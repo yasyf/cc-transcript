@@ -7,8 +7,11 @@ edition = "2021"
 name = "_parser_rs"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py313", "chrono"] }
+pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"] }
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
