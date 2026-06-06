@@ -6,7 +6,14 @@ Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Py
 
 ```
 cc-transcript/
-├── cc_transcript/      # The package — TODO(bootstrap): name the key modules
+├── cc_transcript/      # The package
+│   ├── models.py       # Typed superset event model (the central contract)
+│   ├── discovery.py    # Locating transcript files under ~/.claude/projects
+│   ├── backend.py      # Backend protocol + ParsedTranscript
+│   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
+│   ├── filters.py      # Opt-in consumer-side event filtering
+│   └── store.py        # FileStateStore — SQLite ingestion-state tracking
+├── rust/             # Stub Rust extension (cc_transcript._parser_rs)
 ├── tests/            # Pytest suite
 ├── .github/          # CI, docs, and PyPI release workflows
 ├── AGENTS.md         # This file — shared conventions

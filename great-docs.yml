@@ -13,10 +13,9 @@ jupyter: python3
 
 navbar_style: lilac
 content_style: lilac
-# TODO(bootstrap): pick accent colors that fit the project
 accent_color:
-  light: "#ffb300"
-  dark: "#ffca28"
+  light: "#3a6ea5"
+  dark: "#7aa7d9"
 dark_mode_toggle: true
 back_to_top: true
 keyboard_nav: true
@@ -36,11 +35,6 @@ hero:
 #     dir: docs/guide
 #     navbar_after: Getting Started
 #     index: true
-
-cli:
-  enabled: true
-  module: cc_transcript.cli
-  name: cli
 
 authors:
   - name: Yasyf Mohamedali
