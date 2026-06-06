@@ -9,7 +9,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  build_wheels:
+    name: Build ${{ matrix.id }} wheel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-arm64
+            os: macos-14
+            cibw_archs: arm64
+          - id: macos-x86_64
+            os: macos-15-intel
+            cibw_archs: x86_64
+          - id: linux-x86_64
+            os: ubuntu-latest
+            cibw_archs: x86_64
+          - id: linux-aarch64
+            os: ubuntu-24.04-arm
+            cibw_archs: aarch64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          python-version: "3.13"
+          cache-dependency-glob: uv.lock
+
+      - name: Set version from tag
+        shell: bash
+        run: uv version --frozen "${GITHUB_REF_NAME#v}"
+
+      - name: Install Rust (non-Linux hosts)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts (host builds)
+        if: runner.os != 'Linux'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-on-failure: true
+          shared-key: wheels-${{ matrix.id }}
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cibw-wheels-${{ matrix.id }}
+          path: ./wheelhouse/*.whl
+          if-no-files-found: error
+
+  build_sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,17 +81,17 @@ jobs:
       - name: Set version from tag
         run: uv version --frozen "${GITHUB_REF_NAME#v}"
 
-      - name: Build sdist + wheel
-        run: uv build
+      - name: Build sdist
+        run: uv build --sdist
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dist
-          path: dist/*
+          name: cibw-sdist
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -41,8 +99,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: dist
+          pattern: cibw-*
           path: dist
+          merge-multiple: true
 
       - uses: pypa/gh-action-pypi-publish@release/v1
 
@@ -54,8 +113,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: dist
+          pattern: cibw-*
           path: dist
+          merge-multiple: true
 
       - name: Create GitHub release
         env:

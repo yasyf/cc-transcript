@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13", "3.13"]
+        python-version: ["3.13"]
     steps:
       - uses: actions/checkout@v6
 
@@ -37,4 +37,4 @@ jobs:
           rm -rf .wheel-smoke
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
-          .wheel-smoke/bin/cc-transcript --help
+          .wheel-smoke/bin/python -c "from cc_transcript.parser import TranscriptParser; assert TranscriptParser.backend_name() == 'rust'"
