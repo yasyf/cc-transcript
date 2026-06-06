@@ -39,3 +39,7 @@ coverage.xml
 
 # Great Docs build output
 great-docs/
+
+# Rust build output
+/target/
+wheelhouse/
