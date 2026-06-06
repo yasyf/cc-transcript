@@ -43,7 +43,7 @@ build-backend = "maturin"
 module-name = "cc_transcript._parser_rs"
 manifest-path = "rust/Cargo.toml"
 python-source = "."
-features = ["pyo3/extension-module"]
+features = ["extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
