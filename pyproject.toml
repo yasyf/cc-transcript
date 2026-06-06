@@ -1,0 +1,74 @@
+[project]
+name = "cc-transcript"
+version = "0.1.0"
+description = "Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking."
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Yasyf Mohamedali", email = "yasyfm@gmail.com" }]
+keywords = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+]
+requires-python = ">=3.13"
+dependencies = [
+    "anyio>=4.4",
+    "orjson>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pyright>=1.1",
+    "ruff>=0.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/yasyf/cc-transcript"
+Documentation = "https://yasyf.github.io/cc-transcript/"
+Repository = "https://github.com/yasyf/cc-transcript"
+Issues = "https://github.com/yasyf/cc-transcript/issues"
+Changelog = "https://github.com/yasyf/cc-transcript/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "cc_transcript._parser_rs"
+manifest-path = "rust/Cargo.toml"
+python-source = "."
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--tb=short", "-q"]
+markers = [
+    "unit: Pure unit tests",
+    "integration: Integration tests",
+]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["cc_transcript"]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = [".", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[dependency-groups]
+docs = [
+    "great-docs>=0.13,<0.14",
+]

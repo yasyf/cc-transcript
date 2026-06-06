@@ -1,0 +1,11 @@
+[package]
+name = "cc_transcript_parser"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_parser_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py313", "chrono"] }
