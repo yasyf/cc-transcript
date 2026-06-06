@@ -46,6 +46,13 @@ fn parse_timestamp(raw: &str) -> PyResult<DateTime<chrono::FixedOffset>> {
         .map_err(|e| PyValueError::new_err(format!("invalid timestamp {raw:?}: {e}")))
 }
 
+fn require_array(content: &Value) -> PyResult<&[Value]> {
+    content
+        .as_array()
+        .map(|a| a.as_slice())
+        .ok_or_else(|| PyValueError::new_err("message content is neither a string nor a list"))
+}
+
 fn block_type(block: &Value) -> Option<&str> {
     field_str(block, "type")
 }
@@ -119,7 +126,7 @@ fn parse_user_blocks<'py>(
     match content.as_str() {
         Some(s) => Ok((s.to_string(), PyTuple::empty(py))),
         None => {
-            let array = content.as_array().unwrap();
+            let array = require_array(content)?;
             let texts: Vec<&str> = array
                 .iter()
                 .filter(|b| block_type(b) == Some("text"))
@@ -167,7 +174,7 @@ fn parse_assistant_blocks<'py>(
     py: Python<'py>,
     content: &Value,
 ) -> PyResult<(String, Bound<'py, PyTuple>)> {
-    let array = content.as_array().unwrap();
+    let array = require_array(content)?;
     let text = array
         .iter()
         .filter(|b| block_type(b) == Some("text"))
@@ -224,5 +231,46 @@ pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, Py
             let kind = other.to_string();
             models_type(py, &OTHER_EVENT_CLS, "OtherEvent")?.call1((kind, json_to_py(py, data)?))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(raw: &str) -> Value {
+        sonic_rs::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn require_array_rejects_non_array() {
+        for raw in ["{\"a\":1}", "\"text\"", "5", "null", "true"] {
+            assert!(require_array(&parse(raw)).is_err(), "should reject {raw}");
+        }
+        assert_eq!(require_array(&parse("[1,2,3]")).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn flatten_result_content_joins_only_text_blocks() {
+        assert_eq!(flatten_result_content(&parse("\"hi\"")), "hi");
+        let blocks =
+            parse(r#"[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]"#);
+        assert_eq!(flatten_result_content(&blocks), "ab");
+    }
+
+    #[test]
+    fn parse_timestamp_requires_offset() {
+        assert!(parse_timestamp("2026-01-02T03:04:05Z").is_ok());
+        assert!(parse_timestamp("2026-01-02T03:04:05+05:30").is_ok());
+        assert!(parse_timestamp("2026-01-02T03:04:05").is_err());
+    }
+
+    #[test]
+    fn truthy_str_drops_empty_and_nonstring() {
+        let data = parse(r#"{"a":"x","b":"","c":5}"#);
+        assert_eq!(truthy_str(&data, "a"), Some("x"));
+        assert_eq!(truthy_str(&data, "b"), None);
+        assert_eq!(truthy_str(&data, "c"), None);
+        assert_eq!(truthy_str(&data, "missing"), None);
     }
 }

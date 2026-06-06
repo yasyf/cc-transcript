@@ -202,3 +202,29 @@ def test_parse_batch_parity(tmp_path: Path) -> None:
     for path, parsed in py.items():
         assert rs[path].mtime == parsed.mtime
         assert rs[path].events == parsed.events
+
+
+@requires_rust
+@pytest.mark.parametrize(
+    "content",
+    [{"not": "a list"}, 5, None, True],
+    ids=["dict", "number", "null", "bool"],
+)
+def test_non_array_content_raises_not_panics(tmp_path: Path, content: Any) -> None:
+    from cc_transcript import _parser_rs
+
+    path = tmp_path / "bad.jsonl"
+    path.write_bytes(orjson.dumps(envelope(type="user", message={"role": "user", "content": content})))
+    with pytest.raises(ValueError, match="content is neither a string nor a list"):
+        _parser_rs.stream_parse([(str(path), 1.0)], 1).recv()
+
+
+@requires_rust
+def test_malformed_file_does_not_panic_across_ffi(tmp_path: Path) -> None:
+    from cc_transcript import _parser_rs
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_bytes(orjson.dumps(envelope(type="user", message={"role": "user", "content": {"x": "y"}})))
+    stream = _parser_rs.stream_parse([(str(bad), 1.0)], 4)
+    with pytest.raises(ValueError, match="content is neither a string nor a list"):
+        stream.recv_many(32)
