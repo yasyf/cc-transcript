@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from cc_transcript.models import AssistantEvent, ModeEvent, OtherEvent, SystemEvent, UserEvent
+from cc_transcript.models import AssistantEvent, ModeEvent, OtherEvent, SystemEvent, ToolUseBlock, UserEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -34,46 +34,61 @@ class FilterConfig:
     """Opt-in, consumer-side filtering of a transcript event stream.
 
     Every flag defaults off, so a bare ``FilterConfig()`` passes events
-    through untouched. Compaction summaries and transcript-only entries
-    (envelope flags on :class:`~cc_transcript.models.EntryMeta`) are dropped
-    when :attr:`drop_meta` is set.
+    through untouched.
 
     Attributes:
+        keep_types: When set, drop every event not an instance of one of these
+            types; a type-level allowlist applied before the per-event rules.
         drop_sidechain: Drop events whose envelope marks a sidechain.
         drop_synthetic: Drop assistant events with model ``<synthetic>``.
-        drop_meta: Drop meta, compaction-summary, and transcript-only entries.
+        drop_compacted: Drop compaction-summary and transcript-only entries
+            (envelope flags on :class:`~cc_transcript.models.EntryMeta`).
+        drop_empty: Drop user events with no text and assistant events with
+            neither text nor a tool use.
         drop_ephemeral_entrypoints: Drop events from these entrypoints.
         junk_pattern: Drop user events whose text matches this pattern.
     """
 
+    keep_types: tuple[type[TranscriptEvent], ...] | None = None
     drop_sidechain: bool = False
     drop_synthetic: bool = False
-    drop_meta: bool = False
+    drop_compacted: bool = False
+    drop_empty: bool = False
     drop_ephemeral_entrypoints: frozenset[str] = frozenset()
     junk_pattern: re.Pattern[str] | None = field(default=None)
 
 
 SENTIMENT_FILTER = FilterConfig(
+    keep_types=(UserEvent, AssistantEvent),
     drop_sidechain=True,
     drop_synthetic=True,
-    drop_meta=True,
+    drop_compacted=True,
+    drop_empty=True,
     drop_ephemeral_entrypoints=frozenset({"sdk-cli"}),
     junk_pattern=JUNK_USER_MESSAGE_RE,
 )
 
 
 def keep(event: TranscriptEvent, config: FilterConfig) -> bool:
+    if config.keep_types is not None and not isinstance(event, config.keep_types):
+        return False
     match event:
         case OtherEvent() | ModeEvent():
             return True
         case AssistantEvent() if config.drop_synthetic and event.model == "<synthetic>":
+            return False
+        case AssistantEvent() if config.drop_empty and not event.text.strip() and not any(
+            isinstance(block, ToolUseBlock) for block in event.blocks
+        ):
+            return False
+        case UserEvent() if config.drop_empty and not event.text.strip():
             return False
         case UserEvent() if config.junk_pattern is not None and config.junk_pattern.search(event.text):
             return False
         case UserEvent(meta=meta) | AssistantEvent(meta=meta) | SystemEvent(meta=meta):
             if config.drop_sidechain and meta.is_sidechain:
                 return False
-            if config.drop_meta and (meta.is_meta or meta.is_compact_summary or meta.is_visible_in_transcript_only):
+            if config.drop_compacted and (meta.is_compact_summary or meta.is_visible_in_transcript_only):
                 return False
             return meta.entrypoint not in config.drop_ephemeral_entrypoints
 
