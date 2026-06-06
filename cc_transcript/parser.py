@@ -150,6 +150,15 @@ def parse_one(path: Path, mtime: float) -> ParsedTranscript:
     return ParsedTranscript(path=path, mtime=mtime, events=tuple(parse_events(path)))
 
 
+def load_rust_backend() -> Backend | None:
+    try:
+        from cc_transcript import _parser_rs
+        from cc_transcript.rust import RustBackend
+    except ImportError:
+        return None
+    return RustBackend() if hasattr(_parser_rs, "stream_parse") else None
+
+
 class PythonBackend:
     """The reference pure-Python parsing backend.
 
@@ -208,11 +217,16 @@ class TranscriptParser:
 
     @classmethod
     def resolve_backend(cls) -> Backend:
-        """Selects the parsing backend, honoring ``CC_TRANSCRIPT_DISABLE_RUST``."""
+        """Selects the parsing backend, honoring ``CC_TRANSCRIPT_DISABLE_RUST``.
+
+        Returns the :class:`RustBackend` when the ``_parser_rs`` extension is
+        importable and exposes ``stream_parse``; otherwise the pure-Python
+        :class:`PythonBackend`. Set ``CC_TRANSCRIPT_DISABLE_RUST`` to force
+        Python regardless.
+        """
         if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
             return PythonBackend()
-        # TODO(rust-parity): route to RustBackend once cc_transcript._parser_rs reaches event parity
-        return PythonBackend()
+        return load_rust_backend() or PythonBackend()
 
     @classmethod
     def backend_name(cls) -> Literal["rust", "python"]:
