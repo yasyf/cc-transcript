@@ -112,16 +112,26 @@ impl ParseStream {
 
 #[pyfunction]
 fn stream_parse(paths: Vec<(String, f64)>, prefetch: usize) -> PyResult<ParseStream> {
-    let (tx, rx) = bounded::<ParsedFile>(prefetch.max(1));
+    let depth = prefetch.max(1);
+    let (tx, rx) = bounded::<ParsedFile>(depth);
+    let (permits_tx, permits_rx) = bounded::<()>(depth);
+    for _ in 0..depth {
+        permits_tx.send(()).expect("seed permits");
+    }
     thread::spawn(move || {
         PARSE_POOL.install(|| {
-            paths
-                .into_par_iter()
-                .for_each_with(tx, |tx, (path, mtime)| {
+            paths.into_par_iter().for_each_with(
+                (tx, permits_tx, permits_rx),
+                |(tx, permits_tx, permits_rx), (path, mtime)| {
+                    if permits_rx.recv().is_err() {
+                        return;
+                    }
                     if let Ok(pf) = parse_file_internal(&path, mtime) {
                         let _ = tx.send(pf);
                     }
-                });
+                    let _ = permits_tx.send(());
+                },
+            );
         });
     });
     Ok(ParseStream { rx })
