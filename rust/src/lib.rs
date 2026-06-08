@@ -1,16 +1,21 @@
 mod event;
+mod filter;
 mod model;
+mod value;
 
 use crossbeam_channel::{bounded, Receiver};
 use memchr::memchr_iter;
 use once_cell::sync::Lazy;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyList, PyString, PyTuple};
 use rayon::prelude::*;
 use sonic_rs::Value;
+use std::sync::Arc;
 use std::thread;
 
 use crate::event::build_event;
+use crate::filter::{compile_spec, spec_keep, CompiledSpec};
 
 const AVG_LINE_BYTES: usize = 1400;
 
@@ -32,25 +37,31 @@ struct ParsedFile {
     lines: Vec<Value>,
 }
 
-fn parse_line(line: &[u8], lines: &mut Vec<Value>) {
+fn parse_line(line: &[u8], lines: &mut Vec<Value>, filter: Option<&CompiledSpec>) {
     if line.iter().all(u8::is_ascii_whitespace) {
         return;
     }
     if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
-        lines.push(value);
+        if filter.map_or(true, |spec| spec_keep(spec, &value)) {
+            lines.push(value);
+        }
     }
 }
 
-fn parse_file_internal(path: &str, mtime: f64) -> std::io::Result<ParsedFile> {
+fn parse_file_internal(
+    path: &str,
+    mtime: f64,
+    filter: Option<&CompiledSpec>,
+) -> std::io::Result<ParsedFile> {
     let bytes = std::fs::read(path)?;
     let mut lines: Vec<Value> = Vec::with_capacity(bytes.len() / AVG_LINE_BYTES + 1);
     let mut start = 0usize;
     for pos in memchr_iter(b'\n', &bytes) {
-        parse_line(&bytes[start..pos], &mut lines);
+        parse_line(&bytes[start..pos], &mut lines, filter);
         start = pos + 1;
     }
     if start < bytes.len() {
-        parse_line(&bytes[start..], &mut lines);
+        parse_line(&bytes[start..], &mut lines, filter);
     }
     Ok(ParsedFile {
         path: path.to_string(),
@@ -111,7 +122,16 @@ impl ParseStream {
 }
 
 #[pyfunction]
-fn stream_parse(paths: Vec<(String, f64)>, prefetch: usize) -> PyResult<ParseStream> {
+#[pyo3(signature = (paths, prefetch, spec_json=None))]
+fn stream_parse(
+    paths: Vec<(String, f64)>,
+    prefetch: usize,
+    spec_json: Option<String>,
+) -> PyResult<ParseStream> {
+    let filter: Option<Arc<CompiledSpec>> = match spec_json {
+        Some(json) => Some(Arc::new(compile_spec(&json).map_err(PyValueError::new_err)?)),
+        None => None,
+    };
     let depth = prefetch.max(1);
     let (tx, rx) = bounded::<ParsedFile>(depth);
     let (permits_tx, permits_rx) = bounded::<()>(depth);
@@ -126,7 +146,7 @@ fn stream_parse(paths: Vec<(String, f64)>, prefetch: usize) -> PyResult<ParseStr
                     if permits_rx.recv().is_err() {
                         return;
                     }
-                    if let Ok(pf) = parse_file_internal(&path, mtime) {
+                    if let Ok(pf) = parse_file_internal(&path, mtime, filter.as_deref()) {
                         let _ = tx.send(pf);
                     }
                     let _ = permits_tx.send(());

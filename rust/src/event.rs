@@ -3,29 +3,16 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 use pyo3::IntoPyObjectExt;
-use sonic_rs::{Index, JsonContainerTrait, JsonType, JsonValueTrait, Value};
+use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
     models_type, ASSISTANT_EVENT_CLS, ENTRY_META_CLS, MODE_EVENT_CLS, OTHER_EVENT_CLS,
     SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS,
     TOOL_USE_BLOCK_CLS, USER_EVENT_CLS,
 };
+use crate::value::{block_type, field, field_bool, field_str};
 
 const INTERRUPT_MARKER: &str = "[Request interrupted by user";
-
-fn field<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
-    key.value_index_into(data)
-}
-
-fn field_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
-    field(data, key).and_then(JsonValueTrait::as_str)
-}
-
-fn field_bool(data: &Value, key: &str) -> bool {
-    field(data, key)
-        .and_then(JsonValueTrait::as_bool)
-        .unwrap_or(false)
-}
 
 fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
     field_str(data, key).filter(|s| !s.is_empty())
@@ -51,10 +38,6 @@ fn require_array(content: &Value) -> PyResult<&[Value]> {
         .as_array()
         .map(|a| a.as_slice())
         .ok_or_else(|| PyValueError::new_err("message content is neither a string nor a list"))
-}
-
-fn block_type(block: &Value) -> Option<&str> {
-    field_str(block, "type")
 }
 
 fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
