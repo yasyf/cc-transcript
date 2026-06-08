@@ -118,6 +118,3 @@ def apply_filters(events: Iterable[TranscriptEvent], config: FilterConfig) -> It
         The events for which every enabled rule holds.
     """
     return apply_spec(events, config.to_spec())
-
-
-__all__ = ["JUNK_USER_MESSAGE_RE", "SENTIMENT_FILTER", "FilterConfig", "apply_filters"]

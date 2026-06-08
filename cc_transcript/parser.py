@@ -9,7 +9,6 @@ import anyio.to_thread
 import orjson
 
 from cc_transcript.backend import Backend, ParsedTranscript
-from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
 from cc_transcript.filterspec import apply_spec
 from cc_transcript.models import (
     AssistantEvent,
@@ -267,13 +266,3 @@ class TranscriptParser:
             paths, prefetch=prefetch if prefetch is not None else cls.PREFETCH, spec=spec
         ):
             yield parsed
-
-
-__all__ = [
-    "CLAUDE_PROJECTS_DIR",
-    "PythonBackend",
-    "TranscriptParser",
-    "build_event",
-    "parse_events",
-    "parse_events_from_bytes",
-]

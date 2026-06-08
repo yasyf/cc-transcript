@@ -55,6 +55,3 @@ class Backend(Protocol):
             One :class:`ParsedTranscript` per input path.
         """
         ...
-
-
-__all__ = ["Backend", "ParsedTranscript"]

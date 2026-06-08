@@ -116,6 +116,3 @@ class FileStateStore:
             "INSERT INTO files(path, mtime) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime",
             (path, mtime),
         )
-
-
-__all__ = ["FILE_SCHEMA", "FileStateStore"]

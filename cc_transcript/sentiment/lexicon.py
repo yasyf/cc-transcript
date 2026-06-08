@@ -128,6 +128,3 @@ class NLP:
         if cache_str not in sys.path:
             sys.path.insert(0, cache_str)
         return spacy.load(MODEL_NAME, disable=DISABLED_PIPES)
-
-
-__all__ = ["NLP", "Lexicon"]
