@@ -68,23 +68,6 @@ src = [".", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
-[tool.cibuildwheel]
-build = "cp313-*"
-skip = ["*musllinux*", "*-manylinux_i686", "*-win32"]
-build-frontend = "build"
-build-verbosity = 1
-
-[tool.cibuildwheel.linux]
-archs = ["x86_64", "aarch64"]
-manylinux-x86_64-image = "manylinux_2_28"
-manylinux-aarch64-image = "manylinux_2_28"
-environment = { PATH = "$HOME/.cargo/bin:$PATH" }
-before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable"
-
-[tool.cibuildwheel.macos]
-archs = ["arm64", "x86_64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
-
 [dependency-groups]
 docs = [
     "great-docs>=0.13,<0.14",
