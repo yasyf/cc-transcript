@@ -9,13 +9,14 @@ from cc_transcript.sentiment import (
     AssistantMessage,
     ConversationBucketer,
     FilteredEngine,
-    FrustrationFilter,
-    ScoreFilter,
     SentimentScore,
-    SessionResumeFilter,
     UserMessage,
+    build_score_spec,
+    clamp_resume,
     extract_bucket_keys,
+    flag_frustration,
 )
+from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -68,11 +69,9 @@ def test_bucketer_groups_by_session_and_window() -> None:
         user("other session message here", minutes=0, session="t"),
     ]
     buckets = ConversationBucketer.bucket_messages(messages)
-    # session "t" has only one user turn -> dropped (MIN_USER_TURNS_PER_SESSION)
     assert {b.session_id for b in buckets} == {SessionId("s")}
     assert len(buckets) == 1
-    keys = extract_bucket_keys(messages)
-    assert [k.session_id for k in keys] == [SessionId("s")]
+    assert [k.session_id for k in extract_bucket_keys(messages)] == [SessionId("s")]
 
 
 def test_bucketer_drops_sub_min_user_chars_bucket() -> None:
@@ -82,33 +81,27 @@ def test_bucketer_drops_sub_min_user_chars_bucket() -> None:
         user("actually fix the bug now", minutes=3),
         assistant("sure", minutes=3.2),
     ]
-    keys = extract_bucket_keys(messages)
-    assert sorted(k.bucket_index for k in keys) == [1]
+    assert sorted(k.bucket_index for k in extract_bucket_keys(messages)) == [1]
 
 
-def test_frustration_short_circuits_to_one() -> None:
-    bucket = ConversationBucketer.bucket_messages(
-        [user("wtf this is broken", minutes=0), assistant("sorry", minutes=0.5), user("still broken", minutes=1)]
-    )[0]
-    assert FrustrationFilter().short_circuit(bucket) == SentimentScore(1)
+def test_frustration_stage_short_circuits_to_one() -> None:
+    spec = build_score_spec(flag_frustration())
+    assert py_short_circuit(spec, [["wtf this is broken", "still broken"]]) == [SentimentScore(1)]
+    assert py_short_circuit(spec, [["please fix the bug"]]) == [None]
 
 
-def test_session_resume_clamps_to_three() -> None:
-    bucket = ConversationBucketer.bucket_messages(
-        [user("go ahead", minutes=0), assistant("continuing", minutes=0.5), user("continue", minutes=1)]
-    )[0]
-    assert SessionResumeFilter().post_process(bucket, SentimentScore(5)) == SentimentScore(3)
+def test_resume_stage_clamps_to_three() -> None:
+    spec = build_score_spec(clamp_resume())
+    assert py_post_process(spec, [["go ahead", "continue"]], [SentimentScore(5)]) == [SentimentScore(3)]
+    assert py_post_process(spec, [["a longer real message"]], [SentimentScore(5)]) == [SentimentScore(5)]
 
 
 def test_filtered_engine_short_circuit_bypasses_inference() -> None:
     buckets = ConversationBucketer.bucket_messages(
         [user("wtf broken garbage", minutes=0), assistant("x", minutes=0.5), user("fix it now please", minutes=1)]
     )
-    filters: tuple[ScoreFilter, ...] = (FrustrationFilter(), SessionResumeFilter())
-    engine = FilteredEngine(StubEngine(4), filters)
-    scores = anyio.run(engine.score, buckets)
-    # frustration short-circuits to 1 without hitting the stub's 4
-    assert scores == [SentimentScore(1)]
+    engine = FilteredEngine(StubEngine(4), build_score_spec(flag_frustration(), clamp_resume()))
+    assert anyio.run(engine.score, buckets) == [SentimentScore(1)]
 
 
 def test_filtered_engine_falls_through_to_inference() -> None:
@@ -119,5 +112,5 @@ def test_filtered_engine_falls_through_to_inference() -> None:
             user("and a test", minutes=1),
         ]
     )
-    engine = FilteredEngine(StubEngine(4), (FrustrationFilter(), SessionResumeFilter()))
+    engine = FilteredEngine(StubEngine(4), build_score_spec(flag_frustration(), clamp_resume()))
     assert anyio.run(engine.score, buckets) == [SentimentScore(4)]

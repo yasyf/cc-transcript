@@ -1,10 +1,11 @@
 # spaCy + afinn are optional ([lexicon]) and ship no/partial type info; their
 # unknown-type and missing-import noise is suppressed here, not project-wide.
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportMissingImports=false, reportMissingModuleSource=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportMissingImports=false, reportMissingModuleSource=false, reportMissingTypeStubs=false
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import subprocess
 import sys
 import warnings
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio.to_thread
 
 if TYPE_CHECKING:
+    from types import ModuleType
+
     import spacy.language
     from afinn import Afinn
 
@@ -23,18 +26,57 @@ SPACY_CACHE_DIR = Path.home() / ".cache" / "spacy"
 SPACY_MODEL_VERSION = "3.8.0"
 
 
+def rust_lexicon() -> ModuleType | None:
+    """The Rust lexicon backend when built, its UDPipe model is loadable, and not disabled."""
+    if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
+        return None
+    try:
+        from cc_transcript import _parser_rs
+    except ImportError:
+        return None
+    return _parser_rs if hasattr(_parser_rs, "lexicon_has_hit") and _parser_rs.lexicon_available() else None
+
+
 class Lexicon:
     DOMAIN_OVERRIDES: ClassVar[dict[str, int]] = {
-        "stop": -3, "halt": -3, "quit": -3, "cease": -3,
-        "guess": -2, "guessing": -2,
-        "continue": 2, "proceed": 2, "resume": 2,
-        "break": -2, "nope": -2, "broken": -3, "garbage": -3,
-        "nightmare": -3, "absurd": -2, "bug": -2, "hang": -2,
-        "freeze": -2, "slow": -2, "trash": -3, "regression": -2,
-        "flaky": -2, "impossible": -2, "incorrect": -2,
-        "exactly": 2, "finally": 2, "incredible": 3, "smooth": 2,
-        "neat": 2, "magic": 2, "work": 2, "correct": 2, "solve": 2,
-        "fix": 2, "done": 2, "ship": 2, "crisp": 2, "tight": 2,
+        "stop": -3,
+        "halt": -3,
+        "quit": -3,
+        "cease": -3,
+        "guess": -2,
+        "guessing": -2,
+        "continue": 2,
+        "proceed": 2,
+        "resume": 2,
+        "break": -2,
+        "nope": -2,
+        "broken": -3,
+        "garbage": -3,
+        "nightmare": -3,
+        "absurd": -2,
+        "bug": -2,
+        "hang": -2,
+        "freeze": -2,
+        "slow": -2,
+        "trash": -3,
+        "regression": -2,
+        "flaky": -2,
+        "impossible": -2,
+        "incorrect": -2,
+        "exactly": 2,
+        "finally": 2,
+        "incredible": 3,
+        "smooth": 2,
+        "neat": 2,
+        "magic": 2,
+        "work": 2,
+        "correct": 2,
+        "solve": 2,
+        "fix": 2,
+        "done": 2,
+        "ship": 2,
+        "crisp": 2,
+        "tight": 2,
     }
     MIN_MAGNITUDE: ClassVar[int] = 2
     afinn: ClassVar[Afinn | None] = None
@@ -68,6 +110,22 @@ class Lexicon:
         assert cls.afinn is not None, "Lexicon.ensure_ready() must be awaited at startup"
         score = int(cls.afinn.score(lower))
         return score if abs(score) >= cls.MIN_MAGNITUDE else 0
+
+    @classmethod
+    def has_hit(cls, text: str, *, floor: int, want_negative: bool) -> bool:
+        """Whether any token in ``text`` reaches ``floor`` (``<= -floor`` when ``want_negative``).
+
+        Uses the Rust udpipe backend (lemmatize + score) when available; otherwise the
+        spaCy path, which fails open (returns ``True``) when spaCy/afinn are unavailable.
+        """
+        if (rust := rust_lexicon()) is not None:
+            return rust.lexicon_has_hit(text, floor, want_negative)
+        nlp = NLP.get()
+        if nlp is None or cls.afinn is None:
+            return True
+        if want_negative:
+            return any(cls.polarity(token.lemma_) <= -floor for token in nlp(text) if token.is_alpha)
+        return any(cls.polarity(token.lemma_) >= floor for token in nlp(text) if token.is_alpha)
 
 
 class NLP:

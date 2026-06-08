@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from cc_transcript.filters import SENTIMENT_FILTER, FilterConfig, apply_filters
-from cc_transcript.filterspec import SENTIMENT_SPEC, apply_spec
+from cc_transcript.filters import JUNK_USER_MESSAGE_RE, FilterConfig, apply_filters
 from cc_transcript.models import (
     AssistantEvent,
     EntryMeta,
@@ -25,7 +23,8 @@ from cc_transcript.parser import parse_events
 from tests.test_backend_parity import real_corpus
 
 # The historical monolithic regex + predicate, vendored verbatim, so the
-# declarative SENTIMENT_SPEC is proven byte-for-byte identical on real data.
+# group-composed JUNK_USER_MESSAGE_RE and the declarative FilterConfig lowering
+# stay byte-for-byte identical to the old behavior on real data.
 LEGACY_JUNK_RE = re.compile(
     r"<(?:system[_-](?:instruction|reminder)"
     r"|local-command-(?:stdout|caveat)"
@@ -53,6 +52,17 @@ LEGACY_SENTIMENT = FilterConfig(
     junk_pattern=LEGACY_JUNK_RE,
 )
 
+# The same config built from the group-composed regex cc-transcript ships.
+SENTIMENT_CONFIG = FilterConfig(
+    keep_types=(UserEvent, AssistantEvent),
+    drop_sidechain=True,
+    drop_synthetic=True,
+    drop_compacted=True,
+    drop_empty=True,
+    drop_ephemeral_entrypoints=frozenset({"sdk-cli"}),
+    junk_pattern=JUNK_USER_MESSAGE_RE,
+)
+
 
 def legacy_keep(event: TranscriptEvent, config: FilterConfig) -> bool:
     if config.keep_types is not None and not isinstance(event, config.keep_types):
@@ -62,8 +72,10 @@ def legacy_keep(event: TranscriptEvent, config: FilterConfig) -> bool:
             return True
         case AssistantEvent() if config.drop_synthetic and event.model == "<synthetic>":
             return False
-        case AssistantEvent() if config.drop_empty and not event.text.strip() and not any(
-            isinstance(block, ToolUseBlock) for block in event.blocks
+        case AssistantEvent() if (
+            config.drop_empty
+            and not event.text.strip()
+            and not any(isinstance(block, ToolUseBlock) for block in event.blocks)
         ):
             return False
         case UserEvent() if config.drop_empty and not event.text.strip():
@@ -76,18 +88,6 @@ def legacy_keep(event: TranscriptEvent, config: FilterConfig) -> bool:
             if config.drop_compacted and (meta.is_compact_summary or meta.is_visible_in_transcript_only):
                 return False
             return meta.entrypoint not in config.drop_ephemeral_entrypoints
-
-
-def spec_keep(event: TranscriptEvent) -> bool:
-    """SENTIMENT_SPEC reference: cc-sentiment's exact parser keeps sidechain
-    assistant turns (it drops sidechains only for users)."""
-    if legacy_keep(event, LEGACY_SENTIMENT):
-        return True
-    return (
-        isinstance(event, AssistantEvent)
-        and event.meta.is_sidechain
-        and legacy_keep(event, replace(LEGACY_SENTIMENT, drop_sidechain=False))
-    )
 
 
 def meta(
@@ -143,23 +143,23 @@ def assistant(model: str) -> AssistantEvent:
         pytest.param(ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"), id="mode"),
     ],
 )
-def test_sentiment_filter_drops(event: TranscriptEvent) -> None:
+def test_sentiment_config_drops(event: TranscriptEvent) -> None:
     keeper = user("please refactor the parser")
-    assert list(apply_filters([event, keeper], SENTIMENT_FILTER)) == [keeper]
+    assert list(apply_filters([event, keeper], SENTIMENT_CONFIG)) == [keeper]
 
 
-def test_sentiment_filter_keeps_only_conversational_events() -> None:
+def test_sentiment_config_keeps_only_conversational_events() -> None:
     keepers: list[TranscriptEvent] = [user("please refactor"), assistant("claude-opus-4-7")]
     dropped: list[TranscriptEvent] = [
         OtherEvent(type="summary", raw={"type": "summary"}),
         ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
     ]
-    assert list(apply_filters(keepers + dropped, SENTIMENT_FILTER)) == keepers
+    assert list(apply_filters(keepers + dropped, SENTIMENT_CONFIG)) == keepers
 
 
-def test_sentiment_filter_keeps_is_meta_user() -> None:
+def test_sentiment_config_keeps_is_meta_user() -> None:
     keeper = user("a real prompt that happens to be flagged meta", is_meta=True)
-    assert list(apply_filters([keeper], SENTIMENT_FILTER)) == [keeper]
+    assert list(apply_filters([keeper], SENTIMENT_CONFIG)) == [keeper]
 
 
 def test_default_config_passes_everything_through() -> None:
@@ -172,7 +172,7 @@ def test_default_config_passes_everything_through() -> None:
     assert list(apply_filters(events, FilterConfig())) == events
 
 
-def test_sentiment_spec_matches_shim_and_legacy() -> None:
+def test_sentiment_config_matches_legacy() -> None:
     events: list[TranscriptEvent] = [
         user("please refactor the parser"),
         user("<system-reminder>x</system-reminder>"),
@@ -190,12 +190,10 @@ def test_sentiment_spec_matches_shim_and_legacy() -> None:
         OtherEvent(type="summary", raw={"type": "summary"}),
         ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
     ]
-    assert list(apply_spec(events, SENTIMENT_SPEC)) == [e for e in events if spec_keep(e)]
-    assert list(apply_filters(events, SENTIMENT_FILTER)) == [e for e in events if legacy_keep(e, LEGACY_SENTIMENT)]
+    assert list(apply_filters(events, SENTIMENT_CONFIG)) == [e for e in events if legacy_keep(e, LEGACY_SENTIMENT)]
 
 
 @pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
-def test_sentiment_spec_legacy_parity_on_real_corpus(path: Path) -> None:
+def test_sentiment_config_legacy_parity_on_real_corpus(path: Path) -> None:
     events = parse_events(path)
-    assert list(apply_spec(events, SENTIMENT_SPEC)) == [e for e in events if spec_keep(e)]
-    assert list(apply_filters(events, SENTIMENT_FILTER)) == [e for e in events if legacy_keep(e, LEGACY_SENTIMENT)]
+    assert list(apply_filters(events, SENTIMENT_CONFIG)) == [e for e in events if legacy_keep(e, LEGACY_SENTIMENT)]

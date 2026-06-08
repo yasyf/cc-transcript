@@ -1,6 +1,6 @@
 [project]
 name = "cc-transcript"
-version = "0.3.0"
+version = "0.4.0"
 description = "Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"

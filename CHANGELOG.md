@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+Breaking. Consumer-named presets are removed: the filter **and** score pipelines
+are now composed by each consumer from shared primitives, and both run in Rust
+with a Python fallback at verified parity.
+
+### Added
+- Composable event-filter builders (`build_spec`, `keep_only`, `drop_synthetic`,
+  `drop_empty`, `drop_sidechain`, `drop_meta_flag`, `drop_compacted`,
+  `drop_entrypoints`, `drop_junk`, `drop_phrases`, `drop_short`), the
+  `JUNK_CATEGORIES` registry, and a generic `NOISE_SPEC`.
+- Declarative, Rust-executable `ScoreSpec`: composable score stages
+  (`flag_frustration`, `clamp_positive`, `demote_mild_irritation`, `clamp_resume`,
+  `build_score_spec`), run by a Rust executor with a Python interpreter at parity.
+- Rust sentiment lexicon: lemmatizes via `udpipe-rs` (English UD model, downloaded
+  and cached at runtime) plus AFINN + domain-override scoring; used by default when
+  available, with the unchanged spaCy + afinn path as the at-parity fallback
+  (`Lexicon.has_hit`).
+
+### Changed
+- `FilteredEngine(inner, spec: ScoreSpec)` replaces the filter-tuple constructor.
+- Renamed `SENTIMENT_STRUCTURAL_GROUPS` → `STRUCTURAL_GROUPS` and
+  `PUSHBACK_STRUCTURAL_EXTRA_GROUPS` → `AGENT_INJECTION_GROUPS`.
+- Trimmed the top-level `cc_transcript` export surface; predicate classes and raw
+  group tuples remain importable from `cc_transcript.filterspec`.
+
+### Removed
+- Consumer presets `SENTIMENT_SPEC`, `PUSHBACK_SPEC`, `SENTIMENT_FILTER`,
+  `DEFAULT_FILTERS`, and the `ScoreFilter` ABC + the `*Filter` classes. Consumers
+  compose their own specs from the builders.
+
 ## [Unreleased]
 
 ### Added

@@ -80,17 +80,19 @@ fn compile_regex(predicate: &Value) -> Result<Regex, String> {
     let groups = field(predicate, "groups")
         .and_then(JsonContainerTrait::as_array)
         .ok_or("TextMatchesAny missing 'groups'")?;
+    compile_group_array(groups, field_bool(predicate, "ignore_case"))
+}
+
+/// Joins ``(name, pattern)`` group pairs into one alternation, matching the Python
+/// ``compile_groups`` (so the score executor's regex stages share its semantics).
+pub(crate) fn compile_group_array(groups: &sonic_rs::Array, ignore_case: bool) -> Result<Regex, String> {
     let joined = groups
         .iter()
         .filter_map(|group| 1usize.value_index_into(group).and_then(JsonValueTrait::as_str))
         .map(|pattern| format!("(?:{pattern})"))
         .collect::<Vec<_>>()
         .join("|");
-    let pattern = if field_bool(predicate, "ignore_case") {
-        format!("(?i){joined}")
-    } else {
-        joined
-    };
+    let pattern = if ignore_case { format!("(?i){joined}") } else { joined };
     Regex::new(&pattern).map_err(|e| format!("invalid regex {pattern:?}: {e}"))
 }
 
@@ -167,7 +169,7 @@ fn event_text(data: &Value, kind: Kind) -> String {
     }
 }
 
-fn normalize_bare(text: &str, strip_trailing: &str) -> String {
+pub(crate) fn normalize_bare(text: &str, strip_trailing: &str) -> String {
     text.trim()
         .trim_end_matches(|c: char| strip_trailing.contains(c))
         .trim()
