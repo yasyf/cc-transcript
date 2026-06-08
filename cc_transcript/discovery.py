@@ -63,6 +63,3 @@ class TranscriptDiscovery:
         ]
         found.sort(key=lambda e: e[0])
         return found[:limit] if limit is not None else found
-
-
-__all__ = ["CLAUDE_PROJECTS_DIR", "TranscriptDiscovery"]

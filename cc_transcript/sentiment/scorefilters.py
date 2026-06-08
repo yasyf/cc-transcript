@@ -136,14 +136,3 @@ DEFAULT_FILTERS: tuple[ScoreFilter, ...] = (
     ImperativeMildIrritationFilter(),
     SessionResumeFilter(),
 )
-
-
-__all__ = [
-    "DEFAULT_FILTERS",
-    "FRUSTRATION_PATTERN",
-    "MILD_IMPATIENCE_PATTERN",
-    "FrustrationFilter",
-    "ImperativeMildIrritationFilter",
-    "PositiveClampFilter",
-    "SessionResumeFilter",
-]

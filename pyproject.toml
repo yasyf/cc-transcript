@@ -72,6 +72,9 @@ src = [".", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+
 [dependency-groups]
 docs = [
     # great-docs imports griffe's 2.x module layout; griffelib is the modern

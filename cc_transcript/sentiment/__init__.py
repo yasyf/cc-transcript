@@ -1,3 +1,5 @@
+# Re-exports establish the package's public surface; pyright sees them as unused.
+# pyright: reportUnusedImport=false
 """Sentiment-scoring tier: conversation buckets and composable score filters.
 
 Built on the core transcript model. The lexicon-dependent filters
@@ -30,33 +32,3 @@ from cc_transcript.sentiment.scorefilters import (
     PositiveClampFilter,
     SessionResumeFilter,
 )
-
-__all__ = [
-    "BUCKET_MINUTES",
-    "DEFAULT_FILTERS",
-    "FRUSTRATION_PATTERN",
-    "MILD_IMPATIENCE_PATTERN",
-    "MIN_USER_CHARS",
-    "MIN_USER_TURNS_PER_SESSION",
-    "NLP",
-    "NOOP_PROGRESS",
-    "AssistantMessage",
-    "BaseMessage",
-    "BucketIndex",
-    "BucketKey",
-    "ConversationBucket",
-    "ConversationBucketer",
-    "FilteredEngine",
-    "FrustrationFilter",
-    "ImperativeMildIrritationFilter",
-    "InferenceEngine",
-    "Lexicon",
-    "PositiveClampFilter",
-    "ScoreFilter",
-    "SentimentScore",
-    "SessionResumeFilter",
-    "ToolCall",
-    "TranscriptMessage",
-    "UserMessage",
-    "extract_bucket_keys",
-]

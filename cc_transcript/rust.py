@@ -49,6 +49,3 @@ class RustBackend:
             for path, mtime, events in batch:
                 kept = tuple(apply_spec(events, python_spec)) if python_spec is not None else tuple(events)
                 yield ParsedTranscript(path=Path(path), mtime=mtime, events=kept)
-
-
-__all__ = ["RustBackend"]
