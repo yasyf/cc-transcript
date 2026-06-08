@@ -5,14 +5,29 @@ from typing import TYPE_CHECKING
 import orjson
 import pytest
 
+from cc_transcript.builders import (
+    NOISE_SPEC,
+    build_spec,
+    drop_compacted,
+    drop_empty,
+    drop_entrypoints,
+    drop_junk,
+    drop_meta_flag,
+    drop_phrases,
+    drop_short,
+    drop_sidechain,
+    drop_synthetic,
+    keep_only,
+)
 from cc_transcript.filterspec import (
+    ASSISTANTS,
     FRUSTRATION_GROUPS,
     INTERRUPT_MARKER_GROUPS,
     MILD_IMPATIENCE_GROUPS,
-    PUSHBACK_SPEC,
-    SENTIMENT_SPEC,
+    RESUME_PHRASE_SET,
     STOP_HOOK_GROUPS,
     STRUCTURAL_NOISE_GROUPS,
+    TRIVIAL_ACK_SET,
     USERS,
     Clause,
     FilterSpec,
@@ -44,7 +59,36 @@ ALL_GROUPS_SPEC = FilterSpec(
     )
 )
 
-PRESETS = {"sentiment": SENTIMENT_SPEC, "pushback": PUSHBACK_SPEC, "all_groups": ALL_GROUPS_SPEC}
+# The consumer specs are rebuilt here from the public builders so the Rust↔Python
+# parity guarantee keeps covering their real shapes after they moved to consumers.
+SENTIMENT_SPEC = build_spec(
+    keep_only("user", "assistant"),
+    drop_synthetic(),
+    drop_empty(only_from=ASSISTANTS),
+    drop_empty(only_from=USERS),
+    drop_junk("structural", "interrupt", "stop_hook"),
+    drop_sidechain(except_assistants=True),
+    drop_compacted(),
+    drop_entrypoints({"sdk-cli"}),
+)
+
+PUSHBACK_SPEC = build_spec(
+    keep_only("user"),
+    drop_sidechain(),
+    drop_meta_flag("is_meta"),
+    drop_compacted(),
+    drop_empty(only_from=USERS),
+    drop_junk("structural", "agent_injection"),
+    drop_phrases(TRIVIAL_ACK_SET | RESUME_PHRASE_SET),
+    drop_short(2),
+)
+
+PRESETS = {
+    "sentiment": SENTIMENT_SPEC,
+    "pushback": PUSHBACK_SPEC,
+    "all_groups": ALL_GROUPS_SPEC,
+    "noise": NOISE_SPEC,
+}
 
 # One line per named group (positive), plus near-misses and case folds. The
 # parity assertion is Rust == Python; whether each line matches is incidental.

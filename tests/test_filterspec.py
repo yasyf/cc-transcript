@@ -5,8 +5,6 @@ from datetime import UTC, datetime
 import pytest
 
 from cc_transcript.filterspec import (
-    PUSHBACK_SPEC,
-    SENTIMENT_SPEC,
     Action,
     Clause,
     EntrypointIn,
@@ -28,9 +26,7 @@ from cc_transcript.models import (
     EntryMeta,
     EntryUuid,
     ModeEvent,
-    OtherEvent,
     SessionId,
-    SystemEvent,
     ToolUseBlock,
     ToolUseId,
     TranscriptEvent,
@@ -183,22 +179,3 @@ def test_apply_spec_filters_stream() -> None:
         Clause(TextEmpty(consider_tool_use=False), applies_to=frozenset({"user"})),
     )
     assert list(apply_spec(events, s)) == [keeper]
-
-
-def test_pushback_keeps_interrupt_and_stop_hook() -> None:
-    assert keep(user("[Request interrupted by user] no, do it this way"), PUSHBACK_SPEC)
-    assert keep(user("Stop hook feedback: ruff failed, fix it"), PUSHBACK_SPEC)
-    assert not keep(user("<system-reminder>x</system-reminder>"), PUSHBACK_SPEC)
-    assert not keep(user("go ahead"), PUSHBACK_SPEC)
-    assert not keep(user("ok"), PUSHBACK_SPEC)
-    assert not keep(user("real but meta", is_meta=True), PUSHBACK_SPEC)
-
-
-def test_sentiment_drops_interrupt_keeps_meta_and_teammate() -> None:
-    assert not keep(user("[Request interrupted by user]"), SENTIMENT_SPEC)
-    assert not keep(user("Stop hook feedback: x"), SENTIMENT_SPEC)
-    assert keep(user("a real prompt flagged meta", is_meta=True), SENTIMENT_SPEC)
-    assert keep(user("<teammate-message>hi"), SENTIMENT_SPEC)  # teammate is pushback-only noise
-    assert keep(user("go ahead"), SENTIMENT_SPEC)  # acks clamp at score time, not dropped here
-    assert keep(OtherEvent(type="summary", raw={}), SENTIMENT_SPEC) is False
-    assert keep(SystemEvent(meta=meta(), subtype="x", content=None), SENTIMENT_SPEC) is False

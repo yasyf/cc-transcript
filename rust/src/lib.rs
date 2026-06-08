@@ -1,6 +1,8 @@
 mod event;
 mod filter;
+mod lexicon;
 mod model;
+mod score;
 mod value;
 
 use crossbeam_channel::{bounded, Receiver};
@@ -157,9 +159,45 @@ fn stream_parse(
     Ok(ParseStream { rx })
 }
 
+#[pyfunction]
+fn lexicon_available() -> bool {
+    lexicon::available()
+}
+
+#[pyfunction]
+fn lexicon_polarity(lemma: &str) -> i32 {
+    lexicon::polarity(lemma)
+}
+
+#[pyfunction]
+fn lexicon_has_hit(text: &str, floor: i32, want_negative: bool) -> bool {
+    lexicon::has_hit(text, floor, want_negative)
+}
+
+#[pyfunction]
+fn lexicon_overrides() -> Vec<(String, i32)> {
+    lexicon::overrides_entries()
+}
+
+#[pyfunction]
+fn score_short_circuit(spec_json: String, buckets: Vec<Vec<String>>) -> PyResult<Vec<Option<i64>>> {
+    score::score_short_circuit(&spec_json, &buckets).map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn score_post_process(spec_json: String, buckets: Vec<Vec<String>>, raw: Vec<i64>) -> PyResult<Vec<i64>> {
+    score::score_post_process(&spec_json, &buckets, &raw).map_err(PyValueError::new_err)
+}
+
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(lexicon_available, m)?)?;
+    m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
+    m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;
+    m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;
+    m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
+    m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())
 }

@@ -96,17 +96,6 @@ class FilterConfig:
             yield Clause(EntrypointIn(self.drop_ephemeral_entrypoints))
 
 
-SENTIMENT_FILTER = FilterConfig(
-    keep_types=(UserEvent, AssistantEvent),
-    drop_sidechain=True,
-    drop_synthetic=True,
-    drop_compacted=True,
-    drop_empty=True,
-    drop_ephemeral_entrypoints=frozenset({"sdk-cli"}),
-    junk_pattern=JUNK_USER_MESSAGE_RE,
-)
-
-
 def apply_filters(events: Iterable[TranscriptEvent], config: FilterConfig) -> Iterator[TranscriptEvent]:
     """Yields the events that survive ``config``.
 
