@@ -10,6 +10,7 @@ import orjson
 
 from cc_transcript.backend import Backend, ParsedTranscript
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
+from cc_transcript.filterspec import apply_spec
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,
@@ -32,6 +33,8 @@ from cc_transcript.models import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
     from pathlib import Path
+
+    from cc_transcript.filterspec import FilterSpec
 
 INTERRUPT_MARKER = "[Request interrupted by user"
 
@@ -150,6 +153,13 @@ def parse_one(path: Path, mtime: float) -> ParsedTranscript:
     return ParsedTranscript(path=path, mtime=mtime, events=tuple(parse_events(path)))
 
 
+def parse_one_filtered(path: Path, mtime: float, spec: FilterSpec | None) -> ParsedTranscript:
+    parsed = parse_one(path, mtime)
+    if spec is None:
+        return parsed
+    return ParsedTranscript(path=parsed.path, mtime=parsed.mtime, events=tuple(apply_spec(parsed.events, spec)))
+
+
 def load_rust_backend() -> Backend | None:
     try:
         from cc_transcript import _parser_rs
@@ -173,6 +183,7 @@ class PythonBackend:
         paths: Sequence[tuple[Path, float]],
         *,
         prefetch: int,
+        spec: FilterSpec | None = None,
     ) -> AsyncIterator[ParsedTranscript]:
         """See :meth:`Backend.parse_batch`."""
         if not paths:
@@ -182,7 +193,7 @@ class PythonBackend:
 
         async def worker(path: Path, mtime: float) -> None:
             async with limiter:
-                await send_ch.send(await anyio.to_thread.run_sync(parse_one, path, mtime))
+                await send_ch.send(await anyio.to_thread.run_sync(parse_one_filtered, path, mtime, spec))
 
         async def drive() -> None:
             try:
@@ -239,18 +250,21 @@ class TranscriptParser:
         paths: Sequence[tuple[Path, float]],
         *,
         prefetch: int | None = None,
+        spec: FilterSpec | None = None,
     ) -> AsyncIterator[ParsedTranscript]:
         """Streams parsed transcripts for ``paths`` via the active backend.
 
         Args:
             paths: Pairs of ``(path, mtime)`` to parse.
             prefetch: Files to keep in flight; defaults to :attr:`PREFETCH`.
+            spec: Optional :class:`~cc_transcript.FilterSpec` applied during
+                parsing; events failing it are dropped from each result.
 
         Yields:
             One :class:`ParsedTranscript` per input path.
         """
         async for parsed in cls.backend().parse_batch(
-            paths, prefetch=prefetch if prefetch is not None else cls.PREFETCH
+            paths, prefetch=prefetch if prefetch is not None else cls.PREFETCH, spec=spec
         ):
             yield parsed
 

@@ -28,6 +28,11 @@ class TranscriptDiscovery:
             return None
 
     @staticmethod
+    def transcript_mtime(path: Path) -> float:
+        """Returns ``path``'s modification time, raising if it cannot be read."""
+        return path.stat().st_mtime
+
+    @staticmethod
     def find_in(
         directory: Path,
         *,
