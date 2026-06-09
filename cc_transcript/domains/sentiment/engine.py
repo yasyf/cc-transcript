@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Protocol
 import anyio
 import anyio.to_thread
 
-from cc_transcript.sentiment.buckets import ConversationBucket, SentimentScore
-from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
-from cc_transcript.sentiment.scorespec import (
+from cc_transcript.domains.sentiment.buckets import ConversationBucket, SentimentScore
+from cc_transcript.domains.sentiment.lexicon import NLP, Lexicon, rust_lexicon
+from cc_transcript.domains.sentiment.scorespec import (
     ScoreSpec,
     has_lexicon_stage,
     py_post_process,

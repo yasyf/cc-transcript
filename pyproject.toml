@@ -28,10 +28,12 @@ dev = [
     "ty>=0.0.44",
     "ruff>=0.8",
 ]
-lexicon = [
+sentiment = [
     "spacy>=3.8",
     "afinn>=0.1",
 ]
+# Back-compat alias for the pre-0.6 extra name; prefer [sentiment].
+lexicon = ["cc-transcript[sentiment]"]
 
 [project.urls]
 Homepage = "https://github.com/yasyf/cc-transcript"

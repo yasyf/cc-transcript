@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import anyio
 
 from cc_transcript.models import SessionId
-from cc_transcript.sentiment import (
+from cc_transcript.domains.sentiment import (
     AssistantMessage,
     ConversationBucketer,
     FilteredEngine,
@@ -16,7 +16,7 @@ from cc_transcript.sentiment import (
     extract_bucket_keys,
     flag_frustration,
 )
-from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
+from cc_transcript.domains.sentiment.scorespec import py_post_process, py_short_circuit
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
