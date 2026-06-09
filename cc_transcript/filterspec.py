@@ -398,6 +398,7 @@ def keep(event: TranscriptEvent, spec: FilterSpec) -> bool:
 
 
 def labels_for(event: TranscriptEvent, spec: FilterSpec) -> tuple[str, ...]:
+    """Returns the TAG labels ``spec`` records for ``event``, in clause order."""
     kind = event_kind(event)
     return tuple(
         clause.label

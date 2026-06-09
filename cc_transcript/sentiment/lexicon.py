@@ -38,6 +38,13 @@ def rust_lexicon() -> ModuleType | None:
 
 
 class Lexicon:
+    """Token-polarity lookup: AFINN base scores layered with coding-domain overrides.
+
+    ``DOMAIN_OVERRIDES`` pins context-specific terms (``stop``, ``broken``, ``ship``) that
+    AFINN mis-scores, and magnitudes below ``MIN_MAGNITUDE`` collapse to neutral. Backs the
+    lexicon-bearing score stages through :meth:`has_hit`.
+    """
+
     DOMAIN_OVERRIDES: ClassVar[dict[str, int]] = {
         "stop": -3,
         "halt": -3,
@@ -104,6 +111,7 @@ class Lexicon:
 
     @classmethod
     def polarity(cls, lemma: str) -> int:
+        """The signed polarity of ``lemma`` — a domain override when present, else its AFINN score zeroed below ``MIN_MAGNITUDE``."""
         lower = lemma.lower()
         if (override := cls.DOMAIN_OVERRIDES.get(lower)) is not None:
             return override
@@ -129,6 +137,12 @@ class Lexicon:
 
 
 class NLP:
+    """Lazy loader for the spaCy ``en_core_web_sm`` model used to lemmatize text.
+
+    Loads from the user spaCy cache, downloading the model on first use; on failure it records
+    the diagnostic and disables itself so the lexicon path fails open.
+    """
+
     model: ClassVar[spacy.language.Language | None] = None
     failed: ClassVar[bool] = False
     last_download_output: ClassVar[str | None] = None

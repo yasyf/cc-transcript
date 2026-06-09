@@ -7,11 +7,15 @@ from cc_transcript.models import SessionId
 
 
 class ToolCall(NamedTuple):
+    """A single tool invocation within a message: the tool ``name`` and optional target file path."""
+
     name: str
     file_path: str | None = None
 
 
 class UserMessage(NamedTuple):
+    """A user turn distilled for bucketing: its text, tool calls, and authoring metadata."""
+
     content: str
     timestamp: datetime
     session_id: SessionId
@@ -23,6 +27,8 @@ class UserMessage(NamedTuple):
 
 
 class AssistantMessage(NamedTuple):
+    """An assistant turn distilled for bucketing: its text, tool calls, and responding model."""
+
     content: str
     timestamp: datetime
     session_id: SessionId
