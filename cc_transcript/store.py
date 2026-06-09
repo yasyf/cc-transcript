@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import sqlite3
-import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Self
 
+import aiosqlite
+import anyio
+
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import AsyncIterator
     from pathlib import Path
     from types import TracebackType
 
@@ -21,25 +22,25 @@ CREATE TABLE IF NOT EXISTS files (
 class FileStateStore:
     """Tracks which transcript files have been ingested, keyed by mtime.
 
-    Backed by a single SQLite database with WAL journaling and a process-wide
-    lock, so it is safe to share one store across threads. Consumers compose
-    their own writes alongside :meth:`record_file` inside :meth:`transaction`
-    to keep ingestion state and derived records atomic.
+    Backed by a single async SQLite (``aiosqlite``) database with WAL journaling
+    and a task lock, so it is safe to share one store across concurrent tasks.
+    Consumers compose their own writes alongside :meth:`record_file` inside
+    :meth:`transaction` to keep ingestion state and derived records atomic.
 
     Example:
-        >>> store = FileStateStore.open(Path("state.db"), extra_schema=MY_SCHEMA)
-        >>> with store.transaction() as conn:
-        ...     conn.execute("INSERT INTO my_table VALUES (?)", (value,))
-        ...     store.record_file(str(path), mtime)
+        >>> store = await FileStateStore.open(Path("state.db"), extra_schema=MY_SCHEMA)
+        >>> async with store.transaction() as conn:
+        ...     await conn.execute("INSERT INTO my_table VALUES (?)", (value,))
+        ...     await store.record_file(str(path), mtime)
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection) -> None:
         self.conn = conn
-        self.lock = threading.RLock()
-        self._in_transaction = False
+        self.lock = anyio.Lock()
+        self._txn_owner: int | None = None
 
     @classmethod
-    def open(cls, path: Path, *, extra_schema: str = "") -> Self:
+    async def open(cls, path: Path, *, extra_schema: str = "") -> Self:
         """Opens (creating if needed) the store at ``path``.
 
         Args:
@@ -51,32 +52,31 @@ class FileStateStore:
             The opened store.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.executescript(FILE_SCHEMA + extra_schema)
-        conn.commit()
+        conn = await aiosqlite.connect(str(path), isolation_level=None)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await conn.execute("PRAGMA journal_mode = WAL")
+        await conn.executescript(FILE_SCHEMA + extra_schema)
         return cls(conn)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Closes the underlying connection."""
-        with self.lock:
-            self.conn.close()
+        async with self.lock:
+            await self.conn.close()
 
-    def __enter__(self) -> Self:
+    async def __aenter__(self) -> Self:
         return self
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        await self.close()
 
-    @contextmanager
-    def transaction(self) -> Generator[sqlite3.Connection]:
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         """Yields the locked connection inside a single committed transaction.
 
         Use this to compose consumer writes with :meth:`record_file` so they
@@ -86,33 +86,45 @@ class FileStateStore:
         Yields:
             The store's connection, held under the store lock.
         """
-        with self.lock, self.conn:
-            self._in_transaction = True
+        async with self.lock:
+            self._txn_owner = anyio.get_current_task().id
+            await self.conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self.conn
+            except BaseException:
+                await self.conn.rollback()
+                raise
+            else:
+                await self.conn.commit()
             finally:
-                self._in_transaction = False
+                self._txn_owner = None
 
-    def file_mtimes(self) -> dict[str, float]:
+    async def file_mtimes(self) -> dict[str, float]:
         """Returns the recorded ``path`` to ``mtime`` map."""
-        with self.lock:
-            return {row["path"]: row["mtime"] for row in self.conn.execute("SELECT path, mtime FROM files")}
+        async with self.lock, self.conn.execute("SELECT path, mtime FROM files") as cur:
+            return {row["path"]: row["mtime"] async for row in cur}
 
-    def record_file(self, path: str, mtime: float) -> None:
+    async def record_file(self, path: str, mtime: float) -> None:
         """Upserts the recorded mtime for ``path``.
 
         Call inside :meth:`transaction` to commit alongside consumer writes;
         called on its own it commits immediately.
         """
-        with self.lock:
-            if self._in_transaction:
-                self.upsert_file(path, mtime)
-                return
-            with self.conn:
-                self.upsert_file(path, mtime)
+        if self._txn_owner == anyio.get_current_task().id:
+            await self.upsert_file(path, mtime)
+            return
+        async with self.lock:
+            await self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self.upsert_file(path, mtime)
+            except BaseException:
+                await self.conn.rollback()
+                raise
+            else:
+                await self.conn.commit()
 
-    def upsert_file(self, path: str, mtime: float) -> None:
-        self.conn.execute(
+    async def upsert_file(self, path: str, mtime: float) -> None:
+        await self.conn.execute(
             "INSERT INTO files(path, mtime) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime",
             (path, mtime),
         )

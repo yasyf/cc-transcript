@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anyio
+
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
@@ -14,26 +16,27 @@ class TranscriptDiscovery:
     """
 
     @staticmethod
-    def find_transcripts() -> list[Path]:
+    async def find_transcripts() -> list[Path]:
         """Returns every transcript under the projects directory, sorted."""
-        if not CLAUDE_PROJECTS_DIR.exists():
+        root = anyio.Path(CLAUDE_PROJECTS_DIR)
+        if not await root.exists():
             return []
-        return sorted(CLAUDE_PROJECTS_DIR.rglob("*.jsonl"))
+        return sorted([Path(p) async for p in root.rglob("*.jsonl")])
 
     @staticmethod
-    def stat_mtime(path: Path) -> float | None:
+    async def stat_mtime(path: Path) -> float | None:
         try:
-            return path.stat().st_mtime
+            return (await anyio.Path(path).stat()).st_mtime
         except OSError:
             return None
 
     @staticmethod
-    def transcript_mtime(path: Path) -> float:
+    async def transcript_mtime(path: Path) -> float:
         """Returns ``path``'s modification time, raising if it cannot be read."""
-        return path.stat().st_mtime
+        return (await anyio.Path(path).stat()).st_mtime
 
     @staticmethod
-    def find_in(
+    async def find_in(
         directory: Path,
         *,
         name_contains: str | None = None,
@@ -52,14 +55,18 @@ class TranscriptDiscovery:
         Returns:
             Pairs of ``(path, mtime)`` sorted by path.
         """
-        if not directory.exists():
+        root = anyio.Path(directory)
+        if not await root.exists():
             return []
-        found = [
-            (p, mtime)
-            for p in directory.rglob("*.jsonl")
-            if not name_contains or name_contains in p.name
-            if (mtime := TranscriptDiscovery.stat_mtime(p)) is not None
-            if known_mtimes is None or (prev := known_mtimes.get(str(p))) is None or prev < mtime
-        ]
+        found: list[tuple[Path, float]] = []
+        async for entry in root.rglob("*.jsonl"):
+            if name_contains and name_contains not in entry.name:
+                continue
+            path = Path(entry)
+            if (mtime := await TranscriptDiscovery.stat_mtime(path)) is None:
+                continue
+            if known_mtimes is not None and (prev := known_mtimes.get(str(path))) is not None and prev >= mtime:
+                continue
+            found.append((path, mtime))
         found.sort(key=lambda e: e[0])
         return found[:limit] if limit is not None else found

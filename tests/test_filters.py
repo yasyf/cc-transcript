@@ -19,7 +19,7 @@ from cc_transcript.models import (
     TranscriptEvent,
     UserEvent,
 )
-from cc_transcript.parser import parse_events
+from cc_transcript.parser import parse_events_from_bytes
 from tests.test_backend_parity import real_corpus
 
 # The historical monolithic regex + predicate, vendored verbatim, so the
@@ -195,5 +195,5 @@ def test_sentiment_config_matches_legacy() -> None:
 
 @pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_sentiment_config_legacy_parity_on_real_corpus(path: Path) -> None:
-    events = parse_events(path)
+    events = parse_events_from_bytes(path.read_bytes())
     assert list(apply_filters(events, SENTIMENT_CONFIG)) == [e for e in events if legacy_keep(e, LEGACY_SENTIMENT)]

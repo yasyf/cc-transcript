@@ -37,7 +37,7 @@ from cc_transcript.filterspec import (
     is_portable,
     spec_to_json,
 )
-from cc_transcript.parser import parse_events
+from cc_transcript.parser import parse_events_from_bytes
 from tests.test_backend_parity import fixture_bytes, real_corpus, requires_rust
 
 if TYPE_CHECKING:
@@ -155,7 +155,7 @@ def rust_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
 
 
 def py_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
-    return list(apply_spec(parse_events(path), spec))
+    return list(apply_spec(parse_events_from_bytes(path.read_bytes()), spec))
 
 
 def test_presets_are_portable() -> None:

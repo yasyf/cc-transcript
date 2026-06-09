@@ -111,7 +111,11 @@ class Lexicon:
 
     @classmethod
     def polarity(cls, lemma: str) -> int:
-        """The signed polarity of ``lemma`` — a domain override when present, else its AFINN score zeroed below ``MIN_MAGNITUDE``."""
+        """The signed polarity of ``lemma``.
+
+        A domain override when present, else its AFINN score zeroed below
+        ``MIN_MAGNITUDE``.
+        """
         lower = lemma.lower()
         if (override := cls.DOMAIN_OVERRIDES.get(lower)) is not None:
             return override

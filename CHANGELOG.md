@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+Breaking. All I/O is now async-native (`anyio` + `aiosqlite`); the synchronous
+`parse_events(path)` is removed.
+
+### Changed
+- `FileStateStore` is backed by `aiosqlite`: `open`, `close`, `transaction`,
+  `record_file`, `upsert_file`, and `file_mtimes` are now coroutines, the store
+  is an async context manager (`async with`), and `transaction()` is an
+  `@asynccontextmanager`. The reentrancy guard now keys on the owning task.
+- `TranscriptDiscovery.find_in`, `find_transcripts`, `stat_mtime`, and
+  `transcript_mtime` are now coroutines, using native async `anyio.Path`
+  filesystem traversal (no thread offload).
+- Both parsing backends now uniformly **skip** transcripts that fail to parse:
+  `PythonBackend.parse_batch` swallows per-file `OSError`/`ValueError`/`KeyError`
+  to match `RustBackend`, so `stream_transcripts` no longer aborts a batch on one
+  bad file.
+
+### Added
+- `parse_events_async(path)` — async single-file parse via `anyio.Path`.
+
+### Removed
+- `parse_events(path)`. Migrate to `parse_events_async(path)` for a single file,
+  `TranscriptParser.stream_transcripts(...)` for a batch, or
+  `parse_events_from_bytes(path.read_bytes())` when you already hold the bytes.
+
 ## [0.4.0]
 
 Breaking. Consumer-named presets are removed: the filter **and** score pipelines
@@ -72,5 +98,6 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[0.5.0]: https://github.com/yasyf/cc-transcript/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-transcript/compare/v0.1.0...v0.4.0
 [0.1.0]: https://github.com/yasyf/cc-transcript/releases/tag/v0.1.0

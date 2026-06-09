@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import anyio
 import orjson
 import pytest
 
@@ -21,7 +22,7 @@ from cc_transcript.models import (
     ToolUseId,
     UserEvent,
 )
-from cc_transcript.parser import build_event, parse_events, parse_events_from_bytes
+from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes
 
 
 def envelope(**overrides: Any) -> dict[str, Any]:
@@ -268,8 +269,8 @@ def test_parse_events_from_bytes_skips_blank_and_undecodable() -> None:
     assert [type(e).__name__ for e in events] == ["UserEvent", "AssistantEvent"]
 
 
-def test_parse_events_reads_file(tmp_path: Path) -> None:
+def test_parse_events_async_reads_file(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_bytes(b"\n".join([orjson.dumps(user_str()), orjson.dumps(mode_entry())]))
-    events = parse_events(path)
+    events = anyio.run(parse_events_async, path)
     assert [type(e).__name__ for e in events] == ["UserEvent", "ModeEvent"]

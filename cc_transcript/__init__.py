@@ -56,5 +56,5 @@ from cc_transcript.models import (
     TranscriptEvent,
     UserEvent,
 )
-from cc_transcript.parser import TranscriptParser, parse_events, parse_events_from_bytes
+from cc_transcript.parser import TranscriptParser, parse_events_async, parse_events_from_bytes
 from cc_transcript.store import FileStateStore

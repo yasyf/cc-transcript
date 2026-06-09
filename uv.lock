@@ -13,6 +13,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/86/e5/ffbb7ee3cca21ac6d310ac01944fb163c20030b45bda25421d725d8a859a/afinn-0.1.tar.gz", hash = "sha256:cf2f728ccc6f2974f2f27e2110e4c05a0133a2f14a40387c463a8c9fdd4ab61b", size = 52591, upload-time = "2016-11-03T19:13:05.749Z" }
 
 [[package]]
+name = "aiosqlite"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -209,9 +218,10 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "anyio" },
     { name = "orjson" },
 ]
@@ -236,6 +246,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "afinn", marker = "extra == 'lexicon'", specifier = ">=0.1" },
+    { name = "aiosqlite", specifier = ">=0.20" },
     { name = "anyio", specifier = ">=4.4" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

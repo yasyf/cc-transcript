@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -144,12 +146,12 @@ def decode_line(line: bytes) -> TranscriptEvent | None:
     return build_event(data)
 
 
-def parse_events(path: Path) -> list[TranscriptEvent]:
-    return parse_events_from_bytes(path.read_bytes())
+async def parse_events_async(path: Path) -> list[TranscriptEvent]:
+    return parse_events_from_bytes(await anyio.Path(path).read_bytes())
 
 
 def parse_one(path: Path, mtime: float) -> ParsedTranscript:
-    return ParsedTranscript(path=path, mtime=mtime, events=tuple(parse_events(path)))
+    return ParsedTranscript(path=path, mtime=mtime, events=tuple(parse_events_from_bytes(path.read_bytes())))
 
 
 def parse_one_filtered(path: Path, mtime: float, spec: FilterSpec | None) -> ParsedTranscript:
@@ -192,7 +194,14 @@ class PythonBackend:
 
         async def worker(path: Path, mtime: float) -> None:
             async with limiter:
-                await send_ch.send(await anyio.to_thread.run_sync(parse_one_filtered, path, mtime, spec))
+                try:
+                    parsed = await anyio.to_thread.run_sync(parse_one_filtered, path, mtime, spec)
+                except (OSError, ValueError, KeyError):
+                    return
+                try:
+                    await send_ch.send(parsed)
+                except anyio.BrokenResourceError:
+                    return
 
         async def drive() -> None:
             try:
@@ -202,11 +211,15 @@ class PythonBackend:
             finally:
                 await send_ch.aclose()
 
-        async with anyio.create_task_group() as outer:
-            outer.start_soon(drive)
+        driver = asyncio.ensure_future(drive())
+        try:
             async with recv_ch:
                 async for parsed in recv_ch:
                     yield parsed
+        finally:
+            driver.cancel()
+            with suppress(asyncio.CancelledError):
+                await driver
 
 
 class TranscriptParser:
