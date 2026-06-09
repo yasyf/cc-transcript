@@ -105,6 +105,7 @@ fn text_block<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyAny>> {
 fn parse_user_blocks<'py>(
     py: Python<'py>,
     content: &Value,
+    is_async: bool,
 ) -> PyResult<(String, Bound<'py, PyTuple>)> {
     match content.as_str() {
         Some(s) => Ok((s.to_string(), PyTuple::empty(py))),
@@ -127,6 +128,7 @@ fn parse_user_blocks<'py>(
                                 require_str(b, "tool_use_id")?,
                                 flatten_result_content(require(b, "content")?),
                                 field_bool(b, "is_error"),
+                                is_async,
                             ))
                         }),
                 )
@@ -174,8 +176,11 @@ fn parse_assistant_blocks<'py>(
 pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, PyAny>> {
     match require_str(data, "type")? {
         "user" => {
+            let is_async = field(data, "toolUseResult")
+                .map(|tur| field_bool(tur, "isAsync"))
+                .unwrap_or(false);
             let (text, blocks) =
-                parse_user_blocks(py, require(require(data, "message")?, "content")?)?;
+                parse_user_blocks(py, require(require(data, "message")?, "content")?, is_async)?;
             let interrupted = text.contains(INTERRUPT_MARKER);
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1((
                 parse_meta(py, data)?,

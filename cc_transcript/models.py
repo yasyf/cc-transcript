@@ -59,11 +59,14 @@ class ToolResultBlock:
         tool_use_id: The id of the originating tool-use block.
         content: The result text, flattened from string or block content.
         is_error: Whether the tool reported a failure.
+        is_async: Whether the originating tool ran asynchronously, read from the
+            entry-level ``toolUseResult.isAsync`` marker.
     """
 
     tool_use_id: ToolUseId
     content: str
     is_error: bool
+    is_async: bool = False
 
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock

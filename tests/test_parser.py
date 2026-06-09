@@ -22,6 +22,7 @@ from cc_transcript.models import (
     ToolUseId,
     UserEvent,
 )
+from cc_transcript import parse_event
 from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes
 
 
@@ -68,6 +69,19 @@ def user_tool_result_list_content() -> dict[str, Any]:
                     "content": [{"type": "text", "text": "line a"}, {"type": "text", "text": "line b"}],
                     "is_error": True,
                 }
+            ],
+        },
+    )
+
+
+def user_async_tool_result() -> dict[str, Any]:
+    return envelope(
+        type="user",
+        toolUseResult={"isAsync": True, "status": "async_launched"},
+        message={
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_async", "content": "launched", "is_error": False}
             ],
         },
     )
@@ -179,6 +193,25 @@ def test_tool_result_list_content_flattens_and_errors() -> None:
     assert isinstance(event, UserEvent)
     assert event.text == ""
     assert event.blocks == (ToolResultBlock(tool_use_id=ToolUseId("toolu_2"), content="line aline b", is_error=True),)
+
+
+def test_tool_result_is_async_from_entry_level_flag() -> None:
+    event = parse_event(user_async_tool_result())
+    assert isinstance(event, UserEvent)
+    assert event.blocks == (
+        ToolResultBlock(tool_use_id=ToolUseId("toolu_async"), content="launched", is_error=False, is_async=True),
+    )
+
+
+def test_tool_result_is_async_defaults_false() -> None:
+    event = parse_event(user_blocks())
+    assert isinstance(event, UserEvent)
+    (block,) = (b for b in event.blocks if isinstance(b, ToolResultBlock))
+    assert block.is_async is False
+
+
+def test_parse_event_is_public_alias_of_build_event() -> None:
+    assert parse_event is build_event
 
 
 def test_user_sidechain_meta_flags() -> None:
