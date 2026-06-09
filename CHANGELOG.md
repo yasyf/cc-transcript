@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+Internal re-architecture: the package now has an explicit **core** layer and a
+**domains** tier (`cc_transcript.domains.{sentiment,mining}`) built on top of it.
+Additive for core consumers; the sentiment import paths move behind deprecation
+shims. An import-fence test enforces the layering: core never imports domains,
+and the two domains never import each other.
+
+### Added
+- **core**: `cc_transcript.messages` — the distilled message projection
+  (`UserMessage`/`AssistantMessage`/`ToolCall`/`TranscriptMessage`), promoted out
+  of the sentiment tier and re-exported at the package root.
+- **domains.mining**: new built-in domain. Neutral fact-detectors
+  (`MiningSignal` + `iter_*_signals`) over Claude Code transcripts, the generic
+  `FeedbackCandidate`/`dedup_key`, the context-window builder, nav/marker
+  primitives, review-format infra (`ReviewComment`/`ReviewFormat`/`extract_all`),
+  a `FeedbackStore` base over `FileStateStore`, and the `Confidence`/
+  `CandidateSignal` de-noising layer. Apps map signals to their own candidate
+  records with policy injected.
+
+### Changed
+- **domains.sentiment**: the sentiment scoring tier moved from
+  `cc_transcript.sentiment` to `cc_transcript.domains.sentiment`. The `[lexicon]`
+  extra is renamed `[sentiment]`, with `[lexicon]` kept as a back-compat alias.
+
+### Deprecated
+- The `cc_transcript.sentiment.*` import paths are now thin re-export shims for
+  `cc_transcript.domains.sentiment` and the promoted core message types, to be
+  removed in a future release. Import from `cc_transcript.domains.sentiment` and
+  `cc_transcript` instead.
+
 ## [0.5.0]
 
 Breaking. All I/O is now async-native (`anyio` + `aiosqlite`); the synchronous

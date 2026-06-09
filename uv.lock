@@ -218,7 +218,7 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -236,6 +236,10 @@ lexicon = [
     { name = "afinn" },
     { name = "spacy" },
 ]
+sentiment = [
+    { name = "afinn" },
+    { name = "spacy" },
+]
 
 [package.dev-dependencies]
 docs = [
@@ -245,16 +249,17 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "afinn", marker = "extra == 'lexicon'", specifier = ">=0.1" },
+    { name = "afinn", marker = "extra == 'sentiment'", specifier = ">=0.1" },
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "anyio", specifier = ">=4.4" },
+    { name = "cc-transcript", extras = ["sentiment"], marker = "extra == 'lexicon'" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "spacy", marker = "extra == 'lexicon'", specifier = ">=3.8" },
+    { name = "spacy", marker = "extra == 'sentiment'", specifier = ">=3.8" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.44" },
 ]
-provides-extras = ["dev", "lexicon"]
+provides-extras = ["dev", "sentiment", "lexicon"]
 
 [package.metadata.requires-dev]
 docs = [
