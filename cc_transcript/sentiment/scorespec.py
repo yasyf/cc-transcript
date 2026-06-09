@@ -91,24 +91,29 @@ class ScoreSpec:
 
 
 def flag_frustration(*, score: int = 1) -> FrustrationShortCircuit:
+    """Composes the short-circuit stage that pins a frustrated message to ``score`` before inference."""
     return FrustrationShortCircuit(groups=FRUSTRATION_GROUPS, score=score)
 
 
 def clamp_positive(*, floor: int = 3, max_words: int = SHORT_MESSAGE_MAX_WORDS) -> PositiveClamp:
+    """Composes the post-process stage that lowers a top score on a short message lacking positive lexicon."""
     return PositiveClamp(positive_floor=floor, max_words=max_words)
 
 
 def demote_mild_irritation(*, floor: int = 3) -> MildIrritationDemote:
+    """Composes the post-process stage that softens a non-hostile mild-impatience message off the floor score."""
     return MildIrritationDemote(
         trigger_groups=MILD_IMPATIENCE_GROUPS, hostile_groups=FRUSTRATION_GROUPS, hostile_floor=floor
     )
 
 
 def clamp_resume() -> ResumeClamp:
+    """Composes the post-process stage that neutralizes a bare resume phrase to a middling score."""
     return ResumeClamp(phrases=RESUME_PHRASE_SET)
 
 
 def build_score_spec(*stages: ScoreStage) -> ScoreSpec:
+    """Assembles ``stages`` into a :class:`ScoreSpec` for the engine to apply around inference."""
     return ScoreSpec(stages=tuple(stages))
 
 

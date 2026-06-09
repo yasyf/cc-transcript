@@ -16,6 +16,8 @@ MIN_USER_CHARS = 5
 
 
 class ConversationBucket(NamedTuple):
+    """A session's messages grouped into one fixed-width time window — the unit that gets scored."""
+
     session_id: SessionId
     bucket_index: BucketIndex
     bucket_start: datetime
@@ -23,11 +25,19 @@ class ConversationBucket(NamedTuple):
 
 
 class BucketKey(NamedTuple):
+    """Stable identity of a :class:`ConversationBucket`: its session and bucket index."""
+
     session_id: SessionId
     bucket_index: BucketIndex
 
 
 class ConversationBucketer:
+    """Groups transcript messages into per-session, time-aligned buckets worth scoring.
+
+    Sessions below ``MIN_USER_TURNS_PER_SESSION`` and windows lacking a substantive user turn or
+    any assistant turn are dropped.
+    """
+
     @staticmethod
     def align_to_bucket(ts: datetime) -> datetime:
         return ts.replace(
@@ -73,6 +83,7 @@ class ConversationBucketer:
 
 
 def extract_bucket_keys(messages: list[TranscriptMessage]) -> list[BucketKey]:
+    """Returns the :class:`BucketKey` of every scorable bucket in ``messages``."""
     return [
         BucketKey(session_id=b.session_id, bucket_index=b.bucket_index)
         for b in ConversationBucketer.bucket_messages(messages)
