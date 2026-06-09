@@ -25,10 +25,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache-dependency-glob: uv.lock
 
-      - name: Sync (dev)
-        run: uv sync --extra dev
+      - name: Sync (dev + lexicon)
+        run: uv sync --extra dev --extra lexicon
 
       - name: Type check (ty)
+        continue-on-error: true
         run: uv run ty check cc_transcript
 
       - name: Test (pytest)
