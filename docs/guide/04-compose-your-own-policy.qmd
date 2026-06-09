@@ -1,0 +1,198 @@
+---
+title: "Compose your own policy"
+description: "Declare a project's filtering and scoring policy as data — one FilterSpec and one ScoreSpec, built from primitives, in a single module."
+---
+
+`cc-transcript` ships primitives and no presets. There is no
+"default sentiment policy," no curated list of phrases to drop, no opinion baked
+into the parser about what counts as noise. That is deliberate: every downstream
+consumer wants something slightly different, and a preset that almost fits is
+worse than primitives that compose exactly.
+
+So a consumer owns its policy. Not as scattered `if` branches threaded through the
+ingestion code, but as **data** — a `FilterSpec` and a `ScoreSpec` declared once,
+in one place, from the small builders the library exports. This guide is the
+capstone: it puts both halves into a single `policy.py` the way a real consumer
+(like `cc-sentiment` or `cc-pushback`) would write it.
+
+The two halves are taught in detail elsewhere — see the
+[Filtering guide](01-filtering-events.qmd) for the filter builders and predicate
+classes, and the [Scoring guide](02-scoring-sentiment.qmd) for the score stages and
+the engine. Here we assume you know the primitives and focus on the composition
+pattern: how the pieces sit together in one module.
+
+## The filter half
+
+Filtering narrows the raw event stream to the turns you actually want to reason
+about. Start from a parsed transcript — the fixture below stands in for one
+session on disk:
+
+```{python}
+from cc_transcript import parse_events_from_bytes
+
+TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":"fix the failing test"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:09.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"Fixed it - the off-by-one in the loop bound is gone."}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:04:20.000Z","message":{"role":"user","content":"<system-reminder>Background context, not written by the user.</system-reminder>"}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:04:30.000Z","message":{"role":"user","content":"thanks"}}
+{"type":"system","uuid":"s1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:31.000Z","subtype":"stop_hook_summary","content":"hook ran"}
+"""
+
+events = parse_events_from_bytes(TRANSCRIPT)
+[type(e).__name__ for e in events]
+# -> ['UserEvent', 'AssistantEvent', 'UserEvent', 'UserEvent', 'SystemEvent']
+```
+
+The parse is non-lossy: the system reminder, the bare `thanks`, and the hook
+summary all survive. Your policy decides what to drop. `build_spec` assembles a
+few clauses into one immutable spec, and `apply_spec` yields the survivors:
+
+```{python}
+from cc_transcript import apply_spec, build_spec, drop_junk, drop_short, keep_only
+
+spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_short(2))
+kept = list(apply_spec(events, spec))
+[(type(e).__name__, getattr(e, "text", "")) for e in kept]
+# -> [('UserEvent', 'fix the failing test'),
+#     ('AssistantEvent', 'Fixed it - the off-by-one in the loop bound is gone.')]
+```
+
+Three clauses, three decisions: keep only user and assistant turns, drop the
+structural junk (the `<system-reminder>`), and drop turns shorter than two words
+(the `thanks`). The system event and the noise are gone; the substantive exchange
+remains. That is the entire filter policy — three lines of data.
+
+## The score half
+
+Scoring runs over conversation *buckets* — short windows of user/assistant turns —
+and a `ScoreSpec` wraps the model with deterministic stages that short-circuit or
+clamp its output. The setup below builds a few small helpers and a stand-in
+engine; the real inference engine runs a model, but a constant one keeps this page
+hermetic and lets the policy stages do the visible work:
+
+```{python}
+from datetime import datetime
+
+from cc_transcript.models import SessionId
+from cc_transcript.sentiment import (
+    AssistantMessage,
+    BucketIndex,
+    ConversationBucket,
+    SentimentScore,
+    UserMessage,
+    build_score_spec,
+    clamp_resume,
+    flag_frustration,
+)
+from cc_transcript.sentiment import FilteredEngine
+
+
+def user_msg(content, second):
+    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                       f"u-{second}", (), 0, "1.2.3")
+
+def assistant_msg(content, second):
+    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                            f"a-{second}", (), 0, "claude-opus-4-7")
+
+def bucket(index, *messages):
+    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
+                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
+
+
+class ConstantEngine:
+    """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
+
+    async def score(self, buckets, on_progress=lambda _: None):
+        return [SentimentScore(5) for _ in buckets]
+
+    def peak_memory_gb(self):
+        return 0.0
+
+    async def close(self):
+        return None
+```
+
+`FilteredEngine` wraps an inner engine with the spec: it lets the stages decide a
+bucket's score without a model call where they can, and falls through to the inner
+engine otherwise. The engine is async, so a Quarto cell drives it with top-level
+`await`:
+
+```{python}
+buckets = [
+    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
+    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
+    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
+]
+
+spec = build_score_spec(flag_frustration(), clamp_resume())
+engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
+
+# The engine is async; in a Quarto cell drive it with top-level await
+# (anyio.run / asyncio.run raise "already running asyncio" under the build kernel).
+scores = await engine.score(buckets)
+[int(s) for s in scores]
+# -> [1, 5, 3]   (frustration short-circuits to 1; bucket 1 keeps the model's 5;
+#                  bucket 2's "continue" post-clamps 5 -> 3)
+```
+
+Each bucket is decided by a different rule. Bucket 0's `flag_frustration` stage
+fires on the explicit frustration and short-circuits to `1` without ever calling
+the model. Bucket 1 has nothing for the stages to grab, so it keeps the inner
+engine's `5`. Bucket 2's lone `continue` is a resume cue, so `clamp_resume`
+post-clamps the model's `5` down to a neutral `3`. The stages run in order, and
+the spec is just the ordered tuple of them.
+
+## One module: `policy.py`
+
+Both halves live together in one module. Filtering runs first and narrows the
+stream; scoring runs second over what survives. A real consumer's policy module
+reads like this:
+
+```python
+# policy.py — your project's filtering + scoring policy, as data.
+from cc_transcript import build_spec, keep_only, drop_junk, drop_phrases, drop_short
+from cc_transcript.filterspec import TRIVIAL_ACK_SET
+from cc_transcript.sentiment import build_score_spec, flag_frustration, clamp_positive, demote_mild_irritation, clamp_resume
+
+FILTER_SPEC = build_spec(
+    keep_only("user", "assistant"),
+    drop_junk("structural", "agent_injection"),
+    drop_phrases(TRIVIAL_ACK_SET),
+    drop_short(3),
+)
+
+SCORE_SPEC = build_score_spec(
+    flag_frustration(),
+    clamp_positive(),
+    demote_mild_irritation(),
+    clamp_resume(),
+)
+```
+
+`FILTER_SPEC` narrows the event stream before anything reads it; `SCORE_SPEC`
+wraps the model so deterministic rules get the first and last word on each bucket.
+Both are plain data — ordered tuples of clauses and stages — which is what makes
+this pattern pay off:
+
+- **Testable.** A spec is a value, so you assert on its result directly: parse a
+  fixture, `apply_spec(events, FILTER_SPEC)`, and check the survivors. No mocks,
+  no engine, no I/O.
+- **Serializable.** Filter specs round-trip to JSON (`spec_to_json` /
+  `is_portable` in `cc_transcript.filterspec`), so a policy can travel out of
+  process or get pinned in a fixture.
+- **Executed in Rust at parity.** The same spec runs on the Rust backend with
+  identical results, so declaring policy as data costs nothing at speed.
+
+Note where the names come from. The public surface is import-controlled — there is
+no `__all__`; the public API is exactly what `cc_transcript` and
+`cc_transcript.sentiment` re-export. Import the filter builders and the core
+events from `cc_transcript`, the score builders, stages, types, and engine from
+`cc_transcript.sentiment`, and reach into `cc_transcript.filterspec` only for the
+predicate classes (`KindIs`, `MetaFlag`, `TextMatchesAny`, …) and shared sets like
+`TRIVIAL_ACK_SET`. If a name is not re-exported from one of those namespaces, it is
+not part of the policy surface.
+
+`cc-sentiment` and `cc-pushback` are the reference consumers: each owns a
+`policy.py` of exactly this shape, and each is a worked example of the library's
+one promise — a faithful parse, with the policy living in your code, as data.

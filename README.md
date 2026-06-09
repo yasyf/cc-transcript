@@ -55,4 +55,4 @@ available — every rule is off by default, so a bare `FilterConfig()` passes ev
 
 ## Docs
 
-[Read the docs](https://yasyf.github.io/cc-transcript/) for the full guide and API reference.
+[Read the docs](https://yasyf.github.io/cc-transcript/) for the full guides — Getting Started, Filtering events, Scoring sentiment, Rust/Python backends & parity, and Compose your own policy — plus the complete API reference.

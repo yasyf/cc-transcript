@@ -1,0 +1,192 @@
+---
+title: Scoring sentiment
+description: Wrap an inference model in a composable ScoreSpec whose deterministic stages short-circuit or post-process its score.
+---
+
+Sentiment scoring rates how a user feels across a slice of a session — a 1 is hostile,
+a 5 is happy. The model that produces that number is an `InferenceEngine`, but you
+rarely run it bare. You wrap it in a `ScoreSpec`: an ordered tuple of small,
+deterministic stages that bracket the model.
+
+Each stage acts in one of two phases, and the phase is intrinsic to the stage's
+type — you don't configure it:
+
+- **Short-circuit** stages run *before* inference. When one matches, it returns a
+  score outright and the model never sees that bucket. `FrustrationShortCircuit` is
+  the only short-circuit stage: an explicit "wtf, this is broken" needs no model to
+  read it.
+- **Post-process** stages run *after* inference. They fold the model's raw score
+  through deterministic adjustments — clamping an over-eager 5, softening a harsh 1.
+  `PositiveClamp`, `MildIrritationDemote`, and `ResumeClamp` are post-process stages.
+
+`FilteredEngine` is the wrapper that ties the two together: it asks the spec which
+buckets short-circuit, runs the inner engine only on the rest, then post-processes
+every score. The deterministic stages execute in Rust when the extension is built and
+the spec is portable, and in pure Python at parity otherwise — same scores either way.
+See [Backends & parity](03-backends-and-parity.qmd) for how that fallback is chosen; this
+page treats the two as interchangeable.
+
+## Setup
+
+A `ConversationBucket` groups one session's user and assistant messages into a short
+time window (three minutes by default). A real `InferenceEngine` runs a model over
+each bucket's text. To keep this guide hermetic — no model download, no GPU — we
+stand in a `ConstantEngine` that scores every bucket it's handed a flat `5`. That
+isolates the spec: any score that isn't `5` is the work of a deterministic stage, not
+the model.
+
+```{python}
+from datetime import datetime
+
+from cc_transcript.models import SessionId
+from cc_transcript.sentiment import (
+    AssistantMessage,
+    BucketIndex,
+    ConversationBucket,
+    SentimentScore,
+    UserMessage,
+    build_score_spec,
+    clamp_resume,
+    flag_frustration,
+)
+from cc_transcript.sentiment import FilteredEngine
+
+
+def user_msg(content, second):
+    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                       f"u-{second}", (), 0, "1.2.3")
+
+def assistant_msg(content, second):
+    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                            f"a-{second}", (), 0, "claude-opus-4-7")
+
+def bucket(index, *messages):
+    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
+                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
+
+
+class ConstantEngine:
+    """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
+
+    async def score(self, buckets, on_progress=lambda _: None):
+        return [SentimentScore(5) for _ in buckets]
+
+    def peak_memory_gb(self):
+        return 0.0
+
+    async def close(self):
+        return None
+```
+
+## Run the spec
+
+Compose a spec from two pure stages — `flag_frustration()` (short-circuit) and
+`clamp_resume()` (post-process) — and wrap the engine. `FilteredEngine.score` is
+`async`; inside a Quarto cell you drive it with top-level `await`. Do **not** reach
+for `anyio.run` or `asyncio.run` — the build kernel already has a running event loop,
+so those raise `RuntimeError: ... already running`.
+
+```{python}
+buckets = [
+    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
+    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
+    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
+]
+
+spec = build_score_spec(flag_frustration(), clamp_resume())
+engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
+
+# The engine is async; in a Quarto cell drive it with top-level await
+# (anyio.run / asyncio.run raise "already running asyncio" under the build kernel).
+scores = await engine.score(buckets)
+[int(s) for s in scores]
+# -> [1, 5, 3]   (frustration short-circuits to 1; bucket 1 keeps the model's 5;
+#                  bucket 2's "continue" post-clamps 5 -> 3)
+```
+
+Read `[1, 5, 3]` bucket by bucket:
+
+- **Bucket 0 → 1.** `"this is completely useless, wtf"` matches the frustration
+  groups, so `flag_frustration` short-circuits to `1`. The model never runs on this
+  bucket — `ConstantEngine` is never asked for it.
+- **Bucket 1 → 5.** `"looks reasonable, what about the edge case"` carries no special
+  signal, so the model's score stands. Here that's the stand-in's flat `5`.
+- **Bucket 2 → 3.** `"continue"` is a bare resume phrase, so `clamp_resume`
+  post-clamps the model's `5` down to `3` — a one-word "keep going" is neutral, not
+  delight.
+
+## The four stage builders
+
+You never construct stages directly. Four builders return them pre-wired with the
+library's regex groups, phrase sets, and defaults. Two are **pure** (regex or
+set-membership only) and two are **lexicon-gated** (they consult the sentiment
+lexicon — see below):
+
+| Builder | Stage | Phase | Determinism |
+| --- | --- | --- | --- |
+| `flag_frustration(*, score=1)` | `FrustrationShortCircuit` | short-circuit | pure |
+| `clamp_resume()` | `ResumeClamp` | post-process | pure |
+| `clamp_positive(*, floor=3, max_words=SHORT_MESSAGE_MAX_WORDS)` | `PositiveClamp` | post-process | lexicon-gated |
+| `demote_mild_irritation(*, floor=3)` | `MildIrritationDemote` | post-process | lexicon-gated |
+
+`flag_frustration` and `clamp_resume` are the two you just ran. The other two add
+sharper post-processing but pull in the lexicon, so we illustrate them statically
+rather than running them here (executing them downloads a UDPipe model at build time):
+
+```python
+from cc_transcript.sentiment import build_score_spec, clamp_positive, demote_mild_irritation, flag_frustration, clamp_resume
+
+# A fuller spec. clamp_positive lowers an over-eager 5 to 3 on a terse message
+# that lacks any positive word; demote_mild_irritation softens a frustration-1
+# down to 2 for mild impatience ("...again", "for the third time") that is not hostile.
+spec = build_score_spec(
+    flag_frustration(),
+    clamp_positive(),
+    demote_mild_irritation(),
+    clamp_resume(),
+)
+```
+
+Stage order is significant: short-circuit stages are consulted first (a frustration
+hit ends the bucket immediately), then the post-process stages fold in the order you
+list them. `clamp_positive` only fires on a model `5`, `demote_mild_irritation` only
+on a `1` — they target the score the model is most likely to over-state.
+
+`clamp_positive` and `demote_mild_irritation` both call `Lexicon.has_hit` to decide
+whether a message actually carries positive or hostile sentiment. That lexicon is the
+subject of the next section.
+
+## The lexicon
+
+`Lexicon.has_hit(text, *, floor, want_negative)` lemmatizes each token in a message
+and scores it for polarity, then reports whether any token reaches `floor` (or drops
+to `-floor` when `want_negative=True`). That's what lets `clamp_positive` distinguish
+a terse-but-warm "perfect, ship it" from a flat "ok" — and `demote_mild_irritation`
+tell genuine hostility from mere impatience.
+
+It has two backends and a fail-open default:
+
+- **Rust UDPipe (default).** When the extension is built, `has_hit` lemmatizes and
+  scores in Rust against an English Universal Dependencies model, downloaded and
+  cached at runtime on first use.
+- **spaCy + AFINN (at parity).** The optional `[lexicon]` extra installs the Python
+  path used when the Rust lexicon isn't available. Enable it with:
+
+  ```bash
+  uv add cc-transcript[lexicon]
+  ```
+
+- **Fail open.** When *neither* backend is present, `has_hit` returns `True` rather
+  than guessing. A clamp that depends on it then treats the message as carrying
+  sentiment — the spec degrades toward leaving the model's score alone rather than
+  silently dropping a stage.
+
+Because a lexicon-gated stage triggers a one-time model download, keep it out of
+hermetic contexts (like this page) unless that download is acceptable.
+
+## No preset spec
+
+The library ships **no** default `ScoreSpec`. Frustration thresholds, which clamps to
+apply, and how hard to clamp are policy, and policy belongs to the consumer — a tool
+like `cc-sentiment` composes its own spec from these builders. To assemble and tune
+your own, see [Compose your own policy](04-compose-your-own-policy.qmd).
