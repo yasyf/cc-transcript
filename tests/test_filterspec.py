@@ -6,6 +6,7 @@ import pytest
 
 from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
+    COMMAND_ECHO_GROUPS,
     CONTINUATION_GROUPS,
     Action,
     Clause,
@@ -161,6 +162,13 @@ def test_word_count_at_most(text: str, dropped: bool) -> None:
 def test_continuation_group_drops_advance_directives_not_corrections(text: str, dropped: bool) -> None:
     s = spec(Clause(TextMatchesAny(CONTINUATION_GROUPS), applies_to=frozenset({"user"})))
     assert keep(user(text), s) is not dropped
+
+
+def test_command_echo_drops_bash_mode_turns() -> None:
+    s = spec(Clause(TextMatchesAny(COMMAND_ECHO_GROUPS), applies_to=frozenset({"user"})))
+    assert not keep(user("<bash-input>uv run pytest</bash-input>"), s)
+    assert not keep(user("<bash-stdout>123 passed</bash-stdout>"), s)
+    assert keep(user("run the bash input parser through pytest"), s)
 
 
 def test_role_reminder_is_agent_injection_noise() -> None:
