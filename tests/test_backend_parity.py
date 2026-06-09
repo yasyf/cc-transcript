@@ -8,7 +8,7 @@ import orjson
 import pytest
 
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
-from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events
+from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events_from_bytes
 
 if TYPE_CHECKING:
     from cc_transcript.backend import ParsedTranscript
@@ -154,7 +154,7 @@ def rust_events(path: Path) -> list[TranscriptEvent]:
 
 
 def assert_parity(path: Path) -> None:
-    expected = parse_events(path)
+    expected = parse_events_from_bytes(path.read_bytes())
     actual = rust_events(path)
     assert len(actual) == len(expected), f"event count diverged for {path}: rust={len(actual)} python={len(expected)}"
     for i, (a, e) in enumerate(zip(actual, expected, strict=True)):
@@ -165,7 +165,7 @@ def assert_parity(path: Path) -> None:
 def test_fixture_corpus_parity(tmp_path: Path) -> None:
     path = tmp_path / "fixture.jsonl"
     path.write_bytes(fixture_bytes())
-    expected = parse_events(path)
+    expected = parse_events_from_bytes(path.read_bytes())
     assert len(expected) == len(fixture_entries()) + 1
     assert_parity(path)
 
@@ -210,21 +210,41 @@ def test_parse_batch_parity(tmp_path: Path) -> None:
     [{"not": "a list"}, 5, None, True],
     ids=["dict", "number", "null", "bool"],
 )
-def test_non_array_content_raises_not_panics(tmp_path: Path, content: Any) -> None:
+def test_non_array_content_is_skipped_not_panics(tmp_path: Path, content: Any) -> None:
     from cc_transcript import _parser_rs
 
     path = tmp_path / "bad.jsonl"
     path.write_bytes(orjson.dumps(envelope(type="user", message={"role": "user", "content": content})))
-    with pytest.raises(ValueError, match="content is neither a string nor a list"):
-        _parser_rs.stream_parse([(str(path), 1.0)], 1).recv()
+    # A file whose events cannot be materialized is skipped, not propagated — and
+    # crucially does not panic across the FFI boundary, so the stream just ends.
+    assert _parser_rs.stream_parse([(str(path), 1.0)], 1).recv() is None
 
 
 @requires_rust
-def test_malformed_file_does_not_panic_across_ffi(tmp_path: Path) -> None:
+def test_malformed_file_is_skipped_across_ffi(tmp_path: Path) -> None:
     from cc_transcript import _parser_rs
 
     bad = tmp_path / "bad.jsonl"
     bad.write_bytes(orjson.dumps(envelope(type="user", message={"role": "user", "content": {"x": "y"}})))
-    stream = _parser_rs.stream_parse([(str(bad), 1.0)], 4)
-    with pytest.raises(ValueError, match="content is neither a string nor a list"):
-        stream.recv_many(32)
+    assert _parser_rs.stream_parse([(str(bad), 1.0)], 4).recv_many(32) == []
+
+
+@requires_rust
+def test_stream_skips_bad_files_without_dropping_good_ones(tmp_path: Path) -> None:
+    paths: list[tuple[Path, float]] = []
+    for i in range(6):
+        bad = tmp_path / f"bad{i}.jsonl"
+        bad.write_bytes(b'{"type": "user", "message": {"role": "user", "content": "x"}}')  # no uuid -> skipped
+        paths.append((bad, float(i)))
+    good_names: list[str] = []
+    for i in range(6):
+        good = tmp_path / f"good{i}.jsonl"
+        good.write_bytes(orjson.dumps(envelope(type="user", uuid=f"g{i}", message={"role": "user", "content": "hi"})))
+        good_names.append(good.name)
+        paths.append((good, float(100 + i)))
+
+    async def drain() -> list[str]:
+        assert RUST_BACKEND is not None
+        return [parsed.path.name async for parsed in RUST_BACKEND.parse_batch(paths, prefetch=4)]
+
+    assert sorted(anyio.run(drain)) == sorted(good_names)

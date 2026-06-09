@@ -18,7 +18,7 @@ import pytest
 
 from cc_transcript.filterspec import MILD_IMPATIENCE_GROUPS, SHORT_MESSAGE_MAX_WORDS, compile_groups
 from cc_transcript.models import UserEvent
-from cc_transcript.parser import parse_events
+from cc_transcript.parser import parse_events_from_bytes
 from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
 from tests.test_backend_parity import real_corpus
 
@@ -37,7 +37,12 @@ def parse_tsv(name: str) -> dict[str, int]:
 
 
 def corpus_user_texts() -> list[str]:
-    return [e.text for path in real_corpus() for e in parse_events(path) if isinstance(e, UserEvent) and e.text.strip()]
+    return [
+        e.text
+        for path in real_corpus()
+        for e in parse_events_from_bytes(path.read_bytes())
+        if isinstance(e, UserEvent) and e.text.strip()
+    ]
 
 
 def test_embedded_overrides_match_python_source() -> None:

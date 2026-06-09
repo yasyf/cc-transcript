@@ -96,30 +96,48 @@ pub struct ParseStream {
 
 #[pymethods]
 impl ParseStream {
+    // A file whose events cannot be materialized (e.g. a malformed line missing a
+    // required field) is silently skipped — whole-file parity with PythonBackend.
     fn recv<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        match py.detach(|| self.rx.recv().ok()) {
-            None => Ok(None),
-            Some(pf) => Ok(Some(parsed_file_to_py(py, pf)?)),
+        loop {
+            match py.detach(|| self.rx.recv().ok()) {
+                None => return Ok(None),
+                Some(pf) => {
+                    if let Ok(obj) = parsed_file_to_py(py, pf) {
+                        return Ok(Some(obj));
+                    }
+                }
+            }
         }
     }
 
     fn recv_many<'py>(&self, py: Python<'py>, max: usize) -> PyResult<Vec<Bound<'py, PyAny>>> {
-        py.detach(|| {
-            let mut out: Vec<ParsedFile> = Vec::new();
-            if let Ok(pf) = self.rx.recv() {
-                out.push(pf);
-                while out.len() < max {
-                    match self.rx.try_recv() {
-                        Ok(pf) => out.push(pf),
-                        Err(_) => break,
+        let mut out: Vec<Bound<'py, PyAny>> = Vec::new();
+        // Block for the first materialized file; return [] only when the channel
+        // is genuinely closed, so an all-skipped batch never reads as "done".
+        loop {
+            match py.detach(|| self.rx.recv().ok()) {
+                None => return Ok(out),
+                Some(pf) => {
+                    if let Ok(obj) = parsed_file_to_py(py, pf) {
+                        out.push(obj);
+                        break;
                     }
                 }
             }
-            out
-        })
-        .into_iter()
-        .map(|pf| parsed_file_to_py(py, pf))
-        .collect()
+        }
+        // Drain what is already buffered without blocking, skipping bad files.
+        while out.len() < max {
+            match py.detach(|| self.rx.try_recv().ok()) {
+                None => break,
+                Some(pf) => {
+                    if let Ok(obj) = parsed_file_to_py(py, pf) {
+                        out.push(obj);
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
