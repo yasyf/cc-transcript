@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 import pytest
 
 from cc_transcript.filterspec import (
+    AGENT_INJECTION_GROUPS,
+    CONTINUATION_GROUPS,
     Action,
     Clause,
     EntrypointIn,
@@ -135,6 +137,36 @@ def test_text_in_set_normalization(text: str, dropped: bool) -> None:
 def test_word_count_at_most(text: str, dropped: bool) -> None:
     s = spec(Clause(WordCountAtMost(2), applies_to=frozenset({"user"})))
     assert keep(user(text), s) is not dropped
+
+
+@pytest.mark.parametrize(
+    ("text", "dropped"),
+    [
+        ("go ahead and commit and push all the repos", True),
+        ("yea go ahead and make that change and push it", True),
+        ("push the branch", True),
+        ("yea commit and push", True),
+        ("ok push the branch", True),
+        ("looks good. commit, rebase, push", True),
+        ("proceed", True),
+        ("we hit rate limits, you must resume them", True),
+        ("restart the subagents please", True),
+        # genuine corrections must survive — 'push'/'commit' appear mid-sentence only
+        ("we need to force-push, you should have rebased first", False),
+        ("no you had it right the first time, call super", False),
+        ("switch to structlog everywhere, do a commit that cleans up logging", False),
+        ("I disagree, we should do the pandoc-native thing he suggested", False),
+    ],
+)
+def test_continuation_group_drops_advance_directives_not_corrections(text: str, dropped: bool) -> None:
+    s = spec(Clause(TextMatchesAny(CONTINUATION_GROUPS), applies_to=frozenset({"user"})))
+    assert keep(user(text), s) is not dropped
+
+
+def test_role_reminder_is_agent_injection_noise() -> None:
+    s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
+    assert not keep(user("[Role Reminder: You are a Coordinator. You NEVER edit files."), s)
+    assert keep(user("remind me what the coordinator role does"), s)
 
 
 def test_applies_to_gates_evaluation() -> None:

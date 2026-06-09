@@ -63,10 +63,27 @@ STRUCTURAL_GROUPS: tuple[tuple[str, str], ...] = (
 AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
     ("xml_tags_extra", r"<(?:teammate-message|scheduled-task)\b"),
     ("augment_agent", r"^# Augment Agent\b"),
+    ("role_reminder", r"^\s*\[Role Reminder\b"),
 )
 
 INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"\[Request interrupted by user"),)
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
+
+# Approve-and-advance directives: a user telling the agent to proceed/commit/push or
+# to resume killed work. They follow an assistant turn but advance it rather than
+# correcting it — the opposite of pushback — so a pushback consumer drops them. The
+# approve-and-advance arm is start-anchored so a mid-sentence "commit"/"push" inside
+# a real correction never matches; only the resume arm searches anywhere.
+CONTINUATION_GROUPS: tuple[tuple[str, str], ...] = (
+    (
+        "continuation",
+        r"^\s*(?:(?:yea+h?|yep|yup|sure|ok(?:ay)?|sounds good|looks good|lgtm|perfect)[\s,.!]+){0,2}"
+        r"(?:go ahead\b|(?:go ahead and\s+)?(?:commit|push|rebase|merge|deploy)\b"
+        r"|ship it\b|cut (?:a |the )?(?:new )?release\b|proceed\b)"
+        r"|\byou must resume\b"
+        r"|\b(?:resume|restart) (?:them|it|the (?:sub-?agents?|workflows?|agents?|tasks?))\b",
+    ),
+)
 
 # Named junk categories a consumer composes via ``drop_junk(...)``. Interrupt and
 # stop-hook are kept separate because they carry pushback and must never be folded
@@ -76,6 +93,7 @@ JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
     "agent_injection": AGENT_INJECTION_GROUPS,
     "interrupt": INTERRUPT_MARKER_GROUPS,
     "stop_hook": STOP_HOOK_GROUPS,
+    "continuation": CONTINUATION_GROUPS,
 }
 
 # The superset of structural noise (structural ∪ agent-injection), WITHOUT
@@ -125,6 +143,7 @@ PORTABLE_GROUP_NAMES: frozenset[str] = frozenset(
         *STRUCTURAL_NOISE_GROUPS,
         *INTERRUPT_MARKER_GROUPS,
         *STOP_HOOK_GROUPS,
+        *CONTINUATION_GROUPS,
         *FRUSTRATION_GROUPS,
         *MILD_IMPATIENCE_GROUPS,
     )
