@@ -1,0 +1,212 @@
+---
+title: Filtering events
+description: Compose declarative, both-backend event filters from small builders over named junk categories.
+---
+
+The parser is deliberately non-lossy: it hands you every event, including the
+structural noise, synthetic turns, and sidechains that most consumers want gone.
+Filtering is your job, and `cc_transcript` gives you a model for expressing it as
+data rather than as a hand-rolled loop.
+
+The central type is a `FilterSpec`: **filters as data** — an ordered list of
+`Clause` rules. Each clause pairs a predicate (a condition on one event) with an
+action (`DROP` or `TAG`). You rarely write clauses by hand; instead you compose a
+spec from small builders (`keep_only`, `drop_junk`, `drop_short`, …) that each
+return a frozen clause. Because the spec is plain data, the *same* spec is
+interpreted by the Python reference engine here and, when it is portable,
+serialized to JSON and executed by the Rust backend — which drops events before
+ever materializing a Python object. This guide covers the builder vocabulary and
+the spec model; for how one spec achieves bit-for-bit parity across the two
+engines, see [Backends & parity](03-backends-and-parity.qmd).
+
+Every cell below runs against the same parsed fixture, so parse it first:
+
+```{python}
+from cc_transcript import parse_events_from_bytes
+
+TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":"fix the failing test"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:09.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"Fixed it - the off-by-one in the loop bound is gone."}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:04:20.000Z","message":{"role":"user","content":"<system-reminder>Background context, not written by the user.</system-reminder>"}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:04:30.000Z","message":{"role":"user","content":"thanks"}}
+{"type":"system","uuid":"s1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:31.000Z","subtype":"stop_hook_summary","content":"hook ran"}
+"""
+
+events = parse_events_from_bytes(TRANSCRIPT)
+[type(e).__name__ for e in events]
+# -> ['UserEvent', 'AssistantEvent', 'UserEvent', 'UserEvent', 'SystemEvent']
+```
+
+Five events: a real user request, an assistant reply, a `<system-reminder>`
+injection, a one-word "thanks" ack, and a system stop-hook entry. We will keep the
+two that carry signal and drop the other three.
+
+## Build a spec from the core drops
+
+`build_spec` flattens builder fragments into a `FilterSpec`; `apply_spec` runs it
+over an event stream and yields survivors. Three builders cover most of what you
+need:
+
+```{python}
+from cc_transcript import apply_spec, build_spec, drop_junk, drop_short, keep_only
+
+spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_short(2))
+kept = list(apply_spec(events, spec))
+[(type(e).__name__, getattr(e, "text", "")) for e in kept]
+# -> [('UserEvent', 'fix the failing test'),
+#     ('AssistantEvent', 'Fixed it - the off-by-one in the loop bound is gone.')]
+```
+
+Each clause removes exactly one line of the fixture:
+
+- `keep_only("user", "assistant")` drops the **system** stop-hook entry `s1` — its
+  kind is not in the allow-set.
+- `drop_junk("structural")` drops the **`<system-reminder>`** user line `u2` — its
+  text matches the `structural` junk category.
+- `drop_short(2)` drops the one-word **"thanks"** user line `u3` — at most two
+  words. The four-word `u1` ("fix the failing test") survives, and assistant turns
+  are untouched (`drop_short` defaults to users only).
+
+What is left is the request and the reply: the semantic content. Note that clause
+*order* never changes the keep/drop result — `keep` is a pure existential OR over
+the `DROP` clauses, so a spec is the *set* of rules, not a sequence of steps.
+
+## The builder vocabulary
+
+Every builder returns a frozen `Clause` (or a tuple of them) and lives at the top
+level of `cc_transcript`. The full set:
+
+```python
+from cc_transcript import (
+    keep_only, drop_synthetic, drop_empty, drop_sidechain, drop_meta_flag,
+    drop_compacted, drop_entrypoints, drop_junk, drop_phrases, drop_short, build_spec,
+)
+
+keep_only("user", "assistant")          # drop every event whose kind is not listed
+drop_synthetic()                        # drop assistant turns with the <synthetic> model
+drop_empty(only_from=USERS)             # drop blank-text events of one kind (only_from required)
+drop_sidechain(except_assistants=False) # drop sidechain events; True keeps assistant sidechains
+drop_meta_flag("is_meta", only_from=…)  # drop events whose EntryMeta boolean flag is set
+drop_compacted()                        # drop compaction-summary + transcript-only entries (a tuple)
+drop_entrypoints({"resume", "vscode"})  # drop events whose meta.entrypoint is in the set
+drop_junk("structural", "interrupt")    # drop text matching any named JUNK_CATEGORIES group
+drop_phrases(TRIVIAL_ACK_SET)           # drop events whose normalized text is one of the phrases
+drop_short(3)                           # drop events with at most N whitespace-split words
+build_spec(*fragments)                  # flatten Clause / tuple[Clause, ...] fragments into a spec
+```
+
+Two shapes to keep in mind. First, the text-content drops — `drop_junk`,
+`drop_phrases`, and `drop_short` — default to `only_from={"user"}`, because
+trimming assistant prose by length or phrase is rarely what you want;
+`drop_meta_flag` and `drop_entrypoints` default to *all* kinds, and `drop_empty`
+makes `only_from` required (it keys "consider tool-use blocks as non-empty" off the
+kind). Second, `drop_compacted` returns a *tuple* of clauses rather than a single
+one; `build_spec` flattens tuples transparently, so you drop it into a composition
+exactly like any single-clause builder.
+
+## Named junk categories
+
+The historical junk regex was monolithic. It is now split into named categories so
+a consumer can be surgical about what counts as noise:
+
+```{python}
+from cc_transcript.filterspec import JUNK_CATEGORIES
+
+sorted(JUNK_CATEGORIES)
+# -> ['agent_injection', 'interrupt', 'stop_hook', 'structural']
+```
+
+`structural` covers framework scaffolding (`<system-reminder>`, command-output
+tags, local-command caveats); `agent_injection` covers teammate-message and
+foreign-agent banners. Those two are pure noise. The other two are *not*:
+`interrupt` (a user hitting stop mid-turn) and `stop_hook` (stop-hook feedback)
+both carry user pushback — a signal you usually want to keep.
+
+That is the point of the split. `drop_junk("structural", "agent_injection")` strips
+the noise families and leaves interrupt and stop-hook messages intact unless you
+name them explicitly. Pass `JUNK_CATEGORIES` by importing it from
+`cc_transcript.filterspec`, not the top-level package.
+
+## A ready-made structural-noise spec
+
+For the common "just remove the framework chatter" case, the package ships
+`NOISE_SPEC` — equal to `build_spec(drop_junk("structural"))`:
+
+```{python}
+from cc_transcript import NOISE_SPEC, apply_spec
+
+[type(e).__name__ for e in apply_spec(events, NOISE_SPEC)]
+# -> ['UserEvent', 'AssistantEvent', 'UserEvent', 'SystemEvent']
+```
+
+It drops only the universal structural noise — the `<system-reminder>` line `u2` —
+and keeps everything else: the request, the reply, the short "thanks" ack `u3`, and
+the system event `s1`. Because it never touches length, phrasing, or kind,
+`NOISE_SPEC` is a safe default that won't accidentally discard semantic content.
+Layer your own policy on top when you need more.
+
+## DROP vs TAG: annotating survivors
+
+A clause's action is either `DROP` or `TAG`. `DROP` removes the event — the first
+matching drop wins and stops evaluation. `TAG` instead records a label on a
+*surviving* event and keeps going, so you can annotate without filtering. Build a
+spec that reuses the drops from earlier and tags the assistant turn:
+
+```{python}
+from cc_transcript import FilterSpec, annotate_spec
+from cc_transcript.filterspec import Action, Clause, KindIs
+
+tag_spec = FilterSpec(clauses=(
+    *spec.clauses,
+    Clause(predicate=KindIs(frozenset({"assistant"})), action=Action.TAG, label="assistant-turn"),
+))
+[(type(e).__name__, labels) for e, labels in annotate_spec(events, tag_spec)]
+# -> [('UserEvent', ()), ('AssistantEvent', ('assistant-turn',))]
+```
+
+`annotate_spec` yields `(event, labels)` for every survivor, where `labels` are the
+labels of all `TAG` clauses that matched. The user turn collects none; the
+assistant turn collects `assistant-turn`. The per-event primitives behind these
+helpers — `keep(event, spec)` and `labels_for(event, spec)` — are exported too when
+you need to test one event at a time.
+
+## The FilterConfig flag-bag
+
+If you prefer simple on/off switches over composition, `FilterConfig` is a boolean
+flag-bag that lowers to a `FilterSpec` via `to_spec()` under the hood:
+
+```{python}
+from cc_transcript import FilterConfig, apply_filters
+
+len(list(apply_filters(events, FilterConfig())))
+# -> 5  (every rule is off by default, so a bare FilterConfig passes everything through)
+```
+
+Every flag defaults to off, so a bare `FilterConfig()` is a no-op pass-through.
+Flip individual flags to enable rules. `FilterConfig` is the right tool when you
+want a fixed menu of toggles; for anything richer — named categories, custom phrase
+sets, length thresholds — reach for `build_spec` and the builders directly.
+
+## Composing a consumer policy
+
+Builders compose into whatever policy your consumer needs. A realistic "keep the
+pushback, drop the noise" spec — strip structural and agent-injection noise and
+trivial acks, trim very short turns, but *keep* interrupt and stop-hook messages by
+never naming those categories:
+
+```python
+from cc_transcript import build_spec, keep_only, drop_junk, drop_phrases, drop_short
+from cc_transcript.filterspec import TRIVIAL_ACK_SET
+
+pushback_spec = build_spec(
+    keep_only("user", "assistant"),
+    drop_junk("structural", "agent_injection"),
+    drop_phrases(TRIVIAL_ACK_SET),
+    drop_short(3),
+)
+```
+
+This is the shape `cc-pushback` composes: the library ships the primitives — the
+predicates, builders, and named categories — and the consumer owns the policy that
+combines them. For a walkthrough of designing a spec for your own use case, see
+[Compose your own policy](04-compose-your-own-policy.qmd).

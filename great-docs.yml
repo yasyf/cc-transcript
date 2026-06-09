@@ -25,16 +25,17 @@ hero:
   name: cc-transcript
   tagline: "Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking."
 
-# Narrative doc sections are optional — dynamic mode generates the API reference
-# from docstrings without them. Uncomment and point at docs/ dirs as they appear.
-# sections:
-#   - title: Getting Started
-#     dir: docs/getting-started
-#     index: true
-#   - title: Guide
-#     dir: docs/guide
-#     navbar_after: Getting Started
-#     index: true
+# Narrative doc sections live alongside the dynamic API reference: Getting Started
+# is a single landing page (docs/getting-started/index.qmd); Guides is a numbered
+# set under docs/guide. Both render executable Quarto cells at build time.
+sections:
+  - title: Getting Started
+    dir: docs/getting-started
+    index: true
+  - title: Guides
+    dir: docs/guide
+    navbar_after: Getting Started
+    index: true
 
 authors:
   - name: Yasyf Mohamedali

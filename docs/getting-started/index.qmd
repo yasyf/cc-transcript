@@ -1,0 +1,125 @@
+---
+title: Getting Started
+description: Install cc-transcript and go from raw transcript bytes to a typed parse, a composed filter, and a sentiment score in about a minute.
+---
+
+`cc-transcript` parses Claude Code's on-disk JSONL transcripts into a non-lossy, typed superset event model — nothing is dropped — and then lets you compose your own filtering and scoring on top of that one faithful representation.
+
+```bash
+uv add cc-transcript
+```
+
+This page is the 60-second tour: parse, then filter, then (optionally) score. Every code cell below runs.
+
+## Parse
+
+`parse_events_from_bytes` turns raw JSONL bytes into a list of typed events. Each line becomes exactly one event, and the event's class reflects its `type` field.
+
+```{python}
+from cc_transcript import parse_events_from_bytes
+
+TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":"fix the failing test"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:09.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"Fixed it - the off-by-one in the loop bound is gone."}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:04:20.000Z","message":{"role":"user","content":"<system-reminder>Background context, not written by the user.</system-reminder>"}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:04:30.000Z","message":{"role":"user","content":"thanks"}}
+{"type":"system","uuid":"s1","sessionId":"sess-1","timestamp":"2026-01-02T03:04:31.000Z","subtype":"stop_hook_summary","content":"hook ran"}
+"""
+
+events = parse_events_from_bytes(TRANSCRIPT)
+[type(e).__name__ for e in events]
+# -> ['UserEvent', 'AssistantEvent', 'UserEvent', 'UserEvent', 'SystemEvent']
+```
+
+The parse is a non-lossy superset: every entry kind in the file survives. The trailing `system` event (a `stop_hook_summary`) becomes a `SystemEvent` rather than being discarded, and the `<system-reminder>` line stays a `UserEvent` — its content is preserved verbatim. Nothing here is dropped. Deciding what counts as noise is a separate, opt-in step that lives in *your* code, which is exactly the next section.
+
+## Filter
+
+Filtering is composed from small builders. Each builder returns a clause; `build_spec` assembles the clauses into a single spec; `apply_spec` yields the survivors.
+
+```{python}
+from cc_transcript import apply_spec, build_spec, drop_junk, drop_short, keep_only
+
+spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_short(2))
+kept = list(apply_spec(events, spec))
+[(type(e).__name__, getattr(e, "text", "")) for e in kept]
+# -> [('UserEvent', 'fix the failing test'),
+#     ('AssistantEvent', 'Fixed it - the off-by-one in the loop bound is gone.')]
+```
+
+Read the spec left to right against the five parsed events. `keep_only("user", "assistant")` narrows to conversational turns, dropping the `SystemEvent`. `drop_junk("structural")` removes the `<system-reminder>` line — structural noise injected into the transcript rather than written by the user. `drop_short(2)` discards the bare `"thanks"` acknowledgement (under two words). What remains is the substantive exchange: the real user request and the assistant's reply.
+
+That is three builders out of a larger set — there are clauses for synthetic turns, sidechains, meta flags, compacted entries, entrypoints, and phrase matching. The [Filtering events](../guide/filtering-events.qmd) guide walks the full builder catalog and shows how to serialize a spec.
+
+## Score (optional)
+
+Sentiment scoring sits one layer up: it groups conversational turns into buckets and assigns each bucket a 1–5 score. The actual scoring is done by an `InferenceEngine` — normally a model-backed one. To keep this page self-contained and deterministic, the setup cell below defines a `ConstantEngine` stand-in that scores every bucket it is asked to infer as `5`.
+
+```{python}
+from datetime import datetime
+
+from cc_transcript.models import SessionId
+from cc_transcript.sentiment import (
+    AssistantMessage,
+    BucketIndex,
+    ConversationBucket,
+    SentimentScore,
+    UserMessage,
+    build_score_spec,
+    clamp_resume,
+    flag_frustration,
+)
+from cc_transcript.sentiment import FilteredEngine
+
+
+def user_msg(content, second):
+    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                       f"u-{second}", (), 0, "1.2.3")
+
+def assistant_msg(content, second):
+    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
+                            f"a-{second}", (), 0, "claude-opus-4-7")
+
+def bucket(index, *messages):
+    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
+                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
+
+
+class ConstantEngine:
+    """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
+
+    async def score(self, buckets, on_progress=lambda _: None):
+        return [SentimentScore(5) for _ in buckets]
+
+    def peak_memory_gb(self):
+        return 0.0
+
+    async def close(self):
+        return None
+```
+
+A `ScoreSpec` wraps that engine. Its clauses run *around* inference: some short-circuit a bucket before the model ever sees it, and some post-process the model's raw score. `FilteredEngine` applies the spec, delegating only the undecided buckets to the inner engine.
+
+```{python}
+buckets = [
+    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
+    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
+    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
+]
+
+spec = build_score_spec(flag_frustration(), clamp_resume())
+engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
+
+# The engine is async; in a Quarto cell drive it with top-level await
+# (anyio.run / asyncio.run raise "already running asyncio" under the build kernel).
+scores = await engine.score(buckets)
+[int(s) for s in scores]
+# -> [1, 5, 3]   (frustration short-circuits to 1; bucket 1 keeps the model's 5;
+#                  bucket 2's "continue" post-clamps 5 -> 3)
+```
+
+The `[1, 5, 3]` result shows both clause kinds at work. Bucket 0's `"this is completely useless, wtf"` trips `flag_frustration()`, which short-circuits straight to `1` before the model runs. Bucket 1 has no trigger, so it keeps the inner engine's `5`. Bucket 2's `"continue"` is a resume phrase: the model still scores it `5`, but `clamp_resume()` post-clamps that down to `3`. Swap `ConstantEngine` for a real model-backed `InferenceEngine` and the same spec composes unchanged. The [Scoring sentiment](../guide/scoring-sentiment.qmd) guide covers the engines and the rest of the clause builders.
+
+## Next steps
+
+From here, head to the [Guides](../guide/index.qmd) for discovery, incremental ingestion, the full filter and score builder sets, and the backend protocol.

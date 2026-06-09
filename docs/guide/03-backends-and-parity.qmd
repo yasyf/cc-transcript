@@ -1,0 +1,159 @@
+---
+title: "Rust/Python backends & parity"
+description: "How the Rust fast path and the pure-Python reference stay at verified parity — and how that parity is proven."
+---
+
+Four pieces of `cc-transcript` ship in two implementations apiece: the **parser**,
+the **event filter**, the **score executor**, and the **lexicon**. Each has a Rust
+fast path and a pure-Python reference, and the two are held at *verified parity* —
+the test suite asserts they produce identical output. You never choose between them
+for correctness; you choose for speed, and the library chooses for you.
+
+## The dual-backend pattern
+
+Rust is the default whenever the compiled `cc_transcript._parser_rs` extension is
+importable. When it is missing — a source checkout without the built wheel, an
+unsupported platform — the pure-Python reference takes over behind the same
+`Backend` protocol. To force Python even where the extension is present, set the
+environment variable `CC_TRANSCRIPT_DISABLE_RUST` to any non-empty value.
+
+Resolution lives in `cc_transcript.parser.TranscriptParser`. `resolve_backend()`
+honors `CC_TRANSCRIPT_DISABLE_RUST` first, then calls `load_rust_backend()` —
+which returns the `RustBackend` only when `_parser_rs` imports *and* exposes
+`stream_parse`, else `None` — and falls back to `PythonBackend`. The result is
+cached on first use, so the selection happens once per process.
+
+```{python}
+from cc_transcript.parser import TranscriptParser
+
+TranscriptParser.backend_name()  # 'rust' when the extension is built, else 'python'
+```
+
+The Python backend is always available. It is the reference implementation, not a
+degraded mode: every behavior the Rust path has, the Python path has too, and the
+parity suite is what keeps that promise honest.
+
+## How a FilterSpec crosses into Rust
+
+A `FilterSpec` is *filters as data* — an ordered tuple of `Clause` rules. Because
+it is plain data, it can be interpreted in either language. The Python interpreter
+(`apply_spec`) walks the clauses over already-materialized events. The Rust path
+goes one better: it serializes the spec to a JSON contract and drops events
+*during parsing*, before any Python object is ever built. Events that fail the
+spec never cross the FFI boundary.
+
+That only works when the spec is **portable**. `is_portable` returns `True` when
+every `TextMatchesAny` predicate uses only regex group names proven to match
+identically under Rust's `regex` crate — the set `PORTABLE_GROUP_NAMES` in
+`cc_transcript.filterspec`. A spec that reaches for a non-portable regex group
+still runs correctly; it just falls back to the Python interpreter rather than
+executing in Rust.
+
+```{python}
+from cc_transcript import build_spec, keep_only, drop_junk, drop_short
+from cc_transcript.filterspec import is_portable, spec_to_json
+
+spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_short(2))
+is_portable(spec)        # True -> runs in Rust
+print(spec_to_json(spec)[:120])
+```
+
+`spec_to_json` (from `cc_transcript.filterspec`) is the wire contract. On the Rust
+side, `stream_parse` consumes that JSON and `compile_spec` (`rust/src/filter.rs`)
+compiles it into a `CompiledSpec` whose `spec_keep` is evaluated per line as the
+transcript is parsed. The JSON is the single source of truth for both ends, so the
+two interpreters can never drift on what a clause *means* — only on regex engine
+semantics, which is exactly what `PORTABLE_GROUP_NAMES` pins down.
+
+## The score executor
+
+Sentiment scoring follows the same shape. A `ScoreSpec` is an ordered tuple of
+stages — a frustration short-circuit that pre-empts inference, plus post-process
+clamps that adjust the model's raw score. It serializes the same way, via
+`score_spec_to_json`, and runs in `rust/src/score.rs` through two entry points:
+`score_short_circuit` (the pre-inference pass) and `score_post_process` (the
+post-inference fold). The Python interpreter — `py_short_circuit` and
+`py_post_process` in `cc_transcript.sentiment.scorespec` — is the at-parity
+fallback.
+
+The wrinkle is the lexicon. The positive-clamp and mild-irritation stages consult
+a sentiment lexicon. For those lexicon-bearing stages, Rust is used only when its
+UDPipe model is available; otherwise the Python lexicon path takes over. The
+non-lexicon stages (the frustration short-circuit, the resume clamp) are pure regex
+and string work and run in Rust whenever the extension is built.
+
+The spec serializes exactly like a `FilterSpec` — build the stages, hand them to
+the executor:
+
+```python
+# Illustration only — building and serializing a ScoreSpec (not executed here).
+from cc_transcript.sentiment import (
+    build_score_spec,
+    flag_frustration,
+    clamp_positive,
+    demote_mild_irritation,
+    clamp_resume,
+)
+from cc_transcript.sentiment.scorespec import score_spec_to_json
+
+spec = build_score_spec(
+    flag_frustration(),
+    clamp_positive(),
+    demote_mild_irritation(),
+    clamp_resume(),
+)
+spec_json = score_spec_to_json(spec)
+# Rust: _parser_rs.score_short_circuit(spec_json, buckets)
+#       _parser_rs.score_post_process(spec_json, buckets, raw_scores)
+# Python fallback: py_short_circuit(spec, buckets) / py_post_process(spec, buckets, raw)
+```
+
+## The lexicon
+
+The lexicon answers one question: does any token in a message reach a polarity
+floor? `rust/src/lexicon.rs` lemmatizes with `udpipe-rs` (the English UD model,
+downloaded once to `~/.cache/cc-transcript/udpipe` and loaded lazily) and scores
+each lemma against an embedded AFINN map plus domain overrides. The download and
+load are best-effort: any failure — offline, a bad download, a load error — yields
+`None`, never a panic, so the Python path takes over cleanly.
+
+The Python side is `Lexicon.has_hit`, which lemmatizes with spaCy and scores with
+the `afinn` package (both supplied by the `[lexicon]` extra). When neither the Rust
+nor the Python path is available, `has_hit` *fails open* — it returns `True` rather
+than silently zeroing out a message's sentiment, so a missing lexicon never
+manufactures false negatives.
+
+## How parity is proven
+
+Parity is not asserted by documentation; it is asserted by tests, over both a
+hand-built battery and the real on-disk corpus. Run them with `uv run pytest`:
+
+- **`tests/test_backend_parity.py`** — event-for-event parser parity: the Rust
+  `stream_parse` and the Python `parse_events` produce identical event lists.
+- **`tests/test_filter_parity.py`** — Rust `stream_parse` against Python
+  `apply_spec` over a regex battery and the shipped presets, confirming portable
+  specs drop the same events in both engines.
+- **`tests/test_score_parity.py`** — Rust `score_short_circuit` and
+  `score_post_process` against the Python interpreter across raw scores 1..5, so
+  every clamp and short-circuit agrees at every input.
+- **`tests/test_lexicon_parity.py`** — the embedded lexicon data matches the
+  Python source, *and* the UDPipe filter decisions match spaCy over the real
+  corpus.
+
+When the extension or a model is unavailable, the relevant test skips rather than
+fails, and the Python backend stands in as the reference. The escape hatch is
+always there: set `CC_TRANSCRIPT_DISABLE_RUST` to run everything through Python.
+
+## Single-source data
+
+The lexicon data is generated, never hand-edited. `scripts/build_lexicon_data.py`
+writes `rust/data/afinn-en-165.tsv` and `rust/data/domain_overrides.tsv` from the
+canonical Python sources — the `afinn` package's single-word scores and
+`Lexicon.DOMAIN_OVERRIDES`. The Rust crate `include_str!`s those two TSVs at
+compile time, because it cannot call the Python `afinn` library while building.
+
+To keep the embedded copy from drifting, `tests/test_lexicon_parity.py`
+re-derives the data from the installed sources and asserts the checked-in TSVs
+still match. The Python `afinn` package and `Lexicon.DOMAIN_OVERRIDES` remain the
+one source of truth; the TSVs are a build artifact of it. If a score needs to
+change, change the Python source and regenerate — never edit the TSVs by hand.
