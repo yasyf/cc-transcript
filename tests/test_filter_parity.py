@@ -21,6 +21,7 @@ from cc_transcript.builders import (
 )
 from cc_transcript.filterspec import (
     ASSISTANTS,
+    COMMAND_ECHO_GROUPS,
     CONTINUATION_GROUPS,
     FRUSTRATION_GROUPS,
     INTERRUPT_MARKER_GROUPS,
@@ -53,6 +54,7 @@ ALL_GROUPS_SPEC = FilterSpec(
                 + INTERRUPT_MARKER_GROUPS
                 + STOP_HOOK_GROUPS
                 + CONTINUATION_GROUPS
+                + COMMAND_ECHO_GROUPS
                 + FRUSTRATION_GROUPS
                 + MILD_IMPATIENCE_GROUPS
             ),
@@ -80,7 +82,7 @@ PUSHBACK_SPEC = build_spec(
     drop_meta_flag("is_meta"),
     drop_compacted(),
     drop_empty(only_from=USERS),
-    drop_junk("structural", "agent_injection", "stop_hook", "continuation"),
+    drop_junk("structural", "agent_injection", "stop_hook", "continuation", "command_echo"),
     drop_phrases(TRIVIAL_ACK_SET | RESUME_PHRASE_SET),
     drop_short(2),
 )
@@ -119,6 +121,8 @@ BATTERY = [
     "ok push the branch",
     "we hit rate limits, you must resume them",
     "restart the subagents please",
+    "<bash-input>uv run pytest</bash-input>",
+    "<bash-stdout>123 passed</bash-stdout>",
     "we need to force-push, you should have rebased first",  # near-miss: 'push' mid-sentence, NOT continuation
     "wtf this is broken",
     "stop guessing the imports",

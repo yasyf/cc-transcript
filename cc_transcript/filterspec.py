@@ -85,6 +85,10 @@ CONTINUATION_GROUPS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# Bash-mode (`!`) command echoes recorded as user turns — the command line and its
+# captured stdout/stderr, not authored feedback.
+COMMAND_ECHO_GROUPS: tuple[tuple[str, str], ...] = (("command_echo", r"<bash-(?:input|stdout|stderr)\b"),)
+
 # Named junk categories a consumer composes via ``drop_junk(...)``. Interrupt and
 # stop-hook are kept separate because they carry pushback and must never be folded
 # into the structural-noise default.
@@ -94,6 +98,7 @@ JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
     "interrupt": INTERRUPT_MARKER_GROUPS,
     "stop_hook": STOP_HOOK_GROUPS,
     "continuation": CONTINUATION_GROUPS,
+    "command_echo": COMMAND_ECHO_GROUPS,
 }
 
 # The superset of structural noise (structural ∪ agent-injection), WITHOUT
@@ -144,6 +149,7 @@ PORTABLE_GROUP_NAMES: frozenset[str] = frozenset(
         *INTERRUPT_MARKER_GROUPS,
         *STOP_HOOK_GROUPS,
         *CONTINUATION_GROUPS,
+        *COMMAND_ECHO_GROUPS,
         *FRUSTRATION_GROUPS,
         *MILD_IMPATIENCE_GROUPS,
     )
