@@ -21,6 +21,7 @@ from cc_transcript.builders import (
 )
 from cc_transcript.filterspec import (
     ASSISTANTS,
+    CONTINUATION_GROUPS,
     FRUSTRATION_GROUPS,
     INTERRUPT_MARKER_GROUPS,
     MILD_IMPATIENCE_GROUPS,
@@ -51,6 +52,7 @@ ALL_GROUPS_SPEC = FilterSpec(
                 STRUCTURAL_NOISE_GROUPS
                 + INTERRUPT_MARKER_GROUPS
                 + STOP_HOOK_GROUPS
+                + CONTINUATION_GROUPS
                 + FRUSTRATION_GROUPS
                 + MILD_IMPATIENCE_GROUPS
             ),
@@ -78,7 +80,7 @@ PUSHBACK_SPEC = build_spec(
     drop_meta_flag("is_meta"),
     drop_compacted(),
     drop_empty(only_from=USERS),
-    drop_junk("structural", "agent_injection"),
+    drop_junk("structural", "agent_injection", "stop_hook", "continuation"),
     drop_phrases(TRIVIAL_ACK_SET | RESUME_PHRASE_SET),
     drop_short(2),
 )
@@ -112,6 +114,12 @@ BATTERY = [
     "this # Augment Agent not at start",  # ^-anchored
     "[Request interrupted by user]",
     "Stop hook feedback: ruff failed",
+    "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
+    "go ahead and commit and push all the repos",
+    "ok push the branch",
+    "we hit rate limits, you must resume them",
+    "restart the subagents please",
+    "we need to force-push, you should have rebased first",  # near-miss: 'push' mid-sentence, NOT continuation
     "wtf this is broken",
     "stop guessing the imports",
     "you're useless",
