@@ -63,14 +63,6 @@ markers = [
 [tool.ty.rules]
 # Keep cross-checker `# type: ignore` / `# pyright: ignore` comments from tripping ty.
 unused-type-ignore-comment = "ignore"
-
-# The sentiment lexicon imports optional scientific deps (spacy, afinn) from the
-# `[lexicon]` extra, which CI does not install — scope the unresolved-import silence
-# to that one module so the rest of the package still gets missing-import checks.
-[[tool.ty.overrides]]
-include = ["cc_transcript/sentiment/lexicon.py"]
-
-[tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
 # pyright is kept as a secondary checker (editors / `uvx pyright`). Basic mode plus
