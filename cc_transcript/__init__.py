@@ -38,6 +38,13 @@ from cc_transcript.filterspec import (
     keep,
     labels_for,
 )
+from cc_transcript.messages import (
+    AssistantMessage,
+    BaseMessage,
+    ToolCall,
+    TranscriptMessage,
+    UserMessage,
+)
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,

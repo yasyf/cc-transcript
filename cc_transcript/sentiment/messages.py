@@ -1,43 +1,13 @@
+# Re-exports preserve the pre-0.6 import path; the distilled message types now live in core.
+# pyright: reportUnusedImport=false
+"""Deprecated shim: distilled message types moved to :mod:`cc_transcript.messages`."""
+
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal, NamedTuple
-
-from cc_transcript.models import SessionId
-
-
-class ToolCall(NamedTuple):
-    """A single tool invocation within a message: the tool ``name`` and optional target file path."""
-
-    name: str
-    file_path: str | None = None
-
-
-class UserMessage(NamedTuple):
-    """A user turn distilled for bucketing: its text, tool calls, and authoring metadata."""
-
-    content: str
-    timestamp: datetime
-    session_id: SessionId
-    uuid: str
-    tool_calls: tuple[ToolCall, ...]
-    thinking_chars: int
-    cc_version: str
-    role: Literal["user"] = "user"
-
-
-class AssistantMessage(NamedTuple):
-    """An assistant turn distilled for bucketing: its text, tool calls, and responding model."""
-
-    content: str
-    timestamp: datetime
-    session_id: SessionId
-    uuid: str
-    tool_calls: tuple[ToolCall, ...]
-    thinking_chars: int
-    claude_model: str
-    role: Literal["assistant"] = "assistant"
-
-
-BaseMessage = UserMessage | AssistantMessage
-TranscriptMessage = UserMessage | AssistantMessage
+from cc_transcript.messages import (
+    AssistantMessage,
+    BaseMessage,
+    ToolCall,
+    TranscriptMessage,
+    UserMessage,
+)
