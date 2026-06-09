@@ -32,7 +32,7 @@ from cc_transcript.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from pathlib import Path
 
     from cc_transcript.filterspec import FilterSpec
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 INTERRUPT_MARKER = "[Request interrupted by user"
 
 
-def parse_meta(data: dict[str, Any]) -> EntryMeta:
+def parse_meta(data: Mapping[str, Any]) -> EntryMeta:
     return EntryMeta(
         uuid=EntryUuid(data["uuid"]),
         parent_uuid=EntryUuid(parent) if (parent := data.get("parentUuid")) else None,
@@ -65,7 +65,9 @@ def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
             return "".join(block["text"] for block in content if block.get("type") == "text")
 
 
-def parse_user_blocks(content: str | list[dict[str, Any]]) -> tuple[str, tuple[ContentBlock, ...]]:
+def parse_user_blocks(
+    content: str | list[dict[str, Any]], *, is_async: bool = False
+) -> tuple[str, tuple[ContentBlock, ...]]:
     match content:
         case str():
             return content, ()
@@ -76,6 +78,7 @@ def parse_user_blocks(content: str | list[dict[str, Any]]) -> tuple[str, tuple[C
                     tool_use_id=ToolUseId(block["tool_use_id"]),
                     content=flatten_result_content(block["content"]),
                     is_error=bool(block.get("is_error")),
+                    is_async=is_async,
                 )
                 for block in content
                 if block.get("type") == "tool_result"
@@ -101,10 +104,13 @@ def parse_assistant_block(block: dict[str, Any]) -> ContentBlock:
             raise ValueError(f"unexpected assistant block type: {unknown}")
 
 
-def build_event(data: dict[str, Any]) -> TranscriptEvent | None:
+def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     match data["type"]:
         case "user":
-            text, blocks = parse_user_blocks(data["message"]["content"])
+            text, blocks = parse_user_blocks(
+                data["message"]["content"],
+                is_async=isinstance(tur := data.get("toolUseResult"), dict) and tur.get("isAsync") is True,
+            )
             return UserEvent(
                 meta=parse_meta(data),
                 text=text,
@@ -134,6 +140,9 @@ def build_event(data: dict[str, Any]) -> TranscriptEvent | None:
             return OtherEvent(type=data["type"], raw=data)
 
 
+build_event = parse_event
+
+
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
     return [event for line in raw.split(b"\n") if line.strip() if (event := decode_line(line)) is not None]
 
@@ -143,7 +152,7 @@ def decode_line(line: bytes) -> TranscriptEvent | None:
         data = orjson.loads(line)
     except orjson.JSONDecodeError:
         return None
-    return build_event(data)
+    return parse_event(data)
 
 
 async def parse_events_async(path: Path) -> list[TranscriptEvent]:

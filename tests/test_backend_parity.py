@@ -74,6 +74,16 @@ def fixture_entries() -> list[dict[str, Any]]:
         envelope(type="user", message={"role": "user", "content": "[Request interrupted by user]"}),
         envelope(
             type="user",
+            toolUseResult={"isAsync": True, "status": "async_launched"},
+            message={
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_async", "content": "launched", "is_error": False}
+                ],
+            },
+        ),
+        envelope(
+            type="user",
             isCompactSummary=True,
             isVisibleInTranscriptOnly=True,
             message={"role": "user", "content": "compact unicode héllo 🤖 漢字"},

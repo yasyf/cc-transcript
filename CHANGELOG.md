@@ -16,6 +16,10 @@ and the two domains never import each other.
 - **core**: `cc_transcript.messages` — the distilled message projection
   (`UserMessage`/`AssistantMessage`/`ToolCall`/`TranscriptMessage`), promoted out
   of the sentiment tier and re-exported at the package root.
+- **core**: `ToolResultBlock.is_async`, populated from the entry-level
+  `toolUseResult.isAsync` in both the Python and Rust parsers, and a public
+  `parse_event(data)` single-entry parser (re-exported at the package root) for
+  consumers that parse a transcript line at a time while retaining the raw entry.
 - **domains.mining**: new built-in domain. Neutral fact-detectors
   (`MiningSignal` + `iter_*_signals`) over Claude Code transcripts, the generic
   `FeedbackCandidate`/`dedup_key`, the context-window builder, nav/marker
