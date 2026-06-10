@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0]
+## [0.7.0]
 
 Internal re-architecture: the package now has an explicit **core** layer and a
 **domains** tier (`cc_transcript.domains.{sentiment,mining}`) built on top of it.
