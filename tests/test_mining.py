@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import anyio
+import pytest
 
 from cc_transcript.models import (
     AssistantEvent,
@@ -24,10 +25,12 @@ from cc_transcript.domains.mining import (
     DENIAL_PREFIX,
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
+    TOOL_INPUT_LIMIT,
     TRANSCRIPT_MESSAGE,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
     ContextSnapshot,
+    ContextTurn,
     FeedbackCandidate,
     FeedbackStore,
     ReviewComment,
@@ -41,6 +44,7 @@ from cc_transcript.domains.mining import (
     iter_review_comment_signals,
     iter_tool_denial_signals,
     iter_user_message_signals,
+    summarize_tool_input,
     weak,
 )
 from cc_transcript.domains.mining.confidence import from_payload
@@ -100,6 +104,73 @@ def test_build_snapshot_before_trigger_after() -> None:
     assert snap.trigger.text == "working on it"
     assert [turn.text for turn in snap.before] == ["first ask", "working on it"]
     assert [turn.text for turn in snap.after] == ["fixed"]
+
+
+@pytest.mark.parametrize(
+    ("name", "input", "expected"),
+    [
+        ("Bash", {"command": "uv run pytest"}, "uv run pytest"),
+        ("Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}, "/a.py\n- x = 1\n+ x = 2"),
+        (
+            "MultiEdit",
+            {"file_path": "/a.py", "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c"}]},
+            "/a.py\n- a\n+ b",
+        ),
+        ("Write", {"file_path": "/b.py", "content": "print(1)"}, "/b.py\nprint(1)"),
+        ("ExitPlanMode", {"plan": "do the thing"}, "do the thing"),
+        ("Task", {"prompt": "explore the repo"}, "explore the repo"),
+        ("Agent", {"prompt": "review the diff"}, "review the diff"),
+        ("Grep", {"pattern": "foo"}, '{"pattern": "foo"}'),
+    ],
+    ids=["bash", "edit", "multiedit", "write", "exit_plan", "task", "agent", "fallback_json"],
+)
+def test_summarize_tool_input_extracts_the_action(name: str, input: dict[str, object], expected: str) -> None:
+    assert summarize_tool_input(name, input) == expected
+
+
+def test_summarize_tool_input_truncates() -> None:
+    assert summarize_tool_input("Bash", {"command": "x" * (TOOL_INPUT_LIMIT + 100)}) == "x" * TOOL_INPUT_LIMIT
+
+
+def test_build_snapshot_trigger_carries_tool_inputs() -> None:
+    events = [
+        assistant(
+            "a0",
+            "running it",
+            blocks=(
+                ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "rm -rf build"}),
+                ToolUseBlock(id=ToolUseId("t2"), name="Edit", input={"file_path": "/a.py", "old_string": "x", "new_string": "y"}),
+            ),
+        ),
+        user("u0", "no, stop"),
+    ]
+    snap = build_snapshot(events, 1)
+    assert snap.trigger is not None
+    assert snap.trigger.tool_calls == ("Bash", "Edit")
+    assert snap.trigger.tool_inputs == ("rm -rf build", "/a.py\n- x\n+ y")
+
+
+def test_snapshot_json_round_trips_tool_inputs() -> None:
+    snap = ContextSnapshot(
+        before=(ContextTurn(role="user", text="hi"),),
+        trigger=ContextTurn(role="assistant", text="ran it", tool_calls=("Bash",), tool_inputs=("ls -la",)),
+        after=(),
+    )
+    assert ContextSnapshot.from_json(snap.to_json()) == snap
+
+
+def test_snapshot_from_legacy_json_defaults_tool_inputs_empty() -> None:
+    legacy = json.dumps(
+        {
+            "before": [],
+            "trigger": {"role": "assistant", "text": "ran it", "tool_calls": ["Bash"]},
+            "after": [],
+        }
+    )
+    snap = ContextSnapshot.from_json(legacy)
+    assert snap.trigger is not None
+    assert snap.trigger.tool_calls == ("Bash",)
+    assert snap.trigger.tool_inputs == ()
 
 
 def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
