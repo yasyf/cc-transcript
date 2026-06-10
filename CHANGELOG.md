@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Added
+- **domains.mining**: `ContextTurn.tool_inputs` — one bounded input summary per
+  tool call (the Bash command, the Edit diff, the ExitPlanMode plan body, …),
+  produced by the new `summarize_tool_input` helper (`TOOL_INPUT_LIMIT = 1500`)
+  and carried on every assistant turn in a `ContextSnapshot`. Serialized
+  `context_json` gains a `tool_inputs` key; snapshots persisted before this
+  release read back with empty summaries.
+
 ## [0.7.0]
 
 Internal re-architecture: the package now has an explicit **core** layer and a
