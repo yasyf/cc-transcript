@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 ASSISTANT_TEXT_LIMIT = 2000
+TOOL_INPUT_LIMIT = 1500
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,11 +26,13 @@ class ContextTurn:
         role: Whether the turn came from the user, the assistant, or a tool.
         text: The turn's text content.
         tool_calls: The names of the tools the turn invoked, in order.
+        tool_inputs: One input summary per tool call, in the same order.
     """
 
     role: Literal["user", "assistant", "tool"]
     text: str
     tool_calls: tuple[str, ...] = ()
+    tool_inputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +71,54 @@ class ContextSnapshot:
 
 
 def turn_to_dict(turn: ContextTurn) -> dict[str, Any]:
-    return {"role": turn.role, "text": turn.text, "tool_calls": list(turn.tool_calls)}
+    return {
+        "role": turn.role,
+        "text": turn.text,
+        "tool_calls": list(turn.tool_calls),
+        "tool_inputs": list(turn.tool_inputs),
+    }
 
 
 def turn_from_dict(data: Mapping[str, Any]) -> ContextTurn:
-    return ContextTurn(role=data["role"], text=data["text"], tool_calls=tuple(data["tool_calls"]))
+    return ContextTurn(
+        role=data["role"],
+        text=data["text"],
+        tool_calls=tuple(data["tool_calls"]),
+        tool_inputs=tuple(data.get("tool_inputs", ())),
+    )
+
+
+def summarize_tool_input(name: str, input: Mapping[str, Any]) -> str:
+    """Summarizes one tool call's input for context snapshots.
+
+    Extracts the field that captures what the tool actually did — the Bash
+    command, the Edit diff, the plan body — falling back to the raw JSON for
+    unrecognized tools, truncated to :data:`TOOL_INPUT_LIMIT`.
+
+    Args:
+        name: The tool's name as recorded in the transcript.
+        input: The tool call's input mapping, preserved verbatim by the parser.
+
+    Returns:
+        The bounded one-string summary of the call.
+    """
+    match name:
+        case "Bash":
+            summary = str(input.get("command", ""))
+        case "Edit":
+            summary = f"{input.get('file_path', '')}\n- {input.get('old_string', '')}\n+ {input.get('new_string', '')}"
+        case "MultiEdit":
+            first: Mapping[str, Any] = next(iter(input.get("edits") or ()), {})
+            summary = f"{input.get('file_path', '')}\n- {first.get('old_string', '')}\n+ {first.get('new_string', '')}"
+        case "Write":
+            summary = f"{input.get('file_path', '')}\n{input.get('content', '')}"
+        case "ExitPlanMode":
+            summary = str(input.get("plan", ""))
+        case "Task" | "Agent":
+            summary = str(input.get("prompt", ""))
+        case _:
+            summary = json.dumps(dict(input))
+    return summary[:TOOL_INPUT_LIMIT]
 
 
 def turn_for(event: UserEvent | AssistantEvent) -> ContextTurn:
@@ -80,10 +126,12 @@ def turn_for(event: UserEvent | AssistantEvent) -> ContextTurn:
         case UserEvent():
             return ContextTurn(role="user", text=event.text)
         case AssistantEvent():
+            uses = tuple(block for block in event.blocks if isinstance(block, ToolUseBlock))
             return ContextTurn(
                 role="assistant",
                 text=event.text[:ASSISTANT_TEXT_LIMIT],
-                tool_calls=tuple(block.name for block in event.blocks if isinstance(block, ToolUseBlock)),
+                tool_calls=tuple(use.name for use in uses),
+                tool_inputs=tuple(summarize_tool_input(use.name, use.input) for use in uses),
             )
 
 
