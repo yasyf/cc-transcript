@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.models import AssistantEvent, ToolUseBlock, UserEvent
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 ASSISTANT_TEXT_LIMIT = 2000
 TOOL_INPUT_LIMIT = 1500
+TURN_TEXT_LIMIT = 700
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,33 @@ def summarize_tool_input(name: str, input: Mapping[str, Any]) -> str:
         case _:
             summary = json.dumps(dict(input))
     return summary[:TOOL_INPUT_LIMIT]
+
+
+def clip(text: str, limit: int) -> str:
+    """Truncates ``text`` to ``limit`` characters, marking any cut with an ellipsis."""
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def render_turn(turn: ContextTurn, limit: int = TURN_TEXT_LIMIT) -> str:
+    """Renders one turn as ``role: text`` plus one indented line per tool call.
+
+    Args:
+        turn: The turn to render.
+        limit: The character budget for the turn text and each tool input.
+
+    Returns:
+        The prompt-ready rendering, tool inputs included.
+    """
+    tools = "".join(
+        f"\n  {name}({clip(input, limit)})" if input else f"\n  {name}()"
+        for name, input in zip_longest(turn.tool_calls, turn.tool_inputs, fillvalue="")
+    )
+    return f"{turn.role}: {clip(turn.text, limit)}{tools}"
+
+
+def render_turns(turns: Sequence[ContextTurn]) -> str:
+    """Renders a window of turns, one per line, or ``(none)`` when empty."""
+    return "\n".join(render_turn(turn) for turn in turns) or "(none)"
 
 
 def turn_for(event: UserEvent | AssistantEvent) -> ContextTurn:

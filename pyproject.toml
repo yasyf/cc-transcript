@@ -34,6 +34,7 @@ sentiment = [
 ]
 # Back-compat alias for the pre-0.6 extra name; prefer [sentiment].
 lexicon = ["cc-transcript[sentiment]"]
+llm = ["spawnllm>=0.1.3"]
 
 [project.urls]
 Homepage = "https://github.com/yasyf/cc-transcript"
