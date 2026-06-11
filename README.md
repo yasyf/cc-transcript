@@ -1,5 +1,7 @@
 # cc-transcript
 
+![cc-transcript banner](https://github.com/yasyf/cc-transcript/raw/main/docs/assets/readme-banner.png)
+
 [![PyPI](https://img.shields.io/pypi/v/cc-transcript.svg)](https://pypi.org/project/cc-transcript/)
 [![Python](https://img.shields.io/pypi/pyversions/cc-transcript.svg)](https://pypi.org/project/cc-transcript/)
 [![Docs](https://img.shields.io/github/actions/workflow/status/yasyf/cc-transcript/docs.yml?branch=main&label=docs)](https://yasyf.github.io/cc-transcript/)
