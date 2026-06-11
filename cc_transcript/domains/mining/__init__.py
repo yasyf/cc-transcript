@@ -30,14 +30,33 @@ from cc_transcript.domains.mining.confidence import (
 )
 from cc_transcript.domains.mining.context import (
     TOOL_INPUT_LIMIT,
+    TURN_TEXT_LIMIT,
     ContextSnapshot,
     ContextTurn,
     build_snapshot,
+    clip,
+    render_turn,
+    render_turns,
     summarize_tool_input,
     trigger_for,
     turn_for,
 )
+from cc_transcript.domains.mining.filterspec import (
+    CandidateClause,
+    CandidateFilterSpec,
+    CandidatePredicate,
+    ConfidenceAtLeast,
+    HasReason,
+    IsDurable,
+    SourceKindIn,
+    apply_candidate_filter,
+    at_least,
+    build_candidate_filter,
+    keep_candidate,
+    only_kinds,
+)
 from cc_transcript.domains.mining.formats import ReviewComment, ReviewFormat, extract_all
+from cc_transcript.domains.mining.llm import resolved_model, run_structured, structured_judge
 from cc_transcript.domains.mining.markers import (
     DENIAL_PREFIX,
     EDIT_TOOLS,
@@ -77,3 +96,21 @@ from cc_transcript.domains.mining.sourcekind import (
     SourceKind,
 )
 from cc_transcript.domains.mining.store import FEEDBACK_DDL, FeedbackStore, Stats, event_row
+from cc_transcript.domains.mining.verdicts import (
+    AuditEstimate,
+    AuditSample,
+    Disagreement,
+    Flip,
+    FlipReport,
+    GoldenFailure,
+    GoldenResult,
+    GoldenRow,
+    Metrics,
+    VerdictLike,
+    VerdictStoreMixin,
+    exact_upper_bound,
+    flip_pairs,
+    golden_result,
+    run_verdicts,
+    sample_audit,
+)
