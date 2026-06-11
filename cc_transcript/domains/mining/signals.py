@@ -4,17 +4,25 @@ Each iterator recognizes one transcript shape and yields a :class:`MiningSignal`
 describing it. A signal is a neutral fact: it carries a candidate ``trigger_index``
 but never disqualifies on its absence, never applies a ``FilterSpec``, and never
 builds an app candidate. The app maps signals to its own records with policy injected.
+
+Every signal carries a calibrated :class:`CandidateSignal` spanning the full
+confidence band: arithmetic bumps and demotions over the anchors, with named
+reason codes (``trigger_proximate``, ``short_followup``, ``substantive``,
+``hedged``, ``embedded_text``, ``bare_marker``, ``structural_only``) so apps can
+filter on :func:`~cc_transcript.domains.mining.confidence.effective_confidence`
+and reasons instead of re-deriving them.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from cc_transcript import STRUCTURAL_NOISE_RE
 from cc_transcript.models import AssistantEvent, ModeEvent, UserEvent
 
-from cc_transcript.domains.mining.confidence import firm, weak
+from cc_transcript.domains.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
 from cc_transcript.domains.mining.formats import extract_all
 from cc_transcript.domains.mining.nav import (
     denial_results,
@@ -40,9 +48,16 @@ if TYPE_CHECKING:
 
     from cc_transcript.models import CcVersion, EntryUuid, SessionId, TranscriptEvent
 
-    from cc_transcript.domains.mining.confidence import CandidateSignal
     from cc_transcript.domains.mining.formats import ReviewFormat
     from cc_transcript.domains.mining.sourcekind import SourceKind
+
+CONFIDENCE_STEP = 0.25
+SHORT_FOLLOWUP_MAX_WORDS = 2
+TIGHT_PROXIMITY = 2
+HEDGE_RE = re.compile(
+    r"\b(?:maybe|perhaps|possibly|might|not sure|i think|i guess|if you (?:want|prefer)|up to you)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +94,11 @@ class MiningSignal:
     signal: CandidateSignal | None = None
 
 
+class ScoredText(NamedTuple):
+    text: str
+    signal: CandidateSignal
+
+
 def nearest_assistant_index(events: Sequence[TranscriptEvent], index: int) -> int | None:
     return next((i for i in range(index - 1, -1, -1) if isinstance(events[i], AssistantEvent)), None)
 
@@ -92,6 +112,57 @@ def correction_text(events: Sequence[TranscriptEvent], index: int) -> str | None
     return None
 
 
+def first_followup(events: Sequence[TranscriptEvent], index: int) -> str | None:
+    while (found := next_user_message(events, index + 1)) is not None:
+        index, event = found
+        if not is_bare_interrupt_marker(event.text):
+            return event.text
+    return None
+
+
+def adjust(signal: CandidateSignal, delta: float, reason: str) -> CandidateSignal:
+    return CandidateSignal(
+        Confidence(min(1.0, max(0.0, signal.confidence + delta))), (*signal.reasons, reason), signal.durable
+    )
+
+
+def is_substantive(text: str) -> bool:
+    return len(text.split()) > SHORT_FOLLOWUP_MAX_WORDS and not STRUCTURAL_NOISE_RE.search(text)
+
+
+def is_proximate(index: int, trigger: int | None) -> bool:
+    return trigger is not None and index - trigger <= TIGHT_PROXIMITY
+
+
+def calibrated(text: str, *reasons: str) -> CandidateSignal:
+    base = firm(*reasons)
+    promoted = adjust(base, CONFIDENCE_STEP, "substantive") if is_substantive(text) else base
+    return adjust(promoted, -CONFIDENCE_STEP, "hedged") if HEDGE_RE.search(text) else promoted
+
+
+def score_user_message(text: str, index: int, trigger: int | None) -> CandidateSignal:
+    if STRUCTURAL_NOISE_RE.search(text):
+        return noise("structural_only")
+    base = firm("user_message")
+    short = len(text.split()) <= SHORT_FOLLOWUP_MAX_WORDS
+    demoted = adjust(base, -CONFIDENCE_STEP, "short_followup") if short else base
+    return adjust(demoted, CONFIDENCE_STEP, "trigger_proximate") if is_proximate(index, trigger) else demoted
+
+
+def marker_correction(events: Sequence[TranscriptEvent], index: int) -> ScoredText | None:
+    if (correction := correction_text(events, index)) is not None:
+        return ScoredText(correction, weak("bare_marker"))
+    if (followup := first_followup(events, index)) is not None:
+        return ScoredText(followup, noise("structural_only"))
+    return None
+
+
+def denial_correction(events: Sequence[TranscriptEvent], index: int, embedded: str | None) -> ScoredText | None:
+    if embedded:
+        return ScoredText(embedded, calibrated(embedded, "embedded_text"))
+    return marker_correction(events, index)
+
+
 def iter_user_message_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
     return (
         MiningSignal(
@@ -103,8 +174,8 @@ def iter_user_message_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
             occurred_at=event.meta.timestamp,
             text=event.text,
             cc_version=event.meta.cc_version,
-            trigger_index=nearest_assistant_index(events, index),
-            signal=firm("transcript_message"),
+            trigger_index=(trigger := nearest_assistant_index(events, index)),
+            signal=score_user_message(event.text, index, trigger),
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
@@ -126,7 +197,7 @@ def iter_plan_rejection_signals(events: Sequence[TranscriptEvent]) -> Iterator[M
             text=text,
             cc_version=event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, index),
-            signal=firm("exit_plan_rejection"),
+            signal=calibrated(text, "embedded_text"),
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
@@ -161,7 +232,7 @@ def iter_plan_reentry_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
             cc_version=user_event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, user_index),
             lower_bound=edit,
-            signal=firm("plan_reentry"),
+            signal=calibrated(user_event.text, "reentry_after_edit"),
         )
 
 
@@ -175,17 +246,17 @@ def iter_tool_denial_signals(events: Sequence[TranscriptEvent]) -> Iterator[Mini
             event_index=index,
             event_uuid=event.meta.uuid,
             occurred_at=event.meta.timestamp,
-            text=text,
+            text=scored.text,
             cc_version=event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, index),
             evidence=denied_tool_payload(paired) if paired else {},
-            signal=firm("denial") if embedded else weak("bare_marker"),
+            signal=scored.signal,
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
         for block in denial_results(event)
         if (paired := uses.get(block.tool_use_id)) is None or paired.name not in {"ExitPlanMode", "AskUserQuestion"}
-        if (text := (embedded := embedded_user_text(block.content)) or correction_text(events, index))
+        if (scored := denial_correction(events, index, embedded_user_text(block.content))) is not None
     )
 
 
@@ -198,15 +269,15 @@ def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent]) -> Iterator
             event_index=index,
             event_uuid=event.meta.uuid,
             occurred_at=event.meta.timestamp,
-            text=correction,
+            text=scored.text,
             cc_version=event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, index),
-            signal=weak("bare_marker"),
+            signal=scored.signal,
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
         if marker_in(event) is not None
-        if (correction := correction_text(events, index)) is not None
+        if (scored := marker_correction(events, index)) is not None
     )
 
 
@@ -230,7 +301,7 @@ def iter_review_comment_signals(
                 "line_start": comment.line_start,
                 "line_end": comment.line_end,
             },
-            signal=firm("review_comment"),
+            signal=calibrated(comment.comment, "format_match"),
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
