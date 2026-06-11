@@ -23,12 +23,18 @@ from cc_transcript.models import (
 )
 from cc_transcript.domains.mining import (
     DENIAL_PREFIX,
+    HIGH,
     INTERRUPT_REJECTION,
+    LOW,
+    MEDIUM,
+    NOISE_FLOOR,
+    NONE,
     PLAN_REVIEW,
     TOOL_INPUT_LIMIT,
     TRANSCRIPT_MESSAGE,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
+    CandidateSignal,
     ContextSnapshot,
     ContextTurn,
     FeedbackCandidate,
@@ -38,12 +44,14 @@ from cc_transcript.domains.mining import (
     Stats,
     build_snapshot,
     dedup_key,
-    firm,
+    effective_confidence,
     iter_interrupt_marker_signals,
     iter_plan_reentry_signals,
+    iter_plan_rejection_signals,
     iter_review_comment_signals,
     iter_tool_denial_signals,
     iter_user_message_signals,
+    noise,
     summarize_tool_input,
     weak,
 )
@@ -78,6 +86,10 @@ def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (
     return AssistantEvent(
         meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None
     )
+
+
+def mode(value: str = "normal") -> ModeEvent:
+    return ModeEvent(session_id=SESSION, channel="mode", value=value)
 
 
 def denial_content(said: str) -> str:
@@ -187,7 +199,47 @@ def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
     assert signals[1].trigger_index == 3
     assert signals[0].kind == TRANSCRIPT_MESSAGE
     assert all(signal.detector == "transcript_message" for signal in signals)
-    assert signals[0].signal == firm("transcript_message")
+    assert signals[0].signal == CandidateSignal(MEDIUM, ("user_message",))
+    assert signals[1].signal == CandidateSignal(MEDIUM, ("user_message", "short_followup", "trigger_proximate"))
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        pytest.param(
+            [assistant("a0", "made the change"), user("u0", "no, revert to the old parser")],
+            CandidateSignal(HIGH, ("user_message", "trigger_proximate")),
+            id="strong_when_tightly_following_trigger",
+        ),
+        pytest.param(
+            [assistant("a0", "made the change"), mode(), mode(), user("u0", "please rework the parser entirely")],
+            CandidateSignal(MEDIUM, ("user_message",)),
+            id="firm_when_distant_from_trigger",
+        ),
+        pytest.param(
+            [user("u0", "ok then")],
+            CandidateSignal(LOW, ("user_message", "short_followup")),
+            id="weak_short_followup",
+        ),
+        pytest.param(
+            [assistant("a0", "made the change"), user("u0", "no stop")],
+            CandidateSignal(MEDIUM, ("user_message", "short_followup", "trigger_proximate")),
+            id="short_followup_demotion_offsets_proximity_bump",
+        ),
+        pytest.param(
+            [assistant("a0", "made the change"), user("u0", "<system-reminder>compact summary</system-reminder>")],
+            CandidateSignal(NONE, ("structural_only",)),
+            id="noise_structural_only_despite_proximity",
+        ),
+    ],
+)
+def test_user_message_confidence_calibration(events: list[object], expected: CandidateSignal) -> None:
+    assert [signal.signal for signal in iter_user_message_signals(events)] == [expected]
+
+
+def test_structural_user_message_scores_below_noise_floor() -> None:
+    signals = list(iter_user_message_signals([user("u0", "<system-reminder>compacted</system-reminder>")]))
+    assert effective_confidence(signals[0].signal) < NOISE_FLOOR
 
 
 def test_iter_tool_denial_signals_extracts_embedded_text() -> None:
@@ -213,7 +265,88 @@ def test_iter_tool_denial_signals_extracts_embedded_text() -> None:
     assert signal.text == "use a different approach"
     assert signal.evidence == {"tool": "Bash", "file_path": None}
     assert signal.trigger_index == 0
-    assert signal.signal == firm("denial")
+    assert signal.signal == CandidateSignal(HIGH, ("embedded_text", "substantive"))
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        pytest.param(
+            "use the storage adapter instead",
+            CandidateSignal(HIGH, ("embedded_text", "substantive")),
+            id="substantive_promotes_to_strong",
+        ),
+        pytest.param("no", CandidateSignal(MEDIUM, ("embedded_text",)), id="terse_stays_firm"),
+        pytest.param(
+            "maybe try the storage adapter instead",
+            CandidateSignal(MEDIUM, ("embedded_text", "substantive", "hedged")),
+            id="hedged_demotes_back_to_firm",
+        ),
+    ],
+)
+def test_tool_denial_embedded_text_calibration(said: str, expected: CandidateSignal) -> None:
+    events = [
+        assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "rm -rf /"}),)),
+        user(
+            "u0",
+            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
+        ),
+    ]
+    assert [signal.signal for signal in iter_tool_denial_signals(events)] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("followup", "expected"),
+    [
+        pytest.param(
+            "actually run it in the sandbox first",
+            CandidateSignal(LOW, ("bare_marker",)),
+            id="substantive_followup_stays_weak",
+        ),
+        pytest.param(
+            "<system-reminder>hook output</system-reminder>",
+            CandidateSignal(NONE, ("structural_only",)),
+            id="structural_only_followup_is_noise",
+        ),
+    ],
+)
+def test_tool_denial_bare_marker_followup_calibration(followup: str, expected: CandidateSignal) -> None:
+    events = [
+        assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "ls"}),)),
+        user(
+            "u0",
+            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=f"{DENIAL_PREFIX}.", is_error=True),),
+        ),
+        user("u1", followup),
+    ]
+    signals = list(iter_tool_denial_signals(events))
+    assert [signal.text for signal in signals] == [followup]
+    assert [signal.signal for signal in signals] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        pytest.param(
+            "the plan skips the data migration step",
+            CandidateSignal(HIGH, ("embedded_text", "substantive")),
+            id="substantive_rejection_promotes_to_strong",
+        ),
+        pytest.param("no", CandidateSignal(MEDIUM, ("embedded_text",)), id="terse_rejection_stays_firm"),
+    ],
+)
+def test_plan_rejection_signal_calibration(said: str, expected: CandidateSignal) -> None:
+    events = [
+        assistant(
+            "a0",
+            blocks=(ToolUseBlock(id=ToolUseId("t1"), name="ExitPlanMode", input={"plan": "do it"}),),
+        ),
+        user(
+            "u0",
+            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
+        ),
+    ]
+    assert [signal.signal for signal in iter_plan_rejection_signals(events)] == [expected]
 
 
 def test_iter_interrupt_marker_signals_extracts_correction() -> None:
@@ -239,6 +372,26 @@ def test_iter_interrupt_marker_signals_extracts_correction() -> None:
     assert signal.signal == weak("bare_marker")
 
 
+def test_iter_interrupt_marker_signals_structural_only_correction_is_noise() -> None:
+    events = [
+        assistant("a0", "doing work"),
+        user(
+            "u0",
+            blocks=(
+                ToolResultBlock(
+                    tool_use_id=ToolUseId("t9"), content="[Request interrupted by user]", is_error=True
+                ),
+            ),
+        ),
+        user("u1", "<system-reminder>session resumed</system-reminder>"),
+    ]
+    signals = list(iter_interrupt_marker_signals(events))
+    assert len(signals) == 1
+    assert signals[0].text == "<system-reminder>session resumed</system-reminder>"
+    assert signals[0].signal == noise("structural_only")
+    assert effective_confidence(signals[0].signal) < NOISE_FLOOR
+
+
 def test_iter_review_comment_signals_with_injected_format() -> None:
     pattern = re.compile(r"^NIT: (.+)$", re.MULTILINE)
     fmt = ReviewFormat(
@@ -258,6 +411,7 @@ def test_iter_review_comment_signals_with_injected_format() -> None:
     assert all(signal.detector == "review_comment" for signal in signals)
     assert signals[0].evidence == {"format": "tiny", "file": None, "line_start": None, "line_end": None}
     assert signals[0].trigger_index == 0
+    assert signals[0].signal == CandidateSignal(HIGH, ("format_match", "substantive"))
 
 
 def test_iter_plan_reentry_signals_smoke() -> None:
@@ -273,6 +427,7 @@ def test_iter_plan_reentry_signals_smoke() -> None:
     assert reentries[0].detector == "plan_reentry"
     assert reentries[0].text == "reconsider the plan, this is wrong"
     assert reentries[0].lower_bound == 0
+    assert reentries[0].signal == CandidateSignal(HIGH, ("reentry_after_edit", "substantive"))
 
 
 def test_feedback_store_round_trip_preserves_signal(tmp_path: Path) -> None:
