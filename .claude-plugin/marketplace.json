@@ -1,0 +1,14 @@
+{
+  "name": "cc-transcript",
+  "owner": {
+    "name": "Yasyf Mohamedali",
+    "url": "https://github.com/yasyf"
+  },
+  "plugins": [
+    {
+      "name": "cc-transcript",
+      "source": "./",
+      "description": "Investigate Claude Code transcripts token-efficiently with list, stats, grep, and show."
+    }
+  ]
+}

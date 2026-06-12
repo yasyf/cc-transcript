@@ -1,0 +1,11 @@
+{
+  "name": "cc-transcript",
+  "description": "Investigate Claude Code transcripts token-efficiently via the cc-transcript CLI: list, stats, grep, and show instead of reading raw JSONL.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Yasyf Mohamedali",
+    "url": "https://github.com/yasyf"
+  },
+  "homepage": "https://github.com/yasyf/cc-transcript",
+  "license": "PolyForm-Noncommercial-1.0.0"
+}
