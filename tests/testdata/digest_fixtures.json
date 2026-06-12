@@ -1,0 +1,100 @@
+[
+  {
+    "tool": "Edit",
+    "input": {
+      "file_path": "/a/b.py",
+      "old_string": "x = 1\n",
+      "new_string": "x = 2\n",
+      "replace_all": false
+    },
+    "digest": "19c164024e877290b5a8847565414774909bc5e7a546b8697a29e0c4bf5d3128"
+  },
+  {
+    "tool": "Bash",
+    "input": {
+      "command": "git status",
+      "timeout": 5000
+    },
+    "digest": "bb1ec4959bd14512342126db9066d06d92f8e3486e74b9812cb5037f3f086cc8"
+  },
+  {
+    "tool": "Write",
+    "input": {
+      "file_path": "/tmp/é.txt",
+      "content": "héllo\n\tworld \"quoted\" \\ end"
+    },
+    "digest": "11f61afa614a4c77d0667f84d21335eabd5f96c241c142678fb0e6917840b59e"
+  },
+  {
+    "tool": "MultiEdit",
+    "input": {
+      "file_path": "f.py",
+      "edits": [
+        {
+          "old_string": "a",
+          "new_string": "b"
+        },
+        {
+          "old_string": "c",
+          "new_string": "d",
+          "replace_all": true
+        }
+      ]
+    },
+    "digest": "77166eb9deb4fa99fc9759d73d0c3c3490242cd1f2f7ec8f0739bcd036ba8d5c"
+  },
+  {
+    "tool": "Read",
+    "input": {
+      "file_path": "x",
+      "offset": 0,
+      "limit": 9007199254740991
+    },
+    "digest": "ee0a56c3c4387416c5a83b39b73758908a9bbb3976cc4df0be604453025d7214"
+  },
+  {
+    "tool": "Grep",
+    "input": {
+      "pattern": "[a-z]+",
+      "path": null,
+      "nested": {
+        "empty_obj": {},
+        "empty_arr": [],
+        "null": null,
+        "bools": [
+          true,
+          false
+        ]
+      }
+    },
+    "digest": "01913c400e0cedf8060b480f5fd71417f6b0b8c95afeb6e19684b82e3ddd5c23"
+  },
+  {
+    "tool": "Other",
+    "input": {
+      "float_one": 1.0,
+      "float_frac": 0.5,
+      "float_big": 1e+21,
+      "float_small": 1e-7,
+      "float_repeat": 333333333.3333333,
+      "neg": -1.5,
+      "zero": 0.0
+    },
+    "digest": "5ec49e3e387161f6b12241b569d28c7089193dcf8bf37f36bf56a40366cbc64c"
+  },
+  {
+    "tool": "Unicode",
+    "input": {
+      "😀": "emoji-key",
+      "€": "euro",
+      "￿": "ffff",
+      "controls": "\u0001\u001f"
+    },
+    "digest": "11b85da4cbe88324e35b45b3833201e8357339af86141dc427dd59d0e1d92e60"
+  },
+  {
+    "tool": "Empty",
+    "input": {},
+    "digest": "b50e454c692adcd4121bab7971501fcc94656ad0247b66d2d607be05dcddd4c5"
+  }
+]
