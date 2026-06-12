@@ -9,14 +9,12 @@ from typing import TYPE_CHECKING, NewType
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
-    from pathlib import Path
     from typing import Any
 
-    from cc_transcript.models import SessionId
-
-    from cc_transcript.domains.mining.confidence import CandidateSignal
-    from cc_transcript.domains.mining.context import ContextSnapshot
-    from cc_transcript.domains.mining.sourcekind import SourceKind
+    from cc_transcript.context import ContextWindow
+    from cc_transcript.ids import EventRef, SessionId
+    from cc_transcript.mining.confidence import CandidateSignal
+    from cc_transcript.mining.sourcekind import SourceKind
 
 DedupKey = NewType("DedupKey", str)
 """A content-derived SHA-256 key that makes feedback ingestion idempotent."""
@@ -31,26 +29,26 @@ class FeedbackCandidate:
         source_kind: Which detector produced the candidate.
         occurred_at: When the feedback was given.
         text: The verbatim pushback text.
-        context: The conversational window around the feedback.
+        window: The durable context window around the feedback, captured via
+            :func:`~cc_transcript.context.capture_window`.
+        ref: The resolvable reference to the originating event; None for
+            migrated legacy rows.
         session_id: The transcript session the feedback came from.
-        origin_path: The file the candidate was extracted from.
-        origin_uuid: The originating transcript entry's uuid.
         cc_version: The Claude Code version recorded for the origin.
-        payload: Detector-specific metadata preserved verbatim.
         signal: The de-noising confidence signal, when computed.
+        payload: Detector-specific metadata preserved verbatim.
     """
 
     dedup_key: DedupKey
     source_kind: SourceKind
     occurred_at: datetime
     text: str
-    context: ContextSnapshot
+    window: ContextWindow
+    ref: EventRef | None = None
     session_id: SessionId | None = None
-    origin_path: Path | None = None
-    origin_uuid: str | None = None
     cc_version: str | None = None
-    payload: Mapping[str, Any] | None = None
     signal: CandidateSignal | None = None
+    payload: Mapping[str, Any] | None = None
 
 
 def dedup_key(*parts: str) -> DedupKey:

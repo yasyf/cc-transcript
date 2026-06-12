@@ -7,17 +7,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Self
 
+from cc_transcript.mining.confidence import to_payload
 from cc_transcript.store import FileStateStore
-
-from cc_transcript.domains.mining.confidence import to_payload
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
     from types import TracebackType
 
-    from cc_transcript.domains.mining.candidates import FeedbackCandidate
-    from cc_transcript.domains.mining.sourcekind import SourceKind
+    from cc_transcript.mining.candidates import FeedbackCandidate
+    from cc_transcript.mining.sourcekind import SourceKind
 
 FEEDBACK_DDL = """
 CREATE TABLE IF NOT EXISTS feedback_events (
@@ -25,8 +24,7 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   dedup_key TEXT NOT NULL UNIQUE,
   source_kind TEXT NOT NULL,
   session_id TEXT,
-  origin_path TEXT,
-  origin_uuid TEXT,
+  event_uuid TEXT,
   occurred_at TEXT NOT NULL,
   text TEXT NOT NULL,
   payload_json TEXT,
@@ -40,9 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_feedback_session ON feedback_events(session_id);
 
 INSERT_EVENT = """
 INSERT OR IGNORE INTO feedback_events (
-  dedup_key, source_kind, session_id, origin_path, origin_uuid,
+  dedup_key, source_kind, session_id, event_uuid,
   occurred_at, text, payload_json, context_json, cc_version, ingested_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -58,12 +56,11 @@ def event_row(candidate: FeedbackCandidate, ingested_at: str) -> tuple[object, .
         candidate.dedup_key,
         candidate.source_kind,
         candidate.session_id,
-        str(candidate.origin_path) if candidate.origin_path else None,
-        candidate.origin_uuid,
+        candidate.ref.event_uuid if candidate.ref is not None else None,
         candidate.occurred_at.isoformat(),
         candidate.text,
         json.dumps(payload) if payload else None,
-        candidate.context.to_json(),
+        candidate.window.to_json(),
         candidate.cc_version,
         ingested_at,
     )
@@ -190,11 +187,11 @@ class FeedbackStore:
 
         Returns:
             One dict per event with its ``id``, ``source_kind``, ``occurred_at``,
-            ``text``, ``payload_json``, ``context_json``, ``origin_path``, and
+            ``text``, ``payload_json``, ``context_json``, ``event_uuid``, and
             ``session_id``.
         """
         query = (
-            "SELECT id, source_kind, occurred_at, text, payload_json, context_json, origin_path, session_id "
+            "SELECT id, source_kind, occurred_at, text, payload_json, context_json, event_uuid, session_id "
             "FROM feedback_events"
         )
         params: tuple[object, ...] = ()

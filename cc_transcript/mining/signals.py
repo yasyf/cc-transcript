@@ -3,13 +3,16 @@
 Each iterator recognizes one transcript shape and yields a :class:`MiningSignal`
 describing it. A signal is a neutral fact: it carries a candidate ``trigger_index``
 but never disqualifies on its absence, never applies a ``FilterSpec``, and never
-builds an app candidate. The app maps signals to its own records with policy injected.
+builds an app candidate. The app maps signals to its own records with policy
+injected, capturing each candidate's window via
+:func:`~cc_transcript.context.capture_window` over a lifted
+:class:`~cc_transcript.activity.SessionActivity`.
 
 Every signal carries a calibrated :class:`CandidateSignal` spanning the full
 confidence band: arithmetic bumps and demotions over the anchors, with named
 reason codes (``trigger_proximate``, ``short_followup``, ``substantive``,
 ``hedged``, ``embedded_text``, ``bare_marker``, ``structural_only``) so apps can
-filter on :func:`~cc_transcript.domains.mining.confidence.effective_confidence`
+filter on :func:`~cc_transcript.mining.confidence.effective_confidence`
 and reasons instead of re-deriving them.
 """
 
@@ -19,38 +22,31 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
-from cc_transcript import STRUCTURAL_NOISE_RE
-from cc_transcript.models import AssistantEvent, ModeEvent, UserEvent
-
-from cc_transcript.domains.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
-from cc_transcript.domains.mining.formats import extract_all
-from cc_transcript.domains.mining.nav import (
-    denial_results,
-    denied_tool_payload,
-    embedded_user_text,
-    is_bare_interrupt_marker,
-    last_edit_index,
-    marker_in,
-    next_user_message,
-    tool_uses,
-)
-from cc_transcript.domains.mining.sourcekind import (
+from cc_transcript.filterspec import INTERRUPT_MARKER_RE, STRUCTURAL_NOISE_RE, tool_uses
+from cc_transcript.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
+from cc_transcript.mining.formats import extract_all
+from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
     REVIEW_COMMENT,
     TRANSCRIPT_MESSAGE,
 )
+from cc_transcript.models import AssistantEvent, ModeEvent, ToolResultBlock, ToolUseBlock, UserEvent
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
     from datetime import datetime
     from typing import Any
 
-    from cc_transcript.models import CcVersion, EntryUuid, SessionId, TranscriptEvent
+    from cc_transcript.mining.formats import ReviewFormat
+    from cc_transcript.mining.sourcekind import SourceKind
+    from cc_transcript.models import CcVersion, EventUuid, SessionId, TranscriptEvent
 
-    from cc_transcript.domains.mining.formats import ReviewFormat
-    from cc_transcript.domains.mining.sourcekind import SourceKind
-
+DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
+USER_SAID_TRAILER = "Note: The user's next message"
+EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+REENTRY_LOOKBACK = 40
 CONFIDENCE_STEP = 0.25
 SHORT_FOLLOWUP_MAX_WORDS = 2
 TIGHT_PROXIMITY = 2
@@ -84,7 +80,7 @@ class MiningSignal:
     detector: str
     session_id: SessionId
     event_index: int
-    event_uuid: EntryUuid
+    event_uuid: EventUuid
     occurred_at: datetime
     text: str
     cc_version: CcVersion | None
@@ -97,6 +93,74 @@ class MiningSignal:
 class ScoredText(NamedTuple):
     text: str
     signal: CandidateSignal
+
+
+def denial_results(event: UserEvent) -> Iterator[ToolResultBlock]:
+    return (
+        block
+        for block in event.blocks
+        if isinstance(block, ToolResultBlock)
+        if block.is_error
+        if block.content.startswith(DENIAL_PREFIX)
+    )
+
+
+def embedded_user_text(content: str) -> str | None:
+    if (start := content.find(USER_SAID_MARKER)) == -1:
+        return None
+    return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
+
+
+def last_edit_index(events: Sequence[TranscriptEvent], index: int) -> int | None:
+    return next(
+        (
+            i
+            for i in range(index - 1, max(index - REENTRY_LOOKBACK, 0) - 1, -1)
+            if isinstance(event := events[i], AssistantEvent)
+            if any(isinstance(b, ToolUseBlock) and b.name in EDIT_TOOLS for b in event.blocks)
+        ),
+        None,
+    )
+
+
+def next_user_message(events: Sequence[TranscriptEvent], index: int) -> tuple[int, UserEvent] | None:
+    return next(
+        (
+            (i, event)
+            for i in range(index, len(events))
+            if isinstance(event := events[i], UserEvent)
+            if event.text.strip()
+        ),
+        None,
+    )
+
+
+def denied_tool_payload(use: ToolUseBlock) -> dict[str, Any]:
+    return {"tool": use.name, "file_path": use.input.get("file_path")}
+
+
+def interrupt_marker(content: str) -> str | None:
+    stripped = content.lstrip()
+    if (match := INTERRUPT_MARKER_RE.match(stripped)) is None:
+        return None
+    end = stripped.find("]")
+    return stripped[: end + 1] if end != -1 else match.group(0)
+
+
+def is_bare_interrupt_marker(text: str) -> bool:
+    return (marker := interrupt_marker(text)) is not None and not text.strip()[len(marker.strip()) :].strip()
+
+
+def marker_in(event: UserEvent) -> str | None:
+    return next(
+        (
+            marker
+            for block in event.blocks
+            if isinstance(block, ToolResultBlock)
+            if (marker := interrupt_marker(block.content)) is not None
+        ),
+        None,
+    )
 
 
 def nearest_assistant_index(events: Sequence[TranscriptEvent], index: int) -> int | None:
@@ -209,7 +273,7 @@ def iter_plan_rejection_signals(events: Sequence[TranscriptEvent]) -> Iterator[M
 
 
 def iter_plan_reentry_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
-    seen: set[EntryUuid] = set()
+    seen: set[EventUuid] = set()
     for index, event in enumerate(events):
         if not (isinstance(event, ModeEvent) and event.value == "plan"):
             continue

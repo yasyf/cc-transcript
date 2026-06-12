@@ -11,7 +11,7 @@ import anyio
 import pytest
 
 from cc_transcript.models import SessionId
-from cc_transcript.domains.sentiment import (
+from cc_transcript.sentiment import (
     AssistantMessage,
     ConversationBucket,
     FilteredEngine,
@@ -23,9 +23,9 @@ from cc_transcript.domains.sentiment import (
     demote_mild_irritation,
     flag_frustration,
 )
-from cc_transcript.domains.sentiment.buckets import BucketIndex
-from cc_transcript.domains.sentiment.lexicon import Lexicon
-from cc_transcript.domains.sentiment.scorespec import py_post_process, py_short_circuit
+from cc_transcript.sentiment.buckets import BucketIndex
+from cc_transcript.sentiment.lexicon import Lexicon
+from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 

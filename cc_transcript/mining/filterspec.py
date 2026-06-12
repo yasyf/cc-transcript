@@ -8,7 +8,7 @@ no thresholds; the consumer owns policy and composes its own spec from the
 builders here.
 
 Example:
-    >>> from cc_transcript.domains.mining import NOISE_FLOOR, REVIEW_COMMENT
+    >>> from cc_transcript.mining import NOISE_FLOOR, REVIEW_COMMENT
     >>> spec = build_candidate_filter(at_least(NOISE_FLOOR), only_kinds(REVIEW_COMMENT))
     >>> kept = list(apply_candidate_filter(candidates, spec))
 """
@@ -18,14 +18,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cc_transcript.domains.mining.confidence import effective_confidence
+from cc_transcript.mining.confidence import effective_confidence
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from cc_transcript.domains.mining.candidates import FeedbackCandidate
-    from cc_transcript.domains.mining.confidence import Confidence
-    from cc_transcript.domains.mining.sourcekind import SourceKind
+    from cc_transcript.mining.candidates import FeedbackCandidate
+    from cc_transcript.mining.confidence import Confidence
+    from cc_transcript.mining.sourcekind import SourceKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,8 +33,8 @@ class ConfidenceAtLeast:
     """Matches candidates whose effective confidence is at least ``floor``.
 
     A candidate without a stored signal scores
-    :data:`~cc_transcript.domains.mining.confidence.MEDIUM` via
-    :func:`~cc_transcript.domains.mining.confidence.effective_confidence`, so
+    :data:`~cc_transcript.mining.confidence.MEDIUM` via
+    :func:`~cc_transcript.mining.confidence.effective_confidence`, so
     legacy rows pass any floor at or below it.
     """
 
@@ -60,7 +60,7 @@ class IsDurable:
     """Matches candidates whose signal durability equals ``want``.
 
     A candidate without a stored signal counts as durable, mirroring
-    :class:`~cc_transcript.domains.mining.confidence.CandidateSignal`'s default.
+    :class:`~cc_transcript.mining.confidence.CandidateSignal`'s default.
     """
 
     want: bool

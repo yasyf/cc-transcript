@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from cc_transcript.domains.sentiment.buckets import SentimentScore
-from cc_transcript.domains.sentiment.lexicon import rust_lexicon
-from cc_transcript.domains.sentiment.scorespec import (
+from cc_transcript.sentiment.buckets import SentimentScore
+from cc_transcript.sentiment.lexicon import rust_lexicon
+from cc_transcript.sentiment.scorespec import (
     build_score_spec,
     clamp_positive,
     clamp_resume,
