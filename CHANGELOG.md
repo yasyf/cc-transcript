@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+### Added
+- The `cc-transcript` CLI (`uvx cc-transcript`): `list`, `show`, `grep`, and
+  `stats` for token-efficient transcript investigation, runnable as
+  `python -m cc_transcript` or via the `cc-transcript` entry point.
+- Bundled Claude Code plugin: `.claude-plugin/` manifests and the
+  `cc-transcript-investigate` skill, installed via
+  `/plugin marketplace add yasyf/cc-transcript`.
+- Docs: a mining-feedback guide, a transcript-CLI guide, a curated API
+  reference covering `domains.mining` and `domains.sentiment`, and a generated
+  Click CLI reference.
+
+### Changed
+- Project metadata (description, keywords, classifiers) now covers the CLI and
+  the domain tiers.
+- README quickstart fixed (`parse_events` was removed in 0.5.0).
+
 ## [0.8.0]
 
 ### Added
@@ -173,6 +191,10 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[0.9.0]: https://github.com/yasyf/cc-transcript/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/yasyf/cc-transcript/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/yasyf/cc-transcript/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/yasyf/cc-transcript/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/yasyf/cc-transcript/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-transcript/compare/v0.1.0...v0.4.0
 [0.1.0]: https://github.com/yasyf/cc-transcript/releases/tag/v0.1.0
