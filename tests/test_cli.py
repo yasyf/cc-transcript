@@ -10,18 +10,48 @@ import pytest
 from click.testing import CliRunner
 
 from cc_transcript.cli import cli
+from cc_transcript.ids import tool_digest
 from cc_transcript.parser import TranscriptParser
 from cc_transcript.render import human_size
 
 BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 MODEL = "claude-opus-4-7"
+WINDOW = ("--since", "2026-01-02T03:04:00Z", "--until", "2026-01-02T03:05:00Z")
+
+READ_SLICE = {
+    "schema": "cc-transcript.slice/1",
+    "event_uuid": "u2",
+    "tool_use_id": "toolu_read",
+    "ts_ms": int((BASE_TS + timedelta(seconds=2)).timestamp() * 1000),
+    "tool_name": "Read",
+    "tool_digest": tool_digest("Read", {"file_path": "/x"}),
+    "file_path": "/x",
+    "summary": "Read(/x)",
+}
+
+BASH_SLICE = {
+    "schema": "cc-transcript.slice/1",
+    "event_uuid": "u4",
+    "tool_use_id": "toolu_bash",
+    "ts_ms": int((BASE_TS + timedelta(seconds=4)).timestamp() * 1000),
+    "tool_name": "Bash",
+    "tool_digest": tool_digest("Bash", {"command": "ls"}),
+    "file_path": None,
+    "summary": "ls",
+}
+
+DIGEST_CASES = [
+    {"tool": "Bash", "input": {"command": "ls"}},
+    {"tool": "Edit", "input": {"file_path": "/tmp/é.py", "old_string": "x", "new_string": "y", "ratio": 1.5}},
+    {"tool": "mcp__github__search", "input": {"nested": [{"empty": {}}, [1, 2.5, "three"]]}},
+]
 
 EXPECTED_SHOW = (
     "    0 user  03:04:05 hello world",
     '    1 asst  03:04:06 [claude-opus-4-7] "hi there"',
     "    2 asst  03:04:07 [claude-opus-4-7] th(12ch) Read(/x)",
     "    3 user  03:04:08 <-Read (9ch) ok output",
-    "    4 asst  03:04:09 [claude-opus-4-7] Bash(ls)",
+    "    4 asst  03:04:09 [claude-opus-4-7] ls",
     "    5 user  03:04:10 <-Bash[err] (4ch) boom",
     "    6 user  03:04:11 [int] [Request interrupted by user]",
     "    7 user  03:04:12 <system-reminder>do not respond</system-reminder>",
@@ -187,10 +217,17 @@ def root(tmp_path: Path) -> tuple[Path, Path, Path]:
     return root, old, new
 
 
+@pytest.fixture
+def session_root(tmp_path: Path) -> Path:
+    root = tmp_path / "projects"
+    write_transcript(root / "-Users-x-proj-a" / "sess-1.jsonl", fixture_entries())
+    return root
+
+
 def test_help_lists_all_commands(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert set(cli.commands) == {"list", "show", "grep", "stats"}
+    assert set(cli.commands) == {"list", "show", "grep", "stats", "slice", "digest"}
 
 
 def test_list_newest_first(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
@@ -524,3 +561,93 @@ def test_stats_discovery_combines_files(runner: CliRunner, root: tuple[Path, Pat
             "",
         )
     )
+
+
+def test_slice_emits_one_line_per_tool_call(runner: CliRunner, session_root: Path) -> None:
+    result = runner.invoke(cli, ["slice", "--session", "sess-1", *WINDOW, "--root", str(session_root)])
+    assert result.exit_code == 0
+    rows = [orjson.loads(line) for line in result.output.splitlines()]
+    assert rows == [READ_SLICE, BASH_SLICE]
+    assert all(type(row["ts_ms"]) is int for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "expected"),
+    [
+        pytest.param("2026-01-02T03:04:09Z", "2026-01-02T03:05:00Z", [BASH_SLICE], id="since_inclusive"),
+        pytest.param("2026-01-02T03:04:00Z", "2026-01-02T03:04:09Z", [READ_SLICE], id="until_exclusive"),
+        pytest.param("2026-01-02T03:05:00Z", "2026-01-02T03:06:00Z", [], id="empty_window"),
+    ],
+)
+def test_slice_window_filtering(
+    runner: CliRunner, session_root: Path, since: str, until: str, expected: list[dict[str, object]]
+) -> None:
+    result = runner.invoke(
+        cli, ["slice", "--session", "sess-1", "--since", since, "--until", until, "--root", str(session_root)]
+    )
+    assert result.exit_code == 0
+    assert [orjson.loads(line) for line in result.output.splitlines()] == expected
+
+
+def test_slice_missing_transcript_exits_one_with_empty_stdout(runner: CliRunner, session_root: Path) -> None:
+    result = runner.invoke(cli, ["slice", "--session", "sess-gone", *WINDOW, "--root", str(session_root)])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("since", "until"),
+    [
+        pytest.param("not-a-time", "2026-01-02T03:05:00Z", id="unparseable_since"),
+        pytest.param("2026-01-02T03:04:00Z", "2026-01-02T03:05:00", id="naive_until"),
+    ],
+)
+def test_slice_bad_timestamp_usage_error(runner: CliRunner, session_root: Path, since: str, until: str) -> None:
+    result = runner.invoke(
+        cli, ["slice", "--session", "sess-1", "--since", since, "--until", until, "--root", str(session_root)]
+    )
+    assert result.exit_code == 2
+    assert "RFC 3339" in result.stderr
+
+
+def test_slice_unparseable_transcript_exits_two_with_empty_stdout(
+    runner: CliRunner, tmp_path: Path, python_backend: None
+) -> None:
+    root = tmp_path / "projects"
+    bad = root / "-Users-x-proj-a" / "sess-9.jsonl"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
+    result = runner.invoke(cli, ["slice", "--session", "sess-9", *WINDOW, "--root", str(root)])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
+def test_digest_generates_fixture_rows(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["digest"], input=orjson.dumps(DIGEST_CASES).decode())
+    assert result.exit_code == 0
+    assert orjson.loads(result.output) == [
+        case | {"digest": tool_digest(case["tool"], case["input"])} for case in DIGEST_CASES
+    ]
+
+
+def test_digest_check_verifies_and_catches_corruption(runner: CliRunner, tmp_path: Path) -> None:
+    fixture = tmp_path / "digest_fixtures.json"
+    fixture.write_text(runner.invoke(cli, ["digest"], input=orjson.dumps(DIGEST_CASES).decode()).output)
+    ok = runner.invoke(cli, ["digest", "--check", str(fixture)])
+    assert ok.exit_code == 0
+    assert ok.output == ""
+
+    rows = orjson.loads(fixture.read_bytes())
+    rows[1]["digest"] = "0" * 64
+    fixture.write_bytes(orjson.dumps(rows))
+    corrupted = runner.invoke(cli, ["digest", "--check", str(fixture)])
+    assert corrupted.exit_code == 1
+    assert corrupted.stderr == (
+        f"mismatch: Edit expected {'0' * 64}, computed {tool_digest('Edit', DIGEST_CASES[1]['input'])}\n"
+    )
+
+
+def test_digest_invalid_stdin_usage_error(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["digest"], input="not json")
+    assert result.exit_code == 2
+    assert "invalid JSON on stdin" in result.stderr

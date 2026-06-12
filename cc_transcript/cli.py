@@ -24,12 +24,14 @@ from cc_transcript.builders import (
     drop_synthetic,
     keep_only,
 )
-from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery
+from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery, find_transcript_sync
 from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, keep
+from cc_transcript.ids import SessionId, tool_digest
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
 from cc_transcript.render import (
     WHERE_ALL,
+    Budget,
     collect_stats,
     compact_line,
     display_path,
@@ -37,22 +39,26 @@ from cc_transcript.render import (
     haystack,
     human_size,
     render_stats,
+    render_tool_call,
     stats_dict,
     tool_names,
     transcript_header,
 )
+from cc_transcript.tools import file_path_of, parse_tool_call
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+    from typing import Any
 
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.filterspec import FilterSpec
-    from cc_transcript.models import ToolUseId, TranscriptEvent
+    from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
 
     type Row = tuple[int, TranscriptEvent]
 
 KINDS = get_args(EventKind)
 SHOW_CAP = 200
+SLICE_SCHEMA = "cc-transcript.slice/1"
 SIGNAL_SPEC = build_spec(
     keep_only("user", "assistant"),
     drop_junk("structural", "agent_injection", "command_echo"),
@@ -195,6 +201,34 @@ def compile_pattern(pattern: str, ignore_case: bool) -> re.Pattern[str]:
         return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as error:
         raise click.UsageError(f"invalid pattern: {error}") from error
+
+
+def parse_rfc3339(option: str, value: str) -> datetime:
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise click.UsageError(f"invalid {option} {value!r}; expected an RFC 3339 timestamp") from error
+    if stamp.tzinfo is None:
+        raise click.UsageError(f"invalid {option} {value!r}; RFC 3339 requires a UTC offset")
+    return stamp
+
+
+def ts_ms_of(stamp: datetime) -> int:
+    return round(stamp.timestamp() * 1000)
+
+
+def slice_line(meta: EntryMeta, block: ToolUseBlock) -> dict[str, Any]:
+    call = parse_tool_call(block.name, block.input, on_error="other")
+    return {
+        "schema": SLICE_SCHEMA,
+        "event_uuid": meta.uuid,
+        "tool_use_id": block.id,
+        "ts_ms": ts_ms_of(meta.timestamp),
+        "tool_name": block.name,
+        "tool_digest": block.digest,
+        "file_path": file_path_of(call),
+        "summary": render_tool_call(call, budget=Budget()),
+    }
 
 
 @click.group()
@@ -410,3 +444,65 @@ def stats(
         emit((orjson.dumps(stats_dict(collect_stats(transcripts))),))
     else:
         emit((render_stats(collect_stats(transcripts)),))
+
+
+@cli.command("slice")
+@click.option("--session", required=True, help="Claude session UUID.")
+@click.option("--since", required=True, help="Window start, RFC 3339 (inclusive).")
+@click.option("--until", required=True, help="Window end, RFC 3339 (exclusive).")
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=CLAUDE_PROJECTS_DIR,
+    help="Projects directory to search [default: ~/.claude/projects].",
+)
+def slice_(session: str, since: str, until: str, root: Path) -> None:
+    """Emit a session window's tool calls, one cc-transcript.slice/1 JSON line each."""
+    start, end = parse_rfc3339("--since", since), parse_rfc3339("--until", until)
+    if (path := find_transcript_sync(SessionId(session), root=root)) is None:
+        raise SystemExit(1)
+    if not (parsed := parse_transcripts([(path, path.stat().st_mtime)])):
+        raise SystemExit(2)
+    emit(
+        orjson.dumps(slice_line(event.meta, block))
+        for event in parsed[0].events
+        if isinstance(event, AssistantEvent) and start <= event.meta.timestamp < end
+        for block in event.blocks
+        if isinstance(block, ToolUseBlock)
+    )
+
+
+@cli.command()
+@click.option(
+    "--check",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Verify an existing fixture file instead of generating.",
+)
+def digest(check: Path | None) -> None:
+    """Generate the tool-digest fixture corpus from stdin, or verify one with --check."""
+    if check is not None:
+        mismatched = [
+            (row, actual)
+            for row in orjson.loads(check.read_bytes())
+            if (actual := tool_digest(row["tool"], row["input"])) != row["digest"]
+        ]
+        for row, actual in mismatched:
+            click.echo(f"mismatch: {row['tool']} expected {row['digest']}, computed {actual}", err=True)
+        if mismatched:
+            raise SystemExit(1)
+        return
+    try:
+        rows = orjson.loads(click.get_binary_stream("stdin").read())
+    except orjson.JSONDecodeError as error:
+        raise click.UsageError(f"invalid JSON on stdin: {error}") from error
+    emit(
+        (
+            orjson.dumps(
+                [
+                    {"tool": row["tool"], "input": row["input"], "digest": tool_digest(row["tool"], row["input"])}
+                    for row in rows
+                ],
+                option=orjson.OPT_INDENT_2,
+            ),
+        )
+    )
