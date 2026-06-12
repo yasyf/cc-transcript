@@ -5,7 +5,7 @@ description: "Detect user corrections — tool denials, plan rejections, interru
 
 When a user rejects a tool call, kills a plan, or interrupts mid-turn, the
 transcript records a correction — the most direct feedback a session produces.
-The mining domain, `cc_transcript.domains.mining`, turns those shapes into data.
+The mining layer, `cc_transcript.mining`, turns those shapes into data.
 Each **detector** walks a parsed event stream and yields `MiningSignal`s: neutral
 facts carrying the correction text, a calibrated confidence verdict, and
 evidence, but no policy. Your app decides what clears the bar, maps survivors to
@@ -16,7 +16,7 @@ fixture, detector, confidence, candidate, filter, verdict.
 
 When the user denies a tool call, Claude Code records an error tool result whose
 content starts with a fixed prefix; any reason the user typed is embedded between
-two fixed markers. The domain exports all three (`DENIAL_PREFIX`,
+two fixed markers. The module exports all three (`DENIAL_PREFIX`,
 `USER_SAID_MARKER`, `USER_SAID_TRAILER`), so the fixture composes a denial
 exactly as the app writes it — an assistant `Bash` call running
 `pip install requests`, rejected with "use uv, not pip":
@@ -25,7 +25,7 @@ exactly as the app writes it — an assistant `Bash` call running
 import json
 
 from cc_transcript import parse_events_from_bytes
-from cc_transcript.domains.mining import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.mining import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 
 
 def line(record):
@@ -62,7 +62,7 @@ not text.
 rejects, pulls the embedded "user said" text, and yields one signal per denial:
 
 ```{python}
-from cc_transcript.domains.mining import iter_tool_denial_signals
+from cc_transcript.mining import iter_tool_denial_signals
 
 [signal] = iter_tool_denial_signals(events)
 (signal.kind, signal.detector, signal.text, signal.trigger_index, signal.evidence)
@@ -103,7 +103,7 @@ filter on either. Our denial embeds a real correction, which is the strongest
 shape this detector produces:
 
 ```{python}
-from cc_transcript.domains.mining import NOISE_FLOOR, effective_confidence
+from cc_transcript.mining import NOISE_FLOOR, effective_confidence
 
 (signal.signal, effective_confidence(signal.signal) >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.75, reasons=('embedded_text', 'substantive'), durable=True), True)
@@ -145,53 +145,75 @@ the same pushback recorded under two transcript entries collapses to one row and
 the database stays idempotent across file moves:
 
 ```{python}
-from cc_transcript.domains.mining import dedup_key
+from cc_transcript.mining import dedup_key
 
 key = dedup_key("sess-1", signal.kind, signal.text)
 (key == dedup_key("sess-1", signal.kind, signal.text), len(key))
 # -> (True, 64)
 ```
 
-`build_snapshot` captures the conversational window around the feedback: the
-turns before, the trigger (the assistant action being corrected, its tool calls
-summarized to what they actually did), and the turns after. Together they fill a
-candidate:
+`capture_window` captures the conversational window around the feedback as a
+`ContextWindow` — refs, not prose. Lift the events into a `SessionActivity`,
+anchor on the signal's event with an `EventRef`, and capture: each turn becomes
+a `TurnRef` carrying resolvable references back into the transcript plus a
+preview rendered now, at an explicit budget. Together the key, the window, and
+the anchor fill a candidate:
 
 ```{python}
-from cc_transcript.domains.mining import FeedbackCandidate, build_snapshot
+from cc_transcript import EventRef, SessionActivity, capture_window
+from cc_transcript.mining import FeedbackCandidate
 
-snapshot = build_snapshot(events, signal.event_index)
+activity = SessionActivity.from_events(signal.session_id, events)
+anchor = EventRef(signal.session_id, signal.event_uuid)
+window = capture_window(activity, anchor)
 candidate = FeedbackCandidate(
     dedup_key=key,
     source_kind=signal.kind,
     occurred_at=signal.occurred_at,
     text=signal.text,
-    context=snapshot,
+    window=window,
+    ref=anchor,
     session_id=signal.session_id,
-    origin_uuid=signal.event_uuid,
     cc_version=signal.cc_version,
     payload={"detector": signal.detector, **signal.evidence},
     signal=signal.signal,
 )
-(snapshot.trigger.role, snapshot.trigger.tool_calls, snapshot.trigger.tool_inputs)
-# -> ('assistant', ('Bash',), ('pip install requests',))
+(window.fidelity, window.trigger.role, window.trigger.preview)
+# -> ('full', 'assistant', 'pip install requests')
 ```
 
-The trigger keeps the `pip install requests` command itself — when a judge later
-reads this candidate, it sees what the assistant did, not just that the user
-objected.
+The trigger preview keeps the `pip install requests` command itself — when a
+judge later reads this candidate, it sees what the assistant did, not just that
+the user objected. But the preview is the fallback, not the record. The window's
+refs point back into the transcript, so while it lives, `hydrate` resolves them
+to real turns for full-fidelity rendering — and returns `None`, never raises,
+once the transcript is gone:
+
+```{python}
+from cc_transcript import Budget
+
+hydrated = await window.hydrate()
+(hydrated, window.render_preview(budget=Budget()))
+# -> (None, 'pip install requests')
+```
+
+This fixture session was never on disk, so hydration degrades and
+`render_preview` serves the persisted previews. A window persisted past its
+transcript's lifetime carries summary fidelity, and its preview then leads with
+the `[summary fidelity — transcript unavailable]` label — consumers always know
+which fidelity they are reading.
 
 ## Filter candidates
 
-Which candidates survive is policy, and the domain expresses it the same way the
-event layer does: as data. `CandidateFilterSpec` is the candidate-level companion
+Which candidates survive is policy, and the mining layer expresses it the same
+way the event layer does: as data. `CandidateFilterSpec` is the candidate-level companion
 to the event-level `FilterSpec` from [Filtering events](01-filtering-events.qmd),
 with one twist — every clause must hold for a candidate to pass. Map the noisy
 signal from earlier into a candidate too, then keep only confident
 interrupt-rejections:
 
 ```{python}
-from cc_transcript.domains.mining import (
+from cc_transcript.mining import (
     INTERRUPT_REJECTION,
     apply_candidate_filter,
     at_least,
@@ -204,7 +226,10 @@ noisy = FeedbackCandidate(
     source_kind=structural.kind,
     occurred_at=structural.occurred_at,
     text=structural.text,
-    context=build_snapshot(followup_events, structural.event_index),
+    window=capture_window(
+        SessionActivity.from_events(structural.session_id, followup_events),
+        EventRef(structural.session_id, structural.event_uuid),
+    ),
     signal=structural.signal,
 )
 
@@ -231,7 +256,7 @@ with `category`, `summary`, `confidence`, `rationale`, and `accepted` (the
 ```{python}
 from dataclasses import dataclass
 
-from cc_transcript.domains.mining import run_verdicts
+from cc_transcript.judge import run_verdicts
 
 
 @dataclass(frozen=True)
@@ -267,11 +292,14 @@ judged, failed = await run_verdicts(rows, prompt_for, stub_judge, persist, concu
 # -> (2, 0, True, False)
 ```
 
-In production the judge is `structured_judge` from
-`cc_transcript.domains.mining.llm` (it loads its model client lazily), rows come
-from `VerdictStoreMixin.unjudged`, and `persist` is `record_verdict` — keyed by
-`(dedup_key, role, prompt_version, model)`, so re-running a pass judges only new
-rows. Evaluating the judge itself is mechanical too: `sample_audit` draws a
+In production the judge is `structured_judge` from `cc_transcript.judge` (it
+loads its model client lazily), rows come from `VerdictStoreMixin.unjudged`, and
+`persist` is `record_verdict` — keyed by `(dedup_key, role, prompt_version,
+model)`, so re-running a pass judges only new rows. Verdicts are fidelity-aware:
+each records whether its context window rendered at full fidelity or from
+summary previews, `unjudged(refresh_summary=True)` re-yields summary-fidelity
+rows once their windows hydrate again, and a full-fidelity re-judge replaces the
+summary verdict. Evaluating the judge itself is mechanical too: `sample_audit` draws a
 seeded, stratified audit sample over judged rows (a uniform core for headline
 numbers, a low-confidence oversample for diagnosis), and `Metrics` folds the
 audit into precision, contamination with its exact Clopper-Pearson upper bound,
@@ -284,7 +312,7 @@ a no-op. It is async SQLite, so it stays out of this page's cells:
 ```python
 from pathlib import Path
 
-from cc_transcript.domains.mining import FeedbackStore
+from cc_transcript.mining import FeedbackStore
 
 async with await FeedbackStore.open(Path("feedback.db")) as store:
     inserted = await store.record_file_scan(str(path), mtime, [candidate])
@@ -293,7 +321,7 @@ async with await FeedbackStore.open(Path("feedback.db")) as store:
 
 ## Next steps
 
-The shape of this domain matches the rest of the library: the core ships
+The shape of this layer matches the rest of the platform: the core ships
 detectors, calibration, and storage; the floor, the kinds, and the judge prompts
 are yours. For how to lay that policy out as a module, see
 [Compose your own policy](04-compose-your-own-policy.qmd); for every exported

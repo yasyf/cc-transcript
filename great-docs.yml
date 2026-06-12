@@ -23,7 +23,7 @@ keyboard_nav: true
 
 hero:
   name: cc-transcript
-  tagline: "Non-lossy typed events for Claude Code transcripts: a superset JSONL parser with a Rust fast path, sentiment and feedback-mining domains, and a transcript-investigation CLI."
+  tagline: "The cc-family session-activity platform: non-lossy typed events with a Rust fast path, lifted into turns, tool calls, and edits — durable context windows, feedback mining and judging, and a transcript-investigation CLI on one spine."
 
 # Narrative doc sections live alongside the curated API reference: Getting Started
 # is a single landing page (docs/getting-started/index.qmd); Guides is a numbered
@@ -37,7 +37,7 @@ sections:
     navbar_after: Getting Started
     index: true
 
-# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats).
+# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats/slice/digest).
 cli:
   enabled: true
   module: cc_transcript.cli
@@ -50,9 +50,18 @@ authors:
     email: yasyfm@gmail.com
 
 # Curated symbol reference (public API only). Replaces dynamic discovery
-# wholesale, which keeps internal helpers and the deprecated
-# cc_transcript.sentiment shim out of the rendered reference.
+# wholesale, which keeps internal helpers out of the rendered reference.
 reference:
+  - title: Identity & digests
+    desc: Branded ids, the universal EventRef handle, and the cross-language tool digest.
+    contents:
+      - SessionId
+      - EventUuid
+      - ToolUseId
+      - ToolDigest
+      - EventRef
+      - canonical_json
+      - tool_digest
   - title: Events & parsing
     desc: The typed superset event model and the parsers that produce it.
     contents:
@@ -68,21 +77,56 @@ reference:
       - ToolUseBlock
       - ToolResultBlock
       - EntryMeta
-      - EventUuid
-      - SessionId
-      - ToolUseId
       - CcVersion
       - parse_event
       - parse_events_from_bytes
       - parse_events_async
       - TranscriptParser
+  - title: Tool calls
+    desc: One typed tool-call hierarchy shared by hook runtimes and the parser.
+    contents:
+      - ToolCall
+      - ToolCallBase
+      - parse_tool_call
+      - ToolInputError
+      - BashCall
+      - ReadCall
+      - WriteCall
+      - EditCall
+      - MultiEditCall
+      - NotebookEditCall
+      - GlobCall
+      - GrepCall
+      - ExitPlanModeCall
+      - SkillCall
+      - TaskCall
+      - TaskCreateCall
+      - TaskUpdateCall
+      - OtherCall
+      - EditSpan
+      - Hunk
+      - hunks_of
+      - file_path_of
+      - TOOL_ALIASES
+      - expand_tool_names
+      - tool_name_matches
+  - title: Session activity
+    desc: The spine — transcripts lifted into turns, tool uses, and first-class edits.
+    contents:
+      - SessionActivity
+      - Turn
+      - ToolUse
+      - Edit
+      - UserClassifier
+      - native_user_classifier
+      - hunk_overlap
   - title: Messages
     desc: The distilled message projection over events.
     contents:
       - BaseMessage
       - UserMessage
       - AssistantMessage
-      - ToolCall
+      - MessageToolCall
       - TranscriptMessage
   - title: Discovery & ingestion state
     desc: Finding transcripts on disk and tracking what has been ingested.
@@ -133,7 +177,55 @@ reference:
       - INTERRUPT_MARKER_RE
       - STOP_HOOK_RE
       - JUNK_USER_MESSAGE_RE
-  - title: Sentiment domain
+  - title: Context windows
+    desc: Refs-not-prose context — persisted EventRefs plus previews that hydrate back to full fidelity.
+    contents:
+      - ContextWindow
+      - HydratedWindow
+      - TurnRef
+      - capture_window
+      - SchemaError
+  - title: Rendering
+    desc: The one renderer — budget-bounded turns, tool calls, and sessions; truncation happens only here.
+    contents:
+      - Budget
+      - render_tool_call
+      - render_turn
+      - render_session
+  - title: Evidence
+    desc: Incorrect-edit and correction harvest, with a read-only git pickaxe fallback.
+    contents:
+      - harvest_pairs
+      - match_corrections
+      - git_corrections
+      - CandidatePair
+      - GitFix
+      - EXTRACTOR_VERSION
+  - title: Query
+    desc: The transcript query surface — sessions, tool-call queries, file refs, and subagent recursion.
+    contents:
+      - Session
+      - ToolCallQuery
+      - FileRef
+      - SubagentSession
+      - SubagentIndex
+  - title: Decisions
+    desc: The unified decision ledger, joined to tool calls by content digest.
+    contents:
+      - DecisionLog
+      - Decision
+      - Action
+      - DECISIONS_DDL
+  - title: Disk truth
+    desc: Typed reader for cc-review's session-activity export.
+    contents:
+      - DiskTruth
+      - TreeTurn
+      - FileAttribution
+      - AttributionRange
+      - load_export
+      - export_activity
+  - title: Sentiment
     desc: Conversation buckets and a composable score spec around any inference engine.
     contents:
       - sentiment.ConversationBucket
@@ -153,7 +245,7 @@ reference:
       - sentiment.clamp_resume
       - sentiment.demote_mild_irritation
       - sentiment.Lexicon
-  - title: Mining domain
+  - title: Mining
     desc: Feedback detectors, confidence calibration, candidate filtering, and the feedback store.
     contents:
       - mining.MiningSignal

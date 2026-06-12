@@ -7,8 +7,11 @@ Transcripts are big. A few days of sessions under `~/.claude/projects` is tens
 of megabytes of JSONL, and the answer to a typical question about them — which
 prompt kicked off yesterday's refactor, where a tool call failed — lives in a
 few hundred bytes of it. The CLI is the investigation layer for that gap: four
-commands that narrow from "every transcript on disk" to "these five events", so
-neither you nor an agent reading the output ever pages raw JSONL.
+investigation commands that narrow from "every transcript on disk" to "these
+five events", so neither you nor an agent reading the output ever pages raw
+JSONL. The CLI's other two verbs serve programs rather than people — `slice`
+emits the per-tool-call JSONL bridge cc-review consumes, `digest` checks the
+cross-language digest fixture contract — and this page leaves them alone.
 
 Real usage is `uvx cc-transcript …` — no install step, nothing to import. The
 executed cells on this page call the same entry point in-process, via
@@ -243,7 +246,7 @@ you need to correlate with other tooling.
 
 ## The funnel
 
-The four commands compose into one discipline — spend tokens in proportion to
+The four investigation commands compose into one discipline — spend tokens in proportion to
 how sure you are:
 
 1. `list --project …` — find the right file by recency and name.
