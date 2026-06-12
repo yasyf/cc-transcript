@@ -20,7 +20,7 @@ from cc_transcript.discovery import TranscriptDiscovery, TranscriptExpiredError,
 from cc_transcript.ids import EventRef
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
-from cc_transcript.tools import file_path_of, hunks_of
+from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -299,7 +299,7 @@ def lift_turn(
         tool_uses=tuple(
             ToolUse(
                 ref=EventRef(session_id, event.meta.uuid, block.id),
-                call=block.call,
+                call=parse_tool_call(block.name, block.input, on_error="other"),
                 result=results.get(block.id),
                 turn_index=index,
                 ts=event.meta.timestamp,
