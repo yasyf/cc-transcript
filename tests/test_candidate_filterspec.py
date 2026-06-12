@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 
 from cc_transcript.context import ContextWindow
+from cc_transcript.ids import EventRef, EventUuid, SessionId
 from cc_transcript.mining import (
-    HIGH,
     MEDIUM,
     NOISE_FLOOR,
     PLAN_REVIEW,
@@ -37,8 +37,13 @@ from cc_transcript.mining.filterspec import (
 )
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-EMPTY_WINDOW = ContextWindow(
-    anchor=None, before=(), trigger=None, after=(), fidelity="summary", preview_chars=200, origin="migrated"
+WINDOW = ContextWindow(
+    anchor=EventRef(SessionId("sess"), EventUuid("u1")),
+    before=(),
+    trigger=None,
+    after=(),
+    fidelity="summary",
+    preview_chars=200,
 )
 
 
@@ -46,14 +51,15 @@ def candidate(
     text: str = "feedback",
     *,
     kind: SourceKind = TRANSCRIPT_MESSAGE,
-    signal: CandidateSignal | None = None,
+    signal: CandidateSignal = firm(),
 ) -> FeedbackCandidate:
     return FeedbackCandidate(
         dedup_key=dedup_key("sess", kind, text),
         source_kind=kind,
         occurred_at=BASE,
         text=text,
-        window=EMPTY_WINDOW,
+        window=WINDOW,
+        ref=WINDOW.anchor,
         signal=signal,
     )
 
@@ -65,11 +71,9 @@ def candidate(
         pytest.param(weak("bare_marker"), MEDIUM, False, id="weak_fails_medium_floor"),
         pytest.param(weak("bare_marker"), NOISE_FLOOR, True, id="weak_sits_exactly_on_noise_floor"),
         pytest.param(noise("structural_only"), NOISE_FLOOR, False, id="noise_falls_below_noise_floor"),
-        pytest.param(None, MEDIUM, True, id="legacy_none_signal_decodes_to_medium"),
-        pytest.param(None, HIGH, False, id="legacy_none_signal_fails_high_floor"),
     ],
 )
-def test_confidence_at_least(signal: CandidateSignal | None, floor: Confidence, kept: bool) -> None:
+def test_confidence_at_least(signal: CandidateSignal, floor: Confidence, kept: bool) -> None:
     spec = build_candidate_filter(CandidateClause(ConfidenceAtLeast(floor)))
     assert keep_candidate(candidate(signal=signal), spec) is kept
 
@@ -86,10 +90,9 @@ def test_source_kind_in() -> None:
     [
         pytest.param(strong("embedded_text", "substantive"), "substantive", True, id="reason_present"),
         pytest.param(strong("embedded_text"), "hedged", False, id="reason_absent"),
-        pytest.param(None, "substantive", False, id="no_signal_has_no_reasons"),
     ],
 )
-def test_has_reason(signal: CandidateSignal | None, reason: str, kept: bool) -> None:
+def test_has_reason(signal: CandidateSignal, reason: str, kept: bool) -> None:
     spec = build_candidate_filter(CandidateClause(HasReason(reason)))
     assert keep_candidate(candidate(signal=signal), spec) is kept
 
@@ -100,11 +103,9 @@ def test_has_reason(signal: CandidateSignal | None, reason: str, kept: bool) -> 
         pytest.param(weak("bare_marker", durable=False), False, True, id="ephemeral_matches_want_false"),
         pytest.param(weak("bare_marker", durable=False), True, False, id="ephemeral_fails_want_true"),
         pytest.param(strong("substantive"), True, True, id="durable_matches_want_true"),
-        pytest.param(None, True, True, id="no_signal_defaults_durable"),
-        pytest.param(None, False, False, id="no_signal_fails_want_false"),
     ],
 )
-def test_is_durable(signal: CandidateSignal | None, want: bool, kept: bool) -> None:
+def test_is_durable(signal: CandidateSignal, want: bool, kept: bool) -> None:
     spec = build_candidate_filter(CandidateClause(IsDurable(want)))
     assert keep_candidate(candidate(signal=signal), spec) is kept
 

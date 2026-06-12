@@ -49,8 +49,7 @@ clean = list(apply_spec(events, spec))
 ```
 
 `NOISE_SPEC` is a ready-made spec for the universal structural noise (system reminders,
-local-command output, skill banners). For flag-style filtering, `FilterConfig` is also
-available — every rule is off by default, so a bare `FilterConfig()` passes everything through.
+local-command output, skill banners).
 
 ## The CLI
 
@@ -122,7 +121,7 @@ The plugin's skill teaches Claude to answer questions about its own history — 
 ## What problems does this solve?
 
 - **One faithful parse.** Anything reading Claude Code transcripts re-implements the same JSONL quirks (str-or-list content, tool results nested two ways, envelope-less mode markers). This is that parser, written once and typed strictly.
-- **Non-lossy by design.** The event model is a superset: sidechains, `<synthetic>` turns, thinking blocks, and unrecognized entry types all survive parsing. You decide what to drop, via composable filter specs (`build_spec`) or `FilterConfig`.
+- **Non-lossy by design.** The event model is a superset: sidechains, `<synthetic>` turns, thinking blocks, and unrecognized entry types all survive parsing. You decide what to drop, via composable filter specs (`build_spec`).
 - **Incremental ingestion.** `FileStateStore` tracks per-file mtimes in SQLite (WAL, safe across concurrent tasks) so re-runs only reparse changed files, and you compose your own writes in the same transaction.
 - **Two engines, one contract.** A single `Backend` protocol with two implementations: `RustBackend` (PyO3 + rayon) is the default fast path, and `PythonBackend` is the readable reference — parity-asserted against each other. Filter specs are portable, so a spec built in Python runs Rust-side without giving up the fast path.
 - **One activity spine.** `SessionActivity` lifts parsed events into turns, typed tool calls, and first-class edits; `ContextWindow` persists `EventRef`s plus labeled previews and hydrates back to full fidelity while the transcript lives; rendering is `Budget`-bounded in exactly one place.

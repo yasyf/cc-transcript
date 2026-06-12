@@ -25,7 +25,6 @@ from cc_transcript.mining.confidence import (
     VERY_HIGH,
     CandidateSignal,
     Confidence,
-    effective_confidence,
     firm,
     noise,
     strong,

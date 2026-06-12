@@ -128,10 +128,10 @@ EXPORTS: dict[str, str] = {
             "export_activity",
             "load_export",
         ),
-        "cc_transcript.filters": ("JUNK_USER_MESSAGE_RE", "FilterConfig", "apply_filters"),
         "cc_transcript.filterspec": (
             "ASSISTANTS",
             "INTERRUPT_MARKER_RE",
+            "JUNK_USER_MESSAGE_RE",
             "RESUME_PHRASE_SET",
             "STOP_HOOK_RE",
             "STRUCTURAL_NOISE_RE",
@@ -339,20 +339,14 @@ if TYPE_CHECKING:
     from cc_transcript.evidence import (
         record_harvest as record_harvest,
     )
-    from cc_transcript.filters import (
-        JUNK_USER_MESSAGE_RE as JUNK_USER_MESSAGE_RE,
-    )
-    from cc_transcript.filters import (
-        FilterConfig as FilterConfig,
-    )
-    from cc_transcript.filters import (
-        apply_filters as apply_filters,
-    )
     from cc_transcript.filterspec import (
         ASSISTANTS as ASSISTANTS,
     )
     from cc_transcript.filterspec import (
         INTERRUPT_MARKER_RE as INTERRUPT_MARKER_RE,
+    )
+    from cc_transcript.filterspec import (
+        JUNK_USER_MESSAGE_RE as JUNK_USER_MESSAGE_RE,
     )
     from cc_transcript.filterspec import (
         RESUME_PHRASE_SET as RESUME_PHRASE_SET,

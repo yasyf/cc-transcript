@@ -24,11 +24,10 @@ if TYPE_CHECKING:
 
     from cc_transcript.activity import Turn
 
-SCHEMA = "cc-transcript.context/1"
+SCHEMA = "cc-transcript.context/2"
 SUMMARY_LABEL = "[summary fidelity — transcript unavailable]"
 
 type Fidelity = Literal["full", "summary"]
-type Origin = Literal["live", "migrated"]
 type Role = Literal["user", "assistant"]
 
 
@@ -43,8 +42,7 @@ class TurnRef:
     Attributes:
         role: Whether a user prompt opened the turn or it is assistant-only
             preamble.
-        refs: References to the turn's events; may be ``()`` for migrated
-            legacy rows.
+        refs: References to the turn's events.
         preview: The turn rendered at capture time, at the preview budget.
         tool_digests: Content digests of the turn's tool calls, in order.
     """
@@ -60,16 +58,14 @@ class ContextWindow:
     """The turns around an anchor event, persisted as refs plus previews.
 
     Attributes:
-        anchor: The event the window centers on; None for migrated legacy
-            rows, which can never hydrate.
+        anchor: The event the window centers on.
         before: Turns preceding the anchor's turn, oldest first.
-        trigger: The anchor's own turn.
+        trigger: The anchor's own turn; None for rows converted from pre-2.0
+            stores that recorded no trigger turn.
         after: Turns following the anchor's turn, oldest first.
         fidelity: ``'full'`` while the transcript backs the window;
             ``'summary'`` once only the previews remain.
         preview_chars: The preview budget the window was captured at.
-        origin: ``'live'`` for captured windows, ``'migrated'`` for rows
-            converted from legacy stores.
 
     Example:
         >>> window = capture_window(activity, anchor)
@@ -77,13 +73,12 @@ class ContextWindow:
         >>> text = hydrated.render(budget=Budget()) if hydrated else window.render_preview(budget=Budget())
     """
 
-    anchor: EventRef | None
+    anchor: EventRef
     before: tuple[TurnRef, ...]
     trigger: TurnRef | None
     after: tuple[TurnRef, ...]
     fidelity: Fidelity
     preview_chars: int
-    origin: Origin
 
     def render_preview(self, *, budget: Budget) -> str:
         """Render the persisted previews, never touching the transcript.
@@ -102,12 +97,10 @@ class ContextWindow:
         """Resolve every ref back to real turns for full-fidelity rendering.
 
         Returns:
-            None when the anchor is absent, the transcript has expired, or
-            any ref was compacted away — callers fall back to
-            :meth:`render_preview`, never hydrate-or-fail.
+            None when the transcript has expired or any ref was compacted
+            away — callers fall back to :meth:`render_preview`, never
+            hydrate-or-fail.
         """
-        if self.anchor is None:
-            return None
         try:
             activity = await SessionActivity.from_session(self.anchor.session_id)
         except TranscriptExpiredError:
@@ -121,17 +114,16 @@ class ContextWindow:
         return HydratedWindow(window=self, turns=tuple(turns))
 
     def to_json(self) -> str:
-        """Serialize to the ``cc-transcript.context/1`` wire schema, byte-stably."""
+        """Serialize to the ``cc-transcript.context/2`` wire schema, byte-stably."""
         return json.dumps(
             {
                 "schema": SCHEMA,
-                "anchor": None if self.anchor is None else ref_payload(self.anchor),
+                "anchor": ref_payload(self.anchor),
                 "before": [turn_ref_payload(ref) for ref in self.before],
                 "trigger": None if self.trigger is None else turn_ref_payload(self.trigger),
                 "after": [turn_ref_payload(ref) for ref in self.after],
                 "fidelity": self.fidelity,
                 "preview_chars": self.preview_chars,
-                "origin": self.origin,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -144,19 +136,18 @@ class ContextWindow:
 
         Raises:
             SchemaError: When ``data`` does not carry the literal
-                ``cc-transcript.context/1`` schema.
+                ``cc-transcript.context/2`` schema.
         """
         payload = json.loads(data)
         if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
             raise SchemaError(f"expected schema {SCHEMA!r}, got: {data[:120]}")
         return cls(
-            anchor=None if payload["anchor"] is None else ref_from(payload["anchor"]),
+            anchor=ref_from(payload["anchor"]),
             before=tuple(turn_ref_from(item) for item in payload["before"]),
             trigger=None if payload["trigger"] is None else turn_ref_from(payload["trigger"]),
             after=tuple(turn_ref_from(item) for item in payload["after"]),
             fidelity=payload["fidelity"],
             preview_chars=payload["preview_chars"],
-            origin=payload["origin"],
         )
 
 
@@ -213,7 +204,6 @@ def capture_window(
         after=tuple(turn_ref(turn, budget) for turn in activity.turns[trigger.index + 1 : trigger.index + 1 + after]),
         fidelity="full",
         preview_chars=preview_chars,
-        origin="live",
     )
 
 

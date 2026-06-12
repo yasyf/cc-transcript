@@ -50,16 +50,15 @@ def now() -> str:
 
 def event_row(candidate: FeedbackCandidate, ingested_at: str) -> tuple[object, ...]:
     payload = dict(candidate.payload or {})
-    if candidate.signal is not None:
-        payload["signal"] = to_payload(candidate.signal)
+    payload["signal"] = to_payload(candidate.signal)
     return (
         candidate.dedup_key,
         candidate.source_kind,
         candidate.session_id,
-        candidate.ref.event_uuid if candidate.ref is not None else None,
+        candidate.ref.event_uuid,
         candidate.occurred_at.isoformat(),
         candidate.text,
-        json.dumps(payload) if payload else None,
+        json.dumps(payload),
         candidate.window.to_json(),
         candidate.cc_version,
         ingested_at,

@@ -12,8 +12,7 @@ Every signal carries a calibrated :class:`CandidateSignal` spanning the full
 confidence band: arithmetic bumps and demotions over the anchors, with named
 reason codes (``trigger_proximate``, ``short_followup``, ``substantive``,
 ``hedged``, ``embedded_text``, ``bare_marker``, ``structural_only``) so apps can
-filter on :func:`~cc_transcript.mining.confidence.effective_confidence`
-and reasons instead of re-deriving them.
+filter on the signal's confidence and reasons instead of re-deriving them.
 """
 
 from __future__ import annotations
@@ -71,9 +70,9 @@ class MiningSignal:
         cc_version: The Claude Code version recorded for the origin.
         trigger_index: The nearest preceding assistant index, or None — a hint the
             app may use; absence never disqualifies the fact here.
+        signal: The de-noising confidence signal; apps re-derive as needed.
         lower_bound: A context anchor, such as the plan-reentry edit index.
         evidence: Detector-specific metadata preserved verbatim.
-        signal: The de-noising confidence signal; apps re-derive as needed.
     """
 
     kind: SourceKind
@@ -85,9 +84,9 @@ class MiningSignal:
     text: str
     cc_version: CcVersion | None
     trigger_index: int | None
+    signal: CandidateSignal
     lower_bound: int | None = None
     evidence: Mapping[str, Any] = field(default_factory=dict)
-    signal: CandidateSignal | None = None
 
 
 class ScoredText(NamedTuple):

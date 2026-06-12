@@ -512,3 +512,4 @@ def predicate_to_dict(predicate: Predicate) -> dict[str, Any]:
 STRUCTURAL_NOISE_RE = compile_groups(STRUCTURAL_NOISE_GROUPS, True)
 INTERRUPT_MARKER_RE = compile_groups(INTERRUPT_MARKER_GROUPS, True)
 STOP_HOOK_RE = compile_groups(STOP_HOOK_GROUPS, True)
+JUNK_USER_MESSAGE_RE = compile_groups(SENTIMENT_JUNK_GROUPS, True)

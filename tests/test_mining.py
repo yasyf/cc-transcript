@@ -30,7 +30,6 @@ from cc_transcript.mining import (
     ReviewFormat,
     Stats,
     dedup_key,
-    effective_confidence,
     iter_interrupt_marker_signals,
     iter_plan_reentry_signals,
     iter_plan_rejection_signals,
@@ -115,7 +114,7 @@ def test_capture_window_wraps_turns_around_the_feedback_anchor() -> None:
     window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"))
     assert isinstance(window, ContextWindow)
     assert window.anchor == anchor("u1")
-    assert (window.fidelity, window.origin) == ("full", "live")
+    assert window.fidelity == "full"
     assert [ref.preview for ref in window.before] == ["user: first ask\nassistant: working on it"]
     assert window.trigger is not None
     assert window.trigger.preview == "user: the feedback\nassistant: fixed"
@@ -209,7 +208,7 @@ def test_user_message_confidence_calibration(events: list[object], expected: Can
 
 def test_structural_user_message_scores_below_noise_floor() -> None:
     signals = list(iter_user_message_signals([user("u0", "<system-reminder>compacted</system-reminder>")]))
-    assert effective_confidence(signals[0].signal) < NOISE_FLOOR
+    assert signals[0].signal.confidence < NOISE_FLOOR
 
 
 def test_iter_tool_denial_signals_extracts_embedded_text() -> None:
@@ -359,7 +358,7 @@ def test_iter_interrupt_marker_signals_structural_only_correction_is_noise() -> 
     assert len(signals) == 1
     assert signals[0].text == "<system-reminder>session resumed</system-reminder>"
     assert signals[0].signal == noise("structural_only")
-    assert effective_confidence(signals[0].signal) < NOISE_FLOOR
+    assert signals[0].signal.confidence < NOISE_FLOOR
 
 
 def test_iter_review_comment_signals_with_injected_format() -> None:

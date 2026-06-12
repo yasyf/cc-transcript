@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0]
+
+The cruft purge: every backwards-compatibility affordance left after the 2.0
+platform release is gone. Breaking throughout — consumers move in lockstep.
+
+### Removed
+- `FilterConfig`, `apply_filters`, and the `cc_transcript.filters` module —
+  compose a `FilterSpec` with `build_spec` and apply it with `apply_spec`.
+  `JUNK_USER_MESSAGE_RE` now lives in `cc_transcript.filterspec`.
+- The `[lexicon]` extra alias for the pre-0.6 extra name — install
+  `cc-transcript[sentiment]`.
+- `effective_confidence` and the `None`-signal fallback in **mining**:
+  `FeedbackCandidate.signal`, `FeedbackCandidate.ref`, and
+  `MiningSignal.signal` are required; `from_payload` requires a payload.
+- The window-model migration affordance: `ContextWindow.origin` is gone and
+  `anchor` is required (`trigger` stays optional — converted pre-2.0 rows may
+  genuinely lack a trigger turn).
+- The vendored legacy parity tests (monolithic junk regex, hand-written spec
+  presets) — the refactors they pinned shipped releases ago.
+
+### Changed
+- Context wire schema bumped to `cc-transcript.context/2` (no `origin` key);
+  `/1` documents raise `SchemaError`. Convert stores in place with
+  `scripts/migrate_context_v2.py`; stores predating cc-pushback's
+  `migrate-corpus` must run that first.
+
 ## [2.0.0]
 
 The greenfield platform release: cc-transcript becomes the cc-family's

@@ -1,6 +1,6 @@
 # cc-transcript Development Guide
 
-Typed events for Claude Code transcripts: discovery, a superset JSONL parser — a Rust fast path and a Python reference behind one `Backend` protocol — ingestion-state tracking, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
+Typed events for Claude Code transcripts: discovery, a superset JSONL parser — a Rust fast path and a Python reference behind one `Backend` protocol — session-activity queries, durable context windows, mining/judging/sentiment domain tiers, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
 
 ## Repository Structure
 
@@ -8,6 +8,7 @@ Typed events for Claude Code transcripts: discovery, a superset JSONL parser —
 cc-transcript/
 ├── cc_transcript/      # The package
 │   ├── models.py       # Typed superset event model (the central contract)
+│   ├── ids.py          # Identity primitives shared by every layer of the platform
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
 │   ├── backend.py      # Backend protocol + ParsedTranscript
 │   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
@@ -15,14 +16,23 @@ cc-transcript/
 │   ├── messages.py     # Distilled message projection (User/Assistant/ToolCall)
 │   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters
 │   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
-│   ├── filters.py      # Opt-in consumer-side event filtering
+│   ├── activity.py     # Session activity lifted from parsed transcript events
+│   ├── query.py        # Session-level queries over lifted activity
+│   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
+│   ├── evidence.py     # Evidence harvest around a feedback anchor
+│   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
+│   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
+│   ├── tools.py        # The single typed tool-call hierarchy
 │   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
-│   ├── render.py       # Pure formatting for the CLI — compact lines + stats
-│   ├── domains/        # Domain tiers: sentiment scoring + feedback mining
-│   └── store.py        # FileStateStore — SQLite ingestion-state tracking
+│   ├── render.py       # The one renderer — every cut happens here, under a Budget
+│   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
+│   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
+│   ├── judge/          # LLM verdict passes over mined feedback
+│   └── sentiment/      # Sentiment domain: conversation buckets + composable score spec
 ├── rust/               # Rust extension (cc_transcript._parser_rs)
 ├── tests/              # Pytest suite
 ├── docs/               # Great Docs site: guides + curated API reference
+├── scripts/            # Maintenance scripts: lexicon data build, store conversion
 ├── .claude-plugin/     # Claude Code plugin + marketplace manifests
 ├── skills/             # cc-transcript-investigate skill (CLI-driven transcript investigation)
 ├── .github/            # CI, docs, and PyPI release workflows
