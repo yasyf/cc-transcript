@@ -15,12 +15,17 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from cc_transcript.activity import hunk_overlap
+from cc_transcript.corrections import Correction
+from cc_transcript.ids import tool_digest
+from cc_transcript.models import AssistantEvent, ToolUseBlock
 from cc_transcript.tools import Hunk
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from cc_transcript.activity import Edit, SessionActivity
+    from cc_transcript.corrections import CorrectionLog, Origin
     from cc_transcript.ids import EventRef
 
 EXTRACTOR_VERSION = 1
@@ -194,6 +199,94 @@ def run_git(repo: Path, *args: str) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.stdout if proc.returncode == 0 else None
+
+
+def record_harvest(
+    log: CorrectionLog,
+    activity: SessionActivity,
+    anchor: EventRef,
+    pairs: Sequence[CandidatePair],
+    *,
+    source: str,
+    extractor_version: int = EXTRACTOR_VERSION,
+) -> int:
+    """Records ``pairs`` harvested around ``anchor`` into the shared ledger.
+
+    Lowers each :class:`CandidatePair` to a :class:`~cc_transcript.corrections.Correction`
+    — resolving the incorrect edit's raw tool call to the cross-language
+    ``incorrect_digest`` — and appends it. Idempotent: re-recording the same
+    harvest writes nothing new.
+
+    Returns:
+        The number of corrections appended this call.
+    """
+    rows = [
+        correction
+        for pair in pairs
+        if (correction := lower_pair(activity, anchor, pair, source=source, extractor_version=extractor_version))
+    ]
+    for row in rows:
+        log.append(row)
+    return len(rows)
+
+
+def lower_pair(
+    activity: SessionActivity, anchor: EventRef, pair: CandidatePair, *, source: str, extractor_version: int
+) -> Correction | None:
+    if (block := incorrect_block(activity, pair.incorrect)) is None:
+        return None
+    incorrect_old, incorrect_new = joined_hunks(pair.incorrect.hunks)
+    origin, correction_file, correction_old, correction_new, commit = correction_columns(pair.correction)
+    return Correction(
+        ts_ms=int(pair.incorrect.ts.timestamp() * 1000),
+        session_id=anchor.session_id,
+        source=source,
+        anchor_uuid=anchor.event_uuid,
+        incorrect_digest=tool_digest(block.name, block.input),
+        incorrect_file=pair.incorrect.file_path,
+        incorrect_old=incorrect_old,
+        incorrect_new=incorrect_new,
+        extractor_version=extractor_version,
+        correction_origin=origin,
+        correction_file=correction_file,
+        correction_old=correction_old,
+        correction_new=correction_new,
+        correction_commit=commit,
+        overlap=pair.overlap,
+    )
+
+
+def incorrect_block(activity: SessionActivity, edit: Edit) -> ToolUseBlock | None:
+    if (turn := activity.turn_of(edit.ref)) is None:
+        return None
+    return next(
+        (
+            block
+            for event in turn.events
+            if isinstance(event, AssistantEvent) and event.meta.uuid == edit.ref.event_uuid
+            for block in event.blocks
+            if isinstance(block, ToolUseBlock) and block.id == edit.ref.tool_use_id
+        ),
+        None,
+    )
+
+
+def joined_hunks(hunks: Sequence[Hunk]) -> tuple[str, str]:
+    return "\n".join(hunk.old for hunk in hunks), "\n".join(hunk.new for hunk in hunks)
+
+
+def correction_columns(
+    correction: Edit | GitFix | None,
+) -> tuple[Origin | None, str | None, str | None, str | None, str | None]:
+    match correction:
+        case None:
+            return None, None, None, None, None
+        case GitFix(file_path=file_path, hunks=hunks, commit=commit):
+            old, new = joined_hunks(hunks)
+            return "git", file_path, old, new, commit
+        case edit:
+            old, new = joined_hunks(edit.hunks)
+            return "session", edit.file_path, old, new, None
 
 
 def parse_show_hunks(diff: str) -> tuple[Hunk, ...]:
