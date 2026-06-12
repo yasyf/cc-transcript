@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
-
 from cc_transcript.domains.mining.markers import (
     DENIAL_PREFIX,
     EDIT_TOOLS,
@@ -14,22 +12,14 @@ from cc_transcript.domains.mining.markers import (
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
 )
+from cc_transcript.filterspec import tool_uses as tool_uses
+from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Any
 
-    from cc_transcript.models import ToolUseId, TranscriptEvent
-
-
-def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock]:
-    return {
-        block.id: block
-        for event in events
-        if isinstance(event, AssistantEvent)
-        for block in event.blocks
-        if isinstance(block, ToolUseBlock)
-    }
+    from cc_transcript.models import TranscriptEvent
 
 
 def denial_results(event: UserEvent) -> Iterator[ToolResultBlock]:
