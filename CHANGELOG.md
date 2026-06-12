@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+### Added
+- **domains.mining**: per-instance confidence calibration — detectors now use the
+  full band with named reasons (`trigger_proximate`, `short_followup`,
+  `structural_only`, `substantive`, `hedged`, …); structural-only corrections
+  score below `NOISE_FLOOR`.
+- **domains.mining**: `CandidateFilterSpec` — candidate-level filtering
+  (`ConfidenceAtLeast`/`SourceKindIn`/`HasReason`/`IsDurable` predicates,
+  `CandidateClause`, `keep_candidate`/`apply_candidate_filter`, and the
+  `at_least`/`only_kinds`/`build_candidate_filter` builders), mirroring the
+  event-level `filterspec`. Ships mechanism only; consumers own thresholds.
+- **domains.mining**: the verdicts mechanism, lifted from cc-pushback —
+  `VerdictLike`, `VerdictStoreMixin` (parameterized physical names; generated DDL
+  is byte-compatible with cc-pushback's existing `triage` table), the generic
+  `run_verdicts` runner, deterministic stratified `sample_audit`, and the eval
+  math (`Metrics`, `AuditEstimate`, `exact_upper_bound`, `GoldenRow`,
+  `golden_result`, `flip_pairs`).
+- **domains.mining**: `clip`/`render_turn`/`render_turns` — pure presentation of
+  `ContextTurn`s (including `tool_inputs`) for judge prompts
+  (`TURN_TEXT_LIMIT = 700`).
+- **`[llm]` extra**: `domains.mining.llm` — `run_structured`, `resolved_model`,
+  and the `structured_judge` factory over spawnllm's Claude CLI backend, imported
+  lazily so the domain keeps importing without the extra.
+
+### Changed
+- **domains.mining**: detector signals persist calibrated confidences in
+  `payload_json`; rows written before this release still decode (`None` reads as
+  `MEDIUM`).
+
 ## [0.7.1]
 
 ### Added
