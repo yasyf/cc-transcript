@@ -100,7 +100,8 @@ def test_write_and_notebook_lower_to_addition_hunks() -> None:
 
 def test_file_path_of_covers_file_shaped_calls() -> None:
     assert file_path_of(parse_tool_call("Read", {"file_path": "r.py"})) == "r.py"
-    assert isinstance(nb := parse_tool_call("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": ""}), NotebookEditCall)
+    nb = parse_tool_call("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": ""})
+    assert isinstance(nb, NotebookEditCall)
     assert file_path_of(nb) == "n.ipynb"
     assert file_path_of(parse_tool_call("Bash", {"command": "ls"})) is None
 

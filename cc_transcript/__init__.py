@@ -1,69 +1,554 @@
-# Re-exports establish the package's public surface; pyright sees them as unused.
-# pyright: reportUnusedImport=false
-"""Typed events for Claude Code transcripts.
+"""The cc-family session-activity platform.
 
-Discovery, a superset JSONL parser — a Rust fast path and a Python reference
-behind one ``Backend`` protocol — ingestion-state tracking, and a
-transcript-investigation CLI.
+One spine: parse Claude Code transcript JSONL into typed events, lift them
+into a :class:`~cc_transcript.activity.SessionActivity` of turns, tool calls,
+and edits — and every higher capability (context windows, evidence harvest,
+queries, the decision ledger, LLM judging) is a pure function or thin store
+over that spine.
+
+The package root is lazy (PEP 562): importing ``cc_transcript.ids`` or
+``cc_transcript.tools`` pulls the standard library only, so the hook hot path
+pays nothing for the parser or any heavy dependency.
 """
 
 from __future__ import annotations
 
-from cc_transcript.backend import Backend, ParsedTranscript
-from cc_transcript.builders import (
-    NOISE_SPEC,
-    build_spec,
-    drop_compacted,
-    drop_empty,
-    drop_entrypoints,
-    drop_junk,
-    drop_meta_flag,
-    drop_phrases,
-    drop_short,
-    drop_sidechain,
-    drop_synthetic,
-    keep_only,
-)
-from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery
-from cc_transcript.filters import JUNK_USER_MESSAGE_RE, FilterConfig, apply_filters
-from cc_transcript.filterspec import (
-    ASSISTANTS,
-    INTERRUPT_MARKER_RE,
-    RESUME_PHRASE_SET,
-    STOP_HOOK_RE,
-    STRUCTURAL_NOISE_RE,
-    TRIVIAL_ACK_SET,
-    USERS,
-    FilterSpec,
-    annotate_spec,
-    apply_spec,
-    keep,
-    labels_for,
-)
-from cc_transcript.messages import (
-    AssistantMessage,
-    BaseMessage,
-    ToolCall,
-    TranscriptMessage,
-    UserMessage,
-)
-from cc_transcript.models import (
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
-    EntryUuid,
-    ModeEvent,
-    OtherEvent,
-    SessionId,
-    SystemEvent,
-    TextBlock,
-    ThinkingBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseId,
-    TranscriptEvent,
-    UserEvent,
-)
-from cc_transcript.parser import TranscriptParser, parse_event, parse_events_async, parse_events_from_bytes
-from cc_transcript.store import FileStateStore
+from importlib import import_module
+from typing import TYPE_CHECKING
+
+EXPORTS: dict[str, str] = {
+    name: module
+    for module, names in {
+        "cc_transcript.ids": (
+            "EventRef",
+            "EventUuid",
+            "SessionId",
+            "ToolDigest",
+            "ToolUseId",
+            "canonical_json",
+            "tool_digest",
+        ),
+        "cc_transcript.tools": (
+            "TOOL_ALIASES",
+            "BashCall",
+            "EditCall",
+            "EditSpan",
+            "ExitPlanModeCall",
+            "GlobCall",
+            "GrepCall",
+            "Hunk",
+            "MultiEditCall",
+            "NotebookEditCall",
+            "OtherCall",
+            "ReadCall",
+            "SkillCall",
+            "TaskCall",
+            "TaskCreateCall",
+            "TaskUpdateCall",
+            "ToolCall",
+            "ToolCallBase",
+            "ToolInputError",
+            "WriteCall",
+            "expand_tool_names",
+            "file_path_of",
+            "hunks_of",
+            "parse_tool_call",
+            "tool_name_matches",
+        ),
+        "cc_transcript.models": (
+            "AssistantEvent",
+            "CcVersion",
+            "ContentBlock",
+            "EntryMeta",
+            "ModeEvent",
+            "OtherEvent",
+            "SystemEvent",
+            "TextBlock",
+            "ThinkingBlock",
+            "ToolResultBlock",
+            "ToolUseBlock",
+            "TranscriptEvent",
+            "UserEvent",
+        ),
+        "cc_transcript.parser": (
+            "TranscriptParser",
+            "parse_event",
+            "parse_events_async",
+            "parse_events_from_bytes",
+        ),
+        "cc_transcript.backend": ("Backend", "ParsedTranscript"),
+        "cc_transcript.discovery": (
+            "CLAUDE_PROJECTS_DIR",
+            "TranscriptDiscovery",
+            "TranscriptExpiredError",
+            "find_transcript",
+            "find_transcript_sync",
+            "subagent_paths",
+        ),
+        "cc_transcript.activity": (
+            "Edit",
+            "SessionActivity",
+            "ToolUse",
+            "Turn",
+            "UserClassifier",
+            "hunk_overlap",
+            "native_user_classifier",
+        ),
+        "cc_transcript.evidence": (
+            "EXTRACTOR_VERSION",
+            "CandidatePair",
+            "GitFix",
+            "git_corrections",
+            "harvest_pairs",
+            "match_corrections",
+        ),
+        "cc_transcript.context": (
+            "ContextWindow",
+            "Fidelity",
+            "HydratedWindow",
+            "SchemaError",
+            "TurnRef",
+            "capture_window",
+        ),
+        "cc_transcript.render": ("Budget", "render_session", "render_tool_call", "render_turn"),
+        "cc_transcript.query": ("FileRef", "Session", "SubagentIndex", "SubagentSession", "ToolCallQuery"),
+        "cc_transcript.decisions": ("DECISIONS_DDL", "Action", "Decision", "DecisionLog"),
+        "cc_transcript.disktruth": (
+            "AttributionRange",
+            "DiskTruth",
+            "FileAttribution",
+            "TreeTurn",
+            "export_activity",
+            "load_export",
+        ),
+        "cc_transcript.filters": ("JUNK_USER_MESSAGE_RE", "FilterConfig", "apply_filters"),
+        "cc_transcript.filterspec": (
+            "ASSISTANTS",
+            "INTERRUPT_MARKER_RE",
+            "RESUME_PHRASE_SET",
+            "STOP_HOOK_RE",
+            "STRUCTURAL_NOISE_RE",
+            "TRIVIAL_ACK_SET",
+            "USERS",
+            "FilterSpec",
+            "annotate_spec",
+            "apply_spec",
+            "keep",
+            "labels_for",
+        ),
+        "cc_transcript.builders": (
+            "NOISE_SPEC",
+            "build_spec",
+            "drop_compacted",
+            "drop_empty",
+            "drop_entrypoints",
+            "drop_junk",
+            "drop_meta_flag",
+            "drop_phrases",
+            "drop_short",
+            "drop_sidechain",
+            "drop_synthetic",
+            "keep_only",
+        ),
+        "cc_transcript.messages": (
+            "AssistantMessage",
+            "BaseMessage",
+            "MessageToolCall",
+            "TranscriptMessage",
+            "UserMessage",
+        ),
+        "cc_transcript.store": ("FileStateStore",),
+    }.items()
+    for name in names
+}
+
+
+def __getattr__(name: str) -> object:
+    if module := EXPORTS.get(name):
+        return getattr(import_module(module), name)
+    raise AttributeError(f"module 'cc_transcript' has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(EXPORTS)
+
+
+if TYPE_CHECKING:
+    from cc_transcript.activity import (
+        Edit as Edit,
+    )
+    from cc_transcript.activity import (
+        SessionActivity as SessionActivity,
+    )
+    from cc_transcript.activity import (
+        ToolUse as ToolUse,
+    )
+    from cc_transcript.activity import (
+        Turn as Turn,
+    )
+    from cc_transcript.activity import (
+        UserClassifier as UserClassifier,
+    )
+    from cc_transcript.activity import (
+        hunk_overlap as hunk_overlap,
+    )
+    from cc_transcript.activity import (
+        native_user_classifier as native_user_classifier,
+    )
+    from cc_transcript.backend import Backend as Backend
+    from cc_transcript.backend import ParsedTranscript as ParsedTranscript
+    from cc_transcript.builders import (
+        NOISE_SPEC as NOISE_SPEC,
+    )
+    from cc_transcript.builders import (
+        build_spec as build_spec,
+    )
+    from cc_transcript.builders import (
+        drop_compacted as drop_compacted,
+    )
+    from cc_transcript.builders import (
+        drop_empty as drop_empty,
+    )
+    from cc_transcript.builders import (
+        drop_entrypoints as drop_entrypoints,
+    )
+    from cc_transcript.builders import (
+        drop_junk as drop_junk,
+    )
+    from cc_transcript.builders import (
+        drop_meta_flag as drop_meta_flag,
+    )
+    from cc_transcript.builders import (
+        drop_phrases as drop_phrases,
+    )
+    from cc_transcript.builders import (
+        drop_short as drop_short,
+    )
+    from cc_transcript.builders import (
+        drop_sidechain as drop_sidechain,
+    )
+    from cc_transcript.builders import (
+        drop_synthetic as drop_synthetic,
+    )
+    from cc_transcript.builders import (
+        keep_only as keep_only,
+    )
+    from cc_transcript.context import (
+        ContextWindow as ContextWindow,
+    )
+    from cc_transcript.context import (
+        Fidelity as Fidelity,
+    )
+    from cc_transcript.context import (
+        HydratedWindow as HydratedWindow,
+    )
+    from cc_transcript.context import (
+        SchemaError as SchemaError,
+    )
+    from cc_transcript.context import (
+        TurnRef as TurnRef,
+    )
+    from cc_transcript.context import (
+        capture_window as capture_window,
+    )
+    from cc_transcript.decisions import (
+        DECISIONS_DDL as DECISIONS_DDL,
+    )
+    from cc_transcript.decisions import (
+        Action as Action,
+    )
+    from cc_transcript.decisions import (
+        Decision as Decision,
+    )
+    from cc_transcript.decisions import (
+        DecisionLog as DecisionLog,
+    )
+    from cc_transcript.discovery import (
+        CLAUDE_PROJECTS_DIR as CLAUDE_PROJECTS_DIR,
+    )
+    from cc_transcript.discovery import (
+        TranscriptDiscovery as TranscriptDiscovery,
+    )
+    from cc_transcript.discovery import (
+        TranscriptExpiredError as TranscriptExpiredError,
+    )
+    from cc_transcript.discovery import (
+        find_transcript as find_transcript,
+    )
+    from cc_transcript.discovery import (
+        find_transcript_sync as find_transcript_sync,
+    )
+    from cc_transcript.discovery import (
+        subagent_paths as subagent_paths,
+    )
+    from cc_transcript.disktruth import (
+        AttributionRange as AttributionRange,
+    )
+    from cc_transcript.disktruth import (
+        DiskTruth as DiskTruth,
+    )
+    from cc_transcript.disktruth import (
+        FileAttribution as FileAttribution,
+    )
+    from cc_transcript.disktruth import (
+        TreeTurn as TreeTurn,
+    )
+    from cc_transcript.disktruth import (
+        export_activity as export_activity,
+    )
+    from cc_transcript.disktruth import (
+        load_export as load_export,
+    )
+    from cc_transcript.evidence import (
+        EXTRACTOR_VERSION as EXTRACTOR_VERSION,
+    )
+    from cc_transcript.evidence import (
+        CandidatePair as CandidatePair,
+    )
+    from cc_transcript.evidence import (
+        GitFix as GitFix,
+    )
+    from cc_transcript.evidence import (
+        git_corrections as git_corrections,
+    )
+    from cc_transcript.evidence import (
+        harvest_pairs as harvest_pairs,
+    )
+    from cc_transcript.evidence import (
+        match_corrections as match_corrections,
+    )
+    from cc_transcript.filters import (
+        JUNK_USER_MESSAGE_RE as JUNK_USER_MESSAGE_RE,
+    )
+    from cc_transcript.filters import (
+        FilterConfig as FilterConfig,
+    )
+    from cc_transcript.filters import (
+        apply_filters as apply_filters,
+    )
+    from cc_transcript.filterspec import (
+        ASSISTANTS as ASSISTANTS,
+    )
+    from cc_transcript.filterspec import (
+        INTERRUPT_MARKER_RE as INTERRUPT_MARKER_RE,
+    )
+    from cc_transcript.filterspec import (
+        RESUME_PHRASE_SET as RESUME_PHRASE_SET,
+    )
+    from cc_transcript.filterspec import (
+        STOP_HOOK_RE as STOP_HOOK_RE,
+    )
+    from cc_transcript.filterspec import (
+        STRUCTURAL_NOISE_RE as STRUCTURAL_NOISE_RE,
+    )
+    from cc_transcript.filterspec import (
+        TRIVIAL_ACK_SET as TRIVIAL_ACK_SET,
+    )
+    from cc_transcript.filterspec import (
+        USERS as USERS,
+    )
+    from cc_transcript.filterspec import (
+        FilterSpec as FilterSpec,
+    )
+    from cc_transcript.filterspec import (
+        annotate_spec as annotate_spec,
+    )
+    from cc_transcript.filterspec import (
+        apply_spec as apply_spec,
+    )
+    from cc_transcript.filterspec import (
+        keep as keep,
+    )
+    from cc_transcript.filterspec import (
+        labels_for as labels_for,
+    )
+    from cc_transcript.ids import (
+        EventRef as EventRef,
+    )
+    from cc_transcript.ids import (
+        EventUuid as EventUuid,
+    )
+    from cc_transcript.ids import (
+        SessionId as SessionId,
+    )
+    from cc_transcript.ids import (
+        ToolDigest as ToolDigest,
+    )
+    from cc_transcript.ids import (
+        ToolUseId as ToolUseId,
+    )
+    from cc_transcript.ids import (
+        canonical_json as canonical_json,
+    )
+    from cc_transcript.ids import (
+        tool_digest as tool_digest,
+    )
+    from cc_transcript.messages import (
+        AssistantMessage as AssistantMessage,
+    )
+    from cc_transcript.messages import (
+        BaseMessage as BaseMessage,
+    )
+    from cc_transcript.messages import (
+        MessageToolCall as MessageToolCall,
+    )
+    from cc_transcript.messages import (
+        TranscriptMessage as TranscriptMessage,
+    )
+    from cc_transcript.messages import (
+        UserMessage as UserMessage,
+    )
+    from cc_transcript.models import (
+        AssistantEvent as AssistantEvent,
+    )
+    from cc_transcript.models import (
+        CcVersion as CcVersion,
+    )
+    from cc_transcript.models import (
+        ContentBlock as ContentBlock,
+    )
+    from cc_transcript.models import (
+        EntryMeta as EntryMeta,
+    )
+    from cc_transcript.models import (
+        ModeEvent as ModeEvent,
+    )
+    from cc_transcript.models import (
+        OtherEvent as OtherEvent,
+    )
+    from cc_transcript.models import (
+        SystemEvent as SystemEvent,
+    )
+    from cc_transcript.models import (
+        TextBlock as TextBlock,
+    )
+    from cc_transcript.models import (
+        ThinkingBlock as ThinkingBlock,
+    )
+    from cc_transcript.models import (
+        ToolResultBlock as ToolResultBlock,
+    )
+    from cc_transcript.models import (
+        ToolUseBlock as ToolUseBlock,
+    )
+    from cc_transcript.models import (
+        TranscriptEvent as TranscriptEvent,
+    )
+    from cc_transcript.models import (
+        UserEvent as UserEvent,
+    )
+    from cc_transcript.parser import (
+        TranscriptParser as TranscriptParser,
+    )
+    from cc_transcript.parser import (
+        parse_event as parse_event,
+    )
+    from cc_transcript.parser import (
+        parse_events_async as parse_events_async,
+    )
+    from cc_transcript.parser import (
+        parse_events_from_bytes as parse_events_from_bytes,
+    )
+    from cc_transcript.query import (
+        FileRef as FileRef,
+    )
+    from cc_transcript.query import (
+        Session as Session,
+    )
+    from cc_transcript.query import (
+        SubagentIndex as SubagentIndex,
+    )
+    from cc_transcript.query import (
+        SubagentSession as SubagentSession,
+    )
+    from cc_transcript.query import (
+        ToolCallQuery as ToolCallQuery,
+    )
+    from cc_transcript.render import (
+        Budget as Budget,
+    )
+    from cc_transcript.render import (
+        render_session as render_session,
+    )
+    from cc_transcript.render import (
+        render_tool_call as render_tool_call,
+    )
+    from cc_transcript.render import (
+        render_turn as render_turn,
+    )
+    from cc_transcript.store import FileStateStore as FileStateStore
+    from cc_transcript.tools import (
+        TOOL_ALIASES as TOOL_ALIASES,
+    )
+    from cc_transcript.tools import (
+        BashCall as BashCall,
+    )
+    from cc_transcript.tools import (
+        EditCall as EditCall,
+    )
+    from cc_transcript.tools import (
+        EditSpan as EditSpan,
+    )
+    from cc_transcript.tools import (
+        ExitPlanModeCall as ExitPlanModeCall,
+    )
+    from cc_transcript.tools import (
+        GlobCall as GlobCall,
+    )
+    from cc_transcript.tools import (
+        GrepCall as GrepCall,
+    )
+    from cc_transcript.tools import (
+        Hunk as Hunk,
+    )
+    from cc_transcript.tools import (
+        MultiEditCall as MultiEditCall,
+    )
+    from cc_transcript.tools import (
+        NotebookEditCall as NotebookEditCall,
+    )
+    from cc_transcript.tools import (
+        OtherCall as OtherCall,
+    )
+    from cc_transcript.tools import (
+        ReadCall as ReadCall,
+    )
+    from cc_transcript.tools import (
+        SkillCall as SkillCall,
+    )
+    from cc_transcript.tools import (
+        TaskCall as TaskCall,
+    )
+    from cc_transcript.tools import (
+        TaskCreateCall as TaskCreateCall,
+    )
+    from cc_transcript.tools import (
+        TaskUpdateCall as TaskUpdateCall,
+    )
+    from cc_transcript.tools import (
+        ToolCall as ToolCall,
+    )
+    from cc_transcript.tools import (
+        ToolCallBase as ToolCallBase,
+    )
+    from cc_transcript.tools import (
+        ToolInputError as ToolInputError,
+    )
+    from cc_transcript.tools import (
+        WriteCall as WriteCall,
+    )
+    from cc_transcript.tools import (
+        expand_tool_names as expand_tool_names,
+    )
+    from cc_transcript.tools import (
+        file_path_of as file_path_of,
+    )
+    from cc_transcript.tools import (
+        hunks_of as hunks_of,
+    )
+    from cc_transcript.tools import (
+        parse_tool_call as parse_tool_call,
+    )
+    from cc_transcript.tools import (
+        tool_name_matches as tool_name_matches,
+    )

@@ -4,6 +4,76 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0]
+
+The greenfield platform release: cc-transcript becomes the cc-family's
+session-activity platform. Breaking throughout — consumers move in lockstep,
+no compatibility shims.
+
+### Added
+- `cc_transcript.ids` — identity and digests: `SessionId`/`EventUuid`/
+  `ToolUseId`/`ToolDigest`, the universal `EventRef` handle, `canonical_json`
+  (RFC 8785 JCS: UTF-16 key order, ECMAScript number layout), and
+  `tool_digest` — the single cross-language content join key, computed over
+  the raw input mapping only. Standard library only.
+- `cc_transcript.tools` — the single typed `ToolCall` hierarchy shared by
+  hook runtimes and the parser, with first-class `MultiEditCall` (fixing the
+  silent first-span-only degradation), `hunks_of`/`file_path_of` lowering,
+  alias + `mcp__` name matching, and `parse_tool_call(on_error=)` — strict by
+  default, with a hook-runtime degrade to `OtherCall` whose digest stays
+  correct via the raw substrate.
+- `cc_transcript.activity` — the spine: `SessionActivity` of `Turn`s,
+  `ToolUse`s, and first-class `Edit`s, with `edits_before`/`edits_after`
+  anchored queries, an injectable `UserClassifier` turn-segmentation seam,
+  and `hunk_overlap`.
+- `cc_transcript.evidence` — incorrect-edit/correction harvest:
+  `harvest_pairs`, `match_corrections`, read-only `git_corrections` pickaxe
+  fallback, `GitFix`, `CandidatePair`, `EXTRACTOR_VERSION`.
+- `cc_transcript.context` — refs-not-prose context: `ContextWindow` persists
+  `EventRef`s plus labeled render-time previews (`cc-transcript.context/1`),
+  hydrates asynchronously to a full-fidelity `HydratedWindow` or degrades to
+  an explicitly labeled summary; never hydrate-or-fail.
+- `cc_transcript.render` — the one renderer: `Budget`-bounded
+  `render_tool_call`/`render_turn`/`render_session`; truncation happens only
+  here, marked with omitted-char counts; MultiEdit renders every span.
+- `cc_transcript.query` — the transcript query surface (`Session`,
+  `ToolCallQuery`, `FileRef`, subagent recursion) built from the measured
+  consumer call sites formerly served by captain-hook's `Transcript` API.
+- `cc_transcript.decisions` — the unified decision ledger (`decisions_v1` at
+  `~/.cc-transcript/decisions.db`): dual-writer (Python hooks, cc-review's Go
+  daemon) via a vendored byte-compared DDL; `attribute_tool` joins decisions
+  to tool calls by digest + nearest-preceding timestamp, never by message
+  substring.
+- `cc_transcript.disktruth` — typed reader for cc-review's
+  `cc-review.activity/1` export (turns, version-dimensioned attributions).
+- CLI: `slice` (per-tool-call JSONL for a session UUID + time window — the
+  language-neutral bridge consumed by cc-review) and `digest` (cross-language
+  fixture generator/checker for the digest contract).
+- `cc_transcript.judge` — verdict persistence is fidelity-aware: verdicts
+  record the context fidelity they were judged at, summary-fidelity verdicts
+  are re-judgeable via `unjudged(refresh_summary=True)`, and a full-fidelity
+  re-judge replaces a summary verdict.
+- PEP 562 lazy package root with an import-weight CI guard: importing
+  `cc_transcript.ids`/`cc_transcript.tools` pulls zero heavy dependencies.
+
+### Changed
+- `domains.mining` → `cc_transcript.mining` and `cc_transcript.judge`;
+  `domains.sentiment` → `cc_transcript.sentiment` (replacing the pre-0.6
+  shim). `FeedbackCandidate` now carries a `ContextWindow` and an `EventRef`.
+- `EntryUuid` is now `EventUuid`, defined in `cc_transcript.ids` alongside
+  `SessionId`/`ToolUseId`.
+- `messages.ToolCall` renamed `MessageToolCall`; the root `ToolCall` export
+  is the typed tool-call union.
+- By-UUID transcript discovery (`find_transcript`/`find_transcript_sync`):
+  symlink spellings collapse to one real path, newest mtime wins; paths are
+  resolution hints, never keys.
+
+### Removed
+- `domains.mining.context` (`ContextSnapshot`, `summarize_tool_input`,
+  `TOOL_INPUT_LIMIT` bake-time truncation), `nav`, `markers` — replaced by
+  `context`/`activity`/`mining.signals`.
+- The `domains` package and the legacy `cc_transcript.sentiment` shim.
+
 ## [0.9.0]
 
 ### Added
