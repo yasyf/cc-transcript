@@ -84,3 +84,12 @@ def test_tool_digest_varies_by_name_and_content() -> None:
 def test_event_ref_defaults_tool_use_id_to_none() -> None:
     ref = EventRef(session_id=SessionId("s"), event_uuid=EventUuid("e"))
     assert ref.tool_use_id is None
+
+
+def test_frozen_digest_fixture_corpus() -> None:
+    import pathlib
+
+    cases = json.loads((pathlib.Path(__file__).parent / "testdata" / "digest_fixtures.json").read_text())
+    assert len(cases) >= 9
+    for case in cases:
+        assert tool_digest(case["tool"], case["input"]) == case["digest"], case["tool"]
