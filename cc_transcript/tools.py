@@ -226,10 +226,11 @@ def parse_tool_call(
     """Parse a tool's name and raw input into the typed hierarchy.
 
     Strict by default: a known tool whose input is malformed raises
-    :class:`ToolInputError` (leniency lives in tests). The hook runtime alone
-    passes ``on_error='other'`` so a Claude Code shape change degrades the
-    call to :class:`OtherCall` — with a still-correct digest, since the raw
-    mapping is the substrate — instead of crashing every hook fire.
+    :class:`ToolInputError` (leniency lives in tests). The wild-data boundaries
+    — the hook runtime and the activity lift — pass ``on_error='other'`` so a
+    Claude Code shape change or a model-emitted invalid call degrades to
+    :class:`OtherCall` — with a still-correct digest, since the raw mapping is
+    the substrate — instead of crashing every hook fire or session lift.
 
     Example:
         >>> call = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})

@@ -21,7 +21,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.tools import BashCall, EditCall, Hunk
+from cc_transcript.tools import BashCall, EditCall, Hunk, OtherCall
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -173,6 +173,19 @@ def test_tool_uses_lift_every_block_with_matched_results() -> None:
     assert isinstance(second.call, EditCall)
     assert second.result is None
     assert first.call is uses[0].call
+
+
+def test_malformed_tool_input_lifts_to_other_call() -> None:
+    bad = ToolUseBlock(id=ToolUseId("t1"), name="Grep", input={"query": "^from", "path": "pkg"})
+    act = activity(
+        user("u0", "search"),
+        assistant("a0", "", blocks=(bad, bash("t2", "ls")), secs=3),
+    )
+    first, second = act.turns[0].tool_uses
+    assert isinstance(first.call, OtherCall)
+    assert first.call.name == "Grep"
+    assert first.call.raw == {"query": "^from", "path": "pkg"}
+    assert isinstance(second.call, BashCall)
 
 
 def test_turn_edits_derive_only_from_hunked_calls_with_a_file_path() -> None:
