@@ -207,3 +207,4 @@ class OtherEvent:
 
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent
+"""The union of every typed event a parsed transcript can yield."""
