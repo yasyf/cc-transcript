@@ -8,6 +8,7 @@ import anyio
 import orjson
 import pytest
 
+from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
     EntryUuid,
@@ -22,7 +23,6 @@ from cc_transcript.models import (
     ToolUseId,
     UserEvent,
 )
-from cc_transcript import parse_event
 from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes
 
 
@@ -300,6 +300,17 @@ def test_parse_events_from_bytes_skips_blank_and_undecodable() -> None:
     )
     events = parse_events_from_bytes(raw)
     assert [type(e).__name__ for e in events] == ["UserEvent", "AssistantEvent"]
+
+
+def test_parse_events_from_bytes_skips_non_dict_json() -> None:
+    raw = b"\n".join([b"null", b"42", b'"text"', b"[1, 2]", orjson.dumps(user_str())])
+    events = parse_events_from_bytes(raw)
+    assert [type(e).__name__ for e in events] == ["UserEvent"]
+
+
+def test_unexpected_user_content_shape_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="unexpected user content shape: NoneType"):
+        build_event(envelope(type="user", message={"role": "user", "content": None}))
 
 
 def test_parse_events_async_reads_file(tmp_path: Path) -> None:

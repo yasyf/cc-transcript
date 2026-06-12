@@ -84,6 +84,8 @@ def parse_user_blocks(
                 if block.get("type") == "tool_result"
             )
             return " ".join(texts), blocks
+        case _:
+            raise ValueError(f"unexpected user content shape: {type(content).__name__}")
 
 
 def parse_assistant_blocks(content: list[dict[str, Any]]) -> tuple[str, tuple[ContentBlock, ...]]:
@@ -152,7 +154,7 @@ def decode_line(line: bytes) -> TranscriptEvent | None:
         data = orjson.loads(line)
     except orjson.JSONDecodeError:
         return None
-    return parse_event(data)
+    return parse_event(data) if isinstance(data, dict) else None
 
 
 async def parse_events_async(path: Path) -> list[TranscriptEvent]:
@@ -205,7 +207,7 @@ class PythonBackend:
             async with limiter:
                 try:
                     parsed = await anyio.to_thread.run_sync(parse_one_filtered, path, mtime, spec)
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError, KeyError, TypeError):
                     return
                 try:
                     await send_ch.send(parsed)
