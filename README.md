@@ -54,7 +54,7 @@ available — every rule is off by default, so a bare `FilterConfig()` passes ev
 
 ## The CLI
 
-Four commands — `list`, `show`, `grep`, `stats` — and every one runs as `uvx cc-transcript ...`, no install step. `list` finds transcripts, newest first:
+Six commands — `list`, `show`, `grep`, `stats`, `slice`, `digest` — and every one runs as `uvx cc-transcript ...`, no install step. `list` finds transcripts, newest first:
 
 ```console
 $ uvx cc-transcript list --limit 3
@@ -106,6 +106,8 @@ $ uvx cc-transcript grep -i "filterspec" --kind user --max-matches 3 ~/.claude/p
 
 The output is compact by design — one line per event, hard truncation — so an agent triages a session in a few hundred tokens instead of paging through megabytes of JSONL.
 
+The last two verbs serve programs, not people: `slice` emits per-tool-call JSONL for a session UUID and time window (the language-neutral bridge cc-review consumes), and `digest` generates and checks the cross-language fixture corpus for the tool-digest contract.
+
 ## Claude Code plugin
 
 Install the bundled plugin from inside Claude Code:
@@ -123,7 +125,8 @@ The plugin's skill teaches Claude to answer questions about its own history — 
 - **Non-lossy by design.** The event model is a superset: sidechains, `<synthetic>` turns, thinking blocks, and unrecognized entry types all survive parsing. You decide what to drop, via composable filter specs (`build_spec`) or `FilterConfig`.
 - **Incremental ingestion.** `FileStateStore` tracks per-file mtimes in SQLite (WAL, safe across concurrent tasks) so re-runs only reparse changed files, and you compose your own writes in the same transaction.
 - **Two engines, one contract.** A single `Backend` protocol with two implementations: `RustBackend` (PyO3 + rayon) is the default fast path, and `PythonBackend` is the readable reference — parity-asserted against each other. Filter specs are portable, so a spec built in Python runs Rust-side without giving up the fast path.
-- **Analysis domains.** `domains.sentiment` scores conversational sentiment per time-bucketed conversation window; `domains.mining` mines transcripts for user feedback — detectors, confidence calibration, candidate filtering, and verdicts.
+- **One activity spine.** `SessionActivity` lifts parsed events into turns, typed tool calls, and first-class edits; `ContextWindow` persists `EventRef`s plus labeled previews and hydrates back to full fidelity while the transcript lives; rendering is `Budget`-bounded in exactly one place.
+- **Mining, judging, and sentiment.** `cc_transcript.mining` mines transcripts for user feedback — detectors, confidence calibration, candidate filtering, and the feedback store; `cc_transcript.judge` runs fidelity-aware LLM verdict passes over the mined corpus; `cc_transcript.sentiment` scores conversational sentiment per time-bucketed conversation window.
 - **Transcript investigation for agents.** The CLI answers "what happened in that session" in a few hundred tokens, which is what makes the Claude Code plugin viable.
 
 ## Docs
