@@ -27,7 +27,7 @@ from cc_transcript.filterspec import (
 from cc_transcript.models import (
     AssistantEvent,
     EntryMeta,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     SessionId,
     ToolUseBlock,
@@ -39,7 +39,7 @@ from cc_transcript.models import (
 
 def meta(**overrides: object) -> EntryMeta:
     base: dict[str, object] = {
-        "uuid": EntryUuid("u"),
+        "uuid": EventUuid("u"),
         "parent_uuid": None,
         "session_id": SessionId("s"),
         "timestamp": datetime(2026, 1, 1, tzinfo=UTC),

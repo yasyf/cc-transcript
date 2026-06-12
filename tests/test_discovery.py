@@ -5,7 +5,15 @@ from pathlib import Path
 
 import anyio
 
-from cc_transcript.discovery import TranscriptDiscovery
+from cc_transcript.discovery import (
+    TranscriptDiscovery,
+    TranscriptExpiredError,
+    find_transcript,
+    find_transcript_sync,
+)
+from cc_transcript.ids import SessionId
+
+SESSION = SessionId("0c8e6f54-aaaa-bbbb-cccc-d1d2d3d4d5d6")
 
 
 def write(path: Path, mtime: float) -> Path:
@@ -43,3 +51,39 @@ def test_find_in_limit(tmp_path: Path) -> None:
 
 def test_find_in_missing_directory(tmp_path: Path) -> None:
     assert anyio.run(lambda: TranscriptDiscovery.find_in(tmp_path / "nope")) == []
+
+
+def test_find_transcript_dedupes_symlink_spellings(tmp_path: Path) -> None:
+    real = write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    (tmp_path / "proj-b").mkdir()
+    (tmp_path / "proj-b" / f"{SESSION}.jsonl").symlink_to(real)
+    assert anyio.run(lambda: find_transcript(SESSION, root=tmp_path)) == real.resolve()
+
+
+def test_find_transcript_sync_newest_mtime_wins(tmp_path: Path) -> None:
+    write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    newer = write(tmp_path / "proj-b" / f"{SESSION}.jsonl", 200.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) == newer.resolve()
+
+
+def test_find_transcript_missing_session_returns_none(tmp_path: Path) -> None:
+    write(tmp_path / "proj-a" / "other-session.jsonl", 100.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) is None
+    assert anyio.run(lambda: find_transcript(SESSION, root=tmp_path)) is None
+
+
+def test_find_transcript_sync_missing_root_returns_none(tmp_path: Path) -> None:
+    assert find_transcript_sync(SESSION, root=tmp_path / "nope") is None
+
+
+def test_find_transcript_sync_skips_dangling_symlink(tmp_path: Path) -> None:
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-a" / f"{SESSION}.jsonl").symlink_to(tmp_path / "gone.jsonl")
+    assert find_transcript_sync(SESSION, root=tmp_path) is None
+
+
+def test_transcript_expired_error_carries_session_id() -> None:
+    error = TranscriptExpiredError(SESSION)
+    assert error.session_id == SESSION
+    assert isinstance(error, RuntimeError)
+    assert str(SESSION) in str(error)

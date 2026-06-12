@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NewType
 
+from cc_transcript.ids import EventUuid, SessionId, ToolDigest, ToolUseId, tool_digest
+from cc_transcript.tools import ToolCall, parse_tool_call
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
     from typing import Any
 
-SessionId = NewType("SessionId", str)
-EntryUuid = NewType("EntryUuid", str)
-ToolUseId = NewType("ToolUseId", str)
 CcVersion = NewType("CcVersion", str)
 
 
@@ -49,6 +49,20 @@ class ToolUseBlock:
     id: ToolUseId
     name: str
     input: Mapping[str, Any]
+
+    @property
+    def call(self) -> ToolCall:
+        """The block parsed into the typed tool-call hierarchy.
+
+        Strict: a known tool whose input is malformed raises
+        :class:`~cc_transcript.tools.ToolInputError`.
+        """
+        return parse_tool_call(self.name, self.input)
+
+    @property
+    def digest(self) -> ToolDigest:
+        """The cross-language content digest of this call."""
+        return tool_digest(self.name, self.input)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +105,8 @@ class EntryMeta:
         is_visible_in_transcript_only: Whether the entry is transcript-only.
     """
 
-    uuid: EntryUuid
-    parent_uuid: EntryUuid | None
+    uuid: EventUuid
+    parent_uuid: EventUuid | None
     session_id: SessionId
     timestamp: datetime
     cwd: str | None

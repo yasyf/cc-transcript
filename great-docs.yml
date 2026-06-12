@@ -68,7 +68,7 @@ reference:
       - ToolUseBlock
       - ToolResultBlock
       - EntryMeta
-      - EntryUuid
+      - EventUuid
       - SessionId
       - ToolUseId
       - CcVersion
@@ -88,6 +88,9 @@ reference:
     desc: Finding transcripts on disk and tracking what has been ingested.
     contents:
       - TranscriptDiscovery
+      - find_transcript
+      - find_transcript_sync
+      - TranscriptExpiredError
       - CLAUDE_PROJECTS_DIR
       - FileStateStore
   - title: Backends
@@ -133,68 +136,68 @@ reference:
   - title: Sentiment domain
     desc: Conversation buckets and a composable score spec around any inference engine.
     contents:
-      - domains.sentiment.ConversationBucket
-      - domains.sentiment.ConversationBucketer
-      - domains.sentiment.BucketKey
-      - domains.sentiment.BucketIndex
-      - domains.sentiment.BUCKET_MINUTES
-      - domains.sentiment.extract_bucket_keys
-      - domains.sentiment.SentimentScore
-      - domains.sentiment.InferenceEngine
-      - domains.sentiment.FilteredEngine
-      - domains.sentiment.ScoreSpec
-      - domains.sentiment.ScoreStage
-      - domains.sentiment.build_score_spec
-      - domains.sentiment.flag_frustration
-      - domains.sentiment.clamp_positive
-      - domains.sentiment.clamp_resume
-      - domains.sentiment.demote_mild_irritation
-      - domains.sentiment.Lexicon
+      - sentiment.ConversationBucket
+      - sentiment.ConversationBucketer
+      - sentiment.BucketKey
+      - sentiment.BucketIndex
+      - sentiment.BUCKET_MINUTES
+      - sentiment.extract_bucket_keys
+      - sentiment.SentimentScore
+      - sentiment.InferenceEngine
+      - sentiment.FilteredEngine
+      - sentiment.ScoreSpec
+      - sentiment.ScoreStage
+      - sentiment.build_score_spec
+      - sentiment.flag_frustration
+      - sentiment.clamp_positive
+      - sentiment.clamp_resume
+      - sentiment.demote_mild_irritation
+      - sentiment.Lexicon
   - title: Mining domain
-    desc: Feedback detectors, confidence calibration, candidate filtering, and verdicts.
+    desc: Feedback detectors, confidence calibration, candidate filtering, and the feedback store.
     contents:
-      - domains.mining.MiningSignal
-      - domains.mining.CandidateSignal
-      - domains.mining.Confidence
-      - domains.mining.NOISE_FLOOR
-      - domains.mining.effective_confidence
-      - domains.mining.DEFAULT_DETECTORS
-      - domains.mining.iter_user_message_signals
-      - domains.mining.iter_tool_denial_signals
-      - domains.mining.iter_plan_rejection_signals
-      - domains.mining.iter_plan_reentry_signals
-      - domains.mining.iter_interrupt_marker_signals
-      - domains.mining.iter_review_comment_signals
-      - domains.mining.DENIAL_PREFIX
-      - domains.mining.USER_SAID_MARKER
-      - domains.mining.USER_SAID_TRAILER
-      - domains.mining.SourceKind
-      - domains.mining.FeedbackCandidate
-      - domains.mining.DedupKey
-      - domains.mining.dedup_key
-      - domains.mining.CandidateFilterSpec
-      - domains.mining.build_candidate_filter
-      - domains.mining.at_least
-      - domains.mining.only_kinds
-      - domains.mining.apply_candidate_filter
-      - domains.mining.ContextSnapshot
-      - domains.mining.ContextTurn
-      - domains.mining.build_snapshot
-      - domains.mining.render_turn
-      - domains.mining.render_turns
-      - domains.mining.ReviewComment
-      - domains.mining.ReviewFormat
-      - domains.mining.extract_all
-      - domains.mining.FeedbackStore
-      - domains.mining.Stats
-      - domains.mining.VerdictLike
-      - domains.mining.VerdictStoreMixin
-      - domains.mining.run_verdicts
-      - domains.mining.sample_audit
-      - domains.mining.Metrics
-      - domains.mining.AuditEstimate
-      - domains.mining.exact_upper_bound
-      - domains.mining.GoldenRow
-      - domains.mining.golden_result
-      - domains.mining.flip_pairs
-      - domains.mining.structured_judge
+      - mining.MiningSignal
+      - mining.CandidateSignal
+      - mining.Confidence
+      - mining.NOISE_FLOOR
+      - mining.effective_confidence
+      - mining.DEFAULT_DETECTORS
+      - mining.iter_user_message_signals
+      - mining.iter_tool_denial_signals
+      - mining.iter_plan_rejection_signals
+      - mining.iter_plan_reentry_signals
+      - mining.iter_interrupt_marker_signals
+      - mining.iter_review_comment_signals
+      - mining.DENIAL_PREFIX
+      - mining.USER_SAID_MARKER
+      - mining.USER_SAID_TRAILER
+      - mining.SourceKind
+      - mining.FeedbackCandidate
+      - mining.DedupKey
+      - mining.dedup_key
+      - mining.CandidateFilterSpec
+      - mining.build_candidate_filter
+      - mining.at_least
+      - mining.only_kinds
+      - mining.apply_candidate_filter
+      - mining.ReviewComment
+      - mining.ReviewFormat
+      - mining.extract_all
+      - mining.FeedbackStore
+      - mining.Stats
+  - title: Judge
+    desc: LLM verdict passes over the mined corpus — structured judging, audits, and eval math.
+    contents:
+      - judge.VerdictLike
+      - judge.VerdictStoreMixin
+      - judge.run_verdicts
+      - judge.sample_audit
+      - judge.Metrics
+      - judge.AuditEstimate
+      - judge.exact_upper_bound
+      - judge.GoldenRow
+      - judge.golden_result
+      - judge.flip_pairs
+      - judge.structured_judge
+      - judge.run_structured
+      - judge.resolved_model

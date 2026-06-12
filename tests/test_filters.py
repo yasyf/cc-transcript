@@ -10,7 +10,7 @@ from cc_transcript.filters import JUNK_USER_MESSAGE_RE, FilterConfig, apply_filt
 from cc_transcript.models import (
     AssistantEvent,
     EntryMeta,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     OtherEvent,
     SessionId,
@@ -98,7 +98,7 @@ def meta(
     entrypoint: str | None = "cli",
 ) -> EntryMeta:
     return EntryMeta(
-        uuid=EntryUuid("u"),
+        uuid=EventUuid("u"),
         parent_uuid=None,
         session_id=SessionId("s"),
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
