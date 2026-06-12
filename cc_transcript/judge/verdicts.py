@@ -16,17 +16,18 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 
 import anyio
 
-from cc_transcript.domains.mining.store import now
+from cc_transcript.mining.store import now
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from cc_transcript.domains.mining.candidates import DedupKey
+    from cc_transcript.context import Fidelity
+    from cc_transcript.mining.candidates import DedupKey
     from cc_transcript.store import FileStateStore
 
 EVENT_COLUMNS = (
     "e.id, e.dedup_key, e.source_kind, e.occurred_at, e.text, "
-    "e.payload_json, e.context_json, e.session_id, e.origin_path"
+    "e.payload_json, e.context_json, e.session_id, e.event_uuid"
 )
 
 VERDICT_DDL_TEMPLATE = """
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   {summary} TEXT NOT NULL,
   confidence REAL NOT NULL,
   rationale TEXT NOT NULL,
+  fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
   judged_at TEXT NOT NULL,
   UNIQUE(dedup_key, role, prompt_version, model)
 );
@@ -105,9 +107,14 @@ class VerdictStoreMixin:
         )
 
     async def record_verdict(
-        self, key: DedupKey, verdict: VerdictLike, *, role: str, prompt_version: int, model: str
+        self, key: DedupKey, verdict: VerdictLike, *, role: str, prompt_version: int, model: str, fidelity: Fidelity
     ) -> None:
         """Records one verdict, idempotently, keyed by ``(dedup_key, role, prompt_version, model)``.
+
+        Fidelity sits outside the unique key: re-recording an existing verdict
+        is a no-op, except that a ``'full'``-fidelity verdict replaces a
+        ``'summary'`` one — the re-judge path :meth:`unjudged` opens with
+        ``refresh_summary=True``.
 
         Args:
             key: The judged event's dedup key.
@@ -115,12 +122,19 @@ class VerdictStoreMixin:
             role: Who produced it, e.g. ``judge`` or ``auditor``.
             prompt_version: The prompt version that produced it.
             model: The resolved model name that produced it.
+            fidelity: Whether the judged window rendered at ``'full'`` fidelity
+                or from ``'summary'`` previews.
         """
         await self.store.conn.execute(
-            f"INSERT OR IGNORE INTO {self.VERDICT_TABLE} ("
+            f"INSERT INTO {self.VERDICT_TABLE} ("
             f"dedup_key, role, prompt_version, model, category, {self.ACCEPTED_COLUMN}, "
-            f"{self.SUMMARY_COLUMN}, confidence, rationale, judged_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"{self.SUMMARY_COLUMN}, confidence, rationale, fidelity, judged_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(dedup_key, role, prompt_version, model) DO UPDATE SET "
+            f"category = excluded.category, {self.ACCEPTED_COLUMN} = excluded.{self.ACCEPTED_COLUMN}, "
+            f"{self.SUMMARY_COLUMN} = excluded.{self.SUMMARY_COLUMN}, confidence = excluded.confidence, "
+            "rationale = excluded.rationale, fidelity = excluded.fidelity, judged_at = excluded.judged_at "
+            "WHERE fidelity = 'summary' AND excluded.fidelity = 'full'",
             (
                 key,
                 role,
@@ -131,12 +145,19 @@ class VerdictStoreMixin:
                 verdict.summary,
                 verdict.confidence,
                 verdict.rationale,
+                fidelity,
                 now(),
             ),
         )
 
     async def unjudged(
-        self, *, role: str, prompt_version: int, model: str, limit: int | None = None
+        self,
+        *,
+        role: str,
+        prompt_version: int,
+        model: str,
+        limit: int | None = None,
+        refresh_summary: bool = False,
     ) -> list[dict[str, object]]:
         """Returns events lacking a verdict for ``(role, prompt_version, model)``, oldest first.
 
@@ -145,15 +166,19 @@ class VerdictStoreMixin:
             prompt_version: The prompt version the verdict must carry.
             model: The resolved model name the verdict must carry.
             limit: When set, the maximum number of rows to return.
+            refresh_summary: When True, also re-yields events whose verdict was
+                recorded at ``fidelity='summary'``, so they can be re-judged at
+                full fidelity once their windows hydrate again.
 
         Returns:
             One dict per event with the columns needed to build its prompt.
         """
+        miss = "(t.id IS NULL OR t.fidelity = 'summary')" if refresh_summary else "t.id IS NULL"
         query = (
             f"SELECT {EVENT_COLUMNS} FROM feedback_events e "
             f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
             "AND t.role = ? AND t.prompt_version = ? AND t.model = ? "
-            "WHERE t.id IS NULL ORDER BY e.id"
+            f"WHERE {miss} ORDER BY e.id"
         )
         params: tuple[object, ...] = (role, prompt_version, model)
         if limit is not None:
@@ -396,7 +421,7 @@ class FlipReport:
 
 async def run_verdicts[V](
     rows: Sequence[Mapping[str, object]],
-    prompt_for: Callable[[Mapping[str, object]], str],
+    prompt_for: Callable[[Mapping[str, object]], str | Awaitable[str]],
     judge: Callable[[str], Awaitable[V]],
     persist: Callable[[Mapping[str, object], V], Awaitable[None]],
     *,
@@ -411,7 +436,8 @@ async def run_verdicts[V](
 
     Args:
         rows: The rows to judge.
-        prompt_for: Builds one row's prompt.
+        prompt_for: Builds one row's prompt; sync, or async for prompts that
+            hydrate their context window first.
         judge: Turns one prompt into a verdict payload, e.g. ``structured_judge(...)``.
         persist: Persists one row's verdict, e.g. ``store.record_verdict`` applied.
         concurrency: The maximum number of concurrent judge calls.
@@ -425,7 +451,11 @@ async def run_verdicts[V](
     async def worker(row: Mapping[str, object]) -> None:
         async with limiter:
             try:
-                verdict = await judge(prompt_for(row))
+                match prompt_for(row):
+                    case str() as prompt:
+                        verdict = await judge(prompt)
+                    case awaitable:
+                        verdict = await judge(await awaitable)
             except Exception:
                 counts["failed"] += 1
                 return

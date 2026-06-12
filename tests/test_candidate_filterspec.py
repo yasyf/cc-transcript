@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from cc_transcript.domains.mining import (
+from cc_transcript.context import ContextWindow
+from cc_transcript.mining import (
     HIGH,
     MEDIUM,
     NOISE_FLOOR,
@@ -13,7 +14,6 @@ from cc_transcript.domains.mining import (
     TRANSCRIPT_MESSAGE,
     CandidateSignal,
     Confidence,
-    ContextSnapshot,
     FeedbackCandidate,
     SourceKind,
     dedup_key,
@@ -22,7 +22,7 @@ from cc_transcript.domains.mining import (
     strong,
     weak,
 )
-from cc_transcript.domains.mining.filterspec import (
+from cc_transcript.mining.filterspec import (
     CandidateClause,
     CandidateFilterSpec,
     ConfidenceAtLeast,
@@ -37,7 +37,9 @@ from cc_transcript.domains.mining.filterspec import (
 )
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-EMPTY_CONTEXT = ContextSnapshot(before=(), trigger=None, after=())
+EMPTY_WINDOW = ContextWindow(
+    anchor=None, before=(), trigger=None, after=(), fidelity="summary", preview_chars=200, origin="migrated"
+)
 
 
 def candidate(
@@ -51,7 +53,7 @@ def candidate(
         source_kind=kind,
         occurred_at=BASE,
         text=text,
-        context=EMPTY_CONTEXT,
+        window=EMPTY_WINDOW,
         signal=signal,
     )
 

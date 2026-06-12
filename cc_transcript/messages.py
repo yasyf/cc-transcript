@@ -6,7 +6,7 @@ from typing import Literal, NamedTuple
 from cc_transcript.models import SessionId
 
 
-class ToolCall(NamedTuple):
+class MessageToolCall(NamedTuple):
     """A single tool invocation within a message: the tool ``name`` and optional target file path."""
 
     name: str
@@ -20,7 +20,7 @@ class UserMessage(NamedTuple):
     timestamp: datetime
     session_id: SessionId
     uuid: str
-    tool_calls: tuple[ToolCall, ...]
+    tool_calls: tuple[MessageToolCall, ...]
     thinking_chars: int
     cc_version: str
     role: Literal["user"] = "user"
@@ -33,7 +33,7 @@ class AssistantMessage(NamedTuple):
     timestamp: datetime
     session_id: SessionId
     uuid: str
-    tool_calls: tuple[ToolCall, ...]
+    tool_calls: tuple[MessageToolCall, ...]
     thinking_chars: int
     claude_model: str
     role: Literal["assistant"] = "assistant"

@@ -6,10 +6,7 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
-from cc_transcript.domains.mining.candidates import DedupKey
-from cc_transcript.domains.mining.context import ContextTurn, clip, render_turn, render_turns
-from cc_transcript.domains.mining.store import FEEDBACK_DDL, FeedbackStore
-from cc_transcript.domains.mining.verdicts import (
+from cc_transcript.judge.verdicts import (
     AuditEstimate,
     GoldenResult,
     GoldenRow,
@@ -21,6 +18,8 @@ from cc_transcript.domains.mining.verdicts import (
     run_verdicts,
     sample_audit,
 )
+from cc_transcript.mining.candidates import DedupKey
+from cc_transcript.mining.store import FEEDBACK_DDL, FeedbackStore
 from cc_transcript.store import FileStateStore
 
 if TYPE_CHECKING:
@@ -39,6 +38,7 @@ CREATE TABLE IF NOT EXISTS triage (
   what_claude_did TEXT NOT NULL,
   confidence REAL NOT NULL,
   rationale TEXT NOT NULL,
+  fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
   judged_at TEXT NOT NULL,
   UNIQUE(dedup_key, role, prompt_version, model)
 );
@@ -145,16 +145,18 @@ def test_verdict_store_roundtrip(
                 )
             before = await store.unjudged(role="judge", prompt_version=1, model="sonnet")
             for _ in range(2):
-                await store.record_verdict(DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet")
+                await store.record_verdict(
+                    DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity="full"
+                )
             count_cur = await store.store.conn.execute(f"SELECT COUNT(*) AS n FROM {store_cls.VERDICT_TABLE}")
             physical_cur = await store.store.conn.execute(
-                f"SELECT {store_cls.ACCEPTED_COLUMN} AS a, {store_cls.SUMMARY_COLUMN} AS s "
+                f"SELECT {store_cls.ACCEPTED_COLUMN} AS a, {store_cls.SUMMARY_COLUMN} AS s, fidelity "
                 f"FROM {store_cls.VERDICT_TABLE}"
             )
             return {
                 "before": [row["dedup_key"] for row in before],
                 "rows": [row["n"] async for row in count_cur][0],
-                "physical": [(row["a"], row["s"]) async for row in physical_cur],
+                "physical": [(row["a"], row["s"], row["fidelity"]) async for row in physical_cur],
                 "after": [
                     row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1, model="sonnet")
                 ],
@@ -168,7 +170,7 @@ def test_verdict_store_roundtrip(
     result = anyio.run(go)
     assert result["before"] == ["k1", "k2"]
     assert result["rows"] == 1
-    assert result["physical"] == [(1, "Force-pushed")]
+    assert result["physical"] == [(1, "Force-pushed", "full")]
     assert result["after"] == ["k2"]
     assert result["other_model"] == ["k1", "k2"]
     judged = result["judged"]
@@ -356,40 +358,73 @@ def test_flip_pairs_reports_only_side_changes_over_the_overlap() -> None:
     assert flip_pairs([], []).rate is None
 
 
-@pytest.mark.parametrize(
-    ("text", "limit", "expected"),
-    [
-        pytest.param("short", 10, "short", id="under-limit"),
-        pytest.param("exactly10!", 10, "exactly10!", id="at-limit"),
-        pytest.param("hello world", 8, "hello wo…", id="truncated"),
-        pytest.param("hello      world", 8, "hello…", id="rstripped-before-ellipsis"),
-    ],
-)
-def test_clip(text: str, limit: int, expected: str) -> None:
-    assert clip(text, limit) == expected
-
-
-def test_render_turn_includes_tool_inputs_padding_missing_ones() -> None:
-    turn = ContextTurn(
-        role="assistant", text="running checks", tool_calls=("Bash", "Read"), tool_inputs=("uv run pytest",)
+def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(tmp_path: Path) -> None:
+    summary_verdict = PlainVerdict(
+        category="wrong_approach", summary="from previews", confidence=0.6, rationale="summary window", accepted=False
     )
-    assert render_turn(turn) == "assistant: running checks\n  Bash(uv run pytest)\n  Read()"
+    full_verdict = PlainVerdict(
+        category="wrong_approach", summary="from transcript", confidence=0.9, rationale="hydrated", accepted=True
+    )
+
+    async def record(store: GenericStore, verdict: PlainVerdict, fidelity: str) -> None:
+        await store.record_verdict(
+            DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity=fidelity
+        )
+
+    async def go() -> dict[str, object]:
+        db = await FileStateStore.open(
+            tmp_path / "feedback.db", extra_schema=FEEDBACK_DDL + GenericStore.verdicts_ddl()
+        )
+        async with GenericStore(db) as store:
+            await store.store.conn.execute(
+                INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "text k1")
+            )
+            await record(store, summary_verdict, "summary")
+            plain = await store.unjudged(role="judge", prompt_version=1, model="sonnet")
+            refresh = await store.unjudged(role="judge", prompt_version=1, model="sonnet", refresh_summary=True)
+            await record(store, full_verdict, "full")
+            after_full = await store.unjudged(role="judge", prompt_version=1, model="sonnet", refresh_summary=True)
+            await record(store, summary_verdict, "summary")
+            return {
+                "plain": plain,
+                "refresh": [row["dedup_key"] for row in refresh],
+                "after_full": after_full,
+                "judged": await store.judged(role="judge", prompt_version=1),
+            }
+
+    result = anyio.run(go)
+    assert result["plain"] == []
+    assert result["refresh"] == ["k1"]
+    assert result["after_full"] == []
+    judged = result["judged"]
+    assert isinstance(judged, list) and len(judged) == 1
+    assert (judged[0]["summary"], judged[0]["accepted"]) == ("from transcript", 1)
 
 
-def test_render_turn_clips_text_and_inputs() -> None:
-    turn = ContextTurn(role="assistant", text="x" * 20, tool_calls=("Bash",), tool_inputs=("y" * 20,))
-    assert render_turn(turn, 5) == f"assistant: {'x' * 5}…\n  Bash({'y' * 5}…)"
+def test_run_verdicts_awaits_an_async_prompt_for() -> None:
+    rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(3)]
+    persisted: list[tuple[str, str]] = []
 
+    async def prompt_for(row: Mapping[str, object]) -> str:
+        await anyio.sleep(0)
+        return f"prompt:{row['text']}"
 
-def test_render_turns_joins_and_marks_empty_windows() -> None:
-    assert render_turns([]) == "(none)"
-    turns = [ContextTurn(role="user", text="hi"), ContextTurn(role="assistant", text="yo")]
-    assert render_turns(turns) == "user: hi\nassistant: yo"
+    async def judge(prompt: str) -> str:
+        return prompt.upper()
+
+    async def persist(row: Mapping[str, object], verdict: str) -> None:
+        persisted.append((str(row["dedup_key"]), verdict))
+
+    async def go() -> tuple[int, int]:
+        return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
+
+    assert anyio.run(go) == (3, 0)
+    assert sorted(persisted) == [("k0", "PROMPT:T0"), ("k1", "PROMPT:T1"), ("k2", "PROMPT:T2")]
 
 
 def test_resolved_model_matches_the_backend_table() -> None:
     spawnllm = pytest.importorskip("spawnllm", reason="[llm] extra not installed")
-    from cc_transcript.domains.mining.llm import resolved_model
+    from cc_transcript.judge.llm import resolved_model
 
     assert resolved_model("medium") == spawnllm.ClaudeCliBackend.models["medium"]
 
@@ -400,7 +435,7 @@ def test_structured_judge_defers_the_structured_call() -> None:
 
     from pydantic import BaseModel
 
-    from cc_transcript.domains.mining.llm import structured_judge
+    from cc_transcript.judge.llm import structured_judge
 
     class Toy(BaseModel):
         value: int

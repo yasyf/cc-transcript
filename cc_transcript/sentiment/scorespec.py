@@ -19,8 +19,6 @@ from typing import TYPE_CHECKING
 
 import orjson
 
-from cc_transcript.domains.sentiment.buckets import SentimentScore
-from cc_transcript.domains.sentiment.lexicon import Lexicon
 from cc_transcript.filterspec import (
     FRUSTRATION_GROUPS,
     MILD_IMPATIENCE_GROUPS,
@@ -31,6 +29,8 @@ from cc_transcript.filterspec import (
     compile_groups,
     normalize_bare,
 )
+from cc_transcript.sentiment.buckets import SentimentScore
+from cc_transcript.sentiment.lexicon import Lexicon
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

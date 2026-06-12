@@ -19,7 +19,7 @@ import pytest
 from cc_transcript.filterspec import MILD_IMPATIENCE_GROUPS, SHORT_MESSAGE_MAX_WORDS, compile_groups
 from cc_transcript.models import UserEvent
 from cc_transcript.parser import parse_events_from_bytes
-from cc_transcript.domains.sentiment.lexicon import NLP, Lexicon, rust_lexicon
+from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
 from tests.test_backend_parity import real_corpus
 
 POSITIVE_FLOOR = 3

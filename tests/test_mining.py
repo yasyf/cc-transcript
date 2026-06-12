@@ -8,20 +8,10 @@ from pathlib import Path
 import anyio
 import pytest
 
-from cc_transcript.models import (
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
-    EntryUuid,
-    ModeEvent,
-    SessionId,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseId,
-    UserEvent,
-)
-from cc_transcript.domains.mining import (
+from cc_transcript.activity import SessionActivity
+from cc_transcript.context import ContextWindow, capture_window
+from cc_transcript.ids import EventRef, tool_digest
+from cc_transcript.mining import (
     DENIAL_PREFIX,
     HIGH,
     INTERRUPT_REJECTION,
@@ -30,19 +20,15 @@ from cc_transcript.domains.mining import (
     NOISE_FLOOR,
     NONE,
     PLAN_REVIEW,
-    TOOL_INPUT_LIMIT,
     TRANSCRIPT_MESSAGE,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
     CandidateSignal,
-    ContextSnapshot,
-    ContextTurn,
     FeedbackCandidate,
     FeedbackStore,
     ReviewComment,
     ReviewFormat,
     Stats,
-    build_snapshot,
     dedup_key,
     effective_confidence,
     iter_interrupt_marker_signals,
@@ -52,10 +38,23 @@ from cc_transcript.domains.mining import (
     iter_tool_denial_signals,
     iter_user_message_signals,
     noise,
-    summarize_tool_input,
     weak,
 )
-from cc_transcript.domains.mining.confidence import from_payload
+from cc_transcript.mining.confidence import from_payload
+from cc_transcript.models import (
+    AssistantEvent,
+    CcVersion,
+    ContentBlock,
+    EntryMeta,
+    EventUuid,
+    ModeEvent,
+    SessionId,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    ToolUseId,
+    UserEvent,
+)
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("sess-1")
@@ -63,7 +62,7 @@ SESSION = SessionId("sess-1")
 
 def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
     return EntryMeta(
-        uuid=EntryUuid(uuid),
+        uuid=EventUuid(uuid),
         parent_uuid=None,
         session_id=SESSION,
         timestamp=BASE + timedelta(seconds=secs),
@@ -96,93 +95,64 @@ def denial_content(said: str) -> str:
     return f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}{said}\n{USER_SAID_TRAILER} will follow."
 
 
+def anchor(uuid: str) -> EventRef:
+    return EventRef(SESSION, EventUuid(uuid))
+
+
 def test_dedup_key_stable_and_content_derived() -> None:
     assert dedup_key("sess-1", "transcript_message", "hi") == dedup_key("sess-1", "transcript_message", "hi")
     assert dedup_key("sess-1", "transcript_message", "hi") != dedup_key("sess-1", "transcript_message", "bye")
     assert len(dedup_key("a", "b")) == 64
 
 
-def test_build_snapshot_before_trigger_after() -> None:
+def test_capture_window_wraps_turns_around_the_feedback_anchor() -> None:
     events = [
         user("u0", "first ask"),
-        assistant("a0", "working on it"),
-        user("u1", "the feedback"),
-        assistant("a1", "fixed"),
+        assistant("a0", "working on it", blocks=(TextBlock("working on it"),), secs=1),
+        user("u1", "the feedback", secs=2),
+        assistant("a1", "fixed", blocks=(TextBlock("fixed"),), secs=3),
     ]
-    snap = build_snapshot(events, 2)
-    assert isinstance(snap, ContextSnapshot)
-    assert snap.trigger is not None
-    assert snap.trigger.role == "assistant"
-    assert snap.trigger.text == "working on it"
-    assert [turn.text for turn in snap.before] == ["first ask", "working on it"]
-    assert [turn.text for turn in snap.after] == ["fixed"]
+    window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"))
+    assert isinstance(window, ContextWindow)
+    assert window.anchor == anchor("u1")
+    assert (window.fidelity, window.origin) == ("full", "live")
+    assert [ref.preview for ref in window.before] == ["user: first ask\nassistant: working on it"]
+    assert window.trigger is not None
+    assert window.trigger.preview == "user: the feedback\nassistant: fixed"
+    assert window.after == ()
 
 
-@pytest.mark.parametrize(
-    ("name", "input", "expected"),
-    [
-        ("Bash", {"command": "uv run pytest"}, "uv run pytest"),
-        ("Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}, "/a.py\n- x = 1\n+ x = 2"),
-        (
-            "MultiEdit",
-            {"file_path": "/a.py", "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c"}]},
-            "/a.py\n- a\n+ b",
-        ),
-        ("Write", {"file_path": "/b.py", "content": "print(1)"}, "/b.py\nprint(1)"),
-        ("ExitPlanMode", {"plan": "do the thing"}, "do the thing"),
-        ("Task", {"prompt": "explore the repo"}, "explore the repo"),
-        ("Agent", {"prompt": "review the diff"}, "review the diff"),
-        ("Grep", {"pattern": "foo"}, '{"pattern": "foo"}'),
-    ],
-    ids=["bash", "edit", "multiedit", "write", "exit_plan", "task", "agent", "fallback_json"],
-)
-def test_summarize_tool_input_extracts_the_action(name: str, input: dict[str, object], expected: str) -> None:
-    assert summarize_tool_input(name, input) == expected
-
-
-def test_summarize_tool_input_truncates() -> None:
-    assert summarize_tool_input("Bash", {"command": "x" * (TOOL_INPUT_LIMIT + 100)}) == "x" * TOOL_INPUT_LIMIT
-
-
-def test_build_snapshot_trigger_carries_tool_inputs() -> None:
+def test_capture_window_previews_carry_tool_actions_and_digests() -> None:
+    bash_input = {"command": "rm -rf build"}
+    edit_input = {"file_path": "/a.py", "old_string": "x", "new_string": "y"}
     events = [
+        user("u0", "go ahead"),
         assistant(
             "a0",
-            "running it",
             blocks=(
-                ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "rm -rf build"}),
-                ToolUseBlock(id=ToolUseId("t2"), name="Edit", input={"file_path": "/a.py", "old_string": "x", "new_string": "y"}),
+                ToolUseBlock(id=ToolUseId("t1"), name="Bash", input=bash_input),
+                ToolUseBlock(id=ToolUseId("t2"), name="Edit", input=edit_input),
             ),
+            secs=1,
         ),
-        user("u0", "no, stop"),
+        user("u1", "no, stop", secs=2),
     ]
-    snap = build_snapshot(events, 1)
-    assert snap.trigger is not None
-    assert snap.trigger.tool_calls == ("Bash", "Edit")
-    assert snap.trigger.tool_inputs == ("rm -rf build", "/a.py\n- x\n+ y")
+    window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"))
+    assert window.before[-1].preview == "user: go ahead\nrm -rf build\nEdit /a.py\n- x\n+ y"
+    assert window.before[-1].tool_digests == (tool_digest("Bash", bash_input), tool_digest("Edit", edit_input))
 
 
-def test_snapshot_json_round_trips_tool_inputs() -> None:
-    snap = ContextSnapshot(
-        before=(ContextTurn(role="user", text="hi"),),
-        trigger=ContextTurn(role="assistant", text="ran it", tool_calls=("Bash",), tool_inputs=("ls -la",)),
-        after=(),
-    )
-    assert ContextSnapshot.from_json(snap.to_json()) == snap
-
-
-def test_snapshot_from_legacy_json_defaults_tool_inputs_empty() -> None:
-    legacy = json.dumps(
-        {
-            "before": [],
-            "trigger": {"role": "assistant", "text": "ran it", "tool_calls": ["Bash"]},
-            "after": [],
-        }
-    )
-    snap = ContextSnapshot.from_json(legacy)
-    assert snap.trigger is not None
-    assert snap.trigger.tool_calls == ("Bash",)
-    assert snap.trigger.tool_inputs == ()
+def test_capture_window_clips_previews_to_the_persisted_budget() -> None:
+    events = [
+        user("u0", "go"),
+        assistant(
+            "a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 300}),), secs=1
+        ),
+        user("u1", "feedback", secs=2),
+    ]
+    window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"), preview_chars=50)
+    assert window.preview_chars == 50
+    assert f"{'x' * 50}…(+250ch)" in window.before[-1].preview
 
 
 def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
@@ -194,7 +164,7 @@ def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
         user("u3", "more feedback"),
     ]
     signals = list(iter_user_message_signals(events))
-    assert [signal.event_uuid for signal in signals] == [EntryUuid("u2"), EntryUuid("u3")]
+    assert [signal.event_uuid for signal in signals] == [EventUuid("u2"), EventUuid("u3")]
     assert signals[0].trigger_index is None
     assert signals[1].trigger_index == 3
     assert signals[0].kind == TRANSCRIPT_MESSAGE
@@ -430,33 +400,44 @@ def test_iter_plan_reentry_signals_smoke() -> None:
     assert reentries[0].signal == CandidateSignal(HIGH, ("reentry_after_edit", "substantive"))
 
 
-def test_feedback_store_round_trip_preserves_signal(tmp_path: Path) -> None:
+def test_feedback_store_round_trip_preserves_signal_window_and_ref(tmp_path: Path) -> None:
+    events = [
+        user("u0", "first ask"),
+        assistant("a0", "working on it", blocks=(TextBlock("working on it"),), secs=1),
+        user("u1", "store me", secs=2),
+    ]
+    window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"))
     candidate = FeedbackCandidate(
         dedup_key=dedup_key("sess-1", "transcript_message", "store me"),
         source_kind=TRANSCRIPT_MESSAGE,
         occurred_at=BASE,
         text="store me",
-        context=ContextSnapshot(before=(), trigger=None, after=()),
+        window=window,
+        ref=anchor("u1"),
         session_id=SESSION,
-        origin_path=None,
-        origin_uuid="u0",
         cc_version="1.2.3",
-        payload={"detector": "transcript_message"},
         signal=weak("noisy", durable=False),
+        payload={"detector": "transcript_message"},
     )
 
-    async def go() -> tuple[int, Stats, list[dict[str, object]], list[dict[str, object]]]:
+    async def go() -> tuple[int, int, Stats, list[dict[str, object]], list[dict[str, object]]]:
         async with await FeedbackStore.open(tmp_path / "feedback.db") as store:
             inserted = await store.record_file_scan("/t.jsonl", 1.0, [candidate])
-            return inserted, await store.stats(), await store.recent(), await store.events()
+            rescanned = await store.record_file_scan("/t.jsonl", 2.0, [candidate])
+            return inserted, rescanned, await store.stats(), await store.recent(), await store.events()
 
-    inserted, stats, recent, events = anyio.run(go)
+    inserted, rescanned, stats, recent, rows = anyio.run(go)
     assert inserted == 1
+    assert rescanned == 0
     assert stats.total == 1
     assert stats.files == 1
     assert stats.by_source == {"transcript_message": 1}
     assert [row["text"] for row in recent] == ["store me"]
-    payload_json = events[0]["payload_json"]
+    assert (rows[0]["session_id"], rows[0]["event_uuid"]) == ("sess-1", "u1")
+    context_json = rows[0]["context_json"]
+    assert isinstance(context_json, str)
+    assert ContextWindow.from_json(context_json) == window
+    payload_json = rows[0]["payload_json"]
     assert isinstance(payload_json, str)
     payload = json.loads(payload_json)
     assert payload["detector"] == "transcript_message"

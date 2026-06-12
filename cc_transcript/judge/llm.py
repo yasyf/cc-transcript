@@ -3,7 +3,7 @@
 Argv construction and envelope parsing come from the shared ``spawnllm`` library;
 the spawn stays local (``anyio.run_process``). It uses the user's existing Claude
 Code auth (no API key). ``spawnllm`` and ``pydantic`` load lazily inside each
-function, so importing the mining domain needs no extra installed.
+function, so importing the judge package needs no extra installed.
 """
 
 from __future__ import annotations
