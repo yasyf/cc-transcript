@@ -17,7 +17,7 @@ from cc_transcript.models import (
     CcVersion,
     ContentBlock,
     EntryMeta,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     OtherEvent,
     SessionId,
@@ -42,8 +42,8 @@ INTERRUPT_MARKER = "[Request interrupted by user"
 
 def parse_meta(data: Mapping[str, Any]) -> EntryMeta:
     return EntryMeta(
-        uuid=EntryUuid(data["uuid"]),
-        parent_uuid=EntryUuid(parent) if (parent := data.get("parentUuid")) else None,
+        uuid=EventUuid(data["uuid"]),
+        parent_uuid=EventUuid(parent) if (parent := data.get("parentUuid")) else None,
         session_id=SessionId(data["sessionId"]),
         timestamp=datetime.fromisoformat(data["timestamp"]),
         cwd=data.get("cwd"),

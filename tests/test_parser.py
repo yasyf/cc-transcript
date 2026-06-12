@@ -11,7 +11,7 @@ import pytest
 from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     OtherEvent,
     SessionId,
@@ -168,8 +168,8 @@ def test_user_str_content() -> None:
     assert event.text == "  fix the bug  "
     assert event.blocks == ()
     assert event.interrupted is False
-    assert event.meta.uuid == EntryUuid("uuid-1")
-    assert event.meta.parent_uuid == EntryUuid("uuid-0")
+    assert event.meta.uuid == EventUuid("uuid-1")
+    assert event.meta.parent_uuid == EventUuid("uuid-0")
     assert event.meta.session_id == SessionId("sess-1")
     assert event.meta.timestamp == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     assert event.meta.cwd == "/repo"

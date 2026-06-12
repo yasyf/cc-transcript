@@ -5,10 +5,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from cc_transcript.ids import tool_digest
 from cc_transcript.models import (
     AssistantEvent,
     EntryMeta,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     OtherEvent,
     SessionId,
@@ -19,11 +20,14 @@ from cc_transcript.models import (
     TranscriptEvent,
     UserEvent,
 )
+from cc_transcript.tools import EditCall, ToolInputError
+
+EDIT_INPUT = {"file_path": "a.py", "old_string": "x = 1", "new_string": "x = 2"}
 
 
 def make_meta() -> EntryMeta:
     return EntryMeta(
-        uuid=EntryUuid("u1"),
+        uuid=EventUuid("u1"),
         parent_uuid=None,
         session_id=SessionId("s1"),
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
@@ -89,3 +93,21 @@ def test_match_narrows_union(event: TranscriptEvent, expected: str) -> None:
 
 def test_mode_event_has_no_meta() -> None:
     assert not hasattr(ModeEvent(session_id=SessionId("s1"), channel="mode", value="normal"), "meta")
+
+
+def test_tool_use_block_call_parses_to_edit_call() -> None:
+    call = ToolUseBlock(id=ToolUseId("t1"), name="Edit", input=EDIT_INPUT).call
+    assert isinstance(call, EditCall)
+    assert (call.file_path, call.old, call.new) == ("a.py", "x = 1", "x = 2")
+    assert call.raw == EDIT_INPUT
+
+
+def test_tool_use_block_call_is_strict() -> None:
+    with pytest.raises(ToolInputError):
+        _ = ToolUseBlock(id=ToolUseId("t1"), name="Edit", input={"file_path": "a.py"}).call
+
+
+def test_tool_use_block_digest_round_trips_through_call() -> None:
+    block = ToolUseBlock(id=ToolUseId("t1"), name="Edit", input=EDIT_INPUT)
+    assert block.digest == tool_digest("Edit", EDIT_INPUT)
+    assert block.digest == block.call.digest
