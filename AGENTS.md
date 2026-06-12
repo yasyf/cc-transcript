@@ -1,6 +1,6 @@
 # cc-transcript Development Guide
 
-Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
+Typed events for Claude Code transcripts: discovery, a superset JSONL parser — a Rust fast path and a Python reference behind one `Backend` protocol — ingestion-state tracking, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
 
 ## Repository Structure
 
@@ -11,13 +11,23 @@ cc-transcript/
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
 │   ├── backend.py      # Backend protocol + ParsedTranscript
 │   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
+│   ├── rust.py         # RustBackend — the fast path over cc_transcript._parser_rs
+│   ├── messages.py     # Distilled message projection (User/Assistant/ToolCall)
+│   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters
+│   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
 │   ├── filters.py      # Opt-in consumer-side event filtering
+│   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
+│   ├── render.py       # Pure formatting for the CLI — compact lines + stats
+│   ├── domains/        # Domain tiers: sentiment scoring + feedback mining
 │   └── store.py        # FileStateStore — SQLite ingestion-state tracking
-├── rust/             # Stub Rust extension (cc_transcript._parser_rs)
-├── tests/            # Pytest suite
-├── .github/          # CI, docs, and PyPI release workflows
-├── AGENTS.md         # This file — shared conventions
-└── README.md         # Project overview
+├── rust/               # Rust extension (cc_transcript._parser_rs)
+├── tests/              # Pytest suite
+├── docs/               # Great Docs site: guides + curated API reference
+├── .claude-plugin/     # Claude Code plugin + marketplace manifests
+├── skills/             # cc-transcript-investigate skill (CLI-driven transcript investigation)
+├── .github/            # CI, docs, and PyPI release workflows
+├── AGENTS.md           # This file — shared conventions
+└── README.md           # Project overview
 ```
 
 ## Ask Before Assuming

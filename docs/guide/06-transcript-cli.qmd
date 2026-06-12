@@ -1,0 +1,260 @@
+---
+title: The transcript CLI
+description: "Investigate Claude Code transcripts from the shell — list, stats, grep, and show form a funnel that keeps token spend proportional to what you read."
+---
+
+Transcripts are big. A few days of sessions under `~/.claude/projects` is tens
+of megabytes of JSONL, and the answer to a typical question about them — which
+prompt kicked off yesterday's refactor, where a tool call failed — lives in a
+few hundred bytes of it. The CLI is the investigation layer for that gap: four
+commands that narrow from "every transcript on disk" to "these five events", so
+neither you nor an agent reading the output ever pages raw JSONL.
+
+Real usage is `uvx cc-transcript …` — no install step, nothing to import. The
+executed cells on this page call the same entry point in-process, via
+`subprocess` and `sys.executable -m cc_transcript`, against a fixture tree
+built in the next cell — so every output you see is real CLI output,
+regenerated on every build.
+
+## A fixture tree to investigate
+
+Discovery walks `<root>/<project-dir>/<session>.jsonl`, the exact shape of
+`~/.claude/projects`. The fixture mirrors it: two projects, three sessions — a
+webapp session that fixes a failing login test (and gets interrupted mid-fix),
+an older webapp session, and an api session debugging a deploy script. The
+envelope helpers write the same JSONL shape Claude Code does, and distinct
+mtimes make newest-first ordering visible:
+
+```{python}
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(tempfile.mkdtemp()) / "projects"
+SESSIONS = {
+    "sess-9f2c": ("2026-06-09T15", "/Users/dev/webapp"),
+    "sess-41aa": ("2026-06-08T11", "/Users/dev/webapp"),
+    "sess-c3d7": ("2026-06-09T09", "/Users/dev/api"),
+}
+
+def envelope(session, n, **fields):
+    hour, cwd = SESSIONS[session]
+    return {"uuid": f"{session}-{n}", "parentUuid": None, "sessionId": session,
+            "timestamp": f"{hour}:{n:02d}:00+00:00", "cwd": cwd, "gitBranch": "main",
+            "version": "2.1.0", "isSidechain": False, "entrypoint": "cli"} | fields
+
+def user(session, n, text):
+    return envelope(session, n, type="user", message={"role": "user", "content": text})
+
+def assistant(session, n, content, stop_reason="end_turn"):
+    return envelope(session, n, type="assistant", message={
+        "role": "assistant", "model": "claude-opus-4-7",
+        "stop_reason": stop_reason, "content": content})
+
+def tool_result(session, n, tool_use_id, content, is_error=False):
+    return envelope(session, n, type="user", message={"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_use_id,
+         "content": content, "is_error": is_error}]})
+
+def write(relpath, entries, stamp):
+    path = ROOT / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    os.utime(path, (mtime := datetime.fromisoformat(stamp).timestamp(), mtime))
+    return path
+
+fix_login = [
+    user("sess-9f2c", 0, "the login test is failing on main - can you fix it?"),
+    assistant("sess-9f2c", 1, [
+        {"type": "thinking", "thinking": "Probably the new password argument. Read the test first."},
+        {"type": "tool_use", "id": "toolu_01", "name": "Read",
+         "input": {"file_path": "/Users/dev/webapp/tests/test_login.py"}},
+    ], stop_reason="tool_use"),
+    tool_result("sess-9f2c", 2, "toolu_01", 'def test_login():\n    assert authenticate("alice")'),
+    assistant("sess-9f2c", 3, [
+        {"type": "tool_use", "id": "toolu_02", "name": "Bash",
+         "input": {"command": "uv run pytest tests/test_login.py"}},
+    ], stop_reason="tool_use"),
+    tool_result("sess-9f2c", 4, "toolu_02",
+                "FAILED tests/test_login.py::test_login - TypeError: "
+                "authenticate() missing 1 required positional argument: 'password'",
+                is_error=True),
+    assistant("sess-9f2c", 5, [{"type": "text", "text":
+        "The call site predates the password argument - I'll give authenticate() a default."}]),
+    user("sess-9f2c", 6, "<system-reminder>The user opened tests/test_login.py in the IDE.</system-reminder>"),
+    user("sess-9f2c", 7, "[Request interrupted by user]"),
+    user("sess-9f2c", 8, "no - update the test to pass a password, a default would mask real bugs"),
+    assistant("sess-9f2c", 9, [{"type": "text", "text":
+        'Updated: the test now calls authenticate("alice", password="pw") and passes.'}]),
+]
+healthz = [
+    user("sess-41aa", 0, "add a /healthz endpoint that returns the build sha"),
+    assistant("sess-41aa", 1, [
+        {"type": "text", "text": "Adding it to the router."},
+        {"type": "tool_use", "id": "toolu_11", "name": "Edit",
+         "input": {"file_path": "/Users/dev/webapp/app/routes.py"}},
+    ], stop_reason="tool_use"),
+    tool_result("sess-41aa", 2, "toolu_11", "ok"),
+    assistant("sess-41aa", 3, [{"type": "text", "text": "/healthz now returns the version and sha."}]),
+]
+deploy = [
+    user("sess-c3d7", 0, "why does deploy.sh exit 1 on staging?"),
+    assistant("sess-c3d7", 1, [
+        {"type": "tool_use", "id": "toolu_21", "name": "Bash",
+         "input": {"command": "bash -x deploy.sh staging"}},
+    ], stop_reason="tool_use"),
+    tool_result("sess-c3d7", 2, "toolu_21",
+                "+ aws s3 sync ./dist s3://api-staging\nfatal: bucket does not exist",
+                is_error=True),
+    assistant("sess-c3d7", 3, [{"type": "text", "text":
+        "deploy.sh still targets the old api-staging bucket."}]),
+]
+
+write("-Users-dev-webapp/sess-41aa.jsonl", healthz, "2026-06-08T11:04")
+write("-Users-dev-api/sess-c3d7.jsonl", deploy, "2026-06-09T09:04")
+MAIN = write("-Users-dev-webapp/sess-9f2c.jsonl", fix_login, "2026-06-09T15:10")
+
+def cc(*args):
+    return subprocess.run([sys.executable, "-m", "cc_transcript", *args],
+                          capture_output=True, text=True).stdout
+
+sorted(str(path.relative_to(ROOT.parent)) for path in ROOT.rglob("*.jsonl"))
+# -> ['projects/-Users-dev-api/sess-c3d7.jsonl',
+#     'projects/-Users-dev-webapp/sess-41aa.jsonl',
+#     'projects/-Users-dev-webapp/sess-9f2c.jsonl']
+```
+
+`cc` runs one invocation and hands back stdout. The discovery commands —
+`list`, `grep`, `stats` — take `--root`, which the cells pass explicitly;
+without it they search `~/.claude/projects`. `show` takes an explicit path.
+
+## `list` — find the session
+
+When you know roughly *when* or *where* a session happened, `list` finds the
+file. One line per transcript — mtime, size, path — newest first, with a count
+trailer. `--project` filters on a project-directory substring, `--contains` on
+the file name, and `--limit 50` caps the output (`--all` lifts the cap):
+
+```bash
+uvx cc-transcript list --project webapp --limit 10
+```
+
+```{python}
+print(cc("list", "--root", str(ROOT)))
+print(cc("list", "--root", str(ROOT), "--project", "webapp"))
+```
+
+The trailer doubles as a sanity check: `2 of 3` would tell you the limit bit,
+and an empty or wrong `--root` reports `0 transcripts` instead of erroring.
+
+## `stats` — size it up before reading
+
+Before printing a single event, ask how much there is. `stats` parses the
+discovered transcripts (or explicit paths) and reports histograms over kinds,
+models, and tools, character totals for text, thinking, and tool I/O, plus the
+session count, time span, and the pushback markers — interrupts, tool errors,
+sidechain events:
+
+```bash
+uvx cc-transcript stats
+```
+
+```{python}
+print(cc("stats", "--root", str(ROOT)))
+```
+
+Three files, 18 events, two of them tool errors and one an interrupt — now you
+know whether `show` is affordable and where the friction was before reading
+anything. `--per-file` emits one block per transcript to compare sessions, and
+`--json` returns the same numbers as one machine-readable object.
+
+## `grep` — locate the moment
+
+`grep` searches a regex over event content — user and assistant text, thinking,
+and tool inputs and results — across every discovered transcript, or just the
+paths you give it. Matches print in the same compact event format under a
+per-file header, and `-C N` adds context events around each hit:
+
+```bash
+uvx cc-transcript grep "TypeError" --project webapp -C 1
+```
+
+```{python}
+print(cc("grep", "TypeError", "--root", str(ROOT), "-C", "1"))
+```
+
+The leading number on each line is the event's **index in the raw, unfiltered
+file** — assigned before any filtering, so a grep hit is always a valid
+coordinate for `show --range`. Here the failure is event 4 of `sess-9f2c`, and
+the context rows show the `Bash` call that produced it and the assistant's
+first (soon-to-be-rejected) diagnosis.
+
+Narrow further with `--kind`, `--tool` (matches a tool's calls *and* its
+correlated results), `--where text|thinking|tools`, and `-i`; `--max-matches`
+stops after 20 hits by default. `grep` exits 1 when nothing matched — handy in
+scripts, and the reason the `cc` helper deliberately ignores the return code
+(`subprocess.run` without `check=True`) while probing.
+
+## `show` — read just the window
+
+`show` prints one compact line per event: index, kind tag (`*` marks
+sidechains), timestamp, payload, truncated to `--width 100` per chunk. A bare
+`show` prints the last 200 events and a `… N earlier events hidden` notice;
+`--head N`, `--tail N`, and `--range A:B` (mutually exclusive, half-open, raw
+indexes — `A:` and `:B` leave an end open) pick the window instead. Drill into
+the grep hit:
+
+```bash
+uvx cc-transcript show ~/.claude/projects/-Users-dev-webapp/sess-9f2c.jsonl --range 3:8
+```
+
+```{python}
+print(cc("show", str(MAIN), "--range", "3:8"))
+```
+
+Five events tell the whole story: the test run, the `TypeError`, the
+assistant's plan to add a default, a `<system-reminder>` injection, and the
+user hitting interrupt. To read a long session as conversation instead of
+machinery, `--signal` keeps only substantive user and assistant turns —
+dropping tool results, structural junk, sidechains, and empty turns — while
+`--no-junk` strips just the structural noise:
+
+```{python}
+print(cc("show", str(MAIN), "--signal"))
+```
+
+Note the indexes: 2, 4, and 6 are absent. Filtering never renumbers, so
+any index you see in any output keeps meaning the same event. For full
+fidelity, `--json` emits one complete JSON object per event — every block,
+every metadata field — which is exactly why it belongs at the *end* of an
+investigation, on a slice you have already narrowed:
+
+```{python}
+print(cc("show", str(MAIN), "--range", "8:9", "--json"))
+```
+
+`--kind` keeps only named kinds, `--thinking` renders thinking text inline
+instead of a `th(Nch)` counter, and `--uuids` appends each event's uuid when
+you need to correlate with other tooling.
+
+## The funnel
+
+The four commands compose into one discipline — spend tokens in proportion to
+how sure you are:
+
+1. `list --project …` — find the right file by recency and name.
+2. `stats` — size it up: events, tools, errors, interrupts, span.
+3. `grep` — locate the moment and collect raw event indexes.
+4. `show --range A:B` — read just that window; add `--json` only once the
+   slice is small.
+
+Each step reads strictly less than the last would have. The same funnel is what
+the bundled Claude Code plugin teaches Claude to run, so an agent can answer
+"what went wrong in yesterday's session?" without ever opening the JSONL. For
+the `uvx` quick reference, see the
+[README](https://github.com/yasyf/cc-transcript#readme); for every flag and the
+underlying functions, see the [API reference](../../reference/index.qmd).

@@ -2,7 +2,9 @@
 # pyright: reportUnusedImport=false
 """Typed events for Claude Code transcripts.
 
-Discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking.
+Discovery, a superset JSONL parser — a Rust fast path and a Python reference
+behind one ``Backend`` protocol — ingestion-state tracking, and a
+transcript-investigation CLI.
 """
 
 from __future__ import annotations

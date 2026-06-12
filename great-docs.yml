@@ -23,9 +23,9 @@ keyboard_nav: true
 
 hero:
   name: cc-transcript
-  tagline: "Typed events for Claude Code transcripts: discovery, a superset JSONL parser (Python + Rust), and ingestion-state tracking."
+  tagline: "Non-lossy typed events for Claude Code transcripts: a superset JSONL parser with a Rust fast path, sentiment and feedback-mining domains, and a transcript-investigation CLI."
 
-# Narrative doc sections live alongside the dynamic API reference: Getting Started
+# Narrative doc sections live alongside the curated API reference: Getting Started
 # is a single landing page (docs/getting-started/index.qmd); Guides is a numbered
 # set under docs/guide. Both render executable Quarto cells at build time.
 sections:
@@ -37,17 +37,164 @@ sections:
     navbar_after: Getting Started
     index: true
 
+# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats).
+cli:
+  enabled: true
+  module: cc_transcript.cli
+  name: cli
+
 authors:
   - name: Yasyf Mohamedali
     role: Maintainer
     github: yasyf
     email: yasyfm@gmail.com
 
-# Curated symbol reference (public API only). Optional — without it, dynamic
-# mode documents everything in cc_transcript.__all__.
-# reference:
-#   - title: Core
-#     desc: The main entry points.
-#     contents:
-#       - SomePublicClass
-#       - some_public_function
+# Curated symbol reference (public API only). Replaces dynamic discovery
+# wholesale, which keeps internal helpers and the deprecated
+# cc_transcript.sentiment shim out of the rendered reference.
+reference:
+  - title: Events & parsing
+    desc: The typed superset event model and the parsers that produce it.
+    contents:
+      - TranscriptEvent
+      - UserEvent
+      - AssistantEvent
+      - SystemEvent
+      - ModeEvent
+      - OtherEvent
+      - ContentBlock
+      - TextBlock
+      - ThinkingBlock
+      - ToolUseBlock
+      - ToolResultBlock
+      - EntryMeta
+      - EntryUuid
+      - SessionId
+      - ToolUseId
+      - CcVersion
+      - parse_event
+      - parse_events_from_bytes
+      - parse_events_async
+      - TranscriptParser
+  - title: Messages
+    desc: The distilled message projection over events.
+    contents:
+      - BaseMessage
+      - UserMessage
+      - AssistantMessage
+      - ToolCall
+      - TranscriptMessage
+  - title: Discovery & ingestion state
+    desc: Finding transcripts on disk and tracking what has been ingested.
+    contents:
+      - TranscriptDiscovery
+      - CLAUDE_PROJECTS_DIR
+      - FileStateStore
+  - title: Backends
+    desc: One Backend protocol; a Rust fast path and a Python reference at parity.
+    contents:
+      - Backend
+      - ParsedTranscript
+      - rust.RustBackend
+      - filterspec.is_portable
+      - filterspec.spec_to_json
+  - title: Filtering
+    desc: Filters-as-data — declarative specs, composable builders, and the flag-bag config.
+    contents:
+      - FilterSpec
+      - filterspec.Clause
+      - apply_spec
+      - annotate_spec
+      - keep
+      - labels_for
+      - build_spec
+      - keep_only
+      - drop_synthetic
+      - drop_empty
+      - drop_sidechain
+      - drop_meta_flag
+      - drop_compacted
+      - drop_entrypoints
+      - drop_junk
+      - drop_phrases
+      - drop_short
+      - NOISE_SPEC
+      - FilterConfig
+      - apply_filters
+      - filterspec.JUNK_CATEGORIES
+      - USERS
+      - ASSISTANTS
+      - RESUME_PHRASE_SET
+      - TRIVIAL_ACK_SET
+      - STRUCTURAL_NOISE_RE
+      - INTERRUPT_MARKER_RE
+      - STOP_HOOK_RE
+      - JUNK_USER_MESSAGE_RE
+  - title: Sentiment domain
+    desc: Conversation buckets and a composable score spec around any inference engine.
+    contents:
+      - domains.sentiment.ConversationBucket
+      - domains.sentiment.ConversationBucketer
+      - domains.sentiment.BucketKey
+      - domains.sentiment.BucketIndex
+      - domains.sentiment.BUCKET_MINUTES
+      - domains.sentiment.extract_bucket_keys
+      - domains.sentiment.SentimentScore
+      - domains.sentiment.InferenceEngine
+      - domains.sentiment.FilteredEngine
+      - domains.sentiment.ScoreSpec
+      - domains.sentiment.ScoreStage
+      - domains.sentiment.build_score_spec
+      - domains.sentiment.flag_frustration
+      - domains.sentiment.clamp_positive
+      - domains.sentiment.clamp_resume
+      - domains.sentiment.demote_mild_irritation
+      - domains.sentiment.Lexicon
+  - title: Mining domain
+    desc: Feedback detectors, confidence calibration, candidate filtering, and verdicts.
+    contents:
+      - domains.mining.MiningSignal
+      - domains.mining.CandidateSignal
+      - domains.mining.Confidence
+      - domains.mining.NOISE_FLOOR
+      - domains.mining.effective_confidence
+      - domains.mining.DEFAULT_DETECTORS
+      - domains.mining.iter_user_message_signals
+      - domains.mining.iter_tool_denial_signals
+      - domains.mining.iter_plan_rejection_signals
+      - domains.mining.iter_plan_reentry_signals
+      - domains.mining.iter_interrupt_marker_signals
+      - domains.mining.iter_review_comment_signals
+      - domains.mining.DENIAL_PREFIX
+      - domains.mining.USER_SAID_MARKER
+      - domains.mining.USER_SAID_TRAILER
+      - domains.mining.SourceKind
+      - domains.mining.FeedbackCandidate
+      - domains.mining.DedupKey
+      - domains.mining.dedup_key
+      - domains.mining.CandidateFilterSpec
+      - domains.mining.build_candidate_filter
+      - domains.mining.at_least
+      - domains.mining.only_kinds
+      - domains.mining.apply_candidate_filter
+      - domains.mining.ContextSnapshot
+      - domains.mining.ContextTurn
+      - domains.mining.build_snapshot
+      - domains.mining.render_turn
+      - domains.mining.render_turns
+      - domains.mining.ReviewComment
+      - domains.mining.ReviewFormat
+      - domains.mining.extract_all
+      - domains.mining.FeedbackStore
+      - domains.mining.Stats
+      - domains.mining.VerdictLike
+      - domains.mining.VerdictStoreMixin
+      - domains.mining.run_verdicts
+      - domains.mining.sample_audit
+      - domains.mining.Metrics
+      - domains.mining.AuditEstimate
+      - domains.mining.exact_upper_bound
+      - domains.mining.GoldenRow
+      - domains.mining.golden_result
+      - domains.mining.flip_pairs
+      - domains.mining.structured_judge

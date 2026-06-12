@@ -1,0 +1,300 @@
+---
+title: Mining feedback
+description: "Detect user corrections — tool denials, plan rejections, interrupts, review comments — as confidence-calibrated signals you can filter, persist, and judge."
+---
+
+When a user rejects a tool call, kills a plan, or interrupts mid-turn, the
+transcript records a correction — the most direct feedback a session produces.
+The mining domain, `cc_transcript.domains.mining`, turns those shapes into data.
+Each **detector** walks a parsed event stream and yields `MiningSignal`s: neutral
+facts carrying the correction text, a calibrated confidence verdict, and
+evidence, but no policy. Your app decides what clears the bar, maps survivors to
+`FeedbackCandidate`s, and persists them. This page mines one denial end to end:
+fixture, detector, confidence, candidate, filter, verdict.
+
+## Parse a transcript with a tool denial
+
+When the user denies a tool call, Claude Code records an error tool result whose
+content starts with a fixed prefix; any reason the user typed is embedded between
+two fixed markers. The domain exports all three (`DENIAL_PREFIX`,
+`USER_SAID_MARKER`, `USER_SAID_TRAILER`), so the fixture composes a denial
+exactly as the app writes it — an assistant `Bash` call running
+`pip install requests`, rejected with "use uv, not pip":
+
+```{python}
+import json
+
+from cc_transcript import parse_events_from_bytes
+from cc_transcript.domains.mining import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+
+
+def line(record):
+    return json.dumps(record).encode()
+
+def envelope(kind, uuid, secs, message):
+    return {"type": kind, "uuid": uuid, "sessionId": "sess-1",
+            "timestamp": f"2026-01-02T03:04:{secs:02d}.000Z", "message": message}
+
+denial = f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}use uv, not pip\n{USER_SAID_TRAILER} will follow."
+
+events = parse_events_from_bytes(b"\n".join([
+    line(envelope("assistant", "a1", 5, {
+        "role": "assistant", "model": "claude-opus-4-7", "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "id": "t1", "name": "Bash",
+                     "input": {"command": "pip install requests"}}]})),
+    line(envelope("user", "u1", 9, {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "t1",
+                     "content": denial, "is_error": True}]})),
+]))
+[type(e).__name__ for e in events]
+# -> ['AssistantEvent', 'UserEvent']
+```
+
+Two events: the assistant's `tool_use` and the user's error `tool_result`. The
+correction rides inside the result block — the user event's `text` is empty — so
+a pass over user prose would never see it. That is why mining works on blocks,
+not text.
+
+## Run a detector
+
+`iter_tool_denial_signals` pairs each denial result with the `tool_use` it
+rejects, pulls the embedded "user said" text, and yields one signal per denial:
+
+```{python}
+from cc_transcript.domains.mining import iter_tool_denial_signals
+
+[signal] = iter_tool_denial_signals(events)
+(signal.kind, signal.detector, signal.text, signal.trigger_index, signal.evidence)
+# -> ('interrupt_rejection', 'denial', 'use uv, not pip', 0, {'tool': 'Bash', 'file_path': None})
+```
+
+`kind` is a `SourceKind` — the descriptive category (`interrupt_rejection`
+here); `detector` names the exact shape that fired. `text` is the user's verbatim
+correction, `trigger_index` points at the assistant turn it answers, and
+`evidence` preserves detector-specific metadata (the denied tool, the file it
+targeted). The other detectors follow the same contract:
+
+```python
+iter_tool_denial_signals(events)        # a denied tool call, embedded reason when present
+iter_plan_rejection_signals(events)     # an ExitPlanMode plan rejected with embedded text
+iter_plan_reentry_signals(events)       # plan mode re-entered after an edit cycle
+iter_interrupt_marker_signals(events)   # [Request interrupted by user] plus the correction after it
+iter_user_message_signals(events)       # every substantive user turn, scored by length and proximity
+iter_review_comment_signals(events, formats)  # inline review comments, via app-injected ReviewFormats
+```
+
+`DEFAULT_DETECTORS` bundles the first five — every detector that needs no
+configuration. Review comments are the exception: what a review message looks
+like is app policy, so you inject a `ReviewFormat` sequence (a name, a detection
+pattern, and an extractor) and the detector yields one signal per parsed comment.
+
+## Confidence: anchors and reason codes
+
+Every signal carries a `CandidateSignal`: a `Confidence` score in `[0, 1]` plus
+the reason codes that produced it. Five anchors name the band — `NONE` (0.0),
+`LOW` (0.25), `MEDIUM` (0.5), `HIGH` (0.75), `VERY_HIGH` (0.95) — and
+`NOISE_FLOOR` sits at `LOW`. A detector starts each signal at an anchor and
+moves it one 0.25 step per named reason: `substantive` (more than two
+non-structural words) promotes, `hedged` ("maybe", "up to you") and
+`short_followup` demote, `trigger_proximate` promotes, and `structural_only`
+collapses straight to `NONE`. The reasons travel with the score, so an app can
+filter on either. Our denial embeds a real correction, which is the strongest
+shape this detector produces:
+
+```{python}
+from cc_transcript.domains.mining import NOISE_FLOOR, effective_confidence
+
+(signal.signal, effective_confidence(signal.signal) >= NOISE_FLOOR)
+# -> (CandidateSignal(confidence=0.75, reasons=('embedded_text', 'substantive'), durable=True), True)
+```
+
+Contrast a denial with no embedded reason, where the only follow-up is a
+`<system-reminder>` injection — the detector still reports the fact, but scores
+it as noise:
+
+```{python}
+followup_events = parse_events_from_bytes(b"\n".join([
+    line(envelope("assistant", "a2", 20, {
+        "role": "assistant", "model": "claude-opus-4-7", "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "id": "t2", "name": "Bash",
+                     "input": {"command": "pip install lxml"}}]})),
+    line(envelope("user", "u2", 24, {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "t2",
+                     "content": f"{DENIAL_PREFIX}.", "is_error": True}]})),
+    line(envelope("user", "u3", 25, {
+        "role": "user", "content": "<system-reminder>stop hook output</system-reminder>"})),
+]))
+
+[structural] = iter_tool_denial_signals(followup_events)
+(structural.signal, effective_confidence(structural.signal) >= NOISE_FLOOR)
+# -> (CandidateSignal(confidence=0.0, reasons=('structural_only',), durable=True), False)
+```
+
+`effective_confidence` is the one accessor to use: it returns the signal's score,
+or `MEDIUM` when no signal is stored, so rows mined before calibration existed
+still pass a moderate floor instead of vanishing.
+
+## From signal to candidate
+
+A signal is a transient fact; a `FeedbackCandidate` is the durable record an app
+persists. Two helpers bridge the gap. `dedup_key` derives a SHA-256 key from
+content — session, kind, text — not from the entry uuid or file path, so
+the same pushback recorded under two transcript entries collapses to one row and
+the database stays idempotent across file moves:
+
+```{python}
+from cc_transcript.domains.mining import dedup_key
+
+key = dedup_key("sess-1", signal.kind, signal.text)
+(key == dedup_key("sess-1", signal.kind, signal.text), len(key))
+# -> (True, 64)
+```
+
+`build_snapshot` captures the conversational window around the feedback: the
+turns before, the trigger (the assistant action being corrected, its tool calls
+summarized to what they actually did), and the turns after. Together they fill a
+candidate:
+
+```{python}
+from cc_transcript.domains.mining import FeedbackCandidate, build_snapshot
+
+snapshot = build_snapshot(events, signal.event_index)
+candidate = FeedbackCandidate(
+    dedup_key=key,
+    source_kind=signal.kind,
+    occurred_at=signal.occurred_at,
+    text=signal.text,
+    context=snapshot,
+    session_id=signal.session_id,
+    origin_uuid=signal.event_uuid,
+    cc_version=signal.cc_version,
+    payload={"detector": signal.detector, **signal.evidence},
+    signal=signal.signal,
+)
+(snapshot.trigger.role, snapshot.trigger.tool_calls, snapshot.trigger.tool_inputs)
+# -> ('assistant', ('Bash',), ('pip install requests',))
+```
+
+The trigger keeps the `pip install requests` command itself — when a judge later
+reads this candidate, it sees what the assistant did, not just that the user
+objected.
+
+## Filter candidates
+
+Which candidates survive is policy, and the domain expresses it the same way the
+event layer does: as data. `CandidateFilterSpec` is the candidate-level companion
+to the event-level `FilterSpec` from [Filtering events](01-filtering-events.qmd),
+with one twist — every clause must hold for a candidate to pass. Map the noisy
+signal from earlier into a candidate too, then keep only confident
+interrupt-rejections:
+
+```{python}
+from cc_transcript.domains.mining import (
+    INTERRUPT_REJECTION,
+    apply_candidate_filter,
+    at_least,
+    build_candidate_filter,
+    only_kinds,
+)
+
+noisy = FeedbackCandidate(
+    dedup_key=dedup_key("sess-1", structural.kind, structural.text),
+    source_kind=structural.kind,
+    occurred_at=structural.occurred_at,
+    text=structural.text,
+    context=build_snapshot(followup_events, structural.event_index),
+    signal=structural.signal,
+)
+
+spec = build_candidate_filter(at_least(NOISE_FLOOR), only_kinds(INTERRUPT_REJECTION))
+[kept.text for kept in apply_candidate_filter([candidate, noisy], spec)]
+# -> ['use uv, not pip']
+```
+
+The `structural_only` candidate scores `0.0` and falls below the floor; the
+substantive one passes both clauses. Beyond `at_least` and `only_kinds`, clauses
+can match a reason code (`HasReason`), match durability (`IsDurable`), or negate
+via `CandidateClause(predicate, negate=True)`.
+
+## Verdicts and audits
+
+Detectors are recall-heavy by design — they report facts and let confidence
+de-noise. For precision, apps run an LLM judge over stored candidates.
+`run_verdicts` is the fan-out: it builds one prompt per row, runs the judge
+concurrently, and persists each verdict as it lands, so a failed call is
+retried on the next pass. The judge is any async callable returning an object
+with `category`, `summary`, `confidence`, `rationale`, and `accepted` (the
+`VerdictLike` shape). A deterministic stub keeps this page hermetic:
+
+```{python}
+from dataclasses import dataclass
+
+from cc_transcript.domains.mining import run_verdicts
+
+
+@dataclass(frozen=True)
+class Verdict:
+    category: str
+    summary: str
+    confidence: float
+    rationale: str
+    accepted: bool
+
+
+def prompt_for(row):
+    return f"Is this developer pushback worth learning from?\n\n{row['text']}"
+
+async def stub_judge(prompt):
+    pushback = "<system-reminder>" not in prompt
+    return Verdict(
+        category="tooling" if pushback else "noise",
+        summary="stub verdict",
+        confidence=0.9,
+        rationale="names a concrete alternative" if pushback else "structural text only",
+        accepted=pushback,
+    )
+
+verdicts = {}
+
+async def persist(row, verdict):
+    verdicts[row["dedup_key"]] = verdict
+
+rows = [{"dedup_key": c.dedup_key, "text": c.text} for c in (candidate, noisy)]
+judged, failed = await run_verdicts(rows, prompt_for, stub_judge, persist, concurrency=2)
+(judged, failed, verdicts[candidate.dedup_key].accepted, verdicts[noisy.dedup_key].accepted)
+# -> (2, 0, True, False)
+```
+
+In production the judge is `structured_judge` from
+`cc_transcript.domains.mining.llm` (it loads its model client lazily), rows come
+from `VerdictStoreMixin.unjudged`, and `persist` is `record_verdict` — keyed by
+`(dedup_key, role, prompt_version, model)`, so re-running a pass judges only new
+rows. Evaluating the judge itself is mechanical too: `sample_audit` draws a
+seeded, stratified audit sample over judged rows (a uniform core for headline
+numbers, a low-confidence oversample for diagnosis), and `Metrics` folds the
+audit into precision, contamination with its exact Clopper-Pearson upper bound,
+and a derived recall estimate, gated by a frozen golden fixture.
+
+Persistence runs through `FeedbackStore`, which layers a `feedback_events` table
+on the file-mtime ledger so a scan is atomic and re-scanning an unchanged file is
+a no-op. It is async SQLite, so it stays out of this page's cells:
+
+```python
+from pathlib import Path
+
+from cc_transcript.domains.mining import FeedbackStore
+
+async with await FeedbackStore.open(Path("feedback.db")) as store:
+    inserted = await store.record_file_scan(str(path), mtime, [candidate])
+    print(await store.stats())  # Stats(total=1, files=1, by_source={'interrupt_rejection': 1})
+```
+
+## Next steps
+
+The shape of this domain matches the rest of the library: the core ships
+detectors, calibration, and storage; the floor, the kinds, and the judge prompts
+are yours. For how to lay that policy out as a module, see
+[Compose your own policy](04-compose-your-own-policy.qmd); for every exported
+name, see the [API reference](../../reference/index.qmd).
