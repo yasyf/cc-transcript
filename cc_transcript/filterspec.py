@@ -30,10 +30,10 @@ import orjson
 from cc_transcript.models import AssistantEvent, ModeEvent, OtherEvent, SystemEvent, ToolUseBlock, UserEvent
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterable, Iterator, Sequence
     from typing import Any
 
-    from cc_transcript.models import EntryMeta, TranscriptEvent
+    from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
 
 EventKind = Literal["user", "assistant", "system", "mode", "other"]
 MetaFlagName = Literal["is_sidechain", "is_meta", "is_compact_summary", "is_visible_in_transcript_only"]
@@ -366,6 +366,16 @@ def event_meta(event: TranscriptEvent) -> EntryMeta | None:
             return meta
         case _:
             return None
+
+
+def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock]:
+    return {
+        block.id: block
+        for event in events
+        if isinstance(event, AssistantEvent)
+        for block in event.blocks
+        if isinstance(block, ToolUseBlock)
+    }
 
 
 def normalize_bare(text: str, strip_trailing: str = TRAILING_PUNCT) -> str:

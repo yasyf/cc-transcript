@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import orjson
+import pytest
+from click.testing import CliRunner
+
+from cc_transcript.cli import cli
+from cc_transcript.parser import TranscriptParser
+from cc_transcript.render import human_size
+
+BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+MODEL = "claude-opus-4-7"
+
+EXPECTED_SHOW = (
+    "    0 user  03:04:05 hello world",
+    '    1 asst  03:04:06 [claude-opus-4-7] "hi there"',
+    "    2 asst  03:04:07 [claude-opus-4-7] th(12ch) Read(/x)",
+    "    3 user  03:04:08 <-Read (9ch) ok output",
+    "    4 asst  03:04:09 [claude-opus-4-7] Bash(ls)",
+    "    5 user  03:04:10 <-Bash[err] (4ch) boom",
+    "    6 user  03:04:11 [int] [Request interrupted by user]",
+    "    7 user  03:04:12 <system-reminder>do not respond</system-reminder>",
+    "    8 user* 03:04:13 subagent prompt",
+    "    9 sys   03:04:14 stop_hook_summary: hook ran",
+    "   10 mode           mode=normal",
+    "   11 other          summary",
+    "   12 user  03:04:17 final question",
+)
+
+EXPECTED_STATS = "\n".join(
+    (
+        "files        1",
+        "events       13",
+        "kinds        user 7 · assistant 3 · system 1 · mode 1 · other 1",
+        "models       claude-opus-4-7 3",
+        "tools        Read 1 · Bash 1",
+        "text         126B",
+        "thinking     12B",
+        "tool io      47B",
+        "sessions     1",
+        "span         2026-01-02 03:04:05 → 2026-01-02 03:04:17",
+        "interrupts   1",
+        "tool errors  1",
+        "sidechain    1",
+    )
+)
+
+USER0_DICT = {
+    "i": 0,
+    "kind": "user",
+    "meta": {
+        "uuid": "u0",
+        "parent_uuid": None,
+        "session_id": "sess-1",
+        "timestamp": "2026-01-02T03:04:05+00:00",
+        "cwd": "/repo",
+        "git_branch": "main",
+        "cc_version": "1.2.3",
+        "is_sidechain": False,
+        "is_meta": False,
+        "entrypoint": "cli",
+        "is_compact_summary": False,
+        "is_visible_in_transcript_only": False,
+    },
+    "text": "hello world",
+    "blocks": [],
+    "interrupted": False,
+}
+
+
+def envelope(n: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "uuid": f"u{n}",
+        "parentUuid": None,
+        "sessionId": "sess-1",
+        "timestamp": (BASE_TS + timedelta(seconds=n)).isoformat(),
+        "cwd": "/repo",
+        "gitBranch": "main",
+        "version": "1.2.3",
+        "isSidechain": False,
+        "entrypoint": "cli",
+    } | overrides
+
+
+def user_entry(n: int, text: str, **overrides: Any) -> dict[str, Any]:
+    return envelope(n, type="user", message={"role": "user", "content": text}, **overrides)
+
+
+def assistant_entry(n: int, content: list[dict[str, Any]], *, stop_reason: str = "end_turn") -> dict[str, Any]:
+    return envelope(
+        n,
+        type="assistant",
+        message={"role": "assistant", "model": MODEL, "stop_reason": stop_reason, "content": content},
+    )
+
+
+def tool_result_entry(n: int, tool_use_id: str, content: str, *, is_error: bool) -> dict[str, Any]:
+    return envelope(
+        n,
+        type="user",
+        message={
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}],
+        },
+    )
+
+
+def fixture_entries() -> list[dict[str, Any]]:
+    return [
+        user_entry(0, "hello world"),
+        assistant_entry(1, [{"type": "text", "text": "hi there"}]),
+        assistant_entry(
+            2,
+            [
+                {"type": "thinking", "thinking": "let me think"},
+                {"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "/x"}},
+            ],
+            stop_reason="tool_use",
+        ),
+        tool_result_entry(3, "toolu_read", "ok output", is_error=False),
+        assistant_entry(
+            4,
+            [{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "ls"}}],
+            stop_reason="tool_use",
+        ),
+        tool_result_entry(5, "toolu_bash", "boom", is_error=True),
+        user_entry(6, "[Request interrupted by user]"),
+        user_entry(7, "<system-reminder>do not respond</system-reminder>"),
+        user_entry(8, "subagent prompt", isSidechain=True),
+        envelope(9, type="system", subtype="stop_hook_summary", content="hook ran"),
+        {"type": "mode", "mode": "normal", "sessionId": "sess-1"},
+        {"type": "summary", "summary": "did stuff", "leafUuid": "uuid-x"},
+        user_entry(12, "final question"),
+    ]
+
+
+def write_transcript(path: Path, entries: list[dict[str, Any]], *, mtime: float | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\n".join(orjson.dumps(entry) for entry in entries) + b"\n")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def list_line(path: Path) -> str:
+    stat = path.stat()
+    return f"{datetime.fromtimestamp(stat.st_mtime):%Y-%m-%d %H:%M} {human_size(stat.st_size):>8} {path}"
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+@pytest.fixture
+def python_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
+    monkeypatch.setattr(TranscriptParser, "backend_instance", None)
+
+
+@pytest.fixture
+def unparseable(tmp_path: Path) -> Path:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
+    return bad
+
+
+@pytest.fixture
+def transcript(tmp_path: Path) -> Path:
+    return write_transcript(tmp_path / "t.jsonl", fixture_entries())
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> tuple[Path, Path, Path]:
+    root = tmp_path / "projects"
+    old = write_transcript(root / "-Users-x-proj-a" / "old.jsonl", [user_entry(0, "needle one")], mtime=1_000_000.0)
+    new = write_transcript(
+        root / "-Users-x-proj-b" / "new.jsonl",
+        [user_entry(1, "needle two", sessionId="sess-2")],
+        mtime=2_000_000.0,
+    )
+    return root, old, new
+
+
+def test_help_lists_all_commands(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert set(cli.commands) == {"list", "show", "grep", "stats"}
+
+
+def test_list_newest_first(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, new = root
+    result = runner.invoke(cli, ["list", "--root", str(rootdir)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [list_line(new), list_line(old), f"2 transcripts under {rootdir}"]
+
+
+def test_list_project_filter(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, _ = root
+    result = runner.invoke(cli, ["list", "--root", str(rootdir), "--project", "proj-a"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [list_line(old), f"1 transcripts under {rootdir}"]
+
+
+def test_list_contains_filter(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, _, new = root
+    result = runner.invoke(cli, ["list", "--root", str(rootdir), "--contains", "new"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [list_line(new), f"1 transcripts under {rootdir}"]
+
+
+def test_list_limit_truncates_and_all_restores(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, new = root
+    limited = runner.invoke(cli, ["list", "--root", str(rootdir), "--limit", "1"])
+    assert limited.output.splitlines() == [list_line(new), f"1 of 2 transcripts under {rootdir}"]
+    full = runner.invoke(cli, ["list", "--root", str(rootdir), "--limit", "1", "--all"])
+    assert full.output.splitlines() == [list_line(new), list_line(old), f"2 transcripts under {rootdir}"]
+
+
+def test_list_json_line_shape(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, new = root
+    result = runner.invoke(cli, ["list", "--root", str(rootdir), "--json"])
+    assert result.exit_code == 0
+    assert [orjson.loads(line) for line in result.output.splitlines()] == [
+        {"path": str(new), "mtime": 2_000_000.0, "size": new.stat().st_size},
+        {"path": str(old), "mtime": 1_000_000.0, "size": old.stat().st_size},
+    ]
+
+
+def test_list_empty_root(runner: CliRunner, tmp_path: Path) -> None:
+    empty = tmp_path / "nothing"
+    result = runner.invoke(cli, ["list", "--root", str(empty)])
+    assert result.exit_code == 0
+    assert result.output == f"0 transcripts under {empty}\n"
+
+
+def test_show_default_renders_every_event(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript)])
+    assert result.exit_code == 0
+    assert tuple(result.output.splitlines()) == EXPECTED_SHOW
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param(["--head", "2"], EXPECTED_SHOW[:2], id="head"),
+        pytest.param(["--tail", "2"], EXPECTED_SHOW[-2:], id="tail"),
+        pytest.param(["--range", "3:5"], EXPECTED_SHOW[3:5], id="range-mid"),
+        pytest.param(["--range", "10:"], EXPECTED_SHOW[10:], id="range-open-end"),
+        pytest.param(["--range", ":2"], EXPECTED_SHOW[:2], id="range-open-start"),
+    ],
+)
+def test_show_slicers(runner: CliRunner, transcript: Path, args: list[str], expected: tuple[str, ...]) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), *args])
+    assert result.exit_code == 0
+    assert tuple(result.output.splitlines()) == expected
+
+
+def test_show_kind_filter_preserves_raw_indexes(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--kind", "user"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [EXPECTED_SHOW[i] for i in (0, 3, 5, 6, 7, 8, 12)]
+
+
+def test_show_signal_drops_junk_sidechain_and_empty(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--signal"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [EXPECTED_SHOW[i] for i in (0, 1, 2, 4, 6, 12)]
+
+
+def test_show_thinking_inline(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--range", "2:3", "--thinking"])
+    assert result.output == "    2 asst  03:04:07 [claude-opus-4-7] th(12ch) let me think Read(/x)\n"
+
+
+def test_show_width_truncates(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--range", "0:1", "--width", "8"])
+    assert result.output == "    0 user  03:04:05 hello w…\n"
+
+
+def test_show_json_fidelity(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--json", "--range", "0:1"])
+    assert result.exit_code == 0
+    assert orjson.loads(result.output) == USER0_DICT
+
+
+def test_show_caps_at_200_with_notice(runner: CliRunner, tmp_path: Path) -> None:
+    path = write_transcript(tmp_path / "big.jsonl", [user_entry(n, f"msg {n}") for n in range(205)])
+    result = runner.invoke(cli, ["show", str(path)])
+    lines = result.output.splitlines()
+    assert result.exit_code == 0
+    assert lines[0] == "… 5 earlier events hidden — use --head/--range/--all"
+    assert len(lines) == 201
+    assert lines[1] == f"    5 user  {BASE_TS + timedelta(seconds=5):%H:%M:%S} msg 5"
+    assert lines[-1] == f"  204 user  {BASE_TS + timedelta(seconds=204):%H:%M:%S} msg 204"
+
+
+def test_show_json_cap_notice_goes_to_stderr(runner: CliRunner, tmp_path: Path) -> None:
+    path = write_transcript(tmp_path / "big.jsonl", [user_entry(n, f"msg {n}") for n in range(205)])
+    result = runner.invoke(cli, ["show", str(path), "--json"])
+    assert result.exit_code == 0
+    assert result.stderr == "… 5 earlier events hidden — use --head/--range/--all\n"
+    assert [orjson.loads(line)["i"] for line in result.stdout.splitlines()] == list(range(5, 205))
+
+
+def test_show_two_slicers_usage_error(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), "--head", "1", "--tail", "1"])
+    assert result.exit_code == 2
+    assert "--head, --tail, and --range are mutually exclusive" in result.stderr
+
+
+@pytest.mark.parametrize("option", ["--head", "--tail"])
+def test_show_negative_slicer_usage_error(runner: CliRunner, transcript: Path, option: str) -> None:
+    result = runner.invoke(cli, ["show", str(transcript), option, "-1"])
+    assert result.exit_code == 2
+    assert "is not in the range" in result.stderr
+
+
+def test_show_tolerates_null_line(runner: CliRunner, tmp_path: Path, python_backend: None) -> None:
+    path = tmp_path / "t.jsonl"
+    path.write_bytes(orjson.dumps(user_entry(0, "hello world")) + b"\nnull\n")
+    result = runner.invoke(cli, ["show", str(path)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [EXPECTED_SHOW[0]]
+
+
+def test_grep_match_exits_zero(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "hello", str(transcript)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[0], "1 files, 1 matches"]
+
+
+def test_grep_no_match_exits_one(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "zebra", str(transcript)])
+    assert result.exit_code == 1
+    assert result.output == "0 files, 0 matches\n"
+
+
+def test_grep_ignore_case(runner: CliRunner, transcript: Path) -> None:
+    sensitive = runner.invoke(cli, ["grep", "HELLO", str(transcript)])
+    assert sensitive.exit_code == 1
+    insensitive = runner.invoke(cli, ["grep", "HELLO", str(transcript), "-i"])
+    assert insensitive.exit_code == 0
+    assert insensitive.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[0], "1 files, 1 matches"]
+
+
+def test_grep_kind_filter(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "o", str(transcript), "--kind", "system"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[9], "1 files, 1 matches"]
+
+
+def test_grep_tool_hits_use_and_correlated_result(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", ".", str(transcript), "--tool", "Read"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[2],
+        EXPECTED_SHOW[3],
+        "1 files, 2 matches",
+    ]
+
+
+def test_grep_where_thinking(runner: CliRunner, transcript: Path) -> None:
+    thinking = runner.invoke(cli, ["grep", "think", str(transcript), "--where", "thinking"])
+    assert thinking.exit_code == 0
+    assert thinking.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[2], "1 files, 1 matches"]
+    text_only = runner.invoke(cli, ["grep", "think", str(transcript), "--where", "text"])
+    assert text_only.exit_code == 1
+    assert text_only.output == "0 files, 0 matches\n"
+
+
+def test_grep_context_windows_and_separator(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "hello|final", str(transcript), "-C", "1"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[0],
+        EXPECTED_SHOW[1],
+        "--",
+        EXPECTED_SHOW[11],
+        EXPECTED_SHOW[12],
+        "1 files, 2 matches",
+    ]
+
+
+def test_grep_max_matches(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "hello|final", str(transcript), "--max-matches", "1"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[0], "1 files, 1 matches"]
+
+
+@pytest.mark.parametrize("args", [["-C", "-1"], ["--max-matches", "-1"]], ids=["context", "max-matches"])
+def test_grep_negative_count_usage_error(runner: CliRunner, transcript: Path, args: list[str]) -> None:
+    result = runner.invoke(cli, ["grep", "hello", str(transcript), *args])
+    assert result.exit_code == 2
+    assert "is not in the range" in result.stderr
+
+
+def test_grep_system_kind_matches_subtype(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "stop_hook", str(transcript), "--kind", "system"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[9], "1 files, 1 matches"]
+
+
+def test_grep_mode_kind_matches_channel_value(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "mode=normal", str(transcript), "--kind", "mode"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [f"== {transcript}", EXPECTED_SHOW[10], "1 files, 1 matches"]
+
+
+def test_grep_bad_sibling_keeps_healthy_matches(
+    runner: CliRunner, root: tuple[Path, Path, Path], python_backend: None
+) -> None:
+    rootdir, old, new = root
+    bad = rootdir / "-Users-x-proj-c" / "bad.jsonl"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
+    result = runner.invoke(cli, ["grep", "needle", "--root", str(rootdir)])
+    assert result.exit_code == 0
+    assert result.stderr == f"warning: skipped 1 unparseable transcript(s): {bad}\n"
+    assert result.stdout.splitlines() == [
+        f"== {new}",
+        "    0 user  03:04:06 needle two",
+        f"== {old}",
+        "    0 user  03:04:05 needle one",
+        "2 files, 2 matches",
+    ]
+
+
+def test_grep_discovery_multi_file(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, new = root
+    result = runner.invoke(cli, ["grep", "needle", "--root", str(rootdir)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {new}",
+        "    0 user  03:04:06 needle two",
+        f"== {old}",
+        "    0 user  03:04:05 needle one",
+        "2 files, 2 matches",
+    ]
+
+
+def test_grep_json_carries_path_and_event(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "hello", str(transcript), "--json"])
+    assert result.exit_code == 0
+    assert orjson.loads(result.output) == {"path": str(transcript)} | USER0_DICT
+
+
+def test_grep_json_context_emits_windows(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", "hello", str(transcript), "--json", "-C", "1"])
+    assert result.exit_code == 0
+    rows = [orjson.loads(line) for line in result.output.splitlines()]
+    assert rows[0] == {"path": str(transcript)} | USER0_DICT
+    assert [(row["i"], row.get("context")) for row in rows] == [(0, None), (1, True)]
+
+
+def test_stats_single_file_exact(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["stats", str(transcript)])
+    assert result.exit_code == 0
+    assert result.output == EXPECTED_STATS + "\n"
+
+
+def test_stats_json(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["stats", str(transcript), "--json"])
+    assert result.exit_code == 0
+    assert orjson.loads(result.output) == {
+        "files": 1,
+        "events": 13,
+        "kinds": {"user": 7, "assistant": 3, "system": 1, "mode": 1, "other": 1},
+        "models": {"claude-opus-4-7": 3},
+        "tools": {"Read": 1, "Bash": 1},
+        "text_chars": 126,
+        "thinking_chars": 12,
+        "tool_io_chars": 47,
+        "sessions": 1,
+        "first_timestamp": "2026-01-02T03:04:05+00:00",
+        "last_timestamp": "2026-01-02T03:04:17+00:00",
+        "interrupts": 1,
+        "tool_errors": 1,
+        "sidechain": 1,
+    }
+
+
+def test_stats_per_file(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["stats", str(transcript), "--per-file"])
+    assert result.exit_code == 0
+    assert result.output == f"== {transcript}\n{EXPECTED_STATS}\n\n"
+
+
+def test_stats_warns_on_unparseable_file(
+    runner: CliRunner, transcript: Path, unparseable: Path, python_backend: None
+) -> None:
+    result = runner.invoke(cli, ["stats", str(transcript), str(unparseable)])
+    assert result.exit_code == 0
+    assert result.stderr == f"warning: skipped 1 unparseable transcript(s): {unparseable}\n"
+    assert result.stdout == EXPECTED_STATS + "\n"
+
+
+def test_stats_discovery_combines_files(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, _, _ = root
+    result = runner.invoke(cli, ["stats", "--root", str(rootdir)])
+    assert result.exit_code == 0
+    assert result.output == "\n".join(
+        (
+            "files        2",
+            "events       2",
+            "kinds        user 2",
+            "models       -",
+            "tools        -",
+            "text         20B",
+            "thinking     0B",
+            "tool io      0B",
+            "sessions     2",
+            "span         2026-01-02 03:04:05 → 2026-01-02 03:04:06",
+            "interrupts   0",
+            "tool errors  0",
+            "sidechain    0",
+            "",
+        )
+    )

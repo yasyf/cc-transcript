@@ -222,11 +222,12 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "anyio" },
+    { name = "click" },
     { name = "orjson" },
 ]
 
@@ -260,6 +261,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "anyio", specifier = ">=4.4" },
     { name = "cc-transcript", extras = ["sentiment"], marker = "extra == 'lexicon'" },
+    { name = "click", specifier = ">=8.1" },
     { name = "orjson", specifier = ">=3.10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
