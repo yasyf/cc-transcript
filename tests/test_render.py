@@ -7,12 +7,13 @@ from typing import Any
 import orjson
 import pytest
 
+from cc_transcript.activity import SessionActivity
 from cc_transcript.backend import ParsedTranscript
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,
     EntryMeta,
-    EntryUuid,
+    EventUuid,
     ModeEvent,
     OtherEvent,
     SessionId,
@@ -26,16 +27,22 @@ from cc_transcript.models import (
     UserEvent,
 )
 from cc_transcript.render import (
+    Budget,
     Stats,
+    clip,
     collect_stats,
     compact_line,
     event_dict,
     human_size,
     primary_arg,
+    render_session,
     render_stats,
+    render_tool_call,
+    render_turn,
     tool_names,
     truncate,
 )
+from cc_transcript.tools import parse_tool_call
 
 NAMES = {ToolUseId("toolu_1"): "Bash"}
 
@@ -43,7 +50,7 @@ NAMES = {ToolUseId("toolu_1"): "Bash"}
 def meta(**overrides: Any) -> EntryMeta:
     return EntryMeta(
         **{
-            "uuid": EntryUuid("uuid-1"),
+            "uuid": EventUuid("uuid-1"),
             "parent_uuid": None,
             "session_id": SessionId("sess-1"),
             "timestamp": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
@@ -114,6 +121,143 @@ def test_human_size(n: int, expected: str) -> None:
 )
 def test_primary_arg(input: dict[str, Any], expected: str) -> None:
     assert primary_arg(input) == expected
+
+
+def test_budget_defaults() -> None:
+    assert Budget() == Budget(turn_chars=700, tool_chars=1500)
+
+
+@pytest.mark.parametrize(
+    ("text", "limit", "expected"),
+    [
+        pytest.param("abc", 4, "abc", id="under-limit-unchanged"),
+        pytest.param("abcd", 4, "abcd", id="exact-fit-unchanged"),
+        pytest.param("abcdef", 4, "abcd…(+2ch)", id="cut-marks-omitted-count"),
+        pytest.param("a\nb\nc", 3, "a\nb…(+2ch)", id="preserves-newlines"),
+    ],
+)
+def test_clip(text: str, limit: int, expected: str) -> None:
+    assert clip(text, limit) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "input", "expected"),
+    [
+        pytest.param("Bash", {"command": "uv run pytest"}, "uv run pytest", id="bash-bare-command"),
+        pytest.param(
+            "Edit",
+            {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
+            "Edit /a.py\n- x = 1\n+ x = 2",
+            id="edit-path-old-new",
+        ),
+        pytest.param(
+            "Edit",
+            {"file_path": "/a.py", "old_string": "a\nb", "new_string": "c"},
+            "Edit /a.py\n- a\n- b\n+ c",
+            id="edit-prefixes-every-line",
+        ),
+        pytest.param(
+            "Edit",
+            {"file_path": "/a.py", "old_string": "", "new_string": "x"},
+            "Edit /a.py\n-\n+ x",
+            id="edit-empty-old-keeps-marker",
+        ),
+        pytest.param("Write", {"file_path": "/b.py", "content": "print(1)"}, "Write /b.py\nprint(1)", id="write"),
+        pytest.param("Read", {"file_path": "/x"}, "Read(/x)", id="other-read-compact"),
+        pytest.param("Agent", {"prompt": "do it"}, "Agent(do it)", id="other-task-compact"),
+        pytest.param("mcp__github__search", {"query": "x"}, "mcp__github__search(x)", id="other-mcp-compact"),
+    ],
+)
+def test_render_tool_call(name: str, input: dict[str, Any], expected: str) -> None:
+    assert render_tool_call(parse_tool_call(name, input), budget=Budget()) == expected
+
+
+def test_render_tool_call_multiedit_marks_every_span() -> None:
+    call = parse_tool_call(
+        "MultiEdit",
+        {
+            "file_path": "/a.py",
+            "edits": [
+                {"old_string": "a", "new_string": "b"},
+                {"old_string": "c", "new_string": "d"},
+                {"old_string": "e", "new_string": "f"},
+            ],
+        },
+    )
+    assert render_tool_call(call, budget=Budget()) == (
+        "MultiEdit /a.py\nedit 1/3\n- a\n+ b\nedit 2/3\n- c\n+ d\nedit 3/3\n- e\n+ f"
+    )
+
+
+def test_render_tool_call_multiedit_clips_each_span_to_tool_budget() -> None:
+    call = parse_tool_call(
+        "MultiEdit",
+        {
+            "file_path": "/a.py",
+            "edits": [
+                {"old_string": "o" * 12, "new_string": "n" * 12},
+                {"old_string": "ppp", "new_string": "qqq"},
+            ],
+        },
+    )
+    assert render_tool_call(call, budget=Budget(tool_chars=8)) == (
+        f"MultiEdit /a.py\nedit 1/2\n- {'o' * 8}…(+4ch)\n+ {'n' * 8}…(+4ch)\nedit 2/2\n- ppp\n+ qqq"
+    )
+
+
+def test_render_tool_call_clips_bash_command() -> None:
+    call = parse_tool_call("Bash", {"command": "a" * 30})
+    assert render_tool_call(call, budget=Budget(tool_chars=10)) == f"{'a' * 10}…(+20ch)"
+
+
+def test_render_turn_orders_prompt_prose_and_tool_calls() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            UserEvent(meta=meta(), text="fix the bug", blocks=(), interrupted=False),
+            AssistantEvent(
+                meta=meta(),
+                model="claude-opus-4-7",
+                text="editing",
+                blocks=(
+                    TextBlock("editing"),
+                    ToolUseBlock(
+                        id=ToolUseId("t1"),
+                        name="Edit",
+                        input={"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
+                    ),
+                    TextBlock("done"),
+                ),
+                stop_reason="tool_use",
+            ),
+        ),
+    )
+    assert render_turn(act.turns[0], budget=Budget()) == (
+        "user: fix the bug\nassistant: editing\nEdit /a.py\n- x = 1\n+ x = 2\nassistant: done"
+    )
+
+
+def test_render_turn_clips_prose_to_turn_budget() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (UserEvent(meta=meta(), text="a" * 30, blocks=(), interrupted=False),),
+    )
+    assert render_turn(act.turns[0], budget=Budget(turn_chars=10)) == f"user: {'a' * 10}…(+20ch)"
+
+
+def test_render_session_joins_turns_skipping_empty() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan"),
+            UserEvent(meta=meta(), text="one", blocks=(), interrupted=False),
+            AssistantEvent(
+                meta=meta(), model="claude-opus-4-7", text="ack", blocks=(TextBlock("ack"),), stop_reason="end_turn"
+            ),
+            UserEvent(meta=meta(), text="two", blocks=(), interrupted=False),
+        ),
+    )
+    assert render_session(act, budget=Budget()) == "user: one\nassistant: ack\n\nuser: two"
 
 
 @pytest.mark.parametrize(
@@ -231,10 +375,80 @@ def test_primary_arg(input: dict[str, Any], expected: str) -> None:
             "   12 other          attachment",
             id="other-no-meta-blank-time",
         ),
+        pytest.param(
+            13,
+            AssistantEvent(
+                meta=meta(),
+                model="claude-opus-4-7",
+                text="",
+                blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "ls -la"}),),
+                stop_reason="tool_use",
+            ),
+            False,
+            "   13 asst  03:04:05 [claude-opus-4-7] ls -la",
+            id="bash-renders-bare-command",
+        ),
+        pytest.param(
+            14,
+            AssistantEvent(
+                meta=meta(),
+                model="claude-opus-4-7",
+                text="",
+                blocks=(
+                    ToolUseBlock(
+                        id=ToolUseId("t1"),
+                        name="Edit",
+                        input={"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
+                    ),
+                ),
+                stop_reason="tool_use",
+            ),
+            False,
+            "   14 asst  03:04:05 [claude-opus-4-7] Edit /a.py - x = 1 + x = 2",
+            id="edit-delegates-to-tool-renderer-collapsed",
+        ),
+        pytest.param(
+            15,
+            AssistantEvent(
+                meta=meta(),
+                model="claude-opus-4-7",
+                text="",
+                blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Edit", input={"file_path": "/a.py"}),),
+                stop_reason="tool_use",
+            ),
+            False,
+            "   15 asst  03:04:05 [claude-opus-4-7] Edit(/a.py)",
+            id="malformed-known-tool-degrades-to-compact",
+        ),
     ],
 )
 def test_compact_line(index: int, event: TranscriptEvent, thinking: bool, expected: str) -> None:
     assert compact_line(index, event, names=NAMES, width=100, thinking=thinking, uuids=False) == expected
+
+
+def test_compact_line_tool_input_clips_with_omitted_count() -> None:
+    event = AssistantEvent(
+        meta=meta(),
+        model="claude-opus-4-7",
+        text="",
+        blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "abcdefghij"}),),
+        stop_reason="tool_use",
+    )
+    assert (
+        compact_line(1, event, names={}, width=8, thinking=False, uuids=False)
+        == "    1 asst  03:04:05 [claude-opus-4-7] abcdefgh…(+2ch)"
+    )
+
+
+def test_compact_line_width_zero_never_clips_tool_input() -> None:
+    event = AssistantEvent(
+        meta=meta(),
+        model="claude-opus-4-7",
+        text="",
+        blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 500}),),
+        stop_reason="tool_use",
+    )
+    assert compact_line(1, event, names={}, width=0, thinking=False, uuids=False).endswith("x" * 500)
 
 
 def test_compact_line_appends_uuid_with_meta() -> None:
