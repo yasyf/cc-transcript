@@ -31,11 +31,10 @@ class FeedbackCandidate:
         text: The verbatim pushback text.
         window: The durable context window around the feedback, captured via
             :func:`~cc_transcript.context.capture_window`.
-        ref: The resolvable reference to the originating event; None for
-            migrated legacy rows.
+        ref: The resolvable reference to the originating event.
+        signal: The de-noising confidence signal.
         session_id: The transcript session the feedback came from.
         cc_version: The Claude Code version recorded for the origin.
-        signal: The de-noising confidence signal, when computed.
         payload: Detector-specific metadata preserved verbatim.
     """
 
@@ -44,10 +43,10 @@ class FeedbackCandidate:
     occurred_at: datetime
     text: str
     window: ContextWindow
-    ref: EventRef | None = None
+    ref: EventRef
+    signal: CandidateSignal
     session_id: SessionId | None = None
     cc_version: str | None = None
-    signal: CandidateSignal | None = None
     payload: Mapping[str, Any] | None = None
 
 

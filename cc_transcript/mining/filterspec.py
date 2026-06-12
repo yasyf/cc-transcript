@@ -18,8 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cc_transcript.mining.confidence import effective_confidence
-
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
@@ -30,13 +28,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceAtLeast:
-    """Matches candidates whose effective confidence is at least ``floor``.
-
-    A candidate without a stored signal scores
-    :data:`~cc_transcript.mining.confidence.MEDIUM` via
-    :func:`~cc_transcript.mining.confidence.effective_confidence`, so
-    legacy rows pass any floor at or below it.
-    """
+    """Matches candidates whose signal confidence is at least ``floor``."""
 
     floor: Confidence
 
@@ -57,11 +49,7 @@ class HasReason:
 
 @dataclass(frozen=True, slots=True)
 class IsDurable:
-    """Matches candidates whose signal durability equals ``want``.
-
-    A candidate without a stored signal counts as durable, mirroring
-    :class:`~cc_transcript.mining.confidence.CandidateSignal`'s default.
-    """
+    """Matches candidates whose signal durability equals ``want``."""
 
     want: bool
 
@@ -92,13 +80,13 @@ class CandidateFilterSpec:
 def predicate_matches(predicate: CandidatePredicate, candidate: FeedbackCandidate) -> bool:
     match predicate:
         case ConfidenceAtLeast(floor):
-            return effective_confidence(candidate.signal) >= floor
+            return candidate.signal.confidence >= floor
         case SourceKindIn(kinds):
             return candidate.source_kind in kinds
         case HasReason(reason):
-            return candidate.signal is not None and reason in candidate.signal.reasons
+            return reason in candidate.signal.reasons
         case IsDurable(want):
-            return (candidate.signal is None or candidate.signal.durable) is want
+            return candidate.signal.durable is want
 
 
 def keep_candidate(candidate: FeedbackCandidate, spec: CandidateFilterSpec) -> bool:

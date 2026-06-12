@@ -169,11 +169,11 @@ It has two backends and a fail-open default:
 - **Rust UDPipe (default).** When the extension is built, `has_hit` lemmatizes and
   scores in Rust against an English Universal Dependencies model, downloaded and
   cached at runtime on first use.
-- **spaCy + AFINN (at parity).** The optional `[lexicon]` extra installs the Python
+- **spaCy + AFINN (at parity).** The optional `[sentiment]` extra installs the Python
   path used when the Rust lexicon isn't available. Enable it with:
 
   ```bash
-  uv add cc-transcript[lexicon]
+  uv add cc-transcript[sentiment]
   ```
 
 - **Fail open.** When *neither* backend is present, `has_hit` returns `True` rather

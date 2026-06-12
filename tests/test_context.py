@@ -174,7 +174,7 @@ def projects_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_capture_window_builds_refs_previews_and_digests() -> None:
     window = in_memory_window()
     assert window.anchor == ref("a2", "t3")
-    assert (window.fidelity, window.origin, window.preview_chars) == ("full", "live", 50)
+    assert (window.fidelity, window.preview_chars) == ("full", 50)
     assert window.trigger is not None
     assert window.trigger.role == "user"
     assert window.trigger.refs == (ref("u2"), ref("a2"))
@@ -210,7 +210,7 @@ def test_render_preview_summary_fidelity_always_labeled() -> None:
     window = in_memory_window(fidelity="summary")
     assert window.render_preview(budget=Budget()).splitlines()[0] == SUMMARY_LABEL
     empty = ContextWindow(
-        anchor=None, before=(), trigger=None, after=(), fidelity="summary", preview_chars=200, origin="migrated"
+        anchor=ref("a2", "t3"), before=(), trigger=None, after=(), fidelity="summary", preview_chars=200
     )
     assert empty.render_preview(budget=Budget()) == SUMMARY_LABEL
 
@@ -225,20 +225,23 @@ def test_render_preview_clips_each_preview_to_budget() -> None:
 def test_capture_to_json_from_json_round_trip_byte_stable() -> None:
     window = in_memory_window()
     data = window.to_json()
+    payload = json.loads(data)
+    assert payload["schema"] == "cc-transcript.context/2"
+    assert "origin" not in payload
+    assert data == json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     restored = ContextWindow.from_json(data)
     assert restored == window
     assert restored.to_json() == data
 
 
-def test_round_trip_preserves_null_anchor_and_trigger() -> None:
+def test_round_trip_preserves_null_trigger_and_empty_refs() -> None:
     window = ContextWindow(
-        anchor=None,
-        before=(TurnRef(role="user", refs=(), preview="legacy prose", tool_digests=()),),
+        anchor=ref("a2", "t3"),
+        before=(TurnRef(role="user", refs=(), preview="converted prose", tool_digests=()),),
         trigger=None,
         after=(),
         fidelity="summary",
         preview_chars=200,
-        origin="migrated",
     )
     data = window.to_json()
     restored = ContextWindow.from_json(data)
@@ -250,7 +253,8 @@ def test_round_trip_preserves_null_anchor_and_trigger() -> None:
     "data",
     [
         pytest.param("[]", id="non-object"),
-        pytest.param('{"schema":"cc-transcript.context/2"}', id="future-version"),
+        pytest.param('{"schema":"cc-transcript.context/1"}', id="retired-v1-schema"),
+        pytest.param('{"schema":"cc-transcript.context/3"}', id="future-version"),
         pytest.param('{"anchor":null}', id="missing-schema"),
     ],
 )
@@ -284,11 +288,6 @@ def test_hydrate_none_once_transcript_deleted_and_previews_survive(projects_root
     preview = replace(window, fidelity="summary").render_preview(budget=Budget())
     assert preview.splitlines()[0] == SUMMARY_LABEL
     assert "user: three" in preview
-
-
-def test_hydrate_none_when_anchor_none() -> None:
-    window = in_memory_window(anchor=None)
-    assert anyio.run(window.hydrate) is None
 
 
 @pytest.mark.parametrize(

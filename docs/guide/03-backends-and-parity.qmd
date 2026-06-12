@@ -118,7 +118,7 @@ load are best-effort: any failure — offline, a bad download, a load error — 
 `None`, never a panic, so the Python path takes over cleanly.
 
 The Python side is `Lexicon.has_hit`, which lemmatizes with spaCy and scores with
-the `afinn` package (both supplied by the `[lexicon]` extra). When neither the Rust
+the `afinn` package (both supplied by the `[sentiment]` extra). When neither the Rust
 nor the Python path is available, `has_hit` *fails open* — it returns `True` rather
 than silently zeroing out a message's sentiment, so a missing lexicon never
 manufactures false negatives.

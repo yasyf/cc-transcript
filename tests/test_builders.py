@@ -35,62 +35,6 @@ from cc_transcript.filterspec import (
     WordCountAtMost,
 )
 
-# The historical hand-written presets, vendored verbatim, so the builder-composed
-# specs are proven equal to what cc-transcript shipped before they moved out.
-LEGACY_SENTIMENT_SPEC = FilterSpec(
-    clauses=(
-        Clause(KindIs(CONVERSATIONAL), negate=True),
-        Clause(ModelIs(frozenset({"<synthetic>"})), applies_to=ASSISTANTS),
-        Clause(TextEmpty(consider_tool_use=True), applies_to=ASSISTANTS),
-        Clause(TextEmpty(consider_tool_use=False), applies_to=USERS),
-        Clause(TextMatchesAny(SENTIMENT_JUNK_GROUPS), applies_to=USERS),
-        Clause(MetaFlag("is_sidechain"), applies_to=USERS),
-        Clause(MetaFlag("is_compact_summary")),
-        Clause(MetaFlag("is_visible_in_transcript_only")),
-        Clause(EntrypointIn(frozenset({"sdk-cli"}))),
-    )
-)
-
-LEGACY_PUSHBACK_SPEC = FilterSpec(
-    clauses=(
-        Clause(KindIs(USERS), negate=True),
-        Clause(MetaFlag("is_sidechain")),
-        Clause(MetaFlag("is_meta")),
-        Clause(MetaFlag("is_compact_summary")),
-        Clause(MetaFlag("is_visible_in_transcript_only")),
-        Clause(TextEmpty(consider_tool_use=False), applies_to=USERS),
-        Clause(TextMatchesAny(STRUCTURAL_NOISE_GROUPS), applies_to=USERS),
-        Clause(TextInSet(TRIVIAL_ACK_SET | RESUME_PHRASE_SET), applies_to=USERS),
-        Clause(WordCountAtMost(2), applies_to=USERS),
-    )
-)
-
-
-def sentiment_spec() -> FilterSpec:
-    return build_spec(
-        keep_only("user", "assistant"),
-        drop_synthetic(),
-        drop_empty(only_from=ASSISTANTS),
-        drop_empty(only_from=USERS),
-        drop_junk("structural", "interrupt", "stop_hook"),
-        drop_sidechain(except_assistants=True),
-        drop_compacted(),
-        drop_entrypoints({"sdk-cli"}),
-    )
-
-
-def pushback_spec() -> FilterSpec:
-    return build_spec(
-        keep_only("user"),
-        drop_sidechain(),
-        drop_meta_flag("is_meta"),
-        drop_compacted(),
-        drop_empty(only_from=USERS),
-        drop_junk("structural", "agent_injection"),
-        drop_phrases(TRIVIAL_ACK_SET | RESUME_PHRASE_SET),
-        drop_short(2),
-    )
-
 
 def test_keep_only() -> None:
     assert keep_only("user") == Clause(KindIs(frozenset({"user"})), negate=True)
@@ -156,11 +100,3 @@ def test_build_spec_flattens_clauses_and_tuples() -> None:
 
 def test_noise_spec_is_structural_only() -> None:
     assert NOISE_SPEC == FilterSpec(clauses=(Clause(TextMatchesAny(STRUCTURAL_GROUPS), applies_to=USERS),))
-
-
-def test_builders_reproduce_legacy_sentiment_spec() -> None:
-    assert sentiment_spec() == LEGACY_SENTIMENT_SPEC
-
-
-def test_builders_reproduce_legacy_pushback_spec() -> None:
-    assert pushback_spec() == LEGACY_PUSHBACK_SPEC

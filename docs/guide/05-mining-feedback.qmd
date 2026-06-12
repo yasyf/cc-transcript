@@ -103,9 +103,9 @@ filter on either. Our denial embeds a real correction, which is the strongest
 shape this detector produces:
 
 ```{python}
-from cc_transcript.mining import NOISE_FLOOR, effective_confidence
+from cc_transcript.mining import NOISE_FLOOR
 
-(signal.signal, effective_confidence(signal.signal) >= NOISE_FLOOR)
+(signal.signal, signal.signal.confidence >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.75, reasons=('embedded_text', 'substantive'), durable=True), True)
 ```
 
@@ -128,13 +128,12 @@ followup_events = parse_events_from_bytes(b"\n".join([
 ]))
 
 [structural] = iter_tool_denial_signals(followup_events)
-(structural.signal, effective_confidence(structural.signal) >= NOISE_FLOOR)
+(structural.signal, structural.signal.confidence >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.0, reasons=('structural_only',), durable=True), False)
 ```
 
-`effective_confidence` is the one accessor to use: it returns the signal's score,
-or `MEDIUM` when no signal is stored, so rows mined before calibration existed
-still pass a moderate floor instead of vanishing.
+Every signal carries its score and reasons together, so a floor check is a plain
+comparison on `signal.confidence`.
 
 ## From signal to candidate
 
@@ -221,6 +220,7 @@ from cc_transcript.mining import (
     only_kinds,
 )
 
+noisy_anchor = EventRef(structural.session_id, structural.event_uuid)
 noisy = FeedbackCandidate(
     dedup_key=dedup_key("sess-1", structural.kind, structural.text),
     source_kind=structural.kind,
@@ -228,8 +228,9 @@ noisy = FeedbackCandidate(
     text=structural.text,
     window=capture_window(
         SessionActivity.from_events(structural.session_id, followup_events),
-        EventRef(structural.session_id, structural.event_uuid),
+        noisy_anchor,
     ),
+    ref=noisy_anchor,
     signal=structural.signal,
 )
 

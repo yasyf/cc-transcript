@@ -170,23 +170,6 @@ assistant turn collects `assistant-turn`. The per-event primitives behind these
 helpers — `keep(event, spec)` and `labels_for(event, spec)` — are exported too when
 you need to test one event at a time.
 
-## The FilterConfig flag-bag
-
-If you prefer simple on/off switches over composition, `FilterConfig` is a boolean
-flag-bag that lowers to a `FilterSpec` via `to_spec()` under the hood:
-
-```{python}
-from cc_transcript import FilterConfig, apply_filters
-
-len(list(apply_filters(events, FilterConfig())))
-# -> 5  (every rule is off by default, so a bare FilterConfig passes everything through)
-```
-
-Every flag defaults to off, so a bare `FilterConfig()` is a no-op pass-through.
-Flip individual flags to enable rules. `FilterConfig` is the right tool when you
-want a fixed menu of toggles; for anything richer — named categories, custom phrase
-sets, length thresholds — reach for `build_spec` and the builders directly.
-
 ## Composing a consumer policy
 
 Builders compose into whatever policy your consumer needs. A realistic "keep the

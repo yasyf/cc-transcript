@@ -55,18 +55,11 @@ def noise(*reasons: str, durable: bool = True) -> CandidateSignal:
     return CandidateSignal(NONE, reasons, durable)
 
 
-def effective_confidence(signal: CandidateSignal | None) -> Confidence:
-    """Returns ``signal``'s confidence, or :data:`MEDIUM` when no signal is set."""
-    return signal.confidence if signal else MEDIUM
-
-
 def to_payload(signal: CandidateSignal) -> dict[str, Any]:
     return {"confidence": signal.confidence, "reasons": list(signal.reasons), "durable": signal.durable}
 
 
-def from_payload(data: Mapping[str, Any] | None) -> CandidateSignal | None:
-    if data is None:
-        return None
+def from_payload(data: Mapping[str, Any]) -> CandidateSignal:
     return CandidateSignal(
         confidence=Confidence(data["confidence"]),
         reasons=tuple(data["reasons"]),

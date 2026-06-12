@@ -7,7 +7,7 @@ installed `afinn` package and `cc_transcript.sentiment.lexicon.Lexicon`. The
 mirrors it for the Rust `include_str!`. `tests/test_lexicon_parity.py` asserts the
 embedded copy still matches the installed sources (drift guard).
 
-Run: ``uv run --extra lexicon python scripts/build_lexicon_data.py``
+Run: ``uv run --extra sentiment python scripts/build_lexicon_data.py``
 """
 
 from __future__ import annotations

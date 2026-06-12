@@ -146,7 +146,7 @@ reference:
       - filterspec.is_portable
       - filterspec.spec_to_json
   - title: Filtering
-    desc: Filters-as-data — declarative specs, composable builders, and the flag-bag config.
+    desc: Filters-as-data — declarative specs and composable builders.
     contents:
       - FilterSpec
       - filterspec.Clause
@@ -166,8 +166,6 @@ reference:
       - drop_phrases
       - drop_short
       - NOISE_SPEC
-      - FilterConfig
-      - apply_filters
       - filterspec.JUNK_CATEGORIES
       - USERS
       - ASSISTANTS
@@ -252,7 +250,6 @@ reference:
       - mining.CandidateSignal
       - mining.Confidence
       - mining.NOISE_FLOOR
-      - mining.effective_confidence
       - mining.DEFAULT_DETECTORS
       - mining.iter_user_message_signals
       - mining.iter_tool_denial_signals
