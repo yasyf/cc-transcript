@@ -146,3 +146,12 @@ def test_open_defaults_to_home_ledger(tmp_path: Path, monkeypatch: pytest.Monkey
     log.append(decision(1_000))
     assert (tmp_path / ".cc-transcript" / "decisions.db").exists()
     assert log.for_session(SESSION) == (decision(1_000),)
+
+
+def test_ddl_matches_frozen_cross_language_contract() -> None:
+    import pathlib
+
+    from cc_transcript.decisions import DECISIONS_DDL
+
+    frozen = (pathlib.Path(__file__).parent / "testdata" / "decisions_v1.sql").read_text()
+    assert DECISIONS_DDL == frozen
