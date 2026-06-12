@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from cc_transcript.activity import Edit, SessionActivity
+from cc_transcript.corrections import CorrectionLog
 from cc_transcript.evidence import (
     EXTRACTOR_VERSION,
     CandidatePair,
@@ -16,8 +17,9 @@ from cc_transcript.evidence import (
     harvest_pairs,
     match_corrections,
     parse_show_hunks,
+    record_harvest,
 )
-from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId
+from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId, tool_digest
 from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, ToolUseBlock, UserEvent
 from cc_transcript.tools import Hunk
 
@@ -241,3 +243,58 @@ def test_harvest_pairs_without_repo_leaves_correction_none(tmp_path: Path) -> No
     )
     (pair,) = harvest_pairs(act, ref("u1"))
     assert pair == CandidatePair(incorrect=edit_of(act, "t1"), correction=None, overlap=0.0)
+
+
+def session_with_correction() -> SessionActivity:
+    return activity(
+        user("u0", "one"),
+        assistant("a0", blocks=(edit("t1", "/a.py", "", "alpha = 1"),), secs=1),
+        user("u1", "two", secs=2),
+        assistant("a1", blocks=(edit("t2", "/b.py", "", "zeta = 9"),), secs=3),
+        user("u2", "three", secs=4),
+        assistant("a2", blocks=(edit("t3", "/a.py", "alpha = 1", "alpha = 2"),), secs=5),
+        user("u3", "anchor turn", secs=6),
+    )
+
+
+def test_record_harvest_lowers_session_pairs_with_the_cross_language_digest(tmp_path: Path) -> None:
+    act = session_with_correction()
+    pairs = harvest_pairs(act, ref("u3"))
+    log = CorrectionLog.open(tmp_path / "corrections.db")
+    assert record_harvest(log, act, ref("u3"), pairs, source="cc-pushback") == 3
+    assert len(log.for_session(SESSION)) == 3
+
+    digest = tool_digest("Edit", {"file_path": "/a.py", "old_string": "", "new_string": "alpha = 1"})
+    (row,) = log.by_digest(SESSION, incorrect_digest=digest)
+    assert row.incorrect_digest == digest  # parity with what a hook would digest from raw stdin
+    assert row.anchor_uuid == EventUuid("u3")
+    assert (row.incorrect_file, row.incorrect_old, row.incorrect_new) == ("/a.py", "", "alpha = 1")
+    assert row.correction_origin == "session"
+    assert (row.correction_old, row.correction_new) == ("alpha = 1", "alpha = 2")
+    assert row.overlap == 1.0 and row.correction_commit is None
+    assert row.source == "cc-pushback" and row.extractor_version == EXTRACTOR_VERSION
+
+
+def test_record_harvest_is_idempotent(tmp_path: Path) -> None:
+    act = session_with_correction()
+    pairs = harvest_pairs(act, ref("u3"))
+    log = CorrectionLog.open(tmp_path / "corrections.db")
+    record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
+    record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
+    assert len(log.for_session(SESSION)) == 3
+
+
+@needs_git
+def test_record_harvest_lowers_git_corrections(tmp_path: Path) -> None:
+    repo, source = fixed_repo(tmp_path)
+    act = activity(
+        user("u0", "write it"),
+        assistant("a0", blocks=(edit("t1", str(source), "", f"    {INCORRECT_LINE}"),), secs=1),
+        user("u1", "anchor", secs=2),
+    )
+    log = CorrectionLog.open(tmp_path / "corrections.db")
+    assert record_harvest(log, act, ref("u1"), harvest_pairs(act, ref("u1"), repo=repo), source="cc-pushback") == 1
+    (row,) = log.for_session(SESSION)
+    assert row.correction_origin == "git"
+    assert row.correction_commit is not None and len(row.correction_commit) == 40
+    assert FIXED_LINE in (row.correction_new or "")

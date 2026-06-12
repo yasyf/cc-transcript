@@ -101,6 +101,13 @@ EXPORTS: dict[str, str] = {
             "git_corrections",
             "harvest_pairs",
             "match_corrections",
+            "record_harvest",
+        ),
+        "cc_transcript.corrections": (
+            "CORRECTIONS_DDL",
+            "Correction",
+            "CorrectionLog",
+            "Origin",
         ),
         "cc_transcript.context": (
             "ContextWindow",
@@ -251,6 +258,18 @@ if TYPE_CHECKING:
     from cc_transcript.context import (
         capture_window as capture_window,
     )
+    from cc_transcript.corrections import (
+        CORRECTIONS_DDL as CORRECTIONS_DDL,
+    )
+    from cc_transcript.corrections import (
+        Correction as Correction,
+    )
+    from cc_transcript.corrections import (
+        CorrectionLog as CorrectionLog,
+    )
+    from cc_transcript.corrections import (
+        Origin as Origin,
+    )
     from cc_transcript.decisions import (
         DECISIONS_DDL as DECISIONS_DDL,
     )
@@ -316,6 +335,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.evidence import (
         match_corrections as match_corrections,
+    )
+    from cc_transcript.evidence import (
+        record_harvest as record_harvest,
     )
     from cc_transcript.filters import (
         JUNK_USER_MESSAGE_RE as JUNK_USER_MESSAGE_RE,

@@ -1,7 +1,7 @@
 [project]
 name = "cc-transcript"
-version = "2.0.0"
-description = "The Claude Code session-activity platform: a superset JSONL parser (Rust fast path, Python reference), typed tool calls with a cross-language content digest, turns/edits/evidence over one spine, context windows with labeled fidelity, a unified decision ledger, LLM judging, and a transcript-investigation CLI."
+version = "2.1.0"
+description = "The Claude Code session-activity platform: a superset JSONL parser (Rust fast path, Python reference), typed tool calls with a cross-language content digest, turns/edits/evidence over one spine, context windows with labeled fidelity, unified decision and correction ledgers, LLM judging, and a transcript-investigation CLI."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
