@@ -60,8 +60,8 @@ class ContextWindow:
     Attributes:
         anchor: The event the window centers on.
         before: Turns preceding the anchor's turn, oldest first.
-        trigger: The anchor's own turn; None for rows converted from pre-2.0
-            stores that recorded no trigger turn.
+        trigger: The anchor's own turn, or None when the window carries no
+            trigger preview.
         after: Turns following the anchor's turn, oldest first.
         fidelity: ``'full'`` while the transcript backs the window;
             ``'summary'`` once only the previews remain.

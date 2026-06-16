@@ -6,26 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0]
 
-The cruft purge: every backwards-compatibility affordance left after the 2.0
-platform release is gone. Breaking throughout — consumers move in lockstep.
+The cruft purge: a leaner, more uniform public surface. Breaking throughout —
+consumers move in lockstep.
 
 ### Removed
 - `FilterConfig`, `apply_filters`, and the `cc_transcript.filters` module —
   compose a `FilterSpec` with `build_spec` and apply it with `apply_spec`.
   `JUNK_USER_MESSAGE_RE` now lives in `cc_transcript.filterspec`.
-- The `[lexicon]` extra alias for the pre-0.6 extra name — install
-  `cc-transcript[sentiment]`.
-- `effective_confidence` and the `None`-signal fallback in **mining**:
-  `FeedbackCandidate.signal`, `FeedbackCandidate.ref`, and
-  `MiningSignal.signal` are required; `from_payload` requires a payload.
-- The window-model migration affordance: `ContextWindow.origin` and the
-  `Origin` type are gone, and `anchor` is required.
-- The vendored legacy parity tests (monolithic junk regex, hand-written spec
-  presets) — the refactors they pinned shipped releases ago.
-
-### Changed
-- Context wire schema is `cc-transcript.context/2` (no `origin` key); documents
-  in any older shape raise `SchemaError`.
+- The `[lexicon]` extra alias — install `cc-transcript[sentiment]`.
+- `effective_confidence` and the optional `None` signal in **mining**:
+  `FeedbackCandidate.signal`, `FeedbackCandidate.ref`, and `MiningSignal.signal`
+  are required; `from_payload` requires a payload.
+- `ContextWindow.origin` and the `Origin` type; `anchor` is required.
+- The vendored parity tests for the junk regex and spec presets.
 
 ## [2.1.0]
 
