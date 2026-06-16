@@ -9,7 +9,7 @@ from datetime import datetime
 from functools import partial, reduce
 from itertools import chain, islice
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, NamedTuple, get_args
 
 import anyio
 import click
@@ -44,7 +44,7 @@ from cc_transcript.render import (
     tool_names,
     transcript_header,
 )
-from cc_transcript.tools import file_path_of, parse_tool_call
+from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -128,13 +128,26 @@ def project_matches(path: Path, root: Path, project: str | None) -> bool:
     return project is None or any(project in part for part in path.relative_to(root).parts[:-1])
 
 
+class Targets(NamedTuple):
+    paths: list[tuple[Path, float]]
+    total: int
+
+
 def resolve_targets(
     paths: Sequence[Path], *, root: Path, project: str | None, contains: str | None, limit: int | None
-) -> list[tuple[Path, float]]:
+) -> Targets:
     if paths:
-        return [(path, path.stat().st_mtime) for path in paths]
+        return Targets([(path, path.stat().st_mtime) for path in paths], len(paths))
     matched = discover(root, project=project, contains=contains)
-    return matched if limit is None else matched[:limit]
+    return Targets(matched if limit is None else matched[:limit], len(matched))
+
+
+def scope_note(targets: Targets) -> str:
+    return (
+        f"searched {len(targets.paths)} of {targets.total} transcripts — use --all"
+        if len(targets.paths) < targets.total
+        else ""
+    )
 
 
 def filter_rows(rows: list[Row], *, kinds: frozenset[str], spec: FilterSpec | None) -> list[Row]:
@@ -178,9 +191,14 @@ def slice_rows(
 def uses_tool(event: TranscriptEvent, tool: str, names: Mapping[ToolUseId, str]) -> bool:
     match event:
         case AssistantEvent(blocks=blocks):
-            return any(isinstance(block, ToolUseBlock) and block.name == tool for block in blocks)
+            return any(isinstance(block, ToolUseBlock) and tool_name_matches(block.name, tool) for block in blocks)
         case UserEvent(blocks=blocks):
-            return any(isinstance(block, ToolResultBlock) and names.get(block.tool_use_id) == tool for block in blocks)
+            return any(
+                isinstance(block, ToolResultBlock)
+                and (name := names.get(block.tool_use_id)) is not None
+                and tool_name_matches(name, tool)
+                for block in blocks
+            )
         case _:
             return False
 
@@ -364,7 +382,7 @@ def grep(
     out: list[str | bytes] = []
     files_matched = matched = 0
     budget = max_matches
-    for parsed in parse_transcripts(targets):
+    for parsed in parse_transcripts(targets.paths):
         if budget == 0:
             break
         names = tool_names(parsed.events)
@@ -406,7 +424,7 @@ def grep(
                 for i in range(lo, hi)
             )
     if not as_json:
-        out.append(f"{files_matched} files, {matched} matches")
+        out.append(f"{files_matched} files, {matched} matches" + (f" · {note}" if (note := scope_note(targets)) else ""))
     emit(out)
     if matched == 0:
         raise SystemExit(1)
@@ -429,21 +447,26 @@ def stats(
 ) -> None:
     """Summarize event, model, and tool statistics."""
     targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
-    transcripts = parse_transcripts(targets)
+    transcripts = parse_transcripts(targets.paths)
     if per_file and as_json:
         emit(
             orjson.dumps({"path": str(parsed.path)} | stats_dict(collect_stats([parsed]))) for parsed in transcripts
         )
     elif per_file:
         emit(
-            block
-            for parsed in transcripts
-            for block in (transcript_header(parsed.path), render_stats(collect_stats([parsed])), "")
+            chain(
+                (
+                    block
+                    for parsed in transcripts
+                    for block in (transcript_header(parsed.path), render_stats(collect_stats([parsed])), "")
+                ),
+                (note,) if (note := scope_note(targets)) else (),
+            )
         )
     elif as_json:
         emit((orjson.dumps(stats_dict(collect_stats(transcripts))),))
     else:
-        emit((render_stats(collect_stats(transcripts)),))
+        emit((render_stats(collect_stats(transcripts)), *((note,) if (note := scope_note(targets)) else ())))
 
 
 @cli.command("slice")
