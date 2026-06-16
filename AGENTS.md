@@ -32,7 +32,7 @@ cc-transcript/
 ├── rust/               # Rust extension (cc_transcript._parser_rs)
 ├── tests/              # Pytest suite
 ├── docs/               # Great Docs site: guides + curated API reference
-├── scripts/            # Maintenance scripts: lexicon data build, store conversion
+├── scripts/            # Maintenance scripts: lexicon data build
 ├── .claude-plugin/     # Claude Code plugin + marketplace manifests
 ├── skills/             # cc-transcript-investigate skill (CLI-driven transcript investigation)
 ├── .github/            # CI, docs, and PyPI release workflows
