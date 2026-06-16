@@ -18,17 +18,14 @@ platform release is gone. Breaking throughout — consumers move in lockstep.
 - `effective_confidence` and the `None`-signal fallback in **mining**:
   `FeedbackCandidate.signal`, `FeedbackCandidate.ref`, and
   `MiningSignal.signal` are required; `from_payload` requires a payload.
-- The window-model migration affordance: `ContextWindow.origin` is gone and
-  `anchor` is required (`trigger` stays optional — converted pre-2.0 rows may
-  genuinely lack a trigger turn).
+- The window-model migration affordance: `ContextWindow.origin` and the
+  `Origin` type are gone, and `anchor` is required.
 - The vendored legacy parity tests (monolithic junk regex, hand-written spec
   presets) — the refactors they pinned shipped releases ago.
 
 ### Changed
-- Context wire schema bumped to `cc-transcript.context/2` (no `origin` key);
-  `/1` documents raise `SchemaError`. Convert stores in place with
-  `scripts/migrate_context_v2.py`; stores predating cc-pushback's
-  `migrate-corpus` must run that first.
+- Context wire schema is `cc-transcript.context/2` (no `origin` key); documents
+  in any older shape raise `SchemaError`.
 
 ## [2.1.0]
 
