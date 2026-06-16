@@ -403,6 +403,30 @@ def test_grep_tool_hits_use_and_correlated_result(runner: CliRunner, transcript:
     ]
 
 
+def test_grep_tool_pipe_spec_matches_either(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", ".", str(transcript), "--tool", "Read|Bash"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[2],
+        EXPECTED_SHOW[3],
+        EXPECTED_SHOW[4],
+        EXPECTED_SHOW[5],
+        "1 files, 4 matches",
+    ]
+
+
+def test_grep_tool_alias_matches_canonical_name(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["grep", ".", str(transcript), "--tool", "Execute"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[4],
+        EXPECTED_SHOW[5],
+        "1 files, 2 matches",
+    ]
+
+
 def test_grep_where_thinking(runner: CliRunner, transcript: Path) -> None:
     thinking = runner.invoke(cli, ["grep", "think", str(transcript), "--where", "thinking"])
     assert thinking.exit_code == 0
@@ -483,6 +507,32 @@ def test_grep_discovery_multi_file(runner: CliRunner, root: tuple[Path, Path, Pa
     ]
 
 
+def test_grep_limit_note_and_all_restores(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, old, new = root
+    limited = runner.invoke(cli, ["grep", "needle", "--root", str(rootdir), "--limit", "1"])
+    assert limited.exit_code == 0
+    assert limited.output.splitlines() == [
+        f"== {new}",
+        "    0 user  03:04:06 needle two",
+        "1 files, 1 matches · searched 1 of 2 transcripts — use --all",
+    ]
+    full = runner.invoke(cli, ["grep", "needle", "--root", str(rootdir), "--limit", "1", "--all"])
+    assert full.output.splitlines() == [
+        f"== {new}",
+        "    0 user  03:04:06 needle two",
+        f"== {old}",
+        "    0 user  03:04:05 needle one",
+        "2 files, 2 matches",
+    ]
+
+
+def test_grep_zero_matches_still_notes_truncation(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, _, _ = root
+    result = runner.invoke(cli, ["grep", "needle one", "--root", str(rootdir), "--limit", "1"])
+    assert result.exit_code == 1
+    assert result.output == "0 files, 0 matches · searched 1 of 2 transcripts — use --all\n"
+
+
 def test_grep_json_carries_path_and_event(runner: CliRunner, transcript: Path) -> None:
     result = runner.invoke(cli, ["grep", "hello", str(transcript), "--json"])
     assert result.exit_code == 0
@@ -561,6 +611,26 @@ def test_stats_discovery_combines_files(runner: CliRunner, root: tuple[Path, Pat
             "",
         )
     )
+
+
+def test_stats_limit_note_and_all_restores(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, _, _ = root
+    limited = runner.invoke(cli, ["stats", "--root", str(rootdir), "--limit", "1"])
+    assert limited.exit_code == 0
+    lines = limited.output.splitlines()
+    assert lines[0] == "files        1"
+    assert lines[-1] == "searched 1 of 2 transcripts — use --all"
+    full = runner.invoke(cli, ["stats", "--root", str(rootdir), "--limit", "1", "--all"])
+    assert full.exit_code == 0
+    assert full.output.splitlines()[0] == "files        2"
+    assert "searched" not in full.output
+
+
+def test_stats_json_omits_truncation_note(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
+    rootdir, _, _ = root
+    result = runner.invoke(cli, ["stats", "--root", str(rootdir), "--limit", "1", "--json"])
+    assert result.exit_code == 0
+    assert orjson.loads(result.output)["files"] == 1
 
 
 def test_slice_emits_one_line_per_tool_call(runner: CliRunner, session_root: Path) -> None:
