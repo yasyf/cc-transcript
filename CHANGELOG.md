@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0]
+
+### Added
+- `grep` and `stats` now report when the default `--limit` hid transcripts
+  (`searched N of M transcripts — use --all`), so an empty result is explained
+  rather than mistaken for a broken filter.
+
+### Fixed
+- `grep --tool` matches through `tool_name_matches`, honoring pipe specs
+  (`Read|Edit`), renamed aliases (Bash↔Execute), and MCP-suffixed names —
+  consistent with the query API.
+
 ## [3.0.1]
 
 ### Changed
