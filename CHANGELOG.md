@@ -30,6 +30,25 @@ platform release is gone. Breaking throughout — consumers move in lockstep.
   `scripts/migrate_context_v2.py`; stores predating cc-pushback's
   `migrate-corpus` must run that first.
 
+## [2.1.0]
+
+The shared `corrections_v1` ledger: a durable, cross-language home for the
+incorrect→correct edit pairs the evidence harvest derives, mirroring
+`decisions_v1` so every consumer reads and writes one source. Never published
+to PyPI on its own — it ships as part of 3.0.0.
+
+### Added
+- `cc_transcript.corrections` — an import-light `CorrectionLog` over the
+  `corrections_v1` table (WAL, `INSERT OR IGNORE`, `~/.cc-transcript/corrections.db`),
+  keyed by `(session_id, anchor_uuid, incorrect_digest, extractor_version)`.
+  Reads via `for_session` / `for_anchor` / `by_digest`; the cross-consumer join
+  is by `incorrect_digest`, the same `tool_digest` that `decisions_v1` carries.
+- `evidence.record_harvest(log, activity, anchor, pairs)` — lowers
+  `CandidatePair`/`GitFix` into `Correction` rows in the heavy evidence tier,
+  resolving each incorrect edit's raw tool call to its cross-language digest.
+- The `corrections_v1` DDL is frozen as a byte-compared cross-language contract
+  (`tests/testdata/corrections_v1.sql`), exactly like `decisions_v1`.
+
 ## [2.0.0]
 
 The greenfield platform release: cc-transcript becomes the cc-family's
