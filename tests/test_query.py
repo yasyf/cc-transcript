@@ -144,6 +144,19 @@ def test_fileref_is_test(path: str, expected: bool) -> None:
     assert FileRef(path).is_test is expected
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        pytest.param("/repo/src/app.py", ".py", id="py"),
+        pytest.param("README.md", ".md", id="md_basename"),
+        pytest.param("/repo/data/archive.tar.gz", ".gz", id="last_only"),
+        pytest.param("/repo/Makefile", "", id="no_extension"),
+    ],
+)
+def test_fileref_suffix(path: str, expected: str) -> None:
+    assert FileRef(path).suffix == expected
+
+
 def test_fileref_str_and_fspath() -> None:
     ref = FileRef("/repo/src/app.py")
     assert str(ref) == "/repo/src/app.py"
