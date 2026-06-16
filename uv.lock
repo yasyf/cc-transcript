@@ -222,7 +222,7 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "2.1.0"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
