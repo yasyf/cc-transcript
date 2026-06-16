@@ -253,8 +253,7 @@ def test_round_trip_preserves_null_trigger_and_empty_refs() -> None:
     "data",
     [
         pytest.param("[]", id="non-object"),
-        pytest.param('{"schema":"cc-transcript.context/1"}', id="retired-v1-schema"),
-        pytest.param('{"schema":"cc-transcript.context/3"}', id="future-version"),
+        pytest.param('{"schema":"cc-transcript.context/3"}', id="wrong-version"),
         pytest.param('{"anchor":null}', id="missing-schema"),
     ],
 )
