@@ -110,6 +110,11 @@ class FileRef:
         """Whether the path names a Python test file."""
         return self.matches(*self.TEST_PATTERNS)
 
+    @property
+    def suffix(self) -> str:
+        """The file extension including the leading dot (e.g. ``.py``), or ``""``."""
+        return PurePath(self.path).suffix
+
     def matches(self, *globs: str) -> bool:
         """Whether the full path or the basename matches any glob."""
         name = PurePath(self.path).name
