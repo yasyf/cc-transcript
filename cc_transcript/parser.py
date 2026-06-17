@@ -18,7 +18,9 @@ from cc_transcript.models import (
     ContentBlock,
     EntryMeta,
     EventUuid,
+    FallbackBlock,
     ModeEvent,
+    OtherBlock,
     OtherEvent,
     SessionId,
     SystemEvent,
@@ -102,8 +104,10 @@ def parse_assistant_block(block: dict[str, Any]) -> ContentBlock:
             return ThinkingBlock(block["thinking"])
         case "tool_use":
             return ToolUseBlock(id=ToolUseId(block["id"]), name=block["name"], input=block["input"])
+        case "fallback":
+            return FallbackBlock(from_model=block["from"]["model"], to_model=block["to"]["model"])
         case unknown:
-            raise ValueError(f"unexpected assistant block type: {unknown}")
+            return OtherBlock(type=unknown, raw=block)
 
 
 def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:

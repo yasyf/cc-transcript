@@ -12,7 +12,9 @@ from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
     EventUuid,
+    FallbackBlock,
     ModeEvent,
+    OtherBlock,
     OtherEvent,
     SessionId,
     SystemEvent,
@@ -138,6 +140,30 @@ def assistant_synthetic() -> dict[str, Any]:
     )
 
 
+def assistant_fallback() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "stop_reason": "tool_use",
+            "content": [{"type": "fallback", "from": {"model": "claude-fable-5"}, "to": {"model": "claude-opus-4-8"}}],
+        },
+    )
+
+
+def assistant_unknown_block() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "stop_reason": None,
+            "content": [{"type": "future_block", "payload": {"n": 1}}],
+        },
+    )
+
+
 def system_entry() -> dict[str, Any]:
     return envelope(type="system", subtype="stop_hook_summary", content="hook ran")
 
@@ -254,6 +280,19 @@ def test_assistant_synthetic_is_not_filtered() -> None:
     assert isinstance(event, AssistantEvent)
     assert event.model == "<synthetic>"
     assert event.stop_reason is None
+
+
+def test_assistant_fallback_block() -> None:
+    event = build_event(assistant_fallback())
+    assert isinstance(event, AssistantEvent)
+    assert event.text == ""
+    assert event.blocks == (FallbackBlock(from_model="claude-fable-5", to_model="claude-opus-4-8"),)
+
+
+def test_assistant_unknown_block_degrades_to_other() -> None:
+    event = build_event(assistant_unknown_block())
+    assert isinstance(event, AssistantEvent)
+    assert event.blocks == (OtherBlock(type="future_block", raw={"type": "future_block", "payload": {"n": 1}}),)
 
 
 def test_system_entry() -> None:

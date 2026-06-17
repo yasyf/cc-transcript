@@ -83,7 +83,39 @@ class ToolResultBlock:
     is_async: bool = False
 
 
-ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+@dataclass(frozen=True, slots=True)
+class FallbackBlock:
+    """A marker that the assistant turn fell back from one model to another.
+
+    Claude Code records this when a turn switches models mid-stream; it carries
+    no message content, only the two model names.
+
+    Attributes:
+        from_model: The model the turn started on.
+        to_model: The model the turn fell back to.
+    """
+
+    from_model: str
+    to_model: str
+
+
+@dataclass(frozen=True, slots=True)
+class OtherBlock:
+    """Any assistant content block whose ``type`` is not yet modeled.
+
+    The escape hatch that keeps an unrecognized block from crashing the parser
+    as Claude Code's transcript format evolves, mirroring :class:`OtherEvent`.
+
+    Attributes:
+        type: The block's ``type`` field.
+        raw: The block's full decoded payload.
+    """
+
+    type: str
+    raw: Mapping[str, Any]
+
+
+ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | FallbackBlock | OtherBlock
 
 
 @dataclass(frozen=True, slots=True)

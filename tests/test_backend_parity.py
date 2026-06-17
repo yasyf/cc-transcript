@@ -115,6 +115,26 @@ def fixture_entries() -> list[dict[str, Any]]:
                 "content": [{"type": "text", "text": "noop"}],
             },
         ),
+        envelope(
+            type="assistant",
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "fallback", "from": {"model": "claude-fable-5"}, "to": {"model": "claude-opus-4-8"}}
+                ],
+            },
+        ),
+        envelope(
+            type="assistant",
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": None,
+                "content": [{"type": "future_block", "payload": {"n": 1, "deep": [True, None, 2.5]}}],
+            },
+        ),
         envelope(type="system", subtype="stop_hook_summary", content="hook ran"),
         envelope(type="system", subtype="turn_duration"),
         {"type": "mode", "mode": "normal", "sessionId": "sess-1"},
