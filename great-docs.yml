@@ -11,6 +11,11 @@ pypi: true
 github_style: widget
 jupyter: python3
 
+# Render class methods inline on the class page instead of one page per method.
+# Fewer pages means a smaller per-page sidebar, which Quarto re-emits into every
+# page — the dominant docs-build cost. See docs/scripts/sidebar_text.py.
+inline_methods: true
+
 # Conservative defaults: a solid navbar and a single accent, no gradient
 # presets or hero starfield. The gradient/starfield extras read as busy and the
 # starfield canvas intercepts homepage clicks; keep them off unless asked.
