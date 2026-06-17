@@ -13,7 +13,9 @@ import orjson
 from cc_transcript.filterspec import event_kind, event_meta, event_text, tool_uses
 from cc_transcript.models import (
     AssistantEvent,
+    FallbackBlock,
     ModeEvent,
+    OtherBlock,
     OtherEvent,
     SystemEvent,
     TextBlock,
@@ -230,6 +232,10 @@ def block_payload(block: ContentBlock, *, width: int, thinking: bool) -> str:
             )
         case ToolResultBlock():
             return ""
+        case FallbackBlock(from_model=src, to_model=dst):
+            return f"fallback {src}->{dst}"
+        case OtherBlock(type=type_):
+            return type_
 
 
 def line_budget(width: int) -> Budget:

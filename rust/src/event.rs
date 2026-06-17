@@ -6,9 +6,9 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, ENTRY_META_CLS, MODE_EVENT_CLS, OTHER_EVENT_CLS,
-    SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS,
-    TOOL_USE_BLOCK_CLS, USER_EVENT_CLS,
+    models_type, ASSISTANT_EVENT_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS, MODE_EVENT_CLS,
+    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
+    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USER_EVENT_CLS,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -148,10 +148,14 @@ fn parse_assistant_block<'py>(py: Python<'py>, block: &Value) -> PyResult<Bound<
             require_str(block, "name")?,
             json_to_py(py, require(block, "input")?)?,
         )),
-        other => Err(PyValueError::new_err(format!(
-            "unexpected assistant block type: {}",
-            other.unwrap_or("None")
-        ))),
+        Some("fallback") => models_type(py, &FALLBACK_BLOCK_CLS, "FallbackBlock")?.call1((
+            require_str(require(block, "from")?, "model")?,
+            require_str(require(block, "to")?, "model")?,
+        )),
+        Some(other) => {
+            models_type(py, &OTHER_BLOCK_CLS, "OtherBlock")?.call1((other, json_to_py(py, block)?))
+        }
+        None => Err(PyKeyError::new_err("'type'")),
     }
 }
 

@@ -60,7 +60,9 @@ EXPORTS: dict[str, str] = {
             "CcVersion",
             "ContentBlock",
             "EntryMeta",
+            "FallbackBlock",
             "ModeEvent",
+            "OtherBlock",
             "OtherEvent",
             "SystemEvent",
             "TextBlock",
@@ -427,7 +429,13 @@ if TYPE_CHECKING:
         EntryMeta as EntryMeta,
     )
     from cc_transcript.models import (
+        FallbackBlock as FallbackBlock,
+    )
+    from cc_transcript.models import (
         ModeEvent as ModeEvent,
+    )
+    from cc_transcript.models import (
+        OtherBlock as OtherBlock,
     )
     from cc_transcript.models import (
         OtherEvent as OtherEvent,

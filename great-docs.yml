@@ -76,6 +76,8 @@ reference:
       - ThinkingBlock
       - ToolUseBlock
       - ToolResultBlock
+      - FallbackBlock
+      - OtherBlock
       - EntryMeta
       - CcVersion
       - parse_event
