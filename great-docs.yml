@@ -196,6 +196,7 @@ reference:
       - harvest_pairs
       - match_corrections
       - git_corrections
+      - record_harvest
       - CandidatePair
       - GitFix
       - EXTRACTOR_VERSION
@@ -214,6 +215,13 @@ reference:
       - Decision
       - Action
       - DECISIONS_DDL
+  - title: Corrections
+    desc: The cross-language correction ledger — incorrect edits paired with the fix that later overwrote them, joined to tool calls by content digest.
+    contents:
+      - CorrectionLog
+      - Correction
+      - Origin
+      - CORRECTIONS_DDL
   - title: Disk truth
     desc: Typed reader for cc-review's session-activity export.
     contents:
