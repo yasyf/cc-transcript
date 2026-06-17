@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths:
+      - "docs/**"
+      - "cc_transcript/**"
+      - "great-docs.yml"
+      - "README.md"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -12,6 +19,7 @@ concurrency:
 jobs:
   build-docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
@@ -30,9 +38,12 @@ jobs:
         run: uv sync --group docs
 
       - name: Build documentation
-        run: uv run great-docs build
+        run: uv run python docs/scripts/build_docs.py build
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Restore sidebar kind pills (static; see build_docs.py)
+        run: uv run python docs/scripts/sidebar_pills.py great-docs
 
       - name: Fix color-swatch loader (upstream great-docs bug)
         run: uv run python docs/scripts/fix_color_swatch.py
