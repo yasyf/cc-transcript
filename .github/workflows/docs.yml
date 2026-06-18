@@ -38,12 +38,9 @@ jobs:
         run: uv sync --group docs
 
       - name: Build documentation
-        run: uv run python docs/scripts/build_docs.py build
+        run: uv run great-docs build
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Restore sidebar kind pills (static; see build_docs.py)
-        run: uv run python docs/scripts/sidebar_pills.py great-docs
 
       - name: Fix color-swatch loader (upstream great-docs bug)
         run: uv run python docs/scripts/fix_color_swatch.py
