@@ -153,5 +153,5 @@ def test_ddl_matches_frozen_cross_language_contract() -> None:
 
     from cc_transcript.decisions import DECISIONS_DDL
 
-    frozen = (pathlib.Path(__file__).parent / "testdata" / "decisions_v1.sql").read_text()
+    frozen = (pathlib.Path(__file__).parent / "testdata" / "decisions.sql").read_text()
     assert DECISIONS_DDL == frozen
