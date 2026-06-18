@@ -208,7 +208,6 @@ reference:
       - record_harvest
       - CandidatePair
       - GitFix
-      - EXTRACTOR_VERSION
   - title: Query
     desc: The transcript query surface — sessions, tool-call queries, file refs, and subagent recursion.
     contents:

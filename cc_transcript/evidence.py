@@ -28,9 +28,6 @@ if TYPE_CHECKING:
     from cc_transcript.corrections import CorrectionLog, Origin
     from cc_transcript.ids import EventRef
 
-EXTRACTOR_VERSION = 1
-"""The deterministic-extraction version; part of every derived artifact's UNIQUE key."""
-
 GIT_TIMEOUT_S = 15
 
 
@@ -208,7 +205,6 @@ def record_harvest(
     pairs: Sequence[CandidatePair],
     *,
     source: str,
-    extractor_version: int = EXTRACTOR_VERSION,
 ) -> int:
     """Records ``pairs`` harvested around ``anchor`` into the shared ledger.
 
@@ -220,19 +216,13 @@ def record_harvest(
     Returns:
         The number of corrections appended this call.
     """
-    rows = [
-        correction
-        for pair in pairs
-        if (correction := lower_pair(activity, anchor, pair, source=source, extractor_version=extractor_version))
-    ]
+    rows = [correction for pair in pairs if (correction := lower_pair(activity, anchor, pair, source=source))]
     for row in rows:
         log.append(row)
     return len(rows)
 
 
-def lower_pair(
-    activity: SessionActivity, anchor: EventRef, pair: CandidatePair, *, source: str, extractor_version: int
-) -> Correction | None:
+def lower_pair(activity: SessionActivity, anchor: EventRef, pair: CandidatePair, *, source: str) -> Correction | None:
     if (block := incorrect_block(activity, pair.incorrect)) is None:
         return None
     incorrect_old, incorrect_new = joined_hunks(pair.incorrect.hunks)
@@ -246,7 +236,6 @@ def lower_pair(
         incorrect_file=pair.incorrect.file_path,
         incorrect_old=incorrect_old,
         incorrect_new=incorrect_new,
-        extractor_version=extractor_version,
         correction_origin=origin,
         correction_file=correction_file,
         correction_old=correction_old,

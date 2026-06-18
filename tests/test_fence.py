@@ -1,9 +1,10 @@
 """The core⟂domains architectural fence, enforced as a release contract.
 
 - core modules never import the domain packages (``sentiment``, ``mining``,
-  ``judge``);
+  ``judge``, ``extract``);
 - ``sentiment`` and ``mining`` never import each other, and neither imports
   ``judge``; ``judge`` layers on ``mining`` only, never ``sentiment``;
+  ``extract`` layers on ``judge``, and the lower domains never import it;
 - the top-level package re-exports core only;
 - importing core (and each domain package) needs no domain extra installed.
 """
@@ -17,13 +18,16 @@ import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent.parent / "cc_transcript"
-DOMAIN_PACKAGES = ("sentiment", "mining", "judge")
+DOMAIN_PACKAGES = ("sentiment", "mining", "judge", "extract")
 FORBIDDEN_EDGES = (
     ("sentiment", "mining"),
     ("mining", "sentiment"),
     ("sentiment", "judge"),
     ("mining", "judge"),
     ("judge", "sentiment"),
+    ("sentiment", "extract"),
+    ("mining", "extract"),
+    ("judge", "extract"),
 )
 LLM_DEPS = {"pydantic", "spawnllm"}
 

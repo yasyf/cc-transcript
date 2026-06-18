@@ -12,7 +12,7 @@ prompts, the verdict model, and any SQL views over the verdict table.
 
 from __future__ import annotations
 
-from cc_transcript.judge.llm import resolved_model, run_structured, structured_judge
+from cc_transcript.judge.llm import resolved_model, run_structured, run_structured_on, structured_judge
 from cc_transcript.judge.verdicts import (
     AuditEstimate,
     AuditSample,

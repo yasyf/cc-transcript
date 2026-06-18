@@ -4,6 +4,39 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0]
+
+The corrections ledger becomes the cc-family's single code-correction substrate:
+one table, one access surface, LLM-grounded rows by default.
+
+### Added
+- `cc-transcript corrections` CLI group — `add` (structured insert, the write
+  path for non-Python producers like cc-review's Go), `query`, and a raw-SQL
+  `sql` escape hatch. The ledger location stays internal; callers never name it.
+- `cc_transcript.extract` domain: `extract_correction` harvests the candidate
+  edits around a feedback anchor and appends the one the feedback faults — an LLM
+  pick via `spawnllm.select_backend` by default, the best-overlap candidate when
+  no backend is ready, idempotent per anchor.
+- `CorrectionLog.for_repo` and `.since` readers, and `judge.run_structured_on`
+  (one structured completion on an explicit backend).
+- The `correction_text` column and the `review` correction origin, so a human
+  reviewer's natural-language correction is a first-class ledger row.
+
+### Changed
+- The structured-LLM path (`run_structured`, `structured_judge`, `resolved_model`)
+  runs whichever backend `spawnllm.select_backend` resolves instead of pinning
+  Claude; `resolved_model` reflects the active backend. Requires `spawnllm>=0.2.0`.
+- `corrections` is keyed by `(session_id, anchor_uuid, incorrect_digest)`, and
+  `incorrect_digest` is now nullable — human review rows join by anchor.
+
+### Removed
+- `EXTRACTOR_VERSION` and the `extractor_version` column/parameters; the ledger no
+  longer versions its deterministic extraction.
+
+### Migration
+- The `corrections_v1` table is renamed to `corrections`. There is no in-place
+  migration: delete `~/.cc-transcript/corrections.db*` and let it rebuild.
+
 ## [3.1.0]
 
 ### Added

@@ -97,7 +97,6 @@ EXPORTS: dict[str, str] = {
             "native_user_classifier",
         ),
         "cc_transcript.evidence": (
-            "EXTRACTOR_VERSION",
             "CandidatePair",
             "GitFix",
             "git_corrections",
@@ -319,9 +318,6 @@ if TYPE_CHECKING:
     )
     from cc_transcript.disktruth import (
         load_export as load_export,
-    )
-    from cc_transcript.evidence import (
-        EXTRACTOR_VERSION as EXTRACTOR_VERSION,
     )
     from cc_transcript.evidence import (
         CandidatePair as CandidatePair,

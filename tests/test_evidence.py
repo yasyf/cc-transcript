@@ -10,7 +10,6 @@ import pytest
 from cc_transcript.activity import Edit, SessionActivity
 from cc_transcript.corrections import CorrectionLog
 from cc_transcript.evidence import (
-    EXTRACTOR_VERSION,
     CandidatePair,
     GitFix,
     git_corrections,
@@ -81,10 +80,6 @@ def edit_of(act: SessionActivity, tool_use_id: str) -> Edit:
 def correction_id(pair: CandidatePair) -> str | None:
     assert isinstance(pair.correction, Edit)
     return pair.correction.ref.tool_use_id
-
-
-def test_extractor_version_pins_the_derivation() -> None:
-    assert EXTRACTOR_VERSION == 1
 
 
 def correction_ladder() -> SessionActivity:
@@ -272,7 +267,7 @@ def test_record_harvest_lowers_session_pairs_with_the_cross_language_digest(tmp_
     assert row.correction_origin == "session"
     assert (row.correction_old, row.correction_new) == ("alpha = 1", "alpha = 2")
     assert row.overlap == 1.0 and row.correction_commit is None
-    assert row.source == "cc-pushback" and row.extractor_version == EXTRACTOR_VERSION
+    assert row.source == "cc-pushback"
 
 
 def test_record_harvest_is_idempotent(tmp_path: Path) -> None:

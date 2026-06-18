@@ -227,7 +227,7 @@ def session_root(tmp_path: Path) -> Path:
 def test_help_lists_all_commands(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert set(cli.commands) == {"list", "show", "grep", "stats", "slice", "digest"}
+    assert set(cli.commands) == {"list", "show", "grep", "stats", "slice", "digest", "corrections"}
 
 
 def test_list_newest_first(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:

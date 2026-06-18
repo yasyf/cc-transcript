@@ -24,6 +24,7 @@ from cc_transcript.builders import (
     drop_synthetic,
     keep_only,
 )
+from cc_transcript.corrections_cli import corrections
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery, find_transcript_sync
 from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, keep
 from cc_transcript.ids import SessionId, tool_digest
@@ -255,6 +256,9 @@ def cli() -> None:
     """Investigate Claude Code transcripts: list, show, grep, and stats."""
 
 
+cli.add_command(corrections)
+
+
 @cli.command("list")
 @discovery_options
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per transcript.")
@@ -424,7 +428,9 @@ def grep(
                 for i in range(lo, hi)
             )
     if not as_json:
-        out.append(f"{files_matched} files, {matched} matches" + (f" · {note}" if (note := scope_note(targets)) else ""))
+        out.append(
+            f"{files_matched} files, {matched} matches" + (f" · {note}" if (note := scope_note(targets)) else "")
+        )
     emit(out)
     if matched == 0:
         raise SystemExit(1)
@@ -449,9 +455,7 @@ def stats(
     targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
     transcripts = parse_transcripts(targets.paths)
     if per_file and as_json:
-        emit(
-            orjson.dumps({"path": str(parsed.path)} | stats_dict(collect_stats([parsed]))) for parsed in transcripts
-        )
+        emit(orjson.dumps({"path": str(parsed.path)} | stats_dict(collect_stats([parsed]))) for parsed in transcripts)
     elif per_file:
         emit(
             chain(
