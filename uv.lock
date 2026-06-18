@@ -261,7 +261,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "spacy", marker = "extra == 'sentiment'", specifier = ">=3.8" },
-    { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.1.3" },
+    { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.2.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.44" },
 ]
 provides-extras = ["dev", "sentiment", "llm"]
@@ -2093,16 +2093,16 @@ wheels = [
 
 [[package]]
 name = "spawnllm"
-version = "0.1.3"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "loguru" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/3f/fa14651cc6e900e2e99c34deb50f424e7f41c1b121bdb5dbeeb1b30a1847/spawnllm-0.1.3.tar.gz", hash = "sha256:2533e5b76c2b4b51bbf0c572df68c49b8a90b45923fee1c1d483517bcf0bdc6b", size = 13387, upload-time = "2026-06-10T13:28:44.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/36/1d1496505b594d22c1942b39e6727e7eed2b3cb04611c11f07273147d7ef/spawnllm-0.2.0.tar.gz", hash = "sha256:4d409729a0204bb41074cc1e334a09d53c81a854a7f1d5d9dbaa14bfeb263f81", size = 20205, upload-time = "2026-06-18T09:30:08.57Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/7d/f03994edc20a0d68f0d9c33d236065617f18d407e9c3138f3cb20fc1dee0/spawnllm-0.1.3-py3-none-any.whl", hash = "sha256:2e0831252211f60d67fe52dfcdbcd0bc1926d232eefa88d85ca35c4428c31884", size = 19121, upload-time = "2026-06-10T13:28:43.551Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/74/2e8dcc472f599210207bf3a11f49c05a9806eb157aecc5be416e491cb4f1/spawnllm-0.2.0-py3-none-any.whl", hash = "sha256:7a44c28f2a48831f5173035295ad643156e13000e480065c609d68b072396784", size = 28167, upload-time = "2026-06-18T09:30:07.473Z" },
 ]
 
 [[package]]
