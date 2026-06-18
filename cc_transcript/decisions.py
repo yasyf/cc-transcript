@@ -1,6 +1,6 @@
 """The unified decision ledger shared by every hook and gate writer.
 
-One SQLite table (``decisions_v1``) records every allow/block/warn/nudge/note
+One SQLite table (``decisions``) records every allow/block/warn/nudge/note
 decision across the family. Python (:class:`DecisionLog`) and cc-review's Go
 daemon write the same file directly, so the DDL below is vendored
 byte-identical into the Go repo and byte-compared in CI. Attribution joins by
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from cc_transcript.ids import EventUuid, SessionId, ToolDigest
 
 DECISIONS_DDL = """\
-CREATE TABLE IF NOT EXISTS decisions_v1 (
+CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY,
     ts_ms INTEGER NOT NULL,
     session_id TEXT NOT NULL,
@@ -39,11 +39,11 @@ CREATE TABLE IF NOT EXISTS decisions_v1 (
     UNIQUE (session_id, ts_ms, source, kind, tool_digest)
 );
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_session_ts ON decisions_v1 (session_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_decisions_session_ts ON decisions (session_id, ts_ms);
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_tool_digest ON decisions_v1 (tool_digest);
+CREATE INDEX IF NOT EXISTS idx_decisions_tool_digest ON decisions (tool_digest);
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_source_file ON decisions_v1 (source_file);
+CREATE INDEX IF NOT EXISTS idx_decisions_source_file ON decisions (source_file);
 """
 
 Action = Literal["allow", "block", "warn", "nudge", "note"]
@@ -92,7 +92,7 @@ class Decision:
 
 
 class DecisionLog:
-    """The ``decisions_v1`` ledger at ``~/.cc-transcript/decisions.db``.
+    """The ``decisions`` ledger at ``~/.cc-transcript/decisions.db``.
 
     Opened in WAL mode with a busy timeout because cc-review's Go daemon
     writes the same file concurrently. Durable by convention: rows are never
@@ -136,7 +136,7 @@ class DecisionLog:
         re-running the same integer-ms timestamp.
         """
         self.conn.execute(
-            f"INSERT OR IGNORE INTO decisions_v1 ({DECISION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT OR IGNORE INTO decisions ({DECISION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 decision.ts_ms,
                 decision.session_id,
@@ -158,7 +158,7 @@ class DecisionLog:
         return tuple(
             decision_of(row)
             for row in self.conn.execute(
-                "SELECT * FROM decisions_v1 WHERE session_id = ? ORDER BY ts_ms, id", (session_id,)
+                "SELECT * FROM decisions WHERE session_id = ? ORDER BY ts_ms, id", (session_id,)
             )
         )
 
@@ -177,7 +177,7 @@ class DecisionLog:
             ``[near_ts_ms - window_ms, near_ts_ms]``.
         """
         row = self.conn.execute(
-            "SELECT * FROM decisions_v1 WHERE session_id = ? AND tool_digest = ? AND ts_ms BETWEEN ? AND ?"
+            "SELECT * FROM decisions WHERE session_id = ? AND tool_digest = ? AND ts_ms BETWEEN ? AND ?"
             " ORDER BY ts_ms DESC, id DESC LIMIT 1",
             (session_id, tool_digest, near_ts_ms - window_ms, near_ts_ms),
         ).fetchone()
@@ -205,7 +205,7 @@ class DecisionLog:
         """
         kind_clause, kind_params = ("AND kind = ? ", (kind,)) if kind is not None else ("", ())
         row = self.conn.execute(
-            f"SELECT * FROM decisions_v1 WHERE session_id = ? AND event = ? {kind_clause}AND ts_ms BETWEEN ? AND ?"
+            f"SELECT * FROM decisions WHERE session_id = ? AND event = ? {kind_clause}AND ts_ms BETWEEN ? AND ?"
             " ORDER BY ABS(ts_ms - ?), id DESC LIMIT 1",
             (session_id, event, *kind_params, near_ts_ms - window_ms, near_ts_ms + window_ms, near_ts_ms),
         ).fetchone()

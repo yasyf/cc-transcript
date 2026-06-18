@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS decisions_v1 (
+CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY,
     ts_ms INTEGER NOT NULL,
     session_id TEXT NOT NULL,
@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS decisions_v1 (
     UNIQUE (session_id, ts_ms, source, kind, tool_digest)
 );
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_session_ts ON decisions_v1 (session_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_decisions_session_ts ON decisions (session_id, ts_ms);
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_tool_digest ON decisions_v1 (tool_digest);
+CREATE INDEX IF NOT EXISTS idx_decisions_tool_digest ON decisions (tool_digest);
 
-CREATE INDEX IF NOT EXISTS idx_decisions_v1_source_file ON decisions_v1 (source_file);
+CREATE INDEX IF NOT EXISTS idx_decisions_source_file ON decisions (source_file);

@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0]
+
+### Changed
+- The decision ledger table is renamed `decisions_v1` → `decisions` (its indexes
+  likewise); cc-review's vendored DDL is renamed in lockstep. No in-place
+  migration — delete `~/.cc-transcript/decisions.db*` and let it rebuild.
+- `extract_correction` returns None cleanly when an anchor resolves no turn,
+  instead of fabricating a zero anchor-turn for the (unreachable) no-turn branch.
+
 ## [4.0.0]
 
 The corrections ledger becomes the cc-family's single code-correction substrate:

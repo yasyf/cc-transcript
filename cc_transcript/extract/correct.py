@@ -167,12 +167,9 @@ async def extract_correction(
     if log.for_anchor(anchor.session_id, anchor.event_uuid):
         return None
     pairs = await anyio.to_thread.run_sync(partial(harvest_pairs, activity, anchor, repo=repo))
-    if not pairs:
+    if not pairs or (turn := activity.turn_of(anchor)) is None:
         return None
-    turn = activity.turn_of(anchor)
-    pick = await choose_pair(
-        pairs, feedback=feedback, anchor_turn=turn.index if turn else 0, tier=tier, backend=backend
-    )
+    pick = await choose_pair(pairs, feedback=feedback, anchor_turn=turn.index, tier=tier, backend=backend)
     if pick is None or (row := lower_pair(activity, anchor, pick, source=source)) is None:
         return None
     if repo is not None:
