@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0]
+
+### Added
+- On-disk assistant usage/cost retention: `AssistantEvent.usage` plus shared
+  `Usage`, `CacheCreation`, and `ServerToolUse` models, parsed by both the Python
+  reference and the Rust fast path.
+- `parse_p_result`: a `claude -p --output-format json` envelope parser (Python +
+  Rust) yielding a `ResultEnvelope` with `ModelUsage`, `InitInfo`/`McpServer`/
+  `Plugin`, and `EnvelopeMessage`.
+- `cc_transcript.cost`: a token-to-dollar cost helper — `cost_of`,
+  `cost_of_assistant`, `ModelPricing`, `CostBreakdown`, `resolve_pricing`, and
+  the `PRICING` table.
+
 ## [4.1.0]
 
 ### Changed
