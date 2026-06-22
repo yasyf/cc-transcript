@@ -12,11 +12,17 @@ from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
     CacheCreation,
+    EnvelopeMessage,
     EventUuid,
     FallbackBlock,
+    InitInfo,
+    McpServer,
     ModeEvent,
+    ModelUsage,
     OtherBlock,
     OtherEvent,
+    Plugin,
+    ResultEnvelope,
     ServerToolUse,
     SessionId,
     SystemEvent,
@@ -28,7 +34,9 @@ from cc_transcript.models import (
     Usage,
     UserEvent,
 )
-from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes
+from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes, parse_p_result
+
+TESTDATA = Path(__file__).parent / "testdata"
 
 
 def envelope(**overrides: Any) -> dict[str, Any]:
@@ -404,3 +412,58 @@ def test_parse_events_async_reads_file(tmp_path: Path) -> None:
     path.write_bytes(b"\n".join([orjson.dumps(user_str()), orjson.dumps(mode_entry())]))
     events = anyio.run(parse_events_async, path)
     assert [type(e).__name__ for e in events] == ["UserEvent", "ModeEvent"]
+
+
+def test_parse_p_result_haiku_envelope() -> None:
+    env = parse_p_result((TESTDATA / "haiku_envelope.json").read_bytes())
+
+    assert env.total_cost_usd == 0.05759
+    assert env.model_usage["claude-haiku-4-5-20251001"] == ModelUsage(
+        input_tokens=28,
+        output_tokens=250,
+        cache_read_input_tokens=51020,
+        cache_creation_input_tokens=25605,
+        web_search_requests=0,
+        cost_usd=0.05759,
+        context_window=200000,
+        max_output_tokens=32000,
+    )
+
+    assert env.usage.input_tokens == 28
+    assert env.usage.output_tokens == 250
+    assert env.usage.cache_read_input_tokens == 51020
+    assert env.usage.cache_creation_input_tokens == 25605
+    assert env.usage.cache_creation == CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25605)
+    assert env.usage.service_tier == "standard"
+    assert env.usage.inference_geo == "not_available"
+    assert env.usage.server_tool_use == ServerToolUse(web_search_requests=0, web_fetch_requests=0)
+
+    assert env.structured_output == {"answer": "pong"}
+    assert env.num_turns == 3
+    assert env.is_error is False
+    assert env.result == "pong"
+    assert env.stop_reason == "end_turn"
+    assert env.session_id == SessionId("01fb78f3-fc93-4eb1-b399-07e6a60c3e2c")
+    assert env.fast_mode_state == "off"
+    assert env.permission_denials == ()
+
+    assert env.init is not None
+    assert McpServer(name="plugin:cc-review:cc-review", status="connected") in env.init.mcp_servers
+    assert "Bash" in env.init.tools and "Read" in env.init.tools
+    assert "deep-research" in env.init.skills
+    assert any(p.name == "cc-review" for p in env.init.plugins)
+
+    assert any(
+        isinstance(block, ToolUseBlock) and block.name == "StructuredOutput" and block.input == {"answer": "pong"}
+        for message in env.messages
+        for block in message.blocks
+    )
+    assert any(
+        isinstance(block, ToolResultBlock) and block.content == "Structured output provided successfully"
+        for message in env.messages
+        for block in message.blocks
+    )
+    assert any(
+        message.role == "assistant" and TextBlock("pong") in message.blocks for message in env.messages
+    )
+    assert any(message.model == "claude-haiku-4-5-20251001" for message in env.messages)

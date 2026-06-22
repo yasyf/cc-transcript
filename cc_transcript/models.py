@@ -294,5 +294,138 @@ class Usage:
     server_tool_use: ServerToolUse | None
 
 
+@dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """Per-model token usage and cost from a -p result envelope's modelUsage map.
+
+    Attributes:
+        input_tokens: The number of input tokens consumed by the model.
+        output_tokens: The number of output tokens produced by the model.
+        cache_read_input_tokens: The number of input tokens served from the cache.
+        cache_creation_input_tokens: The flat total of input tokens written to the cache.
+        web_search_requests: The number of server-side web-search requests billed to the model.
+        cost_usd: The cost in USD attributed to the model.
+        context_window: The model's context window size in tokens.
+        max_output_tokens: The model's maximum output token budget.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    web_search_requests: int
+    cost_usd: float
+    context_window: int
+    max_output_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class McpServer:
+    """An MCP server entry from the -p init element.
+
+    Attributes:
+        name: The configured name of the MCP server.
+        status: The connection status reported for the server.
+    """
+
+    name: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class Plugin:
+    """A plugin entry from the -p init element.
+
+    Attributes:
+        name: The plugin's name.
+        path: The filesystem path the plugin was loaded from.
+        source: The source the plugin was installed from.
+    """
+
+    name: str
+    path: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class InitInfo:
+    """The session init snapshot from a -p system/init element.
+
+    Attributes:
+        mcp_servers: The MCP servers configured for the session.
+        plugins: The plugins loaded for the session.
+        tools: The tool names available to the session.
+        skills: The skill names available to the session.
+    """
+
+    mcp_servers: tuple[McpServer, ...]
+    plugins: tuple[Plugin, ...]
+    tools: tuple[str, ...]
+    skills: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeMessage:
+    """A conversational message lifted from a -p envelope.
+
+    Unlike on-disk events it carries no EntryMeta — the -p element shape lacks
+    timestamp/parentUuid — so it holds only role, model, text, blocks, and the ids
+    that are present.
+
+    Attributes:
+        role: The author of the message, either "user" or "assistant".
+        model: The model that produced the message, when present.
+        text: The flattened text of the message.
+        blocks: The structured content blocks of the message.
+        uuid: The message's event uuid, when present.
+        session_id: The session the message belongs to.
+    """
+
+    role: Literal["user", "assistant"]
+    model: str | None
+    text: str
+    blocks: tuple[ContentBlock, ...]
+    uuid: EventUuid | None
+    session_id: SessionId
+
+
+@dataclass(frozen=True, slots=True)
+class ResultEnvelope:
+    """A parsed 'claude -p --output-format json' result envelope.
+
+    Holds the billing/usage/structured-output payload, the init snapshot, and the
+    conversational messages. Reuses the shared Usage model; not a TranscriptEvent.
+
+    Attributes:
+        total_cost_usd: The total cost in USD for the run.
+        model_usage: Per-model usage and cost, keyed by model name.
+        usage: The aggregate token usage for the run.
+        structured_output: The structured output payload, when present.
+        num_turns: The number of turns in the run.
+        is_error: Whether the run ended in an error.
+        result: The final result text, when present.
+        session_id: The session the run belongs to.
+        fast_mode_state: The fast-mode state reported for the run, when present.
+        stop_reason: The reason the run stopped, when present.
+        permission_denials: The permission denials recorded during the run.
+        init: The session init snapshot, when present.
+        messages: The conversational messages of the run.
+    """
+
+    total_cost_usd: float
+    model_usage: Mapping[str, ModelUsage]
+    usage: Usage
+    structured_output: Mapping[str, Any] | None
+    num_turns: int
+    is_error: bool
+    result: str | None
+    session_id: SessionId
+    fast_mode_state: str | None
+    stop_reason: str | None
+    permission_denials: tuple[Mapping[str, Any], ...]
+    init: InitInfo | None
+    messages: tuple[EnvelopeMessage, ...]
+
+
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent
 """The union of every typed event a parsed transcript can yield."""

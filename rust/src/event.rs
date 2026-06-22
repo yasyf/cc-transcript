@@ -6,10 +6,11 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS,
-    MODE_EVENT_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS,
-    TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
-    USER_EVENT_CLS,
+    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, ENVELOPE_MESSAGE_CLS,
+    FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS,
+    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, RESULT_ENVELOPE_CLS, SERVER_TOOL_USE_CLS,
+    SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS,
+    USAGE_CLS, USER_EVENT_CLS,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -32,6 +33,18 @@ fn require_str<'a>(data: &'a Value, key: &str) -> PyResult<&'a str> {
 fn require_i64(data: &Value, key: &str) -> PyResult<i64> {
     require(data, key)?
         .as_i64()
+        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
+}
+
+fn require_f64(data: &Value, key: &str) -> PyResult<f64> {
+    require(data, key)?
+        .as_f64()
+        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
+}
+
+fn require_bool(data: &Value, key: &str) -> PyResult<bool> {
+    require(data, key)?
+        .as_bool()
         .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
 }
 
@@ -146,9 +159,13 @@ fn parse_user_blocks<'py>(
 }
 
 fn build_usage<'py>(py: Python<'py>, message: &Value) -> PyResult<Bound<'py, PyAny>> {
-    let Some(usage) = field(message, "usage").filter(|u| u.is_object()) else {
-        return Ok(py.None().into_bound(py));
-    };
+    match field(message, "usage").filter(|u| u.is_object()) {
+        Some(usage) => build_usage_value(py, usage),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+fn build_usage_value<'py>(py: Python<'py>, usage: &Value) -> PyResult<Bound<'py, PyAny>> {
     let cache_creation = match field(usage, "cache_creation").filter(|cc| cc.is_object()) {
         Some(cc) => models_type(py, &CACHE_CREATION_CLS, "CacheCreation")?.call1((
             require_i64(cc, "ephemeral_5m_input_tokens")?,
@@ -262,6 +279,143 @@ pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, Py
             models_type(py, &OTHER_EVENT_CLS, "OtherEvent")?.call1((kind, json_to_py(py, data)?))
         }
     }
+}
+
+fn build_model_usage<'py>(py: Python<'py>, usage: &Value) -> PyResult<Bound<'py, PyAny>> {
+    models_type(py, &MODEL_USAGE_CLS, "ModelUsage")?.call1((
+        require_i64(usage, "inputTokens")?,
+        require_i64(usage, "outputTokens")?,
+        require_i64(usage, "cacheReadInputTokens")?,
+        require_i64(usage, "cacheCreationInputTokens")?,
+        require_i64(usage, "webSearchRequests")?,
+        require_f64(usage, "costUSD")?,
+        require_i64(usage, "contextWindow")?,
+        require_i64(usage, "maxOutputTokens")?,
+    ))
+}
+
+fn build_init<'py>(py: Python<'py>, init: &Value) -> PyResult<Bound<'py, PyAny>> {
+    let mcp_servers = require(init, "mcp_servers")?
+        .as_array()
+        .ok_or_else(|| PyKeyError::new_err("'mcp_servers'"))?
+        .iter()
+        .map(|s| {
+            models_type(py, &MCP_SERVER_CLS, "McpServer")?
+                .call1((require_str(s, "name")?, require_str(s, "status")?))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let plugins = require(init, "plugins")?
+        .as_array()
+        .ok_or_else(|| PyKeyError::new_err("'plugins'"))?
+        .iter()
+        .map(|p| {
+            models_type(py, &PLUGIN_CLS, "Plugin")?.call1((
+                require_str(p, "name")?,
+                require_str(p, "path")?,
+                require_str(p, "source")?,
+            ))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let tools = require(init, "tools")?
+        .as_array()
+        .ok_or_else(|| PyKeyError::new_err("'tools'"))?
+        .iter()
+        .map(|t| t.as_str().ok_or_else(|| PyKeyError::new_err("'tools'")))
+        .collect::<PyResult<Vec<_>>>()?;
+    let skills = require(init, "skills")?
+        .as_array()
+        .ok_or_else(|| PyKeyError::new_err("'skills'"))?
+        .iter()
+        .map(|s| s.as_str().ok_or_else(|| PyKeyError::new_err("'skills'")))
+        .collect::<PyResult<Vec<_>>>()?;
+    models_type(py, &INIT_INFO_CLS, "InitInfo")?.call1((
+        PyTuple::new(py, mcp_servers)?,
+        PyTuple::new(py, plugins)?,
+        PyTuple::new(py, tools)?,
+        PyTuple::new(py, skills)?,
+    ))
+}
+
+fn build_envelope_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bound<'py, PyAny>> {
+    let role = require_str(element, "type")?;
+    let message = require(element, "message")?;
+    let (text, blocks, model): (String, Bound<'py, PyTuple>, Bound<'py, PyAny>) = match role {
+        "assistant" => {
+            let (text, blocks) = parse_assistant_blocks(py, require(message, "content")?)?;
+            (text, blocks, field_str(message, "model").into_bound_py_any(py)?)
+        }
+        "user" => {
+            let (text, blocks) = parse_user_blocks(py, require(message, "content")?, false)?;
+            (text, blocks, py.None().into_bound(py))
+        }
+        other => return Err(PyValueError::new_err(format!("not a conversational element: {other:?}"))),
+    };
+    models_type(py, &ENVELOPE_MESSAGE_CLS, "EnvelopeMessage")?.call1((
+        role,
+        model,
+        text,
+        blocks,
+        field_str(element, "uuid"),
+        require_str(element, "session_id")?,
+    ))
+}
+
+pub fn build_result_envelope<'py>(py: Python<'py>, array: &Value) -> PyResult<Bound<'py, PyAny>> {
+    let elements = array
+        .as_array()
+        .ok_or_else(|| PyValueError::new_err("envelope is not a JSON array"))?;
+    let result = elements
+        .iter()
+        .find(|e| block_type(e) == Some("result"))
+        .ok_or_else(|| PyValueError::new_err("envelope has no result element"))?;
+    let init = elements
+        .iter()
+        .find(|e| block_type(e) == Some("system") && field_str(e, "subtype") == Some("init"));
+
+    let model_usage = PyDict::new(py);
+    for (model, usage) in require(result, "modelUsage")?
+        .as_object()
+        .ok_or_else(|| PyKeyError::new_err("'modelUsage'"))?
+    {
+        model_usage.set_item(model, build_model_usage(py, usage)?)?;
+    }
+
+    let structured_output = match field(result, "structured_output").filter(|s| !s.is_null()) {
+        Some(s) => json_to_py(py, s)?,
+        None => py.None().into_bound(py),
+    };
+    let permission_denials = require(result, "permission_denials")?
+        .as_array()
+        .ok_or_else(|| PyKeyError::new_err("'permission_denials'"))?
+        .iter()
+        .map(|d| json_to_py(py, d))
+        .collect::<PyResult<Vec<_>>>()?;
+    let init_obj = match init {
+        Some(i) => build_init(py, i)?,
+        None => py.None().into_bound(py),
+    };
+    let messages = elements
+        .iter()
+        .filter(|e| matches!(block_type(e), Some("user") | Some("assistant")))
+        .map(|e| build_envelope_message(py, e))
+        .collect::<PyResult<Vec<_>>>()?;
+
+    let args: [Bound<'py, PyAny>; 13] = [
+        require_f64(result, "total_cost_usd")?.into_bound_py_any(py)?,
+        model_usage.into_any(),
+        build_usage_value(py, require(result, "usage")?)?,
+        structured_output,
+        require_i64(result, "num_turns")?.into_bound_py_any(py)?,
+        require_bool(result, "is_error")?.into_bound_py_any(py)?,
+        field_str(result, "result").into_bound_py_any(py)?,
+        require_str(result, "session_id")?.into_bound_py_any(py)?,
+        field_str(result, "fast_mode_state").into_bound_py_any(py)?,
+        field_str(result, "stop_reason").into_bound_py_any(py)?,
+        PyTuple::new(py, permission_denials)?.into_any(),
+        init_obj,
+        PyTuple::new(py, messages)?.into_any(),
+    ];
+    models_type(py, &RESULT_ENVELOPE_CLS, "ResultEnvelope")?.call1(PyTuple::new(py, args)?)
 }
 
 #[cfg(test)]
