@@ -18,11 +18,17 @@ from cc_transcript.models import (
     CcVersion,
     ContentBlock,
     EntryMeta,
+    EnvelopeMessage,
     EventUuid,
     FallbackBlock,
+    InitInfo,
+    McpServer,
+    ModelUsage,
     ModeEvent,
     OtherBlock,
     OtherEvent,
+    Plugin,
+    ResultEnvelope,
     ServerToolUse,
     SessionId,
     SystemEvent,
@@ -182,6 +188,77 @@ build_event = parse_event
 
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
     return [event for line in raw.split(b"\n") if line.strip() if (event := decode_line(line)) is not None]
+
+
+def parse_model_usage(data: Mapping[str, Any]) -> ModelUsage:
+    return ModelUsage(
+        input_tokens=data["inputTokens"],
+        output_tokens=data["outputTokens"],
+        cache_read_input_tokens=data["cacheReadInputTokens"],
+        cache_creation_input_tokens=data["cacheCreationInputTokens"],
+        web_search_requests=data["webSearchRequests"],
+        cost_usd=data["costUSD"],
+        context_window=data["contextWindow"],
+        max_output_tokens=data["maxOutputTokens"],
+    )
+
+
+def parse_init(data: Mapping[str, Any]) -> InitInfo:
+    return InitInfo(
+        mcp_servers=tuple(McpServer(name=s["name"], status=s["status"]) for s in data["mcp_servers"]),
+        plugins=tuple(Plugin(name=p["name"], path=p["path"], source=p["source"]) for p in data["plugins"]),
+        tools=tuple(data["tools"]),
+        skills=tuple(data["skills"]),
+    )
+
+
+def parse_envelope_message(data: Mapping[str, Any]) -> EnvelopeMessage:
+    message = data["message"]
+    match data["type"]:
+        case "assistant":
+            text, blocks = parse_assistant_blocks(message["content"])
+            model = message.get("model")
+        case "user":
+            text, blocks = parse_user_blocks(message["content"])
+            model = None
+    return EnvelopeMessage(
+        role=data["type"],
+        model=model,
+        text=text,
+        blocks=blocks,
+        uuid=EventUuid(uuid) if (uuid := data.get("uuid")) else None,
+        session_id=SessionId(data["session_id"]),
+    )
+
+
+def parse_p_result(raw: bytes) -> ResultEnvelope:
+    """Parse a 'claude -p --output-format json' payload into a :class:`~cc_transcript.models.ResultEnvelope`.
+
+    Args:
+        raw: The raw bytes of the JSON array claude -p emits.
+
+    Returns:
+        The parsed result envelope: billing, usage, structured output, init
+        snapshot, and the conversational messages.
+    """
+    elements = orjson.loads(raw)
+    result = next(element for element in elements if element.get("type") == "result")
+    init = next((e for e in elements if e.get("type") == "system" and e.get("subtype") == "init"), None)
+    return ResultEnvelope(
+        total_cost_usd=result["total_cost_usd"],
+        model_usage={model: parse_model_usage(usage) for model, usage in result["modelUsage"].items()},
+        usage=parse_usage(result["usage"]),
+        structured_output=result.get("structured_output"),
+        num_turns=result["num_turns"],
+        is_error=result["is_error"],
+        result=result.get("result"),
+        session_id=SessionId(result["session_id"]),
+        fast_mode_state=result.get("fast_mode_state"),
+        stop_reason=result.get("stop_reason"),
+        permission_denials=tuple(result["permission_denials"]),
+        init=parse_init(init) if init else None,
+        messages=tuple(parse_envelope_message(e) for e in elements if e.get("type") in ("user", "assistant")),
+    )
 
 
 def decode_line(line: bytes) -> TranscriptEvent | None:

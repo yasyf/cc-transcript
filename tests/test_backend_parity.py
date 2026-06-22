@@ -8,13 +8,14 @@ import orjson
 import pytest
 
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
-from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events_from_bytes
+from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events_from_bytes, parse_p_result
 
 if TYPE_CHECKING:
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.models import TranscriptEvent
 
 REAL_CORPUS_SAMPLE = 25
+TESTDATA = Path(__file__).parent / "testdata"
 RUST_BACKEND = load_rust_backend()
 requires_rust = pytest.mark.skipif(RUST_BACKEND is None, reason="_parser_rs extension is not built")
 
@@ -297,3 +298,11 @@ def test_stream_skips_bad_files_without_dropping_good_ones(tmp_path: Path) -> No
         return [parsed.path.name async for parsed in RUST_BACKEND.parse_batch(paths, prefetch=4)]
 
     assert sorted(anyio.run(drain)) == sorted(good_names)
+
+
+@requires_rust
+def test_p_result_parity() -> None:
+    from cc_transcript import _parser_rs
+
+    raw = (TESTDATA / "haiku_envelope.json").read_bytes()
+    assert _parser_rs.parse_p_result(raw) == parse_p_result(raw)
