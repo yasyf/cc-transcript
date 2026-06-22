@@ -82,7 +82,7 @@ def user(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), se
 
 def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
     return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None
+        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None, usage=None
     )
 
 

@@ -78,6 +78,7 @@ ASSISTANT_THINKING = AssistantEvent(
         ToolUseBlock(id=ToolUseId("t9"), name="Read", input={"file_path": "/x"}),
     ),
     stop_reason="tool_use",
+    usage=None,
 )
 
 
@@ -231,6 +232,7 @@ def test_render_turn_orders_prompt_prose_and_tool_calls() -> None:
                     TextBlock("done"),
                 ),
                 stop_reason="tool_use",
+                usage=None,
             ),
         ),
     )
@@ -254,7 +256,12 @@ def test_render_session_joins_turns_skipping_empty() -> None:
             ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan"),
             UserEvent(meta=meta(), text="one", blocks=(), interrupted=False),
             AssistantEvent(
-                meta=meta(), model="claude-opus-4-7", text="ack", blocks=(TextBlock("ack"),), stop_reason="end_turn"
+                meta=meta(),
+                model="claude-opus-4-7",
+                text="ack",
+                blocks=(TextBlock("ack"),),
+                stop_reason="end_turn",
+                usage=None,
             ),
             UserEvent(meta=meta(), text="two", blocks=(), interrupted=False),
         ),
@@ -337,6 +344,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                 text="hi there",
                 blocks=(TextBlock("hi there"),),
                 stop_reason="end_turn",
+                usage=None,
             ),
             False,
             '    7 asst  03:04:05 [claude-opus-4-7] "hi there"',
@@ -385,6 +393,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                 text="",
                 blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "ls -la"}),),
                 stop_reason="tool_use",
+                usage=None,
             ),
             False,
             "   13 asst  03:04:05 [claude-opus-4-7] ls -la",
@@ -404,6 +413,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                     ),
                 ),
                 stop_reason="tool_use",
+                usage=None,
             ),
             False,
             "   14 asst  03:04:05 [claude-opus-4-7] Edit /a.py - x = 1 + x = 2",
@@ -417,6 +427,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                 text="",
                 blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Edit", input={"file_path": "/a.py"}),),
                 stop_reason="tool_use",
+                usage=None,
             ),
             False,
             "   15 asst  03:04:05 [claude-opus-4-7] Edit(/a.py)",
@@ -430,6 +441,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                 text="",
                 blocks=(FallbackBlock(from_model="claude-fable-5", to_model="claude-opus-4-8"),),
                 stop_reason="tool_use",
+                usage=None,
             ),
             False,
             "   16 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8",
@@ -443,6 +455,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
                 text="",
                 blocks=(OtherBlock(type="future_block", raw={"type": "future_block"}),),
                 stop_reason=None,
+                usage=None,
             ),
             False,
             "   17 asst  03:04:05 [claude-opus-4-8] future_block",
@@ -461,6 +474,7 @@ def test_compact_line_tool_input_clips_with_omitted_count() -> None:
         text="",
         blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "abcdefghij"}),),
         stop_reason="tool_use",
+        usage=None,
     )
     assert (
         compact_line(1, event, names={}, width=8, thinking=False, uuids=False)
@@ -475,6 +489,7 @@ def test_compact_line_width_zero_never_clips_tool_input() -> None:
         text="",
         blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 500}),),
         stop_reason="tool_use",
+        usage=None,
     )
     assert compact_line(1, event, names={}, width=0, thinking=False, uuids=False).endswith("x" * 500)
 
@@ -503,6 +518,7 @@ def test_tool_names_correlates_ids_across_events() -> None:
                 ToolUseBlock(id=ToolUseId("t2"), name="Bash", input={"command": "ls"}),
             ),
             stop_reason="tool_use",
+            usage=None,
         ),
         OtherEvent(type="summary", raw={"type": "summary"}),
     )
@@ -561,6 +577,7 @@ STATS_TRANSCRIPTS = (
                     ToolUseBlock(id=ToolUseId("t1"), name="Read", input={"file_path": "/x"}),
                 ),
                 stop_reason="tool_use",
+                usage=None,
             ),
             UserEvent(
                 meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 7, tzinfo=UTC)),
@@ -593,6 +610,7 @@ STATS_TRANSCRIPTS = (
                 text="yo",
                 blocks=(TextBlock("yo"),),
                 stop_reason="end_turn",
+                usage=None,
             ),
         ),
     ),

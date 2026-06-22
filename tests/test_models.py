@@ -78,7 +78,7 @@ def test_event_is_frozen() -> None:
     [
         pytest.param(UserEvent(meta=make_meta(), text="x", blocks=(), interrupted=False), "user", id="user"),
         pytest.param(
-            AssistantEvent(meta=make_meta(), model="claude", text="x", blocks=(), stop_reason="end_turn"),
+            AssistantEvent(meta=make_meta(), model="claude", text="x", blocks=(), stop_reason="end_turn", usage=None),
             "assistant",
             id="assistant",
         ),

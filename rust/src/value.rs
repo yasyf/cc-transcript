@@ -14,6 +14,14 @@ pub(crate) fn field_bool(data: &Value, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn field_i64(data: &Value, key: &str) -> Option<i64> {
+    field(data, key).and_then(JsonValueTrait::as_i64)
+}
+
+pub(crate) fn field_f64(data: &Value, key: &str) -> Option<f64> {
+    field(data, key).and_then(JsonValueTrait::as_f64)
+}
+
 pub(crate) fn block_type(block: &Value) -> Option<&str> {
     field_str(block, "type")
 }

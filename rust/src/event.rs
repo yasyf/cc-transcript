@@ -6,9 +6,10 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS, MODE_EVENT_CLS,
-    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
-    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USER_EVENT_CLS,
+    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS,
+    MODE_EVENT_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS,
+    TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
+    USER_EVENT_CLS,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -25,6 +26,12 @@ fn require<'a>(data: &'a Value, key: &str) -> PyResult<&'a Value> {
 fn require_str<'a>(data: &'a Value, key: &str) -> PyResult<&'a str> {
     require(data, key)?
         .as_str()
+        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
+}
+
+fn require_i64(data: &Value, key: &str) -> PyResult<i64> {
+    require(data, key)?
+        .as_i64()
         .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
 }
 
@@ -138,6 +145,36 @@ fn parse_user_blocks<'py>(
     }
 }
 
+fn build_usage<'py>(py: Python<'py>, message: &Value) -> PyResult<Bound<'py, PyAny>> {
+    let Some(usage) = field(message, "usage").filter(|u| u.is_object()) else {
+        return Ok(py.None().into_bound(py));
+    };
+    let cache_creation = match field(usage, "cache_creation").filter(|cc| cc.is_object()) {
+        Some(cc) => models_type(py, &CACHE_CREATION_CLS, "CacheCreation")?.call1((
+            require_i64(cc, "ephemeral_5m_input_tokens")?,
+            require_i64(cc, "ephemeral_1h_input_tokens")?,
+        ))?,
+        None => py.None().into_bound(py),
+    };
+    let server_tool_use = match field(usage, "server_tool_use").filter(|s| s.is_object()) {
+        Some(s) => models_type(py, &SERVER_TOOL_USE_CLS, "ServerToolUse")?.call1((
+            require_i64(s, "web_search_requests")?,
+            require_i64(s, "web_fetch_requests")?,
+        ))?,
+        None => py.None().into_bound(py),
+    };
+    models_type(py, &USAGE_CLS, "Usage")?.call1((
+        require_i64(usage, "input_tokens")?,
+        require_i64(usage, "output_tokens")?,
+        require_i64(usage, "cache_read_input_tokens")?,
+        require_i64(usage, "cache_creation_input_tokens")?,
+        cache_creation,
+        field_str(usage, "service_tier"),
+        field_str(usage, "inference_geo"),
+        server_tool_use,
+    ))
+}
+
 fn parse_assistant_block<'py>(py: Python<'py>, block: &Value) -> PyResult<Bound<'py, PyAny>> {
     match block_type(block) {
         Some("text") => text_block(py, require_str(block, "text")?),
@@ -202,6 +239,7 @@ pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, Py
                 text,
                 blocks,
                 field_str(message, "stop_reason"),
+                build_usage(py, message)?,
             ))
         }
         "system" => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((

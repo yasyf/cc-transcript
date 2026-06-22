@@ -66,7 +66,7 @@ def user(text: str, **kw: bool | str | None) -> UserEvent:
 
 
 def assistant(model: str) -> AssistantEvent:
-    return AssistantEvent(meta=meta(), model=model, text="hi", blocks=(), stop_reason=None)
+    return AssistantEvent(meta=meta(), model=model, text="hi", blocks=(), stop_reason=None, usage=None)
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,7 @@ def assistant(model: str) -> AssistantEvent:
         pytest.param(user("real but compacted", is_compact_summary=True), id="compact-summary"),
         pytest.param(user("   "), id="empty-user"),
         pytest.param(
-            AssistantEvent(meta=meta(), model="claude-opus-4-7", text="", blocks=(), stop_reason=None),
+            AssistantEvent(meta=meta(), model="claude-opus-4-7", text="", blocks=(), stop_reason=None, usage=None),
             id="empty-assistant",
         ),
         pytest.param(OtherEvent(type="summary", raw={"type": "summary"}), id="summary-other"),

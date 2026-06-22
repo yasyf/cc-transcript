@@ -178,6 +178,7 @@ class AssistantEvent:
         text: The joined text of the turn.
         blocks: The parsed content blocks, including thinking and tool uses.
         stop_reason: The model's stop reason, when present.
+        usage: Token usage for the turn, or None when the entry carries no usage (older transcripts, API-error messages).
     """
 
     meta: EntryMeta
@@ -185,6 +186,7 @@ class AssistantEvent:
     text: str
     blocks: tuple[ContentBlock, ...]
     stop_reason: str | None
+    usage: Usage | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +238,60 @@ class OtherEvent:
 
     type: str
     raw: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CacheCreation:
+    """The split of cache-creation input tokens by TTL bucket.
+
+    Attributes:
+        ephemeral_5m_input_tokens: Cache-creation tokens written to the 5-minute TTL bucket.
+        ephemeral_1h_input_tokens: Cache-creation tokens written to the 1-hour TTL bucket.
+    """
+
+    ephemeral_5m_input_tokens: int
+    ephemeral_1h_input_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class ServerToolUse:
+    """Server-side tool invocation counts billed within a turn.
+
+    Attributes:
+        web_search_requests: The number of server-side web-search requests.
+        web_fetch_requests: The number of server-side web-fetch requests.
+    """
+
+    web_search_requests: int
+    web_fetch_requests: int
+
+
+@dataclass(frozen=True, slots=True)
+class Usage:
+    """Token usage and cache accounting for a single assistant turn or a -p result envelope.
+
+    Exposes both the flat cache_creation_input_tokens and the per-TTL cache_creation
+    split, faithfully and without opinion.
+
+    Attributes:
+        input_tokens: The number of input tokens consumed by the turn.
+        output_tokens: The number of output tokens produced by the turn.
+        cache_read_input_tokens: The number of input tokens served from the cache.
+        cache_creation_input_tokens: The flat total of input tokens written to the cache.
+        cache_creation: The per-TTL split of cache-creation tokens, when present.
+        service_tier: The service tier that billed the turn, when present.
+        inference_geo: The inference geography that served the turn, when present.
+        server_tool_use: Server-side tool invocation counts, when present.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    cache_creation: CacheCreation | None
+    service_tier: str | None
+    inference_geo: str | None
+    server_tool_use: ServerToolUse | None
 
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent
