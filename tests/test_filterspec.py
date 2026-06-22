@@ -61,7 +61,7 @@ def user(text: str, **kw: object) -> UserEvent:
 
 def assistant(model: str = "claude-opus-4-7", text: str = "hi", *, tool: bool = False) -> AssistantEvent:
     blocks = (ToolUseBlock(id=ToolUseId("t"), name="Bash", input={}),) if tool else ()
-    return AssistantEvent(meta=meta(), model=model, text=text, blocks=blocks, stop_reason=None)
+    return AssistantEvent(meta=meta(), model=model, text=text, blocks=blocks, stop_reason=None, usage=None)
 
 
 def spec(*clauses: Clause) -> FilterSpec:

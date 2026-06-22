@@ -14,6 +14,7 @@ from cc_transcript.backend import Backend, ParsedTranscript
 from cc_transcript.filterspec import apply_spec
 from cc_transcript.models import (
     AssistantEvent,
+    CacheCreation,
     CcVersion,
     ContentBlock,
     EntryMeta,
@@ -22,6 +23,7 @@ from cc_transcript.models import (
     ModeEvent,
     OtherBlock,
     OtherEvent,
+    ServerToolUse,
     SessionId,
     SystemEvent,
     TextBlock,
@@ -30,6 +32,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     ToolUseId,
     TranscriptEvent,
+    Usage,
     UserEvent,
 )
 
@@ -110,6 +113,33 @@ def parse_assistant_block(block: dict[str, Any]) -> ContentBlock:
             return OtherBlock(type=unknown, raw=block)
 
 
+def parse_cache_creation(cc: Mapping[str, Any]) -> CacheCreation:
+    return CacheCreation(
+        ephemeral_5m_input_tokens=cc["ephemeral_5m_input_tokens"],
+        ephemeral_1h_input_tokens=cc["ephemeral_1h_input_tokens"],
+    )
+
+
+def parse_server_tool_use(stu: Mapping[str, Any]) -> ServerToolUse:
+    return ServerToolUse(
+        web_search_requests=stu["web_search_requests"],
+        web_fetch_requests=stu["web_fetch_requests"],
+    )
+
+
+def parse_usage(usage: Mapping[str, Any]) -> Usage:
+    return Usage(
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+        cache_read_input_tokens=usage["cache_read_input_tokens"],
+        cache_creation_input_tokens=usage["cache_creation_input_tokens"],
+        cache_creation=parse_cache_creation(cc) if (cc := usage.get("cache_creation")) else None,
+        service_tier=usage.get("service_tier"),
+        inference_geo=usage.get("inference_geo"),
+        server_tool_use=parse_server_tool_use(stu) if (stu := usage.get("server_tool_use")) else None,
+    )
+
+
 def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     match data["type"]:
         case "user":
@@ -131,6 +161,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 text=text,
                 blocks=blocks,
                 stop_reason=data["message"].get("stop_reason"),
+                usage=parse_usage(usage) if (usage := data["message"].get("usage")) else None,
             )
         case "system":
             return SystemEvent(meta=parse_meta(data), subtype=data["subtype"], content=data.get("content"))

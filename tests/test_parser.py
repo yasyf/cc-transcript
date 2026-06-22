@@ -11,11 +11,13 @@ import pytest
 from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
+    CacheCreation,
     EventUuid,
     FallbackBlock,
     ModeEvent,
     OtherBlock,
     OtherEvent,
+    ServerToolUse,
     SessionId,
     SystemEvent,
     TextBlock,
@@ -23,6 +25,7 @@ from cc_transcript.models import (
     ToolResultBlock,
     ToolUseBlock,
     ToolUseId,
+    Usage,
     UserEvent,
 )
 from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes
@@ -109,6 +112,28 @@ def assistant_text() -> dict[str, Any]:
             "model": "claude-opus-4-7",
             "stop_reason": "end_turn",
             "content": [{"type": "text", "text": "done"}],
+        },
+    )
+
+
+def assistant_with_usage() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-7",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 7,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 25437,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 25437},
+                "service_tier": "standard",
+                "inference_geo": "not_available",
+                "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+            },
         },
     )
 
@@ -262,6 +287,28 @@ def test_assistant_text() -> None:
     assert event.text == "done"
     assert event.stop_reason == "end_turn"
     assert event.blocks == (TextBlock("done"),)
+
+
+def test_assistant_usage_parses_cache_creation_split() -> None:
+    event = build_event(assistant_with_usage())
+    assert isinstance(event, AssistantEvent)
+    assert event.usage == Usage(
+        input_tokens=10,
+        output_tokens=7,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=25437,
+        cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437),
+        service_tier="standard",
+        inference_geo="not_available",
+        server_tool_use=ServerToolUse(web_search_requests=0, web_fetch_requests=0),
+    )
+
+
+def test_assistant_without_usage_is_none() -> None:
+    event = build_event(assistant_text())
+    assert isinstance(event, AssistantEvent)
+    assert "usage" not in assistant_text()["message"]
+    assert event.usage is None
 
 
 def test_assistant_thinking_and_tool_use() -> None:

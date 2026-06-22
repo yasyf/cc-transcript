@@ -14,6 +14,9 @@ pub static TOOL_USE_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static TOOL_RESULT_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static FALLBACK_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static OTHER_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+pub static USAGE_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+pub static CACHE_CREATION_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+pub static SERVER_TOOL_USE_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 
 pub fn models_type<'py>(
     py: Python<'py>,

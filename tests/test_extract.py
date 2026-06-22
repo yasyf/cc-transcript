@@ -51,7 +51,9 @@ def user(uuid: str, text: str, *, secs: int = 0) -> UserEvent:
 
 
 def assistant(uuid: str, *, blocks: tuple[ContentBlock, ...], secs: int) -> AssistantEvent:
-    return AssistantEvent(meta=meta(uuid, secs=secs), model="claude-opus-4-7", text="", blocks=blocks, stop_reason=None)
+    return AssistantEvent(
+        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text="", blocks=blocks, stop_reason=None, usage=None
+    )
 
 
 def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:
