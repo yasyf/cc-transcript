@@ -57,19 +57,28 @@ EXPORTS: dict[str, str] = {
         ),
         "cc_transcript.models": (
             "AssistantEvent",
+            "CacheCreation",
             "CcVersion",
             "ContentBlock",
             "EntryMeta",
+            "EnvelopeMessage",
             "FallbackBlock",
+            "InitInfo",
+            "McpServer",
             "ModeEvent",
+            "ModelUsage",
             "OtherBlock",
             "OtherEvent",
+            "Plugin",
+            "ResultEnvelope",
+            "ServerToolUse",
             "SystemEvent",
             "TextBlock",
             "ThinkingBlock",
             "ToolResultBlock",
             "ToolUseBlock",
             "TranscriptEvent",
+            "Usage",
             "UserEvent",
         ),
         "cc_transcript.parser": (
@@ -77,6 +86,15 @@ EXPORTS: dict[str, str] = {
             "parse_event",
             "parse_events_async",
             "parse_events_from_bytes",
+            "parse_p_result",
+        ),
+        "cc_transcript.cost": (
+            "PRICING",
+            "CostBreakdown",
+            "ModelPricing",
+            "cost_of",
+            "cost_of_assistant",
+            "resolve_pricing",
         ),
         "cc_transcript.backend": ("Backend", "ParsedTranscript"),
         "cc_transcript.discovery": (
@@ -271,6 +289,24 @@ if TYPE_CHECKING:
     from cc_transcript.corrections import (
         Origin as Origin,
     )
+    from cc_transcript.cost import (
+        PRICING as PRICING,
+    )
+    from cc_transcript.cost import (
+        CostBreakdown as CostBreakdown,
+    )
+    from cc_transcript.cost import (
+        ModelPricing as ModelPricing,
+    )
+    from cc_transcript.cost import (
+        cost_of as cost_of,
+    )
+    from cc_transcript.cost import (
+        cost_of_assistant as cost_of_assistant,
+    )
+    from cc_transcript.cost import (
+        resolve_pricing as resolve_pricing,
+    )
     from cc_transcript.decisions import (
         DECISIONS_DDL as DECISIONS_DDL,
     )
@@ -416,6 +452,9 @@ if TYPE_CHECKING:
         AssistantEvent as AssistantEvent,
     )
     from cc_transcript.models import (
+        CacheCreation as CacheCreation,
+    )
+    from cc_transcript.models import (
         CcVersion as CcVersion,
     )
     from cc_transcript.models import (
@@ -425,16 +464,37 @@ if TYPE_CHECKING:
         EntryMeta as EntryMeta,
     )
     from cc_transcript.models import (
+        EnvelopeMessage as EnvelopeMessage,
+    )
+    from cc_transcript.models import (
         FallbackBlock as FallbackBlock,
     )
     from cc_transcript.models import (
+        InitInfo as InitInfo,
+    )
+    from cc_transcript.models import (
+        McpServer as McpServer,
+    )
+    from cc_transcript.models import (
         ModeEvent as ModeEvent,
+    )
+    from cc_transcript.models import (
+        ModelUsage as ModelUsage,
     )
     from cc_transcript.models import (
         OtherBlock as OtherBlock,
     )
     from cc_transcript.models import (
         OtherEvent as OtherEvent,
+    )
+    from cc_transcript.models import (
+        Plugin as Plugin,
+    )
+    from cc_transcript.models import (
+        ResultEnvelope as ResultEnvelope,
+    )
+    from cc_transcript.models import (
+        ServerToolUse as ServerToolUse,
     )
     from cc_transcript.models import (
         SystemEvent as SystemEvent,
@@ -455,6 +515,9 @@ if TYPE_CHECKING:
         TranscriptEvent as TranscriptEvent,
     )
     from cc_transcript.models import (
+        Usage as Usage,
+    )
+    from cc_transcript.models import (
         UserEvent as UserEvent,
     )
     from cc_transcript.parser import (
@@ -468,6 +531,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.parser import (
         parse_events_from_bytes as parse_events_from_bytes,
+    )
+    from cc_transcript.parser import (
+        parse_p_result as parse_p_result,
     )
     from cc_transcript.query import (
         FileRef as FileRef,

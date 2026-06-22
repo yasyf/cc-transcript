@@ -78,6 +78,8 @@ reference:
       - SystemEvent
       - ModeEvent
       - OtherEvent
+      - EnvelopeMessage
+      - ResultEnvelope
       - ContentBlock
       - TextBlock
       - ThinkingBlock
@@ -87,10 +89,27 @@ reference:
       - OtherBlock
       - EntryMeta
       - CcVersion
+      - Usage
+      - ModelUsage
+      - CacheCreation
+      - ServerToolUse
+      - McpServer
+      - Plugin
+      - InitInfo
       - parse_event
       - parse_events_from_bytes
+      - parse_p_result
       - parse_events_async
       - TranscriptParser
+  - title: Cost
+    desc: Token pricing and the cost helper over assistant usage.
+    contents:
+      - ModelPricing
+      - CostBreakdown
+      - cost_of
+      - cost_of_assistant
+      - resolve_pricing
+      - PRICING
   - title: Tool calls
     desc: One typed tool-call hierarchy shared by hook runtimes and the parser.
     contents:
