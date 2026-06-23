@@ -1,6 +1,7 @@
 mod event;
 mod filter;
 mod lexicon;
+mod mining;
 mod model;
 mod score;
 mod value;
@@ -10,7 +11,7 @@ use memchr::memchr_iter;
 use once_cell::sync::Lazy;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyFloat, PyList, PyString, PyTuple};
+use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
 use rayon::prelude::*;
 use sonic_rs::Value;
 use std::sync::Arc;
@@ -214,6 +215,17 @@ fn score_post_process(spec_json: String, buckets: Vec<Vec<String>>, raw: Vec<i64
     score::score_post_process(&spec_json, &buckets, &raw).map_err(PyValueError::new_err)
 }
 
+#[pyfunction]
+#[pyo3(signature = (raw, spec_json))]
+fn mine_signals<'py>(
+    py: Python<'py>,
+    raw: &[u8],
+    spec_json: String,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let spec = mining::compile_spec(&spec_json).map_err(PyValueError::new_err)?;
+    mining::mine(py, raw, &spec)
+}
+
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -224,6 +236,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
+    m.add_function(wrap_pyfunction!(mine_signals, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())
 }
