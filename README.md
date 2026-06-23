@@ -7,20 +7,20 @@
 [![Docs](https://img.shields.io/github/actions/workflow/status/yasyf/cc-transcript/docs.yml?branch=main&label=docs)](https://yasyf.github.io/cc-transcript/)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://github.com/yasyf/cc-transcript/blob/main/LICENSE)
 
-`cc-transcript` parses Claude Code's on-disk JSONL transcripts into a **typed superset event model** — every entry type preserved, nothing dropped — so you build on one faithful representation and apply your own semantic filtering on top.
+A non-lossy parser for Claude Code's on-disk JSONL transcripts, plus a CLI to investigate sessions.
 
-The one property that makes it worth using: the parser is non-lossy. It never silently discards sidechains, synthetic turns, tool results, or unrecognized entry types; filtering is opt-in and lives in your code, not buried in the parser. It ships as a Python library, a `uvx`-runnable CLI, and a Claude Code plugin.
+`cc-transcript` parses Claude Code's JSONL transcripts into a typed superset event model — every entry type preserved, nothing dropped. The parser never silently discards sidechains, synthetic turns, tool results, or unrecognized entries; filtering is opt-in and lives in your code, not buried in the parser. It ships as a Python library, a `uvx`-runnable CLI, and a Claude Code plugin.
 
 ## Install
 
 ```bash
-uv add cc-transcript        # or: pip install cc-transcript
-uvx cc-transcript --help    # CLI, no install needed
+uvx cc-transcript --help    # run the CLI
+uv add cc-transcript        # use as a library
 ```
 
 ## Quickstart
 
-Discover the transcripts on disk, parse one, and look at the events:
+Discover the transcripts on disk, parse one, and walk the events:
 
 ```python
 import anyio
@@ -38,8 +38,7 @@ for event in events:
             print(f"assistant ({model}):", text[:80])
 ```
 
-Compose a filter from small builders and apply it. The builders return clauses,
-`build_spec` assembles them into a spec, and `apply_spec` yields the survivors:
+Filtering is opt-in. Compose a spec from small builders and apply it — `build_spec` assembles clauses, `apply_spec` yields the survivors. `NOISE_SPEC` is a ready-made spec for universal structural noise (system reminders, local-command output, skill banners):
 
 ```python
 from cc_transcript import apply_spec, build_spec, keep_only, drop_junk, drop_short
@@ -48,22 +47,20 @@ spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_
 clean = list(apply_spec(events, spec))
 ```
 
-`NOISE_SPEC` is a ready-made spec for the universal structural noise (system reminders,
-local-command output, skill banners).
+## CLI
 
-## The CLI
+Every command runs as `uvx cc-transcript <command> ...`; see `--help` on any command for its flags.
 
-Six commands — `list`, `show`, `grep`, `stats`, `slice`, `digest` — and every one runs as `uvx cc-transcript ...`, no install step. `list` finds transcripts, newest first:
+| Command  | What it does |
+| -------- | ------------ |
+| `list`   | Find transcripts on disk, newest first |
+| `stats`  | Summarize a session — counts, kinds, models, tools, token sizes, span |
+| `show`   | Render one compact line per event (`--signal` keeps the conversational spine) |
+| `grep`   | Search event content; hit indexes feed back into `show --range` |
+| `slice`  | Emit per-tool-call JSONL for a session UUID and time window (the bridge cc-review consumes) |
+| `digest` | Generate and check the cross-language fixture corpus for the tool-digest contract |
 
-```console
-$ uvx cc-transcript list --limit 3
-2026-06-11 19:27    1.0MB ~/.claude/projects/-Users-yasyf-Code-captain-hook/d2ca206a-2561-4c2c-9a4c-3ecaac9f8443/subagents/agent-a804d9aea43a110b5.jsonl
-2026-06-11 19:27   70.6KB ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e/subagents/agent-affd5dbe069a3660d.jsonl
-2026-06-11 19:27  740.8KB ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e.jsonl
-3 of 6608 transcripts under ~/.claude/projects
-```
-
-`stats` summarizes a session before you read any of it:
+The output is compact by design — one line per event, hard truncation — so an agent triages a session in a few hundred tokens instead of paging through megabytes of JSONL:
 
 ```console
 $ uvx cc-transcript stats ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e.jsonl
@@ -82,31 +79,6 @@ tool errors  0
 sidechain    0
 ```
 
-`show` renders one compact line per event; `--signal` keeps the conversational spine, and the index column is the event's position in the raw file:
-
-```console
-$ uvx cc-transcript show ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e.jsonl --signal --tail 4
-  189 asst  02:30:49 [claude-fable-5] Bash(rg -A3 'name = "great-docs"' /Users/yasyf/Code/cc-transcript/uv.lock | head -6; echo ---; rg -n "cl…)
-  194 asst  02:31:31 [claude-fable-5] "`cli:` support confirmed in the pinned great-docs. Checking the exact config shape before writing:"
-  195 asst  02:31:31 [claude-fable-5] TaskUpdate(8)
-  196 asst  02:31:32 [claude-fable-5] Bash(sed -n '40,60p;1750,1790p' /Users/yasyf/.cache/uv/git-v0/checkouts/a9f52a54772f9b4e/d318527/great_d…)
-```
-
-`grep` searches event content; hit indexes feed straight back into `show --range`:
-
-```console
-$ uvx cc-transcript grep -i "filterspec" --kind user --max-matches 3 ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e.jsonl
-== ~/.claude/projects/-Users-yasyf-Code-cc-transcript/4c77d556-8694-4613-8f50-253d905da68e.jsonl
-   16 user  01:12:00 <-Agent (10161ch) ## Findings Report: cc-transcript Repository Based on a thorough exploration of `/Users/yasyf/Code/…
-   29 user  01:16:29 <-? (1378ch) /Users/yasyf/Code/cc-transcript/cc_transcript/: total 8648 drwxr-xr-x@ 19 yasyf staff 608 Jun 11 17…
-   69 user  01:36:17 <-Read (4247ch) 1 """Composable builder fragments for :class:`~cc_transcript.FilterSpec`. 2 3 Each fragment returns…
-1 files, 3 matches
-```
-
-The output is compact by design — one line per event, hard truncation — so an agent triages a session in a few hundred tokens instead of paging through megabytes of JSONL.
-
-The last two verbs serve programs, not people: `slice` emits per-tool-call JSONL for a session UUID and time window (the language-neutral bridge cc-review consumes), and `digest` generates and checks the cross-language fixture corpus for the tool-digest contract.
-
 ## Claude Code plugin
 
 Install the bundled plugin from inside Claude Code:
@@ -118,15 +90,9 @@ Install the bundled plugin from inside Claude Code:
 
 The plugin's skill teaches Claude to answer questions about its own history — "what did I ask yesterday", "find the session where we fixed the parser" — by funneling through the CLI's `list`, `stats`, `grep`, and `show` commands instead of reading raw JSONL.
 
-## What problems does this solve?
+## How it works
 
-- **One faithful parse.** Anything reading Claude Code transcripts re-implements the same JSONL quirks (str-or-list content, tool results nested two ways, envelope-less mode markers). This is that parser, written once and typed strictly.
-- **Non-lossy by design.** The event model is a superset: sidechains, `<synthetic>` turns, thinking blocks, and unrecognized entry types all survive parsing. You decide what to drop, via composable filter specs (`build_spec`).
-- **Incremental ingestion.** `FileStateStore` tracks per-file mtimes in SQLite (WAL, safe across concurrent tasks) so re-runs only reparse changed files, and you compose your own writes in the same transaction.
-- **Two engines, one contract.** A single `Backend` protocol with two implementations: `RustBackend` (PyO3 + rayon) is the default fast path, and `PythonBackend` is the readable reference — parity-asserted against each other. Filter specs are portable, so a spec built in Python runs Rust-side without giving up the fast path.
-- **One activity spine.** `SessionActivity` lifts parsed events into turns, typed tool calls, and first-class edits; `ContextWindow` persists `EventRef`s plus labeled previews and hydrates back to full fidelity while the transcript lives; rendering is `Budget`-bounded in exactly one place.
-- **Mining, judging, and sentiment.** `cc_transcript.mining` mines transcripts for user feedback — detectors, confidence calibration, candidate filtering, and the feedback store; `cc_transcript.judge` runs fidelity-aware LLM verdict passes over the mined corpus; `cc_transcript.sentiment` scores conversational sentiment per time-bucketed conversation window.
-- **Transcript investigation for agents.** The CLI answers "what happened in that session" in a few hundred tokens, which is what makes the Claude Code plugin viable.
+The event model is a superset: sidechains, `<synthetic>` turns, thinking blocks, and unrecognized entry types all survive parsing, so you decide what to drop via composable filter specs. Two engines sit behind one `Backend` protocol — `RustBackend` (PyO3 + rayon) is the default fast path, `PythonBackend` is the readable reference, parity-asserted against each other. On top of the spine, `SessionActivity` lifts events into turns and typed tool calls, `FileStateStore` tracks per-file mtimes in SQLite for incremental re-parses, and `cc_transcript.mining`/`judge`/`sentiment` extract feedback, run LLM verdict passes, and score conversational sentiment. The [docs site](https://yasyf.github.io/cc-transcript/) covers each of these in depth.
 
 ## Docs
 
