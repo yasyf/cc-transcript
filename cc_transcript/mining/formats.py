@@ -6,9 +6,10 @@ The concrete review formats are app policy; an app injects its own
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+import orjson
 
 if TYPE_CHECKING:
     import re
@@ -166,7 +167,7 @@ def extract_structured(
         One pair per finding, across all formats. Non-JSON text yields nothing.
     """
     try:
-        payload = json.loads(text)
+        payload = orjson.loads(text)
     except (ValueError, TypeError):
         return
     yield from ((fmt, comment) for fmt in structured_formats for comment in fmt.extract(payload))

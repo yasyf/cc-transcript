@@ -21,7 +21,15 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from cc_transcript.filterspec import INTERRUPT_MARKER_RE, STRUCTURAL_NOISE_RE, tool_uses
+from cc_transcript.filterspec import (
+    DENIAL_PREFIX,
+    INTERRUPT_MARKER_RE,
+    STRUCTURAL_NOISE_RE,
+    USER_SAID_MARKER,
+    USER_SAID_TRAILER,
+    event_kind,
+    tool_uses,
+)
 from cc_transcript.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
 from cc_transcript.mining.formats import extract_all, extract_structured
 from cc_transcript.mining.sourcekind import (
@@ -41,9 +49,6 @@ if TYPE_CHECKING:
     from cc_transcript.mining.sourcekind import SourceKind
     from cc_transcript.models import CcVersion, EventUuid, SessionId, ToolUseId, TranscriptEvent
 
-DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
-USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
-USER_SAID_TRAILER = "Note: The user's next message"
 EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 REENTRY_LOOKBACK = 40
 CONFIDENCE_STEP = 0.25
@@ -166,7 +171,7 @@ def marker_in(event: UserEvent) -> str | None:
 
 
 def nearest_assistant_index(events: Sequence[TranscriptEvent], index: int) -> int | None:
-    return next((i for i in range(index - 1, -1, -1) if isinstance(events[i], AssistantEvent)), None)
+    return next((i for i in range(index - 1, -1, -1) if event_kind(events[i]) == "assistant"), None)
 
 
 def correction_text(events: Sequence[TranscriptEvent], index: int) -> str | None:

@@ -69,6 +69,12 @@ AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
 INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"\[Request interrupted by user"),)
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
+# Raw CC-injected protocol strings carried in tool-result content: the denial banner
+# and the markers that wrap the user's verbatim instruction in a rejected tool use.
+DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
+USER_SAID_TRAILER = "Note: The user's next message"
+
 # Approve-and-advance directives: a user telling the agent to proceed/commit/push or
 # to resume killed work. They follow an assistant turn but advance it rather than
 # correcting it — the opposite of pushback — so a pushback consumer drops them. The
