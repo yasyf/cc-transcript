@@ -6,11 +6,11 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, ENVELOPE_MESSAGE_CLS,
-    FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS,
-    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, RESULT_ENVELOPE_CLS, SERVER_TOOL_USE_CLS,
-    SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS,
-    USAGE_CLS, USER_EVENT_CLS,
+    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS,
+    INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS,
+    PLUGIN_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS,
+    TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
+    USER_EVENT_CLS,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -336,7 +336,7 @@ fn build_init<'py>(py: Python<'py>, init: &Value) -> PyResult<Bound<'py, PyAny>>
     ))
 }
 
-fn build_envelope_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bound<'py, PyAny>> {
+fn build_print_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bound<'py, PyAny>> {
     let role = require_str(element, "type")?;
     let message = require(element, "message")?;
     let (text, blocks, model): (String, Bound<'py, PyTuple>, Bound<'py, PyAny>) = match role {
@@ -350,7 +350,7 @@ fn build_envelope_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bou
         }
         other => return Err(PyValueError::new_err(format!("not a conversational element: {other:?}"))),
     };
-    models_type(py, &ENVELOPE_MESSAGE_CLS, "EnvelopeMessage")?.call1((
+    models_type(py, &PRINT_MESSAGE_CLS, "PrintMessage")?.call1((
         role,
         model,
         text,
@@ -360,7 +360,7 @@ fn build_envelope_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bou
     ))
 }
 
-pub fn build_result_envelope<'py>(py: Python<'py>, array: &Value) -> PyResult<Bound<'py, PyAny>> {
+pub fn build_print_result<'py>(py: Python<'py>, array: &Value) -> PyResult<Bound<'py, PyAny>> {
     let elements = array
         .as_array()
         .ok_or_else(|| PyValueError::new_err("envelope is not a JSON array"))?;
@@ -397,7 +397,7 @@ pub fn build_result_envelope<'py>(py: Python<'py>, array: &Value) -> PyResult<Bo
     let messages = elements
         .iter()
         .filter(|e| matches!(block_type(e), Some("user") | Some("assistant")))
-        .map(|e| build_envelope_message(py, e))
+        .map(|e| build_print_message(py, e))
         .collect::<PyResult<Vec<_>>>()?;
 
     let args: [Bound<'py, PyAny>; 13] = [
@@ -415,7 +415,7 @@ pub fn build_result_envelope<'py>(py: Python<'py>, array: &Value) -> PyResult<Bo
         init_obj,
         PyTuple::new(py, messages)?.into_any(),
     ];
-    models_type(py, &RESULT_ENVELOPE_CLS, "ResultEnvelope")?.call1(PyTuple::new(py, args)?)
+    models_type(py, &PRINT_RESULT_CLS, "PrintResult")?.call1(PyTuple::new(py, args)?)
 }
 
 #[cfg(test)]

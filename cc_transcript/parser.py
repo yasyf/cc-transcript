@@ -18,17 +18,17 @@ from cc_transcript.models import (
     CcVersion,
     ContentBlock,
     EntryMeta,
-    EnvelopeMessage,
     EventUuid,
     FallbackBlock,
     InitInfo,
     McpServer,
-    ModelUsage,
     ModeEvent,
+    ModelUsage,
     OtherBlock,
     OtherEvent,
     Plugin,
-    ResultEnvelope,
+    PrintMessage,
+    PrintResult,
     ServerToolUse,
     SessionId,
     SystemEvent,
@@ -74,6 +74,8 @@ def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
             return content
         case list():
             return "".join(block["text"] for block in content if block.get("type") == "text")
+        case _:
+            raise ValueError(f"unexpected result content shape: {type(content).__name__}")
 
 
 def parse_user_blocks(
@@ -212,7 +214,7 @@ def parse_init(data: Mapping[str, Any]) -> InitInfo:
     )
 
 
-def parse_envelope_message(data: Mapping[str, Any]) -> EnvelopeMessage:
+def parse_print_message(data: Mapping[str, Any]) -> PrintMessage:
     message = data["message"]
     match data["type"]:
         case "assistant":
@@ -221,7 +223,9 @@ def parse_envelope_message(data: Mapping[str, Any]) -> EnvelopeMessage:
         case "user":
             text, blocks = parse_user_blocks(message["content"])
             model = None
-    return EnvelopeMessage(
+        case _:
+            raise ValueError(f"unexpected print message type: {data['type']!r}")
+    return PrintMessage(
         role=data["type"],
         model=model,
         text=text,
@@ -231,20 +235,20 @@ def parse_envelope_message(data: Mapping[str, Any]) -> EnvelopeMessage:
     )
 
 
-def parse_p_result(raw: bytes) -> ResultEnvelope:
-    """Parse a 'claude -p --output-format json' payload into a :class:`~cc_transcript.models.ResultEnvelope`.
+def parse_print_result(raw: bytes) -> PrintResult:
+    """Parse a 'claude -p --output-format json' payload into a :class:`~cc_transcript.models.PrintResult`.
 
     Args:
         raw: The raw bytes of the JSON array claude -p emits.
 
     Returns:
-        The parsed result envelope: billing, usage, structured output, init
+        The parsed -p (print mode) result: billing, usage, structured output, init
         snapshot, and the conversational messages.
     """
     elements = orjson.loads(raw)
     result = next(element for element in elements if element.get("type") == "result")
     init = next((e for e in elements if e.get("type") == "system" and e.get("subtype") == "init"), None)
-    return ResultEnvelope(
+    return PrintResult(
         total_cost_usd=result["total_cost_usd"],
         model_usage={model: parse_model_usage(usage) for model, usage in result["modelUsage"].items()},
         usage=parse_usage(result["usage"]),
@@ -257,7 +261,7 @@ def parse_p_result(raw: bytes) -> ResultEnvelope:
         stop_reason=result.get("stop_reason"),
         permission_denials=tuple(result["permission_denials"]),
         init=parse_init(init) if init else None,
-        messages=tuple(parse_envelope_message(e) for e in elements if e.get("type") in ("user", "assistant")),
+        messages=tuple(parse_print_message(e) for e in elements if e.get("type") in ("user", "assistant")),
     )
 
 

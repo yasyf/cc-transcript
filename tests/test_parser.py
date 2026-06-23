@@ -12,7 +12,6 @@ from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
     CacheCreation,
-    EnvelopeMessage,
     EventUuid,
     FallbackBlock,
     InitInfo,
@@ -22,7 +21,8 @@ from cc_transcript.models import (
     OtherBlock,
     OtherEvent,
     Plugin,
-    ResultEnvelope,
+    PrintMessage,
+    PrintResult,
     ServerToolUse,
     SessionId,
     SystemEvent,
@@ -34,7 +34,7 @@ from cc_transcript.models import (
     Usage,
     UserEvent,
 )
-from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes, parse_p_result
+from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes, parse_print_result
 
 TESTDATA = Path(__file__).parent / "testdata"
 
@@ -414,8 +414,8 @@ def test_parse_events_async_reads_file(tmp_path: Path) -> None:
     assert [type(e).__name__ for e in events] == ["UserEvent", "ModeEvent"]
 
 
-def test_parse_p_result_haiku_envelope() -> None:
-    env = parse_p_result((TESTDATA / "haiku_envelope.json").read_bytes())
+def test_parse_print_result_haiku_envelope() -> None:
+    env = parse_print_result((TESTDATA / "haiku_envelope.json").read_bytes())
 
     assert env.total_cost_usd == 0.05759
     assert env.model_usage["claude-haiku-4-5-20251001"] == ModelUsage(

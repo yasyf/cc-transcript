@@ -78,8 +78,8 @@ reference:
       - SystemEvent
       - ModeEvent
       - OtherEvent
-      - EnvelopeMessage
-      - ResultEnvelope
+      - PrintMessage
+      - PrintResult
       - ContentBlock
       - TextBlock
       - ThinkingBlock
@@ -98,7 +98,7 @@ reference:
       - InitInfo
       - parse_event
       - parse_events_from_bytes
-      - parse_p_result
+      - parse_print_result
       - parse_events_async
       - TranscriptParser
   - title: Cost

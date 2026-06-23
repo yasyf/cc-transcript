@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On-disk assistant usage/cost retention: `AssistantEvent.usage` plus shared
   `Usage`, `CacheCreation`, and `ServerToolUse` models, parsed by both the Python
   reference and the Rust fast path.
-- `parse_p_result`: a `claude -p --output-format json` envelope parser (Python +
-  Rust) yielding a `ResultEnvelope` with `ModelUsage`, `InitInfo`/`McpServer`/
-  `Plugin`, and `EnvelopeMessage`.
+- `parse_print_result`: a `claude -p --output-format json` parser (Python +
+  Rust) yielding a `PrintResult` with `ModelUsage`, `InitInfo`/`McpServer`/
+  `Plugin`, and `PrintMessage`.
 - `cc_transcript.cost`: a token-to-dollar cost helper — `cost_of`,
   `cost_of_assistant`, `ModelPricing`, `CostBreakdown`, `resolve_pricing`, and
   the `PRICING` table.

@@ -8,7 +8,7 @@ import orjson
 import pytest
 
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
-from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events_from_bytes, parse_p_result
+from cc_transcript.parser import PythonBackend, load_rust_backend, parse_events_from_bytes, parse_print_result
 
 if TYPE_CHECKING:
     from cc_transcript.backend import ParsedTranscript
@@ -301,8 +301,8 @@ def test_stream_skips_bad_files_without_dropping_good_ones(tmp_path: Path) -> No
 
 
 @requires_rust
-def test_p_result_parity() -> None:
+def test_print_result_parity() -> None:
     from cc_transcript import _parser_rs
 
     raw = (TESTDATA / "haiku_envelope.json").read_bytes()
-    assert _parser_rs.parse_p_result(raw) == parse_p_result(raw)
+    assert _parser_rs.parse_print_result(raw) == parse_print_result(raw)
