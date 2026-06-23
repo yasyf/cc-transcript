@@ -421,7 +421,7 @@ class FlipReport:
 
 async def run_verdicts[V](
     rows: Sequence[Mapping[str, object]],
-    prompt_for: Callable[[Mapping[str, object]], str | Awaitable[str]],
+    prompt_for: Callable[[Mapping[str, object]], Awaitable[str]],
     judge: Callable[[str], Awaitable[V]],
     persist: Callable[[Mapping[str, object], V], Awaitable[None]],
     *,
@@ -436,8 +436,8 @@ async def run_verdicts[V](
 
     Args:
         rows: The rows to judge.
-        prompt_for: Builds one row's prompt; sync, or async for prompts that
-            hydrate their context window first.
+        prompt_for: Builds one row's prompt; async, so prompts may hydrate their
+            context window first.
         judge: Turns one prompt into a verdict payload, e.g. ``structured_judge(...)``.
         persist: Persists one row's verdict, e.g. ``store.record_verdict`` applied.
         concurrency: The maximum number of concurrent judge calls.
@@ -451,11 +451,7 @@ async def run_verdicts[V](
     async def worker(row: Mapping[str, object]) -> None:
         async with limiter:
             try:
-                match prompt_for(row):
-                    case str() as prompt:
-                        verdict = await judge(prompt)
-                    case awaitable:
-                        verdict = await judge(await awaitable)
+                verdict = await judge(await prompt_for(row))
             except Exception:
                 counts["failed"] += 1
                 return

@@ -6,9 +6,6 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
-[options]
-exclude-newer = "2030-01-02T07:00:00Z"
-
 [[package]]
 name = "afinn"
 version = "0.1"
@@ -240,7 +237,7 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "4.2.0"
+version = "5.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
