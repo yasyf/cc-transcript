@@ -15,7 +15,6 @@ A non-lossy parser for Claude Code's on-disk JSONL transcripts, plus a CLI to in
 
 ```bash
 uvx cc-transcript --help    # run the CLI
-uv add cc-transcript        # use as a library
 ```
 
 ## Quickstart
