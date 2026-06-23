@@ -178,7 +178,8 @@ class AssistantEvent:
         text: The joined text of the turn.
         blocks: The parsed content blocks, including thinking and tool uses.
         stop_reason: The model's stop reason, when present.
-        usage: Token usage for the turn, or None when the entry carries no usage (older transcripts, API-error messages).
+        usage: Token usage for the turn, or None when the entry carries no usage
+            (older transcripts, API-error messages).
     """
 
     meta: EntryMeta
@@ -268,7 +269,7 @@ class ServerToolUse:
 
 @dataclass(frozen=True, slots=True)
 class Usage:
-    """Token usage and cache accounting for a single assistant turn or a -p result envelope.
+    """Token usage and cache accounting for a single assistant turn or a -p (print mode) result.
 
     Exposes both the flat cache_creation_input_tokens and the per-TTL cache_creation
     split, faithfully and without opinion.
@@ -296,7 +297,7 @@ class Usage:
 
 @dataclass(frozen=True, slots=True)
 class ModelUsage:
-    """Per-model token usage and cost from a -p result envelope's modelUsage map.
+    """Per-model token usage and cost from a -p (print mode) result's modelUsage map.
 
     Attributes:
         input_tokens: The number of input tokens consumed by the model.
@@ -365,8 +366,8 @@ class InitInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class EnvelopeMessage:
-    """A conversational message lifted from a -p envelope.
+class PrintMessage:
+    """A conversational message lifted from a -p (print mode) result.
 
     Unlike on-disk events it carries no EntryMeta — the -p element shape lacks
     timestamp/parentUuid — so it holds only role, model, text, blocks, and the ids
@@ -390,8 +391,8 @@ class EnvelopeMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class ResultEnvelope:
-    """A parsed 'claude -p --output-format json' result envelope.
+class PrintResult:
+    """A parsed 'claude -p --output-format json' result.
 
     Holds the billing/usage/structured-output payload, the init snapshot, and the
     conversational messages. Reuses the shared Usage model; not a TranscriptEvent.
@@ -424,7 +425,7 @@ class ResultEnvelope:
     stop_reason: str | None
     permission_denials: tuple[Mapping[str, Any], ...]
     init: InitInfo | None
-    messages: tuple[EnvelopeMessage, ...]
+    messages: tuple[PrintMessage, ...]
 
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent

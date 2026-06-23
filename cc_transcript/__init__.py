@@ -61,7 +61,6 @@ EXPORTS: dict[str, str] = {
             "CcVersion",
             "ContentBlock",
             "EntryMeta",
-            "EnvelopeMessage",
             "FallbackBlock",
             "InitInfo",
             "McpServer",
@@ -70,7 +69,8 @@ EXPORTS: dict[str, str] = {
             "OtherBlock",
             "OtherEvent",
             "Plugin",
-            "ResultEnvelope",
+            "PrintMessage",
+            "PrintResult",
             "ServerToolUse",
             "SystemEvent",
             "TextBlock",
@@ -86,7 +86,7 @@ EXPORTS: dict[str, str] = {
             "parse_event",
             "parse_events_async",
             "parse_events_from_bytes",
-            "parse_p_result",
+            "parse_print_result",
         ),
         "cc_transcript.cost": (
             "PRICING",
@@ -464,9 +464,6 @@ if TYPE_CHECKING:
         EntryMeta as EntryMeta,
     )
     from cc_transcript.models import (
-        EnvelopeMessage as EnvelopeMessage,
-    )
-    from cc_transcript.models import (
         FallbackBlock as FallbackBlock,
     )
     from cc_transcript.models import (
@@ -491,7 +488,10 @@ if TYPE_CHECKING:
         Plugin as Plugin,
     )
     from cc_transcript.models import (
-        ResultEnvelope as ResultEnvelope,
+        PrintMessage as PrintMessage,
+    )
+    from cc_transcript.models import (
+        PrintResult as PrintResult,
     )
     from cc_transcript.models import (
         ServerToolUse as ServerToolUse,
@@ -533,7 +533,7 @@ if TYPE_CHECKING:
         parse_events_from_bytes as parse_events_from_bytes,
     )
     from cc_transcript.parser import (
-        parse_p_result as parse_p_result,
+        parse_print_result as parse_print_result,
     )
     from cc_transcript.query import (
         FileRef as FileRef,

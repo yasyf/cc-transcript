@@ -16,7 +16,7 @@ use sonic_rs::Value;
 use std::sync::Arc;
 use std::thread;
 
-use crate::event::{build_event, build_result_envelope};
+use crate::event::{build_event, build_print_result};
 use crate::filter::{compile_spec, spec_keep, CompiledSpec};
 
 const AVG_LINE_BYTES: usize = 1400;
@@ -178,10 +178,10 @@ fn stream_parse(
 }
 
 #[pyfunction]
-fn parse_p_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let value: Value =
         sonic_rs::from_slice(raw).map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
-    build_result_envelope(py, &value)
+    build_print_result(py, &value)
 }
 
 #[pyfunction]
@@ -217,7 +217,7 @@ fn score_post_process(spec_json: String, buckets: Vec<Vec<String>>, raw: Vec<i64
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_p_result, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_available, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;

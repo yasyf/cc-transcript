@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cc_transcript.models import ResultEnvelope, TranscriptEvent
+from cc_transcript.models import PrintResult, TranscriptEvent
 
 class ParseStream:
     """A streaming handle over a rayon-parsed batch of transcript files."""
@@ -18,8 +18,8 @@ def stream_parse(paths: list[tuple[str, float]], prefetch: int, spec_json: str |
     are dropped during parsing, before any Python object is built.
     """
 
-def parse_p_result(raw: bytes, /) -> ResultEnvelope:
-    """Parses a 'claude -p --output-format json' result envelope from raw JSON bytes."""
+def parse_print_result(raw: bytes, /) -> PrintResult:
+    """Parses a 'claude -p --output-format json' result from raw JSON bytes."""
 
 def lexicon_available() -> bool:
     """Whether the UDPipe English model loaded (downloading + caching on first call)."""
