@@ -36,6 +36,7 @@ from cc_transcript.mining.confidence import (
     strong,
     weak,
 )
+from cc_transcript.mining.engine import mine_signals, rehydrate_signal, rust_mine_backend
 from cc_transcript.mining.filterspec import (
     CandidateClause,
     CandidateFilterSpec,
