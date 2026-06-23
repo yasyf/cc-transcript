@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict
-from typing import cast
 
 import click
 import orjson
@@ -54,7 +53,7 @@ def add(
     anchor: str,
     incorrect_file: str,
     ts_ms: int | None,
-    origin: str | None,
+    origin: Origin | None,
     incorrect_old: str,
     incorrect_new: str,
     incorrect_digest: str | None,
@@ -79,7 +78,7 @@ def add(
             incorrect_file=incorrect_file,
             incorrect_old=incorrect_old,
             incorrect_new=incorrect_new,
-            correction_origin=cast("Origin | None", origin),
+            correction_origin=origin,
             correction_file=correction_file,
             correction_old=correction_old,
             correction_new=correction_new,

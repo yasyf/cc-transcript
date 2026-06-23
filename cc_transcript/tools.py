@@ -277,10 +277,10 @@ def file_path_of(call: ToolCall) -> str | None:
 
 def expand_tool_names(spec: str) -> frozenset[str]:
     """Expand a pipe-separated tool spec to include both alias spellings."""
-    base = set(spec.split("|"))
-    return frozenset(base) | {
-        alias for n in base for alias in (TOOL_ALIASES.get(n), TOOL_ALIASES_REVERSE.get(n)) if alias
-    }
+    return frozenset(
+        (base := set(spec.split("|")))
+        | {alias for n in base for alias in (TOOL_ALIASES.get(n), TOOL_ALIASES_REVERSE.get(n)) if alias}
+    )
 
 
 def tool_name_matches(actual: str, spec: str) -> bool:

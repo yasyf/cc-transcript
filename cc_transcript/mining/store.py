@@ -151,8 +151,8 @@ class FeedbackStore:
             "SELECT source_kind, COUNT(*) AS n FROM feedback_events GROUP BY source_kind ORDER BY source_kind"
         )
         return Stats(
-            total=[row["n"] async for row in total_cur][0],
-            files=[row["n"] async for row in files_cur][0],
+            total=(await total_cur.fetchone())["n"],
+            files=(await files_cur.fetchone())["n"],
             by_source={row["source_kind"]: row["n"] async for row in by_source_cur},
         )
 

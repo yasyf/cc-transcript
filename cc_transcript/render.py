@@ -126,13 +126,13 @@ def render_turn(turn: Turn, *, budget: Budget) -> str:
                 for event in turn.events
                 if isinstance(event, AssistantEvent)
                 for block in event.blocks
-                for part in turn_block_parts(block, calls, budget)
+                for part in turn_block_parts(block, calls, budget=budget)
             ),
         )
     )
 
 
-def turn_block_parts(block: ContentBlock, calls: Iterator[ToolUse], budget: Budget) -> tuple[str, ...]:
+def turn_block_parts(block: ContentBlock, calls: Iterator[ToolUse], *, budget: Budget) -> tuple[str, ...]:
     match block:
         case TextBlock(text=text) if text.strip():
             return (f"assistant: {clip(text, budget.turn_chars)}",)

@@ -75,7 +75,7 @@ async def run_structured_on[M: BaseModel](
             )
     except TimeoutError as exc:
         raise subprocess.TimeoutExpired(argv, timeout) from exc
-    return cast(response_model, backend.parse_response(result.stdout.decode(), response_model))
+    return cast(M, backend.parse_response(result.stdout.decode(), response_model))
 
 
 async def run_structured[M: BaseModel](

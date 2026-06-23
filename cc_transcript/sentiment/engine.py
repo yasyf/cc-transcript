@@ -31,6 +31,7 @@ class InferenceEngine(Protocol):
     async def score(
         self,
         buckets: list[ConversationBucket],
+        *,
         on_progress: Callable[[int], None] = NOOP_PROGRESS,
     ) -> list[SentimentScore]: ...
     def peak_memory_gb(self) -> float: ...
@@ -65,6 +66,7 @@ class FilteredEngine:
     async def score(
         self,
         buckets: list[ConversationBucket],
+        *,
         on_progress: Callable[[int], None] = NOOP_PROGRESS,
     ) -> list[SentimentScore]:
         if has_lexicon_stage(self.spec):
@@ -84,7 +86,7 @@ class FilteredEngine:
         if pre := len(buckets) - len(infer_idx):
             on_progress(pre)
 
-        inferred = await self.inner.score([buckets[i] for i in infer_idx], on_progress) if infer_idx else []
+        inferred = await self.inner.score([buckets[i] for i in infer_idx], on_progress=on_progress) if infer_idx else []
         filled = dict(zip(infer_idx, inferred, strict=True))
         scored = [filled[i] if p is None else p for i, p in enumerate(prefilled)]
 
