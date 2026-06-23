@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from cc_transcript.filterspec import INTERRUPT_MARKER_RE, STRUCTURAL_NOISE_RE, tool_uses
 from cc_transcript.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
-from cc_transcript.mining.formats import extract_all
+from cc_transcript.mining.formats import extract_all, extract_structured
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
@@ -37,9 +37,9 @@ if TYPE_CHECKING:
     from datetime import datetime
     from typing import Any
 
-    from cc_transcript.mining.formats import ReviewFormat
+    from cc_transcript.mining.formats import ReviewComment, ReviewFormat, StructuredFormat
     from cc_transcript.mining.sourcekind import SourceKind
-    from cc_transcript.models import CcVersion, EventUuid, SessionId, TranscriptEvent
+    from cc_transcript.models import CcVersion, EventUuid, SessionId, ToolUseId, TranscriptEvent
 
 DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
@@ -53,6 +53,9 @@ HEDGE_RE = re.compile(
     r"\b(?:maybe|perhaps|possibly|might|not sure|i think|i guess|if you (?:want|prefer)|up to you)\b",
     re.IGNORECASE,
 )
+SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+
+Provenance = Literal["typed", "surfaced", "claude"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,31 +347,83 @@ def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent]) -> Iterator
     )
 
 
+def classify_provenance(tool_name: str | None, *, is_sidechain: bool) -> Provenance:
+    match (tool_name, is_sidechain):
+        case (None, _):
+            return "typed"
+        case (name, False) if name not in SUBAGENT_TOOLS:
+            return "surfaced"
+        case _:
+            return "claude"
+
+
+class ScanText(NamedTuple):
+    text: str
+    provenance: Provenance
+    trigger_index: int | None
+
+
+def review_scan_texts(
+    events: Sequence[TranscriptEvent],
+    event: UserEvent,
+    index: int,
+    *,
+    surfaces: frozenset[Provenance],
+    names: Mapping[ToolUseId, str],
+) -> Iterator[ScanText]:
+    if "typed" in surfaces and event.text.strip():
+        yield ScanText(event.text, "typed", nearest_assistant_index(events, index))
+    yield from (
+        ScanText(block.content, provenance, None)
+        for block in event.blocks
+        if isinstance(block, ToolResultBlock)
+        if (provenance := classify_provenance(names.get(block.tool_use_id), is_sidechain=event.meta.is_sidechain))
+        != "typed"
+        if provenance in surfaces
+    )
+
+
+def review_comment_signal(
+    event: UserEvent, index: int, scan: ScanText, fmt_name: str, comment: ReviewComment
+) -> MiningSignal:
+    return MiningSignal(
+        kind=REVIEW_COMMENT,
+        detector="review_comment",
+        session_id=event.meta.session_id,
+        event_index=index,
+        event_uuid=event.meta.uuid,
+        occurred_at=event.meta.timestamp,
+        text=comment.comment,
+        cc_version=event.meta.cc_version,
+        trigger_index=scan.trigger_index,
+        evidence={
+            "format": fmt_name,
+            "file": comment.file,
+            "line_start": comment.line_start,
+            "line_end": comment.line_end,
+            "provenance": scan.provenance,
+        },
+        signal=calibrated(comment.comment, "format_match"),
+    )
+
+
 def iter_review_comment_signals(
-    events: Sequence[TranscriptEvent], formats: Sequence[ReviewFormat]
+    events: Sequence[TranscriptEvent],
+    formats: Sequence[ReviewFormat],
+    *,
+    surfaces: frozenset[Provenance],
+    structured_formats: Sequence[StructuredFormat],
 ) -> Iterator[MiningSignal]:
+    names = {tid: block.name for tid, block in tool_uses(events).items()}
     return (
-        MiningSignal(
-            kind=REVIEW_COMMENT,
-            detector="review_comment",
-            session_id=event.meta.session_id,
-            event_index=index,
-            event_uuid=event.meta.uuid,
-            occurred_at=event.meta.timestamp,
-            text=comment.comment,
-            cc_version=event.meta.cc_version,
-            trigger_index=nearest_assistant_index(events, index),
-            evidence={
-                "format": fmt.name,
-                "file": comment.file,
-                "line_start": comment.line_start,
-                "line_end": comment.line_end,
-            },
-            signal=calibrated(comment.comment, "format_match"),
-        )
+        review_comment_signal(event, index, scan, fmt_name, comment)
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
-        for fmt, comment in extract_all(event.text, formats)
+        for scan in review_scan_texts(events, event, index, surfaces=surfaces, names=names)
+        for fmt_name, comment in (
+            *((fmt.name, comment) for fmt, comment in extract_all(scan.text, formats)),
+            *((fmt.name, comment) for fmt, comment in extract_structured(scan.text, structured_formats)),
+        )
     )
 
 

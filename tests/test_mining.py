@@ -29,7 +29,10 @@ from cc_transcript.mining import (
     ReviewComment,
     ReviewFormat,
     Stats,
+    StructuredFormat,
+    classify_provenance,
     dedup_key,
+    extract_structured,
     iter_interrupt_marker_signals,
     iter_plan_reentry_signals,
     iter_plan_rejection_signals,
@@ -375,12 +378,145 @@ def test_iter_review_comment_signals_with_injected_format() -> None:
         assistant("a0", "here is the code"),
         user("u0", "NIT: rename this var\nNIT: add a test"),
     ]
-    signals = list(iter_review_comment_signals(events, (fmt,)))
+    signals = list(
+        iter_review_comment_signals(events, (fmt,), surfaces=frozenset({"typed"}), structured_formats=())
+    )
     assert [signal.text for signal in signals] == ["rename this var", "add a test"]
     assert all(signal.detector == "review_comment" for signal in signals)
-    assert signals[0].evidence == {"format": "tiny", "file": None, "line_start": None, "line_end": None}
+    assert signals[0].evidence == {
+        "format": "tiny",
+        "file": None,
+        "line_start": None,
+        "line_end": None,
+        "provenance": "typed",
+    }
     assert signals[0].trigger_index == 0
     assert signals[0].signal == CandidateSignal(HIGH, ("format_match", "substantive"))
+
+
+def workflow_result(content: str, *, sidechain: bool = False) -> tuple[AssistantEvent, UserEvent]:
+    use = assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("w1"), name="Bash", input={"command": "verify.sh"}),))
+    result = UserEvent(
+        meta=EntryMeta(
+            uuid=EventUuid("u0"),
+            parent_uuid=None,
+            session_id=SESSION,
+            timestamp=BASE,
+            cwd="/repo",
+            git_branch="main",
+            cc_version=CcVersion("1.2.3"),
+            is_sidechain=sidechain,
+            is_meta=False,
+            entrypoint="cli",
+            is_compact_summary=False,
+            is_visible_in_transcript_only=False,
+        ),
+        text="",
+        blocks=(ToolResultBlock(tool_use_id=ToolUseId("w1"), content=content, is_error=False),),
+        interrupted=False,
+    )
+    return use, result
+
+
+def test_iter_review_comment_signals_surfaced_structured_tool_result() -> None:
+    fmt = StructuredFormat(name="workflow", finding_keys=("findings",))
+    payload = json.dumps(
+        {"findings": [{"file": "a.py", "line": "24-51", "comment": "guard against None"}]}
+    )
+    use, result = workflow_result(payload)
+    signals = list(
+        iter_review_comment_signals(
+            [use, result], (), surfaces=frozenset({"typed", "surfaced"}), structured_formats=(fmt,)
+        )
+    )
+    assert [signal.text for signal in signals] == ["guard against None"]
+    signal = signals[0]
+    assert signal.detector == "review_comment"
+    assert signal.evidence == {
+        "format": "workflow",
+        "file": "a.py",
+        "line_start": 24,
+        "line_end": 51,
+        "provenance": "surfaced",
+    }
+    assert signal.trigger_index is None
+
+
+def test_iter_review_comment_signals_subagent_result_is_claude_and_excluded() -> None:
+    fmt = StructuredFormat(name="workflow")
+    use = assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Agent", input={"prompt": "review"}),))
+    result = user(
+        "u0",
+        blocks=(
+            ToolResultBlock(
+                tool_use_id=ToolUseId("t1"),
+                content=json.dumps([{"file": "b.py", "line": 9, "comment": "rename"}]),
+                is_error=False,
+            ),
+        ),
+    )
+    surfaced = iter_review_comment_signals(
+        [use, result], (), surfaces=frozenset({"surfaced"}), structured_formats=(fmt,)
+    )
+    assert list(surfaced) == []
+    signals = list(
+        iter_review_comment_signals(
+            [use, result], (), surfaces=frozenset({"claude"}), structured_formats=(fmt,)
+        )
+    )
+    assert [signal.evidence["provenance"] for signal in signals] == ["claude"]
+
+
+def test_iter_review_comment_signals_default_call_tags_typed_provenance() -> None:
+    pattern = re.compile(r"^NIT: (.+)$", re.MULTILINE)
+    fmt = ReviewFormat(
+        name="tiny",
+        pattern=pattern,
+        extract=lambda text: tuple(
+            ReviewComment(file=None, line_start=None, line_end=None, comment=match.group(1))
+            for match in pattern.finditer(text)
+        ),
+    )
+    events = [assistant("a0", "code"), user("u0", "NIT: rename this var")]
+    signals = list(
+        iter_review_comment_signals(events, (fmt,), surfaces=frozenset({"typed"}), structured_formats=())
+    )
+    assert len(signals) == 1
+    assert signals[0].evidence == {
+        "format": "tiny",
+        "file": None,
+        "line_start": None,
+        "line_end": None,
+        "provenance": "typed",
+    }
+    assert signals[0].trigger_index == 0
+
+
+def test_structured_format_fix_keys_append_suggested_fix() -> None:
+    fmt = StructuredFormat(name="x", comment_keys=("description",), fix_keys=("suggested_fix",))
+    payload = json.dumps(
+        {"findings": [{"path": "c.py", "line": 9, "description": "leaks a fd", "suggested_fix": "use with"}]}
+    )
+    comments = [comment for _, comment in extract_structured(payload, (fmt,))]
+    assert comments == [ReviewComment(file="c.py", line_start=9, line_end=9, comment="leaks a fd use with")]
+    bare = json.dumps({"findings": [{"path": "c.py", "line": 9, "description": "leaks a fd"}]})
+    assert [c.comment for _, c in extract_structured(bare, (fmt,))] == ["leaks a fd"]
+
+
+def test_extract_structured_tolerates_non_json_and_shapes() -> None:
+    fmt = StructuredFormat(name="x")
+    assert list(extract_structured("not json at all", (fmt,))) == []
+    nested = json.dumps({"result": {"confirmed_bugs": [{"path": "c.py", "line": 96, "message": "fix"}]}})
+    comments = [comment for _, comment in extract_structured(nested, (fmt,))]
+    assert comments == [ReviewComment(file="c.py", line_start=96, line_end=96, comment="fix")]
+
+
+def test_classify_provenance() -> None:
+    assert classify_provenance(None, is_sidechain=False) == "typed"
+    assert classify_provenance("Bash", is_sidechain=False) == "surfaced"
+    assert classify_provenance("Bash", is_sidechain=True) == "claude"
+    assert classify_provenance("Agent", is_sidechain=False) == "claude"
+    assert classify_provenance("Task", is_sidechain=False) == "claude"
 
 
 def test_iter_plan_reentry_signals_smoke() -> None:
@@ -389,7 +525,9 @@ def test_iter_plan_reentry_signals_smoke() -> None:
         ModeEvent(session_id=SESSION, channel="mode", value="plan"),
         user("u0", "reconsider the plan, this is wrong"),
     ]
-    assert list(iter_review_comment_signals(events, ())) == []
+    assert (
+        list(iter_review_comment_signals(events, (), surfaces=frozenset({"typed"}), structured_formats=())) == []
+    )
     reentries = list(iter_plan_reentry_signals(events))
     assert len(reentries) == 1
     assert reentries[0].kind == PLAN_REVIEW

@@ -81,7 +81,13 @@ def test_haiku_fixture_reconciles_to_the_cent() -> None:
 
 def test_resolve_pricing_matches_opus() -> None:
     row = resolve_pricing("claude-opus-4-8")
-    assert (row.input, row.output, row.cache_read, row.cache_write_5m, row.cache_write_1h) == (5.0, 25.0, 0.5, 6.25, 10.0)
+    assert (row.input, row.output, row.cache_read, row.cache_write_5m, row.cache_write_1h) == (
+        5.0,
+        25.0,
+        0.5,
+        6.25,
+        10.0,
+    )
 
 
 def test_resolve_pricing_unknown_model_raises() -> None:

@@ -198,9 +198,6 @@ class OtherCall(ToolCallBase):
     """A tool the platform does not type: unknown names, MCP tools, and — under
     ``on_error='other'`` — known tools whose input failed to parse."""
 
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.raw.get(key, default)
-
 
 ToolCall = (
     BashCall

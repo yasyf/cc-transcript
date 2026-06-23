@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0]
+
+### Added
+- Review-comment mining can scan beyond human-typed user text.
+  `iter_review_comment_signals` takes a `surfaces` set of `Provenance`
+  (`typed` / `surfaced` / `claude`) selecting which event surfaces to scan —
+  user text, tool-result content (workflow/Bash output), etc. — and stamps each
+  signal's `evidence["provenance"]` accordingly. `classify_provenance` is exported.
+- `StructuredFormat` + `extract_structured`: JSON finding-array extraction for
+  structured review payloads, with a caller-supplied field-map (`file_keys`,
+  `line_keys`, `comment_keys`, `fix_keys`, `finding_keys`); tolerant of int / `"96"`
+  / `"24-51"` line forms and nested `result` / `confirmed*` arrays.
+
+### Changed (BREAKING)
+- `iter_review_comment_signals`: `surfaces` and `structured_formats` are now
+  REQUIRED keyword-only arguments — the defaults and the `TYPED_SURFACE` constant
+  are removed. Pass `surfaces=frozenset({"typed"})` for the previous behavior.
+- `run_verdicts`: `prompt_for` must now be an async callable returning `str`; the
+  synchronous `str` path is removed.
+- `OtherCall.get(key, default)` is removed — use `OtherCall.raw.get(...)`.
+
 ## [4.2.0]
 
 ### Added

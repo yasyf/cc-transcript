@@ -195,8 +195,11 @@ def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
     async def persist(row: Mapping[str, object], verdict: str) -> None:
         persisted.append((str(row["dedup_key"]), verdict))
 
+    async def prompt_for(row: Mapping[str, object]) -> str:
+        return f"prompt:{row['text']}"
+
     async def go() -> tuple[int, int]:
-        return await run_verdicts(rows, lambda row: f"prompt:{row['text']}", judge, persist, concurrency=2)
+        return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
     assert anyio.run(go) == (3, 1)
     assert sorted(persisted) == [("k0", "PROMPT:T0"), ("k1", "PROMPT:T1"), ("k3", "PROMPT:T3")]
@@ -215,9 +218,12 @@ def test_run_verdicts_respects_concurrency() -> None:
     async def persist(row: Mapping[str, object], verdict: str) -> None:
         del row, verdict
 
+    async def prompt_for(row: Mapping[str, object]) -> str:
+        return str(row["dedup_key"])
+
     async def go() -> tuple[int, int]:
         rows = [{"dedup_key": str(i)} for i in range(8)]
-        return await run_verdicts(rows, lambda row: str(row["dedup_key"]), judge, persist, concurrency=2)
+        return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
     assert anyio.run(go) == (8, 0)
     assert state["peak"] == 2

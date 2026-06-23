@@ -69,7 +69,7 @@ def test_grep_maps_type_to_file_type() -> None:
 
 def test_unknown_and_mcp_tools_parse_to_other() -> None:
     call = parse_tool_call("mcp__github__search", {"q": "x"})
-    assert isinstance(call, OtherCall) and call.get("q") == "x"
+    assert isinstance(call, OtherCall) and call.raw.get("q") == "x"
 
 
 def test_malformed_known_tool_raises_by_default() -> None:

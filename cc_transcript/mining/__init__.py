@@ -44,15 +44,25 @@ from cc_transcript.mining.filterspec import (
     keep_candidate,
     only_kinds,
 )
-from cc_transcript.mining.formats import ReviewComment, ReviewFormat, extract_all
+from cc_transcript.mining.formats import (
+    ReviewComment,
+    ReviewFormat,
+    StructuredFormat,
+    extract_all,
+    extract_structured,
+)
 from cc_transcript.mining.signals import (
     DEFAULT_DETECTORS,
     DENIAL_PREFIX,
     EDIT_TOOLS,
     REENTRY_LOOKBACK,
+    SUBAGENT_TOOLS,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
     MiningSignal,
+    Provenance,
+    ScanText,
+    classify_provenance,
     correction_text,
     denial_results,
     denied_tool_payload,
@@ -69,6 +79,7 @@ from cc_transcript.mining.signals import (
     marker_in,
     nearest_assistant_index,
     next_user_message,
+    review_scan_texts,
 )
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
