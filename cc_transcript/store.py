@@ -113,15 +113,8 @@ class FileStateStore:
         if self._txn_owner == anyio.get_current_task().id:
             await self.upsert_file(path, mtime)
             return
-        async with self.lock:
-            await self.conn.execute("BEGIN IMMEDIATE")
-            try:
-                await self.upsert_file(path, mtime)
-            except BaseException:
-                await self.conn.rollback()
-                raise
-            else:
-                await self.conn.commit()
+        async with self.transaction():
+            await self.upsert_file(path, mtime)
 
     async def upsert_file(self, path: str, mtime: float) -> None:
         await self.conn.execute(

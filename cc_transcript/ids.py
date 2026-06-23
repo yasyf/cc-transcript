@@ -19,12 +19,12 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import Any
 
+MAX_SAFE_INTEGER = 2**53 - 1
+
 SessionId = NewType("SessionId", str)
 EventUuid = NewType("EventUuid", str)
 ToolUseId = NewType("ToolUseId", str)
 ToolDigest = NewType("ToolDigest", str)
-
-MAX_SAFE_INTEGER = 2**53 - 1
 
 
 @dataclass(frozen=True, slots=True)
