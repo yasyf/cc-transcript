@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.0.0]
+
+### Changed (BREAKING)
+- The mining layer is rebuilt on the declarative dual-backend standard (Rust fast
+  path + Python reference), like `filterspec`/`scorespec`/`lexicon`. All mining
+  policy is now a serializable `MiningSpec` (`cc_transcript/mining/spec.py`):
+  confidence stages (`Base`/`BumpIfSubstantive`/`DemoteIfHedged`/`DemoteIfShort`/
+  `BumpIfProximate`/`NoiseIfStructural`) folded by `run_confidence`,
+  `ProvenanceSpec`, and a `ReviewSpec` over `RegexReviewFormat | CallableReviewFormat
+  | StructuredFormat`. `mining_spec_to_json` / `mining_spec_is_portable` mirror the
+  other stages; portability rejects lookaround/backref regexes and callable formats.
+- The six `iter_*_signals` detectors collapse into `mine(events, spec)` (the
+  Python-events reference) and `mine_signals(raw, spec)` (the dual-backend entry that
+  takes raw transcript bytes and yields `MiningSignal`s — portable specs take the
+  Rust parse+detect fast path via `_parser_rs.mine_signals`, others fall back to the
+  Python reference). The old `ReviewFormat` dataclass, `extract_all`,
+  `DEFAULT_DETECTORS`, the bare `iter_*_signals` exports, and the unparameterized
+  `classify_provenance` are removed. `MiningSignal`/`CandidateSignal`/`ReviewComment`/
+  `StructuredFormat`/`extract_structured` are unchanged.
+
+### Added
+- `rust/src/mining.rs`: a Rust executor at full parity with the Python reference
+  across all six detectors and both review-format families, proven byte-identical
+  over the corpus (`tests/test_mining_parity.py`). `CC_TRANSCRIPT_DISABLE_RUST=1`
+  forces the Python reference.
+
+### Internal
+- `cc_transcript/mining/formats.py` parses structured payloads via `orjson`; the
+  CC-protocol marker constants moved into core `filterspec.py`.
+
 ## [5.0.0]
 
 ### Added
