@@ -1,6 +1,6 @@
 """Neutral fact-detectors over a transcript's ordered events.
 
-Each iterator recognizes one transcript shape and yields a :class:`MiningSignal`
+Each detector recognizes one transcript shape and yields a :class:`MiningSignal`
 describing it. A signal is a neutral fact: it carries a candidate ``trigger_index``
 but never disqualifies on its absence, never applies a ``FilterSpec``, and never
 builds an app candidate. The app maps signals to its own records with policy
@@ -8,18 +8,20 @@ injected, capturing each candidate's window via
 :func:`~cc_transcript.context.capture_window` over a lifted
 :class:`~cc_transcript.activity.SessionActivity`.
 
-Every signal carries a calibrated :class:`CandidateSignal` spanning the full
-confidence band: arithmetic bumps and demotions over the anchors, with named
-reason codes (``trigger_proximate``, ``short_followup``, ``substantive``,
-``hedged``, ``embedded_text``, ``bare_marker``, ``structural_only``) so apps can
-filter on the signal's confidence and reasons instead of re-deriving them.
+The mining policy is a :class:`~cc_transcript.mining.spec.MiningSpec`: which
+detectors run, the confidence-scoring stages each folds, the provenance set, and the
+review-format policy. :func:`mine` interprets the spec and dispatches the enabled
+detectors; the same spec serializes for the Rust backend. Every signal carries a
+calibrated :class:`CandidateSignal` spanning the full confidence band, with named
+reason codes (``trigger_proximate``, ``short_followup``, ``substantive``, ``hedged``,
+``embedded_text``, ``bare_marker``, ``structural_only``) so apps filter on confidence
+and reasons instead of re-deriving them.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from cc_transcript.filterspec import (
     DENIAL_PREFIX,
@@ -30,37 +32,39 @@ from cc_transcript.filterspec import (
     event_kind,
     tool_uses,
 )
-from cc_transcript.mining.confidence import CandidateSignal, Confidence, firm, noise, weak
-from cc_transcript.mining.formats import extract_all, extract_structured
+from cc_transcript.mining.confidence import CandidateSignal, noise, weak
+from cc_transcript.mining.formats import extract_structured
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
     REVIEW_COMMENT,
     TRANSCRIPT_MESSAGE,
 )
+from cc_transcript.mining.spec import (
+    DENIAL_DETECTOR,
+    EXIT_PLAN_REJECTION_DETECTOR,
+    INTERRUPT_DETECTOR,
+    PLAN_REENTRY_DETECTOR,
+    REVIEW_COMMENT_DETECTOR,
+    TRANSCRIPT_MESSAGE_DETECTOR,
+    MiningSpec,
+    Provenance,
+    calibrated,
+    classify_provenance,
+    regex_review_comments,
+    score_user_message,
+)
 from cc_transcript.models import AssistantEvent, ModeEvent, ToolResultBlock, ToolUseBlock, UserEvent
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
     from datetime import datetime
     from typing import Any
 
-    from cc_transcript.mining.formats import ReviewComment, ReviewFormat, StructuredFormat
+    from cc_transcript.mining.formats import ReviewComment
     from cc_transcript.mining.sourcekind import SourceKind
+    from cc_transcript.mining.spec import ReviewSpec
     from cc_transcript.models import CcVersion, EventUuid, SessionId, ToolUseId, TranscriptEvent
-
-EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-REENTRY_LOOKBACK = 40
-CONFIDENCE_STEP = 0.25
-SHORT_FOLLOWUP_MAX_WORDS = 2
-TIGHT_PROXIMITY = 2
-HEDGE_RE = re.compile(
-    r"\b(?:maybe|perhaps|possibly|might|not sure|i think|i guess|if you (?:want|prefer)|up to you)\b",
-    re.IGNORECASE,
-)
-SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
-
-Provenance = Literal["typed", "surfaced", "claude"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,13 +122,13 @@ def embedded_user_text(content: str) -> str | None:
     return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
 
 
-def last_edit_index(events: Sequence[TranscriptEvent], index: int) -> int | None:
+def last_edit_index(events: Sequence[TranscriptEvent], index: int, spec: MiningSpec) -> int | None:
     return next(
         (
             i
-            for i in range(index - 1, max(index - REENTRY_LOOKBACK, 0) - 1, -1)
+            for i in range(index - 1, max(index - spec.reentry_lookback, 0) - 1, -1)
             if isinstance(event := events[i], AssistantEvent)
-            if any(isinstance(b, ToolUseBlock) and b.name in EDIT_TOOLS for b in event.blocks)
+            if any(isinstance(b, ToolUseBlock) and b.name in spec.edit_tools for b in event.blocks)
         ),
         None,
     )
@@ -191,35 +195,6 @@ def first_followup(events: Sequence[TranscriptEvent], index: int) -> str | None:
     return None
 
 
-def adjust(signal: CandidateSignal, delta: float, reason: str) -> CandidateSignal:
-    return CandidateSignal(
-        Confidence(min(1.0, max(0.0, signal.confidence + delta))), (*signal.reasons, reason), signal.durable
-    )
-
-
-def is_substantive(text: str) -> bool:
-    return len(text.split()) > SHORT_FOLLOWUP_MAX_WORDS and not STRUCTURAL_NOISE_RE.search(text)
-
-
-def is_proximate(index: int, trigger: int | None) -> bool:
-    return trigger is not None and index - trigger <= TIGHT_PROXIMITY
-
-
-def calibrated(text: str, *reasons: str) -> CandidateSignal:
-    base = firm(*reasons)
-    promoted = adjust(base, CONFIDENCE_STEP, "substantive") if is_substantive(text) else base
-    return adjust(promoted, -CONFIDENCE_STEP, "hedged") if HEDGE_RE.search(text) else promoted
-
-
-def score_user_message(text: str, index: int, trigger: int | None) -> CandidateSignal:
-    if STRUCTURAL_NOISE_RE.search(text):
-        return noise("structural_only")
-    base = firm("user_message")
-    short = len(text.split()) <= SHORT_FOLLOWUP_MAX_WORDS
-    demoted = adjust(base, -CONFIDENCE_STEP, "short_followup") if short else base
-    return adjust(demoted, CONFIDENCE_STEP, "trigger_proximate") if is_proximate(index, trigger) else demoted
-
-
 def marker_correction(events: Sequence[TranscriptEvent], index: int) -> ScoredText | None:
     if (correction := correction_text(events, index)) is not None:
         return ScoredText(correction, weak("bare_marker"))
@@ -228,13 +203,15 @@ def marker_correction(events: Sequence[TranscriptEvent], index: int) -> ScoredTe
     return None
 
 
-def denial_correction(events: Sequence[TranscriptEvent], index: int, embedded: str | None) -> ScoredText | None:
+def denial_correction(
+    events: Sequence[TranscriptEvent], index: int, embedded: str | None, spec: MiningSpec
+) -> ScoredText | None:
     if embedded:
-        return ScoredText(embedded, calibrated(embedded, "embedded_text"))
+        return ScoredText(embedded, calibrated(spec.calibrated, embedded, seed="embedded_text"))
     return marker_correction(events, index)
 
 
-def iter_user_message_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
+def iter_user_message_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     return (
         MiningSignal(
             kind=TRANSCRIPT_MESSAGE,
@@ -246,7 +223,7 @@ def iter_user_message_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
             text=event.text,
             cc_version=event.meta.cc_version,
             trigger_index=(trigger := nearest_assistant_index(events, index)),
-            signal=score_user_message(event.text, index, trigger),
+            signal=score_user_message(spec.user_message, event.text, index, trigger),
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
@@ -255,7 +232,7 @@ def iter_user_message_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
     )
 
 
-def iter_plan_rejection_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
+def iter_plan_rejection_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     uses = tool_uses(events)
     return (
         MiningSignal(
@@ -268,7 +245,7 @@ def iter_plan_rejection_signals(events: Sequence[TranscriptEvent]) -> Iterator[M
             text=text,
             cc_version=event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, index),
-            signal=calibrated(text, "embedded_text"),
+            signal=calibrated(spec.calibrated, text, seed="embedded_text"),
         )
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
@@ -279,7 +256,7 @@ def iter_plan_rejection_signals(events: Sequence[TranscriptEvent]) -> Iterator[M
     )
 
 
-def iter_plan_reentry_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
+def iter_plan_reentry_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     seen: set[EventUuid] = set()
     for index, event in enumerate(events):
         if not (isinstance(event, ModeEvent) and event.value == "plan"):
@@ -289,7 +266,7 @@ def iter_plan_reentry_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
         user_index, user_event = user
         if user_event.meta.uuid in seen or is_bare_interrupt_marker(user_event.text):
             continue
-        if (edit := last_edit_index(events, user_index)) is None:
+        if (edit := last_edit_index(events, user_index, spec)) is None:
             continue
         seen.add(user_event.meta.uuid)
         yield MiningSignal(
@@ -303,11 +280,11 @@ def iter_plan_reentry_signals(events: Sequence[TranscriptEvent]) -> Iterator[Min
             cc_version=user_event.meta.cc_version,
             trigger_index=nearest_assistant_index(events, user_index),
             lower_bound=edit,
-            signal=calibrated(user_event.text, "reentry_after_edit"),
+            signal=calibrated(spec.calibrated, user_event.text, seed="reentry_after_edit"),
         )
 
 
-def iter_tool_denial_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
+def iter_tool_denial_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     uses = tool_uses(events)
     return (
         MiningSignal(
@@ -327,11 +304,11 @@ def iter_tool_denial_signals(events: Sequence[TranscriptEvent]) -> Iterator[Mini
         if isinstance(event, UserEvent)
         for block in denial_results(event)
         if (paired := uses.get(block.tool_use_id)) is None or paired.name not in {"ExitPlanMode", "AskUserQuestion"}
-        if (scored := denial_correction(events, index, embedded_user_text(block.content))) is not None
+        if (scored := denial_correction(events, index, embedded_user_text(block.content), spec)) is not None
     )
 
 
-def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent]) -> Iterator[MiningSignal]:
+def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     return (
         MiningSignal(
             kind=INTERRUPT_REJECTION,
@@ -352,16 +329,6 @@ def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent]) -> Iterator
     )
 
 
-def classify_provenance(tool_name: str | None, *, is_sidechain: bool) -> Provenance:
-    match (tool_name, is_sidechain):
-        case (None, _):
-            return "typed"
-        case (name, False) if name not in SUBAGENT_TOOLS:
-            return "surfaced"
-        case _:
-            return "claude"
-
-
 class ScanText(NamedTuple):
     text: str
     provenance: Provenance
@@ -372,24 +339,29 @@ def review_scan_texts(
     events: Sequence[TranscriptEvent],
     event: UserEvent,
     index: int,
+    spec: MiningSpec,
     *,
-    surfaces: frozenset[Provenance],
     names: Mapping[ToolUseId, str],
 ) -> Iterator[ScanText]:
+    surfaces = spec.review.surfaces
     if "typed" in surfaces and event.text.strip():
         yield ScanText(event.text, "typed", nearest_assistant_index(events, index))
     yield from (
         ScanText(block.content, provenance, None)
         for block in event.blocks
         if isinstance(block, ToolResultBlock)
-        if (provenance := classify_provenance(names.get(block.tool_use_id), is_sidechain=event.meta.is_sidechain))
+        if (
+            provenance := classify_provenance(
+                spec.provenance, names.get(block.tool_use_id), is_sidechain=event.meta.is_sidechain
+            )
+        )
         != "typed"
         if provenance in surfaces
     )
 
 
 def review_comment_signal(
-    event: UserEvent, index: int, scan: ScanText, fmt_name: str, comment: ReviewComment
+    event: UserEvent, index: int, scan: ScanText, fmt_name: str, comment: ReviewComment, spec: MiningSpec
 ) -> MiningSignal:
     return MiningSignal(
         kind=REVIEW_COMMENT,
@@ -408,34 +380,52 @@ def review_comment_signal(
             "line_end": comment.line_end,
             "provenance": scan.provenance,
         },
-        signal=calibrated(comment.comment, "format_match"),
+        signal=calibrated(spec.calibrated, comment.comment, seed="format_match"),
     )
 
 
-def iter_review_comment_signals(
-    events: Sequence[TranscriptEvent],
-    formats: Sequence[ReviewFormat],
-    *,
-    surfaces: frozenset[Provenance],
-    structured_formats: Sequence[StructuredFormat],
-) -> Iterator[MiningSignal]:
+def review_comments(review: ReviewSpec, text: str) -> Iterator[tuple[str, ReviewComment]]:
+    yield from ((fmt.name, comment) for fmt in review.regex_formats for comment in regex_review_comments(fmt, text))
+    yield from (
+        (fmt.name, comment)
+        for fmt in review.callable_formats
+        if fmt.pattern.search(text)
+        for comment in fmt.extract(text)
+    )
+    yield from ((fmt.name, comment) for fmt, comment in extract_structured(text, review.structured_formats))
+
+
+def iter_review_comment_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     names = {tid: block.name for tid, block in tool_uses(events).items()}
     return (
-        review_comment_signal(event, index, scan, fmt_name, comment)
+        review_comment_signal(event, index, scan, fmt_name, comment, spec)
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
-        for scan in review_scan_texts(events, event, index, surfaces=surfaces, names=names)
-        for fmt_name, comment in (
-            *((fmt.name, comment) for fmt, comment in extract_all(scan.text, formats)),
-            *((fmt.name, comment) for fmt, comment in extract_structured(scan.text, structured_formats)),
-        )
+        for scan in review_scan_texts(events, event, index, spec, names=names)
+        for fmt_name, comment in review_comments(spec.review, scan.text)
     )
 
 
-DEFAULT_DETECTORS: tuple[Callable[[Sequence[TranscriptEvent]], Iterator[MiningSignal]], ...] = (
-    iter_user_message_signals,
-    iter_plan_rejection_signals,
-    iter_plan_reentry_signals,
-    iter_tool_denial_signals,
-    iter_interrupt_marker_signals,
-)
+def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
+    """Yields every :class:`MiningSignal` the enabled detectors recognize in ``events``.
+
+    Args:
+        events: The ordered transcript events to mine.
+        spec: The mining policy: which detectors run, with which scoring, provenance,
+            and review-format policy.
+
+    Yields:
+        Neutral mined facts, one per recognized transcript shape, in detector order.
+    """
+    if TRANSCRIPT_MESSAGE_DETECTOR in spec.detectors:
+        yield from iter_user_message_signals(events, spec)
+    if EXIT_PLAN_REJECTION_DETECTOR in spec.detectors:
+        yield from iter_plan_rejection_signals(events, spec)
+    if PLAN_REENTRY_DETECTOR in spec.detectors:
+        yield from iter_plan_reentry_signals(events, spec)
+    if DENIAL_DETECTOR in spec.detectors:
+        yield from iter_tool_denial_signals(events, spec)
+    if INTERRUPT_DETECTOR in spec.detectors:
+        yield from iter_interrupt_marker_signals(events, spec)
+    if REVIEW_COMMENT_DETECTOR in spec.detectors:
+        yield from iter_review_comment_signals(events, spec)
