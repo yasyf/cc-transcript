@@ -1,21 +1,17 @@
 """Headless structured completions via spawnllm's first ready CLI backend.
 
-Argv construction and envelope parsing come from the shared ``spawnllm`` library;
-the spawn stays local (``anyio.run_process``). The backend is whichever of
-spawnllm's CLIs is installed and authenticated (:func:`spawnllm.select_backend`),
-using the caller's existing CLI auth — no API key, no pinned provider.
-``spawnllm`` and ``pydantic`` load lazily inside each function, so importing the
-judge package needs no extra installed.
+Run dispatch and envelope parsing come from the shared ``spawnllm`` library;
+:func:`spawnllm.run` drives the spawn and built-in transient retry. The backend
+is whichever of spawnllm's CLIs is installed and authenticated
+(:func:`spawnllm.select_backend`), using the caller's existing CLI auth — no API
+key, no pinned provider. ``spawnllm`` and ``pydantic`` load lazily inside each
+function, so importing the judge package needs no extra installed.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 from functools import cache
 from typing import TYPE_CHECKING, cast
-
-import anyio
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -55,27 +51,24 @@ async def run_structured_on[M: BaseModel](
 
     A caller that resolves a backend once per pass passes it here, so a large pass
     probes auth once; :func:`run_structured` is the select-and-run convenience.
+    :func:`spawnllm.run` retries transient failures with backoff before returning.
 
     Raises:
-        subprocess.SubprocessError: If the backend CLI exits non-zero or times out.
+        subprocess.TimeoutExpired: If the backend CLI outlives ``timeout``.
         pydantic.ValidationError: If the response does not match the schema.
     """
-    from spawnllm import resolve_schema_path, schema_for
+    from spawnllm import RunSpec, run
 
-    argv, stdin = backend.invocation(
-        prompt,
-        model=backend.models[tier],
-        schema_path=resolve_schema_path(backend, schema_for(response_model)),
-        agent=False,
+    rr = await run(
+        RunSpec(
+            prompt=prompt,
+            model=backend.models[tier],
+            schema=backend.schema_for(response_model),
+            timeout=timeout,
+        ),
+        backend=backend,
     )
-    try:
-        with anyio.fail_after(timeout):
-            result = await anyio.run_process(
-                argv, input=stdin.encode() if stdin is not None else None, check=True, env=os.environ | backend.env()
-            )
-    except TimeoutError as exc:
-        raise subprocess.TimeoutExpired(argv, timeout) from exc
-    return cast(M, backend.parse_response(result.stdout.decode(), response_model))
+    return cast(M, backend.parse_response(rr.stdout, response_model))
 
 
 async def run_structured[M: BaseModel](
@@ -88,7 +81,7 @@ async def run_structured[M: BaseModel](
 
     Raises:
         spawnllm.BackendUnavailable: If no backend is installed and authenticated.
-        subprocess.SubprocessError: If the backend CLI exits non-zero or times out.
+        subprocess.TimeoutExpired: If the backend CLI outlives ``timeout``.
         pydantic.ValidationError: If the response does not match the schema.
     """
     return await run_structured_on(default_backend(), prompt, response_model=response_model, tier=tier, timeout=timeout)
