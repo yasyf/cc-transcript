@@ -148,6 +148,11 @@ MILD_IMPATIENCE_GROUPS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# Hedging cues that soften a correction; a mining demote stage drops confidence on a hit.
+HEDGE_GROUPS: tuple[tuple[str, str], ...] = (
+    ("hedged", r"\b(?:maybe|perhaps|possibly|might|not sure|i think|i guess|if you (?:want|prefer)|up to you)\b"),
+)
+
 PORTABLE_GROUP_NAMES: frozenset[str] = frozenset(
     name
     for name, _ in (
@@ -158,6 +163,7 @@ PORTABLE_GROUP_NAMES: frozenset[str] = frozenset(
         *COMMAND_ECHO_GROUPS,
         *FRUSTRATION_GROUPS,
         *MILD_IMPATIENCE_GROUPS,
+        *HEDGE_GROUPS,
     )
 )
 

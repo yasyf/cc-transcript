@@ -23,26 +23,30 @@ from cc_transcript.mining import (
     TRANSCRIPT_MESSAGE,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
+    CallableReviewFormat,
     CandidateSignal,
     FeedbackCandidate,
     FeedbackStore,
+    MiningSpec,
     ReviewComment,
-    ReviewFormat,
+    ReviewSpec,
     Stats,
     StructuredFormat,
-    classify_provenance,
     dedup_key,
     extract_structured,
+    noise,
+    weak,
+)
+from cc_transcript.mining.confidence import from_payload
+from cc_transcript.mining.signals import (
     iter_interrupt_marker_signals,
     iter_plan_reentry_signals,
     iter_plan_rejection_signals,
     iter_review_comment_signals,
     iter_tool_denial_signals,
     iter_user_message_signals,
-    noise,
-    weak,
 )
-from cc_transcript.mining.confidence import from_payload
+from cc_transcript.mining.spec import ProvenanceSpec, classify_provenance
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,
@@ -60,6 +64,17 @@ from cc_transcript.models import (
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("sess-1")
+SPEC = MiningSpec()
+
+
+def review_spec(
+    *formats: CallableReviewFormat,
+    surfaces: frozenset[str],
+    structured_formats: tuple[StructuredFormat, ...] = (),
+) -> MiningSpec:
+    return MiningSpec(
+        review=ReviewSpec(callable_formats=formats, structured_formats=structured_formats, surfaces=surfaces)
+    )
 
 
 def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
@@ -165,7 +180,7 @@ def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
         assistant("a0", "ok"),
         user("u3", "more feedback"),
     ]
-    signals = list(iter_user_message_signals(events))
+    signals = list(iter_user_message_signals(events, SPEC))
     assert [signal.event_uuid for signal in signals] == [EventUuid("u2"), EventUuid("u3")]
     assert signals[0].trigger_index is None
     assert signals[1].trigger_index == 3
@@ -206,11 +221,11 @@ def test_iter_user_message_signals_filters_and_sets_trigger() -> None:
     ],
 )
 def test_user_message_confidence_calibration(events: list[object], expected: CandidateSignal) -> None:
-    assert [signal.signal for signal in iter_user_message_signals(events)] == [expected]
+    assert [signal.signal for signal in iter_user_message_signals(events, SPEC)] == [expected]
 
 
 def test_structural_user_message_scores_below_noise_floor() -> None:
-    signals = list(iter_user_message_signals([user("u0", "<system-reminder>compacted</system-reminder>")]))
+    signals = list(iter_user_message_signals([user("u0", "<system-reminder>compacted</system-reminder>")], SPEC))
     assert signals[0].signal.confidence < NOISE_FLOOR
 
 
@@ -229,7 +244,7 @@ def test_iter_tool_denial_signals_extracts_embedded_text() -> None:
             ),
         ),
     ]
-    signals = list(iter_tool_denial_signals(events))
+    signals = list(iter_tool_denial_signals(events, SPEC))
     assert len(signals) == 1
     signal = signals[0]
     assert signal.kind == INTERRUPT_REJECTION
@@ -264,7 +279,7 @@ def test_tool_denial_embedded_text_calibration(said: str, expected: CandidateSig
             blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
         ),
     ]
-    assert [signal.signal for signal in iter_tool_denial_signals(events)] == [expected]
+    assert [signal.signal for signal in iter_tool_denial_signals(events, SPEC)] == [expected]
 
 
 @pytest.mark.parametrize(
@@ -291,7 +306,7 @@ def test_tool_denial_bare_marker_followup_calibration(followup: str, expected: C
         ),
         user("u1", followup),
     ]
-    signals = list(iter_tool_denial_signals(events))
+    signals = list(iter_tool_denial_signals(events, SPEC))
     assert [signal.text for signal in signals] == [followup]
     assert [signal.signal for signal in signals] == [expected]
 
@@ -318,7 +333,7 @@ def test_plan_rejection_signal_calibration(said: str, expected: CandidateSignal)
             blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
         ),
     ]
-    assert [signal.signal for signal in iter_plan_rejection_signals(events)] == [expected]
+    assert [signal.signal for signal in iter_plan_rejection_signals(events, SPEC)] == [expected]
 
 
 def test_iter_interrupt_marker_signals_extracts_correction() -> None:
@@ -334,7 +349,7 @@ def test_iter_interrupt_marker_signals_extracts_correction() -> None:
         ),
         user("u1", "actually do it this way instead"),
     ]
-    signals = list(iter_interrupt_marker_signals(events))
+    signals = list(iter_interrupt_marker_signals(events, SPEC))
     assert len(signals) == 1
     signal = signals[0]
     assert signal.kind == INTERRUPT_REJECTION
@@ -357,7 +372,7 @@ def test_iter_interrupt_marker_signals_structural_only_correction_is_noise() -> 
         ),
         user("u1", "<system-reminder>session resumed</system-reminder>"),
     ]
-    signals = list(iter_interrupt_marker_signals(events))
+    signals = list(iter_interrupt_marker_signals(events, SPEC))
     assert len(signals) == 1
     assert signals[0].text == "<system-reminder>session resumed</system-reminder>"
     assert signals[0].signal == noise("structural_only")
@@ -366,7 +381,7 @@ def test_iter_interrupt_marker_signals_structural_only_correction_is_noise() -> 
 
 def test_iter_review_comment_signals_with_injected_format() -> None:
     pattern = re.compile(r"^NIT: (.+)$", re.MULTILINE)
-    fmt = ReviewFormat(
+    fmt = CallableReviewFormat(
         name="tiny",
         pattern=pattern,
         extract=lambda text: tuple(
@@ -378,9 +393,7 @@ def test_iter_review_comment_signals_with_injected_format() -> None:
         assistant("a0", "here is the code"),
         user("u0", "NIT: rename this var\nNIT: add a test"),
     ]
-    signals = list(
-        iter_review_comment_signals(events, (fmt,), surfaces=frozenset({"typed"}), structured_formats=())
-    )
+    signals = list(iter_review_comment_signals(events, review_spec(fmt, surfaces=frozenset({"typed"}))))
     assert [signal.text for signal in signals] == ["rename this var", "add a test"]
     assert all(signal.detector == "review_comment" for signal in signals)
     assert signals[0].evidence == {
@@ -426,7 +439,7 @@ def test_iter_review_comment_signals_surfaced_structured_tool_result() -> None:
     use, result = workflow_result(payload)
     signals = list(
         iter_review_comment_signals(
-            [use, result], (), surfaces=frozenset({"typed", "surfaced"}), structured_formats=(fmt,)
+            [use, result], review_spec(surfaces=frozenset({"typed", "surfaced"}), structured_formats=(fmt,))
         )
     )
     assert [signal.text for signal in signals] == ["guard against None"]
@@ -456,12 +469,12 @@ def test_iter_review_comment_signals_subagent_result_is_claude_and_excluded() ->
         ),
     )
     surfaced = iter_review_comment_signals(
-        [use, result], (), surfaces=frozenset({"surfaced"}), structured_formats=(fmt,)
+        [use, result], review_spec(surfaces=frozenset({"surfaced"}), structured_formats=(fmt,))
     )
     assert list(surfaced) == []
     signals = list(
         iter_review_comment_signals(
-            [use, result], (), surfaces=frozenset({"claude"}), structured_formats=(fmt,)
+            [use, result], review_spec(surfaces=frozenset({"claude"}), structured_formats=(fmt,))
         )
     )
     assert [signal.evidence["provenance"] for signal in signals] == ["claude"]
@@ -469,7 +482,7 @@ def test_iter_review_comment_signals_subagent_result_is_claude_and_excluded() ->
 
 def test_iter_review_comment_signals_default_call_tags_typed_provenance() -> None:
     pattern = re.compile(r"^NIT: (.+)$", re.MULTILINE)
-    fmt = ReviewFormat(
+    fmt = CallableReviewFormat(
         name="tiny",
         pattern=pattern,
         extract=lambda text: tuple(
@@ -478,9 +491,7 @@ def test_iter_review_comment_signals_default_call_tags_typed_provenance() -> Non
         ),
     )
     events = [assistant("a0", "code"), user("u0", "NIT: rename this var")]
-    signals = list(
-        iter_review_comment_signals(events, (fmt,), surfaces=frozenset({"typed"}), structured_formats=())
-    )
+    signals = list(iter_review_comment_signals(events, review_spec(fmt, surfaces=frozenset({"typed"}))))
     assert len(signals) == 1
     assert signals[0].evidence == {
         "format": "tiny",
@@ -512,11 +523,12 @@ def test_extract_structured_tolerates_non_json_and_shapes() -> None:
 
 
 def test_classify_provenance() -> None:
-    assert classify_provenance(None, is_sidechain=False) == "typed"
-    assert classify_provenance("Bash", is_sidechain=False) == "surfaced"
-    assert classify_provenance("Bash", is_sidechain=True) == "claude"
-    assert classify_provenance("Agent", is_sidechain=False) == "claude"
-    assert classify_provenance("Task", is_sidechain=False) == "claude"
+    spec = ProvenanceSpec()
+    assert classify_provenance(spec, None, is_sidechain=False) == "typed"
+    assert classify_provenance(spec, "Bash", is_sidechain=False) == "surfaced"
+    assert classify_provenance(spec, "Bash", is_sidechain=True) == "claude"
+    assert classify_provenance(spec, "Agent", is_sidechain=False) == "claude"
+    assert classify_provenance(spec, "Task", is_sidechain=False) == "claude"
 
 
 def test_iter_plan_reentry_signals_smoke() -> None:
@@ -525,10 +537,8 @@ def test_iter_plan_reentry_signals_smoke() -> None:
         ModeEvent(session_id=SESSION, channel="mode", value="plan"),
         user("u0", "reconsider the plan, this is wrong"),
     ]
-    assert (
-        list(iter_review_comment_signals(events, (), surfaces=frozenset({"typed"}), structured_formats=())) == []
-    )
-    reentries = list(iter_plan_reentry_signals(events))
+    assert list(iter_review_comment_signals(events, review_spec(surfaces=frozenset({"typed"})))) == []
+    reentries = list(iter_plan_reentry_signals(events, SPEC))
     assert len(reentries) == 1
     assert reentries[0].kind == PLAN_REVIEW
     assert reentries[0].detector == "plan_reentry"

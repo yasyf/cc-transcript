@@ -1,7 +1,10 @@
 """Generic infrastructure for parsing structured code-review messages.
 
-The concrete review formats are app policy; an app injects its own
-:class:`ReviewFormat` sequence into :func:`extract_all`.
+The concrete review formats are app policy; an app declares its formats as
+:class:`~cc_transcript.mining.spec.RegexReviewFormat`,
+:class:`~cc_transcript.mining.spec.CallableReviewFormat`, and
+:class:`StructuredFormat` on a :class:`~cc_transcript.mining.spec.ReviewSpec`, which
+:func:`~cc_transcript.mining.mine` interprets.
 """
 
 from __future__ import annotations
@@ -12,8 +15,7 @@ from typing import TYPE_CHECKING
 import orjson
 
 if TYPE_CHECKING:
-    import re
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
     from typing import Any
 
 FINDING_KEYS: tuple[str, ...] = ("findings", "bugs", "improvements", "issues", "items", "verdicts")
@@ -34,39 +36,6 @@ class ReviewComment:
     line_start: int | None
     line_end: int | None
     comment: str
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewFormat:
-    """A named code-review text format with a detector and extractor.
-
-    Attributes:
-        name: The format's identifier.
-        pattern: A pattern that matches when the format is present in a text.
-        extract: Parses a matching text into its review comments.
-    """
-
-    name: str
-    pattern: re.Pattern[str]
-    extract: Callable[[str], tuple[ReviewComment, ...]]
-
-
-def extract_all(text: str, formats: Sequence[ReviewFormat]) -> Iterator[tuple[ReviewFormat, ReviewComment]]:
-    """Yields every ``(format, comment)`` extracted by any matching format.
-
-    Args:
-        text: The raw review message text.
-        formats: The review formats to try, in order.
-
-    Yields:
-        One pair per extracted comment, across all formats whose pattern matches.
-    """
-    return (
-        (fmt, comment)
-        for fmt in formats
-        if fmt.pattern.search(text)
-        for comment in fmt.extract(text)
-    )
 
 
 @dataclass(frozen=True, slots=True)
