@@ -16,7 +16,7 @@ use crate::value::{block_type, field, field_bool, field_str};
 
 const INTERRUPT_MARKER: &str = "[Request interrupted by user";
 
-fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
     field_str(data, key).filter(|s| !s.is_empty())
 }
 
@@ -24,7 +24,7 @@ fn require<'a>(data: &'a Value, key: &str) -> PyResult<&'a Value> {
     field(data, key).ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
 }
 
-fn require_str<'a>(data: &'a Value, key: &str) -> PyResult<&'a str> {
+pub(crate) fn require_str<'a>(data: &'a Value, key: &str) -> PyResult<&'a str> {
     require(data, key)?
         .as_str()
         .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
@@ -48,7 +48,7 @@ fn require_bool(data: &Value, key: &str) -> PyResult<bool> {
         .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
 }
 
-fn parse_timestamp(raw: &str) -> PyResult<DateTime<chrono::FixedOffset>> {
+pub(crate) fn parse_timestamp(raw: &str) -> PyResult<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(raw)
         .map_err(|e| PyValueError::new_err(format!("invalid timestamp {raw:?}: {e}")))
 }
