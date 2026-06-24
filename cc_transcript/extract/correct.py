@@ -25,7 +25,6 @@ import anyio.to_thread
 from pydantic import BaseModel
 
 from cc_transcript.evidence import GitFix, harvest_pairs, lower_pair
-from cc_transcript.judge.llm import run_structured_on
 from cc_transcript.render import Budget, hunk_lines
 
 if TYPE_CHECKING:
@@ -138,10 +137,12 @@ def usable_backend() -> LlmBackend | None:
 async def choose_pair(
     pairs: Sequence[CandidatePair], *, feedback: str, anchor_turn: int, tier: TModel, backend: LlmBackend | None
 ) -> CandidatePair | None:
+    from spawnllm import extract
+
     if backend is None:
         return max(pairs, key=lambda pair: pair.overlap)
-    pick = await run_structured_on(
-        backend, build_pick_prompt(feedback, pairs, anchor_turn=anchor_turn), response_model=CorrectionPick, tier=tier
+    pick = await extract(
+        build_pick_prompt(feedback, pairs, anchor_turn=anchor_turn), CorrectionPick, backend=backend, model=tier
     )
     return pairs[pick.candidate - 1] if pick.candidate is not None and 1 <= pick.candidate <= len(pairs) else None
 
