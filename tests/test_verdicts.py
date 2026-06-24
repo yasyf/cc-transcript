@@ -429,10 +429,10 @@ def test_run_verdicts_awaits_an_async_prompt_for() -> None:
 
 
 def test_resolved_model_matches_the_backend_table() -> None:
-    spawnllm = pytest.importorskip("spawnllm", reason="[llm] extra not installed")
-    from cc_transcript.judge.llm import resolved_model
+    pytest.importorskip("spawnllm", reason="[llm] extra not installed")
+    from cc_transcript.judge.llm import default_backend, resolved_model
 
-    assert resolved_model("medium") == spawnllm.ClaudeCliBackend.models["medium"]
+    assert resolved_model("medium") == default_backend().models["medium"]
 
 
 def test_structured_judge_defers_the_structured_call() -> None:
