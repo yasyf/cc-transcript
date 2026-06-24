@@ -111,10 +111,12 @@ def test_idempotent_per_anchor(tmp_path: Path) -> None:
 
 
 def test_llm_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake(backend: object, prompt: str, *, response_model: object, tier: str) -> CorrectionPick:
+    import spawnllm
+
+    async def fake(prompt: str, response_model: object, **_: object) -> CorrectionPick:
         return CorrectionPick(candidate=2, note="the /b.py edit")
 
-    monkeypatch.setattr("cc_transcript.extract.correct.run_structured_on", fake)
+    monkeypatch.setattr(spawnllm, "extract", fake)
     log = open_log(tmp_path)
 
     async def go() -> object:
@@ -125,10 +127,12 @@ def test_llm_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_llm_no_pick_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake(backend: object, prompt: str, *, response_model: object, tier: str) -> CorrectionPick:
+    import spawnllm
+
+    async def fake(prompt: str, response_model: object, **_: object) -> CorrectionPick:
         return CorrectionPick(candidate=None, note="not about a harvested edit")
 
-    monkeypatch.setattr("cc_transcript.extract.correct.run_structured_on", fake)
+    monkeypatch.setattr(spawnllm, "extract", fake)
     log = open_log(tmp_path)
 
     async def go() -> object:
@@ -136,6 +140,50 @@ def test_llm_no_pick_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     assert anyio.run(go) is None
     assert log.for_session(SESSION) == ()
+
+
+def test_faked_codex_backend_picks_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from spawnllm.backends.codex import CodexCliBackend
+    from spawnllm.proc import RunResult
+
+    monkeypatch.setattr(CodexCliBackend, "schema_for", lambda self, model: "{}")
+
+    async def fake_capture(argv: list[str], **_: object) -> RunResult:
+        Path(argv[argv.index("-o") + 1]).write_text('{"candidate": 2, "note": "the /b.py edit"}')
+        return RunResult("log", "", 0)
+
+    monkeypatch.setattr("spawnllm.backends.base.acapture_cli", fake_capture)
+    log = open_log(tmp_path)
+
+    async def go() -> object:
+        return await extract_correction(
+            log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=CodexCliBackend()
+        )
+
+    row = anyio.run(go)
+    assert row is not None and row.incorrect_file == "/b.py"
+
+
+def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import spawnllm
+    from spawnllm.backends.codex import CodexCliBackend
+    from spawnllm.proc import RunResult
+
+    monkeypatch.setattr(CodexCliBackend, "schema_for", lambda self, model: "{}")
+
+    async def fake_capture(argv: list[str], **_: object) -> RunResult:
+        return RunResult("", "codex: not found", 127)
+
+    monkeypatch.setattr("spawnllm.backends.base.acapture_cli", fake_capture)
+    log = open_log(tmp_path)
+
+    async def go() -> object:
+        return await extract_correction(
+            log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=CodexCliBackend()
+        )
+
+    with pytest.raises(spawnllm.BackendCallError):
+        anyio.run(go)
 
 
 def test_usable_backend_none_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
