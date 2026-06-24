@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0]
+
+### Changed (BREAKING)
+- The structured-LLM path migrates to spawnllm 0.5's `run`/`call`/`extract` API and
+  now requires `spawnllm>=0.5.0`. `cc_transcript.judge.run_structured` and
+  `run_structured_on` are removed; the correction picker (`extract/correct.py`) and
+  `structured_judge` call `spawnllm.extract(...)`, which returns the validated model
+  directly. A failing CLI backend now raises `spawnllm.BackendCallError` carrying the
+  backend's real stderr/exit code, instead of a misleading `Invalid JSON: EOF` parse
+  error on empty output. `default_backend` and `resolved_model` are unchanged.
+
 ## [6.0.0]
 
 ### Changed (BREAKING)

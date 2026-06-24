@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[options]
+exclude-newer = "2026-06-24T12:00:00Z"
+
 [[package]]
 name = "afinn"
 version = "0.1"
@@ -276,7 +279,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "spacy", marker = "extra == 'sentiment'", specifier = ">=3.8" },
-    { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.4.0" },
+    { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.5.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.44" },
 ]
 provides-extras = ["dev", "sentiment", "llm"]
@@ -2208,7 +2211,7 @@ wheels = [
 
 [[package]]
 name = "spawnllm"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -2217,9 +2220,9 @@ dependencies = [
     { name = "openai" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/ef/4fae26493ccb609b4b4579e0b7f5896ff3a5923bfc6ec9e9c184d1a9b3c0/spawnllm-0.4.0.tar.gz", hash = "sha256:9b2b358afefb6b1b8382d9dd5a70372c7fad93fd7c3f3ed0cdce3e806da74189", size = 25809, upload-time = "2026-06-23T03:09:14.36Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/86/30f540731e65936cd3fda3b072db4a2260098fd413d0269ca6ee04bbc048/spawnllm-0.5.0.tar.gz", hash = "sha256:d5899d26942ffedc1ddc716195ba508bc4837b6b3fdd730c1a6da8d0285ede9c", size = 26864, upload-time = "2026-06-24T08:19:18.371Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/24/0f65e1a513ce1fa8883e33a44c8a2fee2ff24c0953f3d98fbc6a711e6d2d/spawnllm-0.4.0-py3-none-any.whl", hash = "sha256:13a91033b5de4912cc21ae6c2c6e9ab1823fac02b87846ef8b4bc686411827c2", size = 35486, upload-time = "2026-06-23T03:09:13.034Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/ef/30cfb4be2f63daa0ba976237ffd06a20618e6278257e4cc7f28589d2b6fa/spawnllm-0.5.0-py3-none-any.whl", hash = "sha256:1e00ea142ae6c4153b98dd3cd41d09e78f862bdffa516dc2bc06b9fe9e127664", size = 37560, upload-time = "2026-06-24T08:19:17.259Z" },
 ]
 
 [[package]]
