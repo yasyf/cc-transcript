@@ -212,7 +212,6 @@ reference:
       - TRIVIAL_ACK_SET
       - STRUCTURAL_NOISE_RE
       - INTERRUPT_MARKER_RE
-      - STOP_HOOK_RE
       - JUNK_USER_MESSAGE_RE
   - title: Context windows
     desc: Refs-not-prose context — persisted EventRefs plus previews that hydrate back to full fidelity.
