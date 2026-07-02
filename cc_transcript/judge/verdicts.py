@@ -50,6 +50,18 @@ CREATE INDEX IF NOT EXISTS idx_{table}_dedup ON {table}(dedup_key);
 """
 
 
+class JudgeError(RuntimeError):
+    """A provider or transport failure from one judge call.
+
+    The boundary that talks to the LLM provider (the callable returned by
+    :func:`~cc_transcript.judge.llm.structured_judge`) converts backend, timeout,
+    and response-validation failures into this type. :func:`run_verdicts` catches
+    exactly this: the row is counted as failed and left unpersisted, so the next
+    pass retries it. Anything else raised inside a judge call is a programming
+    error and propagates.
+    """
+
+
 class VerdictLike(Protocol):
     """The structural shape a judge's verdict must expose to be persisted.
 
@@ -429,10 +441,12 @@ async def run_verdicts[V](
 ) -> tuple[int, int]:
     """Runs ``judge`` over every row's prompt and persists each verdict as it lands.
 
-    Incremental by construction: a row whose judge call raises is counted as
-    failed and left unpersisted, so the next pass retries it; every other row's
-    verdict persists as soon as its call completes. Generic over the verdict
-    payload, so the same fan-out serves triage- and refinement-shaped passes.
+    Incremental by construction: a row whose judge call raises :class:`JudgeError`
+    is counted as failed and left unpersisted, so the next pass retries it; every
+    other row's verdict persists as soon as its call completes. Any other
+    exception is a programming error and propagates, cancelling the pass. Generic
+    over the verdict payload, so the same fan-out serves triage- and
+    refinement-shaped passes.
 
     Args:
         rows: The rows to judge.
@@ -452,7 +466,7 @@ async def run_verdicts[V](
         async with limiter:
             try:
                 verdict = await judge(await prompt_for(row))
-            except Exception:
+            except JudgeError:
                 counts["failed"] += 1
                 return
         await persist(row, verdict)

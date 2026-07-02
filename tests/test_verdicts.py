@@ -10,6 +10,7 @@ from cc_transcript.judge.verdicts import (
     AuditEstimate,
     GoldenResult,
     GoldenRow,
+    JudgeError,
     Metrics,
     VerdictStoreMixin,
     exact_upper_bound,
@@ -189,7 +190,7 @@ def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
 
     async def judge(prompt: str) -> str:
         if prompt == "prompt:t2":
-            raise RuntimeError("boom")
+            raise JudgeError("boom")
         return prompt.upper()
 
     async def persist(row: Mapping[str, object], verdict: str) -> None:
@@ -203,6 +204,28 @@ def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
 
     assert anyio.run(go) == (3, 1)
     assert sorted(persisted) == [("k0", "PROMPT:T0"), ("k1", "PROMPT:T1"), ("k3", "PROMPT:T3")]
+
+
+def test_run_verdicts_propagates_programming_errors() -> None:
+    rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(3)]
+
+    async def judge(prompt: str) -> str:
+        if prompt == "prompt:t1":
+            raise TypeError("bug in the worker body")
+        return prompt.upper()
+
+    async def persist(row: Mapping[str, object], verdict: str) -> None:
+        del row, verdict
+
+    async def prompt_for(row: Mapping[str, object]) -> str:
+        return f"prompt:{row['text']}"
+
+    async def go() -> tuple[int, int]:
+        return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
+
+    with pytest.raises(ExceptionGroup) as excinfo:
+        anyio.run(go)
+    assert excinfo.group_contains(TypeError, match="bug in the worker body")
 
 
 def test_run_verdicts_respects_concurrency() -> None:
@@ -450,3 +473,23 @@ def test_structured_judge_defers_the_structured_call() -> None:
     coroutine = judge("prompt")
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
+
+
+def test_structured_judge_converts_provider_errors_to_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("spawnllm", reason="[llm] extra not installed")
+    from pydantic import BaseModel
+    from spawnllm import BackendCallError
+
+    from cc_transcript.judge.llm import structured_judge
+
+    class Toy(BaseModel):
+        value: int
+
+    async def failing_extract(*args: object, **kwargs: object) -> Toy:
+        raise BackendCallError("claude exited 1: overloaded")
+
+    monkeypatch.setattr("spawnllm.extract", failing_extract)
+    monkeypatch.setattr("cc_transcript.judge.llm.default_backend", lambda: object())
+    judge = structured_judge(Toy, tier="medium", timeout=1)
+    with pytest.raises(JudgeError, match="overloaded"):
+        anyio.run(judge, "prompt")

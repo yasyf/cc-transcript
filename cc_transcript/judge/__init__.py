@@ -22,6 +22,7 @@ from cc_transcript.judge.verdicts import (
     GoldenFailure,
     GoldenResult,
     GoldenRow,
+    JudgeError,
     Metrics,
     VerdictLike,
     VerdictStoreMixin,

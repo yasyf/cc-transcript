@@ -14,6 +14,8 @@ from __future__ import annotations
 from functools import cache
 from typing import TYPE_CHECKING
 
+from cc_transcript.judge.verdicts import JudgeError
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -52,11 +54,22 @@ def structured_judge[M: BaseModel](
 
     Each call runs one structured completion on the cached default backend via
     :func:`spawnllm.extract`, which validates the response into ``response_model``.
+    Provider and transport failures — a backend call error, no ready backend, a
+    timeout, or a non-conforming response — surface from the returned callable as
+    :class:`~cc_transcript.judge.verdicts.JudgeError`, the one exception
+    :func:`run_verdicts` counts as failed and retries next pass.
 
     Example:
         >>> judge = structured_judge(Verdict, tier="medium")
         >>> await run_verdicts(rows, prompt_for, judge, persist, concurrency=8)
     """
-    from spawnllm import extract
+    from pydantic import ValidationError
+    from spawnllm import BackendCallError, BackendUnavailable, extract
 
-    return lambda prompt: extract(prompt, response_model, backend=default_backend(), model=tier, timeout=timeout)
+    async def judge(prompt: str) -> M:
+        try:
+            return await extract(prompt, response_model, backend=default_backend(), model=tier, timeout=timeout)
+        except (BackendCallError, BackendUnavailable, TimeoutError, ValidationError) as error:
+            raise JudgeError(str(error)) from error
+
+    return judge
