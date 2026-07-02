@@ -91,7 +91,7 @@ class Lexicon:
 
     @classmethod
     async def ensure_ready(cls) -> None:
-        if cls.afinn is not None:
+        if cls.afinn is not None or await anyio.to_thread.run_sync(rust_lexicon) is not None:
             return
         loop_id = id(asyncio.get_running_loop())
         lock = cls.locks_by_loop.setdefault(loop_id, asyncio.Lock())
@@ -128,13 +128,13 @@ class Lexicon:
         """Whether any token in ``text`` reaches ``floor`` (``<= -floor`` when ``want_negative``).
 
         Uses the Rust udpipe backend (lemmatize + score) when available; otherwise the
-        spaCy path, which fails open (returns ``True``) when spaCy/afinn are unavailable.
+        spaCy path, which requires :meth:`NLP.ensure_ready` and :meth:`ensure_ready` to
+        have been awaited at startup.
         """
         if (rust := rust_lexicon()) is not None:
             return rust.lexicon_has_hit(text, floor, want_negative)
         nlp = NLP.get()
-        if nlp is None or cls.afinn is None:
-            return True
+        assert nlp is not None, "NLP.ensure_ready() must be awaited at startup"
         if want_negative:
             return any(cls.polarity(token.lemma_) <= -floor for token in nlp(text) if token.is_alpha)
         return any(cls.polarity(token.lemma_) >= floor for token in nlp(text) if token.is_alpha)
@@ -143,13 +143,12 @@ class Lexicon:
 class NLP:
     """Lazy loader for the spaCy ``en_core_web_sm`` model used to lemmatize text.
 
-    Loads from the user spaCy cache, downloading the model on first use; on failure it records
-    the diagnostic and disables itself so the lexicon path fails open.
+    Loads from the user spaCy cache, downloading the model on first use; a load or
+    download failure raises. :meth:`ensure_ready` no-ops when the Rust lexicon
+    backend is available, which needs neither spaCy nor afinn.
     """
 
     model: ClassVar[spacy.language.Language | None] = None
-    failed: ClassVar[bool] = False
-    last_download_output: ClassVar[str | None] = None
     locks_by_loop: ClassVar[dict[int, asyncio.Lock]] = {}
 
     @classmethod
@@ -157,31 +156,17 @@ class NLP:
         return cls.model
 
     @classmethod
-    async def ensure_ready(cls) -> spacy.language.Language | None:
-        if cls.model is not None:
-            return cls.model
-        if cls.failed:
-            return None
+    async def ensure_ready(cls) -> None:
+        if cls.model is not None or await anyio.to_thread.run_sync(rust_lexicon) is not None:
+            return
         loop_id = id(asyncio.get_running_loop())
         lock = cls.locks_by_loop.setdefault(loop_id, asyncio.Lock())
         async with lock:
-            if cls.model is None and not cls.failed:
+            if cls.model is None:
                 try:
                     cls.model = await anyio.to_thread.run_sync(cls.load_or_download)
                 except (OSError, subprocess.CalledProcessError, ImportError, RuntimeError) as exc:
-                    cls.failed = True
-                    cls.last_download_output = cls.format_failure(exc)
-        return cls.model
-
-    @staticmethod
-    def format_failure(exc: BaseException) -> str:
-        match exc:
-            case subprocess.CalledProcessError():
-                out = (exc.stdout or "").strip()
-                err = (exc.stderr or "").strip()
-                return f"exit={exc.returncode} stdout={out!r} stderr={err!r}"
-            case _:
-                return f"{exc.__class__.__name__}: {exc}"
+                    raise RuntimeError(f"spaCy {MODEL_NAME} failed to load or download") from exc
 
     @staticmethod
     def load_or_download() -> spacy.language.Language:

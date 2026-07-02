@@ -67,16 +67,19 @@ def test_generated_afinn_tsv_matches_installed_package() -> None:
 
 
 @requires_sentiment
-def test_rust_filter_decisions_match_spacy() -> None:
+def test_rust_filter_decisions_match_spacy(monkeypatch: pytest.MonkeyPatch) -> None:
     rust = rust_lexicon()
     if rust is None:
         pytest.skip("Rust lexicon (udpipe model) unavailable")
-    anyio.run(NLP.ensure_ready)
-    anyio.run(Lexicon.ensure_ready)
-    if NLP.get() is None or Lexicon.afinn is None:
+    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
+    try:
+        anyio.run(NLP.ensure_ready)
+        anyio.run(Lexicon.ensure_ready)
+    except RuntimeError:
         pytest.skip("en_core_web_sm not available")
 
     nlp = NLP.get()
+    assert nlp is not None
 
     def spacy_hit(text: str, floor: int, *, want_negative: bool) -> bool:
         if want_negative:
