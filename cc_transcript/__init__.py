@@ -163,7 +163,6 @@ EXPORTS: dict[str, str] = {
             "INTERRUPT_MARKER_RE",
             "JUNK_USER_MESSAGE_RE",
             "RESUME_PHRASE_SET",
-            "STOP_HOOK_RE",
             "STRUCTURAL_NOISE_RE",
             "TRIVIAL_ACK_SET",
             "USERS",
@@ -398,9 +397,6 @@ if TYPE_CHECKING:
     )
     from cc_transcript.filterspec import (
         RESUME_PHRASE_SET as RESUME_PHRASE_SET,
-    )
-    from cc_transcript.filterspec import (
-        STOP_HOOK_RE as STOP_HOOK_RE,
     )
     from cc_transcript.filterspec import (
         STRUCTURAL_NOISE_RE as STRUCTURAL_NOISE_RE,
