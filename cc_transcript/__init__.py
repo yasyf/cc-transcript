@@ -48,6 +48,7 @@ EXPORTS: dict[str, str] = {
             "ToolCall",
             "ToolCallBase",
             "ToolInputError",
+            "WorkflowCall",
             "WriteCall",
             "expand_tool_names",
             "file_path_of",
@@ -619,6 +620,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         ToolInputError as ToolInputError,
+    )
+    from cc_transcript.tools import (
+        WorkflowCall as WorkflowCall,
     )
     from cc_transcript.tools import (
         WriteCall as WriteCall,

@@ -14,6 +14,7 @@ from cc_transcript.tools import (
     OtherCall,
     TaskCall,
     ToolInputError,
+    WorkflowCall,
     WriteCall,
     expand_tool_names,
     file_path_of,
@@ -60,6 +61,23 @@ def test_task_normalizes_subagent_type() -> None:
     call = parse_tool_call("Agent", {"prompt": "p", "subagent_type": "Explore", "name": "scout"})
     assert isinstance(call, TaskCall)
     assert (call.agent_type, call.agent_name) == ("Explore", "scout")
+
+
+def test_workflow_parses_typed_fields() -> None:
+    call = parse_tool_call(
+        "Workflow",
+        {"script": "export const meta = {}", "args": ["a.ts"], "resumeFromRunId": "wf_abc123"},
+    )
+    assert isinstance(call, WorkflowCall)
+    assert (call.script, call.script_path, call.args) == ("export const meta = {}", None, ["a.ts"])
+    assert call.resume_from_run_id == "wf_abc123"
+
+
+def test_workflow_distinguishes_workflow_name_from_tool_name() -> None:
+    call = parse_tool_call("Workflow", {"name": "review-changes", "scriptPath": "/tmp/wf.js"})
+    assert isinstance(call, WorkflowCall)
+    assert (call.name, call.workflow_name, call.script_path) == ("Workflow", "review-changes", "/tmp/wf.js")
+    assert call.script is None
 
 
 def test_grep_maps_type_to_file_type() -> None:

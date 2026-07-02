@@ -161,6 +161,27 @@ class TaskCall(ToolCallBase):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class WorkflowCall(ToolCallBase):
+    """A Workflow dynamic-orchestration dispatch.
+
+    Attributes:
+        script: The inline workflow script, when passed directly.
+        script_path: Path to a script file on disk, when passed instead of
+            ``script``.
+        workflow_name: A predefined workflow's name (``raw["name"]`` — distinct
+            from :attr:`ToolCallBase.name`, the tool name).
+        args: The value exposed to the script as its ``args`` global.
+        resume_from_run_id: A prior run to resume from.
+    """
+
+    script: str | None = None
+    script_path: str | None = None
+    workflow_name: str | None = None
+    args: Any = None
+    resume_from_run_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SkillCall(ToolCallBase):
     """A Skill invocation."""
 
@@ -209,6 +230,7 @@ ToolCall = (
     | GrepCall
     | GlobCall
     | TaskCall
+    | WorkflowCall
     | SkillCall
     | TaskCreateCall
     | TaskUpdateCall
@@ -364,6 +386,16 @@ def typed_tool_call(name: str, raw: Mapping[str, Any]) -> ToolCall:
                     model=raw.get("model"),
                     agent_name=raw.get("name"),
                     run_in_background=raw.get("run_in_background"),
+                )
+            case "Workflow":
+                return WorkflowCall(
+                    name=name,
+                    raw=raw,
+                    script=raw.get("script"),
+                    script_path=raw.get("scriptPath") or raw.get("script_path"),
+                    workflow_name=raw.get("name"),
+                    args=raw.get("args"),
+                    resume_from_run_id=raw.get("resumeFromRunId") or raw.get("resume_from_run_id"),
                 )
             case "Skill":
                 return SkillCall(name=name, raw=raw, skill=raw["skill"], args=raw.get("args"))
