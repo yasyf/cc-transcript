@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
     from typing import Any
 
-    from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
+    from cc_transcript.models import EntryMeta, SessionId, ToolUseId, TranscriptEvent
 
 EventKind = Literal["user", "assistant", "system", "mode", "other"]
 MetaFlagName = Literal["is_sidechain", "is_meta", "is_compact_summary", "is_visible_in_transcript_only"]
@@ -378,6 +378,10 @@ def event_meta(event: TranscriptEvent) -> EntryMeta | None:
             return meta
         case _:
             return None
+
+
+def session_id_of(events: Sequence[TranscriptEvent]) -> SessionId | None:
+    return next((meta.session_id for event in events if (meta := event_meta(event)) is not None), None)
 
 
 def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock]:

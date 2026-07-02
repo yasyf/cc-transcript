@@ -17,9 +17,9 @@ from fnmatch import fnmatch
 from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
-from cc_transcript.activity import SessionActivity, Turn, native_user_classifier
+from cc_transcript.activity import SessionActivity, Turn, event_stamps, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError, find_transcript, subagent_paths, subagent_transcripts
-from cc_transcript.filterspec import event_meta
+from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
@@ -73,12 +73,12 @@ def event_positions(turns: Sequence[Turn]) -> dict[EventUuid, int]:
 def trim_turn(turn: Turn, lo: int, hi: int) -> Turn:
     events = turn.events[lo:hi]
     positions = {meta.uuid: index for index, event in enumerate(turn.events) if (meta := event_meta(event)) is not None}
-    stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
+    started_at, ended_at = event_stamps(events)
     return Turn(
         index=turn.index,
         prompt=turn.prompt if lo == 0 else "",
-        started_at=stamps[0] if stamps else None,
-        ended_at=stamps[-1] if stamps else None,
+        started_at=started_at,
+        ended_at=ended_at,
         events=events,
         tool_uses=tuple(use for use in turn.tool_uses if lo <= positions[use.ref.event_uuid] < hi),
     )
@@ -251,9 +251,7 @@ class Session:
     def from_path(cls, path: Path, *, user_classifier: UserClassifier = native_user_classifier) -> Session:
         """Parses and lifts the transcript at ``path``, synchronously."""
         events = parse_events_from_bytes(path.read_bytes())
-        session_id = next(
-            (meta.session_id for event in events if (meta := event_meta(event)) is not None), SessionId(path.stem)
-        )
+        session_id = session_id_of(events) or SessionId(path.stem)
         return cls.from_activity(
             SessionActivity.from_events(session_id, events, user_classifier=user_classifier), path=path
         )

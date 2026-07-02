@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.filterspec import DENIAL_PREFIX, embedded_user_text, event_meta
+from cc_transcript.filterspec import DENIAL_PREFIX, embedded_user_text, session_id_of
 from cc_transcript.tools import BashCall, bash_prefixes, file_path_of, mcp_access, mcp_parts
 
 if TYPE_CHECKING:
@@ -123,7 +123,7 @@ def tool_facts(transcripts: Iterable[ParsedTranscript]) -> Iterator[ToolFact]:
         A flattened fact per tool use, in file order.
     """
     for parsed in transcripts:
-        session_id = next((meta.session_id for event in parsed.events if (meta := event_meta(event)) is not None), None)
+        session_id = session_id_of(parsed.events)
         if session_id is None:
             continue
         activity = SessionActivity.from_events(session_id, parsed.events)
