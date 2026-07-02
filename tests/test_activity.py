@@ -170,8 +170,12 @@ def test_tool_uses_lift_every_block_with_matched_results() -> None:
     assert first.result == result("t1", "1 passed")
     assert first.turn_index == 0
     assert first.ts == BASE + timedelta(seconds=3)
+    assert first.result_ts == BASE + timedelta(seconds=4)
+    assert first.duration_ms == 1000
     assert isinstance(second.call, EditCall)
     assert second.result is None
+    assert second.result_ts is None
+    assert second.duration_ms is None
     assert first.call is uses[0].call
 
 
@@ -388,6 +392,8 @@ def test_from_session_discovers_parses_and_lifts(tmp_path: Path) -> None:
     (use,) = act.turns[0].tool_uses
     assert isinstance(use.call, EditCall)
     assert use.result is not None and use.result.content == "applied"
+    assert use.result_ts == BASE + timedelta(seconds=2)
+    assert use.duration_ms == 1000
     assert act.edits[0].hunks == (Hunk("x = 1", "x = 2"),)
 
 

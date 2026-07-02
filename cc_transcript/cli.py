@@ -15,6 +15,7 @@ import anyio
 import click
 import orjson
 
+from cc_transcript.activity import result_index
 from cc_transcript.builders import (
     NOISE_SPEC,
     build_spec,
@@ -35,16 +36,23 @@ from cc_transcript.render import (
     Budget,
     collect_stats,
     compact_line,
+    denial_dict,
+    denial_line,
     display_path,
     event_dict,
+    fact_dict,
+    fact_line,
     haystack,
     human_size,
+    render_counts,
+    render_mcp,
     render_stats,
     render_tool_call,
     stats_dict,
     tool_names,
     transcript_header,
 )
+from cc_transcript.toolcalls import bash_prefix_counts, is_denial, mcp_summary, tool_facts
 from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
 
 if TYPE_CHECKING:
@@ -204,6 +212,55 @@ def uses_tool(event: TranscriptEvent, tool: str, names: Mapping[ToolUseId, str])
             return False
 
 
+class Outcome(NamedTuple):
+    is_error: bool
+    denied: bool
+    duration_ms: int | None
+
+
+def outcome_of(pair: tuple[ToolResultBlock, datetime | None] | None, meta: EntryMeta) -> Outcome:
+    if pair is None:
+        return Outcome(is_error=False, denied=False, duration_ms=None)
+    result, ts = pair
+    return Outcome(
+        is_error=result.is_error,
+        denied=is_denial(result),
+        duration_ms=round((ts - meta.timestamp).total_seconds() * 1000) if ts is not None else None,
+    )
+
+
+def tool_outcomes(
+    event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]
+) -> list[tuple[ToolUseBlock, Outcome]]:
+    match event:
+        case AssistantEvent(blocks=blocks, meta=meta):
+            return [
+                (block, outcome_of(results.get(block.id), meta)) for block in blocks if isinstance(block, ToolUseBlock)
+            ]
+        case _:
+            return []
+
+
+def result_key(
+    event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]
+) -> dict[str, dict[str, Any]]:
+    return {
+        block.id: {"is_error": o.is_error, "denied": o.denied, "duration_ms": o.duration_ms}
+        for block, o in tool_outcomes(event, results)
+    }
+
+
+def outcome_marker(outcome: Outcome) -> str:
+    status = "[denied]" if outcome.denied else "[err]" if outcome.is_error else ""
+    dur = f"({outcome.duration_ms}ms)" if outcome.duration_ms is not None else ""
+    return " ".join(part for part in (status, dur) if part)
+
+
+def result_suffix(event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]) -> str:
+    markers = [marker for _, outcome in tool_outcomes(event, results) if (marker := outcome_marker(outcome))]
+    return f" {' '.join(markers)}" if markers else ""
+
+
 def merge_windows(hits: list[int], *, context: int, size: int) -> list[tuple[int, int]]:
     merged: list[tuple[int, int]] = []
     for lo, hi in ((max(0, i - context), min(size, i + context + 1)) for i in hits):
@@ -360,6 +417,7 @@ def show(
 )
 @click.option("--width", default=100, show_default=True, help="Truncation width per chunk (0 = no cut).")
 @click.option("--uuids", is_flag=True, help="Append each event's uuid.")
+@click.option("--with-result", is_flag=True, help="Annotate tool-use hits with their result's outcome.")
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per match.")
 def grep(
     pattern: str,
@@ -377,6 +435,7 @@ def grep(
     max_matches: int,
     width: int,
     uuids: bool,
+    with_result: bool,
     as_json: bool,
 ) -> None:
     """Search transcript events for a regex pattern."""
@@ -390,6 +449,7 @@ def grep(
         if budget == 0:
             break
         names = tool_names(parsed.events)
+        results = result_index(parsed.events) if with_result else {}
         hits = list(
             islice(
                 (
@@ -414,6 +474,7 @@ def grep(
                     {"path": str(parsed.path)}
                     | event_dict(i, parsed.events[i])
                     | ({} if i in hit_set else {"context": True})
+                    | ({"results": rk} if with_result and (rk := result_key(parsed.events[i], results)) else {})
                 )
                 for lo, hi in merge_windows(hits, context=context, size=len(parsed.events))
                 for i in range(lo, hi)
@@ -425,6 +486,7 @@ def grep(
                 out.append("--")
             out.extend(
                 compact_line(i, parsed.events[i], names=names, width=width, thinking=False, uuids=uuids)
+                + (result_suffix(parsed.events[i], results) if with_result else "")
                 for i in range(lo, hi)
             )
     if not as_json:
@@ -471,6 +533,105 @@ def stats(
         emit((orjson.dumps(stats_dict(collect_stats(transcripts))),))
     else:
         emit((render_stats(collect_stats(transcripts)), *((note,) if (note := scope_note(targets)) else ())))
+
+
+@cli.command()
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@discovery_options
+@click.option("--tool", help="Keep only calls to this tool.")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per tool call.")
+def tools(
+    paths: tuple[Path, ...],
+    root: Path,
+    project: str | None,
+    contains: str | None,
+    limit: int,
+    all_: bool,
+    tool: str | None,
+    as_json: bool,
+) -> None:
+    """List every tool call across the matched transcripts, one compact line each."""
+    targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
+    facts = [
+        fact
+        for fact in tool_facts(parse_transcripts(targets.paths))
+        if tool is None or tool_name_matches(fact.tool, tool)
+    ]
+    if as_json:
+        emit(orjson.dumps(fact_dict(fact)) for fact in facts)
+        return
+    emit(chain((fact_line(fact) for fact in facts), (note,) if (note := scope_note(targets)) else ()))
+
+
+@cli.command()
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@discovery_options
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per prefix.")
+def commands(
+    paths: tuple[Path, ...],
+    root: Path,
+    project: str | None,
+    contains: str | None,
+    limit: int,
+    all_: bool,
+    as_json: bool,
+) -> None:
+    """Tally Bash command prefixes across the matched transcripts, most frequent first."""
+    targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
+    counts = bash_prefix_counts(tool_facts(parse_transcripts(targets.paths)))
+    if as_json:
+        emit(orjson.dumps({"prefix": prefix, "count": count}) for prefix, count in counts.items())
+        return
+    emit(chain(render_counts(counts), (note,) if (note := scope_note(targets)) else ()))
+
+
+@cli.command()
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@discovery_options
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per denial.")
+def permissions(
+    paths: tuple[Path, ...],
+    root: Path,
+    project: str | None,
+    contains: str | None,
+    limit: int,
+    all_: bool,
+    as_json: bool,
+) -> None:
+    """List tool uses the user denied, with the instruction they gave instead."""
+    targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
+    facts = [
+        fact
+        for fact in tool_facts(parse_transcripts(targets.paths))
+        if fact.denied
+        if not tool_name_matches(fact.tool, "ExitPlanMode|AskUserQuestion")
+    ]
+    if as_json:
+        emit(orjson.dumps(denial_dict(fact)) for fact in facts)
+        return
+    emit(chain((denial_line(fact) for fact in facts), (note,) if (note := scope_note(targets)) else ()))
+
+
+@cli.command()
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@discovery_options
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per server.")
+def mcp(
+    paths: tuple[Path, ...],
+    root: Path,
+    project: str | None,
+    contains: str | None,
+    limit: int,
+    all_: bool,
+    as_json: bool,
+) -> None:
+    """Summarize MCP server and tool usage across the matched transcripts."""
+    targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
+    summary = mcp_summary(tool_facts(parse_transcripts(targets.paths)))
+    if as_json:
+        emit(orjson.dumps({"server": server} | data) for server, data in summary.items())
+        return
+    emit(chain(render_mcp(summary), (note,) if (note := scope_note(targets)) else ()))
 
 
 @cli.command("slice")

@@ -10,13 +10,16 @@ only.
 
 from __future__ import annotations
 
+import re
+import shlex
 from dataclasses import dataclass, field
+from itertools import dropwhile
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.ids import ToolDigest, tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
     from typing import Any
 
 TOOL_ALIASES: dict[str, str] = {
@@ -28,6 +31,45 @@ TOOL_ALIASES: dict[str, str] = {
 }
 
 TOOL_ALIASES_REVERSE: dict[str, str] = {v: k for k, v in TOOL_ALIASES.items()}
+
+MULTI_LEVEL_TOOLS = frozenset(
+    {
+        "git",
+        "gh",
+        "uv",
+        "uvx",
+        "npx",
+        "docker",
+        "jj",
+        "go",
+        "cargo",
+        "npm",
+        "pnpm",
+        "yarn",
+        "kubectl",
+        "pip",
+        "brew",
+        "aws",
+        "gcloud",
+        "terraform",
+    }
+)
+
+WRAPPER_COMMANDS = frozenset({"sudo", "env", "time", "timeout", "nice", "nohup", "doas", "command", "exec", "xargs"})
+
+READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query", "describe", "show", "find"})
+
+BASH_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+SHELL_UNWRAP = frozenset({"do", "then", "else", "elif"})
+
+SHELL_STOP = frozenset(
+    {"for", "while", "until", "if", "case", "select", "in", "done", "fi", "esac", "{", "}", "(", ")"}
+)
+
+ASSIGNMENT_RE = re.compile(r"^\w+=")
+
+OPERATOR_SPLIT_RE = re.compile(r"&&|\|\||[;|&]")
 
 
 class ToolInputError(ValueError):
@@ -239,9 +281,7 @@ ToolCall = (
 )
 
 
-def parse_tool_call(
-    name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise"
-) -> ToolCall:
+def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise") -> ToolCall:
     """Parse a tool's name and raw input into the typed hierarchy.
 
     Strict by default: a known tool whose input is malformed raises
@@ -312,9 +352,93 @@ def tool_name_matches(actual: str, spec: str) -> bool:
         True
     """
     candidates = expand_tool_names(spec)
-    return actual in candidates or (
-        actual.startswith("mcp__") and len(parts := actual.split("__", 2)) == 3 and parts[2] in candidates
+    return actual in candidates or ((mp := mcp_parts(actual)) is not None and mp[1] in candidates)
+
+
+def mcp_parts(name: str) -> tuple[str, str] | None:
+    """Split an ``mcp__server__tool`` name into ``(server, tool)``, else ``None``.
+
+    Example:
+        >>> mcp_parts("mcp__semble__search")
+        ('semble', 'search')
+        >>> mcp_parts("Bash") is None
+        True
+    """
+    match name.split("__", 2):
+        case ["mcp", server, tool]:
+            return (server, tool)
+        case _:
+            return None
+
+
+def mcp_access(tool: str) -> Literal["read", "write"]:
+    """Classify an MCP tool segment as ``"read"`` or ``"write"`` by its verbs.
+
+    Returns ``"read"`` when ``tool`` starts with, or has an underscore-delimited
+    token equal to, a read verb (``get``, ``list``, ``search``, …); otherwise
+    ``"write"``. The token check catches namespaced names like ``ccx_read``.
+
+    Example:
+        >>> mcp_access("search")
+        'read'
+        >>> mcp_access("ccx_read")
+        'read'
+        >>> mcp_access("deploy")
+        'write'
+    """
+    lowered = tool.lower()
+    return (
+        "read" if lowered.startswith(tuple(READ_VERBS)) or any(t in READ_VERBS for t in lowered.split("_")) else "write"
     )
+
+
+def segment_prefix(segment: list[str]) -> str | None:
+    rest = list(
+        dropwhile(
+            lambda t: t in WRAPPER_COMMANDS or t in SHELL_UNWRAP,
+            dropwhile(lambda t: ASSIGNMENT_RE.match(t) is not None, segment),
+        )
+    )
+    if not rest or rest[0] in SHELL_STOP:
+        return None
+    argv0, *args = rest
+    if argv0 not in MULTI_LEVEL_TOOLS:
+        return argv0
+    return f"{argv0} {sub}" if (sub := next((a for a in args if not a.startswith("-")), None)) else argv0
+
+
+def split_on_operators(tokens: list[str]) -> Iterator[list[str]]:
+    segment: list[str] = []
+    for token in tokens:
+        if token in BASH_OPERATORS:
+            yield segment
+            segment = []
+        else:
+            segment.append(token)
+    yield segment
+
+
+def bash_prefixes(command: str) -> tuple[str, ...]:
+    """Command prefixes for each pipeline segment of a shell command.
+
+    Splits ``command`` at shell operators (``&&``, ``||``, ``;``, ``|``, ``&``),
+    then per segment drops leading ``VAR=val`` assignments and wrapper commands
+    (``sudo``, ``env``, ``timeout``, …) to reach the real command. A multi-level
+    tool (``git``, ``docker``, …) keeps its first non-flag argument as the
+    subcommand, so ``git commit -m x`` yields ``"git commit"``. A malformed
+    command (an unterminated quote) degrades to its first whitespace token.
+
+    Example:
+        >>> bash_prefixes("git add . && git commit -m 'x; y'")
+        ('git add', 'git commit')
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return (argv0,) if (argv0 := next(iter(OPERATOR_SPLIT_RE.split(command)[0].split()), None)) else ()
+    return tuple(prefix for segment in split_on_operators(tokens) if (prefix := segment_prefix(segment)) is not None)
 
 
 def typed_tool_call(name: str, raw: Mapping[str, Any]) -> ToolCall:

@@ -50,9 +50,12 @@ EXPORTS: dict[str, str] = {
             "ToolInputError",
             "WorkflowCall",
             "WriteCall",
+            "bash_prefixes",
             "expand_tool_names",
             "file_path_of",
             "hunks_of",
+            "mcp_access",
+            "mcp_parts",
             "parse_tool_call",
             "tool_name_matches",
         ),
@@ -114,6 +117,13 @@ EXPORTS: dict[str, str] = {
             "UserClassifier",
             "hunk_overlap",
             "native_user_classifier",
+            "result_index",
+        ),
+        "cc_transcript.toolcalls": (
+            "ToolFact",
+            "bash_prefix_counts",
+            "mcp_summary",
+            "tool_facts",
         ),
         "cc_transcript.evidence": (
             "CandidatePair",
@@ -221,6 +231,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.activity import (
         native_user_classifier as native_user_classifier,
+    )
+    from cc_transcript.activity import (
+        result_index as result_index,
     )
     from cc_transcript.backend import Backend as Backend
     from cc_transcript.backend import ParsedTranscript as ParsedTranscript
@@ -564,6 +577,18 @@ if TYPE_CHECKING:
         render_turn as render_turn,
     )
     from cc_transcript.store import FileStateStore as FileStateStore
+    from cc_transcript.toolcalls import (
+        ToolFact as ToolFact,
+    )
+    from cc_transcript.toolcalls import (
+        bash_prefix_counts as bash_prefix_counts,
+    )
+    from cc_transcript.toolcalls import (
+        mcp_summary as mcp_summary,
+    )
+    from cc_transcript.toolcalls import (
+        tool_facts as tool_facts,
+    )
     from cc_transcript.tools import (
         TOOL_ALIASES as TOOL_ALIASES,
     )
@@ -628,6 +653,9 @@ if TYPE_CHECKING:
         WriteCall as WriteCall,
     )
     from cc_transcript.tools import (
+        bash_prefixes as bash_prefixes,
+    )
+    from cc_transcript.tools import (
         expand_tool_names as expand_tool_names,
     )
     from cc_transcript.tools import (
@@ -635,6 +663,12 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         hunks_of as hunks_of,
+    )
+    from cc_transcript.tools import (
+        mcp_access as mcp_access,
+    )
+    from cc_transcript.tools import (
+        mcp_parts as mcp_parts,
     )
     from cc_transcript.tools import (
         parse_tool_call as parse_tool_call,

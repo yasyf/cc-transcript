@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from cc_transcript.cli import cli
+from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 from cc_transcript.ids import tool_digest
 from cc_transcript.parser import TranscriptParser
 from cc_transcript.render import human_size
@@ -169,6 +170,30 @@ def fixture_entries() -> list[dict[str, Any]]:
     ]
 
 
+def denial(said: str) -> str:
+    return f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}{said}\n{USER_SAID_TRAILER} will follow."
+
+
+def tool_use_entry(n: int, tool_use_id: str, name: str, **input: Any) -> dict[str, Any]:
+    return assistant_entry(
+        n, [{"type": "tool_use", "id": tool_use_id, "name": name, "input": input}], stop_reason="tool_use"
+    )
+
+
+def rich_entries() -> list[dict[str, Any]]:
+    return [
+        user_entry(0, "do stuff"),
+        tool_use_entry(1, "toolu_rm", "Bash", command="rm -rf /tmp/x"),
+        tool_result_entry(2, "toolu_rm", denial("do not delete that"), is_error=True),
+        tool_use_entry(3, "toolu_srch", "mcp__semble__search", query="x"),
+        tool_result_entry(4, "toolu_srch", "results", is_error=False),
+        tool_use_entry(5, "toolu_rel", "mcp__semble__find_related", ref="y"),
+        tool_result_entry(6, "toolu_rel", "related", is_error=False),
+        tool_use_entry(7, "toolu_dep", "mcp__railway__deploy"),
+        tool_result_entry(8, "toolu_dep", "deployed", is_error=False),
+    ]
+
+
 def write_transcript(path: Path, entries: list[dict[str, Any]], *, mtime: float | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\n".join(orjson.dumps(entry) for entry in entries) + b"\n")
@@ -206,6 +231,11 @@ def transcript(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def rich(tmp_path: Path) -> Path:
+    return write_transcript(tmp_path / "rich.jsonl", rich_entries())
+
+
+@pytest.fixture
 def root(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "projects"
     old = write_transcript(root / "-Users-x-proj-a" / "old.jsonl", [user_entry(0, "needle one")], mtime=1_000_000.0)
@@ -227,7 +257,19 @@ def session_root(tmp_path: Path) -> Path:
 def test_help_lists_all_commands(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert set(cli.commands) == {"list", "show", "grep", "stats", "slice", "digest", "corrections"}
+    assert set(cli.commands) == {
+        "list",
+        "show",
+        "grep",
+        "stats",
+        "slice",
+        "digest",
+        "corrections",
+        "tools",
+        "commands",
+        "permissions",
+        "mcp",
+    }
 
 
 def test_list_newest_first(runner: CliRunner, root: tuple[Path, Path, Path]) -> None:
@@ -721,3 +763,157 @@ def test_digest_invalid_stdin_usage_error(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["digest"], input="not json")
     assert result.exit_code == 2
     assert "invalid JSON on stdin" in result.stderr
+
+
+def test_tools_human_lists_one_line_per_call(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["tools", str(transcript)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "2026-01-02 03:04:07 sess-1 Read",
+        "2026-01-02 03:04:09 sess-1 Bash ls [err]",
+    ]
+
+
+def test_tools_human_mcp_and_denied_markers(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["tools", str(rich)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "2026-01-02 03:04:06 sess-1 Bash rm [denied]",
+        "2026-01-02 03:04:08 sess-1 semble/search",
+        "2026-01-02 03:04:10 sess-1 semble/find_related",
+        "2026-01-02 03:04:12 sess-1 railway/deploy",
+    ]
+
+
+def test_tools_json_row_shape(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["tools", str(transcript), "--json"])
+    assert result.exit_code == 0
+    rows = [orjson.loads(line) for line in result.output.splitlines()]
+    assert rows[0] == {
+        "ts": "2026-01-02T03:04:07+00:00",
+        "session_id": "sess-1",
+        "path": str(transcript),
+        "tool": "Read",
+        "bash_prefixes": [],
+        "command": None,
+        "mcp_server": None,
+        "mcp_tool": None,
+        "mcp_access": None,
+        "file_path": "/x",
+        "is_error": False,
+        "denied": False,
+        "user_said": None,
+        "duration_ms": 1000,
+    }
+    assert rows[1]["tool"] == "Bash"
+    assert rows[1]["bash_prefixes"] == ["ls"]
+    assert rows[1]["is_error"] is True
+
+
+def test_tools_tool_filter_keeps_only_matches(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["tools", str(rich), "--tool", "search", "--json"])
+    assert result.exit_code == 0
+    rows = [orjson.loads(line) for line in result.output.splitlines()]
+    assert [row["tool"] for row in rows] == ["mcp__semble__search"]
+
+
+def test_commands_human_counts(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["commands", str(rich)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == ["  1  rm"]
+
+
+def test_commands_json_rows_sorted_desc(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["commands", str(transcript), "--json"])
+    assert result.exit_code == 0
+    assert [orjson.loads(line) for line in result.output.splitlines()] == [{"prefix": "ls", "count": 1}]
+
+
+def test_permissions_human_line(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["permissions", str(rich)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == ["Bash rm -rf /tmp/x → do not delete that"]
+
+
+def test_permissions_json_row_shape(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["permissions", str(rich), "--json"])
+    assert result.exit_code == 0
+    assert [orjson.loads(line) for line in result.output.splitlines()] == [
+        {
+            "ts": "2026-01-02T03:04:06+00:00",
+            "session": "sess-1",
+            "path": str(rich),
+            "tool": "Bash",
+            "command": "rm -rf /tmp/x",
+            "file_path": None,
+            "user_said": "do not delete that",
+        }
+    ]
+
+
+def test_permissions_empty_without_denials(runner: CliRunner, transcript: Path) -> None:
+    result = runner.invoke(cli, ["permissions", str(transcript)])
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_permissions_excludes_plan_and_question_rejections(runner: CliRunner, tmp_path: Path) -> None:
+    path = write_transcript(
+        tmp_path / "plan.jsonl",
+        [
+            user_entry(0, "go"),
+            tool_use_entry(1, "toolu_plan", "ExitPlanMode", plan="do it"),
+            tool_result_entry(2, "toolu_plan", denial("not yet"), is_error=True),
+            tool_use_entry(3, "toolu_ask", "AskUserQuestion", questions=[]),
+            tool_result_entry(4, "toolu_ask", denial("skip"), is_error=True),
+            tool_use_entry(5, "toolu_rm", "Bash", command="rm -rf /x"),
+            tool_result_entry(6, "toolu_rm", denial("stop"), is_error=True),
+        ],
+    )
+    result = runner.invoke(cli, ["permissions", str(path), "--json"])
+    assert result.exit_code == 0
+    assert [orjson.loads(line)["tool"] for line in result.output.splitlines()] == ["Bash"]
+
+
+def test_mcp_human_table_ordered_by_total(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["mcp", str(rich)])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "semble   read 2 · write 0 · total 2  search 1 · find_related 1",
+        "railway  read 0 · write 1 · total 1  deploy 1",
+    ]
+
+
+def test_mcp_json_rows(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["mcp", str(rich), "--json"])
+    assert result.exit_code == 0
+    assert [orjson.loads(line) for line in result.output.splitlines()] == [
+        {"server": "semble", "read": 2, "write": 0, "total": 2, "tools": {"search": 1, "find_related": 1}},
+        {"server": "railway", "read": 0, "write": 1, "total": 1, "tools": {"deploy": 1}},
+    ]
+
+
+def test_grep_with_result_json_adds_results_sibling(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["grep", "rm|query", str(rich), "--json", "--with-result"])
+    assert result.exit_code == 0
+    by_i = {row["i"]: row for line in result.output.splitlines() if (row := orjson.loads(line))}
+    assert by_i[1]["results"] == {"toolu_rm": {"is_error": True, "denied": True, "duration_ms": 1000}}
+    assert by_i[3]["results"] == {"toolu_srch": {"is_error": False, "denied": False, "duration_ms": 1000}}
+
+
+def test_grep_without_with_result_omits_sibling(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["grep", "rm|query", str(rich), "--json"])
+    assert result.exit_code == 0
+    rows = [orjson.loads(line) for line in result.output.splitlines()]
+    assert rows and all("results" not in row for row in rows)
+
+
+def test_grep_with_result_human_appends_markers(runner: CliRunner, rich: Path) -> None:
+    result = runner.invoke(cli, ["grep", "rm|query", str(rich), "--with-result"])
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        f"== {rich}",
+        "    1 asst  03:04:06 [claude-opus-4-7] rm -rf /tmp/x [denied] (1000ms)",
+        "    3 asst  03:04:08 [claude-opus-4-7] mcp__semble__search(x) (1000ms)",
+        "1 files, 2 matches",
+    ]

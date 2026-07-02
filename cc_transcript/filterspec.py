@@ -390,6 +390,12 @@ def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock
     }
 
 
+def embedded_user_text(content: str) -> str | None:
+    if (start := content.find(USER_SAID_MARKER)) == -1:
+        return None
+    return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
+
+
 def normalize_bare(text: str, strip_trailing: str = TRAILING_PUNCT) -> str:
     return text.strip().rstrip(strip_trailing).strip().lower()
 
