@@ -554,6 +554,7 @@ def write_subagent_transcripts(main: Path) -> None:
         )
         + "\n"
     )
+    (directory / "._agent-t9.jsonl").write_bytes(b"\x00\x05\x16\x07 not a transcript")
 
 
 def test_subagent_recursion_gated_by_flag(tmp_path: Path) -> None:

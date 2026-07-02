@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import anyio
 import anyio.to_thread
 
+from cc_transcript.ids import ToolUseId
+
 if TYPE_CHECKING:
     from cc_transcript.ids import SessionId
 
@@ -143,3 +145,16 @@ def subagent_paths(path: Path) -> tuple[Path, ...]:
     if not (directory := path.parent / path.stem / "subagents").is_dir():
         return ()
     return tuple(sorted(entry for entry in directory.glob("*.jsonl") if not entry.name.startswith("._")))
+
+
+def subagent_transcripts(path: Path) -> dict[ToolUseId, Path]:
+    """Sidechain transcripts keyed by the tool-use id that spawned each one.
+
+    Parses the ``agent-<tool_use_id>`` stem of every file
+    :func:`subagent_paths` finds, inheriting its skip of macOS resource-fork
+    artifacts (``._*``).
+
+    Returns:
+        A mapping from tool-use id to sidechain file; ``{}`` when none exist.
+    """
+    return {ToolUseId(entry.stem.removeprefix("agent-")): entry for entry in subagent_paths(path)}

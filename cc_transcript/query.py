@@ -18,7 +18,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
 from cc_transcript.activity import SessionActivity, Turn, native_user_classifier
-from cc_transcript.discovery import TranscriptExpiredError, find_transcript, subagent_paths
+from cc_transcript.discovery import TranscriptExpiredError, find_transcript, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
@@ -294,7 +294,7 @@ class Session:
         """The window's Task dispatches whose sidechain transcripts exist on disk."""
         if self.path is None:
             return SubagentIndex(())
-        base = self.path.parent / self.path.stem / "subagents"
+        transcripts = subagent_transcripts(self.path)
         return SubagentIndex(
             tuple(
                 SubagentSession(
@@ -307,7 +307,7 @@ class Session:
                 if isinstance(call := use.call, TaskCall)
                 and call.agent_type
                 and (tool_use_id := use.ref.tool_use_id) is not None
-                and (agent_path := base / f"agent-{tool_use_id}.jsonl").exists()
+                and (agent_path := transcripts.get(tool_use_id)) is not None
             )
         )
 
