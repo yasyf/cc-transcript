@@ -99,8 +99,9 @@ def git_corrections(repo: Path, hunk: Hunk, *, path: str, since: datetime, max_c
     Pickaxes (``git log -S``) for the longest non-empty line of ``hunk.new``
     in ``path`` since ``since``, then parses each hit's ``git show`` unified
     diff into hunks. Read-only by construction — ``rev-parse``, ``log``, and
-    ``show`` only — and fully guarded: any failure, including git being
-    absent, a nonzero exit, or a timeout, yields ``()``.
+    ``show`` only. Discovery-level failures — ``rev-parse`` or ``log``
+    failing, git being absent, or a timeout — yield ``()``; a failed ``show``
+    skips just that commit and keeps the rest.
     """
     line = max((stripped for raw in hunk.new.splitlines() if (stripped := raw.strip())), key=len, default="")
     if not line:
@@ -123,7 +124,7 @@ def git_corrections(repo: Path, hunk: Hunk, *, path: str, since: datetime, max_c
     for row in log.splitlines():
         commit, _, committed = row.partition(" ")
         if (diff := run_git(repo, "show", "--format=", "--unified=0", commit, "--", path)) is None:
-            return ()
+            continue
         if hunks := parse_show_hunks(diff):
             fixes.append(
                 GitFix(

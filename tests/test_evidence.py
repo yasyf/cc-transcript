@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from cc_transcript import evidence
 from cc_transcript.activity import Edit, SessionActivity
 from cc_transcript.corrections import CorrectionLog
 from cc_transcript.evidence import (
@@ -213,6 +214,32 @@ def test_git_corrections_yields_empty_on_misses_and_failures(
 ) -> None:
     _, source = fixed_repo(tmp_path)
     assert git_corrections(repo_of(tmp_path), hunk, path=str(source), since=since) == ()
+
+
+@needs_git
+def test_git_corrections_skips_the_commit_whose_show_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, source = fixed_repo(tmp_path)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    real_run_git = evidence.run_git
+    failed_shows: list[str] = []
+
+    def failing_first_show(target: Path, *args: str) -> str | None:
+        if args[0] == "show" and not failed_shows:
+            failed_shows.append(args[3])
+            return None
+        return real_run_git(target, *args)
+
+    monkeypatch.setattr(evidence, "run_git", failing_first_show)
+    (fix,) = git_corrections(
+        repo, Hunk("", f"    {INCORRECT_LINE}"), path=str(source), since=datetime(2020, 1, 1, tzinfo=UTC)
+    )
+    assert failed_shows == [head]
+    assert fix.commit != head and len(fix.commit) == 40
+    assert fix.file_path == str(source)
+    assert fix.hunks == (Hunk("", f"def main():\n    {INCORRECT_LINE}\n    return total"),)
+    assert fix.committed_at.tzinfo is not None
 
 
 @needs_git
