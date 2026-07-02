@@ -298,6 +298,11 @@ def result_index(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, tuple[Too
     }
 
 
+def event_stamps(events: Sequence[TranscriptEvent]) -> tuple[datetime | None, datetime | None]:
+    stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
+    return (stamps[0], stamps[-1]) if stamps else (None, None)
+
+
 def lift_turn(
     session_id: SessionId,
     index: int,
@@ -305,12 +310,12 @@ def lift_turn(
     events: tuple[TranscriptEvent, ...],
     results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]],
 ) -> Turn:
-    stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
+    started_at, ended_at = event_stamps(events)
     return Turn(
         index=index,
         prompt=prompt,
-        started_at=stamps[0] if stamps else None,
-        ended_at=stamps[-1] if stamps else None,
+        started_at=started_at,
+        ended_at=ended_at,
         events=events,
         tool_uses=tuple(
             ToolUse(
