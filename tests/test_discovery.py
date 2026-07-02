@@ -10,8 +10,9 @@ from cc_transcript.discovery import (
     TranscriptExpiredError,
     find_transcript,
     find_transcript_sync,
+    subagent_transcripts,
 )
-from cc_transcript.ids import SessionId
+from cc_transcript.ids import SessionId, ToolUseId
 
 SESSION = SessionId("0c8e6f54-aaaa-bbbb-cccc-d1d2d3d4d5d6")
 
@@ -87,3 +88,15 @@ def test_transcript_expired_error_carries_session_id() -> None:
     assert error.session_id == SESSION
     assert isinstance(error, RuntimeError)
     assert str(SESSION) in str(error)
+
+
+def test_subagent_transcripts_keys_by_tool_use_id_and_skips_resource_forks(tmp_path: Path) -> None:
+    main = write(tmp_path / f"{SESSION}.jsonl", 100.0)
+    t9 = write(tmp_path / SESSION / "subagents" / "agent-t9.jsonl", 200.0)
+    t10 = write(tmp_path / SESSION / "subagents" / "agent-t10.jsonl", 200.0)
+    write(tmp_path / SESSION / "subagents" / "._agent-t9.jsonl", 200.0)
+    assert subagent_transcripts(main) == {ToolUseId("t9"): t9, ToolUseId("t10"): t10}
+
+
+def test_subagent_transcripts_empty_without_directory(tmp_path: Path) -> None:
+    assert subagent_transcripts(write(tmp_path / f"{SESSION}.jsonl", 100.0)) == {}
