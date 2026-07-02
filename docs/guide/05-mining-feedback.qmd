@@ -56,15 +56,21 @@ correction rides inside the result block — the user event's `text` is empty �
 a pass over user prose would never see it. That is why mining works on blocks,
 not text.
 
-## Run a detector
+## Run the detectors
 
-`iter_tool_denial_signals` pairs each denial result with the `tool_use` it
-rejects, pulls the embedded "user said" text, and yields one signal per denial:
+Mining is spec-driven: a `MiningSpec` carries the whole policy as data — which
+detectors run, the confidence stages each folds (the defaults wire in
+`CALIBRATED_SPEC`, and `USER_MESSAGE_SPEC` for user turns), and the
+review-format policy. `mine` interprets the spec and dispatches every enabled
+detector. Here the denial detector fires: it pairs each denial result with the
+`tool_use` it rejects, pulls the embedded "user said" text, and yields one
+signal per denial:
 
 ```{python}
-from cc_transcript.mining import iter_tool_denial_signals
+from cc_transcript.mining import MiningSpec, mine
 
-[signal] = iter_tool_denial_signals(events)
+spec = MiningSpec()
+[signal] = mine(events, spec)
 (signal.kind, signal.detector, signal.text, signal.trigger_index, signal.evidence)
 # -> ('interrupt_rejection', 'denial', 'use uv, not pip', 0, {'tool': 'Bash', 'file_path': None})
 ```
@@ -73,21 +79,23 @@ from cc_transcript.mining import iter_tool_denial_signals
 here); `detector` names the exact shape that fired. `text` is the user's verbatim
 correction, `trigger_index` points at the assistant turn it answers, and
 `evidence` preserves detector-specific metadata (the denied tool, the file it
-targeted). The other detectors follow the same contract:
+targeted). The individual detectors live in `cc_transcript.mining.signals`, each
+taking the events plus the same spec and following the same contract:
 
 ```python
-iter_tool_denial_signals(events)        # a denied tool call, embedded reason when present
-iter_plan_rejection_signals(events)     # an ExitPlanMode plan rejected with embedded text
-iter_plan_reentry_signals(events)       # plan mode re-entered after an edit cycle
-iter_interrupt_marker_signals(events)   # [Request interrupted by user] plus the correction after it
-iter_user_message_signals(events)       # every substantive user turn, scored by length and proximity
-iter_review_comment_signals(events, formats)  # inline review comments, via app-injected ReviewFormats
+iter_tool_denial_signals(events, spec)        # a denied tool call, embedded reason when present
+iter_plan_rejection_signals(events, spec)     # an ExitPlanMode plan rejected with embedded text
+iter_plan_reentry_signals(events, spec)       # plan mode re-entered after an edit cycle
+iter_interrupt_marker_signals(events, spec)   # [Request interrupted by user] plus the correction after it
+iter_user_message_signals(events, spec)       # every substantive user turn, scored by length and proximity
+iter_review_comment_signals(events, spec)     # inline review comments, via the spec's review formats
 ```
 
-`DEFAULT_DETECTORS` bundles the first five — every detector that needs no
-configuration. Review comments are the exception: what a review message looks
-like is app policy, so you inject a `ReviewFormat` sequence (a name, a detection
-pattern, and an extractor) and the detector yields one signal per parsed comment.
+The default `MiningSpec` enables all six, so `mine(events, MiningSpec())` runs
+the standard bundle. Review comments stay silent until configured: what a review
+message looks like is app policy, so you fill the spec's `ReviewSpec` with
+formats — a declarative `RegexReviewFormat`, or a `CallableReviewFormat` with a
+Python extractor — and the detector yields one signal per parsed comment.
 
 ## Confidence: anchors and reason codes
 
@@ -110,10 +118,12 @@ from cc_transcript.mining import NOISE_FLOOR
 ```
 
 Contrast a denial with no embedded reason, where the only follow-up is a
-`<system-reminder>` injection — the detector still reports the fact, but scores
-it as noise:
+`<system-reminder>` injection — the denial detector, run on its own this time,
+still reports the fact, but scores it as noise:
 
 ```{python}
+from cc_transcript.mining.signals import iter_tool_denial_signals
+
 followup_events = parse_events_from_bytes(b"\n".join([
     line(envelope("assistant", "a2", 20, {
         "role": "assistant", "model": "claude-opus-4-7", "stop_reason": "tool_use",
@@ -127,7 +137,7 @@ followup_events = parse_events_from_bytes(b"\n".join([
         "role": "user", "content": "<system-reminder>stop hook output</system-reminder>"})),
 ]))
 
-[structural] = iter_tool_denial_signals(followup_events)
+[structural] = iter_tool_denial_signals(followup_events, spec)
 (structural.signal, structural.signal.confidence >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.0, reasons=('structural_only',), durable=True), False)
 ```
@@ -248,7 +258,8 @@ via `CandidateClause(predicate, negate=True)`.
 
 Detectors are recall-heavy by design — they report facts and let confidence
 de-noise. For precision, apps run an LLM judge over stored candidates.
-`run_verdicts` is the fan-out: it builds one prompt per row, runs the judge
+`run_verdicts` is the fan-out: it awaits one prompt per row (the builder is
+async, so a prompt can hydrate its context window first), runs the judge
 concurrently, and persists each verdict as it lands, so a failed call is
 retried on the next pass. The judge is any async callable returning an object
 with `category`, `summary`, `confidence`, `rationale`, and `accepted` (the
@@ -269,7 +280,7 @@ class Verdict:
     accepted: bool
 
 
-def prompt_for(row):
+async def prompt_for(row):
     return f"Is this developer pushback worth learning from?\n\n{row['text']}"
 
 async def stub_judge(prompt):
