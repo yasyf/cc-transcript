@@ -27,7 +27,7 @@ from cc_transcript.builders import (
 )
 from cc_transcript.corrections_cli import corrections
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery, find_transcript_sync
-from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, keep
+from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, keep, tool_names
 from cc_transcript.ids import SessionId, tool_digest
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
@@ -49,7 +49,6 @@ from cc_transcript.render import (
     render_stats,
     render_tool_call,
     stats_dict,
-    tool_names,
     transcript_header,
 )
 from cc_transcript.toolcalls import bash_prefix_counts, is_denial, mcp_summary, tool_facts

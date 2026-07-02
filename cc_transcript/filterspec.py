@@ -390,6 +390,10 @@ def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock
     }
 
 
+def tool_names(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, str]:
+    return {tid: block.name for tid, block in tool_uses(events).items()}
+
+
 def embedded_user_text(content: str) -> str | None:
     if (start := content.find(USER_SAID_MARKER)) == -1:
         return None
