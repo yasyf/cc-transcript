@@ -52,6 +52,8 @@ class ToolUse:
         ref: The resolvable reference to the tool-use block.
         call: The typed tool call, constructed once at lift time.
         result: The matching result block, or None when none ever arrived.
+        result_ts: The timestamp of the user entry carrying the result, or
+            None when no result ever arrived.
         turn_index: The index of the turn the call fired in.
         ts: The timestamp of the assistant entry carrying the call.
     """
@@ -59,8 +61,14 @@ class ToolUse:
     ref: EventRef
     call: ToolCall
     result: ToolResultBlock | None
+    result_ts: datetime | None
     turn_index: int
     ts: datetime
+
+    @property
+    def duration_ms(self) -> int | None:
+        """Milliseconds from the call to its result, or None without a result."""
+        return None if self.result_ts is None else round((self.result_ts - self.ts).total_seconds() * 1000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,13 +165,7 @@ class SessionActivity:
                     segments[-1][1].append(event)
                 case _:
                     segments.append(("", [event]))
-        results = {
-            block.tool_use_id: block
-            for event in events
-            if isinstance(event, UserEvent)
-            for block in event.blocks
-            if isinstance(block, ToolResultBlock)
-        }
+        results = result_index(events)
         return cls(
             session_id=session_id,
             turns=tuple(
@@ -282,12 +284,33 @@ def meta_of(event: TranscriptEvent) -> EntryMeta | None:
             return None
 
 
+def result_index(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, tuple[ToolResultBlock, datetime | None]]:
+    """Indexes tool results by the id of the tool use they answer.
+
+    Pairs each :class:`~cc_transcript.models.ToolResultBlock` with the
+    timestamp of the ``UserEvent`` carrying it, keyed by the block's
+    ``tool_use_id`` — the single source for joining a call to its result and
+    deriving the call's duration.
+
+    Returns:
+        A mapping from tool-use id to a ``(result block, result timestamp)``
+        pair.
+    """
+    return {
+        block.tool_use_id: (block, event.meta.timestamp)
+        for event in events
+        if isinstance(event, UserEvent)
+        for block in event.blocks
+        if isinstance(block, ToolResultBlock)
+    }
+
+
 def lift_turn(
     session_id: SessionId,
     index: int,
     prompt: str,
     events: tuple[TranscriptEvent, ...],
-    results: Mapping[ToolUseId, ToolResultBlock],
+    results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]],
 ) -> Turn:
     stamps = [meta.timestamp for event in events if (meta := meta_of(event)) is not None]
     return Turn(
@@ -300,7 +323,8 @@ def lift_turn(
             ToolUse(
                 ref=EventRef(session_id, event.meta.uuid, block.id),
                 call=parse_tool_call(block.name, block.input, on_error="other"),
-                result=results.get(block.id),
+                result=pair[0] if (pair := results.get(block.id)) is not None else None,
+                result_ts=pair[1] if pair is not None else None,
                 turn_index=index,
                 ts=event.meta.timestamp,
             )

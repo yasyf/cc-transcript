@@ -1,0 +1,175 @@
+"""The single tool-call analytics substrate.
+
+A pure projection of a parsed transcript's tool activity: :func:`tool_facts`
+lifts every :class:`~cc_transcript.activity.SessionActivity` tool use into a
+flat :class:`ToolFact` — Bash prefixes, MCP server/tool/access, file path,
+error and denial state, and duration — and the aggregators
+(:func:`bash_prefix_counts`, :func:`mcp_summary`) roll those facts up. Every
+function is pure over :attr:`~cc_transcript.backend.ParsedTranscript.events`,
+so the CLI's stats surface and any downstream analytics share one substrate.
+"""
+
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
+from cc_transcript.activity import SessionActivity
+from cc_transcript.filterspec import DENIAL_PREFIX, embedded_user_text, event_meta
+from cc_transcript.tools import BashCall, bash_prefixes, file_path_of, mcp_access, mcp_parts
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+    from datetime import datetime
+    from pathlib import Path
+
+    from cc_transcript.activity import ToolUse
+    from cc_transcript.backend import ParsedTranscript
+    from cc_transcript.ids import SessionId
+    from cc_transcript.models import ToolResultBlock
+
+
+def is_denial(block: ToolResultBlock) -> bool:
+    return block.is_error and block.content.startswith(DENIAL_PREFIX)
+
+
+def denial_fields(result: ToolResultBlock | None) -> tuple[bool, str | None]:
+    if result is None or not is_denial(result):
+        return False, None
+    return True, embedded_user_text(result.content)
+
+
+def mcp_split(name: str) -> tuple[str | None, str | None, Literal["read", "write"] | None]:
+    match mcp_parts(name):
+        case (server, tool):
+            return server, tool, mcp_access(tool)
+        case None:
+            return None, None, None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFact:
+    """One tool call flattened for analytics, lifted from a parsed transcript.
+
+    Attributes:
+        ts: The timestamp of the assistant entry that made the call, or None.
+        session_id: The Claude session the call belongs to.
+        path: The transcript file the call was lifted from.
+        tool: The tool name exactly as invoked.
+        bash_prefixes: The command prefixes of each Bash pipeline segment; ``()``
+            for non-Bash calls.
+        command: The shell command for a Bash call, else None.
+        mcp_server: The MCP server segment for an ``mcp__server__tool`` call, else None.
+        mcp_tool: The MCP tool segment for an ``mcp__server__tool`` call, else None.
+        mcp_access: Whether the MCP tool reads or writes, else None.
+        file_path: The file the call targets, when it targets one.
+        is_error: Whether the call's result reported a failure.
+        denied: Whether the result is a user rejection of the tool use.
+        user_said: The user's verbatim instruction embedded in a denial, else None.
+        duration_ms: Milliseconds from the call to its result, or None without one.
+    """
+
+    ts: datetime | None
+    session_id: SessionId
+    path: Path
+    tool: str
+    bash_prefixes: tuple[str, ...]
+    command: str | None
+    mcp_server: str | None
+    mcp_tool: str | None
+    mcp_access: Literal["read", "write"] | None
+    file_path: str | None
+    is_error: bool
+    denied: bool
+    user_said: str | None
+    duration_ms: int | None
+
+
+def fact_of(use: ToolUse, session_id: SessionId, path: Path) -> ToolFact:
+    call = use.call
+    command = call.command if isinstance(call, BashCall) else None
+    server, tool, access = mcp_split(call.name)
+    denied, user_said = denial_fields(use.result)
+    return ToolFact(
+        ts=use.ts,
+        session_id=session_id,
+        path=path,
+        tool=call.name,
+        bash_prefixes=bash_prefixes(command) if command is not None else (),
+        command=command,
+        mcp_server=server,
+        mcp_tool=tool,
+        mcp_access=access,
+        file_path=file_path_of(call),
+        is_error=use.result.is_error if use.result is not None else False,
+        denied=denied,
+        user_said=user_said,
+        duration_ms=use.duration_ms,
+    )
+
+
+def tool_facts(transcripts: Iterable[ParsedTranscript]) -> Iterator[ToolFact]:
+    """Yields one :class:`ToolFact` per tool call across every transcript.
+
+    Each transcript is lifted into a :class:`~cc_transcript.activity.SessionActivity`
+    keyed by the session of its first meta-bearing event; transcripts carrying no
+    such event are skipped. Calls are yielded in turn order, then call order.
+
+    Args:
+        transcripts: The parsed transcripts to project.
+
+    Yields:
+        A flattened fact per tool use, in file order.
+    """
+    for parsed in transcripts:
+        session_id = next((meta.session_id for event in parsed.events if (meta := event_meta(event)) is not None), None)
+        if session_id is None:
+            continue
+        activity = SessionActivity.from_events(session_id, parsed.events)
+        yield from (fact_of(use, session_id, parsed.path) for turn in activity.turns for use in turn.tool_uses)
+
+
+def bash_prefix_counts(facts: Iterable[ToolFact]) -> dict[str, int]:
+    """Counts every Bash command prefix across ``facts``, most frequent first.
+
+    Flattens each fact's :attr:`ToolFact.bash_prefixes`, so a piped command
+    contributes one count per segment.
+
+    Args:
+        facts: The tool facts to tally.
+
+    Returns:
+        Prefix-to-count pairs ordered by descending frequency.
+    """
+    return dict(Counter(prefix for fact in facts for prefix in fact.bash_prefixes).most_common())
+
+
+def mcp_summary(facts: Iterable[ToolFact]) -> dict[str, dict[str, int | dict[str, int]]]:
+    """Summarizes MCP usage per server across ``facts``.
+
+    Groups the facts whose :attr:`ToolFact.mcp_server` is set, tallying read and
+    write access, the total call count, and a per-tool frequency map. Servers are
+    ordered by descending total then name; each ``tools`` map is ordered by
+    descending frequency.
+
+    Args:
+        facts: The tool facts to summarize.
+
+    Returns:
+        A mapping from server to ``{"read", "write", "total", "tools"}``.
+    """
+    grouped: defaultdict[str, list[tuple[str, str]]] = defaultdict(list)
+    for fact in facts:
+        match fact.mcp_server, fact.mcp_tool, fact.mcp_access:
+            case (str() as server, str() as tool, str() as access):
+                grouped[server].append((tool, access))
+    return {
+        server: {
+            "read": sum(access == "read" for _, access in calls),
+            "write": sum(access == "write" for _, access in calls),
+            "total": len(calls),
+            "tools": dict(Counter(tool for tool, _ in calls).most_common()),
+        }
+        for server, calls in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+    }

@@ -27,8 +27,7 @@ from cc_transcript.filterspec import (
     DENIAL_PREFIX,
     INTERRUPT_MARKER_RE,
     STRUCTURAL_NOISE_RE,
-    USER_SAID_MARKER,
-    USER_SAID_TRAILER,
+    embedded_user_text,
     event_kind,
     tool_uses,
 )
@@ -114,12 +113,6 @@ def denial_results(event: UserEvent) -> Iterator[ToolResultBlock]:
         if block.is_error
         if block.content.startswith(DENIAL_PREFIX)
     )
-
-
-def embedded_user_text(content: str) -> str | None:
-    if (start := content.find(USER_SAID_MARKER)) == -1:
-        return None
-    return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
 
 
 def last_edit_index(events: Sequence[TranscriptEvent], index: int, spec: MiningSpec) -> int | None:

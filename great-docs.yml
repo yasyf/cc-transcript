@@ -135,9 +135,19 @@ reference:
       - Hunk
       - hunks_of
       - file_path_of
+      - bash_prefixes
+      - mcp_parts
+      - mcp_access
       - TOOL_ALIASES
       - expand_tool_names
       - tool_name_matches
+  - title: Tool facts
+    desc: Flat per-tool-use facts lifted from session activity, with Bash-prefix and MCP roll-ups.
+    contents:
+      - ToolFact
+      - tool_facts
+      - bash_prefix_counts
+      - mcp_summary
   - title: Session activity
     desc: The spine — transcripts lifted into turns, tool uses, and first-class edits.
     contents:
@@ -148,6 +158,7 @@ reference:
       - UserClassifier
       - native_user_classifier
       - hunk_overlap
+      - result_index
   - title: Messages
     desc: The distilled message projection over events.
     contents:
@@ -285,13 +296,11 @@ reference:
       - mining.CandidateSignal
       - mining.Confidence
       - mining.NOISE_FLOOR
-      - mining.DEFAULT_DETECTORS
-      - mining.iter_user_message_signals
-      - mining.iter_tool_denial_signals
-      - mining.iter_plan_rejection_signals
-      - mining.iter_plan_reentry_signals
-      - mining.iter_interrupt_marker_signals
-      - mining.iter_review_comment_signals
+      - mining.MiningSpec
+      - mining.mine
+      - mining.mine_signals
+      - mining.mining_spec_to_json
+      - mining.mining_spec_is_portable
       - mining.DENIAL_PREFIX
       - mining.USER_SAID_MARKER
       - mining.USER_SAID_TRAILER
@@ -306,7 +315,7 @@ reference:
       - mining.apply_candidate_filter
       - mining.ReviewComment
       - mining.ReviewFormat
-      - mining.extract_all
+      - mining.extract_structured
       - mining.FeedbackStore
       - mining.Stats
   - title: Judge
@@ -323,5 +332,4 @@ reference:
       - judge.golden_result
       - judge.flip_pairs
       - judge.structured_judge
-      - judge.run_structured
       - judge.resolved_model

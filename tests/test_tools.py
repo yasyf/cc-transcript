@@ -16,9 +16,12 @@ from cc_transcript.tools import (
     ToolInputError,
     WorkflowCall,
     WriteCall,
+    bash_prefixes,
     expand_tool_names,
     file_path_of,
     hunks_of,
+    mcp_access,
+    mcp_parts,
     parse_tool_call,
     tool_name_matches,
 )
@@ -134,10 +137,95 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
         ("Execute", "Bash", True),
         ("Bash", "Execute", True),
         ("mcp__github__Grep", "Grep", True),
+        ("mcp__semble__search", "search", True),
         ("mcp__github__Grep", "Bash", False),
+        ("mcp__server", "server", False),
         ("Read", "Bash|Grep", False),
     ],
-    ids=["alias-forward", "alias-reverse", "mcp-suffix", "mcp-miss", "plain-miss"],
+    ids=[
+        "alias-forward",
+        "alias-reverse",
+        "mcp-suffix",
+        "mcp-suffix-server-tool",
+        "mcp-miss",
+        "mcp-too-few-parts",
+        "plain-miss",
+    ],
 )
 def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
     assert tool_name_matches(actual, spec) is expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("VAR=1 sudo docker compose up -d", ("docker compose",)),
+        ("git add . && git commit -m 'x; y'", ("git add", "git commit")),
+        ("git --version", ("git",)),
+        ("cat a && grep b", ("cat", "grep")),
+        ("ls -la", ("ls",)),
+        ('echo "unterminated', ("echo",)),
+        ("for f in *.py; do python $f; done", ("python",)),
+        ("while true; do sleep 1; done", ("sleep",)),
+        ("if grep -q x f; then echo y; else echo z; fi", ("echo", "echo")),
+        ("", ()),
+    ],
+    ids=[
+        "assignment-wrapper-multilevel",
+        "quoted-operator-not-split",
+        "multilevel-only-flags",
+        "two-plain-segments",
+        "single-plain-command",
+        "unterminated-quote-fallback",
+        "loop-do-unwraps-body",
+        "while-do-unwraps-body",
+        "if-then-else-unwrap",
+        "empty",
+    ],
+)
+def test_bash_prefixes(command: str, expected: tuple[str, ...]) -> None:
+    assert bash_prefixes(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("mcp__semble__search", ("semble", "search")),
+        ("mcp__railway__deploy", ("railway", "deploy")),
+        ("mcp__github__Grep", ("github", "Grep")),
+        ("Bash", None),
+        ("mcp__server", None),
+    ],
+    ids=["semble-search", "railway-deploy", "github-grep", "non-mcp", "too-few-parts"],
+)
+def test_mcp_parts(name: str, expected: tuple[str, str] | None) -> None:
+    assert mcp_parts(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool", "expected"),
+    [
+        ("search", "read"),
+        ("deploy", "write"),
+        ("get_balance", "read"),
+        ("list_calls", "read"),
+        ("create_persona", "write"),
+        ("Search", "read"),
+        ("ccx_read", "read"),
+        ("ccx_find", "read"),
+        ("ccx_grep", "write"),
+    ],
+    ids=[
+        "search-read",
+        "deploy-write",
+        "get-prefix-read",
+        "list-prefix-read",
+        "create-write",
+        "case-insensitive",
+        "namespaced-read-token",
+        "namespaced-find-token",
+        "namespaced-non-verb-write",
+    ],
+)
+def test_mcp_access(tool: str, expected: str) -> None:
+    assert mcp_access(tool) == expected
