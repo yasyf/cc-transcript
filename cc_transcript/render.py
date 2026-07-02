@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import orjson
 
-from cc_transcript.filterspec import event_kind, event_meta, event_text, tool_uses
+from cc_transcript.filterspec import event_kind, event_meta, event_text
 from cc_transcript.models import (
     AssistantEvent,
     FallbackBlock,
@@ -167,10 +167,6 @@ def display_path(path: Path) -> str:
 
 def transcript_header(path: Path) -> str:
     return f"== {display_path(path)}"
-
-
-def tool_names(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, str]:
-    return {tid: block.name for tid, block in tool_uses(events).items()}
 
 
 def compact_line(

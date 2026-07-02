@@ -29,6 +29,7 @@ from cc_transcript.filterspec import (
     STRUCTURAL_NOISE_RE,
     embedded_user_text,
     event_kind,
+    tool_names,
     tool_uses,
 )
 from cc_transcript.mining.confidence import CandidateSignal, noise, weak
@@ -389,7 +390,7 @@ def review_comments(review: ReviewSpec, text: str) -> Iterator[tuple[str, Review
 
 
 def iter_review_comment_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
-    names = {tid: block.name for tid, block in tool_uses(events).items()}
+    names = tool_names(events)
     return (
         review_comment_signal(event, index, scan, fmt_name, comment, spec)
         for index, event in enumerate(events)

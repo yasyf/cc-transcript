@@ -9,6 +9,7 @@ import pytest
 
 from cc_transcript.activity import SessionActivity
 from cc_transcript.backend import ParsedTranscript
+from cc_transcript.filterspec import tool_names
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,
@@ -41,7 +42,6 @@ from cc_transcript.render import (
     render_stats,
     render_tool_call,
     render_turn,
-    tool_names,
     truncate,
 )
 from cc_transcript.tools import parse_tool_call
