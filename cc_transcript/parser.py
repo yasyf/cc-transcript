@@ -185,9 +185,6 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
             return OtherEvent(type=data["type"], raw=data)
 
 
-build_event = parse_event
-
-
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
     return [event for line in raw.split(b"\n") if line.strip() if (event := decode_line(line)) is not None]
 

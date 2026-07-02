@@ -30,7 +30,7 @@ from cc_transcript.models import (
     Usage,
     UserEvent,
 )
-from cc_transcript.parser import build_event, parse_events_async, parse_events_from_bytes, parse_print_result
+from cc_transcript.parser import parse_events_async, parse_events_from_bytes, parse_print_result
 
 TESTDATA = Path(__file__).parent / "testdata"
 
@@ -218,7 +218,7 @@ def queue_operation_entry() -> dict[str, Any]:
 
 
 def test_user_str_content() -> None:
-    event = build_event(user_str())
+    event = parse_event(user_str())
     assert isinstance(event, UserEvent)
     assert event.text == "  fix the bug  "
     assert event.blocks == ()
@@ -234,7 +234,7 @@ def test_user_str_content() -> None:
 
 
 def test_user_block_content() -> None:
-    event = build_event(user_blocks())
+    event = parse_event(user_blocks())
     assert isinstance(event, UserEvent)
     assert event.text == "here is context"
     assert event.blocks == (
@@ -244,7 +244,7 @@ def test_user_block_content() -> None:
 
 
 def test_tool_result_list_content_flattens_and_errors() -> None:
-    event = build_event(user_tool_result_list_content())
+    event = parse_event(user_tool_result_list_content())
     assert isinstance(event, UserEvent)
     assert event.text == ""
     assert event.blocks == (ToolResultBlock(tool_use_id=ToolUseId("toolu_2"), content="line aline b", is_error=True),)
@@ -265,27 +265,23 @@ def test_tool_result_is_async_defaults_false() -> None:
     assert block.is_async is False
 
 
-def test_parse_event_is_public_alias_of_build_event() -> None:
-    assert parse_event is build_event
-
-
 def test_user_sidechain_meta_flags() -> None:
-    event = build_event(user_sidechain())
+    event = parse_event(user_sidechain())
     assert isinstance(event, UserEvent)
     assert event.meta.is_sidechain is True
-    meta_event = build_event(user_meta())
+    meta_event = parse_event(user_meta())
     assert isinstance(meta_event, UserEvent)
     assert meta_event.meta.is_meta is True
 
 
 def test_user_interrupt() -> None:
-    event = build_event(user_interrupt())
+    event = parse_event(user_interrupt())
     assert isinstance(event, UserEvent)
     assert event.interrupted is True
 
 
 def test_assistant_text() -> None:
-    event = build_event(assistant_text())
+    event = parse_event(assistant_text())
     assert isinstance(event, AssistantEvent)
     assert event.model == "claude-opus-4-7"
     assert event.text == "done"
@@ -294,7 +290,7 @@ def test_assistant_text() -> None:
 
 
 def test_assistant_usage_parses_cache_creation_split() -> None:
-    event = build_event(assistant_with_usage())
+    event = parse_event(assistant_with_usage())
     assert isinstance(event, AssistantEvent)
     assert event.usage == Usage(
         input_tokens=10,
@@ -309,14 +305,14 @@ def test_assistant_usage_parses_cache_creation_split() -> None:
 
 
 def test_assistant_without_usage_is_none() -> None:
-    event = build_event(assistant_text())
+    event = parse_event(assistant_text())
     assert isinstance(event, AssistantEvent)
     assert "usage" not in assistant_text()["message"]
     assert event.usage is None
 
 
 def test_assistant_thinking_and_tool_use() -> None:
-    event = build_event(assistant_thinking_tool())
+    event = parse_event(assistant_thinking_tool())
     assert isinstance(event, AssistantEvent)
     assert event.text == ""
     assert event.stop_reason == "tool_use"
@@ -327,39 +323,39 @@ def test_assistant_thinking_and_tool_use() -> None:
 
 
 def test_assistant_synthetic_is_not_filtered() -> None:
-    event = build_event(assistant_synthetic())
+    event = parse_event(assistant_synthetic())
     assert isinstance(event, AssistantEvent)
     assert event.model == "<synthetic>"
     assert event.stop_reason is None
 
 
 def test_assistant_fallback_block() -> None:
-    event = build_event(assistant_fallback())
+    event = parse_event(assistant_fallback())
     assert isinstance(event, AssistantEvent)
     assert event.text == ""
     assert event.blocks == (FallbackBlock(from_model="claude-fable-5", to_model="claude-opus-4-8"),)
 
 
 def test_assistant_unknown_block_degrades_to_other() -> None:
-    event = build_event(assistant_unknown_block())
+    event = parse_event(assistant_unknown_block())
     assert isinstance(event, AssistantEvent)
     assert event.blocks == (OtherBlock(type="future_block", raw={"type": "future_block", "payload": {"n": 1}}),)
 
 
 def test_system_entry() -> None:
-    event = build_event(system_entry())
+    event = parse_event(system_entry())
     assert isinstance(event, SystemEvent)
     assert event.subtype == "stop_hook_summary"
     assert event.content == "hook ran"
 
 
 def test_mode_entry() -> None:
-    event = build_event(mode_entry())
+    event = parse_event(mode_entry())
     assert event == ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="normal")
 
 
 def test_permission_mode_entry() -> None:
-    event = build_event(permission_mode_entry())
+    event = parse_event(permission_mode_entry())
     assert event == ModeEvent(session_id=SessionId("sess-1"), channel="permission-mode", value="bypassPermissions")
 
 
@@ -372,7 +368,7 @@ def test_permission_mode_entry() -> None:
     ],
 )
 def test_other_events(data: dict[str, Any], expected_type: str) -> None:
-    event = build_event(data)
+    event = parse_event(data)
     assert isinstance(event, OtherEvent)
     assert event.type == expected_type
     assert event.raw == data
@@ -400,7 +396,7 @@ def test_parse_events_from_bytes_skips_non_dict_json() -> None:
 
 def test_unexpected_user_content_shape_raises_value_error() -> None:
     with pytest.raises(ValueError, match="unexpected user content shape: NoneType"):
-        build_event(envelope(type="user", message={"role": "user", "content": None}))
+        parse_event(envelope(type="user", message={"role": "user", "content": None}))
 
 
 def test_parse_events_async_reads_file(tmp_path: Path) -> None:
