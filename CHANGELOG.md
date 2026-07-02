@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.1.0]
+
+### Added
+- `WorkflowCall`, a typed tool call for the Workflow (dynamic-orchestration) tool:
+  `script`, `script_path`, `workflow_name`, `args`, and `resume_from_run_id`.
+  Workflow dispatches previously degraded to `OtherCall`, leaving hook authors and
+  miners raw-dict access only.
+
 ## [7.0.0]
 
 ### Changed (BREAKING)
