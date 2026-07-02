@@ -13,8 +13,9 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from cc_transcript.activity import SessionActivity, meta_of
+from cc_transcript.activity import SessionActivity
 from cc_transcript.discovery import TranscriptExpiredError
+from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolDigest, ToolUseId
 from cc_transcript.render import Budget, clip, render_turn
 
@@ -211,7 +212,7 @@ def turn_ref(turn: Turn, budget: Budget) -> TurnRef:
     return TurnRef(
         role="user" if turn.prompt else "assistant",
         refs=tuple(
-            EventRef(meta.session_id, meta.uuid) for event in turn.events if (meta := meta_of(event)) is not None
+            EventRef(meta.session_id, meta.uuid) for event in turn.events if (meta := event_meta(event)) is not None
         ),
         preview=render_turn(turn, budget=budget),
         tool_digests=tuple(use.call.digest for use in turn.tool_uses),

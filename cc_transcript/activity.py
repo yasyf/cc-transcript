@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from cc_transcript.discovery import TranscriptDiscovery, TranscriptExpiredError, find_transcript
+from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
-from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, ToolUseBlock, UserEvent
+from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
 from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call
 
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.ids import SessionId, ToolUseId
-    from cc_transcript.models import EntryMeta, TranscriptEvent
+    from cc_transcript.models import TranscriptEvent
     from cc_transcript.tools import Hunk, ToolCall
 
 UserClassifier = Callable[["UserEvent"], bool]
@@ -220,7 +221,7 @@ class SessionActivity:
                 turn
                 for turn in self.turns
                 for event in turn.events
-                if (meta := meta_of(event)) is not None and meta.uuid == ref.event_uuid
+                if (meta := event_meta(event)) is not None and meta.uuid == ref.event_uuid
             ),
             None,
         )
@@ -276,14 +277,6 @@ def hunk_overlap(a: Hunk, b: Hunk) -> float:
     return sum(line in olds for line in lines) / len(lines)
 
 
-def meta_of(event: TranscriptEvent) -> EntryMeta | None:
-    match event:
-        case UserEvent() | AssistantEvent() | SystemEvent():
-            return event.meta
-        case _:
-            return None
-
-
 def result_index(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, tuple[ToolResultBlock, datetime | None]]:
     """Indexes tool results by the id of the tool use they answer.
 
@@ -312,7 +305,7 @@ def lift_turn(
     events: tuple[TranscriptEvent, ...],
     results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]],
 ) -> Turn:
-    stamps = [meta.timestamp for event in events if (meta := meta_of(event)) is not None]
+    stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
     return Turn(
         index=index,
         prompt=prompt,
@@ -340,7 +333,7 @@ def position_in(turn: Turn, ref: EventRef) -> tuple[int, int]:
     event_pos, event = next(
         (i, event)
         for i, event in enumerate(turn.events)
-        if (meta := meta_of(event)) is not None and meta.uuid == ref.event_uuid
+        if (meta := event_meta(event)) is not None and meta.uuid == ref.event_uuid
     )
     match ref.tool_use_id, event:
         case None, _:
