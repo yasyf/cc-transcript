@@ -17,8 +17,9 @@ from fnmatch import fnmatch
 from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
-from cc_transcript.activity import SessionActivity, Turn, meta_of, native_user_classifier
+from cc_transcript.activity import SessionActivity, Turn, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError, find_transcript, subagent_paths
+from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
@@ -65,14 +66,14 @@ def event_positions(turns: Sequence[Turn]) -> dict[EventUuid, int]:
     return {
         meta.uuid: index
         for index, event in enumerate(event for turn in turns for event in turn.events)
-        if (meta := meta_of(event)) is not None
+        if (meta := event_meta(event)) is not None
     }
 
 
 def trim_turn(turn: Turn, lo: int, hi: int) -> Turn:
     events = turn.events[lo:hi]
-    positions = {meta.uuid: index for index, event in enumerate(turn.events) if (meta := meta_of(event)) is not None}
-    stamps = [meta.timestamp for event in events if (meta := meta_of(event)) is not None]
+    positions = {meta.uuid: index for index, event in enumerate(turn.events) if (meta := event_meta(event)) is not None}
+    stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
     return Turn(
         index=turn.index,
         prompt=turn.prompt if lo == 0 else "",
@@ -251,7 +252,7 @@ class Session:
         """Parses and lifts the transcript at ``path``, synchronously."""
         events = parse_events_from_bytes(path.read_bytes())
         session_id = next(
-            (meta.session_id for event in events if (meta := meta_of(event)) is not None), SessionId(path.stem)
+            (meta.session_id for event in events if (meta := event_meta(event)) is not None), SessionId(path.stem)
         )
         return cls.from_activity(
             SessionActivity.from_events(session_id, events, user_classifier=user_classifier), path=path
