@@ -459,7 +459,7 @@ def command_prefixes(command: str) -> tuple[str, ...]:
     return parse_command_line(command).prefixes
 
 
-def load_rust_prefixes() -> Callable[[list[str]], list[tuple[str, ...]]] | None:
+def load_rust_prefixes() -> Callable[[list[str]], list[list[str]]] | None:
     # Stale-extension guard (mirrors parser.load_rust_backend): the compiled
     # extension may be absent or predate the command_prefixes symbol.
     try:
@@ -476,5 +476,5 @@ def bulk_command_prefixes(commands: Sequence[str]) -> list[tuple[str, ...]]:
     predates the ``command_prefixes`` symbol.
     """
     if rust := load_rust_prefixes():
-        return rust(list(commands))
+        return [tuple(prefixes) for prefixes in rust(list(commands))]
     return [command_prefixes(command) for command in commands]

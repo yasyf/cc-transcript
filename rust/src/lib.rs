@@ -1,3 +1,4 @@
+mod command;
 mod event;
 mod filter;
 mod lexicon;
@@ -217,6 +218,11 @@ fn score_post_process(spec_json: String, buckets: Vec<Vec<String>>, raw: Vec<i64
 }
 
 #[pyfunction]
+fn command_prefixes(py: Python<'_>, commands: Vec<String>) -> Vec<Vec<String>> {
+    py.detach(|| commands.par_iter().map(|c| command::prefixes(c)).collect())
+}
+
+#[pyfunction]
 #[pyo3(signature = (raw, spec_json))]
 fn mine_signals<'py>(
     py: Python<'py>,
@@ -237,6 +243,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
+    m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(mine_signals, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())
