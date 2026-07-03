@@ -278,9 +278,32 @@ def test_execute_alias_matches_named_bash_and_commands() -> None:
     )
     assert sess.tool_calls.named("Bash").count() == 1
     assert sess.commands() == ("uv run pytest",)
-    assert sess.has_command(r"pytest", subagents=False)
-    assert not sess.has_command(r"cargo", subagents=False)
+    assert sess.has_command("uv", "run", "pytest", subagents=False)
+    assert not sess.has_command("cargo", subagents=False)
     assert sess.has_tool("Bash", subagents=False)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param("sudo git push -f", True, id="unwraps_sudo"),
+        pytest.param("cd x && git push", True, id="matches_any_segment"),
+        pytest.param('echo "git push"', False, id="ignores_quoted_argument"),
+        pytest.param("git pull", False, id="different_subcommand"),
+    ],
+)
+def test_has_command_matches_argv_prefix(command: str, expected: bool) -> None:
+    sess = session(user("u0", "go"), assistant("a0", "", blocks=(bash("t1", command),), secs=1))
+    assert sess.has_command("git", "push", subagents=False) is expected
+
+
+def test_command_lines_parses_each_bash_command() -> None:
+    sess = session(
+        user("u0", "go"),
+        assistant("a0", "", blocks=(bash("t1", "git add . && pytest"), bash("t2", "ls -la")), secs=1),
+    )
+    assert sess.commands() == ("git add . && pytest", "ls -la")
+    assert [line.prefixes for line in sess.command_lines()] == [("git add", "pytest"), ("ls",)]
 
 
 def test_mcp_suffix_matches_named_and_has_tool() -> None:
@@ -563,8 +586,8 @@ def test_subagent_recursion_gated_by_flag(tmp_path: Path) -> None:
     sess = Session.from_path(main)
     assert not sess.has_tool("Grep", subagents=False)
     assert sess.has_tool("Grep")
-    assert sess.has_command(r"pytest")
-    assert not sess.has_command(r"pytest", subagents=False)
+    assert sess.has_command("uv", "run", "pytest")
+    assert not sess.has_command("uv", "run", "pytest", subagents=False)
     assert not sess.has_tool("Grep", subagents=False)
 
 

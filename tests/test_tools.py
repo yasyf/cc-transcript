@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
+from cc_transcript.command import CommandLine
 from cc_transcript.ids import tool_digest
 from cc_transcript.tools import (
     BashCall,
@@ -16,7 +19,6 @@ from cc_transcript.tools import (
     ToolInputError,
     WorkflowCall,
     WriteCall,
-    bash_prefixes,
     expand_tool_names,
     file_path_of,
     hunks_of,
@@ -60,6 +62,13 @@ def test_bash_and_aliases_parse_to_the_same_shape() -> None:
     assert isinstance(parse_tool_call("Task", {"prompt": "p"}), TaskCall)
 
 
+def test_bash_command_line_parses_to_a_command_line() -> None:
+    call = parse_tool_call("Bash", {"command": "sudo git push -f && echo hi"})
+    assert isinstance(call, BashCall)
+    assert isinstance(call.command_line, CommandLine)
+    assert call.command_line.prefixes == ("git push", "echo")
+
+
 def test_task_normalizes_subagent_type() -> None:
     call = parse_tool_call("Agent", {"prompt": "p", "subagent_type": "Explore", "name": "scout"})
     assert isinstance(call, TaskCall)
@@ -83,6 +92,12 @@ def test_workflow_distinguishes_workflow_name_from_tool_name() -> None:
     assert call.script is None
 
 
+def test_dual_key_first_present_key_wins_over_truthiness() -> None:
+    call = parse_tool_call("Workflow", {"scriptPath": "", "script_path": "x"})
+    assert isinstance(call, WorkflowCall)
+    assert call.script_path == ""
+
+
 def test_grep_maps_type_to_file_type() -> None:
     call = parse_tool_call("Grep", {"pattern": "x", "type": "py"})
     assert isinstance(call, GrepCall) and call.file_type == "py"
@@ -96,6 +111,13 @@ def test_unknown_and_mcp_tools_parse_to_other() -> None:
 def test_malformed_known_tool_raises_by_default() -> None:
     with pytest.raises(ToolInputError, match="Edit input missing"):
         parse_tool_call("Edit", {"file_path": "a.py"})
+
+
+@pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
+@pytest.mark.parametrize("on_error", ["raise", "other"])
+def test_non_mapping_input_raises_under_both_modes(name: str, on_error: Literal["raise", "other"]) -> None:
+    with pytest.raises(ToolInputError, match="must be a mapping"):
+        parse_tool_call(name, ["not", "a", "mapping"], on_error=on_error)  # type: ignore[arg-type]
 
 
 def test_on_error_other_degrades_with_correct_digest() -> None:
@@ -154,37 +176,6 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
 )
 def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
     assert tool_name_matches(actual, spec) is expected
-
-
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("VAR=1 sudo docker compose up -d", ("docker compose",)),
-        ("git add . && git commit -m 'x; y'", ("git add", "git commit")),
-        ("git --version", ("git",)),
-        ("cat a && grep b", ("cat", "grep")),
-        ("ls -la", ("ls",)),
-        ('echo "unterminated', ("echo",)),
-        ("for f in *.py; do python $f; done", ("python",)),
-        ("while true; do sleep 1; done", ("sleep",)),
-        ("if grep -q x f; then echo y; else echo z; fi", ("echo", "echo")),
-        ("", ()),
-    ],
-    ids=[
-        "assignment-wrapper-multilevel",
-        "quoted-operator-not-split",
-        "multilevel-only-flags",
-        "two-plain-segments",
-        "single-plain-command",
-        "unterminated-quote-fallback",
-        "loop-do-unwraps-body",
-        "while-do-unwraps-body",
-        "if-then-else-unwrap",
-        "empty",
-    ],
-)
-def test_bash_prefixes(command: str, expected: tuple[str, ...]) -> None:
-    assert bash_prefixes(command) == expected
 
 
 @pytest.mark.parametrize(

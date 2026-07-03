@@ -15,7 +15,6 @@ import anyio
 import click
 import orjson
 
-from cc_transcript.activity import result_index
 from cc_transcript.builders import (
     NOISE_SPEC,
     build_spec,
@@ -51,7 +50,7 @@ from cc_transcript.render import (
     stats_dict,
     transcript_header,
 )
-from cc_transcript.toolcalls import bash_prefix_counts, is_denial, mcp_summary, tool_facts
+from cc_transcript.facts import command_prefix_counts, mcp_summary, tool_facts
 from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
 
 if TYPE_CHECKING:
@@ -59,6 +58,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from cc_transcript.backend import ParsedTranscript
+    from cc_transcript.facts import ToolFact
     from cc_transcript.filterspec import FilterSpec
     from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
 
@@ -211,52 +211,26 @@ def uses_tool(event: TranscriptEvent, tool: str, names: Mapping[ToolUseId, str])
             return False
 
 
-class Outcome(NamedTuple):
-    is_error: bool
-    denied: bool
-    duration_ms: int | None
-
-
-def outcome_of(pair: tuple[ToolResultBlock, datetime | None] | None, meta: EntryMeta) -> Outcome:
-    if pair is None:
-        return Outcome(is_error=False, denied=False, duration_ms=None)
-    result, ts = pair
-    return Outcome(
-        is_error=result.is_error,
-        denied=is_denial(result),
-        duration_ms=round((ts - meta.timestamp).total_seconds() * 1000) if ts is not None else None,
-    )
-
-
-def tool_outcomes(
-    event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]
-) -> list[tuple[ToolUseBlock, Outcome]]:
+def event_facts(event: TranscriptEvent, facts: Mapping[ToolUseId, ToolFact]) -> list[ToolFact]:
     match event:
-        case AssistantEvent(blocks=blocks, meta=meta):
-            return [
-                (block, outcome_of(results.get(block.id), meta)) for block in blocks if isinstance(block, ToolUseBlock)
-            ]
+        case AssistantEvent(blocks=blocks):
+            return [fact for block in blocks if isinstance(block, ToolUseBlock) and (fact := facts.get(block.id))]
         case _:
             return []
 
 
-def result_key(
-    event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]
-) -> dict[str, dict[str, Any]]:
-    return {
-        block.id: {"is_error": o.is_error, "denied": o.denied, "duration_ms": o.duration_ms}
-        for block, o in tool_outcomes(event, results)
-    }
+def result_key(fact: ToolFact) -> dict[str, Any]:
+    return {"is_error": fact.is_error, "denied": fact.denied, "duration_ms": fact.duration_ms}
 
 
-def outcome_marker(outcome: Outcome) -> str:
-    status = "[denied]" if outcome.denied else "[err]" if outcome.is_error else ""
-    dur = f"({outcome.duration_ms}ms)" if outcome.duration_ms is not None else ""
+def outcome_marker(fact: ToolFact) -> str:
+    status = "[denied]" if fact.denied else "[err]" if fact.is_error else ""
+    dur = f"({fact.duration_ms}ms)" if fact.duration_ms is not None else ""
     return " ".join(part for part in (status, dur) if part)
 
 
-def result_suffix(event: TranscriptEvent, results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]]) -> str:
-    markers = [marker for _, outcome in tool_outcomes(event, results) if (marker := outcome_marker(outcome))]
+def result_suffix(event: TranscriptEvent, facts: Mapping[ToolUseId, ToolFact]) -> str:
+    markers = [marker for fact in event_facts(event, facts) if (marker := outcome_marker(fact))]
     return f" {' '.join(markers)}" if markers else ""
 
 
@@ -448,7 +422,7 @@ def grep(
         if budget == 0:
             break
         names = tool_names(parsed.events)
-        results = result_index(parsed.events) if with_result else {}
+        facts = {fact.tool_use_id: fact for fact in tool_facts([parsed])} if with_result else {}
         hits = list(
             islice(
                 (
@@ -473,7 +447,12 @@ def grep(
                     {"path": str(parsed.path)}
                     | event_dict(i, parsed.events[i])
                     | ({} if i in hit_set else {"context": True})
-                    | ({"results": rk} if with_result and (rk := result_key(parsed.events[i], results)) else {})
+                    | (
+                        {"results": rk}
+                        if with_result
+                        and (rk := {fact.tool_use_id: result_key(fact) for fact in event_facts(parsed.events[i], facts)})
+                        else {}
+                    )
                 )
                 for lo, hi in merge_windows(hits, context=context, size=len(parsed.events))
                 for i in range(lo, hi)
@@ -485,7 +464,7 @@ def grep(
                 out.append("--")
             out.extend(
                 compact_line(i, parsed.events[i], names=names, width=width, thinking=False, uuids=uuids)
-                + (result_suffix(parsed.events[i], results) if with_result else "")
+                + (result_suffix(parsed.events[i], facts) if with_result else "")
                 for i in range(lo, hi)
             )
     if not as_json:
@@ -577,7 +556,7 @@ def commands(
 ) -> None:
     """Tally Bash command prefixes across the matched transcripts, most frequent first."""
     targets = resolve_targets(paths, root=root, project=project, contains=contains, limit=None if all_ else limit)
-    counts = bash_prefix_counts(tool_facts(parse_transcripts(targets.paths)))
+    counts = command_prefix_counts(tool_facts(parse_transcripts(targets.paths)))
     if as_json:
         emit(orjson.dumps({"prefix": prefix, "count": count}) for prefix, count in counts.items())
         return

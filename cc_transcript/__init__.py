@@ -50,7 +50,6 @@ EXPORTS: dict[str, str] = {
             "ToolInputError",
             "WorkflowCall",
             "WriteCall",
-            "bash_prefixes",
             "expand_tool_names",
             "file_path_of",
             "hunks_of",
@@ -58,6 +57,14 @@ EXPORTS: dict[str, str] = {
             "mcp_parts",
             "parse_tool_call",
             "tool_name_matches",
+        ),
+        "cc_transcript.command": (
+            "Command",
+            "CommandLine",
+            "CommandLineQuery",
+            "Redirect",
+            "command_prefixes",
+            "parse_command_line",
         ),
         "cc_transcript.models": (
             "AssistantEvent",
@@ -119,9 +126,9 @@ EXPORTS: dict[str, str] = {
             "native_user_classifier",
             "result_index",
         ),
-        "cc_transcript.toolcalls": (
+        "cc_transcript.facts": (
             "ToolFact",
-            "bash_prefix_counts",
+            "command_prefix_counts",
             "mcp_summary",
             "tool_facts",
         ),
@@ -272,6 +279,24 @@ if TYPE_CHECKING:
     from cc_transcript.builders import (
         keep_only as keep_only,
     )
+    from cc_transcript.command import (
+        Command as Command,
+    )
+    from cc_transcript.command import (
+        CommandLine as CommandLine,
+    )
+    from cc_transcript.command import (
+        CommandLineQuery as CommandLineQuery,
+    )
+    from cc_transcript.command import (
+        Redirect as Redirect,
+    )
+    from cc_transcript.command import (
+        command_prefixes as command_prefixes,
+    )
+    from cc_transcript.command import (
+        parse_command_line as parse_command_line,
+    )
     from cc_transcript.context import (
         ContextWindow as ContextWindow,
     )
@@ -385,6 +410,18 @@ if TYPE_CHECKING:
     )
     from cc_transcript.evidence import (
         record_harvest as record_harvest,
+    )
+    from cc_transcript.facts import (
+        ToolFact as ToolFact,
+    )
+    from cc_transcript.facts import (
+        command_prefix_counts as command_prefix_counts,
+    )
+    from cc_transcript.facts import (
+        mcp_summary as mcp_summary,
+    )
+    from cc_transcript.facts import (
+        tool_facts as tool_facts,
     )
     from cc_transcript.filterspec import (
         ASSISTANTS as ASSISTANTS,
@@ -573,18 +610,6 @@ if TYPE_CHECKING:
         render_turn as render_turn,
     )
     from cc_transcript.store import FileStateStore as FileStateStore
-    from cc_transcript.toolcalls import (
-        ToolFact as ToolFact,
-    )
-    from cc_transcript.toolcalls import (
-        bash_prefix_counts as bash_prefix_counts,
-    )
-    from cc_transcript.toolcalls import (
-        mcp_summary as mcp_summary,
-    )
-    from cc_transcript.toolcalls import (
-        tool_facts as tool_facts,
-    )
     from cc_transcript.tools import (
         TOOL_ALIASES as TOOL_ALIASES,
     )
@@ -647,9 +672,6 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         WriteCall as WriteCall,
-    )
-    from cc_transcript.tools import (
-        bash_prefixes as bash_prefixes,
     )
     from cc_transcript.tools import (
         expand_tool_names as expand_tool_names,

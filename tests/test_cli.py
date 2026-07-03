@@ -793,8 +793,9 @@ def test_tools_json_row_shape(runner: CliRunner, transcript: Path) -> None:
         "ts": "2026-01-02T03:04:07+00:00",
         "session_id": "sess-1",
         "path": str(transcript),
+        "tool_use_id": "toolu_read",
         "tool": "Read",
-        "bash_prefixes": [],
+        "command_prefixes": [],
         "command": None,
         "mcp_server": None,
         "mcp_tool": None,
@@ -806,7 +807,7 @@ def test_tools_json_row_shape(runner: CliRunner, transcript: Path) -> None:
         "duration_ms": 1000,
     }
     assert rows[1]["tool"] == "Bash"
-    assert rows[1]["bash_prefixes"] == ["ls"]
+    assert rows[1]["command_prefixes"] == ["ls"]
     assert rows[1]["is_error"] is True
 
 
