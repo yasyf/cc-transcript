@@ -39,6 +39,10 @@ def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
     return next((raw[key] for key in keys if key in raw), None)
 
 
+def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
+    return raw[next((key for key in keys if key in raw), keys[0])]
+
+
 class ToolInputError(ValueError):
     """A known tool's input did not match its expected shape."""
 
@@ -333,7 +337,7 @@ class TaskUpdateCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            task_id=key_of(raw, "taskId", "task_id"),
+            task_id=required_key(raw, "taskId", "task_id"),
             status=raw.get("status"),
             subject=raw.get("subject"),
             description=raw.get("description"),

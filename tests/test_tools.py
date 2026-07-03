@@ -16,6 +16,7 @@ from cc_transcript.tools import (
     NotebookEditCall,
     OtherCall,
     TaskCall,
+    TaskUpdateCall,
     ToolInputError,
     WorkflowCall,
     WriteCall,
@@ -96,6 +97,24 @@ def test_dual_key_first_present_key_wins_over_truthiness() -> None:
     call = parse_tool_call("Workflow", {"scriptPath": "", "script_path": "x"})
     assert isinstance(call, WorkflowCall)
     assert call.script_path == ""
+
+
+def test_task_update_accepts_either_task_id_spelling() -> None:
+    for raw in ({"taskId": "T1", "status": "completed"}, {"task_id": "T1", "status": "completed"}):
+        call = parse_tool_call("TaskUpdate", raw)
+        assert isinstance(call, TaskUpdateCall)
+        assert (call.task_id, call.status) == ("T1", "completed")
+
+
+def test_task_update_without_task_id_raises_by_default() -> None:
+    with pytest.raises(ToolInputError, match="TaskUpdate input missing"):
+        parse_tool_call("TaskUpdate", {"status": "completed"})
+
+
+def test_task_update_without_task_id_degrades_under_other() -> None:
+    call = parse_tool_call("TaskUpdate", {"status": "completed"}, on_error="other")
+    assert isinstance(call, OtherCall)
+    assert call.raw == {"status": "completed"}
 
 
 def test_grep_maps_type_to_file_type() -> None:
