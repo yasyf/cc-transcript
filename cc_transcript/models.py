@@ -430,3 +430,13 @@ class PrintResult:
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent
 """The union of every typed event a parsed transcript can yield."""
+
+
+def tool_uses(event: UserEvent | AssistantEvent) -> tuple[ToolUseBlock, ...]:
+    """The event's tool-use blocks, in content order."""
+    return tuple(block for block in event.blocks if isinstance(block, ToolUseBlock))
+
+
+def thinking_chars(event: UserEvent | AssistantEvent) -> int:
+    """The total character count of the event's extended-thinking blocks."""
+    return sum(len(block.thinking) for block in event.blocks if isinstance(block, ThinkingBlock))

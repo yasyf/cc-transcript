@@ -4,13 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import anyio
 
-from cc_transcript.models import SessionId
+from cc_transcript.models import AssistantEvent, EntryMeta, EventUuid, ModeEvent, SessionId, SystemEvent, UserEvent
 from cc_transcript.sentiment import (
-    AssistantMessage,
-    ConversationBucketer,
     FilteredEngine,
     SentimentScore,
-    UserMessage,
+    bucket_events,
     build_score_spec,
     clamp_resume,
     extract_bucket_keys,
@@ -21,27 +19,37 @@ from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def user(text: str, *, minutes: float = 0.0, session: str = "s") -> UserMessage:
-    return UserMessage(
-        content=text,
-        timestamp=BASE + timedelta(minutes=minutes),
+def meta(uuid: str, *, minutes: float = 0.0, session: str = "s") -> EntryMeta:
+    return EntryMeta(
+        uuid=EventUuid(uuid),
+        parent_uuid=None,
         session_id=SessionId(session),
-        uuid=f"u{minutes}",
-        tool_calls=(),
-        thinking_chars=0,
-        cc_version="1.0",
+        timestamp=BASE + timedelta(minutes=minutes),
+        cwd="/repo",
+        git_branch="main",
+        cc_version=None,
+        is_sidechain=False,
+        is_meta=False,
+        entrypoint="cli",
+        is_compact_summary=False,
+        is_visible_in_transcript_only=False,
     )
 
 
-def assistant(text: str, *, minutes: float = 0.0, session: str = "s") -> AssistantMessage:
-    return AssistantMessage(
-        content=text,
-        timestamp=BASE + timedelta(minutes=minutes),
-        session_id=SessionId(session),
-        uuid=f"a{minutes}",
-        tool_calls=(),
-        thinking_chars=0,
-        claude_model="claude-opus-4-7",
+def user(text: str, *, minutes: float = 0.0, session: str = "s") -> UserEvent:
+    return UserEvent(
+        meta=meta(f"u{minutes}", minutes=minutes, session=session), text=text, blocks=(), interrupted=False
+    )
+
+
+def assistant(text: str, *, minutes: float = 0.0, session: str = "s") -> AssistantEvent:
+    return AssistantEvent(
+        meta=meta(f"a{minutes}", minutes=minutes, session=session),
+        model="claude-opus-4-7",
+        text=text,
+        blocks=(),
+        stop_reason=None,
+        usage=None,
     )
 
 
@@ -61,27 +69,40 @@ class StubEngine:
 
 
 def test_bucketer_groups_by_session_and_window() -> None:
-    messages = [
+    events = [
         user("please fix the login bug", minutes=0),
         assistant("on it", minutes=0.5),
         user("now add validation too", minutes=1),
         assistant("done", minutes=1.5),
         user("other session message here", minutes=0, session="t"),
     ]
-    buckets = ConversationBucketer.bucket_messages(messages)
+    buckets = bucket_events(events)
     assert {b.session_id for b in buckets} == {SessionId("s")}
     assert len(buckets) == 1
-    assert [k.session_id for k in extract_bucket_keys(messages)] == [SessionId("s")]
+    assert [k.session_id for k in extract_bucket_keys(events)] == [SessionId("s")]
 
 
 def test_bucketer_drops_sub_min_user_chars_bucket() -> None:
-    messages = [
+    events = [
         user("ok", minutes=0),
         assistant("ack", minutes=0.2),
         user("actually fix the bug now", minutes=3),
         assistant("sure", minutes=3.2),
     ]
-    assert sorted(k.bucket_index for k in extract_bucket_keys(messages)) == [1]
+    assert sorted(k.bucket_index for k in extract_bucket_keys(events)) == [1]
+
+
+def test_bucketer_ignores_non_conversational_events() -> None:
+    events = [
+        user("please fix the login bug", minutes=0),
+        SystemEvent(meta=meta("sys0"), subtype="hook", content="noise"),
+        assistant("on it", minutes=0.5),
+        ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
+        user("now add validation too", minutes=1),
+    ]
+    (only,) = bucket_events(events)
+    assert len(only.events) == 3
+    assert all(isinstance(e, UserEvent | AssistantEvent) for e in only.events)
 
 
 def test_frustration_stage_short_circuits_to_one() -> None:
@@ -97,7 +118,7 @@ def test_resume_stage_clamps_to_three() -> None:
 
 
 def test_filtered_engine_short_circuit_bypasses_inference() -> None:
-    buckets = ConversationBucketer.bucket_messages(
+    buckets = bucket_events(
         [user("wtf broken garbage", minutes=0), assistant("x", minutes=0.5), user("fix it now please", minutes=1)]
     )
     engine = FilteredEngine(StubEngine(4), build_score_spec(flag_frustration(), clamp_resume()))
@@ -105,7 +126,7 @@ def test_filtered_engine_short_circuit_bypasses_inference() -> None:
 
 
 def test_filtered_engine_falls_through_to_inference() -> None:
-    buckets = ConversationBucketer.bucket_messages(
+    buckets = bucket_events(
         [
             user("add a docstring to this function", minutes=0),
             assistant("ok", minutes=0.5),

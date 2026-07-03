@@ -87,7 +87,7 @@ def test_top_level_init_is_core_only() -> None:
 
 
 def test_core_imports_without_domain_extras() -> None:
-    for module in ("messages", "parser", "store", "filterspec"):
+    for module in ("facts", "parser", "store", "filterspec"):
         importlib.import_module(f"cc_transcript.{module}")
     importlib.import_module("cc_transcript")
 
