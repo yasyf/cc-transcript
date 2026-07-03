@@ -47,7 +47,7 @@ fn parse_line(line: &[u8], lines: &mut Vec<Value>, filter: Option<&CompiledSpec>
         return;
     }
     if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
-        if filter.map_or(true, |spec| spec_keep(spec, &value)) {
+        if filter.is_none_or(|spec| spec_keep(spec, &value)) {
             lines.push(value);
         }
     }
