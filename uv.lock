@@ -237,7 +237,7 @@ wheels = [
 
 [[package]]
 name = "cc-transcript"
-version = "7.0.1"
+version = "8.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -279,8 +279,8 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "spacy", marker = "extra == 'sentiment'", specifier = ">=3.8" },
     { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.5.1,<0.6" },
-    { name = "tree-sitter", specifier = ">=0.24" },
-    { name = "tree-sitter-bash", specifier = ">=0.23" },
+    { name = "tree-sitter", specifier = ">=0.26" },
+    { name = "tree-sitter-bash", specifier = ">=0.25" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.44" },
 ]
 provides-extras = ["dev", "sentiment", "llm"]
