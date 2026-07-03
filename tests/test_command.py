@@ -339,10 +339,30 @@ class TestCommandLineQuery:
         assert CommandLine.parse(raw).q.contains_token(token) is expected
 
 
+class TestDequote:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("\"'hello'\"", "'hello'", id="one_layer_only"),
+            pytest.param("'hello'", "hello", id="matching_single_quotes"),
+            pytest.param('"hello"', "hello", id="matching_double_quotes"),
+            pytest.param("'", "'", id="lone_quote_untouched"),
+            pytest.param('"a', '"a', id="unmatched_open_quote_untouched"),
+            pytest.param("hello", "hello", id="unquoted_untouched"),
+            pytest.param("", "", id="empty"),
+        ],
+    )
+    def test_dequote(self, text: str, expected: str) -> None:
+        assert CommandLine.dequote(text) == expected
+
+
 class TestEdgeCases:
     def test_malformed_quote(self) -> None:
         cmd = parse('echo "unterminated')
         assert cmd.executable == "echo"
+
+    def test_nested_quotes_keep_inner_layer(self) -> None:
+        assert parse("echo \"'hello'\"").args == ("'hello'",)
 
     def test_colons_preserved(self) -> None:
         cmd = parse("uv run mtest run tests/test_foo.py::TestClass::test_method")
@@ -377,6 +397,18 @@ class TestCommandPrefixes:
             ("if grep -q x f; then echo y; else echo z; fi", ("grep", "echo", "echo")),
             ("", ()),
             ("timeout 30 git push", ("git push",)),
+            ("sudo ''", ()),
+            ("git '' status", ("git",)),
+            ("timeout ٣ git push", ("٣",)),
+            ("git \"'commit'\"", ("git 'commit'",)),
+            ("diff <(sort a.txt) <(sort b.txt)", ("diff",)),
+            ("cat <(git log) | head -3", ("cat", "head")),
+            ("echo $((1 + 2))", ("echo",)),
+            ("x=$((COUNT + 1)) make build", ("make",)),
+            ("echo `git rev-parse HEAD`", ("echo",)),
+            ("foo() { git status; }; foo", ("git status", "foo")),
+            ('git commit -m "line1\nline2"', ("git commit",)),
+            ("git add .\ngit commit -m x", ("git add", "git commit")),
         ],
         ids=[
             "assignment-wrapper-multilevel",
@@ -390,6 +422,18 @@ class TestCommandPrefixes:
             "if-condition-then-else",
             "empty",
             "timeout-integer-arg-unwrapped",
+            "empty-token-stops-unwrap",
+            "empty-token-not-a-subcommand",
+            "arabic-digit-not-skipped",
+            "quoted-subcommand-keeps-inner-quotes",
+            "process-substitution",
+            "process-substitution-in-pipeline",
+            "arithmetic-expansion",
+            "arithmetic-assignment-prefix",
+            "backtick-substitution",
+            "function-definition-body-and-call",
+            "multiline-quoted-string",
+            "newline-separated-commands",
         ],
     )
     def test_command_prefixes(self, command: str, expected: tuple[str, ...]) -> None:

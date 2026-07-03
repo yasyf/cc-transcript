@@ -127,6 +127,24 @@ FIXTURE_COMMANDS = [
     'git commit -m "日本語メッセージ"',
     'echo "emoji 🤖 test"',
     "grep café file.txt",
+    "timeout ٣ git push",
+    # --- empty argv tokens / one-layer dequoting ---
+    "sudo ''",
+    "git '' status",
+    "echo \"'hello'\"",
+    "git \"'commit'\"",
+    "echo '",
+    'echo "a',
+    # --- process substitution / arithmetic / backticks ---
+    "diff <(sort a.txt) <(sort b.txt)",
+    "cat <(git log) | head -3",
+    "echo $((1 + 2))",
+    "x=$((COUNT + 1)) make build",
+    "echo `git rev-parse HEAD`",
+    # --- function definitions / multiline / newline-separated ---
+    "foo() { git status; }; foo",
+    'git commit -m "line1\nline2"',
+    "git add .\ngit commit -m x",
 ]
 
 

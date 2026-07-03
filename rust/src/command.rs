@@ -36,11 +36,20 @@ struct RawCommand {
     args: Vec<String>,
 }
 
+// Parity: command.py CommandLine.dequote — strip exactly one layer of matching
+// outer quotes; anything else (lone quotes, unmatched quotes) is left untouched.
+fn dequote(raw: &str) -> &str {
+    match raw.as_bytes() {
+        [first @ (b'\'' | b'"'), .., last] if first == last => &raw[1..raw.len() - 1],
+        _ => raw,
+    }
+}
+
 fn word_text(node: Node, src: &[u8]) -> String {
     let raw = node.utf8_text(src).unwrap_or("");
     match node.kind() {
         // Parity: command.py CommandLine.word_text — dequote string/raw_string only.
-        "string" | "raw_string" => raw.trim_matches(|c| c == '\'' || c == '"').to_string(),
+        "string" | "raw_string" => dequote(raw).to_string(),
         _ => raw.to_string(),
     }
 }
@@ -121,8 +130,9 @@ fn walk_node(node: Node, src: &[u8], out: &mut Vec<RawCommand>) {
     }
 }
 
-// Parity: command.py Command.unwrapped dropwhile predicate — flags, bare integers,
-// and VAR=val assignments trailing a wrapper are shifted past.
+// Parity: command.py Command.unwrapped dropwhile predicate — flags, bare
+// ASCII-integer arguments (both sides test ASCII digits only), and VAR=val
+// assignments trailing a wrapper are shifted past.
 fn is_wrapper_skip(arg: &str) -> bool {
     arg.starts_with('-')
         || (!arg.is_empty() && arg.bytes().all(|b| b.is_ascii_digit()))
@@ -131,6 +141,8 @@ fn is_wrapper_skip(arg: &str) -> bool {
 
 // Parity: command.py Command.unwrapped + Command.prefix. Unwrap leading wrappers,
 // then a multi-level tool keeps its first non-flag argument as the subcommand.
+// The empty-executable guard tests the unwrapped command, and an empty first
+// non-flag pick falls back to the bare tool (walrus truthiness in Command.prefix).
 fn command_prefix(cmd: &RawCommand) -> Option<String> {
     if cmd.executable.is_empty() {
         return None;
@@ -145,11 +157,12 @@ fn command_prefix(cmd: &RawCommand) -> Option<String> {
     }
 
     match argv.first() {
-        None => None,
+        None | Some(&"") => None,
         Some(&exe) if MULTI_LEVEL_TOOLS.contains(&exe) => Some(
             argv[1..]
                 .iter()
                 .find(|a| !a.starts_with('-'))
+                .filter(|sub| !sub.is_empty())
                 .map_or_else(|| exe.to_string(), |sub| format!("{exe} {sub}")),
         ),
         Some(&exe) => Some(exe.to_string()),
@@ -205,6 +218,22 @@ mod tests {
             // command.py TestCommandLine.test_prefixes / drops empty executable
             ("sudo git push -f && echo hi", vec!["git push", "echo"]),
             ("> out.txt", vec![]),
+            // command.py TestCommandPrefixes — empty argv tokens
+            ("sudo ''", vec![]),
+            ("git '' status", vec!["git"]),
+            // command.py TestCommandPrefixes — digit skip is ASCII-only both sides
+            ("timeout ٣ git push", vec!["٣"]),
+            // command.py TestCommandPrefixes — one-layer dequoting keeps inner quotes
+            ("git \"'commit'\"", vec!["git 'commit'"]),
+            // command.py TestCommandPrefixes — substitutions, functions, multiline
+            ("diff <(sort a.txt) <(sort b.txt)", vec!["diff"]),
+            ("cat <(git log) | head -3", vec!["cat", "head"]),
+            ("echo $((1 + 2))", vec!["echo"]),
+            ("x=$((COUNT + 1)) make build", vec!["make"]),
+            ("echo `git rev-parse HEAD`", vec!["echo"]),
+            ("foo() { git status; }; foo", vec!["git status", "foo"]),
+            ("git commit -m \"line1\nline2\"", vec!["git commit"]),
+            ("git add .\ngit commit -m x", vec!["git add", "git commit"]),
         ]
     }
 
@@ -217,5 +246,18 @@ mod tests {
                 "prefixes mismatch for {command:?}"
             );
         }
+    }
+
+    // command.py TestDequote — one layer of matching outer quotes, lone and
+    // unmatched quotes untouched.
+    #[test]
+    fn dequote_strips_exactly_one_matching_layer() {
+        assert_eq!(super::dequote("\"'hello'\""), "'hello'");
+        assert_eq!(super::dequote("'hello'"), "hello");
+        assert_eq!(super::dequote("\"hello\""), "hello");
+        assert_eq!(super::dequote("'"), "'");
+        assert_eq!(super::dequote("\"a"), "\"a");
+        assert_eq!(super::dequote("hello"), "hello");
+        assert_eq!(super::dequote(""), "");
     }
 }

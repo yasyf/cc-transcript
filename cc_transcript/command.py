@@ -101,13 +101,16 @@ class Command:
         """This command with leading wrappers (``sudo``, ``env``, ``timeout``, …) stripped.
 
         Shifts past each wrapper plus its flag arguments, ``VAR=val`` words, and
-        bare-integer arguments (covering ``env -i``, ``timeout 30``, ``nice -n 10``);
-        returns ``self`` when no unwrapping applies.
+        bare ASCII-integer arguments (covering ``env -i``, ``timeout 30``,
+        ``nice -n 10``); returns ``self`` when no unwrapping applies.
         """
         argv = self.argv
         while argv and argv[0] in WRAPPER_COMMANDS:
             argv = tuple(
-                dropwhile(lambda a: a.startswith("-") or a.isdigit() or ASSIGNMENT_RE.match(a) is not None, argv[1:])
+                dropwhile(
+                    lambda a: a.startswith("-") or (a.isascii() and a.isdigit()) or ASSIGNMENT_RE.match(a) is not None,
+                    argv[1:],
+                )
             )
         if argv == self.argv:
             return self
@@ -225,9 +228,13 @@ class CommandLine:
         return node.text.decode() if node.text else ""
 
     @staticmethod
+    def dequote(text: str) -> str:
+        return text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
+
+    @staticmethod
     def word_text(node: Node) -> str:
         return (
-            CommandLine.node_text(node).strip("'\"")
+            CommandLine.dequote(CommandLine.node_text(node))
             if node.type in ("string", "raw_string")
             else CommandLine.node_text(node)
         )
