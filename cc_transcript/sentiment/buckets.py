@@ -56,6 +56,12 @@ class ConversationBucketer:
 
     @classmethod
     def bucket_events(cls, events: Iterable[TranscriptEvent]) -> list[ConversationBucket]:
+        """Lifts the conversational events in ``events`` into scorable :class:`ConversationBucket` windows.
+
+        Example:
+            >>> bucket_events(parse_events_from_bytes(raw))
+            [ConversationBucket(session_id='s', bucket_index=0, ...)]
+        """
         by_session: dict[SessionId, list[ConversationEvent]] = defaultdict(list)
         for event in events:
             match event:
@@ -75,7 +81,7 @@ class ConversationBucketer:
                 grouped[idx].append(event)
 
             for idx, window_events in sorted(grouped.items()):
-                if not any(isinstance(e, UserEvent) and len(e.text) >= MIN_USER_CHARS for e in window_events):
+                if not any(isinstance(e, UserEvent) and len(e.text.strip()) >= MIN_USER_CHARS for e in window_events):
                     continue
                 if not any(isinstance(e, AssistantEvent) for e in window_events):
                     continue

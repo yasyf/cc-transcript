@@ -92,6 +92,19 @@ def test_bucketer_drops_sub_min_user_chars_bucket() -> None:
     assert sorted(k.bucket_index for k in extract_bucket_keys(events)) == [1]
 
 
+def test_bucketer_ignores_whitespace_only_user_turns() -> None:
+    def events(first_turn: str) -> list[UserEvent | AssistantEvent]:
+        return [
+            user(first_turn, minutes=0),
+            assistant("ack", minutes=0.2),
+            user("actually fix the bug now", minutes=3),
+            assistant("sure", minutes=3.2),
+        ]
+
+    assert sorted(k.bucket_index for k in extract_bucket_keys(events(" \t \n  "))) == [1]
+    assert sorted(k.bucket_index for k in extract_bucket_keys(events("hi ok"))) == [0, 1]
+
+
 def test_bucketer_ignores_non_conversational_events() -> None:
     events = [
         user("please fix the login bug", minutes=0),
