@@ -40,7 +40,9 @@ def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
 
 
 def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
-    return raw[next((key for key in keys if key in raw), keys[0])]
+    if (value := key_of(raw, *keys)) is None:
+        raise KeyError(keys[0])
+    return value
 
 
 class ToolInputError(ValueError):
