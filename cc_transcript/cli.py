@@ -422,7 +422,6 @@ def grep(
         if budget == 0:
             break
         names = tool_names(parsed.events)
-        facts = {fact.tool_use_id: fact for fact in tool_facts([parsed])} if with_result else {}
         hits = list(
             islice(
                 (
@@ -437,6 +436,7 @@ def grep(
         )
         if not hits:
             continue
+        facts = {fact.tool_use_id: fact for fact in tool_facts([parsed])} if with_result else {}
         files_matched += 1
         matched += len(hits)
         budget -= len(hits)
