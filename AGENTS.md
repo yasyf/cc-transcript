@@ -13,22 +13,27 @@ cc-transcript/
 │   ├── backend.py      # Backend protocol + ParsedTranscript
 │   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
 │   ├── rust.py         # RustBackend — the fast path over cc_transcript._parser_rs
-│   ├── messages.py     # Distilled message projection (User/Assistant/ToolCall)
-│   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters
+│   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters, plus the CC-protocol text layer (denial/interrupt markers)
 │   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
+│   ├── tools.py        # The single typed tool-call hierarchy (stdlib-only by contract)
+│   ├── command.py      # Parsed bash command lines: Command/CommandLine/CommandLineQuery, tree-sitter-backed
+│   ├── facts.py        # Tool-call analytics substrate lifted from session activity
 │   ├── activity.py     # Session activity lifted from parsed transcript events
 │   ├── query.py        # Session-level queries over lifted activity
 │   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
 │   ├── evidence.py     # Evidence harvest around a feedback anchor
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
+│   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes
+│   ├── corrections_cli.py # The corrections CLI: the ledger for non-Python consumers
 │   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
-│   ├── tools.py        # The single typed tool-call hierarchy
+│   ├── cost.py         # Token-usage → USD cost model (cost_of, PRICING)
 │   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
 │   ├── render.py       # The one renderer — every cut happens here, under a Budget
 │   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
 │   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
 │   ├── judge/          # LLM verdict passes over mined feedback
-│   └── sentiment/      # Sentiment domain: conversation buckets + composable score spec
+│   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
+│   └── sentiment/      # Sentiment domain: event buckets + composable score spec
 ├── rust/               # Rust extension (cc_transcript._parser_rs)
 ├── tests/              # Pytest suite
 ├── docs/               # Great Docs site: guides + curated API reference
@@ -107,6 +112,24 @@ Reach for your **LSP** when the answer must be *exhaustive* or *structural*:
 4. **"What implements Protocol P?"** → `goToImplementation`
 
 Reach for **`Grep`** only for material neither tool indexes: literal *content* of strings/comments/docstrings (error messages, hard-coded URLs, env-var names, TODOs) and non-source files (logs, JSON, YAML, fixtures). File-pattern questions ("all `*.json` under `src/`") go through `Glob`.
+
+## Ownership & Layering
+
+- **Parse once, at the parsing layer.** Interpreting a tool input after the fact goes
+  through the typed layer: `ToolUseBlock.call` / `tools.parse_tool_call` for tool calls,
+  `command.CommandLine` for bash. Never regex or split a raw command string or `input`
+  dict at a call site — if the typed layer can't answer the question, extend it.
+- **One owner module per concept.** Before writing a detector, predicate, or projection,
+  find the existing implementation (`semble`, LSP) and extend it. Two implementations of
+  one semantic are a bug even while both are correct.
+- **Rust parity is atomic.** A semantic change to a Rust-mirrored domain (filterspec,
+  mining, score, lexicon, command) lands with its Rust port and the parity-suite re-pin
+  in the same commit. Parity comments cite symbol names (`scorespec.apply_post_process`),
+  never line numbers.
+- **Build on the lifted layers.** New analysis features consume `activity`/`query`/
+  `facts` or a domain package — never re-parse raw events — unless the feature *is*
+  the raw layer. The fences in `tests/test_fence.py` and `tests/test_import_weight.py`
+  are release contracts; a change that trips one is wrong until proven otherwise.
 
 ## Python Style
 

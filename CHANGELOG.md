@@ -4,6 +4,52 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.0.0]
+
+### Changed (BREAKING)
+- **One command-parsing layer.** capt-hook's tree-sitter-bash `Command`/`CommandLine`/
+  `CommandLineQuery`/`Redirect` move into `cc_transcript/command.py` and replace every
+  shlex/regex heuristic. `bash_prefixes` is now `command_prefixes` (grammar-exact:
+  `timeout 30 git push` counts as `git push`, quoted operators and loop bodies parse
+  correctly); `Command` gains `unwrapped`, `prefix`, and `runs(*argv)`;
+  `CommandLine` gains `prefixes`. tree-sitter and tree-sitter-bash are now required
+  dependencies. The Rust extension exposes a bulk `command_prefixes` fast path
+  (4–5× the Python reference), parity-tested in `tests/test_command_parity.py`.
+- **tools.py rewritten.** Per-class `from_raw` constructors and a `TOOL_TYPES`
+  registry replace the monolithic dispatcher; dual camelCase/snake_case keys resolve
+  presence-first (explicit `null` falls through); non-mapping input raises in strict
+  mode and degrades to an empty-input `OtherCall` under `on_error="other"`;
+  a `TaskUpdate` without a task id now raises. `BashCall.command_line` returns the
+  parsed `CommandLine`. `typed_tool_call`, `segment_prefix`, `split_on_operators`,
+  and the shell token tables are gone.
+- **toolcalls.py is now facts.py.** `ToolFact` carries `tool_use_id` and
+  `command_prefixes`; `bash_prefix_counts` is `command_prefix_counts`; the CLI's
+  parallel `Outcome` projection is deleted in favor of the one `ToolFact` join.
+- **`Session.has_command(*argv)`** matches parsed commands via `Command.runs`
+  (wrapper-transparent, quote-exact) instead of regexing raw text;
+  `Session.command_lines()` exposes the parsed lines and `commands()` stays raw.
+- **One interrupt-marker semantics.** Head-anchored, case-insensitive
+  (`^\s*\[Request interrupted by user`) everywhere: the parser's `interrupted` flag,
+  filter groups, `JUNK_USER_MESSAGE_RE`, and mining agree, in both languages.
+  Mid-text quotes of the marker no longer count.
+- **Alias-aware mining.** `MiningSpec` gains `plan_tools`/`denial_excluded_tools`,
+  and `edit_tools`/`subagent_tools` are alias-closed; `ExitSpecMode` denials and plan
+  rejections now classify correctly, including `mcp__server__Tool` forms.
+  New `tools.matches_names`; expanded sets travel in the spec JSON.
+- **Sentiment rides the event spine.** `messages.py` is deleted;
+  `ConversationBucket.events` holds `UserEvent | AssistantEvent`
+  (`ConversationEvent`), built by `bucket_events`. New `models.tool_uses` and
+  `models.thinking_chars` helpers replace app-side adapters.
+- **Removed:** `STOP_HOOK_RE`, the `build_event` alias (use `parse_event`),
+  `activity.meta_of` (use `filterspec.event_meta`), `Command.empty()`
+  (`CommandLine.primary`/`head` are `Command | None`).
+
+### Fixed
+- One failed `git show` no longer discards corrections already collected from other
+  commits; the sentiment lexicon fails fast instead of scoring with a silently
+  degraded lexicon; the judge fan-out catches only `JudgeError`, so programming
+  errors propagate; `Session.subagents` skips macOS `._*` resource forks.
+
 ## [7.1.0]
 
 ### Added
