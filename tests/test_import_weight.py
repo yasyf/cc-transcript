@@ -13,11 +13,26 @@ roots = sorted({m.split(".")[0] for m in sys.modules if not m.startswith("_")})
 print(json.dumps(roots))
 """
 
+MINING_PROBE = """
+import json, sys
+import cc_transcript.mining.signals
+roots = sorted({m.split(".")[0] for m in sys.modules if not m.startswith("_")})
+print(json.dumps(roots))
+"""
+
 
 def test_ids_and_tools_import_stdlib_only() -> None:
     out = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, check=True)
     loaded = set(json.loads(out.stdout))
     assert not loaded & set(HEAVY), f"hot-path import pulled heavy deps: {sorted(loaded & set(HEAVY))}"
+    assert "cc_transcript" in loaded
+
+
+def test_mining_signals_import_stays_tree_sitter_free() -> None:
+    out = subprocess.run([sys.executable, "-c", MINING_PROBE], capture_output=True, text=True, check=True)
+    loaded = set(json.loads(out.stdout))
+    grammar = loaded & {"tree_sitter", "tree_sitter_bash"}
+    assert not grammar, f"mining import pulled the bash grammar: {sorted(grammar)}"
     assert "cc_transcript" in loaded
 
 

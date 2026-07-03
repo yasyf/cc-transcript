@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.command import bulk_command_prefixes
 from cc_transcript.filterspec import DENIAL_PREFIX, embedded_user_text, session_id_of
 from cc_transcript.tools import BashCall, file_path_of, mcp_access, mcp_parts
 
@@ -127,6 +126,8 @@ def tool_facts(transcripts: Iterable[ParsedTranscript]) -> Iterator[ToolFact]:
     Yields:
         A flattened fact per tool use, in file order.
     """
+    from cc_transcript.command import bulk_command_prefixes
+
     for parsed in transcripts:
         session_id = session_id_of(parsed.events)
         if session_id is None:
