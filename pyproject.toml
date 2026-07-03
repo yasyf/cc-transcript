@@ -48,7 +48,7 @@ sentiment = [
     "spacy>=3.8",
     "afinn>=0.1",
 ]
-llm = ["spawnllm>=0.5.1,<0.6"]
+llm = ["spawnllm>=0.5.4,<0.6"]
 
 [project.scripts]
 cc-transcript = "cc_transcript.cli:cli"
