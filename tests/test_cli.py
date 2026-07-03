@@ -909,6 +909,24 @@ def test_grep_without_with_result_omits_sibling(runner: CliRunner, rich: Path) -
     assert rows and all("results" not in row for row in rows)
 
 
+def test_grep_with_result_builds_facts_only_for_transcripts_with_hits(
+    runner: CliRunner, rich: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cc_transcript.facts import tool_facts
+
+    quiet = write_transcript(tmp_path / "quiet.jsonl", [user_entry(0, "nothing to see")])
+    joined: list[Any] = []
+
+    def counting(transcripts: Any) -> Any:
+        joined.append(transcripts)
+        return tool_facts(transcripts)
+
+    monkeypatch.setattr("cc_transcript.cli.tool_facts", counting)
+    result = runner.invoke(cli, ["grep", "rm|query", str(rich), str(quiet), "--json", "--with-result"])
+    assert result.exit_code == 0
+    assert len(joined) == 1
+
+
 def test_grep_with_result_human_appends_markers(runner: CliRunner, rich: Path) -> None:
     result = runner.invoke(cli, ["grep", "rm|query", str(rich), "--with-result"])
     assert result.exit_code == 0
