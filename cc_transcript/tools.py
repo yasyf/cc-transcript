@@ -406,8 +406,9 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
     Claude Code shape change or a model-emitted invalid call degrades to
     :class:`OtherCall` — with a still-correct digest, since the raw mapping is
     the substrate — instead of crashing every hook fire or session lift. A
-    non-mapping ``input`` raises under both modes: an :class:`OtherCall`
-    holding one could not digest, so it is unrepresentable.
+    non-mapping ``input`` raises under strict mode; under ``on_error='other'``
+    it degrades to an :class:`OtherCall` over an empty mapping, whose digest is
+    the empty-input digest.
 
     Example:
         >>> call = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})
@@ -415,7 +416,9 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
         'y'
     """
     if not isinstance(input, dict):
-        raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
+        if on_error == "raise":
+            raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
+        return OtherCall(name=name, raw={})
     if (cls := TOOL_TYPES.get(TOOL_ALIASES_REVERSE.get(name, name))) is None:
         return OtherCall(name=name, raw=input)
     try:

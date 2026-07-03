@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 import pytest
 
 from cc_transcript.command import CommandLine
@@ -133,10 +131,21 @@ def test_malformed_known_tool_raises_by_default() -> None:
 
 
 @pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
-@pytest.mark.parametrize("on_error", ["raise", "other"])
-def test_non_mapping_input_raises_under_both_modes(name: str, on_error: Literal["raise", "other"]) -> None:
+def test_non_mapping_input_raises_under_strict(name: str) -> None:
     with pytest.raises(ToolInputError, match="must be a mapping"):
-        parse_tool_call(name, ["not", "a", "mapping"], on_error=on_error)  # type: ignore[arg-type]
+        parse_tool_call(name, ["not", "a", "mapping"])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
+def test_non_mapping_input_degrades_to_empty_other_under_other(name: str) -> None:
+    call = parse_tool_call(name, ["not", "a", "mapping"], on_error="other")  # type: ignore[arg-type]
+    assert isinstance(call, OtherCall)
+    assert (call.name, dict(call.raw)) == (name, {})
+
+
+def test_non_mapping_degrade_digest_is_the_empty_input_digest() -> None:
+    call = parse_tool_call("Bash", None, on_error="other")  # type: ignore[arg-type]
+    assert call.digest == tool_digest("Bash", {})
 
 
 def test_on_error_other_degrades_with_correct_digest() -> None:
