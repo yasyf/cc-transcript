@@ -97,6 +97,12 @@ def test_dual_key_first_present_key_wins_over_truthiness() -> None:
     assert call.script_path == ""
 
 
+def test_dual_key_explicit_null_falls_through_to_next_key() -> None:
+    call = parse_tool_call("Agent", {"prompt": "p", "subagent_type": None, "agent_type": "Explore"})
+    assert isinstance(call, TaskCall)
+    assert call.agent_type == "Explore"
+
+
 def test_task_update_accepts_either_task_id_spelling() -> None:
     for raw in ({"taskId": "T1", "status": "completed"}, {"task_id": "T1", "status": "completed"}):
         call = parse_tool_call("TaskUpdate", raw)
