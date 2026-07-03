@@ -10,8 +10,8 @@ use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 use crate::event::{parse_timestamp, require_str, truthy_str};
 use crate::filter::{compile_group_array, Kind};
 use crate::protocol::{
-    embedded_user_text, interrupt_marker, is_bare_interrupt_marker, DENIAL_PREFIX,
-    INTERRUPT_MARKER_RE,
+    embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
+    DENIAL_PREFIX, INTERRUPT_MARKER_RE,
 };
 use crate::value::{block_type, content_text, field, field_bool, field_str};
 
@@ -20,6 +20,7 @@ const TRANSCRIPT_MESSAGE: &str = "transcript_message";
 const PLAN_REVIEW: &str = "plan_review";
 const INTERRUPT_REJECTION: &str = "interrupt_rejection";
 const REVIEW_COMMENT: &str = "review_comment";
+const QUESTION_ANSWER: &str = "question_answer";
 
 // Detector ids (mining/spec.py TRANSCRIPT_MESSAGE_DETECTOR etc.).
 const DETECTOR_TRANSCRIPT_MESSAGE: &str = "transcript_message";
@@ -28,6 +29,12 @@ const DETECTOR_PLAN_REENTRY: &str = "plan_reentry";
 const DETECTOR_DENIAL: &str = "denial";
 const DETECTOR_INTERRUPT: &str = "interrupt";
 const DETECTOR_REVIEW_COMMENT: &str = "review_comment";
+const DETECTOR_ASK_USER_QUESTION: &str = "ask_user_question";
+
+// AskUserQuestion answered-round segment markers (mining/signals.py).
+const ANSWER_PREVIEW_SEP: &str = " selected preview:\n";
+const ANSWER_NOTES_SEP: &str = " notes: ";
+const NO_OPTION_SELECTED: &str = "(no option selected)";
 
 // Confidence bands (mining/confidence.py NONE / LOW); the hardcoded marker-correction seeds.
 const NONE: f64 = 0.0;
@@ -1164,6 +1171,233 @@ fn iter_review_comment<'py>(
 
 // ── dispatch (mining/signals.py mine) ────────────────────────────────────────
 
+/// The answered AskUserQuestion tool-result blocks of a user event
+/// (signals.py answered_question_results): non-error blocks whose flattened
+/// content starts with the answered banner.
+fn answered_results(event: &Value) -> Vec<&Value> {
+    message_content(event)
+        .and_then(JsonContainerTrait::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|b| block_type(b) == Some("tool_result"))
+        .filter(|b| !field_bool(b, "is_error"))
+        .filter(|b| result_content_text(b).is_some_and(|c| c.starts_with(ANSWERED_PREFIX)))
+        .collect()
+}
+
+struct AnsweredPair<'a> {
+    question: &'a Value,
+    answer: Option<&'a str>,
+    preview: Option<&'a str>,
+    notes: Option<&'a str>,
+}
+
+/// split_answer_segment (signals.py split_answer_segment): the answer head plus
+/// the optional preview and notes parts, split on the first marker occurrence in
+/// render order (answer, preview, notes).
+fn split_answer_segment(segment: &str) -> (&str, Option<&str>, Option<&str>) {
+    if let Some(at) = segment.find(ANSWER_PREVIEW_SEP) {
+        let rest = &segment[at + ANSWER_PREVIEW_SEP.len()..];
+        return match rest.find(ANSWER_NOTES_SEP) {
+            Some(notes_at) => (
+                &segment[..at],
+                Some(&rest[..notes_at]),
+                Some(&rest[notes_at + ANSWER_NOTES_SEP.len()..]),
+            ),
+            None => (&segment[..at], Some(rest), None),
+        };
+    }
+    match segment.find(ANSWER_NOTES_SEP) {
+        Some(at) => (&segment[..at], None, Some(&segment[at + ANSWER_NOTES_SEP.len()..])),
+        None => (segment, None, None),
+    }
+}
+
+/// find_anchor (signals.py find_anchor): the next anchor at or after `pos` that
+/// renders at the body start or right after the ", " pair join, skipping the same
+/// literal embedded inside an earlier freeform answer.
+fn find_anchor(body: &str, anchor: &str, pos: usize) -> Option<usize> {
+    let mut from = pos;
+    while let Some(i) = body[from..].find(anchor) {
+        let at = from + i;
+        if at == 0 || body[..at].ends_with(", ") {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// answered_pairs (signals.py answered_pairs): anchors each question in order on
+/// '"<question>"=', slices each pair's segment to the next found anchor, strips
+/// the exact ', ' pair join on middle segments and the answer's exact closing '"',
+/// and skips questions whose anchor never rendered.
+fn answered_pairs<'a>(body: &'a str, questions: &'a sonic_rs::Array) -> Vec<AnsweredPair<'a>> {
+    let mut found: Vec<(&Value, usize, usize)> = Vec::new();
+    let mut pos = 0usize;
+    for question in questions.iter() {
+        let Some(text) = field_str(question, "question") else { continue };
+        let anchor = format!("\"{text}\"=");
+        let Some(at) = find_anchor(body, &anchor, pos) else { continue };
+        found.push((question, at, at + anchor.len()));
+        pos = at + anchor.len();
+    }
+    let mut pairs = Vec::new();
+    for (i, &(question, _, value_at)) in found.iter().enumerate() {
+        let end = found.get(i + 1).map_or(body.len(), |&(_, at, _)| at);
+        let mut segment = &body[value_at..end];
+        if i + 1 < found.len() {
+            segment = segment.strip_suffix(", ").unwrap_or(segment);
+        }
+        let (head, preview, notes) = split_answer_segment(segment);
+        let answer = if let Some(quoted) = head.strip_prefix('"') {
+            Some(quoted.strip_suffix('"').unwrap_or(quoted))
+        } else if head.starts_with(NO_OPTION_SELECTED) {
+            None
+        } else {
+            continue;
+        };
+        pairs.push(AnsweredPair { question, answer, preview, notes });
+    }
+    pairs
+}
+
+/// join_labels (signals.py join_labels): the multiSelect resolution — split the
+/// answer on ', ' and greedily re-join consecutive parts until each accumulation
+/// equals the next unused label in option order; succeeds only when every part is
+/// consumed.
+fn join_labels(answer: &str, labels: &[String]) -> Option<Vec<String>> {
+    let mut picked: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let mut acc: Option<String> = None;
+    for part in answer.split(", ") {
+        let joined = match acc {
+            None => part.to_string(),
+            Some(prior) => format!("{prior}, {part}"),
+        };
+        match (start..labels.len()).find(|&i| labels[i] == joined) {
+            Some(at) => {
+                picked.push(labels[at].clone());
+                start = at + 1;
+                acc = None;
+            }
+            None => acc = Some(joined),
+        }
+    }
+    (!picked.is_empty() && acc.is_none()).then_some(picked)
+}
+
+/// ordinal_label (signals.py ordinal_label): a leading ASCII-digit run in
+/// 1..=len(options), followed by nothing or one of ',' '.' ' ' ')', resolves to
+/// that option's label; the bool is whether the ordinal stood alone.
+fn ordinal_label(answer: &str, labels: &[String]) -> Option<(String, bool)> {
+    let rest = answer.trim_start_matches(|c: char| c.is_ascii_digit());
+    let digits = &answer[..answer.len() - rest.len()];
+    let n: usize = digits.parse().ok()?;
+    if !(1..=labels.len()).contains(&n) || (!rest.is_empty() && !rest.starts_with([',', '.', ' ', ')'])) {
+        return None;
+    }
+    Some((labels[n - 1].clone(), rest.is_empty()))
+}
+
+/// resolve_pick (signals.py resolve_pick): verbatim/multiSelect join → a full
+/// pick; leading ordinal → resolved label with option_pick only when bare; else
+/// pure freeform.
+fn resolve_pick(answer: Option<&str>, labels: &[String]) -> (Vec<String>, bool) {
+    let Some(answer) = answer else { return (Vec::new(), false) };
+    if let Some(joined) = join_labels(answer, labels) {
+        return (joined, true);
+    }
+    match ordinal_label(answer, labels) {
+        Some((label, bare)) => (vec![label], bare),
+        None => (Vec::new(), false),
+    }
+}
+
+/// iter_ask_user_question_signals (signals.py iter_ask_user_question_signals):
+/// one signal per answered question/answer pair, with the pick resolution facts
+/// as evidence (absent preview/notes keys are omitted, never None).
+fn iter_ask_user_question<'py>(
+    py: Python<'py>,
+    events: &Events,
+    spec: &CompiledMiningSpec,
+    uses: &HashMap<String, &Value>,
+    out: &mut Vec<Bound<'py, PyDict>>,
+) -> PyResult<()> {
+    for index in 0..events.len() {
+        if events.kinds[index] != Kind::User {
+            continue;
+        }
+        let event = &events.lines[index];
+        for block in answered_results(event) {
+            let Some(use_block) = field_str(block, "tool_use_id").and_then(|id| uses.get(id).copied())
+            else {
+                continue;
+            };
+            if field_str(use_block, "name") != Some("AskUserQuestion") {
+                continue;
+            }
+            let Some(content) = result_content_text(block) else { continue };
+            if !content.ends_with(ANSWERED_TRAILER)
+                || content.len() < ANSWERED_PREFIX.len() + ANSWERED_TRAILER.len()
+            {
+                continue;
+            }
+            let body = &content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()];
+            let Some(questions) = field(use_block, "input")
+                .and_then(|input| field(input, "questions"))
+                .and_then(JsonContainerTrait::as_array)
+            else {
+                continue;
+            };
+            let trigger = events.nearest_assistant_index(index);
+            for pair in answered_pairs(body, questions) {
+                let labels: Vec<String> = field(pair.question, "options")
+                    .and_then(JsonContainerTrait::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|option| field_str(option, "label"))
+                    .map(String::from)
+                    .collect();
+                let (picked, option_pick) = resolve_pick(pair.answer, &labels);
+                let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
+                let Some(text) = pair.notes.or(pair.answer) else { continue };
+                let sig = if option_pick {
+                    weak("option_pick")
+                } else {
+                    calibrated(&spec.calibrated, text, "freeform_answer")
+                };
+                let evidence = PyDict::new(py);
+                evidence.set_item("question", field_str(pair.question, "question"))?;
+                evidence.set_item("header", field_str(pair.question, "header"))?;
+                evidence.set_item("multi_select", field_bool(pair.question, "multiSelect"))?;
+                evidence.set_item("option_pick", option_pick)?;
+                evidence.set_item("picked_labels", picked)?;
+                evidence.set_item("recommended_pick", recommended)?;
+                if let Some(preview) = pair.preview {
+                    evidence.set_item("preview", preview)?;
+                }
+                if let Some(notes) = pair.notes {
+                    evidence.set_item("notes", notes)?;
+                }
+                out.push(build_signal_dict(
+                    py,
+                    QUESTION_ANSWER,
+                    DETECTOR_ASK_USER_QUESTION,
+                    event,
+                    index,
+                    text,
+                    trigger,
+                    &sig,
+                    None,
+                    evidence,
+                )?);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn mine<'py>(
     py: Python<'py>,
     raw: &[u8],
@@ -1190,6 +1424,9 @@ pub fn mine<'py>(
     }
     if spec.detectors.contains(DETECTOR_REVIEW_COMMENT) {
         iter_review_comment(py, &events, spec, &uses, &mut out)?;
+    }
+    if spec.detectors.contains(DETECTOR_ASK_USER_QUESTION) {
+        iter_ask_user_question(py, &events, spec, &uses, &mut out)?;
     }
     Ok(out)
 }
@@ -1223,5 +1460,54 @@ mod tests {
         assert_eq!(high.confidence, 1.0);
         let low = bump(CandidateSig { confidence: 0.1, reasons: vec![], durable: true }, -0.25, "r");
         assert_eq!(low.confidence, 0.0);
+    }
+
+    #[test]
+    fn split_answer_segment_variants() {
+        assert_eq!(split_answer_segment("\"A\""), ("\"A\"", None, None));
+        assert_eq!(
+            split_answer_segment("\"A\" selected preview:\nraw text"),
+            ("\"A\"", Some("raw text"), None)
+        );
+        assert_eq!(
+            split_answer_segment("\"A\" selected preview:\nraw notes: typed"),
+            ("\"A\"", Some("raw"), Some("typed"))
+        );
+        assert_eq!(
+            split_answer_segment("(no option selected) notes: typed"),
+            ("(no option selected)", None, Some("typed"))
+        );
+    }
+
+    #[test]
+    fn answered_pairs_slices_segments_and_skips_omitted() {
+        let questions: Value =
+            sonic_rs::from_str(r#"[{"question": "Q1"}, {"question": "Q2"}, {"question": "Q3"}]"#).unwrap();
+        let body = "\"Q1\"=\"first, with comma\", \"Q3\"=\"he said \"hi\"\"";
+        let pairs = answered_pairs(body, questions.as_array().unwrap());
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].answer, Some("first, with comma"));
+        assert_eq!(pairs[1].answer, Some("he said \"hi\""));
+    }
+
+    #[test]
+    fn join_labels_greedy_over_comma_containing_label() {
+        let labels = vec!["BeforeEdit / AfterEdit".to_string(), "One, Two".to_string(), "Three".to_string()];
+        assert_eq!(
+            join_labels("One, Two, Three", &labels),
+            Some(vec!["One, Two".to_string(), "Three".to_string()])
+        );
+        assert_eq!(join_labels("One, Two, Four", &labels), None);
+        assert_eq!(join_labels("Three", &labels), Some(vec!["Three".to_string()]));
+    }
+
+    #[test]
+    fn ordinal_label_bounds_and_separators() {
+        let labels = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        assert_eq!(ordinal_label("3, and more", &labels), Some(("C".to_string(), false)));
+        assert_eq!(ordinal_label("2", &labels), Some(("B".to_string(), true)));
+        assert_eq!(ordinal_label("2026 timeline works", &labels), None);
+        assert_eq!(ordinal_label("1x", &labels), None);
+        assert_eq!(ordinal_label("freeform", &labels), None);
     }
 }

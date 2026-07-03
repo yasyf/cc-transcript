@@ -21,7 +21,13 @@ when :func:`mining_spec_is_portable` holds, the Rust backend both interpret.
 
 from __future__ import annotations
 
-from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.filterspec import (
+    ANSWERED_PREFIX,
+    ANSWERED_TRAILER,
+    DENIAL_PREFIX,
+    USER_SAID_MARKER,
+    USER_SAID_TRAILER,
+)
 from cc_transcript.mining.candidates import DedupKey, FeedbackCandidate, dedup_key
 from cc_transcript.mining.confidence import (
     HIGH,
@@ -64,6 +70,7 @@ from cc_transcript.mining.signals import (
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
+    QUESTION_ANSWER,
     REVIEW_COMMENT,
     TRANSCRIPT_MESSAGE,
     SourceKind,

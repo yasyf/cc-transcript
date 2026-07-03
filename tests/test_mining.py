@@ -12,6 +12,8 @@ from cc_transcript.activity import SessionActivity
 from cc_transcript.context import ContextWindow, capture_window
 from cc_transcript.ids import EventRef, tool_digest
 from cc_transcript.mining import (
+    ANSWERED_PREFIX,
+    ANSWERED_TRAILER,
     DENIAL_PREFIX,
     HIGH,
     INTERRUPT_REJECTION,
@@ -20,6 +22,7 @@ from cc_transcript.mining import (
     NOISE_FLOOR,
     NONE,
     PLAN_REVIEW,
+    QUESTION_ANSWER,
     TRANSCRIPT_MESSAGE,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
@@ -39,6 +42,7 @@ from cc_transcript.mining import (
 )
 from cc_transcript.mining.confidence import from_payload
 from cc_transcript.mining.signals import (
+    iter_ask_user_question_signals,
     iter_interrupt_marker_signals,
     iter_plan_reentry_signals,
     iter_plan_rejection_signals,
@@ -65,6 +69,28 @@ from cc_transcript.models import (
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("sess-1")
 SPEC = MiningSpec()
+
+# An answered AskUserQuestion round captured byte-verbatim from the mirror corpus
+# (captain-hook session 1786702b, toolu_01CmqCAkZFs5TP2WUJAukLa3): the second
+# question carries nested double quotes and its ordinal-shorthand answer embeds
+# commas, so the pair anchors and exact-suffix strips are exercised on real bytes.
+TOMBSTONE_QUESTION = "What should the hook do when a tombstone comment is confirmed?"
+TOMBSTONE_LABELS = ("Advisory warn (Recommended)", "Block the edit", "Turn-end Stop gate")
+MATCHER_QUESTION = (
+    'Which cheap-trigger matcher should run on the extracted comments? (You said "ast/nlp triggered" — AST comment '
+    "extraction is in either way; this is about the text-matching layer. Evidence: spaCy's en_core_web_sm has no "
+    "runtime provisioning path — RESOURCES.spacy raises if it's missing, and nothing in pack install provisions it — "
+    "so NLP would error/no-op in the ~17 general-pack repos until each machine installs the model.)"
+)
+MATCHER_LABELS = ("Regex phrases (Recommended)", "Regex + NLP lemma layer", "NLP-only (as originally floated)")
+MATCHER_ANSWER = (
+    "3, and figure out why NLP is not being installed when you install capt-hook, it should be downloading the "
+    "model live whenyou start it up, look at the git history"
+)
+ROUND1_CONTENT = (
+    f'{ANSWERED_PREFIX}"{TOMBSTONE_QUESTION}"="Advisory warn (Recommended)", '
+    f'"{MATCHER_QUESTION}"="{MATCHER_ANSWER}"{ANSWERED_TRAILER}'
+)
 
 
 def review_spec(
@@ -114,6 +140,31 @@ def denial_content(said: str) -> str:
 
 def anchor(uuid: str) -> EventRef:
     return EventRef(SESSION, EventUuid(uuid))
+
+
+def question(text: str, header: str, *labels: str, multi_select: bool = False) -> dict[str, object]:
+    return {
+        "question": text,
+        "header": header,
+        "multiSelect": multi_select,
+        "options": [{"label": label} for label in labels],
+    }
+
+
+def answered(pairs: str) -> str:
+    return f"{ANSWERED_PREFIX}{pairs}{ANSWERED_TRAILER}"
+
+
+def answered_round(
+    questions: list[dict[str, object]], content: str, *, is_error: bool = False
+) -> list[AssistantEvent | UserEvent]:
+    return [
+        assistant(
+            "a0",
+            blocks=(ToolUseBlock(id=ToolUseId("q1"), name="AskUserQuestion", input={"questions": questions}),),
+        ),
+        user("u0", blocks=(ToolResultBlock(tool_use_id=ToolUseId("q1"), content=content, is_error=is_error),)),
+    ]
 
 
 def test_dedup_key_stable_and_content_derived() -> None:
@@ -546,6 +597,225 @@ def test_iter_plan_reentry_signals_smoke() -> None:
     assert reentries[0].text == "reconsider the plan, this is wrong"
     assert reentries[0].lower_bound == 0
     assert reentries[0].signal == CandidateSignal(HIGH, ("reentry_after_edit", "substantive"))
+
+
+def test_iter_ask_user_question_signals_single_option_pick() -> None:
+    events = answered_round(
+        [question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+        answered('"Which adapter?"="Storage (Recommended)"'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.kind == QUESTION_ANSWER
+    assert signal.detector == "ask_user_question"
+    assert signal.text == "Storage (Recommended)"
+    assert signal.trigger_index == 0
+    assert signal.signal == weak("option_pick")
+    assert signal.evidence == {
+        "question": "Which adapter?",
+        "header": "Adapter",
+        "multi_select": False,
+        "option_pick": True,
+        "picked_labels": ["Storage (Recommended)"],
+        "recommended_pick": True,
+    }
+
+
+def test_iter_ask_user_question_signals_freeform_nested_quotes_and_commas() -> None:
+    events = answered_round(
+        [
+            question(TOMBSTONE_QUESTION, "Enforcement", *TOMBSTONE_LABELS),
+            question(MATCHER_QUESTION, "Matcher", *MATCHER_LABELS),
+        ],
+        ROUND1_CONTENT,
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert [signal.text for signal in signals] == ["Advisory warn (Recommended)", MATCHER_ANSWER]
+    pick, freeform = signals
+    assert pick.signal == weak("option_pick")
+    assert pick.evidence == {
+        "question": TOMBSTONE_QUESTION,
+        "header": "Enforcement",
+        "multi_select": False,
+        "option_pick": True,
+        "picked_labels": ["Advisory warn (Recommended)"],
+        "recommended_pick": True,
+    }
+    assert freeform.signal == CandidateSignal(HIGH, ("freeform_answer", "substantive"))
+    assert freeform.evidence == {
+        "question": MATCHER_QUESTION,
+        "header": "Matcher",
+        "multi_select": False,
+        "option_pick": False,
+        "picked_labels": ["NLP-only (as originally floated)"],
+        "recommended_pick": False,
+    }
+
+
+def test_iter_ask_user_question_signals_ordinal_shorthand_is_freeform() -> None:
+    events = answered_round(
+        [
+            question(
+                "What should the two built-in edit-text contexts be named?",
+                "Names",
+                "BeforeEdit / AfterEdit (Recommended)",
+                "EditOld / EditNew",
+                "Preimage / Postimage",
+            )
+        ],
+        answered(
+            '"What should the two built-in edit-text contexts be named?"='
+            '"1, but shouldnt those be default contexts? were they not before?"'
+        ),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.text == "1, but shouldnt those be default contexts? were they not before?"
+    assert signal.evidence["picked_labels"] == ["BeforeEdit / AfterEdit (Recommended)"]
+    assert signal.evidence["option_pick"] is False
+    assert signal.evidence["recommended_pick"] is True
+    assert signal.signal == CandidateSignal(HIGH, ("freeform_answer", "substantive"))
+
+
+def test_iter_ask_user_question_signals_multiselect_subset_join_is_option_pick() -> None:
+    events = answered_round(
+        [
+            question(
+                "Which docs pages?",
+                "Docs",
+                "Getting started",
+                "How it works, end to end",
+                "CLI reference",
+                multi_select=True,
+            )
+        ],
+        answered('"Which docs pages?"="Getting started, How it works, end to end"'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.text == "Getting started, How it works, end to end"
+    assert signal.signal == weak("option_pick")
+    assert signal.evidence["multi_select"] is True
+    assert signal.evidence["option_pick"] is True
+    assert signal.evidence["picked_labels"] == ["Getting started", "How it works, end to end"]
+    assert signal.evidence["recommended_pick"] is False
+
+
+def test_iter_ask_user_question_signals_preview_split_into_evidence() -> None:
+    events = answered_round(
+        [question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
+        answered(
+            '"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n$ tool enable\n==> done'
+        ),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.text == "Full turnkey (Recommended)"
+    assert signal.signal == weak("option_pick")
+    assert signal.evidence["preview"] == "$ tool enable\n==> done"
+    assert signal.evidence["picked_labels"] == ["Full turnkey (Recommended)"]
+    assert "notes" not in signal.evidence
+
+
+def test_iter_ask_user_question_signals_no_option_selected_notes() -> None:
+    events = answered_round(
+        [question("Add CI coverage?", "CI", "Add the guard", "Skip CI guard")],
+        answered('"Add CI coverage?"=(no option selected) notes: fix it in capt-hook so it skips invalid files'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.text == "fix it in capt-hook so it skips invalid files"
+    assert signal.signal == CandidateSignal(HIGH, ("freeform_answer", "substantive"))
+    assert signal.evidence["option_pick"] is False
+    assert signal.evidence["picked_labels"] == []
+    assert signal.evidence["recommended_pick"] is False
+    assert signal.evidence["notes"] == "fix it in capt-hook so it skips invalid files"
+    assert "preview" not in signal.evidence
+
+
+def test_iter_ask_user_question_signals_omitted_pair_skipped() -> None:
+    events = answered_round(
+        [question("First unanswered?", "One", "A", "B"), question("Second answered?", "Two", "C", "D")],
+        answered('"Second answered?"="C"'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert [signal.evidence["question"] for signal in signals] == ["Second answered?"]
+    assert signals[0].evidence["picked_labels"] == ["C"]
+    assert signals[0].signal == weak("option_pick")
+
+
+def test_iter_ask_user_question_signals_malformed_question_skipped() -> None:
+    events = answered_round(
+        [
+            {"header": "Broken", "multiSelect": False, "options": [{"label": "A"}]},
+            question("Second answered?", "Two", "C", "D"),
+        ],
+        answered('"Second answered?"="C"'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert [signal.evidence["question"] for signal in signals] == ["Second answered?"]
+    assert signals[0].evidence["picked_labels"] == ["C"]
+
+
+def test_iter_ask_user_question_signals_errored_result_yields_nothing() -> None:
+    events = answered_round(
+        [question("Which adapter?", "Adapter", "Storage", "Memory")],
+        answered('"Which adapter?"="Storage"'),
+        is_error=True,
+    )
+    assert list(iter_ask_user_question_signals(events, SPEC)) == []
+
+
+def test_iter_ask_user_question_signals_unpaired_result_skipped() -> None:
+    events = [
+        assistant(
+            "a0",
+            blocks=(
+                ToolUseBlock(
+                    id=ToolUseId("q1"),
+                    name="AskUserQuestion",
+                    input={"questions": [question("Which adapter?", "Adapter", "Storage", "Memory")]},
+                ),
+            ),
+        ),
+        user(
+            "u0",
+            blocks=(
+                ToolResultBlock(
+                    tool_use_id=ToolUseId("q9"), content=answered('"Which adapter?"="Storage"'), is_error=False
+                ),
+            ),
+        ),
+    ]
+    assert list(iter_ask_user_question_signals(events, SPEC)) == []
+
+
+def test_iter_ask_user_question_signals_answer_ending_in_quote_not_overstripped() -> None:
+    events = answered_round(
+        [question("Which name?", "Name", "Alpha", "Beta")],
+        answered('"Which name?"="call it "beta""'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    assert signals[0].text == 'call it "beta"'
+    assert signals[0].evidence["picked_labels"] == []
+    assert signals[0].evidence["option_pick"] is False
+
+
+def test_iter_ask_user_question_signals_answer_embedding_later_anchor() -> None:
+    events = answered_round(
+        [question("First?", "One", "A", "B"), question("Second?", "Two", "C", "D")],
+        answered('"First?"="I think "Second?"=maybe", "Second?"="C"'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert [signal.evidence["question"] for signal in signals] == ["First?", "Second?"]
+    assert signals[0].text == 'I think "Second?"=maybe'
+    assert signals[1].evidence["picked_labels"] == ["C"]
 
 
 def test_feedback_store_round_trip_preserves_signal_window_and_ref(tmp_path: Path) -> None:

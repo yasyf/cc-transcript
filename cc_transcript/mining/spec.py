@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from cc_transcript.mining.signals import MiningSignal
 
 DetectorName = NewType("DetectorName", str)
-"""One of the six core detector identifiers a :class:`MiningSpec` may enable."""
+"""One of the seven core detector identifiers a :class:`MiningSpec` may enable."""
 
 TRANSCRIPT_MESSAGE_DETECTOR = DetectorName("transcript_message")
 EXIT_PLAN_REJECTION_DETECTOR = DetectorName("exit_plan_rejection")
@@ -57,6 +57,7 @@ PLAN_REENTRY_DETECTOR = DetectorName("plan_reentry")
 DENIAL_DETECTOR = DetectorName("denial")
 INTERRUPT_DETECTOR = DetectorName("interrupt")
 REVIEW_COMMENT_DETECTOR = DetectorName("review_comment")
+ASK_USER_QUESTION_DETECTOR = DetectorName("ask_user_question")
 
 ALL_DETECTORS: frozenset[DetectorName] = frozenset(
     {
@@ -66,6 +67,7 @@ ALL_DETECTORS: frozenset[DetectorName] = frozenset(
         DENIAL_DETECTOR,
         INTERRUPT_DETECTOR,
         REVIEW_COMMENT_DETECTOR,
+        ASK_USER_QUESTION_DETECTOR,
     }
 )
 

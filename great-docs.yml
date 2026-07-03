@@ -309,6 +309,8 @@ reference:
       - mining.DENIAL_PREFIX
       - mining.USER_SAID_MARKER
       - mining.USER_SAID_TRAILER
+      - mining.ANSWERED_PREFIX
+      - mining.ANSWERED_TRAILER
       - mining.SourceKind
       - mining.FeedbackCandidate
       - mining.DedupKey
