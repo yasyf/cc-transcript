@@ -275,6 +275,8 @@ reference:
   - title: Sentiment
     desc: Conversation buckets and a composable score spec around any inference engine.
     contents:
+      - sentiment.bucket_events
+      - sentiment.ConversationEvent
       - sentiment.ConversationBucket
       - sentiment.ConversationBucketer
       - sentiment.BucketKey
