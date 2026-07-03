@@ -614,6 +614,27 @@ def test_subagent_index_with_type_and_failed(tmp_path: Path) -> None:
     assert subagents.with_type("missing") == ()
 
 
+def test_with_type_matches_agent_types_alias_free(tmp_path: Path) -> None:
+    path = tmp_path / "proj" / f"{SESSION}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "\n".join(
+            [
+                user_line("u0", 0, "go"),
+                assistant_line("a0", 1, [tool_block("t1", "Task", prompt="p", subagent_type="Agent")]),
+                user_line("u1", 2, [result_block("t1", "done")]),
+            ]
+        )
+        + "\n"
+    )
+    directory = path.parent / path.stem / "subagents"
+    directory.mkdir(parents=True)
+    (directory / "agent-t1.jsonl").write_text(user_line("s0", 1, "go", isSidechain=True) + "\n")
+    subagents = Session.from_path(path).subagents
+    assert subagents.with_type("Task") == ()
+    assert [sub.type for sub in subagents.with_type("Agent")] == ["Agent"]
+
+
 def test_subagent_failed_false_when_clean(tmp_path: Path) -> None:
     path = tmp_path / "proj" / f"{SESSION}.jsonl"
     path.parent.mkdir(parents=True)

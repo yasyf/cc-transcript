@@ -23,7 +23,7 @@ from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
-from cc_transcript.tools import BashCall, SkillCall, TaskCall, expand_tool_names, file_path_of, hunks_of, tool_name_matches
+from cc_transcript.tools import BashCall, SkillCall, TaskCall, file_path_of, hunks_of, tool_name_matches
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -501,7 +501,7 @@ class SubagentIndex:
 
     def with_type(self, pattern: str) -> tuple[SubagentSession, ...]:
         """The dispatches whose type is named in the pipe spec ``pattern``."""
-        names = expand_tool_names(pattern)
+        names = set(pattern.split("|"))
         return tuple(subagent for subagent in self.items if subagent.type in names)
 
     def __iter__(self) -> Iterator[SubagentSession]:
