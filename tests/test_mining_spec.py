@@ -61,6 +61,7 @@ WORKFLOW_FINDING = StructuredFormat(
 def test_default_spec_to_json_shape() -> None:
     payload = json.loads(mining_spec_to_json(MiningSpec()))
     assert payload["detectors"] == [
+        "ask_user_question",
         "denial",
         "exit_plan_rejection",
         "interrupt",

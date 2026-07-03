@@ -26,7 +26,13 @@ from typing import TYPE_CHECKING
 import orjson
 import pytest
 
-from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.filterspec import (
+    ANSWERED_PREFIX,
+    ANSWERED_TRAILER,
+    DENIAL_PREFIX,
+    USER_SAID_MARKER,
+    USER_SAID_TRAILER,
+)
 from cc_transcript.mining.confidence import MEDIUM
 from cc_transcript.mining.engine import mine_signals, rust_mine_backend
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
@@ -46,6 +52,7 @@ from cc_transcript.mining.spec import (
 )
 from cc_transcript.parser import parse_events_from_bytes
 from tests.test_backend_parity import envelope, fixture_bytes, requires_rust
+from tests.test_mining import MATCHER_LABELS, MATCHER_QUESTION, ROUND1_CONTENT, TOMBSTONE_LABELS, TOMBSTONE_QUESTION
 
 if TYPE_CHECKING:
     from typing import Any
@@ -157,6 +164,27 @@ def denial(embedded: str | None = None) -> str:
     if embedded is None:
         return banner
     return f"{banner}{USER_SAID_MARKER}{embedded}\n{USER_SAID_TRAILER} will follow."
+
+
+def answered(pairs: str) -> str:
+    """An answered AskUserQuestion round's tool-result content."""
+    return f"{ANSWERED_PREFIX}{pairs}{ANSWERED_TRAILER}"
+
+
+def auq_question(text: str, header: str, *labels: str, multi_select: bool = False) -> dict[str, Any]:
+    return {
+        "question": text,
+        "header": header,
+        "multiSelect": multi_select,
+        "options": [{"label": label} for label in labels],
+    }
+
+
+def auq_round(questions: list[dict[str, Any]], content: str, *, is_error: bool = False) -> list[dict[str, Any]]:
+    return [
+        assistant("a1", tool_use("t1", "AskUserQuestion", questions=questions)),
+        user_result("u1", "t1", content, is_error=is_error),
+    ]
 
 
 # ── the per-detector battery: one parameterized case per shape, plus near-misses ──
@@ -373,6 +401,112 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
                 user_text("u1", "R[y.py][12a][note the guard][][]"),
             ],
             PADDED_REVIEW_SPEC,
+        ),
+        # ── ask_user_question: pick/freeform resolution, preview/notes, and skip-cases ──
+        "auq_single_pick": (
+            auq_round(
+                [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                answered('"Which adapter?"="Storage (Recommended)"'),
+            ),
+            SPEC,
+        ),
+        "auq_fixture_round1_nested_quotes": (
+            auq_round(
+                [
+                    auq_question(TOMBSTONE_QUESTION, "Enforcement", *TOMBSTONE_LABELS),
+                    auq_question(MATCHER_QUESTION, "Matcher", *MATCHER_LABELS),
+                ],
+                ROUND1_CONTENT,
+            ),
+            SPEC,
+        ),
+        "auq_ordinal_shorthand": (
+            auq_round(
+                [auq_question("Name the contexts?", "Names", "BeforeEdit / AfterEdit (Recommended)", "EditOld / EditNew")],
+                answered('"Name the contexts?"="1, but shouldnt those be default contexts? were they not before?"'),
+            ),
+            SPEC,
+        ),
+        "auq_multiselect_join": (
+            auq_round(
+                [
+                    auq_question(
+                        "Which docs pages?",
+                        "Docs",
+                        "Getting started",
+                        "How it works, end to end",
+                        "CLI reference",
+                        multi_select=True,
+                    )
+                ],
+                answered('"Which docs pages?"="Getting started, How it works, end to end"'),
+            ),
+            SPEC,
+        ),
+        "auq_preview": (
+            auq_round(
+                [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
+                answered(
+                    '"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n$ tool enable\n==> done'
+                ),
+            ),
+            SPEC,
+        ),
+        "auq_no_option_notes": (
+            auq_round(
+                [auq_question("Add CI coverage?", "CI", "Add the guard", "Skip CI guard")],
+                answered('"Add CI coverage?"=(no option selected) notes: fix it upstream so it skips invalid files'),
+            ),
+            SPEC,
+        ),
+        "auq_pair_omitted": (
+            auq_round(
+                [
+                    auq_question("First unanswered?", "One", "A", "B"),
+                    auq_question("Second answered?", "Two", "C", "D"),
+                ],
+                answered('"Second answered?"="C"'),
+            ),
+            SPEC,
+        ),
+        "auq_malformed_question_skipped": (
+            auq_round(
+                [
+                    {"header": "Broken", "multiSelect": False, "options": [{"label": "A"}]},
+                    auq_question("Second answered?", "Two", "C", "D"),
+                ],
+                answered('"Second answered?"="C"'),
+            ),
+            SPEC,
+        ),
+        "auq_error_zero": (
+            auq_round(
+                [auq_question("Which adapter?", "Adapter", "Storage", "Memory")],
+                answered('"Which adapter?"="Storage"'),
+                is_error=True,
+            ),
+            SPEC,
+        ),
+        "auq_unpaired_zero": (
+            [
+                assistant("a1", tool_use("t1", "AskUserQuestion", questions=[auq_question("Q?", "H", "A")])),
+                user_result("u1", "t9", answered('"Q?"="A"'), is_error=False),
+            ],
+            SPEC,
+        ),
+        "auq_answer_embeds_later_anchor": (
+            auq_round(
+                [auq_question("First?", "One", "A", "B"), auq_question("Second?", "Two", "C", "D")],
+                answered('"First?"="I think "Second?"=maybe", "Second?"="C"'),
+            ),
+            SPEC,
+        ),
+        "auq_answer_trailing_quote": (
+            auq_round(
+                [auq_question("Which name?", "Name", "Alpha", "Beta")],
+                answered('"Which name?"="call it "beta""'),
+            ),
+            SPEC,
         ),
     }
 

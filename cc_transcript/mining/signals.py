@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from cc_transcript.facts import is_denial
 from cc_transcript.filterspec import (
+    ANSWERED_PREFIX,
+    ANSWERED_TRAILER,
     INTERRUPT_MARKER_RE,
     compile_groups,
     embedded_user_text,
@@ -39,10 +41,12 @@ from cc_transcript.mining.formats import extract_structured
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
     PLAN_REVIEW,
+    QUESTION_ANSWER,
     REVIEW_COMMENT,
     TRANSCRIPT_MESSAGE,
 )
 from cc_transcript.mining.spec import (
+    ASK_USER_QUESTION_DETECTOR,
     DENIAL_DETECTOR,
     EXIT_PLAN_REJECTION_DETECTOR,
     INTERRUPT_DETECTOR,
@@ -70,6 +74,13 @@ if TYPE_CHECKING:
     from cc_transcript.mining.sourcekind import SourceKind
     from cc_transcript.mining.spec import ReviewSpec
     from cc_transcript.models import CcVersion, EventUuid, SessionId, ToolUseId, TranscriptEvent
+
+# An answered AskUserQuestion round renders each pair as '"Q"="A"' (or
+# '"Q"=(no option selected)'), optionally followed by ' selected preview:\n<raw>'
+# and/or ' notes: <text>', with pairs joined by ', ' inside the ANSWERED banner.
+ANSWER_PREVIEW_SEP = " selected preview:\n"
+ANSWER_NOTES_SEP = " notes: "
+NO_OPTION_SELECTED = "(no option selected)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +411,154 @@ def iter_review_comment_signals(events: Sequence[TranscriptEvent], spec: MiningS
     )
 
 
+class AnsweredPair(NamedTuple):
+    question: Mapping[str, Any]
+    answer: str | None
+    preview: str | None
+    notes: str | None
+
+
+def answered_question_results(event: UserEvent) -> Iterator[ToolResultBlock]:
+    return (
+        block
+        for block in event.blocks
+        if isinstance(block, ToolResultBlock)
+        if not block.is_error
+        if block.content.startswith(ANSWERED_PREFIX)
+    )
+
+
+def split_answer_segment(segment: str) -> tuple[str, str | None, str | None]:
+    if (at := segment.find(ANSWER_PREVIEW_SEP)) != -1:
+        rest = segment[at + len(ANSWER_PREVIEW_SEP) :]
+        if (notes_at := rest.find(ANSWER_NOTES_SEP)) != -1:
+            return segment[:at], rest[:notes_at], rest[notes_at + len(ANSWER_NOTES_SEP) :]
+        return segment[:at], rest, None
+    if (at := segment.find(ANSWER_NOTES_SEP)) != -1:
+        return segment[:at], None, segment[at + len(ANSWER_NOTES_SEP) :]
+    return segment, None, None
+
+
+def find_anchor(body: str, anchor: str, pos: int) -> int:
+    while (at := body.find(anchor, pos)) != -1:
+        if at == 0 or body[:at].endswith(", "):
+            return at
+        pos = at + 1
+    return -1
+
+
+def answered_pairs(body: str, questions: Sequence[Mapping[str, Any]]) -> Iterator[AnsweredPair]:
+    found: list[tuple[Mapping[str, Any], int, int]] = []
+    pos = 0
+    for question in questions:
+        if not isinstance(text := question.get("question"), str):
+            continue
+        anchor = f'"{text}"='
+        if (at := find_anchor(body, anchor, pos)) == -1:
+            continue
+        found.append((question, at, at + len(anchor)))
+        pos = at + len(anchor)
+    for i, (question, _, value_at) in enumerate(found):
+        last = i + 1 == len(found)
+        segment = body[value_at : len(body) if last else found[i + 1][1]]
+        if not last:
+            segment = segment.removesuffix(", ")
+        head, preview, notes = split_answer_segment(segment)
+        if head.startswith('"'):
+            yield AnsweredPair(question, head[1:].removesuffix('"'), preview, notes)
+        elif head.startswith(NO_OPTION_SELECTED):
+            yield AnsweredPair(question, None, preview, notes)
+
+
+def join_labels(answer: str, labels: Sequence[str]) -> list[str] | None:
+    picked: list[str] = []
+    start = 0
+    acc: str | None = None
+    for part in answer.split(", "):
+        acc = part if acc is None else f"{acc}, {part}"
+        if (at := next((i for i in range(start, len(labels)) if labels[i] == acc), None)) is not None:
+            picked.append(labels[at])
+            start = at + 1
+            acc = None
+    return picked if picked and acc is None else None
+
+
+def ordinal_label(answer: str, labels: Sequence[str]) -> tuple[str, bool] | None:
+    rest = answer.lstrip("0123456789")
+    digits = answer[: len(answer) - len(rest)]
+    if not digits or not 1 <= (n := int(digits)) <= len(labels) or (rest and rest[0] not in ",. )"):
+        return None
+    return labels[n - 1], not rest
+
+
+def resolve_pick(answer: str | None, labels: Sequence[str]) -> tuple[list[str], bool]:
+    if answer is None:
+        return [], False
+    if (joined := join_labels(answer, labels)) is not None:
+        return joined, True
+    if (ordinal := ordinal_label(answer, labels)) is not None:
+        label, bare = ordinal
+        return [label], bare
+    return [], False
+
+
+def question_answer_signal(
+    events: Sequence[TranscriptEvent], event: UserEvent, index: int, pair: AnsweredPair, spec: MiningSpec
+) -> MiningSignal | None:
+    options = pair.question.get("options")
+    labels = [
+        label
+        for option in (options if isinstance(options, list) else ())
+        if isinstance(option, dict) and isinstance(label := option.get("label"), str)
+    ]
+    picked, option_pick = resolve_pick(pair.answer, labels)
+    text = pair.notes if pair.notes is not None else pair.answer
+    if text is None:
+        return None
+    evidence: dict[str, Any] = {
+        "question": question if isinstance(question := pair.question.get("question"), str) else None,
+        "header": header if isinstance(header := pair.question.get("header"), str) else None,
+        "multi_select": isinstance(multi := pair.question.get("multiSelect"), bool) and multi,
+        "option_pick": option_pick,
+        "picked_labels": picked,
+        "recommended_pick": any("(Recommended)" in label for label in picked),
+    }
+    if pair.preview is not None:
+        evidence["preview"] = pair.preview
+    if pair.notes is not None:
+        evidence["notes"] = pair.notes
+    return MiningSignal(
+        kind=QUESTION_ANSWER,
+        detector="ask_user_question",
+        session_id=event.meta.session_id,
+        event_index=index,
+        event_uuid=event.meta.uuid,
+        occurred_at=event.meta.timestamp,
+        text=text,
+        cc_version=event.meta.cc_version,
+        trigger_index=nearest_assistant_index(events, index),
+        signal=weak("option_pick") if option_pick else calibrated(spec.calibrated, text, seed="freeform_answer"),
+        evidence=evidence,
+    )
+
+
+def iter_ask_user_question_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
+    uses = tool_uses(events)
+    return (
+        signal
+        for index, event in enumerate(events)
+        if isinstance(event, UserEvent)
+        for block in answered_question_results(event)
+        if (use := uses.get(block.tool_use_id)) is not None
+        if use.name == "AskUserQuestion"
+        if block.content.endswith(ANSWERED_TRAILER)
+        for pair in answered_pairs(
+            block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], use.input["questions"]
+        )
+        if (signal := question_answer_signal(events, event, index, pair, spec)) is not None
+    )
+
+
 def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     """Yields every :class:`MiningSignal` the enabled detectors recognize in ``events``.
 
@@ -423,3 +582,5 @@ def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[Mining
         yield from iter_interrupt_marker_signals(events, spec)
     if REVIEW_COMMENT_DETECTOR in spec.detectors:
         yield from iter_review_comment_signals(events, spec)
+    if ASK_USER_QUESTION_DETECTOR in spec.detectors:
+        yield from iter_ask_user_question_signals(events, spec)

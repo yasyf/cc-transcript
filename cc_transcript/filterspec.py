@@ -70,10 +70,13 @@ INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"^\s*\[Re
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
 # Raw CC-injected protocol strings carried in tool-result content: the denial banner
-# and the markers that wrap the user's verbatim instruction in a rejected tool use.
+# and the markers that wrap the user's verbatim instruction in a rejected tool use,
+# and the banner pair that wraps an answered AskUserQuestion round.
 DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
 USER_SAID_TRAILER = "Note: The user's next message"
+ANSWERED_PREFIX = "Your questions have been answered: "
+ANSWERED_TRAILER = ". You can now continue with these answers in mind."
 
 # Approve-and-advance directives: a user telling the agent to proceed/commit/push or
 # to resume killed work. They follow an assistant turn but advance it rather than

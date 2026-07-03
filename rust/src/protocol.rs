@@ -8,6 +8,8 @@ pub(crate) const DENIAL_PREFIX: &str =
     "The user doesn't want to proceed with this tool use. The tool use was rejected";
 pub(crate) const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
 pub(crate) const USER_SAID_TRAILER: &str = "Note: The user's next message";
+pub(crate) const ANSWERED_PREFIX: &str = "Your questions have been answered: ";
+pub(crate) const ANSWERED_TRAILER: &str = ". You can now continue with these answers in mind.";
 const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern
