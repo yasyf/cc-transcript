@@ -27,11 +27,16 @@ import orjson
 import pytest
 
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.mining.confidence import MEDIUM
 from cc_transcript.mining.engine import mine_signals, rust_mine_backend
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
 from cc_transcript.mining.signals import mine
 from cc_transcript.mining.spec import (
+    Base,
+    BumpIfProximate,
     CallableReviewFormat,
+    ConfidenceSpec,
+    DemoteIfShort,
     MiningSpec,
     RegexReviewFormat,
     ReviewSpec,
@@ -67,6 +72,27 @@ INLINE_REGEX = RegexReviewFormat(
 )
 STRUCTURED = StructuredFormat(name="findings_fmt", fix_keys=("fix", "suggestion"))
 REVIEW_SPEC = MiningSpec(review=ReviewSpec(regex_formats=(INLINE_REGEX,), structured_formats=(STRUCTURED,)))
+
+# A bracket format whose groups can carry padding, be whitespace-only, or hold an
+# unparseable line — pinning the strip-then-filter comment join and the
+# strip-then-parse-or-None line-group semantics on both backends.
+PADDED_REGEX = RegexReviewFormat(
+    name="padded",
+    groups=(("padded", r"^R\[(?P<f>[^\]]*)\]\[(?P<l>[^\]]*)\]\[(?P<a>[^\]]*)\]\[(?P<b>[^\]]*)\]\[(?P<c>[^\]]*)\]$"),),
+    file_group=1,
+    line_start_group=2,
+    line_end_group=2,
+    comment_groups=(3, 4, 5),
+)
+PADDED_REVIEW_SPEC = MiningSpec(review=ReviewSpec(regex_formats=(PADDED_REGEX,)))
+
+# A portable spec whose user_message stages carry no NoiseIfStructural: the
+# marker-correction structural regex must fall back to the anchored, case-folded
+# interrupt marker on BOTH backends — the spec is the contract, not the default
+# STRUCTURAL_NOISE_RE constant.
+NO_STRUCTURAL_SPEC = MiningSpec(
+    user_message=ConfidenceSpec((Base(MEDIUM, "user_message"), DemoteIfShort(), BumpIfProximate()))
+)
 STRUCTURED_PAYLOAD = orjson.dumps(
     {
         "findings": [
@@ -289,6 +315,29 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             [assistant("a1", {"type": "text", "text": "x"}), user_text("u1", "[Request interrupted by user]")],
             SPEC,
         ),
+        # Custom user_message stages WITHOUT NoiseIfStructural: correction scanning
+        # falls back to the interrupt-only structural regex, so the system-reminder
+        # between the marker and the real correction is mined by both backends.
+        "interrupt_custom_spec_structural_between": (
+            [
+                assistant("a1", tool_use("t1", "Bash", command="sleep 100")),
+                user_result("u1", "t1", "[Request interrupted by user]"),
+                user_text("u2", "<system-reminder>injected background context for the session</system-reminder>"),
+                user_text("u3", "actually stop and rework the entire approach"),
+            ],
+            NO_STRUCTURAL_SPEC,
+        ),
+        # The interrupt-only fallback is case-folded on both sides: a case-folded,
+        # non-bare marker fragment is structural noise, so the next message mines.
+        "interrupt_custom_spec_casefolded_fallback": (
+            [
+                assistant("a1", tool_use("t1", "Bash", command="x")),
+                user_result("u1", "t1", "[Request interrupted by user]"),
+                user_text("u2", "[request INTERRUPTED by user] leftover fragment"),
+                user_text("u3", "use the other module instead of this one"),
+            ],
+            NO_STRUCTURAL_SPEC,
+        ),
         # ── review_comment: portable regex format + structured int/"96"/"24-51"/fix ──
         "review_regex_inline": (
             [
@@ -307,6 +356,23 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
                 user_text("u1", "this is just prose, not a JSON document"),
             ],
             REVIEW_SPEC,
+        ),
+        # Whitespace-padded groups: the line group strips to 12 and the comment is
+        # the single-space join of the stripped, non-empty groups on both backends.
+        "review_regex_whitespace_padded_groups": (
+            [
+                assistant("a1", {"type": "text", "text": "ok"}),
+                user_text("u1", "R[x.py][ 12 ][ first ][   ][ second ]"),
+            ],
+            PADDED_REVIEW_SPEC,
+        ),
+        # An unparseable line group yields None on both backends, never a crash.
+        "review_regex_unparseable_line_group": (
+            [
+                assistant("a1", {"type": "text", "text": "ok"}),
+                user_text("u1", "R[y.py][12a][note the guard][][]"),
+            ],
+            PADDED_REVIEW_SPEC,
         ),
     }
 
@@ -432,6 +498,18 @@ def test_mirror_corpus_has_teeth() -> None:
     producing = sum(1 for path in sample if py_dicts(path.read_bytes(), SPEC))
     print(f"[mirror sample] cap={MIRROR_SAMPLE} sampled={len(sample)} produced_signals={producing}")
     assert producing > 0
+
+
+@requires_rust
+def test_non_object_lines_skipped_parity() -> None:
+    """Bare scalars and arrays between events never shift mined event_index (parser.py decode_line)."""
+    entries = [
+        assistant("a1", {"type": "text", "text": "I will refactor"}),
+        user_text("u1", "this is completely wrong, please rewrite the parser module entirely"),
+    ]
+    raw = b"\n".join([orjson.dumps(entries[0]), b"42", b"[1, 2]", b'"scalar"', orjson.dumps(entries[1])])
+    assert_parity(raw, SPEC)
+    assert [signal["event_index"] for signal in py_dicts(raw, SPEC)] == [1]
 
 
 @requires_rust

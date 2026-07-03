@@ -190,9 +190,11 @@ class ProvenanceSpec:
 class RegexReviewFormat:
     """A review format Rust can run: one named regex plus a declarative group map.
 
-    The comment is built by joining ``comment_groups`` in order, each stripped and
-    skipped when falsy or unmatched — reproducing a Python extractor's
-    ``" ".join(part.strip() for part in (...) if part)``.
+    The comment is built from ``comment_groups`` in order: each matched group is
+    stripped first, groups that are unmatched or empty after stripping are skipped,
+    and the remaining parts are joined with ``join``. Line groups are stripped then
+    parsed as integers; an unmatched or unparseable value yields ``None``. Both
+    backends implement exactly these semantics.
 
     Attributes:
         name: The format's identifier.
@@ -351,7 +353,7 @@ def regex_review_comments(fmt: RegexReviewFormat, text: str) -> tuple[ReviewComm
             line_start=int_group(match, fmt.line_start_group),
             line_end=int_group(match, fmt.line_end_group),
             comment=fmt.join.join(
-                part.strip() for index in fmt.comment_groups if (part := match.group(index))
+                part for index in fmt.comment_groups if (part := (match.group(index) or "").strip())
             ),
         )
         for match in pattern.finditer(text)
@@ -363,7 +365,12 @@ def group_value(match: re.Match[str], index: int | None) -> str | None:
 
 
 def int_group(match: re.Match[str], index: int | None) -> int | None:
-    return None if index is None or (value := match.group(index)) is None else int(value)
+    if index is None or (value := match.group(index)) is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
 
 
 def conf_spec_to_dict(spec: ConfidenceSpec) -> dict[str, Any]:

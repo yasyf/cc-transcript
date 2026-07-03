@@ -8,12 +8,13 @@ pub(crate) const DENIAL_PREFIX: &str =
     "The user doesn't want to proceed with this tool use. The tool use was rejected";
 pub(crate) const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
 pub(crate) const USER_SAID_TRAILER: &str = "Note: The user's next message";
-pub(crate) const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
+const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern
 /// compiled case-insensitively, anchored at the start of the haystack with leading
-/// whitespace tolerated.
-static INTERRUPT_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
+/// whitespace tolerated. Shared with mining's structural fallback so both uses
+/// carry identical case semantics.
+pub(crate) static INTERRUPT_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!("(?i){INTERRUPT_MARKER_PATTERN}")).expect("interrupt regex")
 });
 
