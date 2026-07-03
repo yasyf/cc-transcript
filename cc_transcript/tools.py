@@ -45,6 +45,12 @@ def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
     return value
 
 
+def required_str(raw: Mapping[str, Any], *keys: str) -> str:
+    if not isinstance(value := required_key(raw, *keys), str):
+        raise TypeError(f"{keys[0]} must be a str, got {type(value).__name__}")
+    return value
+
+
 class ToolInputError(ValueError):
     """A known tool's input did not match its expected shape."""
 
@@ -69,6 +75,14 @@ class EditSpan:
     old: str
     new: str
     replace_all: bool = False
+
+    @classmethod
+    def from_raw(cls, span: object) -> Self:
+        match span:
+            case {"old_string": str() as old, "new_string": str() as new}:
+                return cls(old, new, span.get("replace_all", False))
+            case _:
+                raise TypeError(f"edit span missing or malformed: {span!r}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -109,7 +123,7 @@ class BashCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            command=raw["command"],
+            command=required_str(raw, "command"),
             timeout=raw.get("timeout"),
             description=raw.get("description"),
             run_in_background=raw.get("run_in_background"),
@@ -137,9 +151,9 @@ class EditCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            file_path=raw["file_path"],
-            old=raw["old_string"],
-            new=raw["new_string"],
+            file_path=required_str(raw, "file_path"),
+            old=required_str(raw, "old_string"),
+            new=required_str(raw, "new_string"),
             replace_all=raw.get("replace_all", False),
         )
 
@@ -156,11 +170,8 @@ class MultiEditCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            file_path=raw["file_path"],
-            edits=tuple(
-                EditSpan(span["old_string"], span["new_string"], span.get("replace_all", False))
-                for span in raw["edits"]
-            ),
+            file_path=required_str(raw, "file_path"),
+            edits=tuple(EditSpan.from_raw(span) for span in raw["edits"]),
         )
 
 
@@ -173,7 +184,7 @@ class WriteCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, file_path=raw["file_path"], content=raw["content"])
+        return cls(name=name, raw=raw, file_path=required_str(raw, "file_path"), content=required_str(raw, "content"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -186,7 +197,13 @@ class ReadCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, file_path=raw["file_path"], offset=raw.get("offset"), limit=raw.get("limit"))
+        return cls(
+            name=name,
+            raw=raw,
+            file_path=required_str(raw, "file_path"),
+            offset=raw.get("offset"),
+            limit=raw.get("limit"),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -203,8 +220,8 @@ class NotebookEditCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            notebook_path=raw["notebook_path"],
-            new_source=raw["new_source"],
+            notebook_path=required_str(raw, "notebook_path"),
+            new_source=required_str(raw, "new_source"),
             cell_id=raw.get("cell_id"),
             edit_mode=raw.get("edit_mode"),
         )
@@ -225,7 +242,7 @@ class GrepCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            pattern=raw["pattern"],
+            pattern=required_str(raw, "pattern"),
             path=raw.get("path"),
             glob=raw.get("glob"),
             file_type=raw.get("type"),
@@ -242,7 +259,7 @@ class GlobCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, pattern=raw["pattern"], path=raw.get("path"))
+        return cls(name=name, raw=raw, pattern=required_str(raw, "pattern"), path=raw.get("path"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -260,7 +277,7 @@ class TaskCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            prompt=raw["prompt"],
+            prompt=required_str(raw, "prompt"),
             agent_type=key_of(raw, "subagent_type", "agent_type"),
             model=raw.get("model"),
             agent_name=raw.get("name"),
@@ -310,7 +327,7 @@ class SkillCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, skill=raw["skill"], args=raw.get("args"))
+        return cls(name=name, raw=raw, skill=required_str(raw, "skill"), args=raw.get("args"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -322,7 +339,7 @@ class TaskCreateCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, subject=raw["subject"], description=raw.get("description"))
+        return cls(name=name, raw=raw, subject=required_str(raw, "subject"), description=raw.get("description"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -339,7 +356,7 @@ class TaskUpdateCall(ToolCallBase):
         return cls(
             name=name,
             raw=raw,
-            task_id=required_key(raw, "taskId", "task_id"),
+            task_id=required_str(raw, "taskId", "task_id"),
             status=raw.get("status"),
             subject=raw.get("subject"),
             description=raw.get("description"),
@@ -354,7 +371,7 @@ class ExitPlanModeCall(ToolCallBase):
 
     @classmethod
     def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
-        return cls(name=name, raw=raw, plan=raw["plan"])
+        return cls(name=name, raw=raw, plan=required_str(raw, "plan"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -403,7 +420,10 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
     """Parse a tool's name and raw input into the typed hierarchy.
 
     Strict by default: a known tool whose input is malformed raises
-    :class:`ToolInputError` (leniency lives in tests). The wild-data boundaries
+    :class:`ToolInputError` (leniency lives in tests). Malformed covers a
+    required field that is missing, explicitly null, or of the wrong runtime
+    type — validation happens here at the boundary, never downstream of a
+    typed field. The wild-data boundaries
     — the hook runtime and the activity lift — pass ``on_error='other'`` so a
     Claude Code shape change or a model-emitted invalid call degrades to
     :class:`OtherCall` — with a still-correct digest, since the raw mapping is
