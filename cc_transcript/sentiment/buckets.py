@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 BucketIndex = NewType("BucketIndex", int)
 SentimentScore = NewType("SentimentScore", int)
 
-type ConversationEvent = UserEvent | AssistantEvent
+ConversationEvent = UserEvent | AssistantEvent
 """The conversational subset of the event spine that sentiment scoring consumes."""
 
 BUCKET_MINUTES = 3
