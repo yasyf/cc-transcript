@@ -154,7 +154,7 @@ fn event_kind(data: &Value) -> Kind {
     }
 }
 
-fn message_content<'a>(data: &'a Value) -> Option<&'a Value> {
+fn message_content(data: &Value) -> Option<&Value> {
     field(field(data, "message")?, "content")
 }
 
