@@ -111,6 +111,17 @@ def test_task_update_accepts_either_task_id_spelling() -> None:
         assert (call.task_id, call.status) == ("T1", "completed")
 
 
+def test_task_update_null_task_id_falls_through_to_the_other_spelling() -> None:
+    call = parse_tool_call("TaskUpdate", {"taskId": None, "task_id": "abc"})
+    assert isinstance(call, TaskUpdateCall)
+    assert call.task_id == "abc"
+
+
+def test_task_update_all_null_task_id_raises_by_default() -> None:
+    with pytest.raises(ToolInputError, match="TaskUpdate input missing"):
+        parse_tool_call("TaskUpdate", {"taskId": None})
+
+
 def test_task_update_without_task_id_raises_by_default() -> None:
     with pytest.raises(ToolInputError, match="TaskUpdate input missing"):
         parse_tool_call("TaskUpdate", {"status": "completed"})
