@@ -11,7 +11,7 @@ use crate::event::{parse_timestamp, require_str, truthy_str};
 use crate::filter::{compile_group_array, Kind};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, DENIAL_PREFIX,
-    INTERRUPT_MARKER_PATTERN,
+    INTERRUPT_MARKER_RE,
 };
 use crate::value::{block_type, content_text, field, field_bool, field_str};
 
@@ -445,11 +445,15 @@ struct Events {
 }
 
 impl Events {
+    /// Splits raw JSONL into event objects, dropping undecodable lines and
+    /// non-object values (parser.py decode_line) so event indices agree with the
+    /// Python reference.
     fn parse(raw: &[u8]) -> Self {
         let lines: Vec<Value> = raw
             .split(|&b| b == b'\n')
             .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
             .filter_map(|line| sonic_rs::from_slice::<Value>(line).ok())
+            .filter(|value| value.is_object())
             .collect();
         let kinds = lines.iter().map(event_kind).collect::<Vec<_>>();
         let texts = lines
@@ -687,8 +691,9 @@ fn occurred_at_iso<'py>(py: Python<'py>, raw: &str) -> PyResult<Bound<'py, PyAny
 // ── detectors ────────────────────────────────────────────────────────────────
 
 /// Compiled structural-noise regex shared by the marker-correction paths
-/// (filterspec.py STRUCTURAL_NOISE_RE). Built from the user-message spec's
-/// NoiseIfStructural stage so it tracks the spec's group set exactly.
+/// (mining/signals.py structural_re): the user-message spec's NoiseIfStructural
+/// stage's groups when present, else the case-folded anchored interrupt marker
+/// (filterspec.py INTERRUPT_MARKER_RE) — both backends derive it from the spec.
 fn structural_re(spec: &CompiledMiningSpec) -> Regex {
     spec.user_message
         .stages
@@ -697,7 +702,7 @@ fn structural_re(spec: &CompiledMiningSpec) -> Regex {
             ConfStage::NoiseIfStructural { groups, .. } => Some(groups.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| Regex::new(INTERRUPT_MARKER_PATTERN).expect("interrupt fallback regex"))
+        .unwrap_or_else(|| INTERRUPT_MARKER_RE.clone())
 }
 
 fn iter_user_message<'py>(
@@ -1064,18 +1069,19 @@ fn extract_structured_format(payload: &Value, fmt: &CompiledStructuredFormat) ->
 }
 
 /// regex_review_comments (mining/spec.py regex_review_comments): one comment per
-/// regex match, joining the stripped, present comment groups; falsy/unmatched
-/// groups are skipped.
+/// regex match. Comment groups are stripped first, unmatched or stripped-empty
+/// groups are skipped, and the rest join with the format's separator; line groups
+/// are stripped then parsed, with unparseable values yielding None.
 fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewComment> {
     fmt.regex
         .captures_iter(text)
         .map(|caps| {
             let group = |index: Option<usize>| index.and_then(|i| caps.get(i)).map(|m| m.as_str().to_string());
-            let int_group = |index: Option<usize>| group(index).map(|v| v.parse::<i64>());
+            let int_group = |index: Option<usize>| group(index).and_then(|v| v.trim().parse::<i64>().ok());
             ReviewComment {
                 file: group(fmt.file_group),
-                line_start: int_group(fmt.line_start_group).transpose().unwrap_or(None),
-                line_end: int_group(fmt.line_end_group).transpose().unwrap_or(None),
+                line_start: int_group(fmt.line_start_group),
+                line_end: int_group(fmt.line_end_group),
                 comment: fmt
                     .comment_groups
                     .iter()

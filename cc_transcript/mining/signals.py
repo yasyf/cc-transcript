@@ -25,7 +25,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from cc_transcript.facts import is_denial
 from cc_transcript.filterspec import (
-    STRUCTURAL_NOISE_RE,
+    INTERRUPT_MARKER_RE,
+    compile_groups,
     embedded_user_text,
     event_kind,
     interrupt_marker,
@@ -49,6 +50,7 @@ from cc_transcript.mining.spec import (
     REVIEW_COMMENT_DETECTOR,
     TRANSCRIPT_MESSAGE_DETECTOR,
     MiningSpec,
+    NoiseIfStructural,
     Provenance,
     calibrated,
     classify_provenance,
@@ -59,6 +61,7 @@ from cc_transcript.models import AssistantEvent, ModeEvent, ToolResultBlock, Too
 from cc_transcript.tools import matches_names
 
 if TYPE_CHECKING:
+    import re
     from collections.abc import Iterator, Mapping, Sequence
     from datetime import datetime
     from typing import Any
@@ -156,10 +159,21 @@ def nearest_assistant_index(events: Sequence[TranscriptEvent], index: int) -> in
     return next((i for i in range(index - 1, -1, -1) if event_kind(events[i]) == "assistant"), None)
 
 
-def correction_text(events: Sequence[TranscriptEvent], index: int) -> str | None:
+def structural_re(spec: MiningSpec) -> re.Pattern[str]:
+    return next(
+        (
+            compile_groups(stage.groups, stage.ignore_case)
+            for stage in spec.user_message.stages
+            if isinstance(stage, NoiseIfStructural)
+        ),
+        INTERRUPT_MARKER_RE,
+    )
+
+
+def correction_text(events: Sequence[TranscriptEvent], index: int, structural: re.Pattern[str]) -> str | None:
     while (found := next_user_message(events, index + 1)) is not None:
         i, event = found
-        if not is_bare_interrupt_marker(event.text) and not STRUCTURAL_NOISE_RE.search(event.text):
+        if not is_bare_interrupt_marker(event.text) and not structural.search(event.text):
             return event.text
         index = i
     return None
@@ -173,8 +187,8 @@ def first_followup(events: Sequence[TranscriptEvent], index: int) -> str | None:
     return None
 
 
-def marker_correction(events: Sequence[TranscriptEvent], index: int) -> ScoredText | None:
-    if (correction := correction_text(events, index)) is not None:
+def marker_correction(events: Sequence[TranscriptEvent], index: int, structural: re.Pattern[str]) -> ScoredText | None:
+    if (correction := correction_text(events, index, structural)) is not None:
         return ScoredText(correction, weak("bare_marker"))
     if (followup := first_followup(events, index)) is not None:
         return ScoredText(followup, noise("structural_only"))
@@ -182,11 +196,11 @@ def marker_correction(events: Sequence[TranscriptEvent], index: int) -> ScoredTe
 
 
 def denial_correction(
-    events: Sequence[TranscriptEvent], index: int, embedded: str | None, spec: MiningSpec
+    events: Sequence[TranscriptEvent], index: int, embedded: str | None, spec: MiningSpec, structural: re.Pattern[str]
 ) -> ScoredText | None:
     if embedded:
         return ScoredText(embedded, calibrated(spec.calibrated, embedded, seed="embedded_text"))
-    return marker_correction(events, index)
+    return marker_correction(events, index, structural)
 
 
 def iter_user_message_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
@@ -264,6 +278,7 @@ def iter_plan_reentry_signals(events: Sequence[TranscriptEvent], spec: MiningSpe
 
 def iter_tool_denial_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     uses = tool_uses(events)
+    structural = structural_re(spec)
     return (
         MiningSignal(
             kind=INTERRUPT_REJECTION,
@@ -282,11 +297,12 @@ def iter_tool_denial_signals(events: Sequence[TranscriptEvent], spec: MiningSpec
         if isinstance(event, UserEvent)
         for block in denial_results(event)
         if (paired := uses.get(block.tool_use_id)) is None or not matches_names(paired.name, spec.denial_excluded_tools)
-        if (scored := denial_correction(events, index, embedded_user_text(block.content), spec)) is not None
+        if (scored := denial_correction(events, index, embedded_user_text(block.content), spec, structural)) is not None
     )
 
 
 def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
+    structural = structural_re(spec)
     return (
         MiningSignal(
             kind=INTERRUPT_REJECTION,
@@ -303,7 +319,7 @@ def iter_interrupt_marker_signals(events: Sequence[TranscriptEvent], spec: Minin
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
         if marker_in(event) is not None
-        if (scored := marker_correction(events, index)) is not None
+        if (scored := marker_correction(events, index, structural)) is not None
     )
 
 
