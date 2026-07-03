@@ -53,38 +53,38 @@ That is three builders out of a larger set — there are clauses for synthetic t
 
 ## Score (optional)
 
-Sentiment scoring sits one layer up: it groups conversational turns into buckets and assigns each bucket a 1–5 score. The actual scoring is done by an `InferenceEngine` — normally a model-backed one. To keep this page self-contained and deterministic, the setup cell below defines a `ConstantEngine` stand-in that scores every bucket it is asked to infer as `5`.
+Sentiment scoring sits one layer up: `bucket_events` groups the parsed stream's `UserEvent` and `AssistantEvent` turns into short time windows — `ConversationBucket`s — and each bucket gets a 1–5 score. The actual scoring is done by an `InferenceEngine` — normally a model-backed one. Buckets are three minutes wide, so the cell below parses a slightly longer fixture that spans three windows, then buckets it.
 
 ```{python}
-from datetime import datetime
-
-from cc_transcript.models import SessionId
+from cc_transcript import UserEvent, parse_events_from_bytes
 from cc_transcript.sentiment import (
-    AssistantMessage,
-    BucketIndex,
-    ConversationBucket,
+    FilteredEngine,
     SentimentScore,
-    UserMessage,
+    bucket_events,
     build_score_spec,
     clamp_resume,
     flag_frustration,
 )
-from cc_transcript.sentiment import FilteredEngine
 
+SCORING_TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:05.000Z","message":{"role":"user","content":"this is completely useless, wtf"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:05.000Z","message":{"role":"user","content":"looks reasonable, what about the edge case"}}
+{"type":"assistant","uuid":"a2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:05.000Z","message":{"role":"user","content":"continue"}}
+{"type":"assistant","uuid":"a3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+"""
 
-def user_msg(content, second):
-    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                       f"u-{second}", (), 0, "1.2.3")
+buckets = bucket_events(parse_events_from_bytes(SCORING_TRANSCRIPT))
+[(int(b.bucket_index), [e.text for e in b.events if isinstance(e, UserEvent)]) for b in buckets]
+# -> [(0, ['this is completely useless, wtf']),
+#     (1, ['looks reasonable, what about the edge case']),
+#     (2, ['continue'])]
+```
 
-def assistant_msg(content, second):
-    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                            f"a-{second}", (), 0, "claude-opus-4-7")
+Only `UserEvent` text is scored; the assistant turns mark each window as a real exchange. To keep this page self-contained and deterministic, the next cell defines a `ConstantEngine` stand-in that scores every bucket it is asked to infer as `5`.
 
-def bucket(index, *messages):
-    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
-                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
-
-
+```{python}
 class ConstantEngine:
     """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
 
@@ -101,12 +101,6 @@ class ConstantEngine:
 A `ScoreSpec` wraps that engine. Its clauses run *around* inference: some short-circuit a bucket before the model ever sees it, and some post-process the model's raw score. `FilteredEngine` applies the spec, delegating only the undecided buckets to the inner engine.
 
 ```{python}
-buckets = [
-    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
-    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
-    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
-]
-
 spec = build_score_spec(flag_frustration(), clamp_resume())
 engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
 
