@@ -64,42 +64,45 @@ remains. That is the entire filter policy — three lines of data.
 
 ## The score half
 
-Scoring runs over conversation *buckets* — short windows of user/assistant turns —
-and a `ScoreSpec` wraps the model with deterministic stages that short-circuit or
-clamp its output. The setup below builds a few small helpers and a stand-in
-engine; the real inference engine runs a model, but a constant one keeps this page
-hermetic and lets the policy stages do the visible work:
+Scoring runs over conversation *buckets* — short windows of `UserEvent` and
+`AssistantEvent` turns that `bucket_events` lifts off the parsed stream — and a
+`ScoreSpec` wraps the model with deterministic stages that short-circuit or
+clamp its output. The setup below parses a second fixture spanning three bucket
+windows and defines a stand-in engine; the real inference engine runs a model,
+but a constant one keeps this page hermetic and lets the policy stages do the
+visible work:
 
 ```{python}
-from datetime import datetime
-
-from cc_transcript.models import SessionId
+from cc_transcript import UserEvent
 from cc_transcript.sentiment import (
-    AssistantMessage,
-    BucketIndex,
-    ConversationBucket,
+    FilteredEngine,
     SentimentScore,
-    UserMessage,
+    bucket_events,
     build_score_spec,
     clamp_resume,
     flag_frustration,
 )
-from cc_transcript.sentiment import FilteredEngine
 
+SCORING_TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:05.000Z","message":{"role":"user","content":"this is completely useless, wtf"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:05.000Z","message":{"role":"user","content":"looks reasonable, what about the edge case"}}
+{"type":"assistant","uuid":"a2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:05.000Z","message":{"role":"user","content":"continue"}}
+{"type":"assistant","uuid":"a3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+"""
 
-def user_msg(content, second):
-    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                       f"u-{second}", (), 0, "1.2.3")
+buckets = bucket_events(parse_events_from_bytes(SCORING_TRANSCRIPT))
+[(int(b.bucket_index), [e.text for e in b.events if isinstance(e, UserEvent)]) for b in buckets]
+# -> [(0, ['this is completely useless, wtf']),
+#     (1, ['looks reasonable, what about the edge case']),
+#     (2, ['continue'])]
+```
 
-def assistant_msg(content, second):
-    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                            f"a-{second}", (), 0, "claude-opus-4-7")
+Each event lands in the window its `meta.timestamp` falls into, and only
+`UserEvent` text feeds the stages. The stand-in engine:
 
-def bucket(index, *messages):
-    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
-                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
-
-
+```{python}
 class ConstantEngine:
     """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
 
@@ -119,12 +122,6 @@ engine otherwise. The engine is async, so a Quarto cell drives it with top-level
 `await`:
 
 ```{python}
-buckets = [
-    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
-    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
-    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
-]
-
 spec = build_score_spec(flag_frustration(), clamp_resume())
 engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
 

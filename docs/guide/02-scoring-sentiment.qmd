@@ -28,43 +28,47 @@ page treats the two as interchangeable.
 
 ## Setup
 
-A `ConversationBucket` groups one session's user and assistant messages into a short
-time window (three minutes by default). A real `InferenceEngine` runs a model over
-each bucket's text. To keep this guide hermetic — no model download, no GPU — we
-stand in a `ConstantEngine` that scores every bucket it's handed a flat `5`. That
-isolates the spec: any score that isn't `5` is the work of a deterministic stage, not
-the model.
+A `ConversationBucket` groups one session's user and assistant events into a short
+time window (three minutes by default), and `bucket_events` lifts those windows
+straight off the parsed event stream. A real `InferenceEngine` runs a model over
+each bucket's user text. To keep this guide hermetic — no model download, no GPU, no
+dependence on your `~/.claude` — we parse an inline transcript that spans three
+bucket windows and stand in a `ConstantEngine` that scores every bucket it's handed
+a flat `5`. That isolates the spec: any score that isn't `5` is the work of a
+deterministic stage, not the model.
 
 ```{python}
-from datetime import datetime
-
-from cc_transcript.models import SessionId
+from cc_transcript import UserEvent, parse_events_from_bytes
 from cc_transcript.sentiment import (
-    AssistantMessage,
-    BucketIndex,
-    ConversationBucket,
+    FilteredEngine,
     SentimentScore,
-    UserMessage,
+    bucket_events,
     build_score_spec,
     clamp_resume,
     flag_frustration,
 )
-from cc_transcript.sentiment import FilteredEngine
 
+TRANSCRIPT = b"""\
+{"type":"user","uuid":"u1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:05.000Z","message":{"role":"user","content":"this is completely useless, wtf"}}
+{"type":"assistant","uuid":"a1","sessionId":"sess-1","timestamp":"2026-01-02T03:00:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:05.000Z","message":{"role":"user","content":"looks reasonable, what about the edge case"}}
+{"type":"assistant","uuid":"a2","sessionId":"sess-1","timestamp":"2026-01-02T03:03:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+{"type":"user","uuid":"u3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:05.000Z","message":{"role":"user","content":"continue"}}
+{"type":"assistant","uuid":"a3","sessionId":"sess-1","timestamp":"2026-01-02T03:06:10.000Z","message":{"role":"assistant","model":"claude-opus-4-7","stop_reason":"end_turn","content":[{"type":"text","text":"ack"}]}}
+"""
 
-def user_msg(content, second):
-    return UserMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                       f"u-{second}", (), 0, "1.2.3")
+buckets = bucket_events(parse_events_from_bytes(TRANSCRIPT))
+[(int(b.bucket_index), [e.text for e in b.events if isinstance(e, UserEvent)]) for b in buckets]
+# -> [(0, ['this is completely useless, wtf']),
+#     (1, ['looks reasonable, what about the edge case']),
+#     (2, ['continue'])]
+```
 
-def assistant_msg(content, second):
-    return AssistantMessage(content, datetime(2026, 1, 2, 3, 4, second), SessionId("sess-1"),
-                            f"a-{second}", (), 0, "claude-opus-4-7")
+Each event lands in the window its `meta.timestamp` falls into. Only `UserEvent`
+text is scored; the assistant turns ride along to mark each window as a real
+exchange. The stand-in engine:
 
-def bucket(index, *messages):
-    return ConversationBucket(SessionId("sess-1"), BucketIndex(index),
-                              datetime(2026, 1, 2, 3, 4, 0), tuple(messages))
-
-
+```{python}
 class ConstantEngine:
     """A stand-in InferenceEngine: every inferred bucket scores 5 (a real one runs a model)."""
 
@@ -87,12 +91,6 @@ for `anyio.run` or `asyncio.run` — the build kernel already has a running even
 so those raise `RuntimeError: ... already running`.
 
 ```{python}
-buckets = [
-    bucket(0, user_msg("this is completely useless, wtf", 5), assistant_msg("ack", 6)),
-    bucket(1, user_msg("looks reasonable, what about the edge case", 5), assistant_msg("ack", 6)),
-    bucket(2, user_msg("continue", 5), assistant_msg("ack", 6)),
-]
-
 spec = build_score_spec(flag_frustration(), clamp_resume())
 engine = FilteredEngine(inner=ConstantEngine(), spec=spec)
 
