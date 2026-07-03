@@ -10,13 +10,11 @@ from datetime import UTC, datetime
 import anyio
 import pytest
 
-from cc_transcript.models import SessionId
+from cc_transcript.models import AssistantEvent, EntryMeta, EventUuid, SessionId, UserEvent
 from cc_transcript.sentiment import (
-    AssistantMessage,
     ConversationBucket,
     FilteredEngine,
     SentimentScore,
-    UserMessage,
     build_score_spec,
     clamp_positive,
     clamp_resume,
@@ -120,16 +118,25 @@ NON_RESUME = [
 ]
 
 
-def user(text: str, *, minutes: float = 0.0) -> UserMessage:
-    return UserMessage(
-        content=text,
-        timestamp=BASE,
+def meta(uuid: str) -> EntryMeta:
+    return EntryMeta(
+        uuid=EventUuid(uuid),
+        parent_uuid=None,
         session_id=SessionId("s"),
-        uuid=f"u{minutes}",
-        tool_calls=(),
-        thinking_chars=0,
-        cc_version="1.0",
+        timestamp=BASE,
+        cwd="/repo",
+        git_branch="main",
+        cc_version=None,
+        is_sidechain=False,
+        is_meta=False,
+        entrypoint="cli",
+        is_compact_summary=False,
+        is_visible_in_transcript_only=False,
     )
+
+
+def user(text: str, *, minutes: float = 0.0) -> UserEvent:
+    return UserEvent(meta=meta(f"u{minutes}"), text=text, blocks=(), interrupted=False)
 
 
 def bucket(*texts: str) -> ConversationBucket:
@@ -137,7 +144,7 @@ def bucket(*texts: str) -> ConversationBucket:
         session_id=SessionId("s"),
         bucket_index=BucketIndex(0),
         bucket_start=BASE,
-        messages=tuple(user(t) for t in texts),
+        events=tuple(user(t) for t in texts),
     )
 
 
@@ -247,16 +254,8 @@ def test_engine_ignores_assistant_frustration() -> None:
         session_id=SessionId("s"),
         bucket_index=BucketIndex(0),
         bucket_start=BASE,
-        messages=(
-            AssistantMessage(
-                content="wtf fuck you",
-                timestamp=BASE,
-                session_id=SessionId("s"),
-                uuid="a",
-                tool_calls=(),
-                thinking_chars=0,
-                claude_model="m",
-            ),
+        events=(
+            AssistantEvent(meta=meta("a"), model="m", text="wtf fuck you", blocks=(), stop_reason=None, usage=None),
             user("please continue with the task"),
         ),
     )

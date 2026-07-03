@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 import anyio
 import anyio.to_thread
 
+from cc_transcript.models import UserEvent
 from cc_transcript.sentiment.buckets import ConversationBucket, SentimentScore
 from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
 from cc_transcript.sentiment.scorespec import (
@@ -72,7 +73,7 @@ class FilteredEngine:
         if has_lexicon_stage(self.spec):
             await self.prepare_lexicon()
 
-        texts = [[m.content for m in bucket.messages if m.role == "user"] for bucket in buckets]
+        texts = [[e.text for e in bucket.events if isinstance(e, UserEvent)] for bucket in buckets]
         rust = rust_score_backend(self.spec)
         spec_json = score_spec_to_json(self.spec) if rust is not None else ""
 

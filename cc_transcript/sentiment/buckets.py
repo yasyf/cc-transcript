@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import NamedTuple, NewType
+from typing import TYPE_CHECKING, NamedTuple, NewType
 
-from cc_transcript.messages import AssistantMessage, TranscriptMessage, UserMessage
-from cc_transcript.models import SessionId
+from cc_transcript.models import AssistantEvent, SessionId, UserEvent
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from cc_transcript.models import TranscriptEvent
 
 BucketIndex = NewType("BucketIndex", int)
 SentimentScore = NewType("SentimentScore", int)
+
+type ConversationEvent = UserEvent | AssistantEvent
+"""The conversational subset of the event spine that sentiment scoring consumes."""
 
 BUCKET_MINUTES = 3
 MIN_USER_TURNS_PER_SESSION = 2
@@ -16,12 +23,12 @@ MIN_USER_CHARS = 5
 
 
 class ConversationBucket(NamedTuple):
-    """A session's messages grouped into one fixed-width time window — the unit that gets scored."""
+    """A session's conversational events grouped into one fixed-width time window — the unit that gets scored."""
 
     session_id: SessionId
     bucket_index: BucketIndex
     bucket_start: datetime
-    messages: tuple[TranscriptMessage, ...]
+    events: tuple[ConversationEvent, ...]
 
 
 class BucketKey(NamedTuple):
@@ -32,10 +39,11 @@ class BucketKey(NamedTuple):
 
 
 class ConversationBucketer:
-    """Groups transcript messages into per-session, time-aligned buckets worth scoring.
+    """Groups conversational transcript events into per-session, time-aligned buckets worth scoring.
 
-    Sessions below ``MIN_USER_TURNS_PER_SESSION`` and windows lacking a substantive user turn or
-    any assistant turn are dropped.
+    User and assistant events are selected from the stream; system, mode, and
+    other events are ignored. Sessions below ``MIN_USER_TURNS_PER_SESSION`` and
+    windows lacking a substantive user turn or any assistant turn are dropped.
     """
 
     @staticmethod
@@ -47,27 +55,29 @@ class ConversationBucketer:
         )
 
     @classmethod
-    def bucket_messages(cls, messages: list[TranscriptMessage]) -> list[ConversationBucket]:
-        by_session: dict[SessionId, list[TranscriptMessage]] = defaultdict(list)
-        for msg in messages:
-            by_session[msg.session_id].append(msg)
+    def bucket_events(cls, events: Iterable[TranscriptEvent]) -> list[ConversationBucket]:
+        by_session: dict[SessionId, list[ConversationEvent]] = defaultdict(list)
+        for event in events:
+            match event:
+                case UserEvent() | AssistantEvent():
+                    by_session[event.meta.session_id].append(event)
 
         buckets: list[ConversationBucket] = []
-        for session_id, session_msgs in by_session.items():
-            if sum(1 for m in session_msgs if isinstance(m, UserMessage)) < MIN_USER_TURNS_PER_SESSION:
+        for session_id, session_events in by_session.items():
+            if sum(1 for e in session_events if isinstance(e, UserEvent)) < MIN_USER_TURNS_PER_SESSION:
                 continue
-            session_msgs.sort(key=lambda m: m.timestamp)
-            session_start = cls.align_to_bucket(session_msgs[0].timestamp)
+            session_events.sort(key=lambda e: e.meta.timestamp)
+            session_start = cls.align_to_bucket(session_events[0].meta.timestamp)
 
-            grouped: dict[int, list[TranscriptMessage]] = defaultdict(list)
-            for msg in session_msgs:
-                idx = int((msg.timestamp - session_start) // timedelta(minutes=BUCKET_MINUTES))
-                grouped[idx].append(msg)
+            grouped: dict[int, list[ConversationEvent]] = defaultdict(list)
+            for event in session_events:
+                idx = int((event.meta.timestamp - session_start) // timedelta(minutes=BUCKET_MINUTES))
+                grouped[idx].append(event)
 
-            for idx, bucket_msgs in sorted(grouped.items()):
-                if not any(isinstance(m, UserMessage) and len(m.content) >= MIN_USER_CHARS for m in bucket_msgs):
+            for idx, window_events in sorted(grouped.items()):
+                if not any(isinstance(e, UserEvent) and len(e.text) >= MIN_USER_CHARS for e in window_events):
                     continue
-                if not any(isinstance(m, AssistantMessage) for m in bucket_msgs):
+                if not any(isinstance(e, AssistantEvent) for e in window_events):
                     continue
                 bucket_start = session_start + timedelta(minutes=BUCKET_MINUTES * idx)
                 buckets.append(
@@ -75,16 +85,16 @@ class ConversationBucketer:
                         session_id=session_id,
                         bucket_index=BucketIndex(idx),
                         bucket_start=bucket_start,
-                        messages=tuple(bucket_msgs),
+                        events=tuple(window_events),
                     )
                 )
 
         return buckets
 
 
-def extract_bucket_keys(messages: list[TranscriptMessage]) -> list[BucketKey]:
-    """Returns the :class:`BucketKey` of every scorable bucket in ``messages``."""
+def extract_bucket_keys(events: Iterable[TranscriptEvent]) -> list[BucketKey]:
+    """Returns the :class:`BucketKey` of every scorable bucket in ``events``."""
     return [
         BucketKey(session_id=b.session_id, bucket_index=b.bucket_index)
-        for b in ConversationBucketer.bucket_messages(messages)
+        for b in ConversationBucketer.bucket_events(events)
     ]

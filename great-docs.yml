@@ -96,6 +96,8 @@ reference:
       - McpServer
       - Plugin
       - InitInfo
+      - tool_uses
+      - thinking_chars
       - parse_event
       - parse_events_from_bytes
       - parse_print_result
@@ -169,14 +171,6 @@ reference:
       - native_user_classifier
       - hunk_overlap
       - result_index
-  - title: Messages
-    desc: The distilled message projection over events.
-    contents:
-      - BaseMessage
-      - UserMessage
-      - AssistantMessage
-      - MessageToolCall
-      - TranscriptMessage
   - title: Discovery & ingestion state
     desc: Finding transcripts on disk and tracking what has been ingested.
     contents:

@@ -92,6 +92,8 @@ EXPORTS: dict[str, str] = {
             "TranscriptEvent",
             "Usage",
             "UserEvent",
+            "thinking_chars",
+            "tool_uses",
         ),
         "cc_transcript.parser": (
             "TranscriptParser",
@@ -193,13 +195,6 @@ EXPORTS: dict[str, str] = {
             "drop_sidechain",
             "drop_synthetic",
             "keep_only",
-        ),
-        "cc_transcript.messages": (
-            "AssistantMessage",
-            "BaseMessage",
-            "MessageToolCall",
-            "TranscriptMessage",
-            "UserMessage",
         ),
         "cc_transcript.store": ("FileStateStore",),
     }.items()
@@ -481,21 +476,6 @@ if TYPE_CHECKING:
     from cc_transcript.ids import (
         tool_digest as tool_digest,
     )
-    from cc_transcript.messages import (
-        AssistantMessage as AssistantMessage,
-    )
-    from cc_transcript.messages import (
-        BaseMessage as BaseMessage,
-    )
-    from cc_transcript.messages import (
-        MessageToolCall as MessageToolCall,
-    )
-    from cc_transcript.messages import (
-        TranscriptMessage as TranscriptMessage,
-    )
-    from cc_transcript.messages import (
-        UserMessage as UserMessage,
-    )
     from cc_transcript.models import (
         AssistantEvent as AssistantEvent,
     )
@@ -567,6 +547,12 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         UserEvent as UserEvent,
+    )
+    from cc_transcript.models import (
+        thinking_chars as thinking_chars,
+    )
+    from cc_transcript.models import (
+        tool_uses as tool_uses,
     )
     from cc_transcript.parser import (
         TranscriptParser as TranscriptParser,

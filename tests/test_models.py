@@ -15,10 +15,13 @@ from cc_transcript.models import (
     SessionId,
     SystemEvent,
     TextBlock,
+    ThinkingBlock,
     ToolUseBlock,
     ToolUseId,
     TranscriptEvent,
     UserEvent,
+    thinking_chars,
+    tool_uses,
 )
 from cc_transcript.tools import EditCall, ToolInputError
 
@@ -111,3 +114,39 @@ def test_tool_use_block_digest_round_trips_through_call() -> None:
     block = ToolUseBlock(id=ToolUseId("t1"), name="Edit", input=EDIT_INPUT)
     assert block.digest == tool_digest("Edit", EDIT_INPUT)
     assert block.digest == block.call.digest
+
+
+def test_tool_uses_keeps_only_tool_use_blocks_in_order() -> None:
+    first = ToolUseBlock(id=ToolUseId("t1"), name="Read", input={"file_path": "x"})
+    second = ToolUseBlock(id=ToolUseId("t2"), name="Bash", input={"command": "ls"})
+    event = AssistantEvent(
+        meta=make_meta(),
+        model="claude",
+        text="hi",
+        blocks=(TextBlock("hi"), first, ThinkingBlock("hmm"), second),
+        stop_reason=None,
+        usage=None,
+    )
+    assert tool_uses(event) == (first, second)
+
+
+def test_tool_uses_empty_for_no_tool_blocks() -> None:
+    event = UserEvent(meta=make_meta(), text="hello", blocks=(TextBlock("hello"),), interrupted=False)
+    assert tool_uses(event) == ()
+
+
+def test_thinking_chars_sums_thinking_block_lengths() -> None:
+    event = AssistantEvent(
+        meta=make_meta(),
+        model="claude",
+        text="",
+        blocks=(ThinkingBlock("abc"), TextBlock("ignored"), ThinkingBlock("de")),
+        stop_reason=None,
+        usage=None,
+    )
+    assert thinking_chars(event) == 5
+
+
+def test_thinking_chars_zero_without_thinking() -> None:
+    event = UserEvent(meta=make_meta(), text="hello", blocks=(TextBlock("hello"),), interrupted=False)
+    assert thinking_chars(event) == 0

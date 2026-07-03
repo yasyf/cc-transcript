@@ -2,17 +2,17 @@
 # pyright: reportUnusedImport=false
 """Sentiment-scoring domain: conversation buckets and a composable score spec.
 
-Built on the core transcript model. Consumers compose a :class:`ScoreSpec` from the
-builders (:func:`flag_frustration`, :func:`clamp_positive`,
-:func:`demote_mild_irritation`, :func:`clamp_resume`) and run it via
-:class:`FilteredEngine`. The lexicon-backed stages lemmatize with the Rust udpipe
-backend when available, falling back to spaCy + AFINN (the ``[sentiment]`` extra).
+Built directly on the core event spine. Consumers bucket ``UserEvent`` /
+``AssistantEvent`` streams via :func:`bucket_events`, compose a
+:class:`ScoreSpec` from the builders (:func:`flag_frustration`,
+:func:`clamp_positive`, :func:`demote_mild_irritation`, :func:`clamp_resume`),
+and run it via :class:`FilteredEngine`. The lexicon-backed stages lemmatize with
+the Rust udpipe backend when available, falling back to spaCy + AFINN (the
+``[sentiment]`` extra).
 """
 
 from __future__ import annotations
 
-from cc_transcript.messages import AssistantMessage, BaseMessage, TranscriptMessage, UserMessage
-from cc_transcript.messages import MessageToolCall as MessageToolCall
 from cc_transcript.sentiment.buckets import (
     BUCKET_MINUTES,
     MIN_USER_CHARS,
@@ -21,6 +21,7 @@ from cc_transcript.sentiment.buckets import (
     BucketKey,
     ConversationBucket,
     ConversationBucketer,
+    ConversationEvent,
     SentimentScore,
     extract_bucket_keys,
 )
@@ -39,3 +40,5 @@ from cc_transcript.sentiment.scorespec import (
     demote_mild_irritation,
     flag_frustration,
 )
+
+bucket_events = ConversationBucketer.bucket_events
