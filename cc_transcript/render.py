@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from cc_transcript.activity import SessionActivity, ToolUse, Turn
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.models import ContentBlock, SessionId, ToolUseId, TranscriptEvent
-    from cc_transcript.toolcalls import ToolFact
+    from cc_transcript.facts import ToolFact
     from cc_transcript.tools import ToolCall
 
 PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
@@ -414,8 +414,9 @@ def fact_dict(fact: ToolFact) -> dict[str, Any]:
         "ts": fact.ts,
         "session_id": fact.session_id,
         "path": str(fact.path),
+        "tool_use_id": fact.tool_use_id,
         "tool": fact.tool,
-        "bash_prefixes": list(fact.bash_prefixes),
+        "command_prefixes": list(fact.command_prefixes),
         "command": fact.command,
         "mcp_server": fact.mcp_server,
         "mcp_tool": fact.mcp_tool,
@@ -431,7 +432,7 @@ def fact_dict(fact: ToolFact) -> dict[str, Any]:
 def fact_line(fact: ToolFact) -> str:
     ts = f"{fact.ts:%Y-%m-%d %H:%M:%S}" if fact.ts is not None else "-"
     name = f"{fact.mcp_server}/{fact.mcp_tool}" if fact.mcp_server is not None else fact.tool
-    prefixes = f" {','.join(fact.bash_prefixes)}" if fact.bash_prefixes else ""
+    prefixes = f" {','.join(fact.command_prefixes)}" if fact.command_prefixes else ""
     marker = " [denied]" if fact.denied else " [err]" if fact.is_error else ""
     return f"{ts} {fact.session_id[:8]} {name}{prefixes}{marker}"
 

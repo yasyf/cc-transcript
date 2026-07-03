@@ -23,8 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
+from cc_transcript.facts import is_denial
 from cc_transcript.filterspec import (
-    DENIAL_PREFIX,
     INTERRUPT_MARKER_RE,
     STRUCTURAL_NOISE_RE,
     embedded_user_text,
@@ -107,13 +107,7 @@ class ScoredText(NamedTuple):
 
 
 def denial_results(event: UserEvent) -> Iterator[ToolResultBlock]:
-    return (
-        block
-        for block in event.blocks
-        if isinstance(block, ToolResultBlock)
-        if block.is_error
-        if block.content.startswith(DENIAL_PREFIX)
-    )
+    return (block for block in event.blocks if isinstance(block, ToolResultBlock) if is_denial(block))
 
 
 def last_edit_index(events: Sequence[TranscriptEvent], index: int, spec: MiningSpec) -> int | None:

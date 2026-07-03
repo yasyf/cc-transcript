@@ -5,22 +5,22 @@ the review gate all see the same object for the same tool call. Each call
 retains its raw input mapping (excluded from equality and repr), and the
 digest is always derived from that raw substrate — a typed-vs-raw digest fork
 is impossible by construction. Import-light by contract: standard library
-only.
+only; :attr:`BashCall.command_line` reaches into ``cc_transcript.command``
+lazily so the tree-sitter grammar never loads on the hook hot path.
 """
 
 from __future__ import annotations
 
-import re
-import shlex
 from dataclasses import dataclass, field
-from itertools import dropwhile
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.ids import ToolDigest, tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
-    from typing import Any
+    from collections.abc import Mapping
+    from typing import Any, Self
+
+    from cc_transcript.command import CommandLine
 
 TOOL_ALIASES: dict[str, str] = {
     "Bash": "Execute",
@@ -32,44 +32,11 @@ TOOL_ALIASES: dict[str, str] = {
 
 TOOL_ALIASES_REVERSE: dict[str, str] = {v: k for k, v in TOOL_ALIASES.items()}
 
-MULTI_LEVEL_TOOLS = frozenset(
-    {
-        "git",
-        "gh",
-        "uv",
-        "uvx",
-        "npx",
-        "docker",
-        "jj",
-        "go",
-        "cargo",
-        "npm",
-        "pnpm",
-        "yarn",
-        "kubectl",
-        "pip",
-        "brew",
-        "aws",
-        "gcloud",
-        "terraform",
-    }
-)
-
-WRAPPER_COMMANDS = frozenset({"sudo", "env", "time", "timeout", "nice", "nohup", "doas", "command", "exec", "xargs"})
-
 READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query", "describe", "show", "find"})
 
-BASH_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
 
-SHELL_UNWRAP = frozenset({"do", "then", "else", "elif"})
-
-SHELL_STOP = frozenset(
-    {"for", "while", "until", "if", "case", "select", "in", "done", "fi", "esac", "{", "}", "(", ")"}
-)
-
-ASSIGNMENT_RE = re.compile(r"^\w+=")
-
-OPERATOR_SPLIT_RE = re.compile(r"&&|\|\||[;|&]")
+def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
+    return next((raw[key] for key in keys if key in raw), None)
 
 
 class ToolInputError(ValueError):
@@ -111,6 +78,11 @@ class ToolCallBase:
     name: str
     raw: Mapping[str, Any] = field(repr=False, compare=False)
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        """Extract this call type's fields from the tool ``name`` and raw input."""
+        return cls(name=name, raw=raw)
+
     @property
     def digest(self) -> ToolDigest:
         """The cross-language content digest of this call."""
@@ -126,6 +98,24 @@ class BashCall(ToolCallBase):
     description: str | None = None
     run_in_background: bool | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            command=raw["command"],
+            timeout=raw.get("timeout"),
+            description=raw.get("description"),
+            run_in_background=raw.get("run_in_background"),
+        )
+
+    @property
+    def command_line(self) -> CommandLine:
+        """The command parsed into a :class:`~cc_transcript.command.CommandLine`."""
+        from cc_transcript.command import parse_command_line
+
+        return parse_command_line(self.command)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EditCall(ToolCallBase):
@@ -136,6 +126,17 @@ class EditCall(ToolCallBase):
     new: str
     replace_all: bool = False
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            file_path=raw["file_path"],
+            old=raw["old_string"],
+            new=raw["new_string"],
+            replace_all=raw.get("replace_all", False),
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MultiEditCall(ToolCallBase):
@@ -144,6 +145,18 @@ class MultiEditCall(ToolCallBase):
     file_path: str
     edits: tuple[EditSpan, ...]
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            file_path=raw["file_path"],
+            edits=tuple(
+                EditSpan(span["old_string"], span["new_string"], span.get("replace_all", False))
+                for span in raw["edits"]
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteCall(ToolCallBase):
@@ -151,6 +164,10 @@ class WriteCall(ToolCallBase):
 
     file_path: str
     content: str
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, file_path=raw["file_path"], content=raw["content"])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -161,6 +178,10 @@ class ReadCall(ToolCallBase):
     offset: int | None = None
     limit: int | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, file_path=raw["file_path"], offset=raw.get("offset"), limit=raw.get("limit"))
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class NotebookEditCall(ToolCallBase):
@@ -170,6 +191,17 @@ class NotebookEditCall(ToolCallBase):
     new_source: str
     cell_id: str | None = None
     edit_mode: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            notebook_path=raw["notebook_path"],
+            new_source=raw["new_source"],
+            cell_id=raw.get("cell_id"),
+            edit_mode=raw.get("edit_mode"),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -182,6 +214,18 @@ class GrepCall(ToolCallBase):
     file_type: str | None = None
     output_mode: str | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            pattern=raw["pattern"],
+            path=raw.get("path"),
+            glob=raw.get("glob"),
+            file_type=raw.get("type"),
+            output_mode=raw.get("output_mode"),
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GlobCall(ToolCallBase):
@@ -189,6 +233,10 @@ class GlobCall(ToolCallBase):
 
     pattern: str
     path: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, pattern=raw["pattern"], path=raw.get("path"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -200,6 +248,18 @@ class TaskCall(ToolCallBase):
     model: str | None = None
     agent_name: str | None = None
     run_in_background: bool | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            prompt=raw["prompt"],
+            agent_type=key_of(raw, "subagent_type", "agent_type"),
+            model=raw.get("model"),
+            agent_name=raw.get("name"),
+            run_in_background=raw.get("run_in_background"),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -222,6 +282,18 @@ class WorkflowCall(ToolCallBase):
     args: Any = None
     resume_from_run_id: str | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            script=raw.get("script"),
+            script_path=key_of(raw, "scriptPath", "script_path"),
+            workflow_name=raw.get("name"),
+            args=raw.get("args"),
+            resume_from_run_id=key_of(raw, "resumeFromRunId", "resume_from_run_id"),
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SkillCall(ToolCallBase):
@@ -230,6 +302,10 @@ class SkillCall(ToolCallBase):
     skill: str
     args: str | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, skill=raw["skill"], args=raw.get("args"))
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TaskCreateCall(ToolCallBase):
@@ -237,6 +313,10 @@ class TaskCreateCall(ToolCallBase):
 
     subject: str
     description: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, subject=raw["subject"], description=raw.get("description"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -248,12 +328,27 @@ class TaskUpdateCall(ToolCallBase):
     subject: str | None = None
     description: str | None = None
 
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            task_id=key_of(raw, "taskId", "task_id"),
+            status=raw.get("status"),
+            subject=raw.get("subject"),
+            description=raw.get("description"),
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExitPlanModeCall(ToolCallBase):
     """An ExitPlanMode/ExitSpecMode plan submission."""
 
     plan: str
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, plan=raw["plan"])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -280,6 +375,23 @@ ToolCall = (
     | OtherCall
 )
 
+TOOL_TYPES: dict[str, type[ToolCallBase]] = {
+    "Bash": BashCall,
+    "Edit": EditCall,
+    "MultiEdit": MultiEditCall,
+    "Write": WriteCall,
+    "Read": ReadCall,
+    "NotebookEdit": NotebookEditCall,
+    "Grep": GrepCall,
+    "Glob": GlobCall,
+    "Agent": TaskCall,
+    "Workflow": WorkflowCall,
+    "Skill": SkillCall,
+    "TaskCreate": TaskCreateCall,
+    "TaskUpdate": TaskUpdateCall,
+    "ExitPlanMode": ExitPlanModeCall,
+}
+
 
 def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise") -> ToolCall:
     """Parse a tool's name and raw input into the typed hierarchy.
@@ -289,18 +401,24 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
     — the hook runtime and the activity lift — pass ``on_error='other'`` so a
     Claude Code shape change or a model-emitted invalid call degrades to
     :class:`OtherCall` — with a still-correct digest, since the raw mapping is
-    the substrate — instead of crashing every hook fire or session lift.
+    the substrate — instead of crashing every hook fire or session lift. A
+    non-mapping ``input`` raises under both modes: an :class:`OtherCall`
+    holding one could not digest, so it is unrepresentable.
 
     Example:
         >>> call = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})
         >>> call.new
         'y'
     """
+    if not isinstance(input, dict):
+        raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
+    if (cls := TOOL_TYPES.get(TOOL_ALIASES_REVERSE.get(name, name))) is None:
+        return OtherCall(name=name, raw=input)
     try:
-        return typed_tool_call(name, input)
-    except ToolInputError:
+        return cls.from_raw(name, input)
+    except (KeyError, TypeError) as error:
         if on_error == "raise":
-            raise
+            raise ToolInputError(f"{name} input missing or malformed: {error}") from error
         return OtherCall(name=name, raw=input)
 
 
@@ -390,153 +508,3 @@ def mcp_access(tool: str) -> Literal["read", "write"]:
     return (
         "read" if lowered.startswith(tuple(READ_VERBS)) or any(t in READ_VERBS for t in lowered.split("_")) else "write"
     )
-
-
-def segment_prefix(segment: list[str]) -> str | None:
-    rest = list(
-        dropwhile(
-            lambda t: t in WRAPPER_COMMANDS or t in SHELL_UNWRAP,
-            dropwhile(lambda t: ASSIGNMENT_RE.match(t) is not None, segment),
-        )
-    )
-    if not rest or rest[0] in SHELL_STOP:
-        return None
-    argv0, *args = rest
-    if argv0 not in MULTI_LEVEL_TOOLS:
-        return argv0
-    return f"{argv0} {sub}" if (sub := next((a for a in args if not a.startswith("-")), None)) else argv0
-
-
-def split_on_operators(tokens: list[str]) -> Iterator[list[str]]:
-    segment: list[str] = []
-    for token in tokens:
-        if token in BASH_OPERATORS:
-            yield segment
-            segment = []
-        else:
-            segment.append(token)
-    yield segment
-
-
-def bash_prefixes(command: str) -> tuple[str, ...]:
-    """Command prefixes for each pipeline segment of a shell command.
-
-    Splits ``command`` at shell operators (``&&``, ``||``, ``;``, ``|``, ``&``),
-    then per segment drops leading ``VAR=val`` assignments and wrapper commands
-    (``sudo``, ``env``, ``timeout``, …) to reach the real command. A multi-level
-    tool (``git``, ``docker``, …) keeps its first non-flag argument as the
-    subcommand, so ``git commit -m x`` yields ``"git commit"``. A malformed
-    command (an unterminated quote) degrades to its first whitespace token.
-
-    Example:
-        >>> bash_prefixes("git add . && git commit -m 'x; y'")
-        ('git add', 'git commit')
-    """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return (argv0,) if (argv0 := next(iter(OPERATOR_SPLIT_RE.split(command)[0].split()), None)) else ()
-    return tuple(prefix for segment in split_on_operators(tokens) if (prefix := segment_prefix(segment)) is not None)
-
-
-def typed_tool_call(name: str, raw: Mapping[str, Any]) -> ToolCall:
-    if not isinstance(raw, dict):
-        raise ToolInputError(f"{name} input must be a mapping, got {type(raw).__name__}")
-    try:
-        match TOOL_ALIASES_REVERSE.get(name, name):
-            case "Bash":
-                return BashCall(
-                    name=name,
-                    raw=raw,
-                    command=raw["command"],
-                    timeout=raw.get("timeout"),
-                    description=raw.get("description"),
-                    run_in_background=raw.get("run_in_background"),
-                )
-            case "Edit":
-                return EditCall(
-                    name=name,
-                    raw=raw,
-                    file_path=raw["file_path"],
-                    old=raw["old_string"],
-                    new=raw["new_string"],
-                    replace_all=raw.get("replace_all", False),
-                )
-            case "MultiEdit":
-                return MultiEditCall(
-                    name=name,
-                    raw=raw,
-                    file_path=raw["file_path"],
-                    edits=tuple(
-                        EditSpan(span["old_string"], span["new_string"], span.get("replace_all", False))
-                        for span in raw["edits"]
-                    ),
-                )
-            case "Write":
-                return WriteCall(name=name, raw=raw, file_path=raw["file_path"], content=raw["content"])
-            case "Read":
-                return ReadCall(
-                    name=name, raw=raw, file_path=raw["file_path"], offset=raw.get("offset"), limit=raw.get("limit")
-                )
-            case "NotebookEdit":
-                return NotebookEditCall(
-                    name=name,
-                    raw=raw,
-                    notebook_path=raw["notebook_path"],
-                    new_source=raw["new_source"],
-                    cell_id=raw.get("cell_id"),
-                    edit_mode=raw.get("edit_mode"),
-                )
-            case "Grep":
-                return GrepCall(
-                    name=name,
-                    raw=raw,
-                    pattern=raw["pattern"],
-                    path=raw.get("path"),
-                    glob=raw.get("glob"),
-                    file_type=raw.get("type"),
-                    output_mode=raw.get("output_mode"),
-                )
-            case "Glob":
-                return GlobCall(name=name, raw=raw, pattern=raw["pattern"], path=raw.get("path"))
-            case "Agent":
-                return TaskCall(
-                    name=name,
-                    raw=raw,
-                    prompt=raw["prompt"],
-                    agent_type=raw.get("subagent_type") or raw.get("agent_type"),
-                    model=raw.get("model"),
-                    agent_name=raw.get("name"),
-                    run_in_background=raw.get("run_in_background"),
-                )
-            case "Workflow":
-                return WorkflowCall(
-                    name=name,
-                    raw=raw,
-                    script=raw.get("script"),
-                    script_path=raw.get("scriptPath") or raw.get("script_path"),
-                    workflow_name=raw.get("name"),
-                    args=raw.get("args"),
-                    resume_from_run_id=raw.get("resumeFromRunId") or raw.get("resume_from_run_id"),
-                )
-            case "Skill":
-                return SkillCall(name=name, raw=raw, skill=raw["skill"], args=raw.get("args"))
-            case "TaskCreate":
-                return TaskCreateCall(name=name, raw=raw, subject=raw["subject"], description=raw.get("description"))
-            case "TaskUpdate":
-                return TaskUpdateCall(
-                    name=name,
-                    raw=raw,
-                    task_id=raw.get("taskId") or raw["task_id"],
-                    status=raw.get("status"),
-                    subject=raw.get("subject"),
-                    description=raw.get("description"),
-                )
-            case "ExitPlanMode":
-                return ExitPlanModeCall(name=name, raw=raw, plan=raw["plan"])
-            case _:
-                return OtherCall(name=name, raw=raw)
-    except (KeyError, TypeError) as error:
-        raise ToolInputError(f"{name} input missing or malformed: {error}") from error

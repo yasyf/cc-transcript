@@ -23,13 +23,14 @@ from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
-from cc_transcript.tools import BashCall, SkillCall, TaskCall, file_path_of, hunks_of, tool_name_matches
+from cc_transcript.tools import BashCall, SkillCall, TaskCall, expand_tool_names, file_path_of, hunks_of, tool_name_matches
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from cc_transcript.activity import ToolUse, UserClassifier
+    from cc_transcript.command import CommandLine
     from cc_transcript.ids import EventUuid, ToolUseId
     from cc_transcript.models import TranscriptEvent
 
@@ -380,10 +381,15 @@ class Session:
             subagents and any(sub.has_tool(name) for sub in sidechain_sessions(self.path))
         )
 
-    def has_command(self, pattern: str, *, subagents: bool = True) -> bool:
-        """Whether any Bash command in the window matches the regex ``pattern``."""
-        return any(re.search(pattern, command) for command in self.commands()) or (
-            subagents and any(sub.has_command(pattern) for sub in sidechain_sessions(self.path))
+    def has_command(self, *argv: str, subagents: bool = True) -> bool:
+        """Whether any Bash command in the window runs ``argv``.
+
+        Matches when ``argv`` is a leading-token prefix of any parsed command's
+        unwrapped argv, so ``has_command("git", "push")`` matches
+        ``sudo git push -f`` and ``cd x && git push`` but not ``echo "git push"``.
+        """
+        return any(cmd.runs(*argv) for line in self.command_lines() for cmd in line) or (
+            subagents and any(sub.has_command(*argv) for sub in sidechain_sessions(self.path))
         )
 
     def has_edit_to(self, *globs: str, subagents: bool = True) -> bool:
@@ -443,6 +449,12 @@ class Session:
         """The shell command strings of the window's Bash calls."""
         return tuple(call.command for use in self.tool_calls.named("Bash") if isinstance(call := use.call, BashCall))
 
+    def command_lines(self) -> tuple[CommandLine, ...]:
+        """The window's Bash commands parsed into :class:`~cc_transcript.command.CommandLine` objects."""
+        from cc_transcript.command import parse_command_line
+
+        return tuple(parse_command_line(command) for command in self.commands())
+
     def __len__(self) -> int:
         return sum(len(turn.events) for turn in self.turns)
 
@@ -489,7 +501,7 @@ class SubagentIndex:
 
     def with_type(self, pattern: str) -> tuple[SubagentSession, ...]:
         """The dispatches whose type is named in the pipe spec ``pattern``."""
-        names = pattern.split("|")
+        names = expand_tool_names(pattern)
         return tuple(subagent for subagent in self.items if subagent.type in names)
 
     def __iter__(self) -> Iterator[SubagentSession]:

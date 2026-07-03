@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 
-HEAVY = ("anyio", "orjson", "click", "aiosqlite", "pydantic", "loguru", "spacy")
+HEAVY = ("anyio", "orjson", "click", "aiosqlite", "pydantic", "loguru", "spacy", "tree_sitter", "tree_sitter_bash")
 
 PROBE = """
 import json, sys

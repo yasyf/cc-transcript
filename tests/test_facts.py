@@ -17,7 +17,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.toolcalls import ToolFact, bash_prefix_counts, is_denial, mcp_summary, tool_facts
+from cc_transcript.facts import ToolFact, command_prefix_counts, is_denial, mcp_summary, tool_facts
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
@@ -85,8 +85,9 @@ def test_bash_call_yields_prefixes_and_command() -> None:
         [parsed(user("u0", "run"), assistant("a0", blocks=(bash("t1", "git add . && pytest"),), secs=1))]
     )
     assert fact.tool == "Bash"
+    assert fact.tool_use_id == ToolUseId("t1")
     assert fact.command == "git add . && pytest"
-    assert fact.bash_prefixes == ("git add", "pytest")
+    assert fact.command_prefixes == ("git add", "pytest")
     assert (fact.mcp_server, fact.mcp_tool, fact.mcp_access) == (None, None, None)
     assert fact.file_path is None
     assert (fact.is_error, fact.denied, fact.user_said) == (False, False, None)
@@ -106,7 +107,30 @@ def test_mcp_call_populates_server_tool_and_access() -> None:
     assert fact.tool == "mcp__semble__search"
     assert (fact.mcp_server, fact.mcp_tool, fact.mcp_access) == ("semble", "search", "read")
     assert fact.command is None
-    assert fact.bash_prefixes == ()
+    assert fact.command_prefixes == ()
+
+
+def test_batched_prefixes_stay_aligned_across_interleaved_calls() -> None:
+    facts = list(
+        tool_facts(
+            [
+                parsed(
+                    user("u0", "go"),
+                    assistant(
+                        "a0",
+                        blocks=(
+                            bash("t1", "git add ."),
+                            tool_use("t2", "mcp__semble__search", query="x"),
+                            bash("t3", "sudo git push -f && echo hi"),
+                        ),
+                        secs=1,
+                    ),
+                )
+            ]
+        )
+    )
+    assert [fact.tool_use_id for fact in facts] == [ToolUseId("t1"), ToolUseId("t2"), ToolUseId("t3")]
+    assert [fact.command_prefixes for fact in facts] == [("git add",), (), ("git push", "echo")]
 
 
 def test_denied_result_sets_denied_and_extracts_user_said() -> None:
@@ -173,7 +197,7 @@ def test_facts_span_multiple_transcripts_with_their_paths() -> None:
     assert all(isinstance(f, ToolFact) for f in facts)
 
 
-def test_bash_prefix_counts_flattens_and_orders_by_frequency() -> None:
+def test_command_prefix_counts_flattens_and_orders_by_frequency() -> None:
     facts = list(
         tool_facts(
             [
@@ -196,7 +220,7 @@ def test_bash_prefix_counts_flattens_and_orders_by_frequency() -> None:
             ]
         )
     )
-    counts = bash_prefix_counts(facts)
+    counts = command_prefix_counts(facts)
     assert counts == {"git status": 3, "pytest": 2, "ls": 1}
     assert list(counts) == ["git status", "pytest", "ls"]
 

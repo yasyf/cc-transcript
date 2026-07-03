@@ -130,23 +130,32 @@ reference:
       - TaskCall
       - TaskCreateCall
       - TaskUpdateCall
+      - WorkflowCall
       - OtherCall
       - EditSpan
       - Hunk
       - hunks_of
       - file_path_of
-      - bash_prefixes
       - mcp_parts
       - mcp_access
       - TOOL_ALIASES
       - expand_tool_names
       - tool_name_matches
+  - title: Command lines
+    desc: Parsed bash command lines — the one command-parsing layer, tree-sitter-backed.
+    contents:
+      - Command
+      - CommandLine
+      - CommandLineQuery
+      - Redirect
+      - parse_command_line
+      - command_prefixes
   - title: Tool facts
-    desc: Flat per-tool-use facts lifted from session activity, with Bash-prefix and MCP roll-ups.
+    desc: Flat per-tool-use facts lifted from session activity, with command-prefix and MCP roll-ups.
     contents:
       - ToolFact
       - tool_facts
-      - bash_prefix_counts
+      - command_prefix_counts
       - mcp_summary
   - title: Session activity
     desc: The spine — transcripts lifted into turns, tool uses, and first-class edits.
