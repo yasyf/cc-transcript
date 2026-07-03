@@ -82,10 +82,20 @@ class Command:
 
     @cached_property
     def argv(self) -> tuple[str, ...]:
+        """The full argument vector — ``(executable, *args)``, or ``()`` when nothing parsed."""
         return (self.executable, *self.args) if self.executable else ()
 
     @cached_property
     def program(self) -> str:
+        """The program this command ultimately runs, resolving launcher invocations.
+
+        ``uv run pytest …`` resolves to ``pytest`` and ``python -m module …``
+        (or ``python3 -m``) to ``module``; any other command resolves to its own
+        executable. Unlike ``unwrapped`` — which strips privilege/environment
+        wrappers (``sudo``, ``env``, ``timeout``, …) and returns a full
+        ``Command`` — this resolves only those two launcher shapes and returns
+        just the program name.
+        """
         if self.executable == "uv" and len(self.args) >= 2 and self.args[0] == "run":
             return self.args[1]
         if re.match(r"python3?$", self.executable) and len(self.args) >= 2 and self.args[0] == "-m":
@@ -94,6 +104,7 @@ class Command:
 
     @cached_property
     def env_dict(self) -> dict[str, str]:
+        """The leading ``VAR=val`` assignments as a dict, keyed by variable name."""
         return dict(self.env)
 
     @cached_property
@@ -150,9 +161,27 @@ class Command:
         return bool(argv) and self.unwrapped.argv[: len(argv)] == argv
 
     def matches(self, pattern: str) -> bool:
+        """Return whether ``pattern`` matches the rendered command.
+
+        Args:
+            pattern: Regular expression searched against ``str(self)`` (the
+                joined argv, or the raw text when nothing parsed).
+
+        Returns:
+            ``True`` if the pattern matches anywhere in the rendered command.
+        """
         return bool(re.search(pattern, str(self)))
 
     def has_arg(self, *patterns: str) -> bool:
+        """Return whether any argument matches any of ``patterns``.
+
+        Args:
+            *patterns: Regular expressions searched against each argument
+                (the executable is not considered).
+
+        Returns:
+            ``True`` if at least one pattern matches at least one argument.
+        """
         return any(re.search(p, a) for p in patterns for a in self.args)
 
     def __str__(self) -> str:

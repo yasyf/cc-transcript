@@ -38,3 +38,6 @@ def score_short_circuit(spec_json: str, buckets: list[list[str]], /) -> list[int
 
 def score_post_process(spec_json: str, buckets: list[list[str]], raw: list[int], /) -> list[int]:
     """Folds each bucket's raw score through the post-process stages in order."""
+
+def command_prefixes(commands: list[str], /) -> list[list[str]]:
+    """Permission-style prefixes per command line, parsed in parallel off the GIL."""
