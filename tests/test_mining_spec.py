@@ -69,7 +69,9 @@ def test_default_spec_to_json_shape() -> None:
         "transcript_message",
     ]
     assert payload["reentry_lookback"] == 40
-    assert payload["edit_tools"] == ["Edit", "MultiEdit", "NotebookEdit", "Write"]
+    assert payload["edit_tools"] == ["Create", "Edit", "MultiEdit", "NotebookEdit", "Write"]
+    assert payload["plan_tools"] == ["ExitPlanMode", "ExitSpecMode"]
+    assert payload["denial_excluded_tools"] == ["AskUserQuestion", "ExitPlanMode", "ExitSpecMode"]
     assert payload["provenance"] == {"subagent_tools": ["Agent", "Task"]}
     assert payload["review"] == {
         "surfaces": ["surfaced", "typed"],

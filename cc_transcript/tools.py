@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from cc_transcript.ids import ToolDigest, tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Container, Mapping
     from typing import Any, Self
 
     from cc_transcript.command import CommandLine
@@ -467,6 +467,23 @@ def expand_tool_names(spec: str) -> frozenset[str]:
     )
 
 
+def matches_names(actual: str, names: Container[str]) -> bool:
+    """Whether ``actual`` is one of ``names``, exactly or as an MCP tool suffix.
+
+    True when ``actual`` is in ``names``, or when it splits as
+    ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` is in
+    ``names``. ``names`` is taken verbatim — no alias closure; pre-expand with
+    :func:`expand_tool_names` when aliases should match.
+
+    Example:
+        >>> matches_names("mcp__github__Grep", {"Grep"})
+        True
+        >>> matches_names("Execute", {"Bash"})
+        False
+    """
+    return actual in names or ((mp := mcp_parts(actual)) is not None and mp[1] in names)
+
+
 def tool_name_matches(actual: str, spec: str) -> bool:
     """Whether ``actual`` matches a pipe spec, honoring aliases and MCP suffixes.
 
@@ -476,8 +493,7 @@ def tool_name_matches(actual: str, spec: str) -> bool:
         >>> tool_name_matches("mcp__github__Grep", "Grep")
         True
     """
-    candidates = expand_tool_names(spec)
-    return actual in candidates or ((mp := mcp_parts(actual)) is not None and mp[1] in candidates)
+    return matches_names(actual, expand_tool_names(spec))
 
 
 def mcp_parts(name: str) -> tuple[str, str] | None:

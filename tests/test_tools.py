@@ -21,6 +21,7 @@ from cc_transcript.tools import (
     expand_tool_names,
     file_path_of,
     hunks_of,
+    matches_names,
     mcp_access,
     mcp_parts,
     parse_tool_call,
@@ -210,6 +211,21 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
 )
 def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
     assert tool_name_matches(actual, spec) is expected
+
+
+@pytest.mark.parametrize(
+    ("actual", "names", "expected"),
+    [
+        ("ExitPlanMode", frozenset({"ExitPlanMode", "ExitSpecMode"}), True),
+        ("ExitSpecMode", frozenset({"ExitPlanMode", "ExitSpecMode"}), True),
+        ("mcp__conductor__ExitPlanMode", frozenset({"ExitPlanMode"}), True),
+        ("mcp__ExitPlanMode", frozenset({"ExitPlanMode"}), False),
+        ("Execute", frozenset({"Bash"}), False),
+    ],
+    ids=["exact", "pre-expanded-alias", "mcp-suffix", "mcp-too-few-parts", "no-alias-closure"],
+)
+def test_matches_names(actual: str, names: frozenset[str], expected: bool) -> None:
+    assert matches_names(actual, names) is expected
 
 
 @pytest.mark.parametrize(

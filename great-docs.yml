@@ -140,6 +140,7 @@ reference:
       - mcp_access
       - TOOL_ALIASES
       - expand_tool_names
+      - matches_names
       - tool_name_matches
   - title: Command lines
     desc: Parsed bash command lines — the one command-parsing layer, tree-sitter-backed.

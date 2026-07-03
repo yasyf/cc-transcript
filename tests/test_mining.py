@@ -529,6 +529,7 @@ def test_classify_provenance() -> None:
     assert classify_provenance(spec, "Bash", is_sidechain=True) == "claude"
     assert classify_provenance(spec, "Agent", is_sidechain=False) == "claude"
     assert classify_provenance(spec, "Task", is_sidechain=False) == "claude"
+    assert classify_provenance(spec, "mcp__conductor__Task", is_sidechain=False) == "claude"
 
 
 def test_iter_plan_reentry_signals_smoke() -> None:

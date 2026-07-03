@@ -53,6 +53,7 @@ EXPORTS: dict[str, str] = {
             "expand_tool_names",
             "file_path_of",
             "hunks_of",
+            "matches_names",
             "mcp_access",
             "mcp_parts",
             "parse_tool_call",
@@ -681,6 +682,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         hunks_of as hunks_of,
+    )
+    from cc_transcript.tools import (
+        matches_names as matches_names,
     )
     from cc_transcript.tools import (
         mcp_access as mcp_access,

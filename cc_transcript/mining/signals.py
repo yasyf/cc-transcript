@@ -56,6 +56,7 @@ from cc_transcript.mining.spec import (
     score_user_message,
 )
 from cc_transcript.models import AssistantEvent, ModeEvent, ToolResultBlock, ToolUseBlock, UserEvent
+from cc_transcript.tools import matches_names
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -228,7 +229,7 @@ def iter_plan_rejection_signals(events: Sequence[TranscriptEvent], spec: MiningS
         if isinstance(event, UserEvent)
         for result in denial_results(event)
         if (use := uses.get(result.tool_use_id)) is not None
-        if use.name == "ExitPlanMode"
+        if matches_names(use.name, spec.plan_tools)
         if (text := embedded_user_text(result.content)) is not None
     )
 
@@ -280,7 +281,7 @@ def iter_tool_denial_signals(events: Sequence[TranscriptEvent], spec: MiningSpec
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
         for block in denial_results(event)
-        if (paired := uses.get(block.tool_use_id)) is None or paired.name not in {"ExitPlanMode", "AskUserQuestion"}
+        if (paired := uses.get(block.tool_use_id)) is None or not matches_names(paired.name, spec.denial_excluded_tools)
         if (scored := denial_correction(events, index, embedded_user_text(block.content), spec)) is not None
     )
 
