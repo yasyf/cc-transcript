@@ -122,17 +122,6 @@ def test_task_update_all_null_task_id_raises_by_default() -> None:
         parse_tool_call("TaskUpdate", {"taskId": None})
 
 
-def test_task_update_without_task_id_raises_by_default() -> None:
-    with pytest.raises(ToolInputError, match="TaskUpdate input missing"):
-        parse_tool_call("TaskUpdate", {"status": "completed"})
-
-
-def test_task_update_without_task_id_degrades_under_other() -> None:
-    call = parse_tool_call("TaskUpdate", {"status": "completed"}, on_error="other")
-    assert isinstance(call, OtherCall)
-    assert call.raw == {"status": "completed"}
-
-
 def test_grep_maps_type_to_file_type() -> None:
     call = parse_tool_call("Grep", {"pattern": "x", "type": "py"})
     assert isinstance(call, GrepCall) and call.file_type == "py"
@@ -143,9 +132,73 @@ def test_unknown_and_mcp_tools_parse_to_other() -> None:
     assert isinstance(call, OtherCall) and call.raw.get("q") == "x"
 
 
-def test_malformed_known_tool_raises_by_default() -> None:
-    with pytest.raises(ToolInputError, match="Edit input missing"):
-        parse_tool_call("Edit", {"file_path": "a.py"})
+REQUIRED_STR_FIELDS = [
+    ("Bash", {"command": "ls"}, "command"),
+    ("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "file_path"),
+    ("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "old_string"),
+    ("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "new_string"),
+    ("MultiEdit", {"file_path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]}, "file_path"),
+    ("Write", {"file_path": "f.py", "content": "body"}, "file_path"),
+    ("Write", {"file_path": "f.py", "content": "body"}, "content"),
+    ("Read", {"file_path": "r.py"}, "file_path"),
+    ("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": "src"}, "notebook_path"),
+    ("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": "src"}, "new_source"),
+    ("Grep", {"pattern": "x"}, "pattern"),
+    ("Glob", {"pattern": "*.py"}, "pattern"),
+    ("Agent", {"prompt": "p"}, "prompt"),
+    ("Skill", {"skill": "verify"}, "skill"),
+    ("TaskCreate", {"subject": "s"}, "subject"),
+    ("TaskUpdate", {"taskId": "T1"}, "taskId"),
+    ("ExitPlanMode", {"plan": "p"}, "plan"),
+]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "int-typed", "explicit-null"])
+@pytest.mark.parametrize(
+    ("name", "valid", "key"), REQUIRED_STR_FIELDS, ids=[f"{name}-{key}" for name, _, key in REQUIRED_STR_FIELDS]
+)
+def test_required_fields_validate_at_the_boundary(name: str, valid: dict[str, object], key: str, mutation: str) -> None:
+    assert not isinstance(parse_tool_call(name, valid), OtherCall)
+    raw = (
+        {k: v for k, v in valid.items() if k != key}
+        if mutation == "missing"
+        else valid | {key: 42 if mutation == "int-typed" else None}
+    )
+    with pytest.raises(ToolInputError, match=f"{name} input missing or malformed"):
+        parse_tool_call(name, raw)
+    degraded = parse_tool_call(name, raw, on_error="other")
+    assert isinstance(degraded, OtherCall)
+    assert (degraded.name, degraded.raw) == (name, raw)
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [{"old_string": 42, "new_string": "b"}],
+        [{"old_string": "a", "new_string": None}],
+        [{"old_string": "a"}],
+        [None],
+        ["not-a-span"],
+        "not-a-list",
+        None,
+    ],
+    ids=[
+        "int-old-string",
+        "null-new-string",
+        "missing-new-string",
+        "null-span",
+        "str-span",
+        "str-edits",
+        "null-edits",
+    ],
+)
+def test_multiedit_validates_spans_shallowly(edits: object) -> None:
+    raw = {"file_path": "a.py", "edits": edits}
+    with pytest.raises(ToolInputError, match="MultiEdit input missing or malformed"):
+        parse_tool_call("MultiEdit", raw)
+    degraded = parse_tool_call("MultiEdit", raw, on_error="other")
+    assert isinstance(degraded, OtherCall)
+    assert degraded.raw == raw
 
 
 @pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
