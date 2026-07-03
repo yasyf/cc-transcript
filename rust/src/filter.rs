@@ -230,7 +230,7 @@ mod tests {
             r#"{"clauses":[
                 {"predicate":{"kind":"KindIs","kinds":["user"]},"action":"drop","applies_to":[],"negate":true,"label":null},
                 {"predicate":{"kind":"MetaFlag","flag":"is_meta"},"action":"drop","applies_to":[],"negate":false,"label":null},
-                {"predicate":{"kind":"TextMatchesAny","groups":[["interrupt","\\[Request interrupted by user"]],"ignore_case":true},"action":"drop","applies_to":["user"],"negate":false,"label":null},
+                {"predicate":{"kind":"TextMatchesAny","groups":[["interrupt","^\\s*\\[Request interrupted by user"]],"ignore_case":true},"action":"drop","applies_to":["user"],"negate":false,"label":null},
                 {"predicate":{"kind":"TextInSet","phrases":["ok","go ahead"],"strip_trailing":".!?,;:"},"action":"drop","applies_to":["user"],"negate":false,"label":null},
                 {"predicate":{"kind":"WordCountAtMost","n":2},"action":"drop","applies_to":["user"],"negate":false,"label":null}
             ]}"#,
@@ -253,6 +253,7 @@ mod tests {
         assert!(!spec_keep(&spec, &user("go ahead.")));
         assert!(!spec_keep(&spec, &user("fix it"))); // two words -> dropped
         assert!(spec_keep(&spec, &user("[Request interrupted by user] no, do it this way")) == false);
+        assert!(spec_keep(&spec, &user("she quoted [Request interrupted by user] mid-text here"))); // head-anchored: mid-text marker kept
     }
 
     #[test]

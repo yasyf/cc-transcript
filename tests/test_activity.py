@@ -104,6 +104,7 @@ def activity(*events: TranscriptEvent) -> SessionActivity:
         pytest.param(user("u0", "reminder", is_meta=True), False, id="meta"),
         pytest.param(user("u0", "subagent ask", is_sidechain=True), False, id="sidechain"),
         pytest.param(user("u0", "[Request interrupted by user]", interrupted=True), False, id="interruption"),
+        pytest.param(user("u0", "she quoted [Request interrupted by user] mid-text"), True, id="mid_text_marker"),
         pytest.param(user("u0", "", blocks=(result("t1"),)), False, id="tool_result_only"),
         pytest.param(user("u0", "   "), False, id="whitespace_only"),
     ],

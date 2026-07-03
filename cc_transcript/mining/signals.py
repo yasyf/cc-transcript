@@ -25,10 +25,11 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from cc_transcript.facts import is_denial
 from cc_transcript.filterspec import (
-    INTERRUPT_MARKER_RE,
     STRUCTURAL_NOISE_RE,
     embedded_user_text,
     event_kind,
+    interrupt_marker,
+    is_bare_interrupt_marker,
     tool_names,
     tool_uses,
 )
@@ -136,18 +137,6 @@ def next_user_message(events: Sequence[TranscriptEvent], index: int) -> tuple[in
 
 def denied_tool_payload(use: ToolUseBlock) -> dict[str, Any]:
     return {"tool": use.name, "file_path": use.input.get("file_path")}
-
-
-def interrupt_marker(content: str) -> str | None:
-    stripped = content.lstrip()
-    if (match := INTERRUPT_MARKER_RE.match(stripped)) is None:
-        return None
-    end = stripped.find("]")
-    return stripped[: end + 1] if end != -1 else match.group(0)
-
-
-def is_bare_interrupt_marker(text: str) -> bool:
-    return (marker := interrupt_marker(text)) is not None and not text.strip()[len(marker.strip()) :].strip()
 
 
 def marker_in(event: UserEvent) -> str | None:

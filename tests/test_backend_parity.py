@@ -73,6 +73,8 @@ def fixture_entries() -> list[dict[str, Any]]:
             },
         ),
         envelope(type="user", message={"role": "user", "content": "[Request interrupted by user]"}),
+        envelope(type="user", message={"role": "user", "content": "  [request INTERRUPTED by user for tool use]"}),
+        envelope(type="user", message={"role": "user", "content": "she quoted [Request interrupted by user] mid"}),
         envelope(
             type="user",
             toolUseResult={"isAsync": True, "status": "async_launched"},
