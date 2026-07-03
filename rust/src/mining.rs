@@ -109,6 +109,8 @@ pub struct CompiledMiningSpec {
     detectors: HashSet<String>,
     reentry_lookback: usize,
     edit_tools: HashSet<String>,
+    plan_tools: HashSet<String>,
+    denial_excluded_tools: HashSet<String>,
     subagent_tools: HashSet<String>,
     user_message: CompiledConfSpec,
     calibrated: CompiledConfSpec,
@@ -302,6 +304,8 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
             .and_then(JsonValueTrait::as_u64)
             .ok_or("mining spec missing 'reentry_lookback'")? as usize,
         edit_tools: str_set(&root, "edit_tools"),
+        plan_tools: str_set(&root, "plan_tools"),
+        denial_excluded_tools: str_set(&root, "denial_excluded_tools"),
         subagent_tools: str_set(
             field(&root, "provenance").ok_or("mining spec missing 'provenance'")?,
             "subagent_tools",
@@ -511,6 +515,18 @@ fn tool_uses(events: &Events) -> HashMap<String, &Value> {
         }
     }
     map
+}
+
+/// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
+/// segment of an ``mcp__<server>__<tool>`` name split on the first two ``__``.
+/// Alias closure happens Python-side (tools.py expand_tool_names); the spec JSON
+/// arrives pre-expanded and the alias table never crosses the language boundary.
+fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
+    names.contains(actual)
+        || actual
+            .strip_prefix("mcp__")
+            .and_then(|rest| rest.split_once("__"))
+            .is_some_and(|(_, tool)| names.contains(tool))
 }
 
 // ── text-shape helpers (mining/signals.py) ───────────────────────────────────
@@ -731,7 +747,7 @@ fn iter_plan_rejection<'py>(
         for result in denial_results(event) {
             let Some(tool_use_id) = field_str(result, "tool_use_id") else { continue };
             let Some(use_block) = uses.get(tool_use_id) else { continue };
-            if field_str(use_block, "name") != Some("ExitPlanMode") {
+            if !field_str(use_block, "name").is_some_and(|name| matches_names(name, &spec.plan_tools)) {
                 continue;
             }
             let Some(content) = result_content_text(result) else { continue };
@@ -812,7 +828,9 @@ fn iter_tool_denial<'py>(
         for block in denial_results(event) {
             let paired = field_str(block, "tool_use_id").and_then(|id| uses.get(id).copied());
             if let Some(use_block) = paired {
-                if matches!(field_str(use_block, "name"), Some("ExitPlanMode") | Some("AskUserQuestion")) {
+                if field_str(use_block, "name")
+                    .is_some_and(|name| matches_names(name, &spec.denial_excluded_tools))
+                {
                     continue;
                 }
             }
@@ -888,11 +906,11 @@ struct ScanText {
 }
 
 /// classify_provenance (mining/spec.py classify_provenance): typed for absent tool,
-/// surfaced for a non-subagent main-chain tool, else claude.
+/// surfaced for a non-subagent main-chain tool (per tools.py matches_names), else claude.
 fn classify_provenance(subagent_tools: &HashSet<String>, tool_name: Option<&str>, is_sidechain: bool) -> &'static str {
     match (tool_name, is_sidechain) {
         (None, _) => "typed",
-        (Some(name), false) if !subagent_tools.contains(name) => "surfaced",
+        (Some(name), false) if !matches_names(name, subagent_tools) => "surfaced",
         _ => "claude",
     }
 }
@@ -1181,6 +1199,16 @@ mod tests {
         assert_eq!(line_bounds(Some(&sonic_rs::from_str("\"007\"").unwrap())).unwrap(), (Some(7), Some(7)));
         assert_eq!(line_bounds(Some(&sonic_rs::from_str("\"x\"").unwrap())).unwrap(), (None, None));
         assert_eq!(line_bounds(None).unwrap(), (None, None));
+    }
+
+    #[test]
+    fn matches_names_exact_or_mcp_suffix() {
+        let names: HashSet<String> =
+            ["ExitPlanMode".to_string(), "ExitSpecMode".to_string()].into();
+        assert!(matches_names("ExitSpecMode", &names));
+        assert!(matches_names("mcp__conductor__ExitPlanMode", &names));
+        assert!(!matches_names("mcp__ExitPlanMode", &names));
+        assert!(!matches_names("AskUserQuestion", &names));
     }
 
     #[test]

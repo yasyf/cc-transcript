@@ -40,6 +40,7 @@ from cc_transcript.filterspec import (
 )
 from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence, firm
 from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, StructuredFormat
+from cc_transcript.tools import expand_tool_names, matches_names
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -68,8 +69,10 @@ ALL_DETECTORS: frozenset[DetectorName] = frozenset(
     }
 )
 
-EDIT_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-SUBAGENT_TOOLS: frozenset[str] = frozenset({"Agent", "Task"})
+EDIT_TOOLS: frozenset[str] = expand_tool_names("Edit|Write|MultiEdit|NotebookEdit")
+SUBAGENT_TOOLS: frozenset[str] = expand_tool_names("Agent|Task")
+PLAN_TOOLS: frozenset[str] = expand_tool_names("ExitPlanMode")
+DENIAL_EXCLUDED_TOOLS: frozenset[str] = expand_tool_names("ExitPlanMode|AskUserQuestion")
 REENTRY_LOOKBACK = 40
 CONFIDENCE_STEP = 0.25
 SHORT_FOLLOWUP_MAX_WORDS = 2
@@ -258,6 +261,8 @@ class MiningSpec:
         review: The review-comment detector's format and surface policy.
         reentry_lookback: How many events back the plan-reentry detector scans for an edit.
         edit_tools: The tool names whose use anchors a plan-reentry edit.
+        plan_tools: The plan-submission tool names whose denials mine as plan rejections.
+        denial_excluded_tools: The tool names whose denials the denial detector skips.
     """
 
     detectors: frozenset[DetectorName] = ALL_DETECTORS
@@ -267,6 +272,8 @@ class MiningSpec:
     review: ReviewSpec = field(default_factory=ReviewSpec)
     reentry_lookback: int = REENTRY_LOOKBACK
     edit_tools: frozenset[str] = EDIT_TOOLS
+    plan_tools: frozenset[str] = PLAN_TOOLS
+    denial_excluded_tools: frozenset[str] = DENIAL_EXCLUDED_TOOLS
 
 
 def run_confidence(spec: ConfidenceSpec, ctx: ScoreCtx, base: CandidateSignal) -> CandidateSignal:
@@ -323,7 +330,7 @@ def classify_provenance(spec: ProvenanceSpec, tool_name: str | None, *, is_sidec
     match (tool_name, is_sidechain):
         case (None, _):
             return "typed"
-        case (name, False) if name not in spec.subagent_tools:
+        case (name, False) if not matches_names(name, spec.subagent_tools):
             return "surfaced"
         case _:
             return "claude"
@@ -459,6 +466,8 @@ def mining_spec_to_json(spec: MiningSpec) -> str:
             "detectors": sorted(spec.detectors),
             "reentry_lookback": spec.reentry_lookback,
             "edit_tools": sorted(spec.edit_tools),
+            "plan_tools": sorted(spec.plan_tools),
+            "denial_excluded_tools": sorted(spec.denial_excluded_tools),
             "provenance": provenance_to_dict(spec.provenance),
             "user_message": conf_spec_to_dict(spec.user_message),
             "calibrated": conf_spec_to_dict(spec.calibrated),

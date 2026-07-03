@@ -185,6 +185,22 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             ],
             SPEC,
         ),
+        # Alias-closed plan tools: an ExitSpecMode denial is a plan rejection, never a denial.
+        "plan_rejection_exitspecmode_alias": (
+            [
+                assistant("a1", tool_use("t1", "ExitSpecMode", plan="do X")),
+                user_result("u1", "t1", denial("the plan skips the rollout ordering entirely")),
+            ],
+            SPEC,
+        ),
+        # MCP suffix matching: mcp__<server>__ExitPlanMode counts as a plan tool too.
+        "plan_rejection_mcp_exitplanmode": (
+            [
+                assistant("a1", tool_use("t1", "mcp__conductor__ExitPlanMode", plan="do X")),
+                user_result("u1", "t1", denial("route the plan through the staging service first")),
+            ],
+            SPEC,
+        ),
         # ── plan_reentry: edit before plan-mode re-entry, and the 40-event boundary ──
         "plan_reentry_after_edit": (
             [
@@ -389,6 +405,14 @@ def test_fixture_corpus_mining_parity() -> None:
 def test_battery_detector_parity(name: str) -> None:
     entries, spec = battery()[name]
     assert_parity(to_bytes(entries), spec)
+
+
+@pytest.mark.parametrize("name", ["plan_rejection_exitspecmode_alias", "plan_rejection_mcp_exitplanmode"])
+def test_alias_plan_denials_mine_as_plan_rejections_not_denials(name: str) -> None:
+    entries, spec = battery()[name]
+    detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
+    assert "exit_plan_rejection" in detectors
+    assert "denial" not in detectors
 
 
 @requires_rust
