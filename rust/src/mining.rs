@@ -9,23 +9,19 @@ use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::event::{parse_timestamp, require_str, truthy_str};
 use crate::filter::{compile_group_array, Kind};
+use crate::protocol::{
+    embedded_user_text, interrupt_marker, is_bare_interrupt_marker, DENIAL_PREFIX,
+    INTERRUPT_MARKER_PATTERN,
+};
 use crate::value::{block_type, content_text, field, field_bool, field_str};
 
-// Raw CC-injected protocol strings (filterspec.py:74-76) and the interrupt marker
-// prefix (event.rs:17 / INTERRUPT_MARKER_GROUPS).
-const DENIAL_PREFIX: &str =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected";
-const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
-const USER_SAID_TRAILER: &str = "Note: The user's next message";
-const INTERRUPT_MARKER: &str = r"\[Request interrupted by user";
-
-// Source kinds (sourcekind.py:14-17).
+// Source kinds (mining/sourcekind.py).
 const TRANSCRIPT_MESSAGE: &str = "transcript_message";
 const PLAN_REVIEW: &str = "plan_review";
 const INTERRUPT_REJECTION: &str = "interrupt_rejection";
 const REVIEW_COMMENT: &str = "review_comment";
 
-// Detector ids (spec.py:53-58).
+// Detector ids (mining/spec.py TRANSCRIPT_MESSAGE_DETECTOR etc.).
 const DETECTOR_TRANSCRIPT_MESSAGE: &str = "transcript_message";
 const DETECTOR_EXIT_PLAN_REJECTION: &str = "exit_plan_rejection";
 const DETECTOR_PLAN_REENTRY: &str = "plan_reentry";
@@ -33,7 +29,7 @@ const DETECTOR_DENIAL: &str = "denial";
 const DETECTOR_INTERRUPT: &str = "interrupt";
 const DETECTOR_REVIEW_COMMENT: &str = "review_comment";
 
-// Confidence bands (confidence.py:15-19); the hardcoded marker-correction seeds.
+// Confidence bands (mining/confidence.py NONE / LOW); the hardcoded marker-correction seeds.
 const NONE: f64 = 0.0;
 const LOW: f64 = 0.25;
 
@@ -249,8 +245,9 @@ fn compile_regex_format(fmt: &Value) -> Result<CompiledRegexFormat, String> {
 }
 
 /// Compiles a review-format regex with the same flags as
-/// ``compile_review_format`` (spec.py:333): the ``(?:p)|...`` join from
-/// ``compile_group_array`` plus a ``(?m)`` prefix when ``multiline`` is set.
+/// ``compile_review_format`` (mining/spec.py compile_review_format): the
+/// ``(?:p)|...`` join from ``compile_group_array`` plus a ``(?m)`` prefix when
+/// ``multiline`` is set.
 fn compile_review_regex(fmt: &Value) -> Result<Regex, String> {
     let groups = group_array(fmt, "groups")?;
     let joined = groups
@@ -319,7 +316,7 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
     })
 }
 
-// ── confidence fold (run_confidence, spec.py:272) ────────────────────────────
+// ── confidence fold (mining/spec.py run_confidence) ──────────────────────────
 
 fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
@@ -386,7 +383,7 @@ fn run_confidence(
 }
 
 /// Scores ``text`` by folding ``calibrated`` over a ``firm(seed)`` base
-/// (spec.py:312-314: MEDIUM band, one seed reason).
+/// (mining/spec.py calibrated: MEDIUM band, one seed reason).
 fn calibrated(spec: &CompiledConfSpec, text: &str, seed: &str) -> CandidateSig {
     run_confidence(
         spec,
@@ -401,8 +398,8 @@ fn calibrated(spec: &CompiledConfSpec, text: &str, seed: &str) -> CandidateSig {
     )
 }
 
-/// Scores a transcript user message (spec.py:317-319: NONE band, empty reasons,
-/// durable=true seed).
+/// Scores a transcript user message (mining/spec.py score_user_message: NONE band,
+/// empty reasons, durable=true seed).
 fn score_user_message(spec: &CompiledConfSpec, text: &str, index: i64, trigger: Option<i64>) -> CandidateSig {
     run_confidence(
         spec,
@@ -463,19 +460,20 @@ impl Events {
         self.lines.len()
     }
 
-    /// Nearest preceding assistant index (signals.py:177).
+    /// Nearest preceding assistant index (mining/signals.py nearest_assistant_index).
     fn nearest_assistant_index(&self, index: usize) -> Option<i64> {
         (0..index).rev().find(|&i| self.kinds[i] == Kind::Assistant).map(|i| i as i64)
     }
 
-    /// The first non-blank user message at or after ``index`` (signals.py:137).
+    /// The first non-blank user message at or after ``index`` (mining/signals.py
+    /// next_user_message).
     fn next_user_message(&self, index: usize) -> Option<usize> {
         (index..self.len()).find(|&i| self.kinds[i] == Kind::User && !self.texts[i].trim().is_empty())
     }
 
-    /// The 40-event lookback for the most recent edit (signals.py:125): scans
-    /// ``range(index-1, max(index-lookback, 0)-1, -1)`` for an assistant event
-    /// using an edit tool.
+    /// The 40-event lookback for the most recent edit (mining/signals.py
+    /// last_edit_index): scans ``range(index-1, max(index-lookback, 0)-1, -1)``
+    /// for an assistant event using an edit tool.
     fn last_edit_index(&self, index: usize, spec: &CompiledMiningSpec) -> Option<i64> {
         let lo = index.saturating_sub(spec.reentry_lookback);
         (lo..index)
@@ -496,7 +494,7 @@ impl Events {
     }
 }
 
-/// Builds the ``tool_use_id -> ToolUseBlock`` map (filterspec.py:383), keeping
+/// Builds the ``tool_use_id -> ToolUseBlock`` map (filterspec.py tool_uses), keeping
 /// last-write-wins on duplicate ids to match the Python dict comprehension.
 fn tool_uses(events: &Events) -> HashMap<String, &Value> {
     let mut map = HashMap::new();
@@ -515,48 +513,17 @@ fn tool_uses(events: &Events) -> HashMap<String, &Value> {
     map
 }
 
-// ── text-shape helpers (signals.py) ──────────────────────────────────────────
+// ── text-shape helpers (mining/signals.py) ───────────────────────────────────
 
-/// embedded_user_text (signals.py:119): the verbatim instruction wrapped between
-/// the USER_SAID markers, or None.
-fn embedded_user_text(content: &str) -> Option<String> {
-    let start = content.find(USER_SAID_MARKER)?;
-    let after = &content[start + USER_SAID_MARKER.len()..];
-    Some(after.split(USER_SAID_TRAILER).next().unwrap_or(after).trim().to_string())
-}
-
-/// interrupt_marker (signals.py:153): the bracketed interrupt prefix at the head
-/// of ``content`` (after lstrip), through the closing ``]`` when present, else the
-/// matched marker prefix. ``INTERRUPT_MARKER_RE`` matches case-insensitively from
-/// the start (``.match()``), so the leading-prefix test is case-folded too.
-fn interrupt_marker(content: &str) -> Option<String> {
-    static MARKER: once_cell::sync::Lazy<Regex> =
-        once_cell::sync::Lazy::new(|| Regex::new(&format!("(?i)^{INTERRUPT_MARKER}")).expect("interrupt regex"));
-    let stripped = content.trim_start();
-    let matched = MARKER.find(stripped)?;
-    match stripped.find(']') {
-        Some(end) => Some(stripped[..=end].to_string()),
-        None => Some(matched.as_str().to_string()),
-    }
-}
-
-/// is_bare_interrupt_marker (signals.py:161): the text is only the marker.
-fn is_bare_interrupt_marker(text: &str) -> bool {
-    match interrupt_marker(text) {
-        None => false,
-        Some(marker) => text.trim()[marker.trim().len()..].trim().is_empty(),
-    }
-}
-
-/// marker_in (signals.py:165): the first interrupt marker found in a tool-result
-/// block's content, or None.
-fn marker_in(event: &Value) -> Option<String> {
+/// marker_in (mining/signals.py marker_in): whether any tool-result block's
+/// content carries the interrupt marker.
+fn marker_in(event: &Value) -> bool {
     message_content(event)
         .and_then(JsonContainerTrait::as_array)
         .into_iter()
         .flatten()
         .filter(|b| block_type(b) == Some("tool_result"))
-        .find_map(|b| interrupt_marker(&result_content_text(b)?))
+        .any(|b| result_content_text(b).is_some_and(|c| interrupt_marker(&c).is_some()))
 }
 
 /// The flattened text of a tool-result block: the string content, or the joined
@@ -575,9 +542,8 @@ fn result_content_text(block: &Value) -> Option<String> {
     })
 }
 
-const STRUCTURAL_INTERRUPT_RE: &str = INTERRUPT_MARKER;
-
-// ── confidence band literals for marker_correction (signals.py:198-203) ──────
+// ── confidence band literals for marker_correction (mining/confidence.py weak /
+// noise) ──────────────────────────────────────────────────────────────────────
 
 fn weak(reason: &str) -> CandidateSig {
     CandidateSig { confidence: LOW, reasons: vec![reason.to_string()], durable: true }
@@ -592,8 +558,9 @@ struct ScoredText {
     signal: CandidateSig,
 }
 
-/// correction_text (signals.py:181): the first following non-bare, non-structural
-/// user message — a forward loop that re-scans from the last consumed index.
+/// correction_text (mining/signals.py correction_text): the first following
+/// non-bare, non-structural user message — a forward loop that re-scans from the
+/// last consumed index.
 fn correction_text(events: &Events, mut index: usize, structural: &Regex) -> Option<String> {
     while let Some(i) = events.next_user_message(index + 1) {
         let text = &events.texts[i];
@@ -605,7 +572,8 @@ fn correction_text(events: &Events, mut index: usize, structural: &Regex) -> Opt
     None
 }
 
-/// first_followup (signals.py:190): the first following non-bare user message.
+/// first_followup (mining/signals.py first_followup): the first following non-bare
+/// user message.
 fn first_followup(events: &Events, mut index: usize) -> Option<String> {
     while let Some(i) = events.next_user_message(index + 1) {
         index = i;
@@ -616,8 +584,8 @@ fn first_followup(events: &Events, mut index: usize) -> Option<String> {
     None
 }
 
-/// marker_correction (signals.py:198): a real correction weak(bare_marker), else
-/// a followup noise(structural_only), else None.
+/// marker_correction (mining/signals.py marker_correction): a real correction
+/// weak(bare_marker), else a followup noise(structural_only), else None.
 fn marker_correction(events: &Events, index: usize, structural: &Regex) -> Option<ScoredText> {
     if let Some(correction) = correction_text(events, index, structural) {
         return Some(ScoredText { text: correction, signal: weak("bare_marker") });
@@ -625,8 +593,8 @@ fn marker_correction(events: &Events, index: usize, structural: &Regex) -> Optio
     first_followup(events, index).map(|followup| ScoredText { text: followup, signal: noise("structural_only") })
 }
 
-/// denial_correction (signals.py:206): the embedded instruction calibrated, else
-/// the marker-correction fallback.
+/// denial_correction (mining/signals.py denial_correction): the embedded
+/// instruction calibrated, else the marker-correction fallback.
 fn denial_correction(
     events: &Events,
     index: usize,
@@ -643,8 +611,9 @@ fn denial_correction(
     }
 }
 
-/// The denial tool-result blocks of a user event (signals.py:109): error blocks
-/// whose flattened content starts with the denial banner.
+/// The denial tool-result blocks of a user event (mining/signals.py
+/// denial_results): error blocks whose flattened content starts with the denial
+/// banner.
 fn denial_results(event: &Value) -> Vec<&Value> {
     message_content(event)
         .and_then(JsonContainerTrait::as_array)
@@ -656,7 +625,7 @@ fn denial_results(event: &Value) -> Vec<&Value> {
         .collect()
 }
 
-// ── signal dict construction (signal_to_dict, spec.py:501) ───────────────────
+// ── signal dict construction (mining/spec.py signal_to_dict) ─────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn build_signal_dict<'py>(
@@ -702,7 +671,7 @@ fn occurred_at_iso<'py>(py: Python<'py>, raw: &str) -> PyResult<Bound<'py, PyAny
 // ── detectors ────────────────────────────────────────────────────────────────
 
 /// Compiled structural-noise regex shared by the marker-correction paths
-/// (STRUCTURAL_NOISE_RE, filterspec.py:524). Built from the user-message spec's
+/// (filterspec.py STRUCTURAL_NOISE_RE). Built from the user-message spec's
 /// NoiseIfStructural stage so it tracks the spec's group set exactly.
 fn structural_re(spec: &CompiledMiningSpec) -> Regex {
     spec.user_message
@@ -712,7 +681,7 @@ fn structural_re(spec: &CompiledMiningSpec) -> Regex {
             ConfStage::NoiseIfStructural { groups, .. } => Some(groups.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| Regex::new(STRUCTURAL_INTERRUPT_RE).expect("interrupt fallback regex"))
+        .unwrap_or_else(|| Regex::new(INTERRUPT_MARKER_PATTERN).expect("interrupt fallback regex"))
 }
 
 fn iter_user_message<'py>(
@@ -882,7 +851,7 @@ fn iter_interrupt<'py>(
         if events.kinds[index] != Kind::User {
             continue;
         }
-        if marker_in(&events.lines[index]).is_none() {
+        if !marker_in(&events.lines[index]) {
             continue;
         }
         let Some(scored) = marker_correction(events, index, structural) else { continue };
@@ -918,8 +887,8 @@ struct ScanText {
     trigger_index: Option<i64>,
 }
 
-/// classify_provenance (spec.py:322): typed for absent tool, surfaced for a
-/// non-subagent main-chain tool, else claude.
+/// classify_provenance (mining/spec.py classify_provenance): typed for absent tool,
+/// surfaced for a non-subagent main-chain tool, else claude.
 fn classify_provenance(subagent_tools: &HashSet<String>, tool_name: Option<&str>, is_sidechain: bool) -> &'static str {
     match (tool_name, is_sidechain) {
         (None, _) => "typed",
@@ -928,8 +897,8 @@ fn classify_provenance(subagent_tools: &HashSet<String>, tool_name: Option<&str>
     }
 }
 
-/// review_scan_texts (signals.py:338): the typed user text plus each surfaced or
-/// claude tool-result, gated by the surfaces set.
+/// review_scan_texts (mining/signals.py review_scan_texts): the typed user text
+/// plus each surfaced or claude tool-result, gated by the surfaces set.
 fn review_scan_texts(
     events: &Events,
     index: usize,
@@ -964,16 +933,16 @@ fn review_scan_texts(
     scans
 }
 
-/// first (formats.py:74): the first present, non-null alias value.
+/// first (mining/formats.py first): the first present, non-null alias value.
 fn first<'a>(obj: &'a Value, keys: &[String]) -> Option<&'a Value> {
     keys.iter()
         .filter_map(|key| field(obj, key))
         .find(|value| !value.is_null())
 }
 
-/// line_bounds (formats.py:78): int -> (n,n); "a-b" -> first-partition split;
-/// all-digit string -> (n,n); else (None,None). A malformed range parse raises,
-/// matching Python's propagated int() error.
+/// line_bounds (mining/formats.py line_bounds): int -> (n,n); "a-b" ->
+/// first-partition split; all-digit string -> (n,n); else (None,None). A malformed
+/// range parse raises, matching Python's propagated int() error.
 fn line_bounds(value: Option<&Value>) -> Result<(Option<i64>, Option<i64>), String> {
     match value {
         Some(v) if v.is_i64() || v.is_u64() => {
@@ -1018,8 +987,9 @@ fn json_str(value: &Value) -> String {
     sonic_rs::to_string(value).unwrap_or_default()
 }
 
-/// review_comment (formats.py:91): builds a comment from a finding object's
-/// aliased fields. The comment joins the comment value and any fix value with " ".
+/// review_comment (mining/formats.py review_comment): builds a comment from a
+/// finding object's aliased fields. The comment joins the comment value and any fix
+/// value with " ".
 fn review_comment(obj: &Value, fmt: &CompiledStructuredFormat) -> Result<ReviewComment, String> {
     let (line_start, line_end) = line_bounds(first(obj, &fmt.line_keys))?;
     let file = first(obj, &fmt.file_keys).map(json_str);
@@ -1032,8 +1002,9 @@ fn review_comment(obj: &Value, fmt: &CompiledStructuredFormat) -> Result<ReviewC
     Ok(ReviewComment { file, line_start, line_end, comment })
 }
 
-/// findings (formats.py:107): list -> items; dict -> the first finding-array
-/// alias, else recurse into "result", else every confirmed*-prefixed list.
+/// findings (mining/formats.py findings): list -> items; dict -> the first
+/// finding-array alias, else recurse into "result", else every confirmed*-prefixed
+/// list.
 fn findings<'a>(payload: &'a Value, keys: &[String], acc: &mut Vec<&'a Value>) {
     if let Some(items) = payload.as_array() {
         acc.extend(items.iter());
@@ -1061,8 +1032,8 @@ fn findings<'a>(payload: &'a Value, keys: &[String], acc: &mut Vec<&'a Value>) {
     }
 }
 
-/// StructuredFormat.extract (formats.py:65): the review comments for every finding
-/// object that carries a comment value.
+/// StructuredFormat.extract (mining/formats.py StructuredFormat.extract): the
+/// review comments for every finding object that carries a comment value.
 fn extract_structured_format(payload: &Value, fmt: &CompiledStructuredFormat) -> Result<Vec<ReviewComment>, String> {
     let mut found = Vec::new();
     findings(payload, &fmt.finding_keys, &mut found);
@@ -1074,8 +1045,9 @@ fn extract_structured_format(payload: &Value, fmt: &CompiledStructuredFormat) ->
         .collect()
 }
 
-/// regex_review_comments (spec.py:338): one comment per regex match, joining the
-/// stripped, present comment groups; falsy/unmatched groups are skipped.
+/// regex_review_comments (mining/spec.py regex_review_comments): one comment per
+/// regex match, joining the stripped, present comment groups; falsy/unmatched
+/// groups are skipped.
 fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewComment> {
     fmt.regex
         .captures_iter(text)
@@ -1099,8 +1071,9 @@ fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewCom
         .collect()
 }
 
-/// review_comments (signals.py:387): regex formats then structured formats, in
-/// order. Callable formats are non-portable and never reach the Rust backend.
+/// review_comments (mining/signals.py review_comments): regex formats then
+/// structured formats, in order. Callable formats are non-portable and never reach
+/// the Rust backend.
 fn review_comments(spec: &CompiledMiningSpec, text: &str) -> Result<Vec<(String, ReviewComment)>, String> {
     let mut out: Vec<(String, ReviewComment)> = spec
         .review
@@ -1165,7 +1138,7 @@ fn iter_review_comment<'py>(
     Ok(())
 }
 
-// ── dispatch (mine, signals.py:409) ──────────────────────────────────────────
+// ── dispatch (mining/signals.py mine) ────────────────────────────────────────
 
 pub fn mine<'py>(
     py: Python<'py>,
@@ -1200,36 +1173,6 @@ pub fn mine<'py>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn embedded_text_extracts_between_markers() {
-        let content = format!("{DENIAL_PREFIX}\n\n{USER_SAID_MARKER}do it this way\n{USER_SAID_TRAILER} ...");
-        assert_eq!(embedded_user_text(&content), Some("do it this way".to_string()));
-    }
-
-    #[test]
-    fn embedded_text_missing_marker_is_none() {
-        assert_eq!(embedded_user_text("no marker here"), None);
-    }
-
-    #[test]
-    fn interrupt_marker_through_bracket() {
-        assert_eq!(
-            interrupt_marker("[Request interrupted by user]"),
-            Some("[Request interrupted by user]".to_string())
-        );
-        assert_eq!(
-            interrupt_marker("  [Request interrupted by user for tool use]rest"),
-            Some("[Request interrupted by user for tool use]".to_string())
-        );
-        assert_eq!(interrupt_marker("hello"), None);
-    }
-
-    #[test]
-    fn bare_marker_detection() {
-        assert!(is_bare_interrupt_marker("[Request interrupted by user]"));
-        assert!(!is_bare_interrupt_marker("[Request interrupted by user] no do it differently"));
-    }
 
     #[test]
     fn line_bounds_variants() {

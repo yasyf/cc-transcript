@@ -108,6 +108,18 @@ def user_interrupt() -> dict[str, Any]:
     return envelope(type="user", message={"role": "user", "content": "[Request interrupted by user]"})
 
 
+def user_interrupt_casefolded_leading_whitespace() -> dict[str, Any]:
+    return envelope(
+        type="user", message={"role": "user", "content": "  [request INTERRUPTED by user for tool use]"}
+    )
+
+
+def user_marker_mid_text() -> dict[str, Any]:
+    return envelope(
+        type="user", message={"role": "user", "content": "she quoted [Request interrupted by user] mid-text"}
+    )
+
+
 def assistant_text() -> dict[str, Any]:
     return envelope(
         type="assistant",
@@ -278,6 +290,18 @@ def test_user_interrupt() -> None:
     event = parse_event(user_interrupt())
     assert isinstance(event, UserEvent)
     assert event.interrupted is True
+
+
+def test_user_interrupt_casefolded_leading_whitespace() -> None:
+    event = parse_event(user_interrupt_casefolded_leading_whitespace())
+    assert isinstance(event, UserEvent)
+    assert event.interrupted is True
+
+
+def test_user_marker_mid_text_is_not_interrupted() -> None:
+    event = parse_event(user_marker_mid_text())
+    assert isinstance(event, UserEvent)
+    assert event.interrupted is False
 
 
 def test_assistant_text() -> None:

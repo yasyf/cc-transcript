@@ -3,6 +3,7 @@ mod filter;
 mod lexicon;
 mod mining;
 mod model;
+mod protocol;
 mod score;
 mod value;
 

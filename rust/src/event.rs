@@ -12,9 +12,8 @@ use crate::model::{
     TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
     USER_EVENT_CLS,
 };
+use crate::protocol::interrupt_marker;
 use crate::value::{block_type, field, field_bool, field_str};
-
-const INTERRUPT_MARKER: &str = "[Request interrupted by user";
 
 pub(crate) fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
     field_str(data, key).filter(|s| !s.is_empty())
@@ -239,7 +238,7 @@ pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, Py
                 .unwrap_or(false);
             let (text, blocks) =
                 parse_user_blocks(py, require(require(data, "message")?, "content")?, is_async)?;
-            let interrupted = text.contains(INTERRUPT_MARKER);
+            let interrupted = interrupt_marker(&text).is_some();
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1((
                 parse_meta(py, data)?,
                 text,

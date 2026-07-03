@@ -11,7 +11,7 @@ import anyio.to_thread
 import orjson
 
 from cc_transcript.backend import Backend, ParsedTranscript
-from cc_transcript.filterspec import apply_spec
+from cc_transcript.filterspec import apply_spec, interrupt_marker
 from cc_transcript.models import (
     AssistantEvent,
     CacheCreation,
@@ -47,8 +47,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.filterspec import FilterSpec
-
-INTERRUPT_MARKER = "[Request interrupted by user"
 
 
 def parse_meta(data: Mapping[str, Any]) -> EntryMeta:
@@ -159,7 +157,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 meta=parse_meta(data),
                 text=text,
                 blocks=blocks,
-                interrupted=INTERRUPT_MARKER in text,
+                interrupted=interrupt_marker(text) is not None,
             )
         case "assistant":
             text, blocks = parse_assistant_blocks(data["message"]["content"])

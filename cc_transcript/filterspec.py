@@ -66,7 +66,7 @@ AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
     ("role_reminder", r"^\s*\[Role Reminder\b"),
 )
 
-INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"\[Request interrupted by user"),)
+INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"^\s*\[Request interrupted by user"),)
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
 # Raw CC-injected protocol strings carried in tool-result content: the denial banner
@@ -402,6 +402,18 @@ def embedded_user_text(content: str) -> str | None:
     if (start := content.find(USER_SAID_MARKER)) == -1:
         return None
     return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
+
+
+def interrupt_marker(content: str) -> str | None:
+    stripped = content.lstrip()
+    if (match := INTERRUPT_MARKER_RE.match(stripped)) is None:
+        return None
+    end = stripped.find("]")
+    return stripped[: end + 1] if end != -1 else match.group(0)
+
+
+def is_bare_interrupt_marker(text: str) -> bool:
+    return (marker := interrupt_marker(text)) is not None and not text.strip()[len(marker.strip()) :].strip()
 
 
 def normalize_bare(text: str, strip_trailing: str = TRAILING_PUNCT) -> str:

@@ -115,6 +115,8 @@ BATTERY = [
     "# Augment Agent",
     "this # Augment Agent not at start",  # ^-anchored
     "[Request interrupted by user]",
+    "  [request INTERRUPTED by user for tool use]",  # leading whitespace + case fold: still matches
+    "she quoted [Request interrupted by user] mid-text",  # ^-anchored: mid-text marker kept
     "Stop hook feedback: ruff failed",
     "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
     "go ahead and commit and push all the repos",
