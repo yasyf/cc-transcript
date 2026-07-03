@@ -30,7 +30,7 @@ keyboard_nav: true
 
 hero:
   name: cc-transcript
-  tagline: "The cc-family session-activity platform: non-lossy typed events with a Rust fast path, lifted into turns, tool calls, and edits — durable context windows, feedback mining and judging, and a transcript-investigation CLI on one spine."
+  tagline: "Grep every Claude Code session you've ever run."
 
 # Narrative doc sections live alongside the curated API reference: Getting Started
 # is a single landing page (docs/getting-started/index.qmd); Guides is a numbered

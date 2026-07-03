@@ -1,17 +1,17 @@
 ---
-title: Getting Started
+title: Parse, filter, and score a transcript in about a minute
 description: Install cc-transcript and go from raw transcript bytes to a typed parse, a composed filter, and a sentiment score in about a minute.
 ---
 
 `cc-transcript` parses Claude Code's on-disk JSONL transcripts into a non-lossy, typed superset event model — nothing is dropped — and then lets you compose your own filtering and scoring on top of that one faithful representation.
 
+Where you land: five raw JSONL lines become five typed events, a three-clause filter spec reduces them to the two substantive turns, and a score spec turns a three-bucket conversation into `[1, 5, 3]` — all in three short cells. Every code cell below runs.
+
 ```bash
 uv add cc-transcript
 ```
 
-This page is the 60-second tour: parse, then filter, then (optionally) score. Every code cell below runs.
-
-## Parse
+## Step 1 — Parse
 
 `parse_events_from_bytes` turns raw JSONL bytes into a list of typed events. Each line becomes exactly one event, and the event's class reflects its `type` field.
 
@@ -33,7 +33,7 @@ events = parse_events_from_bytes(TRANSCRIPT)
 
 The parse is a non-lossy superset: every entry kind in the file survives. The trailing `system` event (a `stop_hook_summary`) becomes a `SystemEvent` rather than being discarded, and the `<system-reminder>` line stays a `UserEvent` — its content is preserved verbatim. Nothing here is dropped. Deciding what counts as noise is a separate, opt-in step that lives in *your* code, which is exactly the next section.
 
-## Filter
+## Step 2 — Filter
 
 Filtering is composed from small builders. Each builder returns a clause; `build_spec` assembles the clauses into a single spec; `apply_spec` yields the survivors.
 
@@ -51,7 +51,11 @@ Read the spec left to right against the five parsed events. `keep_only("user", "
 
 That is three builders out of a larger set — there are clauses for synthetic turns, sidechains, meta flags, compacted entries, entrypoints, and phrase matching. The [Filtering events](../guide/filtering-events.qmd) guide walks the full builder catalog and shows how to serialize a spec.
 
-## Score (optional)
+::: {.callout-tip title="Checkpoint"}
+The filter cell prints exactly two survivors: the `('UserEvent', 'fix the failing test')` request and its `AssistantEvent` reply. Five events in, two out — if you still see five, the spec was built but not applied (`apply_spec(events, spec)` yields the survivors).
+:::
+
+## Step 3 — Score (optional)
 
 Sentiment scoring sits one layer up: `bucket_events` groups the parsed stream's `UserEvent` and `AssistantEvent` turns into short time windows — `ConversationBucket`s — and each bucket gets a 1–5 score. The actual scoring is done by an `InferenceEngine` — normally a model-backed one. Buckets are three minutes wide, so the cell below parses a slightly longer fixture that spans three windows, then buckets it.
 
@@ -113,6 +117,10 @@ scores = await engine.score(buckets)
 ```
 
 The `[1, 5, 3]` result shows both clause kinds at work. Bucket 0's `"this is completely useless, wtf"` trips `flag_frustration()`, which short-circuits straight to `1` before the model runs. Bucket 1 has no trigger, so it keeps the inner engine's `5`. Bucket 2's `"continue"` is a resume phrase: the model still scores it `5`, but `clamp_resume()` post-clamps that down to `3`. Swap `ConstantEngine` for a real model-backed `InferenceEngine` and the same spec composes unchanged. The [Scoring sentiment](../guide/scoring-sentiment.qmd) guide covers the engines and the rest of the clause builders.
+
+::: {.callout-tip title="Checkpoint"}
+The final cell prints `[1, 5, 3]`. That is the promised end state: a typed parse, a composed filter, and a scored conversation, with every decision living in your code rather than the parser.
+:::
 
 ## Next steps
 
