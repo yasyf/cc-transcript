@@ -36,7 +36,7 @@ READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query
 
 
 def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
-    return next((raw[key] for key in keys if key in raw), None)
+    return next((value for key in keys if (value := raw.get(key)) is not None), None)
 
 
 def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
