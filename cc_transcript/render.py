@@ -28,7 +28,7 @@ from cc_transcript.models import (
 from cc_transcript.tools import BashCall, EditCall, MultiEditCall, WriteCall, parse_tool_call
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping
     from datetime import datetime
     from typing import Any
 
