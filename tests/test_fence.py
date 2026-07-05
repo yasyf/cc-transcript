@@ -30,6 +30,8 @@ FORBIDDEN_EDGES = (
     ("judge", "extract"),
 )
 LLM_DEPS = {"pydantic", "spawnllm"}
+EMBED_DEPS = {"model2vec", "numpy", "sqlite_vec"}
+HEAVY_DEPS = LLM_DEPS | EMBED_DEPS
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -99,10 +101,10 @@ def test_domains_import_without_extras() -> None:
         importlib.import_module(f"cc_transcript.{package}")
 
 
-def test_mining_and_judge_never_import_llm_deps_eagerly() -> None:
+def test_mining_and_judge_never_import_heavy_deps_eagerly() -> None:
     for package in ("mining", "judge"):
         for path in py_files(PACKAGE / package):
-            offenders = sorted(mod for mod in eager_imports(path) if mod.partition(".")[0] in LLM_DEPS)
+            offenders = sorted(mod for mod in eager_imports(path) if mod.partition(".")[0] in HEAVY_DEPS)
             assert not offenders, f"{path.relative_to(PACKAGE)} eagerly imports {offenders}"
 
 
@@ -110,5 +112,13 @@ def test_judge_import_leaves_llm_deps_unloaded() -> None:
     code = (
         "import sys, cc_transcript.mining, cc_transcript.judge, cc_transcript.judge.llm; "
         f"assert not {LLM_DEPS!r} & sys.modules.keys(), sorted({LLM_DEPS!r} & sys.modules.keys())"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_judge_similar_import_leaves_embed_deps_unloaded() -> None:
+    code = (
+        "import sys, cc_transcript.judge.similar; "
+        f"assert not {EMBED_DEPS!r} & sys.modules.keys(), sorted({EMBED_DEPS!r} & sys.modules.keys())"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
