@@ -4,6 +4,60 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.0.0]
+
+### Changed (BREAKING)
+- **Model leaves verdict identity.** The verdict table's unique key drops from
+  `(dedup_key, role, prompt_version, model)` to `(dedup_key, role, prompt_version)`:
+  one verdict per event per role per prompt version. `model` stays `NOT NULL` as
+  pure provenance — recorded and reported, never filtered on — so a judge-backend
+  flip no longer mass-re-judges the corpus (81 events double-judged in production)
+  and `judged()`'s consumers stop double-counting per-model duplicates.
+  `VerdictStoreMixin.unjudged` loses its `model` parameter.
+
+### Added
+- **`canonical_key`.** A nullable `canonical_key` column on the verdict table and a
+  read-only `VerdictLike.canonical_key` (`str | None`) — the normalized durable-rule
+  key a judge may assign, `None` when the verdict names no rule. `record_verdict`
+  persists it and carries it across a summary-to-full upgrade.
+- **Slug primitives.** `SLUG_PATTERN` (two to six hyphenated `[a-z0-9]` groups, by
+  construction never a 64-character hex digest) and `canonical_slug`, both exported
+  from `cc_transcript.judge`.
+- **Canonical-key suggester.** `cc_transcript.judge.similar` — a sqlite-vec retrieval
+  layer behind the new `[judge]` extra (`sqlite-vec`, `model2vec`, `numpy`).
+  `record_verdict` embeds each canonical-key verdict's feedback with
+  `potion-retrieval-32M` and upserts the vector into the store's own database, created
+  on first use and never part of the base schema. `suggest_canonical_keys` ranks stored
+  keys by evidence similarity to a new correction; `near_duplicate_keys` flags distinct
+  keys whose evidence centroids nearly coincide, a split-detection signal that never
+  auto-merges. The vector deps load lazily, so importing `cc_transcript.judge` needs
+  none of them installed, and assigning a canonical key without the extra fails loud
+  with an `ImportError` naming it.
+
+### Fixed
+- **The summary treadmill.** `unjudged(refresh_summary=True)` now orders truly-unjudged
+  events ahead of summary-refresh rows, so a backlog of summary rows no longer starves
+  fresh events under `limit`, and drops summary rows whose context window no longer
+  hydrates — its transcript expired or a ref was compacted away — so a dead transcript
+  stops re-judging every session.
+- **Cross-model fidelity upgrade.** A summary-to-full re-record updates `model` and
+  `canonical_key` alongside the content, so an upgrade judged by a different backend
+  no longer keeps the summary pass's provenance on the full pass's content.
+- **Option picks carrying notes.** An `ask_user_question` option pick with notes
+  ("Option A, and never do X again") scores on its notes like a freeform answer
+  instead of the flat `option_pick` weak floor, so the richest durable-rule shape
+  survives the confidence gate.
+
+## [8.1.0]
+
+### Added
+- **`ask_user_question` mining detector.** One signal per answered `AskUserQuestion`
+  Q/A pair, scoring option picks apart from freeform answers and splitting the
+  answer's notes and command preview into evidence.
+
+### Changed
+- The `[llm]` extra's `spawnllm` floor rises to `>=0.5.4`.
+
 ## [8.0.0]
 
 ### Changed (BREAKING)

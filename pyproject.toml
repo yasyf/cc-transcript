@@ -1,6 +1,6 @@
 [project]
 name = "cc-transcript"
-version = "8.1.0"
+version = "9.0.0"
 description = "Grep every Claude Code session you've ever run."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -49,6 +49,11 @@ sentiment = [
     "afinn>=0.1",
 ]
 llm = ["spawnllm>=0.5.4,<0.6"]
+judge = [
+    "sqlite-vec>=0.1.9",
+    "model2vec>=0.8.2",
+    "numpy>=1.26",
+]
 
 [project.scripts]
 cc-transcript = "cc_transcript.cli:cli"
