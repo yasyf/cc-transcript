@@ -422,7 +422,11 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
         ),
         "auq_ordinal_shorthand": (
             auq_round(
-                [auq_question("Name the contexts?", "Names", "BeforeEdit / AfterEdit (Recommended)", "EditOld / EditNew")],
+                [
+                    auq_question(
+                        "Name the contexts?", "Names", "BeforeEdit / AfterEdit (Recommended)", "EditOld / EditNew"
+                    )
+                ],
                 answered('"Name the contexts?"="1, but shouldnt those be default contexts? were they not before?"'),
             ),
             SPEC,
@@ -447,7 +451,8 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             auq_round(
                 [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
                 answered(
-                    '"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n$ tool enable\n==> done'
+                    '"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n'
+                    "$ tool enable\n==> done"
                 ),
             ),
             SPEC,
@@ -456,6 +461,24 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             auq_round(
                 [auq_question("Add CI coverage?", "CI", "Add the guard", "Skip CI guard")],
                 answered('"Add CI coverage?"=(no option selected) notes: fix it upstream so it skips invalid files'),
+            ),
+            SPEC,
+        ),
+        # A pick carrying notes scores on the notes like a freeform answer, not the
+        # flat option_pick weak floor — the notes-aware branch on both backends.
+        "auq_pick_with_notes": (
+            auq_round(
+                [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                answered('"Which adapter?"="Storage (Recommended)" notes: and never use the memory one again'),
+            ),
+            SPEC,
+        ),
+        # A pick whose segment ends in a bare ' notes: ' yields empty notes: both
+        # backends treat empty notes as absent and fall back to the weak option_pick.
+        "auq_pick_trailing_empty_notes": (
+            auq_round(
+                [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                answered('"Which adapter?"="Storage (Recommended)" notes: '),
             ),
             SPEC,
         ),

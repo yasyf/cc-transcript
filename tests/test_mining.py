@@ -213,9 +213,7 @@ def test_capture_window_previews_carry_tool_actions_and_digests() -> None:
 def test_capture_window_clips_previews_to_the_persisted_budget() -> None:
     events = [
         user("u0", "go"),
-        assistant(
-            "a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 300}),), secs=1
-        ),
+        assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 300}),), secs=1),
         user("u1", "feedback", secs=2),
     ]
     window = capture_window(SessionActivity.from_events(SESSION, events), anchor("u1"), preview_chars=50)
@@ -393,9 +391,7 @@ def test_iter_interrupt_marker_signals_extracts_correction() -> None:
         user(
             "u0",
             blocks=(
-                ToolResultBlock(
-                    tool_use_id=ToolUseId("t9"), content="[Request interrupted by user]", is_error=True
-                ),
+                ToolResultBlock(tool_use_id=ToolUseId("t9"), content="[Request interrupted by user]", is_error=True),
             ),
         ),
         user("u1", "actually do it this way instead"),
@@ -416,9 +412,7 @@ def test_iter_interrupt_marker_signals_structural_only_correction_is_noise() -> 
         user(
             "u0",
             blocks=(
-                ToolResultBlock(
-                    tool_use_id=ToolUseId("t9"), content="[Request interrupted by user]", is_error=True
-                ),
+                ToolResultBlock(tool_use_id=ToolUseId("t9"), content="[Request interrupted by user]", is_error=True),
             ),
         ),
         user("u1", "<system-reminder>session resumed</system-reminder>"),
@@ -484,9 +478,7 @@ def workflow_result(content: str, *, sidechain: bool = False) -> tuple[Assistant
 
 def test_iter_review_comment_signals_surfaced_structured_tool_result() -> None:
     fmt = StructuredFormat(name="workflow", finding_keys=("findings",))
-    payload = json.dumps(
-        {"findings": [{"file": "a.py", "line": "24-51", "comment": "guard against None"}]}
-    )
+    payload = json.dumps({"findings": [{"file": "a.py", "line": "24-51", "comment": "guard against None"}]})
     use, result = workflow_result(payload)
     signals = list(
         iter_review_comment_signals(
@@ -707,9 +699,7 @@ def test_iter_ask_user_question_signals_multiselect_subset_join_is_option_pick()
 def test_iter_ask_user_question_signals_preview_split_into_evidence() -> None:
     events = answered_round(
         [question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
-        answered(
-            '"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n$ tool enable\n==> done'
-        ),
+        answered('"How far should enable go?"="Full turnkey (Recommended)" selected preview:\n$ tool enable\n==> done'),
     )
     signals = list(iter_ask_user_question_signals(events, SPEC))
     assert len(signals) == 1
@@ -719,6 +709,21 @@ def test_iter_ask_user_question_signals_preview_split_into_evidence() -> None:
     assert signal.evidence["preview"] == "$ tool enable\n==> done"
     assert signal.evidence["picked_labels"] == ["Full turnkey (Recommended)"]
     assert "notes" not in signal.evidence
+
+
+def test_iter_ask_user_question_signals_option_pick_with_notes_scores_on_notes() -> None:
+    events = answered_round(
+        [question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+        answered('"Which adapter?"="Storage (Recommended)" notes: never store secrets to the memory file'),
+    )
+    signals = list(iter_ask_user_question_signals(events, SPEC))
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.text == "never store secrets to the memory file"
+    assert signal.evidence["option_pick"] is True
+    assert signal.evidence["picked_labels"] == ["Storage (Recommended)"]
+    assert signal.evidence["notes"] == "never store secrets to the memory file"
+    assert signal.signal == CandidateSignal(HIGH, ("freeform_answer", "substantive"))
 
 
 def test_iter_ask_user_question_signals_no_option_selected_notes() -> None:
