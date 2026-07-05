@@ -6,13 +6,20 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
+from cc_transcript.activity import SessionActivity
+from cc_transcript.context import ContextWindow, TurnRef
+from cc_transcript.discovery import TranscriptExpiredError
+from cc_transcript.ids import EventRef, EventUuid, SessionId
 from cc_transcript.judge.verdicts import (
+    SLUG_PATTERN,
     AuditEstimate,
     GoldenResult,
     GoldenRow,
     JudgeError,
     Metrics,
+    VerdictSchemaError,
     VerdictStoreMixin,
+    canonical_slug,
     exact_upper_bound,
     flip_pairs,
     golden_result,
@@ -39,6 +46,45 @@ CREATE TABLE IF NOT EXISTS triage (
   what_claude_did TEXT NOT NULL,
   confidence REAL NOT NULL,
   rationale TEXT NOT NULL,
+  canonical_key TEXT,
+  fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
+  judged_at TEXT NOT NULL,
+  UNIQUE(dedup_key, role, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS idx_triage_dedup ON triage(dedup_key);
+"""
+
+V8_VERDICT_DDL = """
+CREATE TABLE IF NOT EXISTS verdicts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
+  role TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  category TEXT NOT NULL,
+  accepted INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  rationale TEXT NOT NULL,
+  fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
+  judged_at TEXT NOT NULL,
+  UNIQUE(dedup_key, role, prompt_version, model)
+);
+CREATE INDEX IF NOT EXISTS idx_verdicts_dedup ON verdicts(dedup_key);
+"""
+
+V8_TRIAGE_DDL = """
+CREATE TABLE IF NOT EXISTS triage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
+  role TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  category TEXT NOT NULL,
+  is_pushback INTEGER NOT NULL,
+  what_claude_did TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  rationale TEXT NOT NULL,
   fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
   judged_at TEXT NOT NULL,
   UNIQUE(dedup_key, role, prompt_version, model)
@@ -51,7 +97,47 @@ INSERT_EVENT = (
     "VALUES (?, ?, ?, ?, '{}', '2026-01-01T00:00:00+00:00')"
 )
 
+INSERT_EVENT_CONTEXT = (
+    "INSERT INTO feedback_events (dedup_key, source_kind, occurred_at, text, context_json, ingested_at) "
+    "VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00')"
+)
+
 EMPTY_GOLDEN = GoldenResult(total=0, passed=0, sha256="", failures=())
+
+
+def window_json() -> str:
+    anchor = EventRef(SessionId("s"), EventUuid("u"))
+    return ContextWindow(
+        anchor=anchor,
+        before=(),
+        trigger=TurnRef(role="user", refs=(anchor,), preview="p", tool_digests=()),
+        after=(),
+        fidelity="summary",
+        preview_chars=200,
+    ).to_json()
+
+
+class LiveActivity:
+    """A session whose transcript still resolves every ref the fence hydrates."""
+
+    def turn_of(self, ref: EventRef) -> object:
+        return ref
+
+
+@pytest.fixture
+def live_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def alive(session_id: SessionId, **_: object) -> LiveActivity:
+        return LiveActivity()
+
+    monkeypatch.setattr(SessionActivity, "from_session", staticmethod(alive))
+
+
+@pytest.fixture
+def dead_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def expired(session_id: SessionId, **_: object) -> LiveActivity:
+        raise TranscriptExpiredError(session_id)
+
+    monkeypatch.setattr(SessionActivity, "from_session", staticmethod(expired))
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +147,7 @@ class PlainVerdict:
     confidence: float
     rationale: str
     accepted: bool
+    canonical_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +157,7 @@ class AliasedVerdict:
     confidence: float
     rationale: str
     is_pushback: bool
+    canonical_key: str | None = None
 
     @property
     def summary(self) -> str:
@@ -104,6 +192,9 @@ def test_generic_params_name_generic_table_and_columns() -> None:
     ddl = GenericStore.verdicts_ddl()
     assert "CREATE TABLE IF NOT EXISTS verdicts (" in ddl
     assert "  accepted INTEGER NOT NULL,\n  summary TEXT NOT NULL," in ddl
+    assert "  canonical_key TEXT,\n" in ddl
+    assert "UNIQUE(dedup_key, role, prompt_version)\n" in ddl
+    assert "prompt_version, model)" not in ddl
     assert "CREATE INDEX IF NOT EXISTS idx_verdicts_dedup ON verdicts(dedup_key);" in ddl
 
 
@@ -118,6 +209,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
                 confidence=0.9,
                 rationale="rejects plan",
                 accepted=True,
+                canonical_key="never-force-push",
             ),
             id="generic-names",
         ),
@@ -129,6 +221,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
                 confidence=0.9,
                 rationale="rejects plan",
                 is_pushback=True,
+                canonical_key="never-force-push",
             ),
             id="legacy-triage-names",
         ),
@@ -144,26 +237,21 @@ def test_verdict_store_roundtrip(
                 await store.store.conn.execute(
                     INSERT_EVENT, (key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", f"text {key}")
                 )
-            before = await store.unjudged(role="judge", prompt_version=1, model="sonnet")
+            before = await store.unjudged(role="judge", prompt_version=1)
             for _ in range(2):
                 await store.record_verdict(
                     DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity="full"
                 )
             count_cur = await store.store.conn.execute(f"SELECT COUNT(*) AS n FROM {store_cls.VERDICT_TABLE}")
             physical_cur = await store.store.conn.execute(
-                f"SELECT {store_cls.ACCEPTED_COLUMN} AS a, {store_cls.SUMMARY_COLUMN} AS s, fidelity "
-                f"FROM {store_cls.VERDICT_TABLE}"
+                f"SELECT {store_cls.ACCEPTED_COLUMN} AS a, {store_cls.SUMMARY_COLUMN} AS s, canonical_key AS ck, "
+                f"fidelity FROM {store_cls.VERDICT_TABLE}"
             )
             return {
                 "before": [row["dedup_key"] for row in before],
                 "rows": [row["n"] async for row in count_cur][0],
-                "physical": [(row["a"], row["s"], row["fidelity"]) async for row in physical_cur],
-                "after": [
-                    row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1, model="sonnet")
-                ],
-                "other_model": [
-                    row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1, model="opus")
-                ],
+                "physical": [(row["a"], row["s"], row["ck"], row["fidelity"]) async for row in physical_cur],
+                "after": [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)],
                 "judged": await store.judged(role="judge", prompt_version=1),
                 "keys": await store.dedup_keys(),
             }
@@ -171,9 +259,8 @@ def test_verdict_store_roundtrip(
     result = anyio.run(go)
     assert result["before"] == ["k1", "k2"]
     assert result["rows"] == 1
-    assert result["physical"] == [(1, "Force-pushed", "full")]
+    assert result["physical"] == [(1, "Force-pushed", "never-force-push", "full")]
     assert result["after"] == ["k2"]
-    assert result["other_model"] == ["k1", "k2"]
     judged = result["judged"]
     assert isinstance(judged, list) and len(judged) == 1
     assert judged[0]["dedup_key"] == "k1"
@@ -182,6 +269,266 @@ def test_verdict_store_roundtrip(
     assert (judged[0]["category"], judged[0]["rationale"]) == ("wrong_approach", "rejects plan")
     assert judged[0]["model"] == "sonnet"
     assert result["keys"] == {"k1", "k2"}
+
+
+def plain(
+    *, summary: str = "s", accepted: bool = True, canonical_key: str | None = None, confidence: float = 0.9
+) -> PlainVerdict:
+    return PlainVerdict(
+        category="wrong_approach",
+        summary=summary,
+        confidence=confidence,
+        rationale="r",
+        accepted=accepted,
+        canonical_key=canonical_key,
+    )
+
+
+async def open_generic(tmp_path: Path) -> GenericStore:
+    db = await FileStateStore.open(tmp_path / "feedback.db", extra_schema=FEEDBACK_DDL + GenericStore.verdicts_ddl())
+    return GenericStore(db)
+
+
+async def one_verdict(store: GenericStore) -> dict[str, object]:
+    cur = await store.store.conn.execute(
+        "SELECT COUNT(*) AS n, MAX(model) AS model, MAX(summary) AS summary, MAX(canonical_key) AS ck, "
+        "MAX(fidelity) AS fidelity FROM verdicts"
+    )
+    return [dict(row) async for row in cur][0]
+
+
+def test_same_key_different_model_never_holds_two_rows(tmp_path: Path) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
+            await store.record_verdict(
+                DedupKey("k1"), plain(summary="a"), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            await store.record_verdict(
+                DedupKey("k1"), plain(summary="b"), role="judge", prompt_version=1, model="opus", fidelity="summary"
+            )
+            after_summary = await one_verdict(store)
+            await store.record_verdict(
+                DedupKey("k1"), plain(summary="c"), role="judge", prompt_version=1, model="haiku", fidelity="full"
+            )
+            return {"after_summary": after_summary, "after_full": await one_verdict(store)}
+
+    result = anyio.run(go)
+    assert result["after_summary"] == {"n": 1, "model": "sonnet", "summary": "a", "ck": None, "fidelity": "summary"}
+    assert result["after_full"] == {"n": 1, "model": "haiku", "summary": "c", "ck": None, "fidelity": "full"}
+
+
+def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp_path: Path) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
+            await store.record_verdict(
+                DedupKey("k1"),
+                plain(summary="preview", canonical_key="old-rule"),
+                role="judge",
+                prompt_version=1,
+                model="sonnet",
+                fidelity="summary",
+            )
+            await store.record_verdict(
+                DedupKey("k1"),
+                plain(summary="hydrated", canonical_key="new-rule"),
+                role="judge",
+                prompt_version=1,
+                model="opus",
+                fidelity="full",
+            )
+            return await one_verdict(store)
+
+    assert anyio.run(go) == {"n": 1, "model": "opus", "summary": "hydrated", "ck": "new-rule", "fidelity": "full"}
+
+
+def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
+            await store.record_verdict(
+                DedupKey("k1"),
+                plain(summary="first", canonical_key="first-rule"),
+                role="judge",
+                prompt_version=1,
+                model="sonnet",
+                fidelity="full",
+            )
+            await store.record_verdict(
+                DedupKey("k1"),
+                plain(summary="second", canonical_key="second-rule"),
+                role="judge",
+                prompt_version=1,
+                model="opus",
+                fidelity="full",
+            )
+            return await one_verdict(store)
+
+    assert anyio.run(go) == {"n": 1, "model": "sonnet", "summary": "first", "ck": "first-rule", "fidelity": "full"}
+
+
+def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
+    async def go() -> list[tuple[object, object]]:
+        async with await open_generic(tmp_path) as store:
+            for key in ("k1", "k2"):
+                await store.store.conn.execute(
+                    INSERT_EVENT, (key, "transcript_message", "2026-01-01T00:00:00+00:00", "t")
+                )
+            await store.record_verdict(
+                DedupKey("k1"),
+                plain(canonical_key="use-uv-not-pip"),
+                role="judge",
+                prompt_version=1,
+                model="sonnet",
+                fidelity="full",
+            )
+            await store.record_verdict(
+                DedupKey("k2"),
+                plain(canonical_key=None),
+                role="judge",
+                prompt_version=1,
+                model="sonnet",
+                fidelity="full",
+            )
+            cur = await store.store.conn.execute("SELECT dedup_key, canonical_key FROM verdicts ORDER BY dedup_key")
+            return [(row["dedup_key"], row["canonical_key"]) async for row in cur]
+
+    assert anyio.run(go) == [("k1", "use-uv-not-pip"), ("k2", None)]
+
+
+def test_unmigrated_v8_verdict_table_fails_loud_on_every_path(tmp_path: Path) -> None:
+    async def go() -> None:
+        db = await FileStateStore.open(tmp_path / "feedback.db", extra_schema=FEEDBACK_DDL + V8_VERDICT_DDL)
+        async with GenericStore(db) as store:
+            await store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
+            with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
+                await store.judged(role="judge", prompt_version=1)
+            with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
+                await store.unjudged(role="judge", prompt_version=1)
+            with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
+                await store.record_verdict(
+                    DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full"
+                )
+
+    anyio.run(go)
+
+
+def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
+            unjudged = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
+            await store.record_verdict(
+                DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full"
+            )
+            return {
+                "unjudged": unjudged,
+                "judged": [row["dedup_key"] for row in await store.judged(role="judge", prompt_version=1)],
+            }
+
+    assert anyio.run(go) == {"unjudged": ["k1"], "judged": ["k1"]}
+
+
+def test_legacy_aliased_v9_table_passes_schema_validation(tmp_path: Path) -> None:
+    async def go() -> None:
+        db = await FileStateStore.open(tmp_path / "feedback.db", extra_schema=FEEDBACK_DDL + LegacyStore.verdicts_ddl())
+        async with LegacyStore(db) as store:
+            await store.ensure_verdict_schema()
+
+    anyio.run(go)
+
+
+def test_second_verdict_table_on_a_shared_connection_still_fails_loud(tmp_path: Path) -> None:
+    async def go() -> None:
+        db = await FileStateStore.open(
+            tmp_path / "feedback.db", extra_schema=FEEDBACK_DDL + GenericStore.verdicts_ddl() + V8_TRIAGE_DDL
+        )
+        async with db:
+            await GenericStore(db).ensure_verdict_schema()
+            with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
+                await LegacyStore(db).ensure_verdict_schema()
+
+    anyio.run(go)
+
+
+def test_unjudged_orders_truly_unjudged_before_summary_refresh(tmp_path: Path, live_transcript: None) -> None:
+    async def go() -> list[str]:
+        async with await open_generic(tmp_path) as store:
+            for i, key in enumerate(("k1", "k2", "k3")):
+                await store.store.conn.execute(
+                    INSERT_EVENT_CONTEXT,
+                    (key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", "t", window_json()),
+                )
+            await store.record_verdict(
+                DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            return [str(row["dedup_key"]) for row in rows]
+
+    assert anyio.run(go) == ["k2", "k3", "k1"]
+
+
+def test_unjudged_keeps_a_summary_row_while_its_transcript_lives(tmp_path: Path, live_transcript: None) -> None:
+    async def go() -> list[str]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(
+                INSERT_EVENT_CONTEXT, ("live", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json())
+            )
+            await store.record_verdict(
+                DedupKey("live"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            return [str(row["dedup_key"]) for row in rows]
+
+    assert anyio.run(go) == ["live"]
+
+
+def test_unjudged_drops_a_summary_row_whose_transcript_expired(tmp_path: Path, dead_transcript: None) -> None:
+    # The row carries the populated refs capture_window always produces; only the
+    # transcript is gone. The fence must hydrate to notice — refs alone never do.
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(
+                INSERT_EVENT_CONTEXT, ("dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json())
+            )
+            await store.record_verdict(
+                DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            return {
+                "refresh": [
+                    str(row["dedup_key"])
+                    for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+                ],
+                "plain": [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1)],
+            }
+
+    result = anyio.run(go)
+    assert result["refresh"] == []
+    assert result["plain"] == []
+
+
+def test_unjudged_keeps_an_unjudged_event_then_drops_it_once_its_dead_transcript_is_verdicted(
+    tmp_path: Path, dead_transcript: None
+) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(
+                INSERT_EVENT_CONTEXT, ("dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json())
+            )
+            before = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            await store.record_verdict(
+                DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            after = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            return {
+                "before": [str(row["dedup_key"]) for row in before],
+                "after": [str(row["dedup_key"]) for row in after],
+            }
+
+    result = anyio.run(go)
+    assert result["before"] == ["dead"]
+    assert result["after"] == []
 
 
 def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
@@ -387,7 +734,9 @@ def test_flip_pairs_reports_only_side_changes_over_the_overlap() -> None:
     assert flip_pairs([], []).rate is None
 
 
-def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(tmp_path: Path) -> None:
+def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
+    tmp_path: Path, live_transcript: None
+) -> None:
     summary_verdict = PlainVerdict(
         category="wrong_approach", summary="from previews", confidence=0.6, rationale="summary window", accepted=False
     )
@@ -406,13 +755,14 @@ def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(tm
         )
         async with GenericStore(db) as store:
             await store.store.conn.execute(
-                INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "text k1")
+                INSERT_EVENT_CONTEXT,
+                ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "text k1", window_json()),
             )
             await record(store, summary_verdict, "summary")
-            plain = await store.unjudged(role="judge", prompt_version=1, model="sonnet")
-            refresh = await store.unjudged(role="judge", prompt_version=1, model="sonnet", refresh_summary=True)
+            plain = await store.unjudged(role="judge", prompt_version=1)
+            refresh = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             await record(store, full_verdict, "full")
-            after_full = await store.unjudged(role="judge", prompt_version=1, model="sonnet", refresh_summary=True)
+            after_full = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             await record(store, summary_verdict, "summary")
             return {
                 "plain": plain,
@@ -493,3 +843,37 @@ def test_structured_judge_converts_provider_errors_to_judge_error(monkeypatch: p
     judge = structured_judge(Toy, tier="medium", timeout=1)
     with pytest.raises(JudgeError, match="overloaded"):
         anyio.run(judge, "prompt")
+
+
+@pytest.mark.parametrize(
+    ("text", "matches"),
+    [
+        pytest.param("use-uv", True, id="two-groups"),
+        pytest.param("use-uv-not-pip-here-now", True, id="six-groups"),
+        pytest.param("word", False, id="one-group-rejected"),
+        pytest.param("a-b-c-d-e-f-g", False, id="seven-groups-rejected"),
+        pytest.param("a" * 64, False, id="sixty-four-hex-rejected"),
+        pytest.param("Use-Uv", False, id="uppercase-rejected"),
+        pytest.param("use--uv", False, id="double-hyphen-rejected"),
+    ],
+)
+def test_slug_pattern_edges(text: str, matches: bool) -> None:
+    assert bool(SLUG_PATTERN.match(text)) is matches
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("Use UV, not pip!", "use-uv-not-pip", id="punctuation-and-case"),
+        pytest.param("  never   force_push  ", "never-force-push", id="whitespace-and-underscore"),
+        pytest.param("already-a-slug", "already-a-slug", id="idempotent"),
+        pytest.param("!!!", "", id="all-punctuation-empties"),
+    ],
+)
+def test_canonical_slug_normalizes(text: str, expected: str) -> None:
+    assert canonical_slug(text) == expected
+
+
+def test_canonical_slug_output_matches_slug_pattern() -> None:
+    slug = canonical_slug("Use UV, not pip!")
+    assert SLUG_PATTERN.match(slug)

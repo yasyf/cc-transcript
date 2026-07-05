@@ -25,12 +25,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache-dependency-glob: uv.lock
 
-      - name: Sync (dev + sentiment)
-        run: uv sync --extra dev --extra sentiment
+      - name: Sync (dev + sentiment + judge)
+        run: uv sync --extra dev --extra sentiment --extra judge
 
       - name: Type check (ty)
         continue-on-error: true
         run: uv run ty check cc_transcript
+
+      - name: Prefetch embedder (potion-retrieval-32M)
+        run: uv run python -c "from model2vec import StaticModel; StaticModel.from_pretrained('minishlab/potion-retrieval-32M')"
 
       - name: Test (pytest)
         run: uv run pytest

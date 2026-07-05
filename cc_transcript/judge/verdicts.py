@@ -9,10 +9,12 @@ prompts, the verdict model, and any SQL views over the verdict table.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from math import comb
 from random import Random
 from typing import TYPE_CHECKING, ClassVar, Protocol
+from weakref import WeakKeyDictionary
 
 import anyio
 
@@ -20,6 +22,8 @@ from cc_transcript.mining.store import now
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
+
+    import aiosqlite
 
     from cc_transcript.context import Fidelity
     from cc_transcript.mining.candidates import DedupKey
@@ -42,12 +46,45 @@ CREATE TABLE IF NOT EXISTS {table} (
   {summary} TEXT NOT NULL,
   confidence REAL NOT NULL,
   rationale TEXT NOT NULL,
+  canonical_key TEXT,
   fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
   judged_at TEXT NOT NULL,
-  UNIQUE(dedup_key, role, prompt_version, model)
+  UNIQUE(dedup_key, role, prompt_version)
 );
 CREATE INDEX IF NOT EXISTS idx_{table}_dedup ON {table}(dedup_key);
 """
+
+SLUG_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+){1,5}$")
+"""Matches a durable rule slug: two to six ``[a-z0-9]`` groups joined by single hyphens.
+
+The two-group floor rejects a bare word, and the six-group ceiling — together
+with the hyphen requirement — can never match a 64-character hex digest, so a
+slug and a content digest never collide.
+"""
+
+VALIDATED_VERDICT_TABLES: WeakKeyDictionary[aiosqlite.Connection, set[str]] = WeakKeyDictionary()
+"""Per-connection sets of verdict table names that passed :meth:`VerdictStoreMixin.ensure_verdict_schema`.
+
+A table's schema is fixed for a connection's lifetime, so the v8/v9 check runs
+once per table per connection; membership short-circuits the repeat calls from
+every :meth:`~VerdictStoreMixin.judged`, :meth:`~VerdictStoreMixin.unjudged`, and
+:meth:`~VerdictStoreMixin.record_verdict`. Scoped by table, not connection alone,
+because the mixin is explicitly multi-table — two subclasses with different
+``VERDICT_TABLE`` may share one connection, and validating one must not vouch for
+the other.
+"""
+
+
+class VerdictSchemaError(RuntimeError):
+    """The verdict table predates the v9 schema and must be rebuilt by hand.
+
+    Raised by :class:`VerdictStoreMixin`'s read and write paths when the physical
+    table lacks the ``canonical_key`` column or its unique index still covers the
+    v8 identity ``(dedup_key, role, prompt_version, model)``. ``CREATE TABLE IF
+    NOT EXISTS`` leaves such a table untouched, and :meth:`~VerdictStoreMixin.judged`
+    neither selects ``canonical_key`` nor joins on ``model``, so a v8 table would
+    otherwise read without error while silently returning per-model duplicates.
+    """
 
 
 class JudgeError(RuntimeError):
@@ -75,6 +112,8 @@ class VerdictLike(Protocol):
         confidence: The judge's probability that its accept-vs-reject call is right.
         rationale: One short clause explaining the call.
         accepted: Whether the verdict accepts the row.
+        canonical_key: The canonical, normalized key of the durable rule the
+            verdict names, or ``None`` when the verdict names no durable rule.
     """
 
     @property
@@ -87,6 +126,8 @@ class VerdictLike(Protocol):
     def rationale(self) -> str: ...
     @property
     def accepted(self) -> bool: ...
+    @property
+    def canonical_key(self) -> str | None: ...
 
 
 class VerdictStoreMixin:
@@ -98,6 +139,12 @@ class VerdictStoreMixin:
     generic ``accepted``/``summary``, so the sampling and eval math read one row
     shape. An app with an existing verdict table (cc-pushback's ``triage``)
     adopts the mixin by overriding the params — zero migration.
+
+    Verdict identity is ``(dedup_key, role, prompt_version)``: one verdict per
+    event per role per prompt version. ``model`` is provenance only — recorded
+    and reported, never filtered on — so a judge-backend flip cannot mass-re-judge
+    the corpus and :meth:`judged`'s consumers never double-count per-model
+    duplicates.
 
     Example:
         >>> class Store(VerdictStoreMixin, FeedbackStore):
@@ -118,86 +165,173 @@ class VerdictStoreMixin:
             table=cls.VERDICT_TABLE, accepted=cls.ACCEPTED_COLUMN, summary=cls.SUMMARY_COLUMN
         )
 
+    async def ensure_verdict_schema(self) -> None:
+        """Validates the verdict table matches the v9 schema, once per table per connection.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves an existing v8 table (no
+        ``canonical_key`` column, unique index over ``(dedup_key, role,
+        prompt_version, model)``) in place, and neither :meth:`judged` nor
+        :meth:`unjudged` selects ``canonical_key`` or joins on ``model`` — so a v8
+        table reads without error while returning per-model duplicates. The read
+        and write paths call this first so the mismatch fails loud instead.
+
+        Raises:
+            VerdictSchemaError: When the table lacks a ``canonical_key`` column or
+                no unique index covers exactly ``(dedup_key, role, prompt_version)``.
+        """
+        if self.VERDICT_TABLE in VALIDATED_VERDICT_TABLES.setdefault(self.store.conn, set()):
+            return
+        columns = {
+            row["name"] async for row in await self.store.conn.execute(f"PRAGMA table_info({self.VERDICT_TABLE})")
+        }
+        indexes = [dict(row) async for row in await self.store.conn.execute(f"PRAGMA index_list({self.VERDICT_TABLE})")]
+        unique_columns = [
+            tuple([col["name"] async for col in await self.store.conn.execute(f"PRAGMA index_info({index['name']})")])
+            for index in indexes
+            if index["unique"]
+        ]
+        if "canonical_key" not in columns or ("dedup_key", "role", "prompt_version") not in unique_columns:
+            raise VerdictSchemaError(
+                f"verdict table {self.VERDICT_TABLE!r} predates the v9 schema: it needs a canonical_key column and a "
+                f"UNIQUE(dedup_key, role, prompt_version) index. Rebuild it with the manual v8-to-v9 migration "
+                f"(recreate {self.VERDICT_TABLE!r} from verdicts_ddl() and copy the rows over) before reading "
+                f"or writing."
+            )
+        VALIDATED_VERDICT_TABLES[self.store.conn].add(self.VERDICT_TABLE)
+
     async def record_verdict(
         self, key: DedupKey, verdict: VerdictLike, *, role: str, prompt_version: int, model: str, fidelity: Fidelity
     ) -> None:
-        """Records one verdict, idempotently, keyed by ``(dedup_key, role, prompt_version, model)``.
+        """Records one verdict, idempotently, keyed by ``(dedup_key, role, prompt_version)``.
 
-        Fidelity sits outside the unique key: re-recording an existing verdict
-        is a no-op, except that a ``'full'``-fidelity verdict replaces a
-        ``'summary'`` one — the re-judge path :meth:`unjudged` opens with
-        ``refresh_summary=True``.
+        One verdict per event per role per prompt version — ``model`` is pure
+        provenance, recorded and reported but never part of the identity, so a
+        judge-backend flip never mass-re-judges the corpus. Re-recording is a
+        no-op, with one exception: a ``'full'``-fidelity verdict replaces a
+        ``'summary'`` one at the same key (any model), carrying the new model,
+        content, and ``canonical_key`` across — the re-judge path
+        :meth:`unjudged` opens with ``refresh_summary=True``. A different-model
+        ``'full'``-to-``'full'`` re-record is a deliberate silent no-op:
+        first-full-wins.
 
         Args:
             key: The judged event's dedup key.
             verdict: The structured verdict to persist.
             role: Who produced it, e.g. ``judge`` or ``auditor``.
             prompt_version: The prompt version that produced it.
-            model: The resolved model name that produced it.
+            model: The resolved model name that produced it, kept as provenance.
             fidelity: Whether the judged window rendered at ``'full'`` fidelity
                 or from ``'summary'`` previews.
         """
-        await self.store.conn.execute(
-            f"INSERT INTO {self.VERDICT_TABLE} ("
-            f"dedup_key, role, prompt_version, model, category, {self.ACCEPTED_COLUMN}, "
-            f"{self.SUMMARY_COLUMN}, confidence, rationale, fidelity, judged_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(dedup_key, role, prompt_version, model) DO UPDATE SET "
-            f"category = excluded.category, {self.ACCEPTED_COLUMN} = excluded.{self.ACCEPTED_COLUMN}, "
-            f"{self.SUMMARY_COLUMN} = excluded.{self.SUMMARY_COLUMN}, confidence = excluded.confidence, "
-            "rationale = excluded.rationale, fidelity = excluded.fidelity, judged_at = excluded.judged_at "
-            "WHERE fidelity = 'summary' AND excluded.fidelity = 'full'",
-            (
-                key,
-                role,
-                prompt_version,
-                model,
-                verdict.category,
-                verdict.accepted,
-                verdict.summary,
-                verdict.confidence,
-                verdict.rationale,
-                fidelity,
-                now(),
-            ),
+        from cc_transcript.judge.similar import (
+            clear_evidence,
+            embed_evidence,
+            prepare_evidence_removal,
+            record_evidence,
         )
+
+        await self.ensure_verdict_schema()
+        evidence = (
+            await embed_evidence(
+                self.store, dedup_key=key, canonical_key=verdict.canonical_key, summary=verdict.summary
+            )
+            if verdict.canonical_key is not None
+            else None
+        )
+        removable = evidence is None and await prepare_evidence_removal(self.store)
+        async with self.store.transaction() as conn:
+            cursor = await conn.execute(
+                f"INSERT INTO {self.VERDICT_TABLE} ("
+                f"dedup_key, role, prompt_version, model, category, {self.ACCEPTED_COLUMN}, "
+                f"{self.SUMMARY_COLUMN}, confidence, rationale, canonical_key, fidelity, judged_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(dedup_key, role, prompt_version) DO UPDATE SET "
+                f"model = excluded.model, category = excluded.category, "
+                f"{self.ACCEPTED_COLUMN} = excluded.{self.ACCEPTED_COLUMN}, "
+                f"{self.SUMMARY_COLUMN} = excluded.{self.SUMMARY_COLUMN}, confidence = excluded.confidence, "
+                "rationale = excluded.rationale, canonical_key = excluded.canonical_key, "
+                "fidelity = excluded.fidelity, judged_at = excluded.judged_at "
+                "WHERE fidelity = 'summary' AND excluded.fidelity = 'full'",
+                (
+                    key,
+                    role,
+                    prompt_version,
+                    model,
+                    verdict.category,
+                    verdict.accepted,
+                    verdict.summary,
+                    verdict.confidence,
+                    verdict.rationale,
+                    verdict.canonical_key,
+                    fidelity,
+                    now(),
+                ),
+            )
+            if cursor.rowcount > 0:
+                if evidence is not None:
+                    await record_evidence(
+                        conn, dedup_key=key, role=role, prompt_version=prompt_version, evidence=evidence
+                    )
+                elif removable:
+                    await clear_evidence(conn, dedup_key=key, role=role, prompt_version=prompt_version)
 
     async def unjudged(
         self,
         *,
         role: str,
         prompt_version: int,
-        model: str,
         limit: int | None = None,
         refresh_summary: bool = False,
     ) -> list[dict[str, object]]:
-        """Returns events lacking a verdict for ``(role, prompt_version, model)``, oldest first.
+        """Returns events lacking a verdict for ``(role, prompt_version)``, unjudged first.
+
+        Truly-unjudged events (no verdict at all) sort ahead of summary-refresh
+        rows, then by event id, so a backlog of summary rows never starves fresh
+        events under ``limit``.
 
         Args:
             role: The verdict role to check.
             prompt_version: The prompt version the verdict must carry.
-            model: The resolved model name the verdict must carry.
             limit: When set, the maximum number of rows to return.
             refresh_summary: When True, also re-yields events whose verdict was
                 recorded at ``fidelity='summary'``, so they can be re-judged at
-                full fidelity once their windows hydrate again.
+                full fidelity once their windows hydrate again. A summary row
+                whose context window no longer hydrates — its transcript expired
+                or a ref was compacted away — is dropped, so a dead transcript
+                stops burning the cap.
 
         Returns:
             One dict per event with the columns needed to build its prompt.
         """
-        miss = "(t.id IS NULL OR t.fidelity = 'summary')" if refresh_summary else "t.id IS NULL"
-        query = (
-            f"SELECT {EVENT_COLUMNS} FROM feedback_events e "
+        await self.ensure_verdict_schema()
+        if not refresh_summary:
+            sql = (
+                f"SELECT {EVENT_COLUMNS} FROM feedback_events e "
+                f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
+                "AND t.role = ? AND t.prompt_version = ? "
+                "WHERE t.id IS NULL ORDER BY e.id"
+            )
+            params: tuple[object, ...] = (role, prompt_version)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, limit)
+            async with self.store.conn.execute(sql, params) as cur:
+                return [dict(row) async for row in cur]
+        kept: list[dict[str, object]] = []
+        async with self.store.conn.execute(
+            f"SELECT {EVENT_COLUMNS}, t.id AS verdict_id FROM feedback_events e "
             f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
-            "AND t.role = ? AND t.prompt_version = ? AND t.model = ? "
-            f"WHERE {miss} ORDER BY e.id"
-        )
-        params: tuple[object, ...] = (role, prompt_version, model)
-        if limit is not None:
-            query += " LIMIT ?"
-            params = (*params, limit)
-        cur = await self.store.conn.execute(query, params)
-        return [dict(row) async for row in cur]
+            "AND t.role = ? AND t.prompt_version = ? "
+            "WHERE (t.id IS NULL OR t.fidelity = 'summary') ORDER BY (t.id IS NOT NULL), e.id",
+            (role, prompt_version),
+        ) as cur:
+            async for raw in cur:
+                row = dict(raw)
+                if row.pop("verdict_id") is None or await hydratable(str(row["context_json"])):
+                    kept.append(row)
+                    if limit is not None and len(kept) >= limit:
+                        break
+        return kept
 
     async def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
         """Returns events joined with their ``(role, prompt_version)`` verdicts, oldest first.
@@ -214,6 +348,7 @@ class VerdictStoreMixin:
             verdict's ``category``, ``accepted``, ``confidence``, ``summary``,
             ``rationale``, and ``model``.
         """
+        await self.ensure_verdict_schema()
         cur = await self.store.conn.execute(
             f"SELECT {EVENT_COLUMNS}, t.category, t.{self.ACCEPTED_COLUMN} AS accepted, t.confidence, "
             f"t.{self.SUMMARY_COLUMN} AS summary, t.rationale, t.model "
@@ -429,6 +564,26 @@ class FlipReport:
     def rate(self) -> float | None:
         """``len(flips) / common``, or ``None`` when no rows overlap."""
         return len(self.flips) / self.common if self.common else None
+
+
+def canonical_slug(text: str) -> str:
+    """Normalizes free text into a hyphenated slug candidate.
+
+    Lowercases ``text`` and reduces every run of non-alphanumeric characters to a
+    single hyphen, trimming leading and trailing hyphens — so a judge can turn a
+    durable-rule phrase into a stable :data:`SLUG_PATTERN` ``canonical_key``.
+
+    Example:
+        >>> canonical_slug("Use UV, not pip!")
+        'use-uv-not-pip'
+    """
+    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+
+
+async def hydratable(context_json: str) -> bool:
+    from cc_transcript.context import ContextWindow
+
+    return await ContextWindow.from_json(context_json).hydrate() is not None
 
 
 async def run_verdicts[V](
