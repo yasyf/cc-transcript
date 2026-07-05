@@ -1362,7 +1362,7 @@ fn iter_ask_user_question<'py>(
                 let (picked, option_pick) = resolve_pick(pair.answer, &labels);
                 let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
                 let Some(text) = pair.notes.or(pair.answer) else { continue };
-                let sig = if option_pick {
+                let sig = if option_pick && pair.notes.map_or(true, str::is_empty) {
                     weak("option_pick")
                 } else {
                     calibrated(&spec.calibrated, text, "freeform_answer")

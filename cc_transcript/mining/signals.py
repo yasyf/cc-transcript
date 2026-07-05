@@ -537,7 +537,9 @@ def question_answer_signal(
         text=text,
         cc_version=event.meta.cc_version,
         trigger_index=nearest_assistant_index(events, index),
-        signal=weak("option_pick") if option_pick else calibrated(spec.calibrated, text, seed="freeform_answer"),
+        signal=weak("option_pick")
+        if option_pick and not pair.notes
+        else calibrated(spec.calibrated, text, seed="freeform_answer"),
         evidence=evidence,
     )
 
@@ -552,9 +554,7 @@ def iter_ask_user_question_signals(events: Sequence[TranscriptEvent], spec: Mini
         if (use := uses.get(block.tool_use_id)) is not None
         if use.name == "AskUserQuestion"
         if block.content.endswith(ANSWERED_TRAILER)
-        for pair in answered_pairs(
-            block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], use.input["questions"]
-        )
+        for pair in answered_pairs(block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], use.input["questions"])
         if (signal := question_answer_signal(events, event, index, pair, spec)) is not None
     )
 
