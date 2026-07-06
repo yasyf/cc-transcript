@@ -25,8 +25,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache-dependency-glob: uv.lock
 
-      - name: Sync (dev + sentiment + judge)
-        run: uv sync --extra dev --extra sentiment --extra judge
+      - name: Sync (dev + sentiment + judge + llm)
+        run: uv sync --extra dev --extra sentiment --extra judge --extra llm
 
       - name: Type check (ty)
         continue-on-error: true

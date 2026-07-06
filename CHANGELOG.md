@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.0.1] - 2026-07-06
+
+### Fixed
+- A non-JSON judge response now converts to `JudgeError` like every other
+  response-validation failure, so the row counts failed and retries on the next
+  pass instead of the raw `JSONDecodeError` crashing the whole verdict run.
+  CI now installs the `llm` extra so `structured_judge` has live coverage.
+
 ## [9.0.0]
 
 ### Changed (BREAKING)
