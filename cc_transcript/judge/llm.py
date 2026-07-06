@@ -11,6 +11,7 @@ needs no extra installed.
 
 from __future__ import annotations
 
+import json
 from functools import cache
 from typing import TYPE_CHECKING
 
@@ -69,7 +70,7 @@ def structured_judge[M: BaseModel](
     async def judge(prompt: str) -> M:
         try:
             return await extract(prompt, response_model, backend=default_backend(), model=tier, timeout=timeout)
-        except (BackendCallError, BackendUnavailable, TimeoutError, ValidationError) as error:
+        except (BackendCallError, BackendUnavailable, TimeoutError, ValidationError, json.JSONDecodeError) as error:
             raise JudgeError(str(error)) from error
 
     return judge

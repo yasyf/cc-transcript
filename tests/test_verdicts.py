@@ -575,6 +575,33 @@ def test_run_verdicts_propagates_programming_errors() -> None:
     assert excinfo.group_contains(TypeError, match="bug in the worker body")
 
 
+def test_structured_judge_wraps_a_non_json_response_as_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("spawnllm")
+
+    from pydantic import BaseModel
+
+    from cc_transcript.judge import llm
+
+    class Verdict(BaseModel):
+        ok: bool
+
+    async def garbage_extract(*_: object, **__: object) -> Verdict:
+        from spawnllm.structured import structured_value
+
+        structured_value("<< not the JSON the judge asked for >>")
+        raise AssertionError("spawnllm must reject a non-JSON response before returning")
+
+    monkeypatch.setattr(llm, "default_backend", lambda: object())
+    monkeypatch.setattr("spawnllm.extract", garbage_extract)
+
+    async def go() -> None:
+        judge = llm.structured_judge(Verdict, tier="medium")
+        with pytest.raises(JudgeError):
+            await judge("prompt")
+
+    anyio.run(go)
+
+
 def test_run_verdicts_respects_concurrency() -> None:
     state = {"active": 0, "peak": 0}
 
