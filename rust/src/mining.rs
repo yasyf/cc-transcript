@@ -7,7 +7,7 @@ use pyo3::types::PyDict;
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::event::{parse_timestamp, require_str, truthy_str};
+use crate::parse::{parse_timestamp, require_str, truthy_str};
 use crate::filter::{compile_group_array, Kind};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
