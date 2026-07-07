@@ -830,9 +830,16 @@ def test_run_verdicts_awaits_an_async_prompt_for() -> None:
 
 def test_resolved_model_matches_the_backend_table() -> None:
     pytest.importorskip("spawnllm", reason="[llm] extra not installed")
+    from spawnllm import BackendUnavailable
+
     from cc_transcript.judge.llm import default_backend, resolved_model
 
-    assert resolved_model("medium") == default_backend().models["medium"]
+    try:
+        backend = default_backend()
+    except BackendUnavailable:
+        pytest.skip("no spawnllm backend available")
+
+    assert resolved_model("medium") == backend.models["medium"]
 
 
 def test_structured_judge_defers_the_structured_call() -> None:
