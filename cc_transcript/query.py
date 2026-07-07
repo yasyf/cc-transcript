@@ -22,6 +22,7 @@ from cc_transcript.discovery import TranscriptExpiredError, find_transcript, sub
 from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
+from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
 from cc_transcript.tools import BashCall, SkillCall, TaskCall, file_path_of, hunks_of, tool_name_matches
 
@@ -287,6 +288,11 @@ class Session:
     def tool_calls(self) -> ToolCallQuery:
         """The window's tool calls as a chainable query."""
         return ToolCallQuery(tuple(use for turn in self.turns for use in turn.tool_uses))
+
+    @property
+    def notifications(self) -> Notifications:
+        """The harness notification-delivery queue replayed over the window's events."""
+        return Notifications.from_events(self.events)
 
     @property
     def subagents(self) -> SubagentIndex:
