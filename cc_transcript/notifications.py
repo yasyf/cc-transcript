@@ -32,7 +32,7 @@ def delivered_text(event: TranscriptEvent) -> str | None:
     match event:
         case UserEvent(text=text) if NOTIFICATION_MARKER in text:
             return text
-        case OtherEvent(type="attachment", raw=raw) if (attachment := raw.get("attachment", {})).get(
+        case OtherEvent(type="attachment", raw=raw) if (attachment := raw.get("attachment") or {}).get(
             "type"
         ) == "queued_command":
             return str(attachment.get("prompt", ""))

@@ -112,6 +112,14 @@ def session(*events: TranscriptEvent, user_classifier: UserClassifier = native_u
             id="remove-then-queued-command-attachment-completes",
         ),
         pytest.param(
+            (OtherEvent(type="attachment", raw={"type": "attachment", "attachment": None}), enqueue(notif(TID))),
+            TID,
+            False,
+            True,
+            True,
+            id="null-attachment-payload-does-not-crash",
+        ),
+        pytest.param(
             (enqueue(notif(TID)), remove()),
             TID,
             True,
