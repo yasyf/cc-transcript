@@ -1,4 +1,3 @@
-use chrono::DateTime;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
@@ -12,51 +11,20 @@ use crate::model::{
     TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
     USER_EVENT_CLS,
 };
+use crate::parse::ParseError;
 use crate::protocol::interrupt_marker;
-use crate::value::{block_type, field, field_bool, field_str};
+use crate::types::{
+    joined_text, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage, PrintBody, PrintMessage,
+    PrintResult, Usage, UserContent,
+};
 
-pub(crate) fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
-    field_str(data, key).filter(|s| !s.is_empty())
-}
-
-fn require<'a>(data: &'a Value, key: &str) -> PyResult<&'a Value> {
-    field(data, key).ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
-}
-
-pub(crate) fn require_str<'a>(data: &'a Value, key: &str) -> PyResult<&'a str> {
-    require(data, key)?
-        .as_str()
-        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
-}
-
-fn require_i64(data: &Value, key: &str) -> PyResult<i64> {
-    require(data, key)?
-        .as_i64()
-        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
-}
-
-fn require_f64(data: &Value, key: &str) -> PyResult<f64> {
-    require(data, key)?
-        .as_f64()
-        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
-}
-
-fn require_bool(data: &Value, key: &str) -> PyResult<bool> {
-    require(data, key)?
-        .as_bool()
-        .ok_or_else(|| PyKeyError::new_err(format!("'{key}'")))
-}
-
-pub(crate) fn parse_timestamp(raw: &str) -> PyResult<DateTime<chrono::FixedOffset>> {
-    DateTime::parse_from_rfc3339(raw)
-        .map_err(|e| PyValueError::new_err(format!("invalid timestamp {raw:?}: {e}")))
-}
-
-fn require_array(content: &Value) -> PyResult<&[Value]> {
-    content
-        .as_array()
-        .map(|a| a.as_slice())
-        .ok_or_else(|| PyValueError::new_err("message content is neither a string nor a list"))
+impl From<ParseError> for PyErr {
+    fn from(err: ParseError) -> Self {
+        match err {
+            ParseError::Key(key) => PyKeyError::new_err(format!("'{key}'")),
+            ParseError::Value(msg) => PyValueError::new_err(msg),
+        }
+    }
 }
 
 fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
@@ -87,373 +55,234 @@ fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>
     }
 }
 
-fn parse_meta<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, PyAny>> {
+fn build_meta<'py>(py: Python<'py>, meta: &EntryMeta) -> PyResult<Bound<'py, PyAny>> {
     models_type(py, &ENTRY_META_CLS, "EntryMeta")?.call1((
-        require_str(data, "uuid")?,
-        truthy_str(data, "parentUuid"),
-        require_str(data, "sessionId")?,
-        parse_timestamp(require_str(data, "timestamp")?)?,
-        field_str(data, "cwd"),
-        field_str(data, "gitBranch"),
-        truthy_str(data, "version"),
-        field_bool(data, "isSidechain"),
-        field_bool(data, "isMeta"),
-        field_str(data, "entrypoint"),
-        field_bool(data, "isCompactSummary"),
-        field_bool(data, "isVisibleInTranscriptOnly"),
+        &meta.uuid,
+        meta.parent_uuid.as_deref(),
+        &meta.session_id,
+        meta.timestamp,
+        meta.cwd.as_deref(),
+        meta.git_branch.as_deref(),
+        meta.version.as_deref(),
+        meta.is_sidechain,
+        meta.is_meta,
+        meta.entrypoint.as_deref(),
+        meta.is_compact_summary,
+        meta.is_visible_in_transcript_only,
     ))
 }
 
-fn flatten_result_content(content: &Value) -> String {
-    match content.as_str() {
-        Some(s) => s.to_string(),
-        None => content
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| block_type(b) == Some("text"))
-            .filter_map(|b| field_str(b, "text"))
-            .collect(),
-    }
-}
-
-fn text_block<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyAny>> {
-    models_type(py, &TEXT_BLOCK_CLS, "TextBlock")?.call1((text,))
-}
-
-fn parse_user_blocks<'py>(
-    py: Python<'py>,
-    content: &Value,
-    is_async: bool,
-) -> PyResult<(String, Bound<'py, PyTuple>)> {
-    match content.as_str() {
-        Some(s) => Ok((s.to_string(), PyTuple::empty(py))),
-        None => {
-            let array = require_array(content)?;
-            let texts: Vec<&str> = array
-                .iter()
-                .filter(|b| block_type(b) == Some("text"))
-                .filter_map(|b| field_str(b, "text"))
-                .collect();
-            let blocks = texts
-                .iter()
-                .map(|t| text_block(py, t))
-                .chain(
-                    array
-                        .iter()
-                        .filter(|b| block_type(b) == Some("tool_result"))
-                        .map(|b| {
-                            models_type(py, &TOOL_RESULT_BLOCK_CLS, "ToolResultBlock")?.call1((
-                                require_str(b, "tool_use_id")?,
-                                flatten_result_content(require(b, "content")?),
-                                field_bool(b, "is_error"),
-                                is_async,
-                            ))
-                        }),
-                )
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok((texts.join(" "), PyTuple::new(py, blocks)?))
+fn build_block<'py>(py: Python<'py>, block: &ContentBlock) -> PyResult<Bound<'py, PyAny>> {
+    match block {
+        ContentBlock::Text(text) => models_type(py, &TEXT_BLOCK_CLS, "TextBlock")?.call1((text,)),
+        ContentBlock::Thinking(thinking) => {
+            models_type(py, &THINKING_BLOCK_CLS, "ThinkingBlock")?.call1((thinking,))
+        }
+        ContentBlock::ToolUse(tu) => models_type(py, &TOOL_USE_BLOCK_CLS, "ToolUseBlock")?.call1((
+            &tu.id,
+            &tu.name,
+            json_to_py(py, &tu.input)?,
+        )),
+        ContentBlock::ToolResult(tr) => models_type(py, &TOOL_RESULT_BLOCK_CLS, "ToolResultBlock")?
+            .call1((&tr.tool_use_id, &tr.content, tr.is_error, tr.is_async)),
+        ContentBlock::Fallback(fb) => models_type(py, &FALLBACK_BLOCK_CLS, "FallbackBlock")?
+            .call1((&fb.from_model, &fb.to_model)),
+        ContentBlock::Other { ty, raw } => {
+            models_type(py, &OTHER_BLOCK_CLS, "OtherBlock")?.call1((ty, json_to_py(py, raw)?))
         }
     }
 }
 
-fn build_usage<'py>(py: Python<'py>, message: &Value) -> PyResult<Bound<'py, PyAny>> {
-    match field(message, "usage").filter(|u| u.is_object()) {
+// The Python model orders user blocks text-first, then tool results.
+fn build_user_blocks<'py>(py: Python<'py>, content: &UserContent) -> PyResult<Bound<'py, PyTuple>> {
+    match content {
+        UserContent::Plain(_) => Ok(PyTuple::empty(py)),
+        UserContent::Blocks(blocks) => {
+            let objs = blocks
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::Text(_)))
+                .chain(blocks.iter().filter(|b| matches!(b, ContentBlock::ToolResult(_))))
+                .map(|b| build_block(py, b))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyTuple::new(py, objs)
+        }
+    }
+}
+
+fn build_assistant_blocks<'py>(
+    py: Python<'py>,
+    blocks: &[ContentBlock],
+) -> PyResult<Bound<'py, PyTuple>> {
+    let objs = blocks
+        .iter()
+        .map(|b| build_block(py, b))
+        .collect::<PyResult<Vec<_>>>()?;
+    PyTuple::new(py, objs)
+}
+
+fn build_usage<'py>(py: Python<'py>, usage: Option<&Usage>) -> PyResult<Bound<'py, PyAny>> {
+    match usage {
         Some(usage) => build_usage_value(py, usage),
         None => Ok(py.None().into_bound(py)),
     }
 }
 
-fn build_usage_value<'py>(py: Python<'py>, usage: &Value) -> PyResult<Bound<'py, PyAny>> {
-    let cache_creation = match field(usage, "cache_creation").filter(|cc| cc.is_object()) {
-        Some(cc) => models_type(py, &CACHE_CREATION_CLS, "CacheCreation")?.call1((
-            require_i64(cc, "ephemeral_5m_input_tokens")?,
-            require_i64(cc, "ephemeral_1h_input_tokens")?,
-        ))?,
+fn build_usage_value<'py>(py: Python<'py>, usage: &Usage) -> PyResult<Bound<'py, PyAny>> {
+    let cache_creation = match &usage.cache_creation {
+        Some(cc) => models_type(py, &CACHE_CREATION_CLS, "CacheCreation")?
+            .call1((cc.ephemeral_5m_input_tokens, cc.ephemeral_1h_input_tokens))?,
         None => py.None().into_bound(py),
     };
-    let server_tool_use = match field(usage, "server_tool_use").filter(|s| s.is_object()) {
-        Some(s) => models_type(py, &SERVER_TOOL_USE_CLS, "ServerToolUse")?.call1((
-            require_i64(s, "web_search_requests")?,
-            require_i64(s, "web_fetch_requests")?,
-        ))?,
+    let server_tool_use = match &usage.server_tool_use {
+        Some(s) => models_type(py, &SERVER_TOOL_USE_CLS, "ServerToolUse")?
+            .call1((s.web_search_requests, s.web_fetch_requests))?,
         None => py.None().into_bound(py),
     };
     models_type(py, &USAGE_CLS, "Usage")?.call1((
-        require_i64(usage, "input_tokens")?,
-        require_i64(usage, "output_tokens")?,
-        require_i64(usage, "cache_read_input_tokens")?,
-        require_i64(usage, "cache_creation_input_tokens")?,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
         cache_creation,
-        field_str(usage, "service_tier"),
-        field_str(usage, "inference_geo"),
+        usage.service_tier.as_deref(),
+        usage.inference_geo.as_deref(),
         server_tool_use,
     ))
 }
 
-fn parse_assistant_block<'py>(py: Python<'py>, block: &Value) -> PyResult<Bound<'py, PyAny>> {
-    match block_type(block) {
-        Some("text") => text_block(py, require_str(block, "text")?),
-        Some("thinking") => models_type(py, &THINKING_BLOCK_CLS, "ThinkingBlock")?
-            .call1((require_str(block, "thinking")?,)),
-        Some("tool_use") => models_type(py, &TOOL_USE_BLOCK_CLS, "ToolUseBlock")?.call1((
-            require_str(block, "id")?,
-            require_str(block, "name")?,
-            json_to_py(py, require(block, "input")?)?,
-        )),
-        Some("fallback") => models_type(py, &FALLBACK_BLOCK_CLS, "FallbackBlock")?.call1((
-            require_str(require(block, "from")?, "model")?,
-            require_str(require(block, "to")?, "model")?,
-        )),
-        Some(other) => {
-            models_type(py, &OTHER_BLOCK_CLS, "OtherBlock")?.call1((other, json_to_py(py, block)?))
-        }
-        None => Err(PyKeyError::new_err("'type'")),
-    }
-}
-
-fn parse_assistant_blocks<'py>(
-    py: Python<'py>,
-    content: &Value,
-) -> PyResult<(String, Bound<'py, PyTuple>)> {
-    let array = require_array(content)?;
-    let text = array
-        .iter()
-        .filter(|b| block_type(b) == Some("text"))
-        .filter_map(|b| field_str(b, "text"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let blocks = array
-        .iter()
-        .map(|b| parse_assistant_block(py, b))
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok((text, PyTuple::new(py, blocks)?))
-}
-
-pub fn build_event<'py>(py: Python<'py>, data: &Value) -> PyResult<Bound<'py, PyAny>> {
-    match require_str(data, "type")? {
-        "user" => {
-            let is_async = field(data, "toolUseResult")
-                .map(|tur| field_bool(tur, "isAsync"))
-                .unwrap_or(false);
-            let (text, blocks) =
-                parse_user_blocks(py, require(require(data, "message")?, "content")?, is_async)?;
+pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, PyAny>> {
+    match entry {
+        Entry::User(user) => {
+            let text = user.content.text();
             let interrupted = interrupt_marker(&text).is_some();
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1((
-                parse_meta(py, data)?,
+                build_meta(py, &user.meta)?,
                 text,
-                blocks,
+                build_user_blocks(py, &user.content)?,
                 interrupted,
             ))
         }
-        "assistant" => {
-            let message = require(data, "message")?;
-            let (text, blocks) = parse_assistant_blocks(py, require(message, "content")?)?;
+        Entry::Assistant(assistant) => {
             models_type(py, &ASSISTANT_EVENT_CLS, "AssistantEvent")?.call1((
-                parse_meta(py, data)?,
-                require_str(message, "model")?,
-                text,
-                blocks,
-                field_str(message, "stop_reason"),
-                build_usage(py, message)?,
+                build_meta(py, &assistant.meta)?,
+                &assistant.model,
+                joined_text(&assistant.blocks),
+                build_assistant_blocks(py, &assistant.blocks)?,
+                assistant.stop_reason.as_deref(),
+                build_usage(py, assistant.usage.as_ref())?,
             ))
         }
-        "system" => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((
-            parse_meta(py, data)?,
-            require_str(data, "subtype")?,
-            field_str(data, "content"),
+        Entry::System(system) => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((
+            build_meta(py, &system.meta)?,
+            &system.subtype,
+            system.content.as_deref(),
         )),
-        "mode" => models_type(py, &MODE_EVENT_CLS, "ModeEvent")?.call1((
-            require_str(data, "sessionId")?,
-            "mode",
-            require_str(data, "mode")?,
+        Entry::Mode(mode) => models_type(py, &MODE_EVENT_CLS, "ModeEvent")?.call1((
+            &mode.session_id,
+            mode.channel.as_str(),
+            &mode.value,
         )),
-        "permission-mode" => models_type(py, &MODE_EVENT_CLS, "ModeEvent")?.call1((
-            require_str(data, "sessionId")?,
-            "permission-mode",
-            require_str(data, "permissionMode")?,
-        )),
-        other => {
-            let kind = other.to_string();
-            models_type(py, &OTHER_EVENT_CLS, "OtherEvent")?.call1((kind, json_to_py(py, data)?))
-        }
+        Entry::Other(other) => models_type(py, &OTHER_EVENT_CLS, "OtherEvent")?
+            .call1((&other.ty, json_to_py(py, &other.raw)?)),
     }
 }
 
-fn build_model_usage<'py>(py: Python<'py>, usage: &Value) -> PyResult<Bound<'py, PyAny>> {
+fn build_model_usage<'py>(py: Python<'py>, usage: &ModelUsage) -> PyResult<Bound<'py, PyAny>> {
     models_type(py, &MODEL_USAGE_CLS, "ModelUsage")?.call1((
-        require_i64(usage, "inputTokens")?,
-        require_i64(usage, "outputTokens")?,
-        require_i64(usage, "cacheReadInputTokens")?,
-        require_i64(usage, "cacheCreationInputTokens")?,
-        require_i64(usage, "webSearchRequests")?,
-        require_f64(usage, "costUSD")?,
-        require_i64(usage, "contextWindow")?,
-        require_i64(usage, "maxOutputTokens")?,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+        usage.web_search_requests,
+        usage.cost_usd,
+        usage.context_window,
+        usage.max_output_tokens,
     ))
 }
 
-fn build_init<'py>(py: Python<'py>, init: &Value) -> PyResult<Bound<'py, PyAny>> {
-    let mcp_servers = require(init, "mcp_servers")?
-        .as_array()
-        .ok_or_else(|| PyKeyError::new_err("'mcp_servers'"))?
+fn build_init<'py>(py: Python<'py>, init: &InitInfo) -> PyResult<Bound<'py, PyAny>> {
+    let mcp_servers = init
+        .mcp_servers
         .iter()
-        .map(|s| {
-            models_type(py, &MCP_SERVER_CLS, "McpServer")?
-                .call1((require_str(s, "name")?, require_str(s, "status")?))
-        })
+        .map(|s| models_type(py, &MCP_SERVER_CLS, "McpServer")?.call1((&s.name, &s.status)))
         .collect::<PyResult<Vec<_>>>()?;
-    let plugins = require(init, "plugins")?
-        .as_array()
-        .ok_or_else(|| PyKeyError::new_err("'plugins'"))?
+    let plugins = init
+        .plugins
         .iter()
-        .map(|p| {
-            models_type(py, &PLUGIN_CLS, "Plugin")?.call1((
-                require_str(p, "name")?,
-                require_str(p, "path")?,
-                require_str(p, "source")?,
-            ))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    let tools = require(init, "tools")?
-        .as_array()
-        .ok_or_else(|| PyKeyError::new_err("'tools'"))?
-        .iter()
-        .map(|t| t.as_str().ok_or_else(|| PyKeyError::new_err("'tools'")))
-        .collect::<PyResult<Vec<_>>>()?;
-    let skills = require(init, "skills")?
-        .as_array()
-        .ok_or_else(|| PyKeyError::new_err("'skills'"))?
-        .iter()
-        .map(|s| s.as_str().ok_or_else(|| PyKeyError::new_err("'skills'")))
+        .map(|p| models_type(py, &PLUGIN_CLS, "Plugin")?.call1((&p.name, &p.path, &p.source)))
         .collect::<PyResult<Vec<_>>>()?;
     models_type(py, &INIT_INFO_CLS, "InitInfo")?.call1((
         PyTuple::new(py, mcp_servers)?,
         PyTuple::new(py, plugins)?,
-        PyTuple::new(py, tools)?,
-        PyTuple::new(py, skills)?,
+        PyTuple::new(py, &init.tools)?,
+        PyTuple::new(py, &init.skills)?,
     ))
 }
 
-fn build_print_message<'py>(py: Python<'py>, element: &Value) -> PyResult<Bound<'py, PyAny>> {
-    let role = require_str(element, "type")?;
-    let message = require(element, "message")?;
-    let (text, blocks, model): (String, Bound<'py, PyTuple>, Bound<'py, PyAny>) = match role {
-        "assistant" => {
-            let (text, blocks) = parse_assistant_blocks(py, require(message, "content")?)?;
-            (text, blocks, field_str(message, "model").into_bound_py_any(py)?)
-        }
-        "user" => {
-            let (text, blocks) = parse_user_blocks(py, require(message, "content")?, false)?;
-            (text, blocks, py.None().into_bound(py))
-        }
-        other => return Err(PyValueError::new_err(format!("not a conversational element: {other:?}"))),
-    };
+fn build_print_message<'py>(py: Python<'py>, message: &PrintMessage) -> PyResult<Bound<'py, PyAny>> {
+    let (role, model, text, blocks): (&str, Bound<'py, PyAny>, String, Bound<'py, PyTuple>) =
+        match &message.body {
+            PrintBody::Assistant { model, blocks } => (
+                "assistant",
+                model.as_deref().into_bound_py_any(py)?,
+                joined_text(blocks),
+                build_assistant_blocks(py, blocks)?,
+            ),
+            PrintBody::User(content) => (
+                "user",
+                py.None().into_bound(py),
+                content.text(),
+                build_user_blocks(py, content)?,
+            ),
+        };
     models_type(py, &PRINT_MESSAGE_CLS, "PrintMessage")?.call1((
         role,
         model,
         text,
         blocks,
-        field_str(element, "uuid"),
-        require_str(element, "session_id")?,
+        message.uuid.as_deref(),
+        &message.session_id,
     ))
 }
 
-pub fn build_print_result<'py>(py: Python<'py>, array: &Value) -> PyResult<Bound<'py, PyAny>> {
-    let elements = array
-        .as_array()
-        .ok_or_else(|| PyValueError::new_err("envelope is not a JSON array"))?;
-    let result = elements
-        .iter()
-        .find(|e| block_type(e) == Some("result"))
-        .ok_or_else(|| PyValueError::new_err("envelope has no result element"))?;
-    let init = elements
-        .iter()
-        .find(|e| block_type(e) == Some("system") && field_str(e, "subtype") == Some("init"));
-
+pub fn build_print_result<'py>(py: Python<'py>, result: &PrintResult) -> PyResult<Bound<'py, PyAny>> {
     let model_usage = PyDict::new(py);
-    for (model, usage) in require(result, "modelUsage")?
-        .as_object()
-        .ok_or_else(|| PyKeyError::new_err("'modelUsage'"))?
-    {
+    for (model, usage) in &result.model_usage {
         model_usage.set_item(model, build_model_usage(py, usage)?)?;
     }
-
-    let structured_output = match field(result, "structured_output").filter(|s| !s.is_null()) {
+    let structured_output = match &result.structured_output {
         Some(s) => json_to_py(py, s)?,
         None => py.None().into_bound(py),
     };
-    let permission_denials = require(result, "permission_denials")?
-        .as_array()
-        .ok_or_else(|| PyKeyError::new_err("'permission_denials'"))?
+    let permission_denials = result
+        .permission_denials
         .iter()
         .map(|d| json_to_py(py, d))
         .collect::<PyResult<Vec<_>>>()?;
-    let init_obj = match init {
-        Some(i) => build_init(py, i)?,
+    let init_obj = match &result.init {
+        Some(init) => build_init(py, init)?,
         None => py.None().into_bound(py),
     };
-    let messages = elements
+    let messages = result
+        .messages
         .iter()
-        .filter(|e| matches!(block_type(e), Some("user") | Some("assistant")))
-        .map(|e| build_print_message(py, e))
+        .map(|m| build_print_message(py, m))
         .collect::<PyResult<Vec<_>>>()?;
 
     let args: [Bound<'py, PyAny>; 13] = [
-        require_f64(result, "total_cost_usd")?.into_bound_py_any(py)?,
+        result.total_cost_usd.into_bound_py_any(py)?,
         model_usage.into_any(),
-        build_usage_value(py, require(result, "usage")?)?,
+        build_usage_value(py, &result.usage)?,
         structured_output,
-        require_i64(result, "num_turns")?.into_bound_py_any(py)?,
-        require_bool(result, "is_error")?.into_bound_py_any(py)?,
-        field_str(result, "result").into_bound_py_any(py)?,
-        require_str(result, "session_id")?.into_bound_py_any(py)?,
-        field_str(result, "fast_mode_state").into_bound_py_any(py)?,
-        field_str(result, "stop_reason").into_bound_py_any(py)?,
+        result.num_turns.into_bound_py_any(py)?,
+        result.is_error.into_bound_py_any(py)?,
+        result.result.as_deref().into_bound_py_any(py)?,
+        result.session_id.as_str().into_bound_py_any(py)?,
+        result.fast_mode_state.as_deref().into_bound_py_any(py)?,
+        result.stop_reason.as_deref().into_bound_py_any(py)?,
         PyTuple::new(py, permission_denials)?.into_any(),
         init_obj,
         PyTuple::new(py, messages)?.into_any(),
     ];
     models_type(py, &PRINT_RESULT_CLS, "PrintResult")?.call1(PyTuple::new(py, args)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(raw: &str) -> Value {
-        sonic_rs::from_str(raw).unwrap()
-    }
-
-    #[test]
-    fn require_array_rejects_non_array() {
-        for raw in ["{\"a\":1}", "\"text\"", "5", "null", "true"] {
-            assert!(require_array(&parse(raw)).is_err(), "should reject {raw}");
-        }
-        assert_eq!(require_array(&parse("[1,2,3]")).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn flatten_result_content_joins_only_text_blocks() {
-        assert_eq!(flatten_result_content(&parse("\"hi\"")), "hi");
-        let blocks =
-            parse(r#"[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]"#);
-        assert_eq!(flatten_result_content(&blocks), "ab");
-    }
-
-    #[test]
-    fn parse_timestamp_requires_offset() {
-        assert!(parse_timestamp("2026-01-02T03:04:05Z").is_ok());
-        assert!(parse_timestamp("2026-01-02T03:04:05+05:30").is_ok());
-        assert!(parse_timestamp("2026-01-02T03:04:05").is_err());
-    }
-
-    #[test]
-    fn truthy_str_drops_empty_and_nonstring() {
-        let data = parse(r#"{"a":"x","b":"","c":5}"#);
-        assert_eq!(truthy_str(&data, "a"), Some("x"));
-        assert_eq!(truthy_str(&data, "b"), None);
-        assert_eq!(truthy_str(&data, "c"), None);
-        assert_eq!(truthy_str(&data, "missing"), None);
-    }
 }

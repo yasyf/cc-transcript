@@ -4,8 +4,10 @@ mod filter;
 mod lexicon;
 mod mining;
 mod model;
+mod parse;
 mod protocol;
 mod score;
+mod types;
 mod value;
 
 use crossbeam_channel::{bounded, Receiver};
@@ -21,6 +23,8 @@ use std::thread;
 
 use crate::event::{build_event, build_print_result};
 use crate::filter::{compile_spec, spec_keep, CompiledSpec};
+use crate::parse::{parse_entry, parse_print_envelope, ParseError};
+use crate::types::Entry;
 
 const AVG_LINE_BYTES: usize = 1400;
 
@@ -39,36 +43,40 @@ static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
 struct ParsedFile {
     path: String,
     mtime: f64,
-    lines: Vec<Value>,
+    lines: Vec<Entry>,
 }
 
-fn parse_line(line: &[u8], lines: &mut Vec<Value>, filter: Option<&CompiledSpec>) {
+// Lines that are not valid JSON are skipped; a JSON line that fails the typed
+// parse (e.g. a missing required field) fails the whole file — whole-file
+// parity with PythonBackend.
+fn parse_line(
+    line: &[u8],
+    lines: &mut Vec<Entry>,
+    filter: Option<&CompiledSpec>,
+) -> Result<(), ParseError> {
     if line.iter().all(u8::is_ascii_whitespace) {
-        return;
+        return Ok(());
     }
     if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
         if filter.is_none_or(|spec| spec_keep(spec, &value)) {
-            lines.push(value);
+            lines.push(parse_entry(value)?);
         }
     }
+    Ok(())
 }
 
-fn parse_file_internal(
-    path: &str,
-    mtime: f64,
-    filter: Option<&CompiledSpec>,
-) -> std::io::Result<ParsedFile> {
-    let bytes = std::fs::read(path)?;
-    let mut lines: Vec<Value> = Vec::with_capacity(bytes.len() / AVG_LINE_BYTES + 1);
+fn parse_file_internal(path: &str, mtime: f64, filter: Option<&CompiledSpec>) -> Option<ParsedFile> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut lines: Vec<Entry> = Vec::with_capacity(bytes.len() / AVG_LINE_BYTES + 1);
     let mut start = 0usize;
     for pos in memchr_iter(b'\n', &bytes) {
-        parse_line(&bytes[start..pos], &mut lines, filter);
+        parse_line(&bytes[start..pos], &mut lines, filter).ok()?;
         start = pos + 1;
     }
     if start < bytes.len() {
-        parse_line(&bytes[start..], &mut lines, filter);
+        parse_line(&bytes[start..], &mut lines, filter).ok()?;
     }
-    Ok(ParsedFile {
+    Some(ParsedFile {
         path: path.to_string(),
         mtime,
         lines,
@@ -99,8 +107,8 @@ pub struct ParseStream {
 
 #[pymethods]
 impl ParseStream {
-    // A file whose events cannot be materialized (e.g. a malformed line missing a
-    // required field) is silently skipped — whole-file parity with PythonBackend.
+    // Malformed files are already skipped at parse time; a file whose typed
+    // entries still fail Python materialization is silently skipped too.
     fn recv<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         loop {
             match py.detach(|| self.rx.recv().ok()) {
@@ -169,7 +177,7 @@ fn stream_parse(
                     if permits_rx.recv().is_err() {
                         return;
                     }
-                    if let Ok(pf) = parse_file_internal(&path, mtime, filter.as_deref()) {
+                    if let Some(pf) = parse_file_internal(&path, mtime, filter.as_deref()) {
                         let _ = tx.send(pf);
                     }
                     let _ = permits_tx.send(());
@@ -184,7 +192,8 @@ fn stream_parse(
 fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let value: Value =
         sonic_rs::from_slice(raw).map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
-    build_print_result(py, &value)
+    let result = parse_print_envelope(&value)?;
+    build_print_result(py, &result)
 }
 
 #[pyfunction]
