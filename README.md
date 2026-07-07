@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/yasyf/cc-transcript/actions/workflows/ci.yml/badge.svg)](https://github.com/yasyf/cc-transcript/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cc-transcript.svg)](https://pypi.org/project/cc-transcript/)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](https://github.com/yasyf/cc-transcript/blob/main/LICENSE)
+[![License PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-blue)](https://github.com/yasyf/cc-transcript/blob/main/LICENSE)
 
 ## Get started
 
@@ -12,9 +12,9 @@
 uvx cc-transcript list
 ```
 
-Every session is already on disk under `~/.claude/projects` — `list` finds them newest first, and `stats` collapses one into a screenful:
+Every session is already on disk under `~/.claude/projects`. `list` finds them newest first, and `stats` collapses one into a screenful:
 
-<img src="https://github.com/yasyf/cc-transcript/raw/main/docs/assets/demo.png" alt="Terminal running 'uvx cc-transcript stats' — a 1,023-event session summarized as counts, kinds, models, and tool names" width="700">
+<img src="https://github.com/yasyf/cc-transcript/raw/main/docs/assets/demo.png" alt="Terminal running 'uvx cc-transcript stats' — one session summarized as counts, kinds, models, and tool names" width="700">
 
 Driving with an agent? Paste this:
 
@@ -23,7 +23,7 @@ Driving with an agent? Paste this:
 /plugin install cc-transcript@cc-transcript
 ```
 
-The plugin's skill teaches Claude to answer "what did I ask you yesterday?" from its own history, funneling through the CLI instead of reading raw JSONL.
+The plugin's skill teaches Claude to answer "what did I ask you yesterday" from its own history, funneling through the CLI instead of reading raw JSONL.
 
 <details>
 <summary>No Claude Code? Point any agent at the CLI</summary>
@@ -49,7 +49,7 @@ Yesterday's session is a megabyte of JSONL, and pasting it into a chat blows the
 uvx cc-transcript show --signal --tail 20 ~/.claude/projects/<project>/<session>.jsonl
 ```
 
-`--signal` keeps only the substantive user and assistant turns — one line per event, a few hundred tokens for the whole exchange. With the plugin installed, skip the command: ask Claude directly and its skill runs this funnel for you.
+`--signal` keeps only the substantive user and assistant turns. One line per event, a few hundred tokens for the whole exchange. With the plugin installed, skip the command and ask Claude directly; its skill runs this funnel for you.
 
 ### Find the session where you fixed that bug
 
@@ -59,7 +59,7 @@ The fix happened weeks ago, in one of a few hundred transcripts. Search them all
 uvx cc-transcript grep "TranscriptExpiredError" --project cc-transcript
 ```
 
-Hits print under their transcript's path, each line carrying its raw event index — feed an index back into `show --range` to re-read the conversation around the fix. `grep` searches your newest 50 transcripts by default; `--all` takes it to every session on disk, and a no-match run exits 1 so it scripts cleanly.
+Hits print under their transcript's path, each line carrying its raw event index; feed an index back into `show --range` to re-read the conversation around the fix. `grep` searches your newest 50 transcripts by default; `--all` takes it to every session on disk, and a no-match run exits 1 so it scripts cleanly.
 
 ### Debug a token blowup from transcript evidence
 
@@ -69,15 +69,15 @@ A session burned through the context window and you want the culprit, not a gues
 uvx cc-transcript stats --per-file --project myapp
 ```
 
-Each block reports text, thinking, and tool-io bytes plus per-tool call counts — the blowup stands out as an outsized `tool io` line. Then `grep --tool <name> --with-result` pins it to the exact calls.
+Each block reports text, thinking, and tool-io bytes plus per-tool call counts; the blowup stands out as an outsized `tool io` line. Then `grep --tool <name> --with-result` pins it to the exact calls.
 
 ## More in the docs
 
-- **The Python library** — raw JSONL bytes to typed events, a composed filter, and a score in a dozen lines — [getting started](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html)
-- **Filtering events** — composable clauses, specs, and the ready-made `NOISE_SPEC` — [builder catalog](https://yasyf.github.io/cc-transcript/docs/guide/filtering-events.html)
-- **Sentiment scoring** — bucket conversations and score them around any inference engine — [score specs](https://yasyf.github.io/cc-transcript/docs/guide/scoring-sentiment.html)
-- **Feedback mining** — detectors, confidence calibration, and LLM verdict passes over your corpus — [mine your sessions](https://yasyf.github.io/cc-transcript/docs/guide/mining-feedback.html)
-- **Two backends, one protocol** — a Rust fast path and a Python reference, parity-asserted against each other — [how parity works](https://yasyf.github.io/cc-transcript/docs/guide/backends-and-parity.html)
-- **API reference** — the complete typed surface, from `TranscriptEvent` to `SessionActivity` — [reference](https://yasyf.github.io/cc-transcript/reference/index.html)
+- [The Python library](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) turns raw JSONL bytes into typed events, a composed filter, and a score in a dozen lines.
+- [Filtering events](https://yasyf.github.io/cc-transcript/docs/guide/filtering-events.html) covers composable clauses, specs, and the ready-made `NOISE_SPEC`.
+- [Sentiment scoring](https://yasyf.github.io/cc-transcript/docs/guide/scoring-sentiment.html) buckets conversations and scores them around any inference engine.
+- [Feedback mining](https://yasyf.github.io/cc-transcript/docs/guide/mining-feedback.html) runs detectors, confidence calibration, and LLM verdict passes over your corpus.
+- [Two backends, one protocol](https://yasyf.github.io/cc-transcript/docs/guide/backends-and-parity.html) pairs a Rust fast path with a Python reference, parity-asserted against each other.
+- [API reference](https://yasyf.github.io/cc-transcript/reference/index.html) documents the complete typed surface, from `TranscriptEvent` to `SessionActivity`.
 
 Read the [docs](https://yasyf.github.io/cc-transcript/) for the full guide. Licensed under [PolyForm Noncommercial 1.0.0](https://github.com/yasyf/cc-transcript/blob/main/LICENSE).
