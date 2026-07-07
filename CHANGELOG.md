@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.1.0] - 2026-07-07
+
+### Added
+- **`Session.notifications`.** A replay of Claude Code's task-notification
+  delivery queue from the transcript's `queue-operation` audit records. The
+  `Notifications` view separates *enqueued* from *delivered* — a finished
+  task's notification can sit queued while the agent is mid-turn:
+  `completed(tool_use_id)` is true once the notification was delivered (as a
+  user event or a `queued_command` attachment) or otherwise left the queue,
+  while `pending(tool_use_id)` and `has_pending` report what is still
+  undelivered. FIFO replay covers `enqueue`/`dequeue`/`remove`/`popAll`
+  (subtract-by-content, never clear-all); the semantics are pinned by an
+  empirical test spec distilled from real transcripts.
+
 ## [9.0.1] - 2026-07-06
 
 ### Fixed
