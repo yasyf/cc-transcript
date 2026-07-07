@@ -158,6 +158,7 @@ EXPORTS: dict[str, str] = {
             "capture_window",
         ),
         "cc_transcript.render": ("Budget", "render_session", "render_tool_call", "render_turn"),
+        "cc_transcript.notifications": ("Notifications",),
         "cc_transcript.query": ("FileRef", "Session", "SubagentIndex", "SubagentSession", "ToolCallQuery"),
         "cc_transcript.decisions": ("DECISIONS_DDL", "Action", "Decision", "DecisionLog"),
         "cc_transcript.disktruth": (
@@ -554,6 +555,7 @@ if TYPE_CHECKING:
     from cc_transcript.models import (
         tool_uses as tool_uses,
     )
+    from cc_transcript.notifications import Notifications as Notifications
     from cc_transcript.parser import (
         TranscriptParser as TranscriptParser,
     )
