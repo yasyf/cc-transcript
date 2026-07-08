@@ -57,6 +57,7 @@
     }
   },
   "enabledPlugins": {
+    "cc-context@skills": true,
     "codex@skills": true,
     "captain-hook@captain-hook": true,
     "cc-notes@cc-notes": true
