@@ -184,8 +184,6 @@ impl Entry {
         }
     }
 
-    // Consumed at the pyo3 boundary in a later stage; only tests exercise it yet.
-    #[allow(dead_code)]
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Entry::Mode(m) => Some(&m.session_id),
