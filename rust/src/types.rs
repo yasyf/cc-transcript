@@ -38,10 +38,7 @@ pub struct Question {
 pub struct ToolUseBlock {
     pub id: String,
     pub name: String,
-    // Typed input reads for the activity-oracle stage; only tests read them yet.
-    #[allow(dead_code)]
     pub run_in_background: Option<bool>,
-    #[allow(dead_code)]
     pub subagent_type: Option<String>,
     /// The target file, when the input names one (mining denial evidence).
     pub file_path: Option<String>,
@@ -116,9 +113,6 @@ impl UserEntry {
         })
     }
 
-    // Anticipatory analysis surface (turn segmentation) for the stages that
-    // will consume the typed model; only tests exercise it yet.
-    #[allow(dead_code)]
     pub fn interrupted(&self) -> bool {
         interrupt_marker(&self.content.text()).is_some()
     }
@@ -190,8 +184,7 @@ impl Entry {
         }
     }
 
-    // Anticipatory analysis surface (turn segmentation) for the stages that
-    // will consume the typed model; only tests exercise it yet.
+    // Consumed at the pyo3 boundary in a later stage; only tests exercise it yet.
     #[allow(dead_code)]
     pub fn session_id(&self) -> Option<&str> {
         match self {
@@ -215,7 +208,6 @@ impl Entry {
         })
     }
 
-    #[allow(dead_code)]
     pub fn tool_results(&self) -> impl Iterator<Item = &ToolResultBlock> {
         self.blocks().iter().filter_map(|b| match b {
             ContentBlock::ToolResult(tr) => Some(tr),
