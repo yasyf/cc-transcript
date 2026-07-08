@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"choose"}}
+{"type":"assistant","uuid":"a","sessionId":"s1","timestamp":"2026-01-02T03:04:06Z","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[]}}]}}
