@@ -1,6 +1,3 @@
-// Consumed at the pyo3 boundary by the next activity-oracle stage; only tests
-// exercise it yet.
-#[allow(dead_code)]
 mod activity;
 mod command;
 mod event;
@@ -22,9 +19,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
 use rayon::prelude::*;
 use sonic_rs::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
+use crate::activity::{session_activity, ActivityOpts, SessionActivity};
 use crate::event::{build_event, build_print_result};
 use crate::filter::{compile_spec, spec_keep, CompiledSpec};
 use crate::parse::{parse_entry, parse_print_envelope, ParseError};
@@ -72,21 +71,25 @@ fn parse_line(
     Ok(())
 }
 
-fn parse_file_internal(path: &str, mtime: f64, filter: Option<&CompiledSpec>) -> Option<ParsedFile> {
-    let bytes = std::fs::read(path).ok()?;
+fn parse_bytes(bytes: &[u8], filter: Option<&CompiledSpec>) -> Result<Vec<Entry>, ParseError> {
     let mut lines: Vec<Entry> = Vec::with_capacity(bytes.len() / AVG_LINE_BYTES + 1);
     let mut start = 0usize;
-    for pos in memchr_iter(b'\n', &bytes) {
-        parse_line(&bytes[start..pos], &mut lines, filter).ok()?;
+    for pos in memchr_iter(b'\n', bytes) {
+        parse_line(&bytes[start..pos], &mut lines, filter)?;
         start = pos + 1;
     }
     if start < bytes.len() {
-        parse_line(&bytes[start..], &mut lines, filter).ok()?;
+        parse_line(&bytes[start..], &mut lines, filter)?;
     }
+    Ok(lines)
+}
+
+fn parse_file_internal(path: &str, mtime: f64, filter: Option<&CompiledSpec>) -> Option<ParsedFile> {
+    let bytes = std::fs::read(path).ok()?;
     Some(ParsedFile {
         path: path.to_string(),
         mtime,
-        lines,
+        lines: parse_bytes(&bytes, filter).ok()?,
     })
 }
 
@@ -239,6 +242,42 @@ fn command_prefixes(py: Python<'_>, commands: Vec<String>) -> Vec<Vec<String>> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (path, waiting_tools=None, human_facing_tools=None))]
+fn session_activity_probe<'py>(
+    py: Python<'py>,
+    path: String,
+    waiting_tools: Option<Vec<String>>,
+    human_facing_tools: Option<Vec<String>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let defaults = ActivityOpts::default();
+    let opts = ActivityOpts {
+        waiting_tools: waiting_tools.map_or(defaults.waiting_tools, HashSet::from_iter),
+        human_facing_tools: human_facing_tools.map_or(defaults.human_facing_tools, HashSet::from_iter),
+    };
+    let activity = py.detach(|| -> PyResult<SessionActivity> {
+        let bytes = std::fs::read(&path)?;
+        Ok(session_activity(&parse_bytes(&bytes, None)?, &opts))
+    })?;
+    let dict = PyDict::new(py);
+    dict.set_item("is_waiting", activity.is_waiting)?;
+    dict.set_item("mid_tool", activity.mid_tool)?;
+    dict.set_item("last_event_epoch", activity.last_event_epoch)?;
+    let pending = activity
+        .pending
+        .iter()
+        .map(|item| {
+            let entry = PyDict::new(py);
+            entry.set_item("tool_use_id", item.tool_use_id.as_deref())?;
+            entry.set_item("name", &item.name)?;
+            entry.set_item("kind", item.kind.as_str())?;
+            Ok(entry)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    dict.set_item("pending", PyList::new(py, pending)?)?;
+    Ok(dict)
+}
+
+#[pyfunction]
 #[pyo3(signature = (raw, spec_json))]
 fn mine_signals<'py>(
     py: Python<'py>,
@@ -261,6 +300,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(mine_signals, m)?)?;
+    m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())
 }

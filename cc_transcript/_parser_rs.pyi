@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from cc_transcript.models import PrintResult, TranscriptEvent
 
 class ParseStream:
@@ -41,3 +43,15 @@ def score_post_process(spec_json: str, buckets: list[list[str]], raw: list[int],
 
 def command_prefixes(commands: list[str], /) -> list[list[str]]:
     """Permission-style prefixes per command line, parsed in parallel off the GIL."""
+
+def mine_signals(raw: bytes, spec_json: str, /) -> list[dict[str, Any]]:
+    """Parses raw transcript bytes and mines signal dicts per the portable mining spec."""
+
+def session_activity_probe(
+    path: str, waiting_tools: list[str] | None = ..., human_facing_tools: list[str] | None = ..., /
+) -> dict[str, Any]:
+    """Parses the transcript at ``path`` and returns the session-activity verdict dict.
+
+    The dict carries ``is_waiting: bool``, ``mid_tool: bool``, ``last_event_epoch: int | None``,
+    and ``pending: list[dict]`` with ``tool_use_id``/``name``/``kind`` per contributing call.
+    """
