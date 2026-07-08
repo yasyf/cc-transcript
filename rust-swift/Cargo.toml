@@ -1,0 +1,16 @@
+[package]
+name = "cc_transcript_swift"
+version = "0.8.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+cc_transcript_parser = { path = "../rust", default-features = false, features = ["swift"] }
+# swift-bridge is pre-1.0: keep all three swift-bridge crates (including the
+# CLI pinned in scripts/build-swift-package.sh) on the same exact version.
+swift-bridge = "=0.1.59"
+
+[build-dependencies]
+swift-bridge-build = "=0.1.59"
