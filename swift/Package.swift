@@ -16,7 +16,11 @@ let package = Package(
 		),
 		.target(
 			name: "CCTranscript",
-			dependencies: ["RustXcframework"])
+			dependencies: ["RustXcframework"]),
+		.testTarget(
+			name: "CCTranscriptTests",
+			dependencies: ["CCTranscript"],
+			resources: [.copy("Fixtures")])
 	]
 )
 	

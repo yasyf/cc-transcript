@@ -1,0 +1,3 @@
+{"type":"user","uuid":"u","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"build it"}}
+{"type":"assistant","uuid":"a","sessionId":"s1","timestamp":"2026-01-02T03:04:06Z","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"make","run_in_background":true}}]}}
+{"type":"user","uuid":"r","sessionId":"s1","timestamp":"2026-01-02T03:04:07Z","toolUseResult":{"isAsync":false},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"done","is_error":false}]}}

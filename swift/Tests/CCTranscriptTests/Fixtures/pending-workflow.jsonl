@@ -1,0 +1,3 @@
+{"type":"user","uuid":"u","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"run the workflow"}}
+{"type":"assistant","uuid":"a","sessionId":"s1","timestamp":"2026-01-02T03:04:06Z","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"wf1","name":"Workflow","input":{"script":"return 1"}}]}}
+{"type":"user","uuid":"r","sessionId":"s1","timestamp":"2026-01-02T03:04:07Z","toolUseResult":{"isAsync":false},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"wf1","content":"done","is_error":false}]}}
