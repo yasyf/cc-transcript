@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "_parser_rs"
-crate-type = ["cdylib", "rlib", "staticlib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["python"]
