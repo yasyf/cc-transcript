@@ -1,3 +1,7 @@
+// Consumed at the pyo3 boundary by the next activity-oracle stage; only tests
+// exercise it yet.
+#[allow(dead_code)]
+mod activity;
 mod command;
 mod event;
 mod filter;
