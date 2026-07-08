@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::Value;
 
@@ -21,6 +23,17 @@ pub struct EntryMeta {
     pub is_visible_in_transcript_only: bool,
 }
 
+/// One AskUserQuestion round, lifted from a tool-use input's ``questions``
+/// array. Questions without string text are dropped — ``answered_pairs``
+/// (mining/signals.py) never anchors them.
+#[derive(Debug)]
+pub struct Question {
+    pub question: String,
+    pub header: Option<String>,
+    pub multi_select: bool,
+    pub labels: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct ToolUseBlock {
     pub id: String,
@@ -30,6 +43,10 @@ pub struct ToolUseBlock {
     pub run_in_background: Option<bool>,
     #[allow(dead_code)]
     pub subagent_type: Option<String>,
+    /// The target file, when the input names one (mining denial evidence).
+    pub file_path: Option<String>,
+    /// The AskUserQuestion rounds, when the input carries a questions array.
+    pub questions: Option<Vec<Question>>,
     /// The verbatim input payload; Python receives it exactly as written.
     pub input: Value,
 }
@@ -84,10 +101,24 @@ pub struct UserEntry {
     pub content: UserContent,
 }
 
-// Anticipatory analysis surface (turn segmentation, tool_use↔result joins) for
-// the stages that will consume the typed model; only tests exercise it yet.
-#[allow(dead_code)]
 impl UserEntry {
+    pub fn blocks(&self) -> &[ContentBlock] {
+        match &self.content {
+            UserContent::Plain(_) => &[],
+            UserContent::Blocks(blocks) => blocks,
+        }
+    }
+
+    pub fn tool_results(&self) -> impl Iterator<Item = &ToolResultBlock> {
+        self.blocks().iter().filter_map(|b| match b {
+            ContentBlock::ToolResult(tr) => Some(tr),
+            _ => None,
+        })
+    }
+
+    // Anticipatory analysis surface (turn segmentation) for the stages that
+    // will consume the typed model; only tests exercise it yet.
+    #[allow(dead_code)]
     pub fn interrupted(&self) -> bool {
         interrupt_marker(&self.content.text()).is_some()
     }
@@ -149,10 +180,10 @@ pub enum Entry {
     Other(OtherEntry),
 }
 
-// Anticipatory analysis surface (turn segmentation, tool_use↔result joins) for
-// the stages that will consume the typed model; only tests exercise it yet.
-#[allow(dead_code)]
 impl Entry {
+    // Anticipatory analysis surface (turn segmentation) for the stages that
+    // will consume the typed model; only tests exercise these yet.
+    #[allow(dead_code)]
     pub fn meta(&self) -> Option<&EntryMeta> {
         match self {
             Entry::User(u) => Some(&u.meta),
@@ -162,6 +193,7 @@ impl Entry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Entry::Mode(m) => Some(&m.session_id),
@@ -171,10 +203,7 @@ impl Entry {
 
     pub fn blocks(&self) -> &[ContentBlock] {
         match self {
-            Entry::User(UserEntry {
-                content: UserContent::Blocks(blocks),
-                ..
-            }) => blocks,
+            Entry::User(user) => user.blocks(),
             Entry::Assistant(a) => &a.blocks,
             _ => &[],
         }
@@ -187,12 +216,24 @@ impl Entry {
         })
     }
 
+    #[allow(dead_code)]
     pub fn tool_results(&self) -> impl Iterator<Item = &ToolResultBlock> {
         self.blocks().iter().filter_map(|b| match b {
             ContentBlock::ToolResult(tr) => Some(tr),
             _ => None,
         })
     }
+}
+
+/// The ``tool_use_id -> ToolUseBlock`` join over a parsed transcript
+/// (filterspec.py tool_uses), last-write-wins on duplicate ids to match the
+/// Python dict comprehension.
+pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
+    entries
+        .iter()
+        .flat_map(Entry::tool_uses)
+        .map(|tu| (tu.id.as_str(), tu))
+        .collect()
 }
 
 /// The space-joined text of the ``Text`` blocks — the ``text`` field of the

@@ -4,8 +4,8 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::types::{
     AssistantEntry, CacheCreation, ContentBlock, Entry, EntryMeta, FallbackBlock, InitInfo,
     McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin, PrintBody, PrintMessage,
-    PrintResult, ServerToolUse, SystemEntry, ToolResultBlock, ToolUseBlock, Usage, UserContent,
-    UserEntry,
+    PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock, ToolUseBlock, Usage,
+    UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -117,6 +117,29 @@ fn parse_user_content(content: &Value, is_async: bool) -> Result<UserContent, Pa
     }
 }
 
+fn parse_questions(input: &Value) -> Option<Vec<Question>> {
+    let questions = field(input, "questions")?.as_array()?;
+    Some(
+        questions
+            .iter()
+            .filter_map(|question| {
+                Some(Question {
+                    question: field_str(question, "question")?.to_string(),
+                    header: field_str(question, "header").map(str::to_string),
+                    multi_select: field_bool(question, "multiSelect"),
+                    labels: field(question, "options")
+                        .and_then(JsonContainerTrait::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|option| field_str(option, "label"))
+                        .map(String::from)
+                        .collect(),
+                })
+            })
+            .collect(),
+    )
+}
+
 fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
     match block_type(block) {
         Some("text") => Ok(ContentBlock::Text(require_str(block, "text")?.to_string())),
@@ -130,6 +153,8 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
                 name,
                 run_in_background: field(input, "run_in_background").and_then(JsonValueTrait::as_bool),
                 subagent_type: field_str(input, "subagent_type").map(str::to_string),
+                file_path: field_str(input, "file_path").map(str::to_string),
+                questions: parse_questions(input),
                 input: input.clone(),
             }))
         }
@@ -481,7 +506,12 @@ mod tests {
             r#"{{"type":"assistant",{META},"message":{{"model":"m1","content":[
                 {{"type":"text","text":"on it"}},
                 {{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"ls","run_in_background":true}}}},
-                {{"type":"tool_use","id":"t2","name":"Task","input":{{"subagent_type":"Explore"}}}}
+                {{"type":"tool_use","id":"t2","name":"Task","input":{{"subagent_type":"Explore"}}}},
+                {{"type":"tool_use","id":"t3","name":"Edit","input":{{"file_path":"/x.py"}}}},
+                {{"type":"tool_use","id":"t4","name":"AskUserQuestion","input":{{"questions":[
+                    {{"question":"Q?","header":"H","multiSelect":true,"options":[{{"label":"A"}},{{"bad":1}}]}},
+                    {{"header":"no question text"}}
+                ]}}}}
             ]}}}}"#
         );
         let entry = parse_entry(parse(&raw)).unwrap();
@@ -491,13 +521,22 @@ mod tests {
         assert_eq!(assistant.model, "m1");
         assert!(assistant.usage.is_none());
         let uses: Vec<_> = entry.tool_uses().collect();
-        assert_eq!(uses.len(), 2);
+        assert_eq!(uses.len(), 4);
         assert_eq!(uses[0].name, "Bash");
         assert_eq!(uses[0].run_in_background, Some(true));
         assert_eq!(uses[0].subagent_type, None);
+        assert_eq!(uses[0].file_path, None);
+        assert!(uses[0].questions.is_none());
         assert_eq!(uses[0].input, parse(r#"{"command":"ls","run_in_background":true}"#));
         assert_eq!(uses[1].run_in_background, None);
         assert_eq!(uses[1].subagent_type.as_deref(), Some("Explore"));
+        assert_eq!(uses[2].file_path.as_deref(), Some("/x.py"));
+        let questions = uses[3].questions.as_deref().unwrap();
+        assert_eq!(questions.len(), 1, "question without string text is dropped");
+        assert_eq!(questions[0].question, "Q?");
+        assert_eq!(questions[0].header.as_deref(), Some("H"));
+        assert!(questions[0].multi_select);
+        assert_eq!(questions[0].labels, ["A"], "non-string labels are dropped");
         assert_eq!(joined_text(&assistant.blocks), "on it");
     }
 

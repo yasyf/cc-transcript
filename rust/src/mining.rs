@@ -7,13 +7,14 @@ use pyo3::types::PyDict;
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::parse::{parse_timestamp, require_str, truthy_str};
-use crate::filter::{compile_group_array, Kind};
+use crate::filter::compile_group_array;
+use crate::parse::{parse_entry, ParseError};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
     DENIAL_PREFIX, INTERRUPT_MARKER_RE,
 };
-use crate::value::{block_type, content_text, field, field_bool, field_str};
+use crate::types::{tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry};
+use crate::value::{field, field_bool, field_str};
 
 // Source kinds (mining/sourcekind.py).
 const TRANSCRIPT_MESSAGE: &str = "transcript_message";
@@ -423,67 +424,52 @@ fn score_user_message(spec: &CompiledConfSpec, text: &str, index: i64, trigger: 
 
 // ── event view & cross-event pass ────────────────────────────────────────────
 
-fn event_kind(data: &Value) -> Kind {
-    match field_str(data, "type") {
-        Some("user") => Kind::User,
-        Some("assistant") => Kind::Assistant,
-        Some("system") => Kind::System,
-        Some("mode") | Some("permission-mode") => Kind::Mode,
-        _ => Kind::Other,
-    }
-}
-
-fn message_content(data: &Value) -> Option<&Value> {
-    field(field(data, "message")?, "content")
-}
-
-/// The joined text of a user/assistant event, mirroring ``content_text``.
-fn event_text(data: &Value, kind: Kind) -> String {
-    match kind {
-        Kind::User | Kind::Assistant => message_content(data).map(content_text).unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
 struct Events {
-    lines: Vec<Value>,
-    kinds: Vec<Kind>,
+    entries: Vec<Entry>,
     texts: Vec<String>,
 }
 
 impl Events {
-    /// Splits raw JSONL into event objects, dropping undecodable lines and
+    /// Splits raw JSONL into typed entries, dropping undecodable lines and
     /// non-object values (parser.py decode_line) so event indices agree with the
-    /// Python reference.
-    fn parse(raw: &[u8]) -> Self {
-        let lines: Vec<Value> = raw
+    /// Python reference; a malformed entry fails the mine, as in the reference.
+    fn parse(raw: &[u8]) -> Result<Self, ParseError> {
+        let entries = raw
             .split(|&b| b == b'\n')
             .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
             .filter_map(|line| sonic_rs::from_slice::<Value>(line).ok())
             .filter(|value| value.is_object())
-            .collect();
-        let kinds = lines.iter().map(event_kind).collect::<Vec<_>>();
-        let texts = lines
+            .map(parse_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+        let texts = entries
             .iter()
-            .zip(&kinds)
-            .map(|(line, &kind)| event_text(line, kind))
+            .map(|entry| match entry {
+                Entry::User(user) => user.content.text(),
+                _ => String::new(),
+            })
             .collect();
-        Events { lines, kinds, texts }
+        Ok(Events { entries, texts })
     }
 
     fn len(&self) -> usize {
-        self.lines.len()
+        self.entries.len()
     }
 
     /// Nearest preceding assistant index (mining/signals.py nearest_assistant_index).
     fn nearest_assistant_index(&self, index: usize) -> Option<i64> {
-        (0..index).rev().find(|&i| self.kinds[i] == Kind::Assistant).map(|i| i as i64)
+        (0..index)
+            .rev()
+            .find(|&i| matches!(self.entries[i], Entry::Assistant(_)))
+            .map(|i| i as i64)
     }
 
     /// The first non-blank user message at or after ``index`` (mining/signals.py
     /// next_user_message).
-    fn next_user_message(&self, index: usize) -> Option<usize> {
-        (index..self.len()).find(|&i| self.kinds[i] == Kind::User && !self.texts[i].trim().is_empty())
+    fn next_user_message(&self, index: usize) -> Option<(usize, &UserEntry)> {
+        (index..self.len()).find_map(|i| match &self.entries[i] {
+            Entry::User(user) if !self.texts[i].trim().is_empty() => Some((i, user)),
+            _ => None,
+        })
     }
 
     /// The 40-event lookback for the most recent edit (mining/signals.py
@@ -493,39 +479,9 @@ impl Events {
         let lo = index.saturating_sub(spec.reentry_lookback);
         (lo..index)
             .rev()
-            .find(|&i| self.kinds[i] == Kind::Assistant && self.uses_edit_tool(i, &spec.edit_tools))
+            .find(|&i| self.entries[i].tool_uses().any(|tu| spec.edit_tools.contains(&tu.name)))
             .map(|i| i as i64)
     }
-
-    fn uses_edit_tool(&self, index: usize, edit_tools: &HashSet<String>) -> bool {
-        message_content(&self.lines[index])
-            .and_then(JsonContainerTrait::as_array)
-            .into_iter()
-            .flatten()
-            .any(|block| {
-                block_type(block) == Some("tool_use")
-                    && field_str(block, "name").is_some_and(|name| edit_tools.contains(name))
-            })
-    }
-}
-
-/// Builds the ``tool_use_id -> ToolUseBlock`` map (filterspec.py tool_uses), keeping
-/// last-write-wins on duplicate ids to match the Python dict comprehension.
-fn tool_uses(events: &Events) -> HashMap<String, &Value> {
-    let mut map = HashMap::new();
-    for (line, &kind) in events.lines.iter().zip(&events.kinds) {
-        if kind != Kind::Assistant {
-            continue;
-        }
-        for block in message_content(line).and_then(JsonContainerTrait::as_array).into_iter().flatten() {
-            if block_type(block) == Some("tool_use") {
-                if let Some(id) = field_str(block, "id") {
-                    map.insert(id.to_string(), block);
-                }
-            }
-        }
-    }
-    map
 }
 
 /// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
@@ -544,29 +500,8 @@ fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
 
 /// marker_in (mining/signals.py marker_in): whether any tool-result block's
 /// content carries the interrupt marker.
-fn marker_in(event: &Value) -> bool {
-    message_content(event)
-        .and_then(JsonContainerTrait::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|b| block_type(b) == Some("tool_result"))
-        .any(|b| result_content_text(b).is_some_and(|c| interrupt_marker(&c).is_some()))
-}
-
-/// The flattened text of a tool-result block: the string content, or the joined
-/// text blocks (event.rs flatten_result_content).
-fn result_content_text(block: &Value) -> Option<String> {
-    let content = field(block, "content")?;
-    Some(match content.as_str() {
-        Some(s) => s.to_string(),
-        None => content
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| block_type(b) == Some("text"))
-            .filter_map(|b| field_str(b, "text"))
-            .collect(),
-    })
+fn marker_in(user: &UserEntry) -> bool {
+    user.tool_results().any(|b| interrupt_marker(&b.content).is_some())
 }
 
 // ── confidence band literals for marker_correction (mining/confidence.py weak /
@@ -589,7 +524,7 @@ struct ScoredText {
 /// non-bare, non-structural user message — a forward loop that re-scans from the
 /// last consumed index.
 fn correction_text(events: &Events, mut index: usize, structural: &Regex) -> Option<String> {
-    while let Some(i) = events.next_user_message(index + 1) {
+    while let Some((i, _)) = events.next_user_message(index + 1) {
         let text = &events.texts[i];
         if !is_bare_interrupt_marker(text) && !structural.is_match(text) {
             return Some(text.clone());
@@ -602,7 +537,7 @@ fn correction_text(events: &Events, mut index: usize, structural: &Regex) -> Opt
 /// first_followup (mining/signals.py first_followup): the first following non-bare
 /// user message.
 fn first_followup(events: &Events, mut index: usize) -> Option<String> {
-    while let Some(i) = events.next_user_message(index + 1) {
+    while let Some((i, _)) = events.next_user_message(index + 1) {
         index = i;
         if !is_bare_interrupt_marker(&events.texts[index]) {
             return Some(events.texts[index].clone());
@@ -639,17 +574,10 @@ fn denial_correction(
 }
 
 /// The denial tool-result blocks of a user event (mining/signals.py
-/// denial_results): error blocks whose flattened content starts with the denial
-/// banner.
-fn denial_results(event: &Value) -> Vec<&Value> {
-    message_content(event)
-        .and_then(JsonContainerTrait::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|b| block_type(b) == Some("tool_result"))
-        .filter(|b| field_bool(b, "is_error"))
-        .filter(|b| result_content_text(b).is_some_and(|c| c.starts_with(DENIAL_PREFIX)))
-        .collect()
+/// denial_results): error blocks whose content starts with the denial banner.
+fn denial_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
+    user.tool_results()
+        .filter(|b| b.is_error && b.content.starts_with(DENIAL_PREFIX))
 }
 
 // ── signal dict construction (mining/spec.py signal_to_dict) ─────────────────
@@ -659,7 +587,7 @@ fn build_signal_dict<'py>(
     py: Python<'py>,
     kind: &str,
     detector: &str,
-    meta: &Value,
+    meta: &EntryMeta,
     event_index: usize,
     text: &str,
     trigger_index: Option<i64>,
@@ -670,12 +598,12 @@ fn build_signal_dict<'py>(
     let d = PyDict::new(py);
     d.set_item("kind", kind)?;
     d.set_item("detector", detector)?;
-    d.set_item("session_id", require_str(meta, "sessionId")?)?;
+    d.set_item("session_id", &meta.session_id)?;
     d.set_item("event_index", event_index as i64)?;
-    d.set_item("event_uuid", require_str(meta, "uuid")?)?;
-    d.set_item("occurred_at", occurred_at_iso(py, require_str(meta, "timestamp")?)?)?;
+    d.set_item("event_uuid", &meta.uuid)?;
+    d.set_item("occurred_at", occurred_at_iso(py, meta.timestamp)?)?;
     d.set_item("text", text)?;
-    d.set_item("cc_version", truthy_str(meta, "version"))?;
+    d.set_item("cc_version", meta.version.as_deref())?;
     d.set_item("trigger_index", trigger_index)?;
     let signal = PyDict::new(py);
     signal.set_item("confidence", sig.confidence)?;
@@ -690,8 +618,7 @@ fn build_signal_dict<'py>(
 /// occurred_at parity (R1): reproduce ``datetime.isoformat()`` byte-for-byte by
 /// building a Python ``datetime`` from the chrono value and calling
 /// ``.isoformat()`` — the identical oracle to ``signal_to_dict``.
-fn occurred_at_iso<'py>(py: Python<'py>, raw: &str) -> PyResult<Bound<'py, PyAny>> {
-    let dt: DateTime<FixedOffset> = parse_timestamp(raw)?;
+fn occurred_at_iso<'py>(py: Python<'py>, dt: DateTime<FixedOffset>) -> PyResult<Bound<'py, PyAny>> {
     dt.into_pyobject(py)?.call_method0("isoformat")
 }
 
@@ -718,10 +645,8 @@ fn iter_user_message<'py>(
     spec: &CompiledMiningSpec,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
         let text = &events.texts[index];
         if text.trim().is_empty() || is_bare_interrupt_marker(text) {
             continue;
@@ -732,7 +657,7 @@ fn iter_user_message<'py>(
             py,
             TRANSCRIPT_MESSAGE,
             DETECTOR_TRANSCRIPT_MESSAGE,
-            &events.lines[index],
+            &user.meta,
             index,
             text,
             trigger,
@@ -748,29 +673,24 @@ fn iter_plan_rejection<'py>(
     py: Python<'py>,
     events: &Events,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<String, &Value>,
+    uses: &HashMap<&str, &ToolUseBlock>,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
-        let event = &events.lines[index];
-        for result in denial_results(event) {
-            let Some(tool_use_id) = field_str(result, "tool_use_id") else { continue };
-            let Some(use_block) = uses.get(tool_use_id) else { continue };
-            if !field_str(use_block, "name").is_some_and(|name| matches_names(name, &spec.plan_tools)) {
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
+        for result in denial_results(user) {
+            let Some(use_block) = uses.get(result.tool_use_id.as_str()) else { continue };
+            if !matches_names(&use_block.name, &spec.plan_tools) {
                 continue;
             }
-            let Some(content) = result_content_text(result) else { continue };
-            let Some(text) = embedded_user_text(&content) else { continue };
+            let Some(text) = embedded_user_text(&result.content) else { continue };
             let trigger = events.nearest_assistant_index(index);
             let sig = calibrated(&spec.calibrated, &text, "embedded_text");
             out.push(build_signal_dict(
                 py,
                 PLAN_REVIEW,
                 DETECTOR_EXIT_PLAN_REJECTION,
-                event,
+                &user.meta,
                 index,
                 &text,
                 trigger,
@@ -789,32 +709,29 @@ fn iter_plan_reentry<'py>(
     spec: &CompiledMiningSpec,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    let mut seen: HashSet<String> = HashSet::new();
-    for index in 0..events.len() {
-        let event = &events.lines[index];
-        let is_plan_mode = events.kinds[index] == Kind::Mode
-            && (field_str(event, "mode") == Some("plan") || field_str(event, "permissionMode") == Some("plan"));
-        if !is_plan_mode {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::Mode(mode) = entry else { continue };
+        if mode.value != "plan" {
             continue;
         }
-        let Some(user_index) = events.next_user_message(index) else { continue };
-        let user_event = &events.lines[user_index];
-        let Some(uuid) = field_str(user_event, "uuid") else { continue };
+        let Some((user_index, user)) = events.next_user_message(index) else { continue };
+        let uuid = user.meta.uuid.as_str();
         if seen.contains(uuid) || is_bare_interrupt_marker(&events.texts[user_index]) {
             continue;
         }
         let Some(edit) = events.last_edit_index(user_index, spec) else { continue };
-        seen.insert(uuid.to_string());
-        let text = events.texts[user_index].clone();
+        seen.insert(uuid);
+        let text = &events.texts[user_index];
         let trigger = events.nearest_assistant_index(user_index);
-        let sig = calibrated(&spec.calibrated, &text, "reentry_after_edit");
+        let sig = calibrated(&spec.calibrated, text, "reentry_after_edit");
         out.push(build_signal_dict(
             py,
             PLAN_REVIEW,
             DETECTOR_PLAN_REENTRY,
-            user_event,
+            &user.meta,
             user_index,
-            &text,
+            text,
             trigger,
             &sig,
             Some(edit),
@@ -828,37 +745,30 @@ fn iter_tool_denial<'py>(
     py: Python<'py>,
     events: &Events,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<String, &Value>,
+    uses: &HashMap<&str, &ToolUseBlock>,
     structural: &Regex,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
-        let event = &events.lines[index];
-        for block in denial_results(event) {
-            let paired = field_str(block, "tool_use_id").and_then(|id| uses.get(id).copied());
-            if let Some(use_block) = paired {
-                if field_str(use_block, "name")
-                    .is_some_and(|name| matches_names(name, &spec.denial_excluded_tools))
-                {
-                    continue;
-                }
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
+        for block in denial_results(user) {
+            let paired = uses.get(block.tool_use_id.as_str()).copied();
+            if paired.is_some_and(|use_block| matches_names(&use_block.name, &spec.denial_excluded_tools)) {
+                continue;
             }
-            let embedded = result_content_text(block).and_then(|c| embedded_user_text(&c));
+            let embedded = embedded_user_text(&block.content);
             let Some(scored) = denial_correction(events, index, embedded, spec, structural) else { continue };
             let trigger = events.nearest_assistant_index(index);
             let evidence = PyDict::new(py);
             if let Some(use_block) = paired {
-                evidence.set_item("tool", field_str(use_block, "name"))?;
-                evidence.set_item("file_path", field(use_block, "input").and_then(|i| field_str(i, "file_path")))?;
+                evidence.set_item("tool", &use_block.name)?;
+                evidence.set_item("file_path", use_block.file_path.as_deref())?;
             }
             out.push(build_signal_dict(
                 py,
                 INTERRUPT_REJECTION,
                 DETECTOR_DENIAL,
-                event,
+                &user.meta,
                 index,
                 &scored.text,
                 trigger,
@@ -877,11 +787,9 @@ fn iter_interrupt<'py>(
     structural: &Regex,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
-        if !marker_in(&events.lines[index]) {
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
+        if !marker_in(user) {
             continue;
         }
         let Some(scored) = marker_correction(events, index, structural) else { continue };
@@ -890,7 +798,7 @@ fn iter_interrupt<'py>(
             py,
             INTERRUPT_REJECTION,
             DETECTOR_INTERRUPT,
-            &events.lines[index],
+            &user.meta,
             index,
             &scored.text,
             trigger,
@@ -913,7 +821,7 @@ struct ReviewComment {
 
 struct ScanText {
     text: String,
-    provenance: String,
+    provenance: &'static str,
     trigger_index: Option<i64>,
 }
 
@@ -931,34 +839,28 @@ fn classify_provenance(subagent_tools: &HashSet<String>, tool_name: Option<&str>
 /// plus each surfaced or claude tool-result, gated by the surfaces set.
 fn review_scan_texts(
     events: &Events,
+    user: &UserEntry,
     index: usize,
     spec: &CompiledMiningSpec,
-    names: &HashMap<String, String>,
+    uses: &HashMap<&str, &ToolUseBlock>,
 ) -> Vec<ScanText> {
-    let event = &events.lines[index];
     let surfaces = &spec.review.surfaces;
     let mut scans = Vec::new();
     let text = &events.texts[index];
     if surfaces.contains("typed") && !text.trim().is_empty() {
         scans.push(ScanText {
             text: text.clone(),
-            provenance: "typed".to_string(),
+            provenance: "typed",
             trigger_index: events.nearest_assistant_index(index),
         });
     }
-    let is_sidechain = field_bool(event, "isSidechain");
-    for block in message_content(event).and_then(JsonContainerTrait::as_array).into_iter().flatten() {
-        if block_type(block) != Some("tool_result") {
-            continue;
-        }
-        let tool_name = field_str(block, "tool_use_id").and_then(|id| names.get(id)).map(String::as_str);
-        let provenance = classify_provenance(&spec.subagent_tools, tool_name, is_sidechain);
+    for block in user.tool_results() {
+        let tool_name = uses.get(block.tool_use_id.as_str()).map(|tu| tu.name.as_str());
+        let provenance = classify_provenance(&spec.subagent_tools, tool_name, user.meta.is_sidechain);
         if provenance == "typed" || !surfaces.contains(provenance) {
             continue;
         }
-        if let Some(content) = result_content_text(block) {
-            scans.push(ScanText { text: content, provenance: provenance.to_string(), trigger_index: None });
-        }
+        scans.push(ScanText { text: block.content.clone(), provenance, trigger_index: None });
     }
     scans
 }
@@ -1128,34 +1030,27 @@ fn iter_review_comment<'py>(
     py: Python<'py>,
     events: &Events,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<String, &Value>,
+    uses: &HashMap<&str, &ToolUseBlock>,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    let names: HashMap<String, String> = uses
-        .iter()
-        .filter_map(|(id, block)| field_str(block, "name").map(|name| (id.clone(), name.to_string())))
-        .collect();
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
-        for scan in review_scan_texts(events, index, spec, &names) {
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
+        for scan in review_scan_texts(events, user, index, spec, uses) {
             for (fmt_name, comment) in
                 review_comments(spec, &scan.text).map_err(pyo3::exceptions::PyValueError::new_err)?
             {
-                let event = &events.lines[index];
                 let evidence = PyDict::new(py);
                 evidence.set_item("format", &fmt_name)?;
                 evidence.set_item("file", &comment.file)?;
                 evidence.set_item("line_start", comment.line_start)?;
                 evidence.set_item("line_end", comment.line_end)?;
-                evidence.set_item("provenance", &scan.provenance)?;
+                evidence.set_item("provenance", scan.provenance)?;
                 let sig = calibrated(&spec.calibrated, &comment.comment, "format_match");
                 out.push(build_signal_dict(
                     py,
                     REVIEW_COMMENT,
                     DETECTOR_REVIEW_COMMENT,
-                    event,
+                    &user.meta,
                     index,
                     &comment.comment,
                     scan.trigger_index,
@@ -1172,21 +1067,15 @@ fn iter_review_comment<'py>(
 // ── dispatch (mining/signals.py mine) ────────────────────────────────────────
 
 /// The answered AskUserQuestion tool-result blocks of a user event
-/// (signals.py answered_question_results): non-error blocks whose flattened
-/// content starts with the answered banner.
-fn answered_results(event: &Value) -> Vec<&Value> {
-    message_content(event)
-        .and_then(JsonContainerTrait::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|b| block_type(b) == Some("tool_result"))
-        .filter(|b| !field_bool(b, "is_error"))
-        .filter(|b| result_content_text(b).is_some_and(|c| c.starts_with(ANSWERED_PREFIX)))
-        .collect()
+/// (signals.py answered_question_results): non-error blocks whose content
+/// starts with the answered banner.
+fn answered_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
+    user.tool_results()
+        .filter(|b| !b.is_error && b.content.starts_with(ANSWERED_PREFIX))
 }
 
 struct AnsweredPair<'a> {
-    question: &'a Value,
+    question: &'a Question,
     answer: Option<&'a str>,
     preview: Option<&'a str>,
     notes: Option<&'a str>,
@@ -1232,12 +1121,11 @@ fn find_anchor(body: &str, anchor: &str, pos: usize) -> Option<usize> {
 /// '"<question>"=', slices each pair's segment to the next found anchor, strips
 /// the exact ', ' pair join on middle segments and the answer's exact closing '"',
 /// and skips questions whose anchor never rendered.
-fn answered_pairs<'a>(body: &'a str, questions: &'a sonic_rs::Array) -> Vec<AnsweredPair<'a>> {
-    let mut found: Vec<(&Value, usize, usize)> = Vec::new();
+fn answered_pairs<'a>(body: &'a str, questions: &'a [Question]) -> Vec<AnsweredPair<'a>> {
+    let mut found: Vec<(&Question, usize, usize)> = Vec::new();
     let mut pos = 0usize;
-    for question in questions.iter() {
-        let Some(text) = field_str(question, "question") else { continue };
-        let anchor = format!("\"{text}\"=");
+    for question in questions {
+        let anchor = format!("\"{}\"=", question.question);
         let Some(at) = find_anchor(body, &anchor, pos) else { continue };
         found.push((question, at, at + anchor.len()));
         pos = at + anchor.len();
@@ -1321,56 +1209,38 @@ fn iter_ask_user_question<'py>(
     py: Python<'py>,
     events: &Events,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<String, &Value>,
+    uses: &HashMap<&str, &ToolUseBlock>,
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
-    for index in 0..events.len() {
-        if events.kinds[index] != Kind::User {
-            continue;
-        }
-        let event = &events.lines[index];
-        for block in answered_results(event) {
-            let Some(use_block) = field_str(block, "tool_use_id").and_then(|id| uses.get(id).copied())
-            else {
-                continue;
-            };
-            if field_str(use_block, "name") != Some("AskUserQuestion") {
+    for (index, entry) in events.entries.iter().enumerate() {
+        let Entry::User(user) = entry else { continue };
+        for block in answered_results(user) {
+            let Some(use_block) = uses.get(block.tool_use_id.as_str()) else { continue };
+            if use_block.name != "AskUserQuestion" {
                 continue;
             }
-            let Some(content) = result_content_text(block) else { continue };
+            let content = &block.content;
             if !content.ends_with(ANSWERED_TRAILER)
                 || content.len() < ANSWERED_PREFIX.len() + ANSWERED_TRAILER.len()
             {
                 continue;
             }
             let body = &content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()];
-            let Some(questions) = field(use_block, "input")
-                .and_then(|input| field(input, "questions"))
-                .and_then(JsonContainerTrait::as_array)
-            else {
-                continue;
-            };
+            let Some(questions) = use_block.questions.as_deref() else { continue };
             let trigger = events.nearest_assistant_index(index);
             for pair in answered_pairs(body, questions) {
-                let labels: Vec<String> = field(pair.question, "options")
-                    .and_then(JsonContainerTrait::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|option| field_str(option, "label"))
-                    .map(String::from)
-                    .collect();
-                let (picked, option_pick) = resolve_pick(pair.answer, &labels);
+                let (picked, option_pick) = resolve_pick(pair.answer, &pair.question.labels);
                 let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
                 let Some(text) = pair.notes.or(pair.answer) else { continue };
-                let sig = if option_pick && pair.notes.map_or(true, str::is_empty) {
+                let sig = if option_pick && pair.notes.is_none_or(str::is_empty) {
                     weak("option_pick")
                 } else {
                     calibrated(&spec.calibrated, text, "freeform_answer")
                 };
                 let evidence = PyDict::new(py);
-                evidence.set_item("question", field_str(pair.question, "question"))?;
-                evidence.set_item("header", field_str(pair.question, "header"))?;
-                evidence.set_item("multi_select", field_bool(pair.question, "multiSelect"))?;
+                evidence.set_item("question", &pair.question.question)?;
+                evidence.set_item("header", pair.question.header.as_deref())?;
+                evidence.set_item("multi_select", pair.question.multi_select)?;
                 evidence.set_item("option_pick", option_pick)?;
                 evidence.set_item("picked_labels", picked)?;
                 evidence.set_item("recommended_pick", recommended)?;
@@ -1384,7 +1254,7 @@ fn iter_ask_user_question<'py>(
                     py,
                     QUESTION_ANSWER,
                     DETECTOR_ASK_USER_QUESTION,
-                    event,
+                    &user.meta,
                     index,
                     text,
                     trigger,
@@ -1403,8 +1273,8 @@ pub fn mine<'py>(
     raw: &[u8],
     spec: &CompiledMiningSpec,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let events = Events::parse(raw);
-    let uses = tool_uses(&events);
+    let events = Events::parse(raw)?;
+    let uses = tool_use_index(&events.entries);
     let structural = structural_re(spec);
     let mut out: Vec<Bound<'py, PyDict>> = Vec::new();
     if spec.detectors.contains(DETECTOR_TRANSCRIPT_MESSAGE) {
@@ -1479,14 +1349,24 @@ mod tests {
         );
     }
 
+    fn question(text: &str) -> Question {
+        Question {
+            question: text.to_string(),
+            header: None,
+            multi_select: false,
+            labels: Vec::new(),
+        }
+    }
+
     #[test]
     fn answered_pairs_slices_segments_and_skips_omitted() {
-        let questions: Value =
-            sonic_rs::from_str(r#"[{"question": "Q1"}, {"question": "Q2"}, {"question": "Q3"}]"#).unwrap();
+        let questions = [question("Q1"), question("Q2"), question("Q3")];
         let body = "\"Q1\"=\"first, with comma\", \"Q3\"=\"he said \"hi\"\"";
-        let pairs = answered_pairs(body, questions.as_array().unwrap());
+        let pairs = answered_pairs(body, &questions);
         assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].question.question, "Q1");
         assert_eq!(pairs[0].answer, Some("first, with comma"));
+        assert_eq!(pairs[1].question.question, "Q3");
         assert_eq!(pairs[1].answer, Some("he said \"hi\""));
     }
 
