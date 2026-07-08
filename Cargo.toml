@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust"]
+members = ["rust", "rust-swift"]
 resolver = "2"
 
 [profile.release]
