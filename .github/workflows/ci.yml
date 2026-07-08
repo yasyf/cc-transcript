@@ -45,3 +45,42 @@ jobs:
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/python -c "from cc_transcript.parser import TranscriptParser; assert TranscriptParser.backend_name() == 'rust'"
+
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      # cache-bin (default true) also keeps the swift-bridge-cli install warm.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bridge crate
+        run: cargo build --release -p cc_transcript_swift --target aarch64-apple-darwin
+
+      - name: Test Rust core (swift feature)
+        working-directory: rust
+        run: cargo test --no-default-features --features swift
+
+      - name: Test Swift package against the committed xcframework
+        run: swift test --package-path swift
+
+      # The swift tests above exercise the COMMITTED binary, so they can't see
+      # a package that was never regenerated after a Rust change. Regenerate
+      # and require the text artifacts (Package.swift, generated Swift,
+      # headers) to match the committed tree; only byte-diffs in the static
+      # lib are expected (rustc version/paths) and exempt.
+      - name: Freshness guard (regenerated swift/ must match the committed tree)
+        run: |
+          scripts/build-swift-package.sh
+          drift="$(git status --porcelain -- swift | grep -v 'libcc_transcript_swift\.a$' || true)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            git --no-pager diff -- swift ':!swift/RustXcframework.xcframework/macos-arm64/libcc_transcript_swift.a'
+            echo "::error::swift/ is stale — rerun scripts/build-swift-package.sh and commit the diff"
+            exit 1
+          fi
