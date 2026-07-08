@@ -4,25 +4,25 @@ use regex::Regex;
 // Raw CC-injected protocol strings (filterspec.py DENIAL_PREFIX / USER_SAID_MARKER /
 // USER_SAID_TRAILER) and the head-anchored interrupt pattern (filterspec.py
 // INTERRUPT_MARKER_GROUPS).
-pub(crate) const DENIAL_PREFIX: &str =
+pub const DENIAL_PREFIX: &str =
     "The user doesn't want to proceed with this tool use. The tool use was rejected";
-pub(crate) const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
-pub(crate) const USER_SAID_TRAILER: &str = "Note: The user's next message";
-pub(crate) const ANSWERED_PREFIX: &str = "Your questions have been answered: ";
-pub(crate) const ANSWERED_TRAILER: &str = ". You can now continue with these answers in mind.";
+pub const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
+pub const USER_SAID_TRAILER: &str = "Note: The user's next message";
+pub const ANSWERED_PREFIX: &str = "Your questions have been answered: ";
+pub const ANSWERED_TRAILER: &str = ". You can now continue with these answers in mind.";
 const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern
 /// compiled case-insensitively, anchored at the start of the haystack with leading
 /// whitespace tolerated. Shared with mining's structural fallback so both uses
 /// carry identical case semantics.
-pub(crate) static INTERRUPT_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
+pub static INTERRUPT_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!("(?i){INTERRUPT_MARKER_PATTERN}")).expect("interrupt regex")
 });
 
 /// embedded_user_text (filterspec.py embedded_user_text): the verbatim instruction
 /// wrapped between the USER_SAID markers, or None.
-pub(crate) fn embedded_user_text(content: &str) -> Option<String> {
+pub fn embedded_user_text(content: &str) -> Option<String> {
     let start = content.find(USER_SAID_MARKER)?;
     let after = &content[start + USER_SAID_MARKER.len()..];
     Some(after.split(USER_SAID_TRAILER).next().unwrap_or(after).trim().to_string())
@@ -31,7 +31,7 @@ pub(crate) fn embedded_user_text(content: &str) -> Option<String> {
 /// interrupt_marker (filterspec.py interrupt_marker): the bracketed interrupt prefix
 /// at the head of ``text`` (after lstrip; case-insensitive), through the closing
 /// ``]`` when present, else the matched marker prefix.
-pub(crate) fn interrupt_marker(text: &str) -> Option<&str> {
+pub fn interrupt_marker(text: &str) -> Option<&str> {
     let stripped = text.trim_start();
     let matched = INTERRUPT_MARKER_RE.find(stripped)?;
     match stripped.find(']') {
@@ -42,7 +42,7 @@ pub(crate) fn interrupt_marker(text: &str) -> Option<&str> {
 
 /// is_bare_interrupt_marker (filterspec.py is_bare_interrupt_marker): the whole
 /// (stripped) text is just the marker.
-pub(crate) fn is_bare_interrupt_marker(text: &str) -> bool {
+pub fn is_bare_interrupt_marker(text: &str) -> bool {
     match interrupt_marker(text) {
         None => false,
         Some(marker) => text.trim()[marker.trim().len()..].trim().is_empty(),

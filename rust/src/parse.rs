@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset};
+use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::types::{
@@ -8,6 +9,8 @@ use crate::types::{
     UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
+
+const AVG_LINE_BYTES: usize = 1400;
 
 /// A malformed entry or envelope. Mapped to the matching Python exception
 /// (``KeyError`` / ``ValueError``) at the pyo3 boundary in ``event.rs``.
@@ -260,6 +263,39 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
         _ => {}
     }
     Ok(Entry::Other(OtherEntry { ty, raw: data }))
+}
+
+// Lines that are not valid JSON are skipped; a JSON line that fails the typed
+// parse (e.g. a missing required field) fails the whole file — whole-file
+// parity with PythonBackend, which parses every line before filtering.
+fn parse_line<F: Fn(&Entry) -> bool>(
+    line: &[u8],
+    lines: &mut Vec<Entry>,
+    keep: &F,
+) -> Result<(), ParseError> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
+    if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
+        let entry = parse_entry(value)?;
+        if keep(&entry) {
+            lines.push(entry);
+        }
+    }
+    Ok(())
+}
+
+pub fn parse_bytes<F: Fn(&Entry) -> bool>(bytes: &[u8], keep: F) -> Result<Vec<Entry>, ParseError> {
+    let mut lines: Vec<Entry> = Vec::with_capacity(bytes.len() / AVG_LINE_BYTES + 1);
+    let mut start = 0usize;
+    for pos in memchr_iter(b'\n', bytes) {
+        parse_line(&bytes[start..pos], &mut lines, &keep)?;
+        start = pos + 1;
+    }
+    if start < bytes.len() {
+        parse_line(&bytes[start..], &mut lines, &keep)?;
+    }
+    Ok(lines)
 }
 
 fn parse_model_usage(usage: &Value) -> Result<ModelUsage, ParseError> {

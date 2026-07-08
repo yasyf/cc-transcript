@@ -77,7 +77,6 @@ dependencies = [
  "pyo3",
  "rayon",
  "regex",
- "serde",
  "sonic-rs",
  "tree-sitter",
  "tree-sitter-bash",

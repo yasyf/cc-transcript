@@ -5,25 +5,36 @@ edition = "2021"
 
 [lib]
 name = "_parser_rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
-extension-module = ["pyo3/extension-module"]
+default = ["python"]
+python = [
+    "dep:pyo3",
+    "dep:rayon",
+    "dep:crossbeam-channel",
+    "dep:num_cpus",
+    "dep:udpipe-rs",
+    "dep:dirs",
+    "dep:tree-sitter",
+    "dep:tree-sitter-bash",
+]
+extension-module = ["python", "pyo3/extension-module"]
+swift = []
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"] }
-serde = { version = "1", features = ["derive"] }
+pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"], optional = true }
 sonic-rs = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-rayon = "1.10"
-crossbeam-channel = "0.5"
-num_cpus = "1"
+rayon = { version = "1.10", optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
+num_cpus = { version = "1", optional = true }
 memchr = "2.7"
 once_cell = "1"
 regex = "1"
-udpipe-rs = "0.2"
-dirs = "5"
+udpipe-rs = { version = "0.2", optional = true }
+dirs = { version = "5", optional = true }
 # Grammar-pinned to the Python wheel: tree_sitter_bash 0.25.1 both sides (same
 # bash grammar), tree-sitter core 0.26 matches the wheel's tree-sitter 0.26.0.
-tree-sitter = "0.26"
-tree-sitter-bash = "0.25"
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
