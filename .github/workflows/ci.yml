@@ -62,6 +62,9 @@ jobs:
       - name: Build bridge crate
         run: cargo build --release -p cc_transcript_swift --target aarch64-apple-darwin
 
+      - name: Test bridge crate
+        run: cargo test -p cc_transcript_swift
+
       - name: Test Rust core (swift feature)
         working-directory: rust
         run: cargo test --no-default-features --features swift
@@ -84,3 +87,10 @@ jobs:
             echo "::error::swift/ is stale — rerun scripts/build-swift-package.sh and commit the diff"
             exit 1
           fi
+
+      # The guard above regenerated swift/ from the current Rust source, so its
+      # xcframework is freshly built. Re-test against it: a semantic Rust change
+      # that alters only the .a (exempt from the drift check) would otherwise
+      # pass the guard with a stale committed binary.
+      - name: Test Swift package against the regenerated xcframework
+        run: swift test --package-path swift
