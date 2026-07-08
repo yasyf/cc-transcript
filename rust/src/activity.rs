@@ -29,6 +29,19 @@ pub enum PendingKind {
     MidTool,
 }
 
+impl PendingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PendingKind::WaitingTool => "waiting_tool",
+            PendingKind::Background => "background",
+            PendingKind::SubagentlessTask => "subagentless_task",
+            PendingKind::PendingAsyncTask => "pending_async_task",
+            PendingKind::PendingAsyncWorkflow => "pending_async_workflow",
+            PendingKind::MidTool => "mid_tool",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct PendingItem {
     pub tool_use_id: Option<String>,
