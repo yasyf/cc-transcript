@@ -82,18 +82,14 @@ final class SessionActivityTests: XCTestCase {
             file: file,
             line: line
         )
-        let activity = try sessionActivity(path: url.path)
-        XCTAssertEqual(activity.is_waiting(), isWaiting, "\(fixture): is_waiting", file: file, line: line)
-        XCTAssertEqual(activity.mid_tool(), midTool, "\(fixture): mid_tool", file: file, line: line)
+        let summary = try sessionActivity(path: url.path)
+        XCTAssertEqual(summary.isWaiting, isWaiting, "\(fixture): is_waiting", file: file, line: line)
+        XCTAssertEqual(summary.midTool, midTool, "\(fixture): mid_tool", file: file, line: line)
         XCTAssertEqual(
-            activity.last_event_epoch(), lastEventEpoch, "\(fixture): last_event_epoch", file: file, line: line
+            summary.lastEventEpoch, lastEventEpoch, "\(fixture): last_event_epoch", file: file, line: line
         )
-        let actual = activity.pending().map { item in
-            Pending(
-                toolUseId: item.tool_use_id()?.toString(),
-                name: item.name().toString(),
-                kind: item.kind().toString()
-            )
+        let actual = summary.pending.map { item in
+            Pending(toolUseId: item.toolUseId, name: item.name, kind: item.kind)
         }
         XCTAssertEqual(actual, expected, "\(fixture): pending", file: file, line: line)
     }

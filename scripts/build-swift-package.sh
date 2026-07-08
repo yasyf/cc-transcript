@@ -58,17 +58,56 @@ grep -q 'platforms: \[\.macOS(\.v14)\]' swift/Package.swift
 grep -q 'testTarget' swift/Package.swift
 
 cat > swift/Sources/CCTranscript/CCTranscript.swift <<'EOF'
+/// A session-activity verdict as pure Swift value types, copied out of the
+/// bridged FFI handles so the result outlives them.
+public struct SessionActivitySummary {
+    public struct PendingItem {
+        public let toolUseId: String?
+        public let name: String
+        public let kind: String
+    }
+
+    public let isWaiting: Bool
+    public let midTool: Bool
+    public let lastEventEpoch: Int64?
+    public let pending: [PendingItem]
+}
+
 /// Probe a session transcript (JSONL) for whether the session is waiting on
 /// the human. Empty tool arrays mean the Rust-side defaults
 /// (`ActivityOpts::default()`). Throws a `RustString` describing an
 /// unreadable or malformed transcript, or an internal panic the bridge
 /// caught; it never aborts the process.
+///
+/// This is the documented entry point. It returns `SessionActivitySummary`
+/// value types rather than the generated `SessionActivity` / `PendingItem`
+/// bridged classes, whose accessors hand back borrowed references: e.g.
+/// `activity.pending()[0]` yields a `PendingItemRef` into a temporary
+/// `RustVec` that is freed at the end of the statement, so the retained
+/// reference then reads freed memory. Hold this value, not the bridged handles.
 public func sessionActivity(
     path: String,
     waitingTools: [String] = [],
     humanFacingTools: [String] = []
-) throws -> SessionActivity {
-    try session_activity(RustString(path), rustVec(waitingTools), rustVec(humanFacingTools))
+) throws -> SessionActivitySummary {
+    let activity = try session_activity(RustString(path), rustVec(waitingTools), rustVec(humanFacingTools))
+    let bridged = activity.pending()
+    var pending: [SessionActivitySummary.PendingItem] = []
+    for item in bridged {
+        pending.append(
+            SessionActivitySummary.PendingItem(
+                toolUseId: item.tool_use_id()?.toString(),
+                name: item.name().toString(),
+                kind: item.kind().toString()
+            )
+        )
+    }
+    return SessionActivitySummary(
+        isWaiting: activity.is_waiting(),
+        midTool: activity.mid_tool(),
+        lastEventEpoch: activity.last_event_epoch(),
+        pending: pending
+    )
 }
 
 private func rustVec(_ strings: [String]) -> RustVec<RustString> {
@@ -91,4 +130,8 @@ perl -0pi -e 's{\s*\z}{\n}' Package.swift
 grep -q 'path: "swift/RustXcframework.xcframework"' Package.swift
 grep -q 'path: "swift/Sources/CCTranscript"' Package.swift
 grep -q 'path: "swift/Tests/CCTranscriptTests"' Package.swift
+# Header note for git (SwiftPM) consumers: the tools-version comment must stay
+# the first line, so the platform caveat is inserted just below it.
+perl -0pi -e 's{^(// swift-tools-version:5\.9\n)}{$1//\n// The committed RustXcframework.xcframework is macos-arm64 only, by design;\n// Intel (x86_64) consumers must build from source via scripts/build-swift-package.sh.\n//\n}' Package.swift
+grep -q 'macos-arm64 only, by design' Package.swift
 swift build

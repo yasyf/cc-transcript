@@ -7,12 +7,12 @@ guard CommandLine.arguments.count == 2 else {
 }
 
 do {
-    let activity = try sessionActivity(path: CommandLine.arguments[1])
-    print("is_waiting: \(activity.is_waiting())")
-    print("mid_tool: \(activity.mid_tool())")
-    print("last_event_epoch: \(activity.last_event_epoch().map(String.init) ?? "none")")
-    for item in activity.pending() {
-        print("pending: \(item.name().toString()) kind=\(item.kind().toString()) tool_use_id=\(item.tool_use_id()?.toString() ?? "none")")
+    let summary = try sessionActivity(path: CommandLine.arguments[1])
+    print("is_waiting: \(summary.isWaiting)")
+    print("mid_tool: \(summary.midTool)")
+    print("last_event_epoch: \(summary.lastEventEpoch.map(String.init) ?? "none")")
+    for item in summary.pending {
+        print("pending: \(item.name) kind=\(item.kind) tool_use_id=\(item.toolUseId ?? "none")")
     }
 } catch let error as RustString {
     FileHandle.standardError.write(Data((error.toString() + "\n").utf8))

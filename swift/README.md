@@ -3,9 +3,10 @@
 Swift bindings for the Rust session-activity oracle, generated with
 [swift-bridge](https://github.com/chinedufn/swift-bridge). The whole package
 is committed, including the prebuilt `RustXcframework.xcframework` for macOS
-arm64. After touching `rust-swift/`, rerun `scripts/build-swift-package.sh`
-and commit the diff. `Tests/`, `Examples/`, and this README are hand-written
-and survive regeneration.
+arm64 only, by design. Intel (x86_64) consumers must build from source with
+`scripts/build-swift-package.sh`. After touching `rust-swift/`, rerun that
+script and commit the diff. `Tests/`, `Examples/`, and this README are
+hand-written and survive regeneration.
 
 ## Usage
 
@@ -29,17 +30,23 @@ Probe a transcript:
 ```swift
 import CCTranscript
 
-let activity = try sessionActivity(path: "/path/to/session.jsonl")
-activity.is_waiting()        // Bool: the session is waiting on the human
-activity.mid_tool()          // Bool: a current-turn tool call has no result yet
-activity.last_event_epoch()  // Int64?: unix seconds of the newest event
-for item in activity.pending() {
-    item.name().toString()          // e.g. "Workflow"
-    item.kind().toString()          // waiting_tool | background | subagentless_task |
-                                    // pending_async_task | pending_async_workflow | mid_tool
-    item.tool_use_id()?.toString()  // String?
+let summary = try sessionActivity(path: "/path/to/session.jsonl")
+summary.isWaiting       // Bool: the session is waiting on the human
+summary.midTool         // Bool: a current-turn tool call has no result yet
+summary.lastEventEpoch  // Int64?: unix seconds of the newest event
+for item in summary.pending {
+    item.name       // e.g. "Workflow"
+    item.kind       // waiting_tool | background | subagentless_task |
+                    // pending_async_task | pending_async_workflow | mid_tool
+    item.toolUseId  // String?
 }
 ```
+
+`sessionActivity` is the documented entry point. It returns a
+`SessionActivitySummary` value type whose `pending` field holds
+`SessionActivitySummary.PendingItem` values, so consumers can hold the result
+safely instead of the generated `SessionActivity` and `PendingItem` bridged
+classes, whose accessors return references borrowed from transient Rust memory.
 
 `sessionActivity(path:waitingTools:humanFacingTools:)` also takes tool-name
 arrays. Empty arrays select the Rust defaults, which treat Monitor,
