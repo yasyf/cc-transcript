@@ -46,5 +46,6 @@ wheelhouse/
 
 # Swift bridge codegen and package build (swift/ itself is committed)
 /rust-swift/generated/
+/.build/
 /swift/.build/
 /swift/Examples/probe/.build/

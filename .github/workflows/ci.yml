@@ -71,16 +71,16 @@ jobs:
 
       # The swift tests above exercise the COMMITTED binary, so they can't see
       # a package that was never regenerated after a Rust change. Regenerate
-      # and require the text artifacts (Package.swift, generated Swift,
-      # headers) to match the committed tree; only byte-diffs in the static
-      # lib are expected (rustc version/paths) and exempt.
+      # and require the text artifacts (both Package.swift manifests, generated
+      # Swift, headers) to match the committed tree; only byte-diffs in the
+      # static lib are expected (rustc version/paths) and exempt.
       - name: Freshness guard (regenerated swift/ must match the committed tree)
         run: |
           scripts/build-swift-package.sh
-          drift="$(git status --porcelain -- swift | grep -v 'libcc_transcript_swift\.a$' || true)"
+          drift="$(git status --porcelain -- swift Package.swift | grep -v 'libcc_transcript_swift\.a$' || true)"
           if [ -n "$drift" ]; then
             echo "$drift"
-            git --no-pager diff -- swift ':!swift/RustXcframework.xcframework/macos-arm64/libcc_transcript_swift.a'
+            git --no-pager diff -- swift Package.swift ':!swift/RustXcframework.xcframework/macos-arm64/libcc_transcript_swift.a'
             echo "::error::swift/ is stale — rerun scripts/build-swift-package.sh and commit the diff"
             exit 1
           fi

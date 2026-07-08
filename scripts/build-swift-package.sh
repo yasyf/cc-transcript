@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates the committed CCTranscript Swift package in swift/.
+# Regenerates the committed CCTranscript Swift package in swift/ plus the
+# root Package.swift that remote (git URL) consumers resolve.
 #
 # Pipeline:
 #   1. cargo build --release -p cc_transcript_swift for aarch64-apple-darwin;
@@ -14,6 +15,10 @@
 #      emits no platforms line) and the CCTranscriptTests test target, write
 #      the sessionActivity convenience wrapper, then swift-test the package
 #      and build the Examples/probe consumer as a smoke check.
+#   4. Derive the root Package.swift from swift/Package.swift by pointing
+#      every target path into swift/ (SwiftPM git dependencies require the
+#      manifest at the repo root), then swift-build from the root as a smoke
+#      check. swift/Package.swift stays for path consumers (Examples/probe).
 #
 # swift-bridge is pre-1.0: the CLI version here and the swift-bridge /
 # swift-bridge-build pins in rust-swift/Cargo.toml must stay on the same
@@ -77,3 +82,13 @@ EOF
 
 (cd swift && swift test)
 (cd swift/Examples/probe && swift build)
+
+cp swift/Package.swift Package.swift
+perl -0pi -e 's{path: "RustXcframework\.xcframework"}{path: "swift/RustXcframework.xcframework"}' Package.swift
+perl -0pi -e 's{dependencies: \["RustXcframework"\]\)}{dependencies: ["RustXcframework"],\n\t\t\tpath: "swift/Sources/CCTranscript")}' Package.swift
+perl -0pi -e 's{dependencies: \["CCTranscript"\],\n}{dependencies: ["CCTranscript"],\n\t\t\tpath: "swift/Tests/CCTranscriptTests",\n}' Package.swift
+perl -0pi -e 's{\s*\z}{\n}' Package.swift
+grep -q 'path: "swift/RustXcframework.xcframework"' Package.swift
+grep -q 'path: "swift/Sources/CCTranscript"' Package.swift
+grep -q 'path: "swift/Tests/CCTranscriptTests"' Package.swift
+swift build
