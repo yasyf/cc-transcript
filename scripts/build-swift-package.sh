@@ -60,8 +60,8 @@ grep -q 'testTarget' swift/Package.swift
 cat > swift/Sources/CCTranscript/CCTranscript.swift <<'EOF'
 /// A session-activity verdict as pure Swift value types, copied out of the
 /// bridged FFI handles so the result outlives them.
-public struct SessionActivitySummary {
-    public struct PendingItem {
+public struct SessionActivitySummary: Sendable {
+    public struct PendingItem: Sendable {
         public let toolUseId: String?
         public let name: String
         public let kind: String
