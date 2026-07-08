@@ -181,9 +181,6 @@ pub enum Entry {
 }
 
 impl Entry {
-    // Anticipatory analysis surface (turn segmentation) for the stages that
-    // will consume the typed model; only tests exercise these yet.
-    #[allow(dead_code)]
     pub fn meta(&self) -> Option<&EntryMeta> {
         match self {
             Entry::User(u) => Some(&u.meta),
@@ -193,6 +190,8 @@ impl Entry {
         }
     }
 
+    // Anticipatory analysis surface (turn segmentation) for the stages that
+    // will consume the typed model; only tests exercise it yet.
     #[allow(dead_code)]
     pub fn session_id(&self) -> Option<&str> {
         match self {

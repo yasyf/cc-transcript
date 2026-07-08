@@ -48,7 +48,9 @@ struct ParsedFile {
 
 // Lines that are not valid JSON are skipped; a JSON line that fails the typed
 // parse (e.g. a missing required field) fails the whole file — whole-file
-// parity with PythonBackend.
+// parity with PythonBackend, which parses every line before filtering. The
+// drop-spec evaluates on the typed entry, so dropped lines are parsed but
+// never materialized into Python objects.
 fn parse_line(
     line: &[u8],
     lines: &mut Vec<Entry>,
@@ -58,8 +60,9 @@ fn parse_line(
         return Ok(());
     }
     if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
-        if filter.is_none_or(|spec| spec_keep(spec, &value)) {
-            lines.push(parse_entry(value)?);
+        let entry = parse_entry(value)?;
+        if filter.is_none_or(|spec| spec_keep(spec, &entry)) {
+            lines.push(entry);
         }
     }
     Ok(())

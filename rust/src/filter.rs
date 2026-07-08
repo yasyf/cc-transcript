@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::value::{content_text, field, field_bool, field_str, has_block_type};
+use crate::types::{joined_text, ContentBlock, Entry, EntryMeta};
+use crate::value::{field, field_bool, field_str};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -26,7 +27,7 @@ struct CompiledClause {
 
 enum CompiledPredicate {
     KindIs(Vec<Kind>),
-    MetaFlag(&'static str),
+    MetaFlag(fn(&EntryMeta) -> bool),
     EntrypointIn(HashSet<String>),
     ModelIs(HashSet<String>),
     TextEmpty { consider_tool_use: bool },
@@ -46,12 +47,12 @@ fn parse_kind(name: &str) -> Result<Kind, String> {
     }
 }
 
-fn meta_json_key(flag: &str) -> Result<&'static str, String> {
+fn meta_flag(flag: &str) -> Result<fn(&EntryMeta) -> bool, String> {
     match flag {
-        "is_sidechain" => Ok("isSidechain"),
-        "is_meta" => Ok("isMeta"),
-        "is_compact_summary" => Ok("isCompactSummary"),
-        "is_visible_in_transcript_only" => Ok("isVisibleInTranscriptOnly"),
+        "is_sidechain" => Ok(|meta| meta.is_sidechain),
+        "is_meta" => Ok(|meta| meta.is_meta),
+        "is_compact_summary" => Ok(|meta| meta.is_compact_summary),
+        "is_visible_in_transcript_only" => Ok(|meta| meta.is_visible_in_transcript_only),
         other => Err(format!("unknown meta flag: {other}")),
     }
 }
@@ -99,7 +100,7 @@ pub(crate) fn compile_group_array(groups: &sonic_rs::Array, ignore_case: bool) -
 fn compile_predicate(predicate: &Value) -> Result<CompiledPredicate, String> {
     match field_str(predicate, "kind").ok_or("predicate missing 'kind'")? {
         "KindIs" => Ok(CompiledPredicate::KindIs(kind_array(predicate, "kinds")?)),
-        "MetaFlag" => Ok(CompiledPredicate::MetaFlag(meta_json_key(
+        "MetaFlag" => Ok(CompiledPredicate::MetaFlag(meta_flag(
             field_str(predicate, "flag").ok_or("MetaFlag missing 'flag'")?,
         )?)),
         "EntrypointIn" => Ok(CompiledPredicate::EntrypointIn(str_set(predicate, "entrypoints"))),
@@ -144,27 +145,20 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledSpec, String> {
     Ok(CompiledSpec { clauses })
 }
 
-fn event_kind(data: &Value) -> Kind {
-    match field_str(data, "type") {
-        Some("user") => Kind::User,
-        Some("assistant") => Kind::Assistant,
-        Some("system") => Kind::System,
-        Some("mode") | Some("permission-mode") => Kind::Mode,
-        _ => Kind::Other,
+fn entry_kind(entry: &Entry) -> Kind {
+    match entry {
+        Entry::User(_) => Kind::User,
+        Entry::Assistant(_) => Kind::Assistant,
+        Entry::System(_) => Kind::System,
+        Entry::Mode(_) => Kind::Mode,
+        Entry::Other(_) => Kind::Other,
     }
 }
 
-fn message_content(data: &Value) -> Option<&Value> {
-    field(field(data, "message")?, "content")
-}
-
-fn message_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
-    field(data, "message").and_then(|message| field_str(message, key))
-}
-
-fn event_text(data: &Value, kind: Kind) -> String {
-    match kind {
-        Kind::User | Kind::Assistant => message_content(data).map(content_text).unwrap_or_default(),
+fn entry_text(entry: &Entry) -> String {
+    match entry {
+        Entry::User(user) => user.content.text(),
+        Entry::Assistant(assistant) => joined_text(&assistant.blocks),
         _ => String::new(),
     }
 }
@@ -176,18 +170,18 @@ pub(crate) fn normalize_bare(text: &str, strip_trailing: &str) -> String {
         .to_lowercase()
 }
 
-fn predicate_matches(predicate: &CompiledPredicate, data: &Value, kind: Kind, text: &str) -> bool {
+fn predicate_matches(predicate: &CompiledPredicate, entry: &Entry, kind: Kind, text: &str) -> bool {
     match predicate {
         CompiledPredicate::KindIs(kinds) => kinds.contains(&kind),
         CompiledPredicate::ModelIs(models) => {
-            kind == Kind::Assistant && message_str(data, "model").is_some_and(|m| models.contains(m))
+            matches!(entry, Entry::Assistant(assistant) if models.contains(&assistant.model))
         }
-        CompiledPredicate::TextEmpty { consider_tool_use } => match kind {
-            Kind::Assistant if *consider_tool_use => {
+        CompiledPredicate::TextEmpty { consider_tool_use } => match entry {
+            Entry::Assistant(assistant) if *consider_tool_use => {
                 text.trim().is_empty()
-                    && !message_content(data).is_some_and(|content| has_block_type(content, "tool_use"))
+                    && !assistant.blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse(_)))
             }
-            Kind::User | Kind::Assistant => text.trim().is_empty(),
+            Entry::User(_) | Entry::Assistant(_) => text.trim().is_empty(),
             _ => false,
         },
         CompiledPredicate::TextMatchesAny(re) => re.is_match(text),
@@ -195,34 +189,37 @@ fn predicate_matches(predicate: &CompiledPredicate, data: &Value, kind: Kind, te
             phrases.contains(&normalize_bare(text, strip_trailing))
         }
         CompiledPredicate::WordCountAtMost(n) => text.split_whitespace().count() <= *n,
-        CompiledPredicate::MetaFlag(json_key) => field_bool(data, json_key),
-        CompiledPredicate::EntrypointIn(set) => field_str(data, "entrypoint").is_some_and(|e| set.contains(e)),
+        CompiledPredicate::MetaFlag(flag) => entry.meta().is_some_and(flag),
+        CompiledPredicate::EntrypointIn(set) => entry
+            .meta()
+            .is_some_and(|meta| meta.entrypoint.as_deref().is_some_and(|e| set.contains(e))),
     }
 }
 
-fn clause_matches(clause: &CompiledClause, data: &Value, kind: Kind, text: &str) -> bool {
+fn clause_matches(clause: &CompiledClause, entry: &Entry, kind: Kind, text: &str) -> bool {
     if !clause.applies_to.is_empty() && !clause.applies_to.contains(&kind) {
         return false;
     }
-    predicate_matches(&clause.predicate, data, kind, text) != clause.negate
+    predicate_matches(&clause.predicate, entry, kind, text) != clause.negate
 }
 
-/// Returns whether ``data`` survives every ``DROP`` clause of ``spec``.
-pub fn spec_keep(spec: &CompiledSpec, data: &Value) -> bool {
-    let kind = event_kind(data);
-    let text = event_text(data, kind);
+/// Returns whether ``entry`` survives every ``DROP`` clause of ``spec``.
+pub fn spec_keep(spec: &CompiledSpec, entry: &Entry) -> bool {
+    let kind = entry_kind(entry);
+    let text = entry_text(entry);
     !spec
         .clauses
         .iter()
-        .any(|clause| clause_matches(clause, data, kind, &text))
+        .any(|clause| clause_matches(clause, entry, kind, &text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::parse_entry;
 
-    fn parse(raw: &str) -> Value {
-        sonic_rs::from_str(raw).unwrap()
+    fn parse(raw: &str) -> Entry {
+        parse_entry(sonic_rs::from_str(raw).unwrap()).unwrap()
     }
 
     fn pushback_spec() -> CompiledSpec {
@@ -238,7 +235,7 @@ mod tests {
         .unwrap()
     }
 
-    fn user(text: &str) -> Value {
+    fn user(text: &str) -> Entry {
         parse(&format!(
             r#"{{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{{"role":"user","content":{}}}}}"#,
             sonic_rs::to_string(&text).unwrap()
