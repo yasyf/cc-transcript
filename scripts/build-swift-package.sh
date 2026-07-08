@@ -56,7 +56,8 @@ cat > swift/Sources/CCTranscript/CCTranscript.swift <<'EOF'
 /// Probe a session transcript (JSONL) for whether the session is waiting on
 /// the human. Empty tool arrays mean the Rust-side defaults
 /// (`ActivityOpts::default()`). Throws a `RustString` describing an
-/// unreadable or malformed transcript.
+/// unreadable or malformed transcript, or an internal panic the bridge
+/// caught; it never aborts the process.
 public func sessionActivity(
     path: String,
     waitingTools: [String] = [],

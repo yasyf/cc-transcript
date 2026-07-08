@@ -8,6 +8,7 @@
 //! accessor methods instead of shared structs.
 
 use std::fs;
+use std::panic::{self, AssertUnwindSafe};
 
 use _parser_rs::activity::{self, ActivityOpts};
 use _parser_rs::parse::{self, ParseError};
@@ -91,24 +92,43 @@ impl PendingItem {
 
 /// Probe `path` (a session transcript, JSONL) for whether the session is
 /// waiting on the human. Empty tool lists mean [`ActivityOpts::default`].
+/// Panics below this boundary become `Err` rather than crossing the
+/// swift-bridge `extern "C"` glue, where rustc's abort-on-unwind shim would
+/// take down the consuming Swift process.
 pub fn session_activity(
     path: String,
     waiting_tools: Vec<String>,
     human_facing_tools: Vec<String>,
 ) -> Result<SessionActivity, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
-    let entries = parse::parse_bytes(&bytes, |_| true).map_err(|e| match e {
-        ParseError::Key(key) => format!("missing key '{key}'"),
-        ParseError::Value(msg) => msg,
-    })?;
-    let mut opts = ActivityOpts::default();
-    if !waiting_tools.is_empty() {
-        opts.waiting_tools = waiting_tools.into_iter().collect();
-    }
-    if !human_facing_tools.is_empty() {
-        opts.human_facing_tools = human_facing_tools.into_iter().collect();
-    }
-    Ok(SessionActivity(activity::session_activity(&entries, &opts)))
+    catch_panic(move || {
+        let bytes = fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+        let entries = parse::parse_bytes(&bytes, |_| true).map_err(|e| match e {
+            ParseError::Key(key) => format!("missing key '{key}'"),
+            ParseError::Value(msg) => msg,
+        })?;
+        let mut opts = ActivityOpts::default();
+        if !waiting_tools.is_empty() {
+            opts.waiting_tools = waiting_tools.into_iter().collect();
+        }
+        if !human_facing_tools.is_empty() {
+            opts.human_facing_tools = human_facing_tools.into_iter().collect();
+        }
+        Ok(SessionActivity(activity::session_activity(&entries, &opts)))
+    })
+}
+
+// The default panic hook still prints the panic to stderr before the payload
+// reaches us here; swapping the hook around the call would mutate
+// process-global state from a library, so the stderr line stays.
+fn catch_panic<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let msg = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic");
+        Err(format!("panic in session_activity: {msg}"))
+    })
 }
 
 #[cfg(test)]
@@ -170,5 +190,14 @@ mod tests {
         let err = session_activity("/nonexistent/transcript.jsonl".to_string(), vec![], vec![])
             .unwrap_err();
         assert!(err.starts_with("/nonexistent/transcript.jsonl: "), "{err}");
+    }
+
+    #[test]
+    fn panic_becomes_err() {
+        let err = catch_panic::<()>(|| panic!("boom {}", 42)).unwrap_err();
+        assert_eq!(err, "panic in session_activity: boom 42");
+
+        let err = catch_panic::<()>(|| panic!("static boom")).unwrap_err();
+        assert_eq!(err, "panic in session_activity: static boom");
     }
 }
