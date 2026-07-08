@@ -1,0 +1,5 @@
+module RustXcframework {
+    header "SwiftBridgeCore.h"
+    header "cc_transcript_swift.h"
+    export *
+}
