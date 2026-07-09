@@ -37,3 +37,6 @@ dirs = { version = "5", optional = true }
 # bash grammar), tree-sitter core 0.26 matches the wheel's tree-sitter 0.26.0.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-bash = { version = "0.25", optional = true }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

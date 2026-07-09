@@ -81,6 +81,7 @@ dependencies = [
  "num_cpus",
  "once_cell",
  "pyo3",
+ "pyo3-build-config",
  "rayon",
  "regex",
  "sonic-rs",
