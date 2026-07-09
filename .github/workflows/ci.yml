@@ -65,9 +65,9 @@ jobs:
       - name: Test bridge crate
         run: cargo test -p cc_transcript_swift
 
-      - name: Test Rust core (swift feature)
+      - name: Test Rust core (no default features)
         working-directory: rust
-        run: cargo test --no-default-features --features swift
+        run: cargo test --no-default-features
 
       - name: Test Swift package against the committed xcframework
         run: swift test --package-path swift

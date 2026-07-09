@@ -1,5 +1,5 @@
 //! swift-bridge surface over the session-activity oracle: reads a transcript
-//! file, parses it with the swift-feature core, and exposes the result as
+//! file, parses it with the python-free core, and exposes the result as
 //! opaque `SessionActivity` / `PendingItem` handles.
 //!
 //! swift-bridge 0.1.59 cannot bridge transparent structs holding

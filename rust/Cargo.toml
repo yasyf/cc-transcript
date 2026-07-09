@@ -20,7 +20,6 @@ python = [
     "dep:tree-sitter-bash",
 ]
 extension-module = ["python", "pyo3/extension-module"]
-swift = []
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"], optional = true }
