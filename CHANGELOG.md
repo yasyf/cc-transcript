@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.1.0] - 2026-07-09
+
+### Changed
+- **Delivery-aware oracle completion.** Completion is delivery-aware via the
+  `Notifications` queue replay: a pending async Agent/Task/Workflow counts as
+  completed only once its notification was delivered (user turn or
+  `queued_command` attachment) or drained from the queue — merely enqueued does
+  not clear the wait — and any queued-but-undelivered task notification keeps
+  `is_waiting` true on its own, resumed-session orphans included. Compact-summary
+  user lines do not open turns, so auto-compaction cannot retire a running
+  background task; this deliberately leads captain-hook, which still has the
+  compaction bug.
+
 ## [10.0.0] - 2026-07-09
 
 ### Changed (BREAKING)
@@ -29,14 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bridge crate and package freshness.
 - **Session-activity oracle.** A Rust session-activity oracle over the typed
   entry model, exposed as a dual-backend (Rust/Python) probe pinned by parity
-  tests. Completion is delivery-aware via the `Notifications` queue replay: a
-  pending async Agent/Task/Workflow counts as completed only once its
-  notification was delivered (user turn or `queued_command` attachment) or
-  drained from the queue — merely enqueued does not clear the wait — and any
-  queued-but-undelivered task notification keeps `is_waiting` true on its own,
-  resumed-session orphans included. Compact-summary user lines do not open
-  turns, so auto-compaction cannot retire a running background task; this
-  deliberately leads captain-hook, which still has the compaction bug.
+  tests.
 
 ### Fixed
 - `key_of`/`required_key` treat explicit JSON `null` as absent instead of
@@ -601,6 +607,7 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[10.1.0]: https://github.com/yasyf/cc-transcript/compare/v10.0.0...v10.1.0
 [0.9.0]: https://github.com/yasyf/cc-transcript/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yasyf/cc-transcript/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/yasyf/cc-transcript/compare/v0.7.0...v0.7.1
