@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.0.0] - 2026-07-09
+
+### Changed (BREAKING)
+- **Alias-aware tool-name matching in mining specs.** Mining specs now match
+  tool names through `matches_names` over `expand_tool_names`: a spec naming
+  `Task` also matches `Agent` and MCP-suffixed spellings, in both the Python
+  and Rust backends. Specs that relied on exact-string matching to target a
+  single alias now match its siblings, which can change mining results.
+
+### Added
+- **Platform contract layer** (`cc_transcript.ids`, `cc_transcript.tools`):
+  `SessionId`/`EventRef` identity, RFC 8785 canonical JSON and `tool_digest`
+  over the raw input substrate, and the typed `ToolCall` hierarchy —
+  first-class `MultiEdit` hunk lowering, alias + MCP name matching, and a
+  hook-runtime `on_error` degrade that keeps digests correct. `TaskCall`
+  carries `agent_type`, `model`, `run_in_background`, and `agent_name` — the
+  `name` a teammate spawn passes to the Agent tool, which is what lets a hook
+  tell a teammate start from a plain subagent start.
+- **CCTranscript Swift package.** A SwiftPM package over a swift-bridge crate
+  exposing the session-activity oracle: root `Package.swift` for git
+  consumers, value-type wrappers with no dangling bridged refs, panic-catching
+  at the bridge boundary, Sendable summaries, and a macOS CI job covering the
+  bridge crate and package freshness.
+- **Session-activity oracle.** A Rust session-activity oracle over the typed
+  entry model, exposed as a dual-backend (Rust/Python) probe pinned by parity
+  tests.
+
+### Fixed
+- `key_of`/`required_key` treat explicit JSON `null` as absent instead of
+  returning it.
+- Wild-data mode degrades non-mapping tool input instead of crashing the lift.
+- Typed calls validate required field types at the wild-data boundary, so
+  malformed wild data degrades instead of mistyping fields.
+
 ## [9.1.0] - 2026-07-07
 
 ### Added
