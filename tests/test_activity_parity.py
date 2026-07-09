@@ -237,6 +237,19 @@ CASES = [
         id="popall-drains-command-not-notification",
     ),
     pytest.param(
+        [
+            user("run the workflow"),
+            WORKFLOW,
+            tool_result("wf1"),
+            queue_op(notification("wf1")),
+            queue_op(notification("wf1"), operation="popAll"),
+        ],
+        False,
+        False,
+        (),
+        id="popall-drains-the-notification-completes",
+    ),
+    pytest.param(
         [user("hi"), queue_op(notification("tu_ghost"))],
         True,
         False,

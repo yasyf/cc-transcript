@@ -104,12 +104,20 @@ def session(*events: TranscriptEvent, user_classifier: UserClassifier = native_u
             id="dequeue-then-user-delivery-completes",
         ),
         pytest.param(
-            (enqueue(notif(TID)), remove(), attachment(notif(TID))),
+            (attachment(notif(TID)),),
             TID,
             True,
             False,
             False,
-            id="remove-then-queued-command-attachment-completes",
+            id="bare-attachment-delivery-completes",
+        ),
+        pytest.param(
+            (enqueue(notif(TID)), attachment(notif(TID))),
+            TID,
+            True,
+            True,
+            True,
+            id="queued-command-attachment-completes-while-still-queued",
         ),
         pytest.param(
             (OtherEvent(type="attachment", raw={"type": "attachment", "attachment": None}), enqueue(notif(TID))),

@@ -410,6 +410,32 @@ mod tests {
     }
 
     #[test]
+    fn popall_drains_the_notification_completes() {
+        let notif = notification("wf1");
+        let entries = vec![
+            user("run the workflow"),
+            tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
+            tool_result("wf1"),
+            queue_op(&notif),
+            queue_entry("popAll", &notif),
+        ];
+        let notifications = Notifications::from_entries(&entries);
+        assert!(
+            notifications.queued.is_empty(),
+            "popAll subtracts the notification itself out of the queue"
+        );
+        assert!(
+            notifications.completed("wf1"),
+            "an enqueued-then-drained notification counts as completed"
+        );
+        assert!(!notifications.has_pending());
+        let activity = activity(&entries);
+        assert!(!activity.is_waiting, "draining the notification closes the workflow's async wait");
+        assert!(!activity.mid_tool);
+        assert!(activity.pending.is_empty());
+    }
+
+    #[test]
     fn orphan_undelivered_notification_is_waiting() {
         let entries = vec![user("hi"), queue_op(&notification("tu_ghost"))];
         let activity = activity(&entries);
