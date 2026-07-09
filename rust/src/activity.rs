@@ -381,15 +381,32 @@ mod tests {
 
     #[test]
     fn popall_drains_command_but_not_notification() {
+        let notif = notification("wf1");
         let entries = vec![
             user("run the workflow"),
             tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
             tool_result("wf1"),
-            queue_op(&notification("wf1")),
+            queue_op(&notif),
             queue_op("run the tests please"),
             queue_entry("popAll", "run the tests please"),
         ];
-        assert!(activity(&entries).is_waiting);
+        let notifications = Notifications::from_entries(&entries);
+        assert_eq!(
+            notifications.queued,
+            vec![notif],
+            "popAll drains the matching command yet leaves the notification queued"
+        );
+        assert!(notifications.has_pending());
+        let activity = activity(&entries);
+        assert!(activity.is_waiting);
+        assert_eq!(
+            activity.pending,
+            [PendingItem {
+                tool_use_id: Some("wf1".to_string()),
+                name: "Workflow".to_string(),
+                kind: PendingKind::PendingAsyncWorkflow
+            }]
+        );
     }
 
     #[test]
@@ -407,11 +424,16 @@ mod tests {
             user("go"),
             tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
             result_entry("a1", false, true),
-            queue_op(&notification("a1")),
-            queue_entry("remove", ""),
             attachment(&notification("a1")),
         ];
-        assert!(!activity(&entries).is_waiting);
+        let activity = activity(&entries);
+        assert!(!activity.is_waiting, "the queued_command attachment alone closes the async task");
+        assert!(!activity.mid_tool);
+        assert!(activity.pending.is_empty());
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:07Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(activity.last_event_epoch, Some(expected));
     }
 
     #[test]
@@ -422,7 +444,14 @@ mod tests {
             result_entry("a1", false, true),
             user(&notification("a1")),
         ];
-        assert!(!activity(&entries).is_waiting);
+        let activity = activity(&entries);
+        assert!(!activity.is_waiting, "a user turn carrying the notification closes the async task");
+        assert!(!activity.mid_tool);
+        assert!(activity.pending.is_empty());
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:07Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(activity.last_event_epoch, Some(expected));
     }
 
     #[test]

@@ -244,14 +244,7 @@ CASES = [
         id="orphan-undelivered-notification-is-waiting",
     ),
     pytest.param(
-        [
-            user("go"),
-            TYPED_AGENT,
-            tool_result("a1", is_async=True),
-            queue_op(notification("a1")),
-            queue_op("", operation="remove"),
-            attachment(notification("a1")),
-        ],
+        [user("go"), TYPED_AGENT, tool_result("a1", is_async=True), attachment(notification("a1"))],
         False,
         False,
         (),
