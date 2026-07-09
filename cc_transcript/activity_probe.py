@@ -4,11 +4,14 @@
 to the Python reference. :func:`session_activity_probe` is the public dual-backend entry:
 it reads a ``.jsonl`` transcript, runs the oracle over its parsed events, and returns a
 :class:`SessionActivityProbe`; :func:`probe_events` is the Python reference the Rust probe
-stays identical to. The verdict spans ephemeral waits (waiting tools, backgrounded
-Agent/Task/Bash, subagentless Agent/Task) over the current turn plus pending async
-launches (async Agent/Task, live Workflow) session-wide, with completion read from
-queue-operation ``<tool-use-id>`` markers, and flags unanswered non-human-facing tool
-calls in the current turn as mid-tool.
+stays identical to. The verdict spans undelivered task notifications (the
+:class:`~cc_transcript.notifications.Notifications` queue replay), ephemeral waits
+(waiting tools, backgrounded Agent/Task/Bash, subagentless Agent/Task) over the current
+turn, and pending async launches (async Agent/Task, live Workflow) session-wide — a
+launch counts as completed only once its notification was delivered or drained, never
+when merely enqueued — and flags unanswered non-human-facing tool calls in the current
+turn as mid-tool. Compact-summary user lines do not open turns, deliberately leading
+captain-hook, which still lets compaction close the turn.
 """
 
 from __future__ import annotations
@@ -20,12 +23,12 @@ from typing import TYPE_CHECKING, Literal
 from cc_transcript.activity import native_user_classifier
 from cc_transcript.models import (
     AssistantEvent,
-    OtherEvent,
     SystemEvent,
     ToolResultBlock,
     ToolUseBlock,
     UserEvent,
 )
+from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse_events_from_bytes
 
 if TYPE_CHECKING:
@@ -81,11 +84,6 @@ class SessionActivityProbe:
     last_event_epoch: int | None
 
 
-def completed(completions: Sequence[str], tool_use_id: str) -> bool:
-    marker = f"<tool-use-id>{tool_use_id}</tool-use-id>"
-    return any(marker in content for content in completions)
-
-
 def ephemeral_wait(block: ToolUseBlock, waiting_tools: frozenset[str]) -> PendingKind | None:
     if block.name in waiting_tools:
         return "waiting_tool"
@@ -98,12 +96,12 @@ def ephemeral_wait(block: ToolUseBlock, waiting_tools: frozenset[str]) -> Pendin
 
 
 def pending_async(
-    block: ToolUseBlock, result: ToolResultBlock | None, completions: Sequence[str]
+    block: ToolUseBlock, result: ToolResultBlock | None, notifications: Notifications
 ) -> PendingKind | None:
     match block.name:
-        case "Agent" | "Task" if result is not None and result.is_async and not completed(completions, block.id):
+        case "Agent" | "Task" if result is not None and result.is_async and not notifications.completed(block.id):
             return "pending_async_task"
-        case "Workflow" if not completed(completions, block.id):
+        case "Workflow" if not notifications.completed(block.id):
             return "pending_async_workflow"
     return None
 
@@ -114,7 +112,11 @@ def probe_events(
     waiting_tools: frozenset[str] = DEFAULT_WAITING_TOOLS,
     human_facing_tools: frozenset[str] = DEFAULT_HUMAN_FACING_TOOLS,
 ) -> SessionActivityProbe:
-    """The Python reference oracle over parsed events, twin of the Rust probe."""
+    """The Python reference oracle over parsed events, twin of the Rust probe.
+
+    An undelivered task notification alone sets ``is_waiting`` with no pending
+    item — a resumed session's orphan has no launch to point at.
+    """
     results = {
         block.tool_use_id: block
         for event in events
@@ -122,22 +124,19 @@ def probe_events(
         for block in event.blocks
         if isinstance(block, ToolResultBlock)
     }
-    completions = [
-        content
-        for event in events
-        if isinstance(event, OtherEvent) and event.type == "queue-operation"
-        if isinstance(content := event.raw.get("content"), str)
-    ]
+    notifications = Notifications.from_events(events)
     turn_start = next(
         (
             index
             for index in reversed(range(len(events)))
-            if isinstance(event := events[index], UserEvent) and native_user_classifier(event)
+            if isinstance(event := events[index], UserEvent)
+            and native_user_classifier(event)
+            and not event.meta.is_compact_summary
         ),
         0,
     )
 
-    is_waiting = False
+    is_waiting = notifications.has_pending
     mid_tool = False
     pending: list[PendingItem] = []
     seen: set[str] = set()
@@ -152,7 +151,7 @@ def probe_events(
                 continue
             in_current_turn = index >= turn_start
             waiting_kind = (ephemeral_wait(block, waiting_tools) if in_current_turn else None) or pending_async(
-                block, result, completions
+                block, result, notifications
             )
             unmatched = in_current_turn and result is None and block.name not in human_facing_tools
             is_waiting = is_waiting or waiting_kind is not None

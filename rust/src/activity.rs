@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::{Entry, ToolResultBlock, ToolUseBlock, UserEntry};
-use crate::value::field_str;
+use crate::value::{field, field_str};
+
+const NOTIFICATION_MARKER: &str = "<task-notification>";
 
 pub struct ActivityOpts {
     pub waiting_tools: HashSet<String>,
@@ -59,9 +61,10 @@ pub struct SessionActivity {
 
 /// Whether a user entry opens a turn (activity.py ``native_user_classifier``):
 /// a real prompt — non-meta, non-sidechain, not an interruption marker, with
-/// non-blank text.
+/// non-blank text. Compact-summary exclusion deliberately leads captain-hook,
+/// which still lets compaction close the turn; convergence is a follow-up there.
 fn opens_turn(user: &UserEntry) -> bool {
-    !(user.meta.is_meta || user.meta.is_sidechain || user.interrupted())
+    !(user.meta.is_meta || user.meta.is_sidechain || user.meta.is_compact_summary || user.interrupted())
         && !user.content.text().trim().is_empty()
 }
 
@@ -90,51 +93,114 @@ fn ephemeral_wait(tool_use: &ToolUseBlock, waiting_tools: &HashSet<String>) -> O
 }
 
 /// conditions.py ``pending_async``: an async Agent/Task launch or a live
-/// Workflow with no completion notification yet.
+/// Workflow whose completion notification has not reached the agent.
 fn pending_async(
     tool_use: &ToolUseBlock,
     result: Option<&ToolResultBlock>,
-    completions: &[&str],
+    notifications: &Notifications,
 ) -> Option<PendingKind> {
     match tool_use.name.as_str() {
         "Agent" | "Task"
-            if result.is_some_and(|r| r.is_async) && !completed(completions, &tool_use.id) =>
+            if result.is_some_and(|r| r.is_async) && !notifications.completed(&tool_use.id) =>
         {
             Some(PendingKind::PendingAsyncTask)
         }
-        "Workflow" if !completed(completions, &tool_use.id) => Some(PendingKind::PendingAsyncWorkflow),
+        "Workflow" if !notifications.completed(&tool_use.id) => {
+            Some(PendingKind::PendingAsyncWorkflow)
+        }
         _ => None,
     }
 }
 
-fn completion_contents(entries: &[Entry]) -> Vec<&str> {
-    entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Other(other) if other.ty == "queue-operation" => field_str(&other.raw, "content"),
-            _ => None,
-        })
-        .collect()
+/// notifications.py ``Notifications``: the harness delivery queue replayed
+/// from the transcript's ``queue-operation`` audit records.
+struct Notifications {
+    queued: Vec<String>,
+    delivered: Vec<String>,
+    enqueued: Vec<String>,
 }
 
-fn completed(contents: &[&str], id: &str) -> bool {
-    let marker = format!("<tool-use-id>{id}</tool-use-id>");
-    contents.iter().any(|content| content.contains(&marker))
+impl Notifications {
+    fn from_entries(entries: &[Entry]) -> Self {
+        let mut queued: Vec<String> = Vec::new();
+        let mut delivered: Vec<String> = Vec::new();
+        let mut enqueued: Vec<String> = Vec::new();
+        for entry in entries {
+            if let Entry::Other(other) = entry {
+                if other.ty == "queue-operation" {
+                    match field_str(&other.raw, "operation") {
+                        Some("enqueue") => {
+                            let content =
+                                field_str(&other.raw, "content").unwrap_or_default().to_string();
+                            enqueued.push(content.clone());
+                            queued.push(content);
+                        }
+                        Some("dequeue" | "remove") if !queued.is_empty() => {
+                            queued.remove(0);
+                        }
+                        Some("popAll") => {
+                            let content = field_str(&other.raw, "content").unwrap_or_default();
+                            queued.retain(|item| !content.contains(item.as_str()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(text) = delivered_text(entry) {
+                delivered.push(text);
+            }
+        }
+        Self { queued, delivered, enqueued }
+    }
+
+    /// notifications.py ``Notifications.completed``: delivered, or enqueued at
+    /// some point yet no longer sitting undelivered in the queue.
+    fn completed(&self, tool_use_id: &str) -> bool {
+        let marker = format!("<tool-use-id>{tool_use_id}</tool-use-id>");
+        let holds = |texts: &[String]| texts.iter().any(|text| text.contains(&marker));
+        holds(&self.delivered) || (holds(&self.enqueued) && !holds(&self.queued))
+    }
+
+    /// notifications.py ``Notifications.has_pending``: any queued item is an
+    /// undelivered task notification.
+    fn has_pending(&self) -> bool {
+        self.queued.iter().any(|text| text.contains(NOTIFICATION_MARKER))
+    }
+}
+
+/// notifications.py ``delivered_text``: a user turn carrying a task
+/// notification, or a ``queued_command`` attachment replayed to the model.
+fn delivered_text(entry: &Entry) -> Option<String> {
+    match entry {
+        Entry::User(user) => {
+            let text = user.content.text();
+            text.contains(NOTIFICATION_MARKER).then_some(text)
+        }
+        Entry::Other(other) if other.ty == "attachment" => {
+            let attachment = field(&other.raw, "attachment")?;
+            (field_str(attachment, "type") == Some("queued_command"))
+                .then(|| field_str(attachment, "prompt").unwrap_or_default().to_string())
+        }
+        _ => None,
+    }
 }
 
 /// The session-activity oracle over parsed entries: captain-hook's
-/// ``is_waiting`` verdict over ephemeral waits and pending async launches,
-/// the mid-tool flag, and the contributing tool calls.
+/// ``is_waiting`` verdict (post-d2e07cc, minus its hook-side Stop-payload
+/// layer) over undelivered notifications, ephemeral waits, and pending async
+/// launches, plus the mid-tool flag and the contributing tool calls. An
+/// undelivered notification alone sets ``is_waiting`` with no pending item —
+/// a resumed session's orphan has no launch to point at.
 pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivity {
     let results: HashMap<&str, &ToolResultBlock> = entries
         .iter()
         .flat_map(Entry::tool_results)
         .map(|result| (result.tool_use_id.as_str(), result))
         .collect();
-    let completions = completion_contents(entries);
+    let notifications = Notifications::from_entries(entries);
     let turn_start = current_turn_start(entries);
 
-    let mut is_waiting = false;
+    let mut is_waiting = notifications.has_pending();
     let mut mid_tool = false;
     let mut pending: Vec<PendingItem> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
@@ -148,7 +214,7 @@ pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivi
             let waiting_kind = in_current_turn
                 .then(|| ephemeral_wait(tool_use, &opts.waiting_tools))
                 .flatten()
-                .or_else(|| pending_async(tool_use, result, &completions));
+                .or_else(|| pending_async(tool_use, result, &notifications));
             let unmatched = in_current_turn
                 && result.is_none()
                 && !opts.human_facing_tools.contains(&tool_use.name);
@@ -215,10 +281,25 @@ mod tests {
     }
 
     fn queue_op(content: &str) -> Entry {
+        queue_entry("enqueue", content)
+    }
+
+    fn queue_entry(operation: &str, content: &str) -> Entry {
         parse(&format!(
-            r#"{{"type":"queue-operation","operation":"enqueue","content":{}}}"#,
+            r#"{{"type":"queue-operation","operation":"{operation}","content":{}}}"#,
             sonic_rs::to_string(&content).unwrap()
         ))
+    }
+
+    fn attachment(prompt: &str) -> Entry {
+        parse(&format!(
+            r#"{{"type":"attachment","attachment":{{"type":"queued_command","prompt":{}}}}}"#,
+            sonic_rs::to_string(&prompt).unwrap()
+        ))
+    }
+
+    fn delivered_notification(id: &str) -> Vec<Entry> {
+        vec![queue_op(&notification(id)), queue_entry("dequeue", ""), user(&notification(id))]
     }
 
     fn notification(id: &str) -> String {
@@ -252,7 +333,20 @@ mod tests {
     }
 
     #[test]
-    fn workflow_completion_marker_clears_waiting() {
+    fn workflow_delivered_notification_clears_waiting() {
+        let mut entries = vec![
+            user("run the workflow"),
+            tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
+            tool_result("wf1"),
+        ];
+        entries.extend(delivered_notification("wf1"));
+        let activity = activity(&entries);
+        assert!(!activity.is_waiting);
+        assert!(activity.pending.is_empty());
+    }
+
+    #[test]
+    fn enqueued_undelivered_notification_keeps_waiting() {
         let entries = vec![
             user("run the workflow"),
             tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
@@ -260,8 +354,91 @@ mod tests {
             queue_op(&notification("wf1")),
         ];
         let activity = activity(&entries);
+        assert!(activity.is_waiting);
+        assert_eq!(
+            activity.pending,
+            [PendingItem {
+                tool_use_id: Some("wf1".to_string()),
+                name: "Workflow".to_string(),
+                kind: PendingKind::PendingAsyncWorkflow
+            }]
+        );
+    }
+
+    #[test]
+    fn removed_notification_counts_completed() {
+        let entries = vec![
+            user("run the workflow"),
+            tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
+            tool_result("wf1"),
+            queue_op(&notification("wf1")),
+            queue_entry("remove", ""),
+        ];
+        let activity = activity(&entries);
         assert!(!activity.is_waiting);
         assert!(activity.pending.is_empty());
+    }
+
+    #[test]
+    fn popall_drains_command_but_not_notification() {
+        let entries = vec![
+            user("run the workflow"),
+            tool_use("Workflow", "wf1", r#"{"script":"return 1"}"#),
+            tool_result("wf1"),
+            queue_op(&notification("wf1")),
+            queue_op("run the tests please"),
+            queue_entry("popAll", "run the tests please"),
+        ];
+        assert!(activity(&entries).is_waiting);
+    }
+
+    #[test]
+    fn orphan_undelivered_notification_is_waiting() {
+        let entries = vec![user("hi"), queue_op(&notification("tu_ghost"))];
+        let activity = activity(&entries);
+        assert!(activity.is_waiting, "a queued task notification holds the session on its own");
+        assert!(!activity.mid_tool);
+        assert!(activity.pending.is_empty());
+    }
+
+    #[test]
+    fn attachment_delivery_completes() {
+        let entries = vec![
+            user("go"),
+            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            result_entry("a1", false, true),
+            queue_op(&notification("a1")),
+            queue_entry("remove", ""),
+            attachment(&notification("a1")),
+        ];
+        assert!(!activity(&entries).is_waiting);
+    }
+
+    #[test]
+    fn plain_user_delivery_completes() {
+        let entries = vec![
+            user("go"),
+            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            result_entry("a1", false, true),
+            user(&notification("a1")),
+        ];
+        assert!(!activity(&entries).is_waiting);
+    }
+
+    #[test]
+    fn compact_summary_user_does_not_open_turn() {
+        let entries = vec![
+            user("build it"),
+            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_result("b1"),
+            user_with("compact recap", r#""isCompactSummary":true,"#),
+        ];
+        let activity = activity(&entries);
+        assert!(
+            activity.is_waiting,
+            "auto-compaction must not retire a running background task"
+        );
+        assert_eq!(activity.pending[0].kind, PendingKind::Background);
     }
 
     #[test]
@@ -349,14 +526,14 @@ mod tests {
     }
 
     #[test]
-    fn async_agent_completion_marker_clears_waiting() {
-        let entries = vec![
+    fn async_agent_delivered_notification_clears_waiting() {
+        let mut entries = vec![
             user("go"),
             tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
             result_entry("a1", false, true),
             user("while that runs, plan"),
-            queue_op(&notification("a1")),
         ];
+        entries.extend(delivered_notification("a1"));
         assert!(!activity(&entries).is_waiting);
     }
 

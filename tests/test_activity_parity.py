@@ -62,8 +62,12 @@ def tool_result(tool_id: str, *, is_error: bool = False, is_async: bool = False)
     }
 
 
-def queue_op(content: str) -> dict[str, Any]:
-    return {"type": "queue-operation", "operation": "enqueue", "content": content}
+def queue_op(content: str, operation: str = "enqueue") -> dict[str, Any]:
+    return {"type": "queue-operation", "operation": operation, "content": content}
+
+
+def attachment(prompt: str) -> dict[str, Any]:
+    return {"type": "attachment", "attachment": {"type": "queued_command", "prompt": prompt}}
 
 
 def notification(tool_id: str) -> str:
@@ -73,6 +77,12 @@ def notification(tool_id: str) -> str:
     )
 
 
+def delivered(tool_id: str) -> list[dict[str, Any]]:
+    """The real delivery lifecycle: enqueue, dequeue, then a user turn carrying the text."""
+    text = notification(tool_id)
+    return [queue_op(text), queue_op("", operation="dequeue"), user(text)]
+
+
 def write(tmp_path: Path, lines: list[dict[str, Any]]) -> Path:
     path = tmp_path / "session.jsonl"
     path.write_bytes(b"\n".join(orjson.dumps(line) for line in lines))
@@ -80,7 +90,17 @@ def write(tmp_path: Path, lines: list[dict[str, Any]]) -> Path:
 
 
 def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
-    """Import-free port of captain-hook conditions.py ``is_waiting`` over parsed events."""
+    """Independent re-derivation of captain-hook conditions.py ``is_waiting`` (post-d2e07cc).
+
+    Mirrors exactly: the ``has_pending`` notifications layer plus per-launch
+    ``pending_async`` with completion counted at delivery — a notification
+    delivered as a user turn or ``queued_command`` attachment, or drained from
+    the replayed FIFO, never merely enqueued (notifications.py ``Notifications``).
+    Deliberately omitted: the Stop-payload ``background_tasks``/``session_crons``
+    layer — hook-side data a transcript never carries. Deliberate divergence:
+    compact-summary user lines do not open turns here, leading captain-hook,
+    which still lets compaction close the turn.
+    """
     results = {
         block.tool_use_id: block
         for event in events
@@ -88,15 +108,32 @@ def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
         for block in event.blocks
         if isinstance(block, ToolResultBlock)
     }
-    contents = [
-        content
-        for event in events
-        if isinstance(event, OtherEvent) and event.type == "queue-operation"
-        if isinstance(content := event.raw.get("content"), str)
-    ]
+    queued: list[str] = []
+    enqueued: list[str] = []
+    delivered_texts: list[str] = []
+    for event in events:
+        if isinstance(event, OtherEvent) and event.type == "queue-operation":
+            match event.raw.get("operation"):
+                case "enqueue":
+                    enqueued.append(content := str(event.raw.get("content", "")))
+                    queued.append(content)
+                case "dequeue" | "remove" if queued:
+                    queued.pop(0)
+                case "popAll":
+                    content = str(event.raw.get("content", ""))
+                    queued = [item for item in queued if item not in content]
+        if isinstance(event, UserEvent) and "<task-notification>" in event.text:
+            delivered_texts.append(event.text)
+        elif isinstance(event, OtherEvent) and event.type == "attachment":
+            payload = event.raw.get("attachment") or {}
+            if payload.get("type") == "queued_command":
+                delivered_texts.append(str(payload.get("prompt", "")))
 
     def completed(tool_use_id: str) -> bool:
-        return any(f"<tool-use-id>{tool_use_id}</tool-use-id>" in content for content in contents)
+        marker = f"<tool-use-id>{tool_use_id}</tool-use-id>"
+        return any(marker in text for text in delivered_texts) or (
+            any(marker in text for text in enqueued) and not any(marker in text for text in queued)
+        )
 
     def ephemeral_wait(block: ToolUseBlock) -> bool:
         if block.name in WAITING_TOOLS:
@@ -132,13 +169,17 @@ def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
             index
             for index in reversed(range(len(events)))
             if isinstance(event := events[index], UserEvent)
-            and not (event.meta.is_meta or event.meta.is_sidechain or event.interrupted)
+            and not (
+                event.meta.is_meta or event.meta.is_sidechain or event.meta.is_compact_summary or event.interrupted
+            )
             and event.text.strip()
         ),
         0,
     )
-    return any(ephemeral_wait(block) for block in tool_calls(events[turn_start:])) or any(
-        pending_async(block) for block in tool_calls(events)
+    return (
+        any("<task-notification>" in text for text in queued)
+        or any(ephemeral_wait(block) for block in tool_calls(events[turn_start:]))
+        or any(pending_async(block) for block in tool_calls(events))
     )
 
 
@@ -155,11 +196,73 @@ CASES = [
         id="pending-workflow",
     ),
     pytest.param(
-        [user("run the workflow"), WORKFLOW, tool_result("wf1"), queue_op(notification("wf1"))],
+        [user("run the workflow"), WORKFLOW, tool_result("wf1"), *delivered("wf1")],
         False,
         False,
         (),
-        id="workflow-completion-marker-clears",
+        id="workflow-delivered-notification-clears",
+    ),
+    pytest.param(
+        [user("run the workflow"), WORKFLOW, tool_result("wf1"), queue_op(notification("wf1"))],
+        True,
+        False,
+        (PendingItem("wf1", "Workflow", "pending_async_workflow"),),
+        id="enqueued-undelivered-notification-still-waiting",
+    ),
+    pytest.param(
+        [
+            user("run the workflow"),
+            WORKFLOW,
+            tool_result("wf1"),
+            queue_op(notification("wf1")),
+            queue_op("", operation="remove"),
+        ],
+        False,
+        False,
+        (),
+        id="removed-notification-counts-completed",
+    ),
+    pytest.param(
+        [
+            user("run the workflow"),
+            WORKFLOW,
+            tool_result("wf1"),
+            queue_op(notification("wf1")),
+            queue_op("run the tests please"),
+            queue_op("run the tests please", operation="popAll"),
+        ],
+        True,
+        False,
+        (PendingItem("wf1", "Workflow", "pending_async_workflow"),),
+        id="popall-drains-command-not-notification",
+    ),
+    pytest.param(
+        [user("hi"), queue_op(notification("tu_ghost"))],
+        True,
+        False,
+        (),
+        id="orphan-undelivered-notification-is-waiting",
+    ),
+    pytest.param(
+        [
+            user("go"),
+            TYPED_AGENT,
+            tool_result("a1", is_async=True),
+            queue_op(notification("a1")),
+            queue_op("", operation="remove"),
+            attachment(notification("a1")),
+        ],
+        False,
+        False,
+        (),
+        id="attachment-delivery-completes",
+    ),
+    pytest.param(
+        [user("go"), TYPED_AGENT, tool_result("a1", is_async=True), user(notification("a1"))],
+        False,
+        False,
+        (),
+        id="plain-user-delivery-completes",
     ),
     pytest.param(
         [user("run the workflow"), WORKFLOW, tool_result("wf1"), queue_op(notification("wf_other"))],
@@ -223,12 +326,12 @@ CASES = [
             TYPED_AGENT,
             tool_result("a1", is_async=True),
             user("while that runs, plan"),
-            queue_op(notification("a1")),
+            *delivered("a1"),
         ],
         False,
         False,
         (),
-        id="async-agent-completion-marker-clears",
+        id="async-agent-delivered-notification-clears",
     ),
     pytest.param(
         [user("watch it"), tool_use("Monitor", "m1", {"until": "done"})],
@@ -275,10 +378,10 @@ CASES = [
     ),
     pytest.param(
         [user("build it"), BACKGROUND_BASH, tool_result("b1"), user("compact recap", isCompactSummary=True)],
+        True,
         False,
-        False,
-        (),
-        id="compact-summary-user-opens-turn",
+        (PendingItem("b1", "Bash", "background"),),
+        id="compact-summary-user-does-not-open-turn",
     ),
     pytest.param(
         [

@@ -18,13 +18,23 @@ final class SessionActivityTests: XCTestCase {
         )
     }
 
-    func testWorkflowCompletionMarkerClears() throws {
+    func testWorkflowDeliveredNotificationClears() throws {
         try assertVerdict(
-            fixture: "workflow-completion-marker-clears",
+            fixture: "workflow-delivered-notification-clears",
             isWaiting: false,
             midTool: false,
             lastEventEpoch: 1_767_323_047,
             pending: []
+        )
+    }
+
+    func testWorkflowEnqueuedUndeliveredNotificationKeepsWaiting() throws {
+        try assertVerdict(
+            fixture: "workflow-notification-enqueued-waits",
+            isWaiting: true,
+            midTool: false,
+            lastEventEpoch: 1_767_323_047,
+            pending: [Pending(toolUseId: "wf1", name: "Workflow", kind: "pending_async_workflow")]
         )
     }
 
