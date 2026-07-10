@@ -1,24 +1,11 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-// Raw CC-injected protocol strings (filterspec.py DENIAL_PREFIX / USER_SAID_MARKER /
-// USER_SAID_TRAILER) and the head-anchored interrupt pattern (filterspec.py
-// INTERRUPT_MARKER_GROUPS).
-pub const DENIAL_PREFIX: &str =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected";
-pub const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
-pub const USER_SAID_TRAILER: &str = "Note: The user's next message";
-pub const ANSWERED_PREFIX: &str = "Your questions have been answered: ";
-pub const ANSWERED_TRAILER: &str = ". You can now continue with these answers in mind.";
-const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
+use crate::generated::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
 
-// Agent-injected relay banners (filterspec.py AGENT_INJECTION_GROUPS): teammate-message
-// digests, scheduled-task banners, and foreign-agent headers. The alternation mirrors
-// compile_groups(AGENT_INJECTION_GROUPS): `(?:p1)|(?:p2)|(?:p3)`. Each alternative is
-// start-anchored (\A\s*), the trailing \b is an explicit follower class agreeing with
-// Python re across combining marks, and Reminder's "i" is ASCII-pinned via (?-i:[Ii]) so
-// dotted/dotless-I case folding stays in parity.
-const AGENT_INJECTION_PATTERN: &str = r"(?:\A\s*<(?:teammate-message|scheduled-task)(?:[\s/>]|$))|(?:\A\s*# Augment Agent(?:\s|$))|(?:\A\s*\[Role Rem(?-i:[Ii])nder(?:[\s:\]]|$))";
+pub use crate::generated::protocol::{
+    ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER,
+};
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern
 /// compiled case-insensitively, anchored at the start of the haystack with leading

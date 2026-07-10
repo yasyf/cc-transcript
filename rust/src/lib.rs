@@ -1,3 +1,5 @@
+mod generated;
+
 pub mod activity;
 pub mod parse;
 pub mod protocol;

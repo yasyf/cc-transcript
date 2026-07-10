@@ -183,6 +183,21 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 }
 
 #[pyfunction]
+fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    use crate::generated::protocol;
+
+    let dict = PyDict::new(py);
+    dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
+    dict.set_item("protocol.USER_SAID_MARKER", protocol::USER_SAID_MARKER)?;
+    dict.set_item("protocol.USER_SAID_TRAILER", protocol::USER_SAID_TRAILER)?;
+    dict.set_item("protocol.ANSWERED_PREFIX", protocol::ANSWERED_PREFIX)?;
+    dict.set_item("protocol.ANSWERED_TRAILER", protocol::ANSWERED_TRAILER)?;
+    dict.set_item("protocol.INTERRUPT_MARKER_PATTERN", protocol::INTERRUPT_MARKER_PATTERN)?;
+    dict.set_item("protocol.AGENT_INJECTION_PATTERN", protocol::AGENT_INJECTION_PATTERN)?;
+    Ok(dict)
+}
+
+#[pyfunction]
 fn score_short_circuit(spec_json: String, buckets: Vec<Vec<String>>) -> PyResult<Vec<Option<i64>>> {
     score::score_short_circuit(&spec_json, &buckets).map_err(PyValueError::new_err)
 }
@@ -252,6 +267,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;
+    m.add_function(wrap_pyfunction!(embedded_literals, m)?)?;
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
