@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::Value;
@@ -223,6 +223,18 @@ pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
         .flat_map(Entry::tool_uses)
         .map(|tu| (tu.id.as_str(), tu))
         .collect()
+}
+
+/// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
+/// segment of an ``mcp__<server>__<tool>`` name split on the first two ``__``.
+/// Alias closure happens Python-side (tools.py expand_tool_names); spec JSON
+/// arrives pre-expanded and the alias table never crosses the language boundary.
+pub(crate) fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
+    names.contains(actual)
+        || actual
+            .strip_prefix("mcp__")
+            .and_then(|rest| rest.split_once("__"))
+            .is_some_and(|(_, tool)| names.contains(tool))
 }
 
 /// The space-joined text of the ``Text`` blocks — the ``text`` field of the

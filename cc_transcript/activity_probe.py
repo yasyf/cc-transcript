@@ -10,8 +10,8 @@ stays identical to. The verdict spans undelivered task notifications (the
 turn, and pending async launches (async Agent/Task, live Workflow) session-wide — a
 launch counts as completed only once its notification was delivered or drained, never
 when merely enqueued — and flags unanswered non-human-facing tool calls in the current
-turn as mid-tool. Compact-summary user lines do not open turns, deliberately leading
-captain-hook, which still lets compaction close the turn.
+turn as mid-tool. Compact-summary user lines do not open turns, matching captain-hook,
+which consumes this probe since the 10.2.0 shared-classifier fix.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from cc_transcript.models import (
 )
 from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse_events_from_bytes
+from cc_transcript.tools import expand_tool_names, matches_names
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,6 +41,9 @@ if TYPE_CHECKING:
 
 DEFAULT_WAITING_TOOLS = frozenset({"Monitor", "ScheduleWakeup", "SendMessage", "TeamCreate"})
 DEFAULT_HUMAN_FACING_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
+
+BACKGROUND_TOOLS = expand_tool_names("Agent|Task|Bash")
+TASK_TOOLS = expand_tool_names("Agent|Task")
 
 PendingKind = Literal[
     "waiting_tool",
@@ -85,13 +89,12 @@ class SessionActivityProbe:
 
 
 def ephemeral_wait(block: ToolUseBlock, waiting_tools: frozenset[str]) -> PendingKind | None:
-    if block.name in waiting_tools:
+    if matches_names(block.name, waiting_tools):
         return "waiting_tool"
-    match block.name:
-        case "Agent" | "Task" | "Bash" if block.input.get("run_in_background") is True:
-            return "background"
-        case "Agent" | "Task" if not isinstance(block.input.get("subagent_type"), str):
-            return "subagentless_task"
+    if matches_names(block.name, BACKGROUND_TOOLS) and block.input.get("run_in_background") is True:
+        return "background"
+    if matches_names(block.name, TASK_TOOLS) and not isinstance(block.input.get("subagent_type"), str):
+        return "subagentless_task"
     return None
 
 

@@ -1,9 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::types::{Entry, ToolResultBlock, ToolUseBlock, UserEntry};
+use once_cell::sync::Lazy;
+
+use crate::types::{matches_names, Entry, ToolResultBlock, ToolUseBlock, UserEntry};
 use crate::value::{field, field_str};
 
 const NOTIFICATION_MARKER: &str = "<task-notification>";
+
+// tools.py expand_tool_names("Agent|Task|Bash") / ("Agent|Task"), pre-expanded
+// here because the alias table never crosses the language boundary.
+static BACKGROUND_TOOLS: Lazy<HashSet<String>> =
+    Lazy::new(|| HashSet::from(["Agent", "Task", "Bash", "Execute"].map(String::from)));
+static TASK_TOOLS: Lazy<HashSet<String>> =
+    Lazy::new(|| HashSet::from(["Agent", "Task"].map(String::from)));
 
 pub struct ActivityOpts {
     pub waiting_tools: HashSet<String>,
@@ -61,8 +70,8 @@ pub struct SessionActivity {
 
 /// Whether a user entry opens a turn (activity.py ``native_user_classifier``):
 /// a real prompt — non-meta, non-sidechain, not an interruption marker, with
-/// non-blank text. Compact-summary exclusion deliberately leads captain-hook,
-/// which still lets compaction close the turn; convergence is a follow-up there.
+/// non-blank text. Compact-summary exclusion matches captain-hook, which
+/// consumes this probe since the 10.2.0 shared-classifier fix.
 fn opens_turn(user: &UserEntry) -> bool {
     !(user.meta.is_meta || user.meta.is_sidechain || user.meta.is_compact_summary || user.interrupted())
         && !user.content.text().trim().is_empty()
@@ -78,18 +87,19 @@ fn current_turn_start(entries: &[Entry]) -> usize {
 }
 
 /// conditions.py ``ephemeral_wait``: a waiting tool, a backgrounded
-/// Agent/Task/Bash, or a subagentless Agent/Task.
+/// Agent/Task/Bash, or a subagentless Agent/Task — every name matched alias-
+/// and MCP-prefix-aware (tools.py matches_names).
 fn ephemeral_wait(tool_use: &ToolUseBlock, waiting_tools: &HashSet<String>) -> Option<PendingKind> {
-    if waiting_tools.contains(&tool_use.name) {
+    if matches_names(&tool_use.name, waiting_tools) {
         return Some(PendingKind::WaitingTool);
     }
-    match tool_use.name.as_str() {
-        "Agent" | "Task" | "Bash" if tool_use.run_in_background == Some(true) => {
-            Some(PendingKind::Background)
-        }
-        "Agent" | "Task" if tool_use.subagent_type.is_none() => Some(PendingKind::SubagentlessTask),
-        _ => None,
+    if matches_names(&tool_use.name, &BACKGROUND_TOOLS) && tool_use.run_in_background == Some(true) {
+        return Some(PendingKind::Background);
     }
+    if matches_names(&tool_use.name, &TASK_TOOLS) && tool_use.subagent_type.is_none() {
+        return Some(PendingKind::SubagentlessTask);
+    }
+    None
 }
 
 /// conditions.py ``pending_async``: an async Agent/Task launch or a live
@@ -546,6 +556,17 @@ mod tests {
     }
 
     #[test]
+    fn background_execute_alias_in_current_turn_is_waiting() {
+        let entries = vec![
+            user("build it"),
+            tool_use("Execute", "e1", r#"{"command":"make","run_in_background":true}"#),
+        ];
+        let activity = activity(&entries);
+        assert!(activity.is_waiting);
+        assert_eq!(activity.pending[0].kind, PendingKind::Background);
+    }
+
+    #[test]
     fn subagentless_agent_is_waiting() {
         let entries = vec![
             user("go"),
@@ -598,6 +619,17 @@ mod tests {
         let activity = activity(&entries);
         assert!(activity.is_waiting);
         assert!(activity.mid_tool, "an unmatched Monitor is also mid-tool");
+        assert_eq!(activity.pending[0].kind, PendingKind::WaitingTool);
+    }
+
+    #[test]
+    fn mcp_prefixed_waiting_tool_is_waiting() {
+        let entries = vec![
+            user("ping the pool"),
+            tool_use("mcp__pool__SendMessage", "s1", r#"{"text":"hi"}"#),
+        ];
+        let activity = activity(&entries);
+        assert!(activity.is_waiting);
         assert_eq!(activity.pending[0].kind, PendingKind::WaitingTool);
     }
 

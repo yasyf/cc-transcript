@@ -474,6 +474,32 @@ def test_custom_tool_sets_flow_through(tmp_path: Path) -> None:
 
 @requires_rust
 @rust_enabled
+def test_execute_alias_background_is_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backgrounded Execute (Bash's alias) classifies like a backgrounded Bash on both backends."""
+    path = write(
+        tmp_path, [user("build it"), tool_use("Execute", "e1", {"command": "make", "run_in_background": True})]
+    )
+    via_rust = session_activity_probe(path)
+    assert via_rust.is_waiting is True
+    assert via_rust.pending == (PendingItem("e1", "Execute", "background"),)
+    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
+    assert session_activity_probe(path) == via_rust
+
+
+@requires_rust
+@rust_enabled
+def test_mcp_prefixed_waiting_tool_is_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An mcp__<server>__ spelling of a configured waiting tool matches on both backends."""
+    path = write(tmp_path, [user("ping the pool"), tool_use("mcp__pool__SendMessage", "s1", {"text": "hi"})])
+    via_rust = session_activity_probe(path, waiting_tools=frozenset({"SendMessage"}))
+    assert via_rust.is_waiting is True
+    assert via_rust.pending == (PendingItem("s1", "mcp__pool__SendMessage", "waiting_tool"),)
+    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
+    assert session_activity_probe(path, waiting_tools=frozenset({"SendMessage"})) == via_rust
+
+
+@requires_rust
+@rust_enabled
 @pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_real_corpus_probe_parity(path: Path) -> None:
     probe = session_activity_probe(path)

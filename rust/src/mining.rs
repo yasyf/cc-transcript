@@ -13,7 +13,9 @@ use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
     DENIAL_PREFIX, INTERRUPT_MARKER_RE,
 };
-use crate::types::{tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry};
+use crate::types::{
+    matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry,
+};
 use crate::value::{field, field_bool, field_str};
 
 // Source kinds (mining/sourcekind.py).
@@ -476,18 +478,6 @@ impl Events {
             .find(|&i| self.entries[i].tool_uses().any(|tu| matches_names(&tu.name, &spec.edit_tools)))
             .map(|i| i as i64)
     }
-}
-
-/// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
-/// segment of an ``mcp__<server>__<tool>`` name split on the first two ``__``.
-/// Alias closure happens Python-side (tools.py expand_tool_names); the spec JSON
-/// arrives pre-expanded and the alias table never crosses the language boundary.
-fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
-    names.contains(actual)
-        || actual
-            .strip_prefix("mcp__")
-            .and_then(|rest| rest.split_once("__"))
-            .is_some_and(|(_, tool)| names.contains(tool))
 }
 
 // ── text-shape helpers (mining/signals.py) ───────────────────────────────────
