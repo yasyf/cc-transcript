@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.4.0] - 2026-07-10
+
+### Fixed
+- **The activity oracle matches tool names the way the platform layer does.**
+  Ephemeral-wait classification lowers aliases (an `Execute` background command
+  counts as backgrounded Bash), and the waiting-tool and human-facing checks
+  strip `mcp__<server>__` prefixes via `matches_names` — an MCP-wrapped
+  `SendMessage` matches a configured waiting tool, and an MCP-wrapped
+  `AskUserQuestion` classifies as human-facing instead of mid-tool. Both
+  backends move in lockstep, parity-pinned, restoring the typed-lowering
+  reference semantics captain-hook had before it delegated to the probe.
+
 ## [10.3.0] - 2026-07-10
 
 ### Fixed
@@ -638,6 +650,7 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[10.4.0]: https://github.com/yasyf/cc-transcript/compare/v10.3.0...v10.4.0
 [10.2.0]: https://github.com/yasyf/cc-transcript/compare/v10.1.0...v10.2.0
 [10.1.0]: https://github.com/yasyf/cc-transcript/compare/v10.0.0...v10.1.0
 [0.9.0]: https://github.com/yasyf/cc-transcript/compare/v0.8.0...v0.9.0
