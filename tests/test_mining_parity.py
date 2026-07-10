@@ -264,6 +264,14 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             ],
             SPEC,
         ),
+        "plan_reentry_after_ccx_mcp_edit": (
+            [
+                assistant("a1", tool_use("e1", "mcp__cc-context__ccx_code_edit", file_path="/x.py")),
+                plan_mode(),
+                user_text("u1", "the edit was wrong, reconsider the plan from scratch"),
+            ],
+            SPEC,
+        ),
         # Edit sits exactly REENTRY_LOOKBACK (40) events before the user re-entry:
         # last_edit_index scans range(user-1, user-40-1, -1), so distance 40 is included.
         "plan_reentry_lookback_at_boundary": (

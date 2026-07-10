@@ -49,6 +49,7 @@ from cc_transcript.mining.signals import (
     iter_review_comment_signals,
     iter_tool_denial_signals,
     iter_user_message_signals,
+    last_edit_index,
 )
 from cc_transcript.mining.spec import ProvenanceSpec, classify_provenance
 from cc_transcript.models import (
@@ -589,6 +590,25 @@ def test_iter_plan_reentry_signals_smoke() -> None:
     assert reentries[0].text == "reconsider the plan, this is wrong"
     assert reentries[0].lower_bound == 0
     assert reentries[0].signal == CandidateSignal(HIGH, ("reentry_after_edit", "substantive"))
+
+
+def test_last_edit_index_matches_ccx_mcp_edit_suffix() -> None:
+    events = [
+        assistant(
+            "a0",
+            "",
+            blocks=(
+                ToolUseBlock(
+                    id=ToolUseId("e1"),
+                    name="mcp__cc-context__ccx_code_edit",
+                    input={"file_path": "/x"},
+                ),
+            ),
+        ),
+        ModeEvent(session_id=SESSION, channel="mode", value="plan"),
+        user("u0", "reconsider the plan, this is wrong"),
+    ]
+    assert last_edit_index(events, 2, SPEC) == 0
 
 
 def test_iter_ask_user_question_signals_single_option_pick() -> None:

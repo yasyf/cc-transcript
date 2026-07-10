@@ -249,7 +249,13 @@ def test_file_path_of_covers_file_shaped_calls() -> None:
 
 
 def test_expand_tool_names_includes_both_alias_spellings() -> None:
-    assert expand_tool_names("Bash|Write") == frozenset({"Bash", "Execute", "Write", "Create"})
+    assert expand_tool_names("Bash|Write") == frozenset(
+        {"Bash", "Execute", "Write", "Create", "ccx_code_replace"}
+    )
+    assert expand_tool_names("Edit|Write") == frozenset(
+        {"Edit", "Write", "Create", "ccx_code_edit", "ccx_code_replace"}
+    )
+    assert expand_tool_names("Grep") == frozenset({"Grep"})
 
 
 @pytest.mark.parametrize(
@@ -262,6 +268,9 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
         ("mcp__github__Grep", "Bash", False),
         ("mcp__server", "server", False),
         ("Read", "Bash|Grep", False),
+        ("mcp__cc-context__ccx_code_edit", "Edit|Write|MultiEdit", True),
+        ("mcp__cc-context__ccx_code_replace", "Write", True),
+        ("mcp__cc-context__ccx_code_read", "Edit|Write|MultiEdit", False),
     ],
     ids=[
         "alias-forward",
@@ -271,6 +280,9 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
         "mcp-miss",
         "mcp-too-few-parts",
         "plain-miss",
+        "ccx-edit-aliases-edit-gate",
+        "ccx-replace-aliases-write",
+        "ccx-read-not-edit-gate",
     ],
 )
 def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
@@ -285,8 +297,22 @@ def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
         ("mcp__conductor__ExitPlanMode", frozenset({"ExitPlanMode"}), True),
         ("mcp__ExitPlanMode", frozenset({"ExitPlanMode"}), False),
         ("Execute", frozenset({"Bash"}), False),
+        ("mcp__cc-context__ccx_code_edit", frozenset({"Edit"}), True),
+        ("mcp__cc-context__ccx_code_replace", frozenset({"Write"}), True),
+        ("mcp__cc-context__ccx_code_read", frozenset({"Edit", "Write", "MultiEdit"}), False),
+        ("mcp__cc-context__ccx_code_grep", frozenset({"Edit", "Write", "MultiEdit"}), False),
     ],
-    ids=["exact", "pre-expanded-alias", "mcp-suffix", "mcp-too-few-parts", "no-alias-closure"],
+    ids=[
+        "exact",
+        "pre-expanded-alias",
+        "mcp-suffix",
+        "mcp-too-few-parts",
+        "no-alias-closure",
+        "ccx-edit-aliases-edit",
+        "ccx-replace-aliases-write",
+        "ccx-read-not-edit",
+        "ccx-grep-not-edit",
+    ],
 )
 def test_matches_names(actual: str, names: frozenset[str], expected: bool) -> None:
     assert matches_names(actual, names) is expected

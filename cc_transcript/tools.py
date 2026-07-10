@@ -32,6 +32,14 @@ TOOL_ALIASES: dict[str, str] = {
 
 TOOL_ALIASES_REVERSE: dict[str, str] = {v: k for k, v in TOOL_ALIASES.items()}
 
+# cc-context routes real file edits through MCP tools whose bare names match no
+# builtin edit gate; alias its write surface to the builtins those gates watch so
+# an edit through the MCP can't slip past a Tool("Edit"/"Write"/"MultiEdit") guard.
+MCP_TOOL_ALIASES: dict[str, str] = {
+    "ccx_code_edit": "Edit",
+    "ccx_code_replace": "Write",
+}
+
 READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query", "describe", "show", "find"})
 
 
@@ -482,28 +490,34 @@ def file_path_of(call: ToolCall) -> str | None:
 
 
 def expand_tool_names(spec: str) -> frozenset[str]:
-    """Expand a pipe-separated tool spec to include both alias spellings."""
-    return frozenset(
-        (base := set(spec.split("|")))
-        | {alias for n in base for alias in (TOOL_ALIASES.get(n), TOOL_ALIASES_REVERSE.get(n)) if alias}
-    )
+    """Expand a pipe-separated tool spec to include alias and MCP bare spellings."""
+    base = set(spec.split("|"))
+    expanded = base | {alias for n in base for alias in (TOOL_ALIASES.get(n), TOOL_ALIASES_REVERSE.get(n)) if alias}
+    return frozenset(expanded | {bare for bare, builtin in MCP_TOOL_ALIASES.items() if builtin in expanded})
 
 
 def matches_names(actual: str, names: Container[str]) -> bool:
     """Whether ``actual`` is one of ``names``, exactly or as an MCP tool suffix.
 
     True when ``actual`` is in ``names``, or when it splits as
-    ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` is in
-    ``names``. ``names`` is taken verbatim — no alias closure; pre-expand with
-    :func:`expand_tool_names` when aliases should match.
+    ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
+    :data:`MCP_TOOL_ALIASES` builtin equivalent — is in ``names``. That alias
+    closes the edit-gate bypass where cc-context's ``ccx_code_edit`` /
+    ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
+    gate would catch. Harness-rename aliases are not closed over — ``names`` is
+    taken verbatim; pre-expand with :func:`expand_tool_names` for those.
 
     Example:
         >>> matches_names("mcp__github__Grep", {"Grep"})
         True
+        >>> matches_names("mcp__cc-context__ccx_code_edit", {"Edit"})
+        True
         >>> matches_names("Execute", {"Bash"})
         False
     """
-    return actual in names or ((mp := mcp_parts(actual)) is not None and mp[1] in names)
+    return actual in names or (
+        (mp := mcp_parts(actual)) is not None and (mp[1] in names or MCP_TOOL_ALIASES.get(mp[1]) in names)
+    )
 
 
 def tool_name_matches(actual: str, spec: str) -> bool:

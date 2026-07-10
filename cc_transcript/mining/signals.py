@@ -132,7 +132,7 @@ def last_edit_index(events: Sequence[TranscriptEvent], index: int, spec: MiningS
             i
             for i in range(index - 1, max(index - spec.reentry_lookback, 0) - 1, -1)
             if isinstance(event := events[i], AssistantEvent)
-            if any(isinstance(b, ToolUseBlock) and b.name in spec.edit_tools for b in event.blocks)
+            if any(isinstance(b, ToolUseBlock) and matches_names(b.name, spec.edit_tools) for b in event.blocks)
         ),
         None,
     )

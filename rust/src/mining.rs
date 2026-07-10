@@ -473,7 +473,7 @@ impl Events {
         let lo = index.saturating_sub(spec.reentry_lookback);
         (lo..index)
             .rev()
-            .find(|&i| self.entries[i].tool_uses().any(|tu| spec.edit_tools.contains(&tu.name)))
+            .find(|&i| self.entries[i].tool_uses().any(|tu| matches_names(&tu.name, &spec.edit_tools)))
             .map(|i| i as i64)
     }
 }
@@ -1316,6 +1316,10 @@ mod tests {
         assert!(matches_names("mcp__conductor__ExitPlanMode", &names));
         assert!(!matches_names("mcp__ExitPlanMode", &names));
         assert!(!matches_names("AskUserQuestion", &names));
+
+        let edit_names: HashSet<String> = ["Edit".to_string(), "ccx_code_edit".to_string()].into();
+        assert!(matches_names("mcp__cc-context__ccx_code_edit", &edit_names));
+        assert!(!matches_names("mcp__cc-context__ccx_code_read", &edit_names));
     }
 
     #[test]
