@@ -11,7 +11,8 @@ disqualification rules, their review formats), capture each candidate's durable
 :class:`~cc_transcript.context.ContextWindow` via
 :func:`~cc_transcript.context.capture_window`, and persist them through
 :class:`FeedbackStore`. LLM verdict passes over the stored corpus live in
-:mod:`cc_transcript.judge`.
+:mod:`cc_transcript.judge`; deterministic "did not steer here" negatives come
+from :func:`sample_windows`.
 
 The :class:`MiningSpec` is the mining analogue of :class:`~cc_transcript.FilterSpec`
 and :class:`~cc_transcript.sentiment.ScoreSpec`: a frozen-dataclass tree with a JSON

@@ -44,7 +44,7 @@ sections:
     navbar_after: Getting Started
     index: true
 
-# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats/slice/digest).
+# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats/slice/digest/watch).
 cli:
   enabled: true
   module: cc_transcript.cli
@@ -220,6 +220,14 @@ reference:
       - TranscriptExpiredError
       - CLAUDE_PROJECTS_DIR
       - FileStateStore
+  - title: Watch
+    desc: Live transcript tailing — byte-offset polling that yields each appended event exactly once.
+    contents:
+      - watch.watch
+      - watch.tick
+      - watch.WatchEvent
+      - watch.TailState
+      - watch.TailCursor
   - title: Backends
     desc: One Backend protocol; a Rust fast path and a Python reference at parity.
     contents:
@@ -367,6 +375,7 @@ reference:
       - mining.extract_structured
       - mining.FeedbackStore
       - mining.Stats
+      - mining.sample_windows
   - title: Judge
     desc: LLM verdict passes over the mined corpus — structured judging, audits, and eval math.
     contents:
