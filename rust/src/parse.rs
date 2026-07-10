@@ -265,9 +265,10 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
     Ok(Entry::Other(OtherEntry { ty, raw: data }))
 }
 
-// Lines that are not valid JSON are skipped; a JSON line that fails the typed
-// parse (e.g. a missing required field) fails the whole file — whole-file
-// parity with PythonBackend, which parses every line before filtering.
+// Non-JSON lines and valid-JSON lines that are not objects (bare scalars or
+// arrays) are skipped; a JSON object that fails the typed parse (e.g. a missing
+// required field) fails the whole file — whole-file parity with PythonBackend,
+// which decodes every line, skips non-objects, then parses the rest.
 fn parse_line<F: Fn(&Entry) -> bool>(
     line: &[u8],
     lines: &mut Vec<Entry>,
@@ -277,6 +278,9 @@ fn parse_line<F: Fn(&Entry) -> bool>(
         return Ok(());
     }
     if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
+        if !value.is_object() {
+            return Ok(());
+        }
         let entry = parse_entry(value)?;
         if keep(&entry) {
             lines.push(entry);
@@ -612,6 +616,15 @@ mod tests {
         };
         assert_eq!(other.ty, "queue-operation");
         assert_eq!(other.raw, parse(raw));
+    }
+
+    #[test]
+    fn parse_bytes_skips_valid_json_non_object_lines() {
+        let real = format!(r#"{{"type":"user",{META},"message":{{"content":"hi"}}}}"#);
+        let bytes = format!("{real}\n42\n\"bare\"\n[1,2,3]\n{real}");
+        let entries = parse_bytes(bytes.as_bytes(), |_| true).unwrap();
+        assert_eq!(entries.len(), 2, "bare scalar and array lines are skipped");
+        assert!(entries.iter().all(|e| matches!(e, Entry::User(_))));
     }
 
     #[test]

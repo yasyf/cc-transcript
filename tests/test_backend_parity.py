@@ -184,6 +184,11 @@ def fixture_bytes() -> bytes:
     )
 
 
+def bare_nonobject_fixture_bytes() -> bytes:
+    real = orjson.dumps(fixture_entries()[0])
+    return b"\n".join([real, b"42", b'"a bare string"', b"[1, 2, 3]", real])
+
+
 def real_corpus() -> list[Path]:
     if not CLAUDE_PROJECTS_DIR.exists():
         return []
@@ -219,6 +224,15 @@ def test_fixture_corpus_parity(tmp_path: Path) -> None:
     path.write_bytes(fixture_bytes())
     expected = parse_events_from_bytes(path.read_bytes())
     assert len(expected) == len(fixture_entries()) + 1
+    assert_parity(path)
+
+
+@requires_rust
+def test_bare_nonobject_lines_skipped_with_parity(tmp_path: Path) -> None:
+    path = tmp_path / "scalars.jsonl"
+    path.write_bytes(bare_nonobject_fixture_bytes())
+    expected = parse_events_from_bytes(path.read_bytes())
+    assert len(expected) == 2, "bare scalar and array lines are skipped, two real events remain"
     assert_parity(path)
 
 
