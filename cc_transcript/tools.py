@@ -90,7 +90,7 @@ class EditSpan:
     def from_raw(cls, span: object) -> Self:
         match span:
             case {"old_string": str() as old, "new_string": str() as new}:
-                return cls(old, new, span.get("replace_all", False))
+                return cls(old, new, bool(span.get("replace_all", False)))
             case _:
                 raise TypeError(f"edit span missing or malformed: {span!r}")
 
@@ -408,7 +408,7 @@ ToolCall = (
     | OtherCall
 )
 
-TOOL_TYPES: dict[str, type[ToolCallBase]] = {
+TOOL_TYPES: dict[str, type[ToolCall]] = {
     "Bash": BashCall,
     "Edit": EditCall,
     "MultiEdit": MultiEditCall,

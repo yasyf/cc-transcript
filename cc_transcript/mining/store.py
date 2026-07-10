@@ -150,9 +150,11 @@ class FeedbackStore:
         by_source_cur = await conn.execute(
             "SELECT source_kind, COUNT(*) AS n FROM feedback_events GROUP BY source_kind ORDER BY source_kind"
         )
+        total_row, files_row = await total_cur.fetchone(), await files_cur.fetchone()
+        assert total_row is not None and files_row is not None, "COUNT(*) always returns one row"
         return Stats(
-            total=(await total_cur.fetchone())["n"],
-            files=(await files_cur.fetchone())["n"],
+            total=total_row["n"],
+            files=files_row["n"],
             by_source={row["source_kind"]: row["n"] async for row in by_source_cur},
         )
 

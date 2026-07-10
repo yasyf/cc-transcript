@@ -188,7 +188,9 @@ async def embed_evidence(store: FileStateStore, *, dedup_key: DedupKey, canonica
     await prepare_connection(store)
     async with store.lock:
         cursor = await store.conn.execute("SELECT text FROM feedback_events WHERE dedup_key = ?", (dedup_key,))
-        text = (await cursor.fetchone())["text"]
+        row = await cursor.fetchone()
+    assert row is not None, "verdict dedup keys always resolve to a stored feedback event"
+    text = row["text"]
     embedder = await anyio.to_thread.run_sync(default_embedder)
     vector = await anyio.to_thread.run_sync(embedder, f"{text}\n{summary}")
     return Evidence(serialize_vector(vector), text, canonical_key)

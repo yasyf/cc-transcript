@@ -95,6 +95,7 @@ def fact_of(use: ToolUse, session_id: SessionId, path: Path, prefixes: tuple[str
     call = use.call
     server, tool, access = mcp_split(call.name)
     denied, user_said = denial_fields(use.result)
+    assert use.ref.tool_use_id is not None, "ToolUse refs always carry the tool-use id"
     return ToolFact(
         ts=use.ts,
         session_id=session_id,
