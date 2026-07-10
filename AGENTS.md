@@ -1,4 +1,4 @@
-<!-- cc-guides 0.1.8 src=AGENTS.src.md | GENERATED — do not edit: change AGENTS.src.md and run 'cc-guides render'. Everything below is in force. -->
+<!-- cc-guides 0.1.11 src=.claude/fragments/AGENTS.md fragments=cc-skills@a91b043bdbd2 | GENERATED — do not edit: edit .claude/fragments/AGENTS.md/ and run 'cc-guides render'. Everything below is in force. -->
 # cc-transcript Development Guide
 
 Typed events for Claude Code transcripts: discovery, a superset JSONL parser — a Rust fast path and a Python reference behind one `Backend` protocol — session-activity queries, durable context windows, mining/judging/sentiment domain tiers, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
