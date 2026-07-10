@@ -4,22 +4,12 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use tree_sitter::{Node, Parser};
 
-// Parity: command.py WRAPPER_COMMANDS
-const WRAPPER_COMMANDS: &[&str] = &[
-    "sudo", "env", "time", "timeout", "nice", "nohup", "doas", "command", "exec", "xargs",
-];
+use crate::generated::command::{
+    ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS,
+};
 
-// Parity: command.py MULTI_LEVEL_TOOLS
-const MULTI_LEVEL_TOOLS: &[&str] = &[
-    "git", "gh", "uv", "uvx", "npx", "docker", "jj", "go", "cargo", "npm", "pnpm", "yarn",
-    "kubectl", "pip", "brew", "aws", "gcloud", "terraform",
-];
-
-// Parity: command.py COMPOUND_OPS
-const COMPOUND_OPS: &[&str] = &["&&", "||", ";", "|", "&"];
-
-// Parity: command.py ASSIGNMENT_RE
-static ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\w+=").expect("assignment regex"));
+static ASSIGNMENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(ASSIGNMENT_PATTERN).expect("assignment regex"));
 
 thread_local! {
     static BASH_PARSER: RefCell<Parser> = RefCell::new({

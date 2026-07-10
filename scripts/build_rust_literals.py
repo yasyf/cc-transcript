@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
 from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     ANSWERED_PREFIX,
@@ -88,6 +89,20 @@ def float_const(name: str, value: float) -> str:
     return f"pub const {name}: f64 = {value!r};"
 
 
+def str_slice_const(name: str, values: frozenset[str]) -> str:
+    # rustfmt: one line if it fits, else a single block-indented line, else one item per
+    # line — it never packs multiple items onto a continuation line.
+    items = [rust_str(value) for value in sorted(values)]
+    if len(one_line := f"pub const {name}: &[&str] = &[{', '.join(items)}];") <= MAX_WIDTH:
+        return one_line
+    body = (
+        f"    {inner},"
+        if 5 + len(inner := ", ".join(items)) <= MAX_WIDTH
+        else "\n".join(f"    {item}," for item in items)
+    )
+    return f"pub const {name}: &[&str] = &[\n{body}\n];"
+
+
 def protocol_rs() -> str:
     consts = (
         ("DENIAL_PREFIX", DENIAL_PREFIX),
@@ -133,13 +148,30 @@ def mining_rs() -> str:
     )
 
 
+def command_rs() -> str:
+    return (
+        "\n".join(
+            (
+                HEADER,
+                "",
+                str_slice_const("WRAPPER_COMMANDS", WRAPPER_COMMANDS),
+                str_slice_const("MULTI_LEVEL_TOOLS", MULTI_LEVEL_TOOLS),
+                str_slice_const("COMPOUND_OPS", COMPOUND_OPS),
+                const("ASSIGNMENT_PATTERN", ASSIGNMENT_RE.pattern),
+            )
+        )
+        + "\n"
+    )
+
+
 def mod_rs() -> str:
-    return "\n".join((HEADER, "", "pub mod mining;", "pub mod protocol;")) + "\n"
+    return "\n".join((HEADER, "", "pub mod command;", "pub mod mining;", "pub mod protocol;")) + "\n"
 
 
 def render() -> dict[str, str]:
     return {
         "rust/src/generated/mod.rs": mod_rs(),
+        "rust/src/generated/command.rs": command_rs(),
         "rust/src/generated/mining.rs": mining_rs(),
         "rust/src/generated/protocol.rs": protocol_rs(),
     }

@@ -184,7 +184,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 
 #[pyfunction]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    use crate::generated::{mining, protocol};
+    use crate::generated::{command, mining, protocol};
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
@@ -211,6 +211,10 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("mining.NO_OPTION_SELECTED", mining::NO_OPTION_SELECTED)?;
     dict.set_item("mining.NONE", mining::NONE)?;
     dict.set_item("mining.LOW", mining::LOW)?;
+    dict.set_item("command.WRAPPER_COMMANDS", command::WRAPPER_COMMANDS)?;
+    dict.set_item("command.MULTI_LEVEL_TOOLS", command::MULTI_LEVEL_TOOLS)?;
+    dict.set_item("command.COMPOUND_OPS", command::COMPOUND_OPS)?;
+    dict.set_item("command.ASSIGNMENT_PATTERN", command::ASSIGNMENT_PATTERN)?;
     Ok(dict)
 }
 

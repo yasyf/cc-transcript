@@ -13,6 +13,7 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
 from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     ANSWERED_PREFIX,
@@ -83,6 +84,10 @@ def test_embedded_literals_match_python_source() -> None:
         "mining.NO_OPTION_SELECTED": NO_OPTION_SELECTED,
         "mining.NONE": NONE,
         "mining.LOW": LOW,
+        "command.WRAPPER_COMMANDS": sorted(WRAPPER_COMMANDS),
+        "command.MULTI_LEVEL_TOOLS": sorted(MULTI_LEVEL_TOOLS),
+        "command.COMPOUND_OPS": sorted(COMPOUND_OPS),
+        "command.ASSIGNMENT_PATTERN": ASSIGNMENT_RE.pattern,
     }
 
 
