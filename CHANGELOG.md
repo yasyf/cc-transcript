@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.5.0] - 2026-07-10
+
+### Added
+- **`UserEvent.is_agent_injected`.** A parse-time boolean flagging agent-injected
+  relay banners — teammate-message digests, scheduled-task banners, and
+  foreign-agent headers — computed from the `AGENT_INJECTION_GROUPS` regexes via
+  the new `is_agent_injection` helper (search semantics, matching the
+  `agent_injection` junk group). Both backends set the field in lockstep: the
+  Rust parser mirrors the group alternation in `protocol.rs`, and the parse-time
+  value plus the oracle behavior are pinned by the backend- and activity-parity
+  suites.
+
+### Fixed
+- **Agent-injected relay banners no longer open turns.** A banner folded into a
+  turn stops resetting turn segmentation in `SessionActivity` and stops opening a
+  turn in the `is_waiting` oracle — the Python `probe_events` twin and the Rust
+  `opens_turn` alike, so exact three-way parity holds. This is a deliberate
+  oracle-semantics change: an injected banner arriving after a pending tool no
+  longer closes the pending-tool waiting window, so a session mid-background-task
+  stays `is_waiting` through a relay banner instead of being falsely retired.
+
 ## [10.4.0] - 2026-07-10
 
 ### Fixed
@@ -650,6 +671,7 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[10.5.0]: https://github.com/yasyf/cc-transcript/compare/v10.4.0...v10.5.0
 [10.4.0]: https://github.com/yasyf/cc-transcript/compare/v10.3.0...v10.4.0
 [10.3.0]: https://github.com/yasyf/cc-transcript/compare/v10.2.0...v10.3.0
 [10.2.0]: https://github.com/yasyf/cc-transcript/compare/v10.1.0...v10.2.0
