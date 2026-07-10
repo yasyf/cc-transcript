@@ -3,3 +3,6 @@ fragments = [
   "cc-skills:ccx",
   "ownership-layering",
 ]
+
+[sources.cc-skills]
+source = "github:yasyf/cc-skills@main"
