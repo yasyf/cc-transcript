@@ -8,7 +8,7 @@ use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::filter::compile_group_array;
-use crate::parse::{parse_entry, ParseError};
+use crate::parse::{parse_bytes, ParseError};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
     DENIAL_PREFIX, INTERRUPT_MARKER_RE,
@@ -434,13 +434,7 @@ impl Events {
     /// non-object values (parser.py decode_line) so event indices agree with the
     /// Python reference; a malformed entry fails the mine, as in the reference.
     fn parse(raw: &[u8]) -> Result<Self, ParseError> {
-        let entries = raw
-            .split(|&b| b == b'\n')
-            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-            .filter_map(|line| sonic_rs::from_slice::<Value>(line).ok())
-            .filter(|value| value.is_object())
-            .map(parse_entry)
-            .collect::<Result<Vec<_>, _>>()?;
+        let entries = parse_bytes(raw, |_| true)?;
         let texts = entries
             .iter()
             .map(|entry| match entry {
