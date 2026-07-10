@@ -34,7 +34,9 @@ SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 PLAN_FILE = "/Users/x/.claude/plans/p.md"
 
 
-def meta(uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False) -> EntryMeta:
+def meta(
+    uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False, is_compact_summary: bool = False
+) -> EntryMeta:
     return EntryMeta(
         uuid=EventUuid(uuid),
         parent_uuid=None,
@@ -46,7 +48,7 @@ def meta(uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool 
         is_sidechain=is_sidechain,
         is_meta=is_meta,
         entrypoint="cli",
-        is_compact_summary=False,
+        is_compact_summary=is_compact_summary,
         is_visible_in_transcript_only=False,
     )
 
@@ -58,8 +60,14 @@ def user(
     blocks: tuple[ContentBlock, ...] = (),
     secs: int = 0,
     is_meta: bool = False,
+    is_compact_summary: bool = False,
 ) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs, is_meta=is_meta), text=text, blocks=blocks, interrupted=False)
+    return UserEvent(
+        meta=meta(uuid, secs=secs, is_meta=is_meta, is_compact_summary=is_compact_summary),
+        text=text,
+        blocks=blocks,
+        interrupted=False,
+    )
 
 
 def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
@@ -245,6 +253,17 @@ def test_current_turn_and_user_text() -> None:
     assert turn_view.user_text == "tweak it"
     assert [use.call.name for use in turn_view.tool_calls] == ["Write"]
     assert session().user_text == ""
+
+
+def test_compact_summary_last_user_folds_into_current_turn() -> None:
+    sess = session(
+        user("u0", "real ask"),
+        assistant("a0", "working", secs=1),
+        user("u1", "compact recap", is_compact_summary=True, secs=2),
+    )
+    assert len(sess.turns) == 1
+    assert sess.user_text == "real ask"
+    assert sess.current_turn.user_text == "real ask"
 
 
 def test_first_prompt_skips_the_preamble_turn() -> None:
@@ -538,9 +557,7 @@ def write_main_transcript(root: Path) -> Path:
     path.parent.mkdir(parents=True)
     lines = [
         user_line("u0", 0, "run the tests"),
-        assistant_line(
-            "a0", 1, [tool_block("t9", "Task", prompt="run tests", subagent_type="test-runner")]
-        ),
+        assistant_line("a0", 1, [tool_block("t9", "Task", prompt="run tests", subagent_type="test-runner")]),
         user_line("u1", 2, [result_block("t9", "done")]),
         assistant_line("a1", 3, [tool_block("t10", "Task", prompt="scout", subagent_type="explorer")]),
         user_line("u2", 4, [result_block("t10", "crashed", is_error=True)]),
@@ -556,9 +573,7 @@ def write_subagent_transcripts(main: Path) -> None:
         "\n".join(
             [
                 user_line("s0", 1, "run tests", isSidechain=True),
-                assistant_line(
-                    "s1", 2, [tool_block("b1", "Bash", command="uv run pytest")], isSidechain=True
-                ),
+                assistant_line("s1", 2, [tool_block("b1", "Bash", command="uv run pytest")], isSidechain=True),
                 user_line("s2", 3, [result_block("b1", "1 failed", is_error=True)], isSidechain=True),
                 assistant_line(
                     "s3", 4, [tool_block("b2", "Bash", command="uv run pytest -k failing")], isSidechain=True

@@ -39,10 +39,12 @@ UserClassifier = Callable[["UserEvent"], bool]
 def native_user_classifier(event: UserEvent) -> bool:
     """Whether a user event is a real prompt under native Claude Code semantics.
 
-    A prompt is non-meta, non-sidechain, not an interruption marker, and not
-    tool-result-only — it must carry real text.
+    A prompt is non-meta, non-sidechain, not a compact summary, not an
+    interruption marker, and not tool-result-only — it must carry real text.
     """
-    return not (event.meta.is_meta or event.meta.is_sidechain or event.interrupted) and bool(event.text.strip())
+    return not (
+        event.meta.is_meta or event.meta.is_sidechain or event.meta.is_compact_summary or event.interrupted
+    ) and bool(event.text.strip())
 
 
 @dataclass(frozen=True, slots=True)

@@ -129,9 +129,7 @@ def probe_events(
         (
             index
             for index in reversed(range(len(events)))
-            if isinstance(event := events[index], UserEvent)
-            and native_user_classifier(event)
-            and not event.meta.is_compact_summary
+            if isinstance(event := events[index], UserEvent) and native_user_classifier(event)
         ),
         0,
     )

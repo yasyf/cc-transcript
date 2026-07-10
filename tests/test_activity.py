@@ -32,7 +32,9 @@ BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 
 
-def meta(uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False) -> EntryMeta:
+def meta(
+    uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False, is_compact_summary: bool = False
+) -> EntryMeta:
     return EntryMeta(
         uuid=EventUuid(uuid),
         parent_uuid=None,
@@ -44,7 +46,7 @@ def meta(uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool 
         is_sidechain=is_sidechain,
         is_meta=is_meta,
         entrypoint="cli",
-        is_compact_summary=False,
+        is_compact_summary=is_compact_summary,
         is_visible_in_transcript_only=False,
     )
 
@@ -58,9 +60,10 @@ def user(
     interrupted: bool = False,
     is_meta: bool = False,
     is_sidechain: bool = False,
+    is_compact_summary: bool = False,
 ) -> UserEvent:
     return UserEvent(
-        meta=meta(uuid, secs=secs, is_meta=is_meta, is_sidechain=is_sidechain),
+        meta=meta(uuid, secs=secs, is_meta=is_meta, is_sidechain=is_sidechain, is_compact_summary=is_compact_summary),
         text=text,
         blocks=blocks,
         interrupted=interrupted,
@@ -107,6 +110,7 @@ def activity(*events: TranscriptEvent) -> SessionActivity:
         pytest.param(user("u0", "she quoted [Request interrupted by user] mid-text"), True, id="mid_text_marker"),
         pytest.param(user("u0", "", blocks=(result("t1"),)), False, id="tool_result_only"),
         pytest.param(user("u0", "   "), False, id="whitespace_only"),
+        pytest.param(user("u0", "compact recap", is_compact_summary=True), False, id="compact_summary"),
     ],
 )
 def test_native_user_classifier(event: UserEvent, expected: bool) -> None:
