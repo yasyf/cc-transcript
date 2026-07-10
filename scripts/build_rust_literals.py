@@ -12,6 +12,7 @@ Run: ``uv run python scripts/build_rust_literals.py``
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from cc_transcript.filterspec import (
@@ -23,6 +24,24 @@ from cc_transcript.filterspec import (
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
     group_pattern,
+)
+from cc_transcript.mining.confidence import LOW, NONE
+from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED
+from cc_transcript.mining.sourcekind import (
+    INTERRUPT_REJECTION,
+    PLAN_REVIEW,
+    QUESTION_ANSWER,
+    REVIEW_COMMENT,
+    TRANSCRIPT_MESSAGE,
+)
+from cc_transcript.mining.spec import (
+    ASK_USER_QUESTION_DETECTOR,
+    DENIAL_DETECTOR,
+    EXIT_PLAN_REJECTION_DETECTOR,
+    INTERRUPT_DETECTOR,
+    PLAN_REENTRY_DETECTOR,
+    REVIEW_COMMENT_DETECTOR,
+    TRANSCRIPT_MESSAGE_DETECTOR,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +82,12 @@ def const(name: str, value: str) -> str:
     )
 
 
+def float_const(name: str, value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite f64 in Rust literal: {name} = {value!r}")
+    return f"pub const {name}: f64 = {value!r};"
+
+
 def protocol_rs() -> str:
     consts = (
         ("DENIAL_PREFIX", DENIAL_PREFIX),
@@ -76,13 +101,46 @@ def protocol_rs() -> str:
     return "\n".join((HEADER, "", *(const(name, value) for name, value in consts))) + "\n"
 
 
+def mining_rs() -> str:
+    str_consts = (
+        ("TRANSCRIPT_MESSAGE", TRANSCRIPT_MESSAGE),
+        ("PLAN_REVIEW", PLAN_REVIEW),
+        ("INTERRUPT_REJECTION", INTERRUPT_REJECTION),
+        ("REVIEW_COMMENT", REVIEW_COMMENT),
+        ("QUESTION_ANSWER", QUESTION_ANSWER),
+        ("DETECTOR_TRANSCRIPT_MESSAGE", TRANSCRIPT_MESSAGE_DETECTOR),
+        ("DETECTOR_EXIT_PLAN_REJECTION", EXIT_PLAN_REJECTION_DETECTOR),
+        ("DETECTOR_PLAN_REENTRY", PLAN_REENTRY_DETECTOR),
+        ("DETECTOR_DENIAL", DENIAL_DETECTOR),
+        ("DETECTOR_INTERRUPT", INTERRUPT_DETECTOR),
+        ("DETECTOR_REVIEW_COMMENT", REVIEW_COMMENT_DETECTOR),
+        ("DETECTOR_ASK_USER_QUESTION", ASK_USER_QUESTION_DETECTOR),
+        ("ANSWER_PREVIEW_SEP", ANSWER_PREVIEW_SEP),
+        ("ANSWER_NOTES_SEP", ANSWER_NOTES_SEP),
+        ("NO_OPTION_SELECTED", NO_OPTION_SELECTED),
+    )
+    float_consts = (("NONE", NONE), ("LOW", LOW))
+    return (
+        "\n".join(
+            (
+                HEADER,
+                "",
+                *(const(name, value) for name, value in str_consts),
+                *(float_const(name, value) for name, value in float_consts),
+            )
+        )
+        + "\n"
+    )
+
+
 def mod_rs() -> str:
-    return "\n".join((HEADER, "", "pub mod protocol;")) + "\n"
+    return "\n".join((HEADER, "", "pub mod mining;", "pub mod protocol;")) + "\n"
 
 
 def render() -> dict[str, str]:
     return {
         "rust/src/generated/mod.rs": mod_rs(),
+        "rust/src/generated/mining.rs": mining_rs(),
         "rust/src/generated/protocol.rs": protocol_rs(),
     }
 

@@ -35,8 +35,8 @@ def lexicon_has_hit(text: str, floor: int, want_negative: bool, /) -> bool:
 def lexicon_overrides() -> list[tuple[str, int]]:
     """The embedded domain-override entries (for the single-source drift guard)."""
 
-def embedded_literals() -> dict[str, str]:
-    """The generated protocol literals keyed ``module.NAME`` (for the single-source drift guard)."""
+def embedded_literals() -> dict[str, str | float]:
+    """The generated protocol and mining literals keyed ``module.NAME`` (for the single-source drift guard)."""
 
 def score_short_circuit(spec_json: str, buckets: list[list[str]], /) -> list[int | None]:
     """Per bucket, the first short-circuit stage's score over its user texts, else None."""

@@ -23,6 +23,24 @@ from cc_transcript.filterspec import (
     USER_SAID_TRAILER,
     group_pattern,
 )
+from cc_transcript.mining.confidence import LOW, NONE
+from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED
+from cc_transcript.mining.sourcekind import (
+    INTERRUPT_REJECTION,
+    PLAN_REVIEW,
+    QUESTION_ANSWER,
+    REVIEW_COMMENT,
+    TRANSCRIPT_MESSAGE,
+)
+from cc_transcript.mining.spec import (
+    ASK_USER_QUESTION_DETECTOR,
+    DENIAL_DETECTOR,
+    EXIT_PLAN_REJECTION_DETECTOR,
+    INTERRUPT_DETECTOR,
+    PLAN_REENTRY_DETECTOR,
+    REVIEW_COMMENT_DETECTOR,
+    TRANSCRIPT_MESSAGE_DETECTOR,
+)
 from tests.test_backend_parity import requires_rust
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +66,23 @@ def test_embedded_literals_match_python_source() -> None:
         "protocol.ANSWERED_TRAILER": ANSWERED_TRAILER,
         "protocol.INTERRUPT_MARKER_PATTERN": group_pattern(INTERRUPT_MARKER_GROUPS),
         "protocol.AGENT_INJECTION_PATTERN": group_pattern(AGENT_INJECTION_GROUPS),
+        "mining.TRANSCRIPT_MESSAGE": TRANSCRIPT_MESSAGE,
+        "mining.PLAN_REVIEW": PLAN_REVIEW,
+        "mining.INTERRUPT_REJECTION": INTERRUPT_REJECTION,
+        "mining.REVIEW_COMMENT": REVIEW_COMMENT,
+        "mining.QUESTION_ANSWER": QUESTION_ANSWER,
+        "mining.DETECTOR_TRANSCRIPT_MESSAGE": TRANSCRIPT_MESSAGE_DETECTOR,
+        "mining.DETECTOR_EXIT_PLAN_REJECTION": EXIT_PLAN_REJECTION_DETECTOR,
+        "mining.DETECTOR_PLAN_REENTRY": PLAN_REENTRY_DETECTOR,
+        "mining.DETECTOR_DENIAL": DENIAL_DETECTOR,
+        "mining.DETECTOR_INTERRUPT": INTERRUPT_DETECTOR,
+        "mining.DETECTOR_REVIEW_COMMENT": REVIEW_COMMENT_DETECTOR,
+        "mining.DETECTOR_ASK_USER_QUESTION": ASK_USER_QUESTION_DETECTOR,
+        "mining.ANSWER_PREVIEW_SEP": ANSWER_PREVIEW_SEP,
+        "mining.ANSWER_NOTES_SEP": ANSWER_NOTES_SEP,
+        "mining.NO_OPTION_SELECTED": NO_OPTION_SELECTED,
+        "mining.NONE": NONE,
+        "mining.LOW": LOW,
     }
 
 

@@ -8,6 +8,12 @@ use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::filter::compile_group_array;
+use crate::generated::mining::{
+    ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, DETECTOR_ASK_USER_QUESTION, DETECTOR_DENIAL,
+    DETECTOR_EXIT_PLAN_REJECTION, DETECTOR_INTERRUPT, DETECTOR_PLAN_REENTRY,
+    DETECTOR_REVIEW_COMMENT, DETECTOR_TRANSCRIPT_MESSAGE, INTERRUPT_REJECTION, LOW, NONE,
+    NO_OPTION_SELECTED, PLAN_REVIEW, QUESTION_ANSWER, REVIEW_COMMENT, TRANSCRIPT_MESSAGE,
+};
 use crate::parse::{parse_bytes, ParseError};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
@@ -17,31 +23,6 @@ use crate::types::{
     matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry,
 };
 use crate::value::{field, field_bool, field_str};
-
-// Source kinds (mining/sourcekind.py).
-const TRANSCRIPT_MESSAGE: &str = "transcript_message";
-const PLAN_REVIEW: &str = "plan_review";
-const INTERRUPT_REJECTION: &str = "interrupt_rejection";
-const REVIEW_COMMENT: &str = "review_comment";
-const QUESTION_ANSWER: &str = "question_answer";
-
-// Detector ids (mining/spec.py TRANSCRIPT_MESSAGE_DETECTOR etc.).
-const DETECTOR_TRANSCRIPT_MESSAGE: &str = "transcript_message";
-const DETECTOR_EXIT_PLAN_REJECTION: &str = "exit_plan_rejection";
-const DETECTOR_PLAN_REENTRY: &str = "plan_reentry";
-const DETECTOR_DENIAL: &str = "denial";
-const DETECTOR_INTERRUPT: &str = "interrupt";
-const DETECTOR_REVIEW_COMMENT: &str = "review_comment";
-const DETECTOR_ASK_USER_QUESTION: &str = "ask_user_question";
-
-// AskUserQuestion answered-round segment markers (mining/signals.py).
-const ANSWER_PREVIEW_SEP: &str = " selected preview:\n";
-const ANSWER_NOTES_SEP: &str = " notes: ";
-const NO_OPTION_SELECTED: &str = "(no option selected)";
-
-// Confidence bands (mining/confidence.py NONE / LOW); the hardcoded marker-correction seeds.
-const NONE: f64 = 0.0;
-const LOW: f64 = 0.25;
 
 // FINDING_KEYS prefix is folded into finding_keys by structured_format_to_dict, so the
 // compiled spec already carries the full alias list; no constant needed here.

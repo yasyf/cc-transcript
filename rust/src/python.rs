@@ -184,7 +184,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 
 #[pyfunction]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    use crate::generated::protocol;
+    use crate::generated::{mining, protocol};
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
@@ -194,6 +194,23 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("protocol.ANSWERED_TRAILER", protocol::ANSWERED_TRAILER)?;
     dict.set_item("protocol.INTERRUPT_MARKER_PATTERN", protocol::INTERRUPT_MARKER_PATTERN)?;
     dict.set_item("protocol.AGENT_INJECTION_PATTERN", protocol::AGENT_INJECTION_PATTERN)?;
+    dict.set_item("mining.TRANSCRIPT_MESSAGE", mining::TRANSCRIPT_MESSAGE)?;
+    dict.set_item("mining.PLAN_REVIEW", mining::PLAN_REVIEW)?;
+    dict.set_item("mining.INTERRUPT_REJECTION", mining::INTERRUPT_REJECTION)?;
+    dict.set_item("mining.REVIEW_COMMENT", mining::REVIEW_COMMENT)?;
+    dict.set_item("mining.QUESTION_ANSWER", mining::QUESTION_ANSWER)?;
+    dict.set_item("mining.DETECTOR_TRANSCRIPT_MESSAGE", mining::DETECTOR_TRANSCRIPT_MESSAGE)?;
+    dict.set_item("mining.DETECTOR_EXIT_PLAN_REJECTION", mining::DETECTOR_EXIT_PLAN_REJECTION)?;
+    dict.set_item("mining.DETECTOR_PLAN_REENTRY", mining::DETECTOR_PLAN_REENTRY)?;
+    dict.set_item("mining.DETECTOR_DENIAL", mining::DETECTOR_DENIAL)?;
+    dict.set_item("mining.DETECTOR_INTERRUPT", mining::DETECTOR_INTERRUPT)?;
+    dict.set_item("mining.DETECTOR_REVIEW_COMMENT", mining::DETECTOR_REVIEW_COMMENT)?;
+    dict.set_item("mining.DETECTOR_ASK_USER_QUESTION", mining::DETECTOR_ASK_USER_QUESTION)?;
+    dict.set_item("mining.ANSWER_PREVIEW_SEP", mining::ANSWER_PREVIEW_SEP)?;
+    dict.set_item("mining.ANSWER_NOTES_SEP", mining::ANSWER_NOTES_SEP)?;
+    dict.set_item("mining.NO_OPTION_SELECTED", mining::NO_OPTION_SELECTED)?;
+    dict.set_item("mining.NONE", mining::NONE)?;
+    dict.set_item("mining.LOW", mining::LOW)?;
     Ok(dict)
 }
 
