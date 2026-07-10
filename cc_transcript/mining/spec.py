@@ -37,6 +37,7 @@ from cc_transcript.filterspec import (
     PORTABLE_GROUP_NAMES,
     STRUCTURAL_NOISE_GROUPS,
     compile_groups,
+    group_pattern,
 )
 from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence, firm
 from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, StructuredFormat
@@ -343,7 +344,7 @@ def classify_provenance(spec: ProvenanceSpec, tool_name: str | None, *, is_sidec
 @cache
 def compile_review_format(groups: tuple[tuple[str, str], ...], ignore_case: bool, multiline: bool) -> re.Pattern[str]:
     flags = (re.IGNORECASE if ignore_case else 0) | (re.MULTILINE if multiline else 0)
-    return re.compile("|".join(f"(?:{pattern})" for _, pattern in groups), flags)
+    return re.compile(group_pattern(groups), flags)
 
 
 def regex_review_comments(fmt: RegexReviewFormat, text: str) -> tuple[ReviewComment, ...]:

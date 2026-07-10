@@ -351,9 +351,14 @@ class FilterSpec:
     clauses: tuple[Clause, ...]
 
 
+def group_pattern(groups: tuple[tuple[str, str], ...]) -> str:
+    """Composes named regex groups into one non-capturing alternation."""
+    return "|".join(f"(?:{pattern})" for _, pattern in groups)
+
+
 @cache
 def compile_groups(groups: tuple[tuple[str, str], ...], ignore_case: bool) -> re.Pattern[str]:
-    return re.compile("|".join(f"(?:{pattern})" for _, pattern in groups), re.IGNORECASE if ignore_case else 0)
+    return re.compile(group_pattern(groups), re.IGNORECASE if ignore_case else 0)
 
 
 def event_kind(event: TranscriptEvent) -> EventKind:
