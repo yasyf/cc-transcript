@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.2.0] - 2026-07-09
+
+### Fixed
+- **The Rust backend no longer drops a whole file over one non-object line.**
+  A line that is valid JSON but not an object (a bare scalar or array) is now
+  skipped, exactly as the Python backend skips it; previously it errored out of
+  the typed parse and `stream_parse` discarded the entire transcript. Valid
+  objects that fail the typed parse still fail the file.
+- **Compact-summary lines no longer open turns anywhere.** The exclusion moved
+  from the activity probe's local check into the shared `native_user_classifier`,
+  so `Session.current_turn` and every consumer built on it (context, facts,
+  evidence, mining, render) now survives auto-compaction; the probe's observable
+  behavior is unchanged.
+
+### Changed
+- Mining's event parsing goes through the shared parse layer (`parse_bytes`)
+  instead of a bespoke line splitter, confining raw-byte JSON parsing to the
+  parse layer.
+
 ## [10.1.0] - 2026-07-09
 
 ### Changed
@@ -607,6 +626,7 @@ with a Python fallback at verified parity.
 - `FileStateStore`: a generic WAL/locked SQLite mtime ledger with atomic
   consumer transactions, for idempotent incremental scans.
 
+[10.2.0]: https://github.com/yasyf/cc-transcript/compare/v10.1.0...v10.2.0
 [10.1.0]: https://github.com/yasyf/cc-transcript/compare/v10.0.0...v10.1.0
 [0.9.0]: https://github.com/yasyf/cc-transcript/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yasyf/cc-transcript/compare/v0.7.1...v0.8.0
