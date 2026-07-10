@@ -99,11 +99,22 @@ def fixture_entries() -> list[dict[str, Any]]:
             type="user",
             message={"role": "user", "content": "<scheduled-task id='7'>run the nightly suite</scheduled-task>"},
         ),
-        # Head-anchored role-reminder marker appearing mid-text: .search() does not match, so both
+        # Head-anchored role-reminder marker appearing mid-text: the group is start-anchored, so both
         # backends must agree is_agent_injected is False — guards Rust against over-matching.
         envelope(
             type="user",
             message={"role": "user", "content": "we discussed the [Role Reminder] banner mid-sentence"},
+        ),
+        # A relay tag mentioned mid-text is authored, not injected — start-anchored, False on both.
+        envelope(
+            type="user",
+            message={"role": "user", "content": "why did the transcript contain <teammate-message from=a> above"},
+        ),
+        # A combining mark (U+0301) after the tag name is not a portable word boundary: Python re once
+        # matched here while the Rust regex crate did not — the follower class restores False on both.
+        envelope(
+            type="user",
+            message={"role": "user", "content": "<teammate-message\u0301>"},
         ),
         envelope(
             type="assistant",
@@ -268,6 +279,25 @@ def test_agent_injected_field_true_on_both_backends(tmp_path: Path) -> None:
     (rust_event,) = rust_events(path)
     assert py_event.is_agent_injected is True
     assert rust_event.is_agent_injected is True
+
+
+@requires_rust
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("<teammate-message\u0301>", id="combining-mark"),
+        pytest.param("why did the transcript contain <teammate-message from=a> above", id="mid-text-mention"),
+    ],
+)
+def test_agent_injected_field_false_on_both_backends(tmp_path: Path, content: str) -> None:
+    """A combining mark after the tag name (once Python-only True) and a mid-text mention are
+    not banners — both backends must agree is_agent_injected is False."""
+    path = tmp_path / "not-a-banner.jsonl"
+    path.write_bytes(orjson.dumps(envelope(type="user", message={"role": "user", "content": content})))
+    (py_event,) = parse_events_from_bytes(path.read_bytes())
+    (rust_event,) = rust_events(path)
+    assert py_event.is_agent_injected is False
+    assert rust_event.is_agent_injected is False
 
 
 @requires_rust

@@ -183,10 +183,14 @@ AGENT_INJECTION_ROWS = [
     pytest.param("<scheduled-task id='7'>run the suite</scheduled-task>", True, id="scheduled-task"),
     pytest.param("[Role Reminder: You are a Coordinator.", True, id="role-reminder-head-anchored"),
     pytest.param("# Augment Agent\nyou have these tools", True, id="augment-agent-head-anchored"),
-    # .search() is unanchored, so a mid-text teammate tag still matches — the group regex is not head-anchored.
-    pytest.param("as noted in the <teammate-message> above", True, id="teammate-tag-mid-text-still-matches"),
-    # ...whereas the head-anchored role-reminder group does not match mid-text.
+    # Leading whitespace before the marker is tolerated — still a banner.
+    pytest.param("   <teammate-message from='mate'>ping</teammate-message>", True, id="teammate-message-leading-ws"),
+    # A real injected banner BEGINS with its marker; a relay tag mentioned mid-text is authored, not injected.
+    pytest.param("as noted in the <teammate-message> above", False, id="teammate-tag-mid-text-no-match"),
+    pytest.param("Why did the transcript contain <teammate-message from=a>?", False, id="authored-prompt-about-tag"),
     pytest.param("discussing the [Role Reminder] banner mid-sentence", False, id="role-reminder-mid-text-no-match"),
+    # A combining mark (U+0301) after the tag name is not a portable word boundary — not a banner on either backend.
+    pytest.param("<teammate-message\u0301>", False, id="teammate-message-combining-mark"),
     pytest.param("remind me what the teammate coordinator does", False, id="plain-prose"),
 ]
 

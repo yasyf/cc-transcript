@@ -59,11 +59,14 @@ STRUCTURAL_GROUPS: tuple[tuple[str, str], ...] = (
     ("hash_banner", r"(?:###\s+[\w][\w \-]{0,30}\s+){3,}###"),
 )
 
-# Agent-injected banners (teammate messages, scheduled tasks, foreign agents).
+# Agent-injected banners (teammate messages, scheduled tasks, foreign agents). Start-anchored
+# so a mid-text mention is not a banner; the follower class replaces \b and Reminder's "i" is
+# ASCII-pinned via (?-i:[Ii]) so Rust regex and Python re stay in parity across combining marks
+# and dotted/dotless-I folding. Mirror any change in rust/src/protocol.rs AGENT_INJECTION_PATTERN.
 AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
-    ("xml_tags_extra", r"<(?:teammate-message|scheduled-task)\b"),
-    ("augment_agent", r"^# Augment Agent\b"),
-    ("role_reminder", r"^\s*\[Role Reminder\b"),
+    ("xml_tags_extra", r"\A\s*<(?:teammate-message|scheduled-task)(?:[\s/>]|$)"),
+    ("augment_agent", r"\A\s*# Augment Agent(?:\s|$)"),
+    ("role_reminder", r"\A\s*\[Role Rem(?-i:[Ii])nder(?:[\s:\]]|$)"),
 )
 
 INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"^\s*\[Request interrupted by user"),)

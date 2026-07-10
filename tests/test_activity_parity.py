@@ -409,6 +409,18 @@ CASES = [
     ),
     pytest.param(
         [
+            user("build it"),
+            BACKGROUND_BASH,
+            tool_result("b1"),
+            user("why did the transcript contain <teammate-message from='mate'> above?"),
+        ],
+        False,
+        False,
+        (),
+        id="mid-text-relay-mention-opens-turn",
+    ),
+    pytest.param(
+        [
             user("go"),
             tool_use("Agent", "a1", {"prompt": "x", "run_in_background": True}),
             tool_result("a1", is_async=True),

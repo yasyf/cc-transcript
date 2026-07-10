@@ -14,9 +14,11 @@ const INTERRUPT_MARKER_PATTERN: &str = r"^\s*\[Request interrupted by user";
 
 // Agent-injected relay banners (filterspec.py AGENT_INJECTION_GROUPS): teammate-message
 // digests, scheduled-task banners, and foreign-agent headers. The alternation mirrors
-// compile_groups(AGENT_INJECTION_GROUPS): `(?:p1)|(?:p2)|(?:p3)`.
-const AGENT_INJECTION_PATTERN: &str =
-    r"(?:<(?:teammate-message|scheduled-task)\b)|(?:^# Augment Agent\b)|(?:^\s*\[Role Reminder\b)";
+// compile_groups(AGENT_INJECTION_GROUPS): `(?:p1)|(?:p2)|(?:p3)`. Each alternative is
+// start-anchored (\A\s*), the trailing \b is an explicit follower class agreeing with
+// Python re across combining marks, and Reminder's "i" is ASCII-pinned via (?-i:[Ii]) so
+// dotted/dotless-I case folding stays in parity.
+const AGENT_INJECTION_PATTERN: &str = r"(?:\A\s*<(?:teammate-message|scheduled-task)(?:[\s/>]|$))|(?:\A\s*# Augment Agent(?:\s|$))|(?:\A\s*\[Role Rem(?-i:[Ii])nder(?:[\s:\]]|$))";
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern
 /// compiled case-insensitively, anchored at the start of the haystack with leading
@@ -117,15 +119,21 @@ mod tests {
         assert!(is_agent_injection("<scheduled-task id='7'>run the suite</scheduled-task>"));
         assert!(is_agent_injection("[Role Reminder: You are a Coordinator."));
         assert!(is_agent_injection("# Augment Agent\nyou have these tools"));
-        // search() is unanchored: a mid-text teammate tag still matches.
-        assert!(is_agent_injection("as noted in the <teammate-message> above"));
+        // Leading whitespace before the marker is tolerated.
+        assert!(is_agent_injection("   <teammate-message from='mate'>ping</teammate-message>"));
     }
 
     #[test]
-    fn agent_injection_rejects_prose_and_head_anchored_mid_text() {
+    fn agent_injection_rejects_prose_and_mid_text_mentions() {
         assert!(!is_agent_injection("remind me what the teammate coordinator does"));
-        // the head-anchored role-reminder group does not match mid-text.
+        // Start-anchored: a relay tag mentioned mid-text is authored, not injected.
+        assert!(!is_agent_injection("as noted in the <teammate-message> above"));
+        assert!(!is_agent_injection("Why did the transcript contain <teammate-message from=a>?"));
         assert!(!is_agent_injection("we discussed the [Role Reminder] banner mid-sentence"));
+        // A combining mark (U+0301) after the tag name is not a portable word boundary; and
+        // dotless-I must not fold to ASCII "i" — Python re once matched both, Rust never did.
+        assert!(!is_agent_injection("<teammate-message\u{0301}>"));
+        assert!(!is_agent_injection("[Role Rem\u{0131}nder: dotless"));
         assert!(!is_agent_injection(""));
     }
 }
