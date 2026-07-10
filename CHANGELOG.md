@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.6.0] - 2026-07-10
+
+### Fixed
+- **Agent-injection matching is anchored to the start of the text.** Every
+  `AGENT_INJECTION_GROUPS` alternative now requires its banner marker at the head of
+  the message (leading whitespace tolerated), so a prompt that only mentions a relay
+  tag mid-text — for instance one asking about a `<teammate-message>` tag it saw —
+  reads as authored, not injected. Such a prompt keeps opening turns and no longer
+  distorts the `is_waiting` oracle. Because the `agent_injection` group feeds
+  `STRUCTURAL_NOISE_GROUPS`, this also stops `drop_junk("agent_injection")` from
+  dropping mention-only prompts — a deliberate, approved tightening.
+- **Portable follower classes restore exact Python/Rust parity.** The trailing `\b`
+  in each alternative is replaced by an explicit follower class (whitespace,
+  delimiter, or end-of-text), and Reminder's `i` is pinned to ASCII via `(?-i:[Ii])`.
+  Python `re` and the Rust `regex` crate diverged on `\b` before a combining mark
+  (`<teammate-message` + U+0301 matched only in Python) and on Unicode dotted/dotless-I
+  case folding; both engines now agree, holding the backend- and activity-parity
+  suites in lockstep.
+
 ## [10.5.0] - 2026-07-10
 
 ### Added

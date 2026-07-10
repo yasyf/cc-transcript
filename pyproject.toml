@@ -1,6 +1,6 @@
 [project]
 name = "cc-transcript"
-version = "10.5.0"
+version = "10.6.0"
 description = "Grep every Claude Code session you've ever run."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
