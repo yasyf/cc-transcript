@@ -500,6 +500,19 @@ def test_mcp_prefixed_waiting_tool_is_waiting(tmp_path: Path, monkeypatch: pytes
 
 @requires_rust
 @rust_enabled
+def test_mcp_prefixed_human_facing_tool_is_not_mid_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An mcp__<server>__ spelling of a human-facing tool is the user's move, never mid-tool, on both backends."""
+    path = write(tmp_path, [user("choose"), tool_use("mcp__someserver__AskUserQuestion", "q1", {"questions": []})])
+    via_rust = session_activity_probe(path)
+    assert via_rust.mid_tool is False
+    assert via_rust.is_waiting is False
+    assert via_rust.pending == ()
+    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
+    assert session_activity_probe(path) == via_rust
+
+
+@requires_rust
+@rust_enabled
 @pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_real_corpus_probe_parity(path: Path) -> None:
     probe = session_activity_probe(path)

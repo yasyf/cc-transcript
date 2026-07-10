@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 DEFAULT_WAITING_TOOLS = frozenset({"Monitor", "ScheduleWakeup", "SendMessage", "TeamCreate"})
-DEFAULT_HUMAN_FACING_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
+DEFAULT_HUMAN_FACING_TOOLS = expand_tool_names("AskUserQuestion|ExitPlanMode")
 
 BACKGROUND_TOOLS = expand_tool_names("Agent|Task|Bash")
 TASK_TOOLS = expand_tool_names("Agent|Task")
@@ -154,7 +154,7 @@ def probe_events(
             waiting_kind = (ephemeral_wait(block, waiting_tools) if in_current_turn else None) or pending_async(
                 block, result, notifications
             )
-            unmatched = in_current_turn and result is None and block.name not in human_facing_tools
+            unmatched = in_current_turn and result is None and not matches_names(block.name, human_facing_tools)
             is_waiting = is_waiting or waiting_kind is not None
             mid_tool = mid_tool or unmatched
             kind = waiting_kind or ("mid_tool" if unmatched else None)

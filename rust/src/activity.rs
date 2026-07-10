@@ -25,7 +25,11 @@ impl Default for ActivityOpts {
             waiting_tools: HashSet::from(
                 ["Monitor", "ScheduleWakeup", "SendMessage", "TeamCreate"].map(String::from),
             ),
-            human_facing_tools: HashSet::from(["AskUserQuestion", "ExitPlanMode"].map(String::from)),
+            // tools.py expand_tool_names("AskUserQuestion|ExitPlanMode"), pre-expanded
+            // here because the alias table never crosses the language boundary.
+            human_facing_tools: HashSet::from(
+                ["AskUserQuestion", "ExitPlanMode", "ExitSpecMode"].map(String::from),
+            ),
         }
     }
 }
@@ -227,7 +231,7 @@ pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivi
                 .or_else(|| pending_async(tool_use, result, &notifications));
             let unmatched = in_current_turn
                 && result.is_none()
-                && !opts.human_facing_tools.contains(&tool_use.name);
+                && !matches_names(&tool_use.name, &opts.human_facing_tools);
             is_waiting |= waiting_kind.is_some();
             mid_tool |= unmatched;
             let Some(kind) = waiting_kind.or(unmatched.then_some(PendingKind::MidTool)) else {
@@ -638,6 +642,18 @@ mod tests {
         let entries = vec![
             user("choose"),
             tool_use("AskUserQuestion", "q1", r#"{"questions":[]}"#),
+        ];
+        let activity = activity(&entries);
+        assert!(!activity.is_waiting);
+        assert!(!activity.mid_tool);
+        assert!(activity.pending.is_empty());
+    }
+
+    #[test]
+    fn mcp_prefixed_human_facing_tool_is_not_mid_tool() {
+        let entries = vec![
+            user("choose"),
+            tool_use("mcp__someserver__AskUserQuestion", "q1", r#"{"questions":[]}"#),
         ];
         let activity = activity(&entries);
         assert!(!activity.is_waiting);
