@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.3.0] - 2026-07-10
+
+### Fixed
+- **cc-context MCP edits no longer bypass edit-tool matching.** `mcp__cc-context__ccx_code_edit`
+  and `ccx_code_replace` split to bare names that matched no `Edit`/`Write` gate, so a
+  `Tool("Edit"|"Write"|"MultiEdit")` condition never saw edits routed through the cc-context
+  MCP. `matches_names` now consults the new `MCP_TOOL_ALIASES` table (`ccx_code_edit` → `Edit`,
+  `ccx_code_replace` → `Write`) after the `mcp__` split, `expand_tool_names` reverse-closes the
+  bare names into pre-expanded specs — the spec JSON crossing to Rust inherits the fix — and
+  plan-reentry mining (`last_edit_index`) uses the suffix-splitting matcher on both sides of the
+  parity line.
+
 ## [10.2.0] - 2026-07-09
 
 ### Fixed
