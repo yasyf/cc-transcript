@@ -92,6 +92,20 @@ def fixture_entries() -> list[dict[str, Any]]:
             message={"role": "user", "content": "compact unicode héllo 🤖 漢字"},
         ),
         envelope(
+            type="user",
+            message={"role": "user", "content": "<teammate-message from='reviewer'>please rebase</teammate-message>"},
+        ),
+        envelope(
+            type="user",
+            message={"role": "user", "content": "<scheduled-task id='7'>run the nightly suite</scheduled-task>"},
+        ),
+        # Head-anchored role-reminder marker appearing mid-text: .search() does not match, so both
+        # backends must agree is_agent_injected is False — guards Rust against over-matching.
+        envelope(
+            type="user",
+            message={"role": "user", "content": "we discussed the [Role Reminder] banner mid-sentence"},
+        ),
+        envelope(
             type="assistant",
             message={
                 "role": "assistant",
@@ -234,6 +248,26 @@ def test_bare_nonobject_lines_skipped_with_parity(tmp_path: Path) -> None:
     expected = parse_events_from_bytes(path.read_bytes())
     assert len(expected) == 2, "bare scalar and array lines are skipped, two real events remain"
     assert_parity(path)
+
+
+@requires_rust
+def test_agent_injected_field_true_on_both_backends(tmp_path: Path) -> None:
+    path = tmp_path / "banner.jsonl"
+    path.write_bytes(
+        orjson.dumps(
+            envelope(
+                type="user",
+                message={
+                    "role": "user",
+                    "content": "<teammate-message from='reviewer'>please rebase</teammate-message>",
+                },
+            )
+        )
+    )
+    (py_event,) = parse_events_from_bytes(path.read_bytes())
+    (rust_event,) = rust_events(path)
+    assert py_event.is_agent_injected is True
+    assert rust_event.is_agent_injected is True
 
 
 @requires_rust

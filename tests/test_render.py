@@ -547,6 +547,7 @@ def test_event_dict_user_round_trips_through_orjson() -> None:
         "text": "hi",
         "blocks": [{"text": "hi"}],
         "interrupted": False,
+        "is_agent_injected": False,
     }
 
 

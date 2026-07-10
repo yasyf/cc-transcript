@@ -7,6 +7,7 @@ import orjson
 import pytest
 
 from cc_transcript.activity_probe import PendingItem, probe_events, session_activity_probe
+from cc_transcript.filterspec import is_agent_injection
 from cc_transcript.models import AssistantEvent, OtherEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import parse_events_from_bytes
 from tests.test_backend_parity import real_corpus, requires_rust
@@ -99,7 +100,8 @@ def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
     Deliberately omitted: the Stop-payload ``background_tasks``/``session_crons``
     layer — hook-side data a transcript never carries. Deliberate divergence:
     compact-summary user lines do not open turns here, leading captain-hook,
-    which still lets compaction close the turn.
+    which still lets compaction close the turn. Agent-injected relay banners
+    (``is_agent_injection``) likewise never open a turn.
     """
     results = {
         block.tool_use_id: block
@@ -170,7 +172,11 @@ def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
             for index in reversed(range(len(events)))
             if isinstance(event := events[index], UserEvent)
             and not (
-                event.meta.is_meta or event.meta.is_sidechain or event.meta.is_compact_summary or event.interrupted
+                event.meta.is_meta
+                or event.meta.is_sidechain
+                or event.meta.is_compact_summary
+                or event.interrupted
+                or is_agent_injection(event.text)
             )
             and event.text.strip()
         ),
@@ -388,6 +394,18 @@ CASES = [
         False,
         (PendingItem("b1", "Bash", "background"),),
         id="compact-summary-user-does-not-open-turn",
+    ),
+    pytest.param(
+        [
+            user("build it"),
+            BACKGROUND_BASH,
+            tool_result("b1"),
+            user("<teammate-message from='mate'>ping</teammate-message>"),
+        ],
+        True,
+        False,
+        (PendingItem("b1", "Bash", "background"),),
+        id="agent-injected-banner-does-not-open-turn",
     ),
     pytest.param(
         [

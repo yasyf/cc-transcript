@@ -61,12 +61,14 @@ def user(
     is_meta: bool = False,
     is_sidechain: bool = False,
     is_compact_summary: bool = False,
+    is_agent_injected: bool = False,
 ) -> UserEvent:
     return UserEvent(
         meta=meta(uuid, secs=secs, is_meta=is_meta, is_sidechain=is_sidechain, is_compact_summary=is_compact_summary),
         text=text,
         blocks=blocks,
         interrupted=interrupted,
+        is_agent_injected=is_agent_injected,
     )
 
 
@@ -108,6 +110,11 @@ def activity(*events: TranscriptEvent) -> SessionActivity:
         pytest.param(user("u0", "subagent ask", is_sidechain=True), False, id="sidechain"),
         pytest.param(user("u0", "[Request interrupted by user]", interrupted=True), False, id="interruption"),
         pytest.param(user("u0", "she quoted [Request interrupted by user] mid-text"), True, id="mid_text_marker"),
+        pytest.param(
+            user("u0", "<teammate-message>please rebase</teammate-message>", is_agent_injected=True),
+            False,
+            id="agent_injected_banner",
+        ),
         pytest.param(user("u0", "", blocks=(result("t1"),)), False, id="tool_result_only"),
         pytest.param(user("u0", "   "), False, id="whitespace_only"),
         pytest.param(user("u0", "compact recap", is_compact_summary=True), False, id="compact_summary"),
@@ -146,6 +153,18 @@ def test_injected_classifier_controls_segmentation() -> None:
     act = SessionActivity.from_events(SESSION, events, user_classifier=lambda e: e.text.startswith("go:"))
     assert [turn.prompt for turn in act.turns] == ["", "go: build it"]
     assert len(act.turns[1].events) == 2
+
+
+def test_agent_injected_banner_mid_turn_does_not_split_turn() -> None:
+    act = activity(
+        user("u0", "fix the bug"),
+        assistant("a0", "on it", secs=1),
+        user("u1", "<teammate-message>ping</teammate-message>", is_agent_injected=True, secs=2),
+        assistant("a1", "still on it", secs=3),
+        user("u2", "second ask", secs=4),
+    )
+    assert [turn.prompt for turn in act.turns] == ["fix the bug", "second ask"]
+    assert [len(turn.events) for turn in act.turns] == [4, 1]
 
 
 def test_turn_timestamps_span_meta_bearing_events() -> None:

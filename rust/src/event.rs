@@ -12,7 +12,7 @@ use crate::model::{
     USER_EVENT_CLS,
 };
 use crate::parse::ParseError;
-use crate::protocol::interrupt_marker;
+use crate::protocol::{interrupt_marker, is_agent_injection};
 use crate::types::{
     joined_text, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage, PrintBody, PrintMessage,
     PrintResult, Usage, UserContent,
@@ -155,11 +155,13 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
         Entry::User(user) => {
             let text = user.content.text();
             let interrupted = interrupt_marker(&text).is_some();
+            let is_agent_injected = is_agent_injection(&text);
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1((
                 build_meta(py, &user.meta)?,
                 text,
                 build_user_blocks(py, &user.content)?,
                 interrupted,
+                is_agent_injected,
             ))
         }
         Entry::Assistant(assistant) => {

@@ -101,6 +101,7 @@ USER0_DICT = {
     "text": "hello world",
     "blocks": [],
     "interrupted": False,
+    "is_agent_injected": False,
 }
 
 

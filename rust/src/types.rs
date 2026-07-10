@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::Value;
 
-use crate::protocol::interrupt_marker;
+use crate::protocol::{interrupt_marker, is_agent_injection};
 
 /// Envelope metadata shared by the conversational entry kinds (user, assistant,
 /// system). Mode and Other entries carry no envelope on disk.
@@ -115,6 +115,10 @@ impl UserEntry {
 
     pub fn interrupted(&self) -> bool {
         interrupt_marker(&self.content.text()).is_some()
+    }
+
+    pub fn is_agent_injected(&self) -> bool {
+        is_agent_injection(&self.content.text())
     }
 }
 

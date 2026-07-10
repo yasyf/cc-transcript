@@ -73,11 +73,16 @@ pub struct SessionActivity {
 }
 
 /// Whether a user entry opens a turn (activity.py ``native_user_classifier``):
-/// a real prompt — non-meta, non-sidechain, not an interruption marker, with
-/// non-blank text. Compact-summary exclusion matches captain-hook, which
-/// consumes this probe since the 10.2.0 shared-classifier fix.
+/// a real prompt — non-meta, non-sidechain, not an interruption marker, not an
+/// agent-injected relay banner, with non-blank text. Compact-summary exclusion
+/// matches captain-hook, which consumes this probe since the 10.2.0
+/// shared-classifier fix.
 fn opens_turn(user: &UserEntry) -> bool {
-    !(user.meta.is_meta || user.meta.is_sidechain || user.meta.is_compact_summary || user.interrupted())
+    !(user.meta.is_meta
+        || user.meta.is_sidechain
+        || user.meta.is_compact_summary
+        || user.interrupted()
+        || user.is_agent_injected())
         && !user.content.text().trim().is_empty()
 }
 
@@ -506,6 +511,22 @@ mod tests {
         assert!(
             activity.is_waiting,
             "auto-compaction must not retire a running background task"
+        );
+        assert_eq!(activity.pending[0].kind, PendingKind::Background);
+    }
+
+    #[test]
+    fn agent_injected_banner_does_not_open_turn() {
+        let entries = vec![
+            user("build it"),
+            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_result("b1"),
+            user("<teammate-message from='mate'>ping</teammate-message>"),
+        ];
+        let activity = activity(&entries);
+        assert!(
+            activity.is_waiting,
+            "an agent-injected relay banner must not open a turn, so the background Bash stays current"
         );
         assert_eq!(activity.pending[0].kind, PendingKind::Background);
     }

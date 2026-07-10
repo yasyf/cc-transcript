@@ -11,7 +11,7 @@ import anyio.to_thread
 import orjson
 
 from cc_transcript.backend import Backend, ParsedTranscript
-from cc_transcript.filterspec import apply_spec, interrupt_marker
+from cc_transcript.filterspec import apply_spec, interrupt_marker, is_agent_injection
 from cc_transcript.models import (
     AssistantEvent,
     CacheCreation,
@@ -158,6 +158,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 text=text,
                 blocks=blocks,
                 interrupted=interrupt_marker(text) is not None,
+                is_agent_injected=is_agent_injection(text),
             )
         case "assistant":
             text, blocks = parse_assistant_blocks(data["message"]["content"])

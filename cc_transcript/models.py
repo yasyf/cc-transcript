@@ -160,12 +160,16 @@ class UserEvent:
         text: The joined text of the turn.
         blocks: The parsed content blocks, including tool results.
         interrupted: Whether the turn is a user interruption.
+        is_agent_injected: Whether the turn is an agent-injected relay banner —
+            a teammate-message digest, scheduled-task banner, or foreign-agent
+            header — rather than an authored prompt.
     """
 
     meta: EntryMeta
     text: str
     blocks: tuple[ContentBlock, ...]
     interrupted: bool
+    is_agent_injected: bool = False
 
 
 @dataclass(frozen=True, slots=True)

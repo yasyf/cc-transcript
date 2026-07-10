@@ -419,6 +419,10 @@ def is_bare_interrupt_marker(text: str) -> bool:
     return (marker := interrupt_marker(text)) is not None and not text.strip()[len(marker.strip()) :].strip()
 
 
+def is_agent_injection(text: str) -> bool:
+    return AGENT_INJECTION_RE.search(text) is not None
+
+
 def normalize_bare(text: str, strip_trailing: str = TRAILING_PUNCT) -> str:
     return text.strip().rstrip(strip_trailing).strip().lower()
 
@@ -551,5 +555,6 @@ def predicate_to_dict(predicate: Predicate) -> dict[str, Any]:
 
 
 STRUCTURAL_NOISE_RE = compile_groups(STRUCTURAL_NOISE_GROUPS, True)
+AGENT_INJECTION_RE = compile_groups(AGENT_INJECTION_GROUPS, True)
 INTERRUPT_MARKER_RE = compile_groups(INTERRUPT_MARKER_GROUPS, True)
 JUNK_USER_MESSAGE_RE = compile_groups(SENTIMENT_JUNK_GROUPS, True)

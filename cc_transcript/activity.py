@@ -40,10 +40,15 @@ def native_user_classifier(event: UserEvent) -> bool:
     """Whether a user event is a real prompt under native Claude Code semantics.
 
     A prompt is non-meta, non-sidechain, not a compact summary, not an
-    interruption marker, and not tool-result-only — it must carry real text.
+    interruption marker, not an agent-injected relay banner, and not
+    tool-result-only — it must carry real text.
     """
     return not (
-        event.meta.is_meta or event.meta.is_sidechain or event.meta.is_compact_summary or event.interrupted
+        event.meta.is_meta
+        or event.meta.is_sidechain
+        or event.meta.is_compact_summary
+        or event.interrupted
+        or event.is_agent_injected
     ) and bool(event.text.strip())
 
 

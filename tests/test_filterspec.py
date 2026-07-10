@@ -21,6 +21,7 @@ from cc_transcript.filterspec import (
     WordCountAtMost,
     annotate_spec,
     apply_spec,
+    is_agent_injection,
     keep,
     labels_for,
 )
@@ -175,6 +176,30 @@ def test_role_reminder_is_agent_injection_noise() -> None:
     s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
     assert not keep(user("[Role Reminder: You are a Coordinator. You NEVER edit files."), s)
     assert keep(user("remind me what the coordinator role does"), s)
+
+
+AGENT_INJECTION_ROWS = [
+    pytest.param("<teammate-message from='reviewer'>please rebase</teammate-message>", True, id="teammate-message"),
+    pytest.param("<scheduled-task id='7'>run the suite</scheduled-task>", True, id="scheduled-task"),
+    pytest.param("[Role Reminder: You are a Coordinator.", True, id="role-reminder-head-anchored"),
+    pytest.param("# Augment Agent\nyou have these tools", True, id="augment-agent-head-anchored"),
+    # .search() is unanchored, so a mid-text teammate tag still matches — the group regex is not head-anchored.
+    pytest.param("as noted in the <teammate-message> above", True, id="teammate-tag-mid-text-still-matches"),
+    # ...whereas the head-anchored role-reminder group does not match mid-text.
+    pytest.param("discussing the [Role Reminder] banner mid-sentence", False, id="role-reminder-mid-text-no-match"),
+    pytest.param("remind me what the teammate coordinator does", False, id="plain-prose"),
+]
+
+
+@pytest.mark.parametrize(("text", "injected"), AGENT_INJECTION_ROWS)
+def test_is_agent_injection_helper(text: str, injected: bool) -> None:
+    assert is_agent_injection(text) is injected
+
+
+@pytest.mark.parametrize(("text", "injected"), AGENT_INJECTION_ROWS)
+def test_is_agent_injection_matches_agent_injection_group_drop(text: str, injected: bool) -> None:
+    s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
+    assert is_agent_injection(text) is (not keep(user(text), s))
 
 
 def test_applies_to_gates_evaluation() -> None:

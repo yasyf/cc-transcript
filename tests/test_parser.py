@@ -120,6 +120,13 @@ def user_marker_mid_text() -> dict[str, Any]:
     )
 
 
+def user_agent_injection() -> dict[str, Any]:
+    return envelope(
+        type="user",
+        message={"role": "user", "content": "<teammate-message from='reviewer'>please rebase</teammate-message>"},
+    )
+
+
 def assistant_text() -> dict[str, Any]:
     return envelope(
         type="assistant",
@@ -235,6 +242,7 @@ def test_user_str_content() -> None:
     assert event.text == "  fix the bug  "
     assert event.blocks == ()
     assert event.interrupted is False
+    assert event.is_agent_injected is False
     assert event.meta.uuid == EventUuid("uuid-1")
     assert event.meta.parent_uuid == EventUuid("uuid-0")
     assert event.meta.session_id == SessionId("sess-1")
@@ -302,6 +310,16 @@ def test_user_marker_mid_text_is_not_interrupted() -> None:
     event = parse_event(user_marker_mid_text())
     assert isinstance(event, UserEvent)
     assert event.interrupted is False
+
+
+def test_user_agent_injection_flags_relay_banner() -> None:
+    event = parse_event(user_agent_injection())
+    assert isinstance(event, UserEvent)
+    assert event.is_agent_injected is True
+    assert event.interrupted is False
+    prose = parse_event(user_str())
+    assert isinstance(prose, UserEvent)
+    assert prose.is_agent_injected is False
 
 
 def test_assistant_text() -> None:
