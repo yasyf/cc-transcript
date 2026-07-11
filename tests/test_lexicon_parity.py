@@ -1,8 +1,11 @@
 """Parity + drift guards for the dual-backend lexicon.
 
-- The Rust (udpipe) path reproduces the spaCy path's *filter decisions* over the
-  real corpus — the gate that proves sentiment scores don't shift. Skips when the
-  UDPipe model can't be fetched (offline) or spaCy isn't installed.
+- The Rust (udpipe) path reproduces the spaCy path's *filter decisions* over a
+  frozen adversarial fixture — the gate that proves sentiment scores don't shift.
+  The fixture is routed through the same ``JUNK_USER_MESSAGE_RE`` the sentiment
+  engine applies, so protocol wrappers drop before scoring and only genuine prose
+  reaches the comparison. Skips when the UDPipe model can't be fetched (offline) or
+  spaCy isn't installed.
 - Single source: the Rust-embedded overrides equal `Lexicon.DOMAIN_OVERRIDES`, and
   the generated `rust/data/*.tsv` still match the installed `afinn` + overrides.
 """
@@ -16,11 +19,13 @@ from pathlib import Path
 import anyio
 import pytest
 
-from cc_transcript.filterspec import MILD_IMPATIENCE_GROUPS, SHORT_MESSAGE_MAX_WORDS, compile_groups
-from cc_transcript.models import UserEvent
-from cc_transcript.parser import parse_events_from_bytes
+from cc_transcript.filterspec import (
+    JUNK_USER_MESSAGE_RE,
+    MILD_IMPATIENCE_GROUPS,
+    SHORT_MESSAGE_MAX_WORDS,
+    compile_groups,
+)
 from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
-from tests.test_backend_parity import real_corpus
 
 POSITIVE_FLOOR = 3
 HOSTILE_FLOOR = 3
@@ -30,19 +35,73 @@ RUST_DATA = Path(__file__).resolve().parent.parent / "rust" / "data"
 sentiment_extra = importlib.util.find_spec("spacy") is not None and importlib.util.find_spec("afinn") is not None
 requires_sentiment = pytest.mark.skipif(not sentiment_extra, reason="spaCy/afinn ([sentiment]) not installed")
 
+# Genuine-prose fixture for the spaCy/Rust filter-parity comparison, keyed by the
+# tokenizer/lemmatizer divergence source each group probes. Every entry survives
+# JUNK_USER_MESSAGE_RE; the short subset drives the positive-axis check and the mild
+# subset the negative-axis check, mirroring the PositiveClamp and mild-irritation stages.
+ADVERSARIAL_USER_TEXTS: dict[str, tuple[str, ...]] = {
+    "positive": (
+        "this is exactly the fix I wanted",
+        "this is incredible work",
+        "that was an amazing and wonderful solution",
+        "the résumé looks incredible",
+    ),
+    "negative": (
+        "the whole build is completely broken and useless",
+        "this is a terrible and horrible regression",
+        "the deploy is garbage and the server keeps crashing",
+        "the migration script is an absolute nightmare",
+    ),
+    "neutral": (
+        "please update the readme and ship it",
+        "add a new column to the users table",
+        "the parser reads the transcript into events",
+    ),
+    "short_boundary": (
+        "finally it works",
+        "this is broken",
+        "great crisp work",
+        "incredible smooth ship",
+        "absolutely terrible garbage",
+        "it is amazing",
+        "totally useless nonsense",
+        "done",
+    ),
+    "unicode": (
+        "café finally works",
+        "naïve fix broke everything",
+        "café works perfectly",
+    ),
+    "mild_impatience": (
+        "it's broken yet again",
+        "the deploy failed once again",
+        "flaky and broken for the third time",
+        "this terrible bug is back yet again",
+        "still broken once again after the fix",
+    ),
+    "empty_ish": (
+        "",
+        "   ",
+        "...",
+    ),
+}
+
+# Protocol wrappers the sentiment junk filter drops before scoring. The tag-glued
+# 'Login successful' case diverges between spaCy and udpipe, so it must never score.
+WRAPPER_NOISE_TEXTS: tuple[str, ...] = (
+    "<local-command-stdout>Login successful</local-command-stdout>",
+    "<local-command-stderr>fatal: not a git repo</local-command-stderr>",
+    "<command-name>commit</command-name>",
+    "<bash-input>uv run pytest</bash-input>",
+)
+
+GENUINE_USER_TEXTS: tuple[str, ...] = tuple(t for group in ADVERSARIAL_USER_TEXTS.values() for t in group)
+FIXTURE_USER_TEXTS: tuple[str, ...] = GENUINE_USER_TEXTS + WRAPPER_NOISE_TEXTS
+
 
 def parse_tsv(name: str) -> dict[str, int]:
     text = (RUST_DATA / name).read_text(encoding="utf-8")
     return {w: int(s) for w, _, s in (line.partition("\t") for line in text.splitlines()) if s}
-
-
-def corpus_user_texts() -> list[str]:
-    return [
-        e.text
-        for path in real_corpus()
-        for e in parse_events_from_bytes(path.read_bytes())
-        if isinstance(e, UserEvent) and e.text.strip()
-    ]
 
 
 def test_embedded_overrides_match_python_source() -> None:
@@ -66,6 +125,11 @@ def test_generated_afinn_tsv_matches_installed_package() -> None:
     assert parse_tsv("afinn-en-165.tsv") == expected
 
 
+@pytest.mark.parametrize("text", WRAPPER_NOISE_TEXTS)
+def test_wrapper_noise_filtered_before_scoring(text: str) -> None:
+    assert JUNK_USER_MESSAGE_RE.search(text) is not None
+
+
 @requires_sentiment
 def test_rust_filter_decisions_match_spacy(monkeypatch: pytest.MonkeyPatch) -> None:
     rust = rust_lexicon()
@@ -86,11 +150,13 @@ def test_rust_filter_decisions_match_spacy(monkeypatch: pytest.MonkeyPatch) -> N
             return any(Lexicon.polarity(t.lemma_) <= -floor for t in nlp(text) if t.is_alpha)
         return any(Lexicon.polarity(t.lemma_) >= floor for t in nlp(text) if t.is_alpha)
 
-    texts = corpus_user_texts()
-    short = [t for t in texts if len(t.split()) <= SHORT_MESSAGE_MAX_WORDS]
-    mild = [t for t in texts if MILD_IMPATIENCE_RE.search(t)]
-    if not short:
-        pytest.skip("corpus produced no short messages")
+    prose = [t for t in FIXTURE_USER_TEXTS if not JUNK_USER_MESSAGE_RE.search(t)]
+    assert prose == list(GENUINE_USER_TEXTS), "junk filter must drop the wrappers and keep every genuine-prose entry"
+
+    short = [t for t in prose if len(t.split()) <= SHORT_MESSAGE_MAX_WORDS]
+    mild = [t for t in prose if MILD_IMPATIENCE_RE.search(t)]
+    assert short and mild, "frozen fixture must exercise both the short and mild subsets"
+
     pos_bad = [
         t
         for t in short
