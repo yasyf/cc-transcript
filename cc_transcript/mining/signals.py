@@ -20,6 +20,7 @@ and reasons instead of re-deriving them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -61,12 +62,19 @@ from cc_transcript.mining.spec import (
     regex_review_comments,
     score_user_message,
 )
-from cc_transcript.models import AssistantEvent, ModeEvent, ToolResultBlock, ToolUseBlock, UserEvent
-from cc_transcript.tools import matches_names
+from cc_transcript.models import (
+    AssistantEvent,
+    ModeEvent,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserEvent,
+    parse_questions,
+)
+from cc_transcript.tools import AskUserQuestionResult, matches_names
 
 if TYPE_CHECKING:
     import re
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Sequence
     from datetime import datetime
     from typing import Any
 
@@ -416,16 +424,6 @@ class AnsweredPair(NamedTuple):
     notes: str | None
 
 
-def answered_question_results(event: UserEvent) -> Iterator[ToolResultBlock]:
-    return (
-        block
-        for block in event.blocks
-        if isinstance(block, ToolResultBlock)
-        if not block.is_error
-        if block.content.startswith(ANSWERED_PREFIX)
-    )
-
-
 def split_answer_segment(segment: str) -> tuple[str, str | None, str | None]:
     if (at := segment.find(ANSWER_PREVIEW_SEP)) != -1:
         rest = segment[at + len(ANSWER_PREVIEW_SEP) :]
@@ -534,18 +532,47 @@ def question_answer_signal(
     )
 
 
+def structured_answered_pairs(payload: Mapping[str, Any], use: ToolUseBlock) -> Iterator[AnsweredPair]:
+    result = AskUserQuestionResult.from_raw("AskUserQuestion", payload)
+    questions = parse_questions(payload.get("questions"))
+    for question in use.questions or () if questions is None else questions:
+        annotation = result.annotations.get(question.question)
+        yield AnsweredPair(
+            question,
+            result.answers.get(question.question),
+            annotation.preview if annotation is not None else None,
+            annotation.notes if annotation is not None else None,
+        )
+
+
+def banner_answered_pairs(block: ToolResultBlock, use: ToolUseBlock) -> Iterator[AnsweredPair]:
+    if (
+        block.is_error
+        or not block.content.startswith(ANSWERED_PREFIX)
+        or not block.content.endswith(ANSWERED_TRAILER)
+        or (questions := use.questions) is None
+    ):
+        return
+    yield from answered_pairs(block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], questions)
+
+
+def question_pairs(block: ToolResultBlock, use: ToolUseBlock) -> Iterator[AnsweredPair]:
+    if not block.is_error and isinstance(payload := block.tool_use_result, Mapping) and "answers" in payload:
+        return structured_answered_pairs(payload, use)
+    return banner_answered_pairs(block, use)
+
+
 def iter_ask_user_question_signals(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
     uses = tool_uses(events)
     return (
         signal
         for index, event in enumerate(events)
         if isinstance(event, UserEvent)
-        for block in answered_question_results(event)
+        for block in event.blocks
+        if isinstance(block, ToolResultBlock)
         if (use := uses.get(block.tool_use_id)) is not None
         if use.name == "AskUserQuestion"
-        if block.content.endswith(ANSWERED_TRAILER)
-        if (questions := use.questions) is not None
-        for pair in answered_pairs(block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], questions)
+        for pair in question_pairs(block, use)
         if (signal := question_answer_signal(events, event, index, pair, spec)) is not None
     )
 

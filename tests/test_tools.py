@@ -536,6 +536,21 @@ def test_ask_user_question_result_lifts_questions_answers_annotations() -> None:
     )
 
 
+def test_ask_user_question_result_drops_non_string_answer_values() -> None:
+    result = parse_tool_result("AskUserQuestion", {"answers": {"Q?": 42, "R?": "kept"}})
+    assert isinstance(result, AskUserQuestionResult)
+    assert result.answers == {"R?": "kept"}
+
+
+def test_ask_user_question_result_non_string_annotation_leaves_read_as_none() -> None:
+    result = parse_tool_result(
+        "AskUserQuestion",
+        {"answers": {"Q?": "A"}, "annotations": {"Q?": {"notes": 3, "preview": ["not", "a", "string"]}}},
+    )
+    assert isinstance(result, AskUserQuestionResult)
+    assert result.annotations == {"Q?": QuestionAnnotation(preview=None, notes=None)}
+
+
 def test_string_payload_becomes_text_result() -> None:
     result = parse_tool_result("Bash", "The user doesn't want to proceed with this tool use.")
     assert result == TextResult(name="Bash", raw="", text="The user doesn't want to proceed with this tool use.")

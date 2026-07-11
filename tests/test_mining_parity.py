@@ -35,7 +35,7 @@ from cc_transcript.filterspec import (
 from cc_transcript.mining.confidence import MEDIUM
 from cc_transcript.mining.engine import mine_signals, rust_mine_backend
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
-from cc_transcript.mining.signals import mine
+from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED, mine
 from cc_transcript.mining.spec import (
     Base,
     BumpIfProximate,
@@ -191,6 +191,54 @@ def auq_round(questions: list[dict[str, Any]], content: str, *, is_error: bool =
         assistant("a1", tool_use("t1", "AskUserQuestion", questions=questions)),
         user_result("u1", "t1", content, is_error=is_error),
     ]
+
+
+def render_pairs(
+    questions: list[dict[str, Any]], answers: dict[str, str], annotations: dict[str, dict[str, str]]
+) -> str:
+    """Render a round's answers/annotations into the ANSWERED banner's pair body."""
+    segments = []
+    for question in questions:
+        text = question["question"]
+        answer = answers.get(text)
+        head = f'"{text}"="{answer}"' if answer is not None else f'"{text}"={NO_OPTION_SELECTED}'
+        annotation = annotations.get(text, {})
+        if (preview := annotation.get("preview")) is not None:
+            head += f"{ANSWER_PREVIEW_SEP}{preview}"
+        if (notes := annotation.get("notes")) is not None:
+            head += f"{ANSWER_NOTES_SEP}{notes}"
+        segments.append(head)
+    return ", ".join(segments)
+
+
+def auq_payload(
+    questions: list[dict[str, Any]], answers: dict[str, str], annotations: dict[str, dict[str, str]] | None = None
+) -> dict[str, Any]:
+    return {"questions": questions, "answers": answers, "annotations": annotations or {}}
+
+
+def auq_round_structured(
+    questions: list[dict[str, Any]],
+    answers: dict[str, str],
+    annotations: dict[str, dict[str, str]] | None = None,
+    *,
+    content: str,
+    is_error: bool = False,
+) -> list[dict[str, Any]]:
+    """A round whose result carries the structured toolUseResult payload."""
+    return [
+        assistant("a1", tool_use("t1", "AskUserQuestion", questions=questions)),
+        user_result(
+            "u1", "t1", content, is_error=is_error, toolUseResult=auq_payload(questions, answers, annotations)
+        ),
+    ]
+
+
+def auq_round_banner(
+    questions: list[dict[str, Any]], answers: dict[str, str], annotations: dict[str, dict[str, str]] | None = None
+) -> list[dict[str, Any]]:
+    """The same round rendered banner-only, with no structured payload."""
+    return auq_round(questions, answered(render_pairs(questions, answers, annotations or {})))
 
 
 # ── the per-detector battery: one parameterized case per shape, plus near-misses ──
@@ -569,6 +617,112 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             ),
             SPEC,
         ),
+        # ── structured-first: pairs built from the toolUseResult payload, not the banner ──
+        "auq_structured_only": (
+            auq_round_structured(
+                [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                {"Which adapter?": "Storage (Recommended)"},
+                content="answered",
+            ),
+            SPEC,
+        ),
+        "auq_structured_multiselect": (
+            auq_round_structured(
+                [
+                    auq_question(
+                        "Which docs pages?",
+                        "Docs",
+                        "Getting started",
+                        "How it works, end to end",
+                        "CLI reference",
+                        multi_select=True,
+                    )
+                ],
+                {"Which docs pages?": "Getting started, How it works, end to end"},
+                content="answered",
+            ),
+            SPEC,
+        ),
+        "auq_structured_omitted": (
+            auq_round_structured(
+                [
+                    auq_question("First unanswered?", "One", "A", "B"),
+                    auq_question("Second answered?", "Two", "C", "D"),
+                ],
+                {"Second answered?": "C"},
+                {"First unanswered?": {"notes": "leave this one alone"}},
+                content="answered",
+            ),
+            SPEC,
+        ),
+        "auq_structured_annotations": (
+            auq_round_structured(
+                [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
+                {"How far should enable go?": "Full turnkey (Recommended)"},
+                {"How far should enable go?": {"preview": "$ tool enable\n==> done", "notes": "make it turnkey"}},
+                content="answered",
+            ),
+            SPEC,
+        ),
+        # An error round carrying a full structured payload mines nothing: the
+        # structured branch is gated on !is_error just like the banner path.
+        "auq_structured_error_zero": (
+            auq_round_structured(
+                [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                {"Which adapter?": "Storage (Recommended)"},
+                content=answered('"Which adapter?"="Storage (Recommended)"'),
+                is_error=True,
+            ),
+            SPEC,
+        ),
+        # A malformed annotation leaf (numeric notes) reads as absent on both
+        # backends: the plain answer signal, no notes key in evidence.
+        "auq_structured_numeric_notes_leaf": (
+            [
+                assistant(
+                    "a1",
+                    tool_use(
+                        "t1",
+                        "AskUserQuestion",
+                        questions=[auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                    ),
+                ),
+                user_result(
+                    "u1",
+                    "t1",
+                    "answered",
+                    is_error=False,
+                    toolUseResult={
+                        "questions": [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                        "answers": {"Which adapter?": "Storage (Recommended)"},
+                        "annotations": {"Which adapter?": {"notes": 3}},
+                    },
+                ),
+            ],
+            SPEC,
+        ),
+        # A payload with answers but no questions key falls back to the tool-use
+        # input's questions instead of mining nothing.
+        "auq_structured_no_questions_key": (
+            [
+                assistant(
+                    "a1",
+                    tool_use(
+                        "t1",
+                        "AskUserQuestion",
+                        questions=[auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+                    ),
+                ),
+                user_result(
+                    "u1",
+                    "t1",
+                    answered('"Which adapter?"="Storage (Recommended)"'),
+                    is_error=False,
+                    toolUseResult={"answers": {"Which adapter?": "Storage (Recommended)"}},
+                ),
+            ],
+            SPEC,
+        ),
     }
 
 
@@ -674,6 +828,149 @@ def test_alias_plan_denials_mine_as_plan_rejections_not_denials(name: str) -> No
     detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
     assert "exit_plan_rejection" in detectors
     assert "denial" not in detectors
+
+
+# Rounds exercising the structured-first path against its banner rendering: single
+# pick, pick+notes, comma-bearing multiSelect labels, an omitted answer, preview+notes,
+# and a full two-question round.
+STRUCTURED_ROUNDS: dict[str, tuple[list[dict[str, Any]], dict[str, str], dict[str, dict[str, str]]]] = {
+    "single_pick": (
+        [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+        {"Which adapter?": "Storage (Recommended)"},
+        {},
+    ),
+    "pick_with_notes": (
+        [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+        {"Which adapter?": "Storage (Recommended)"},
+        {"Which adapter?": {"notes": "and never use the memory one again"}},
+    ),
+    "multiselect_comma_label": (
+        [
+            auq_question(
+                "Which docs pages?",
+                "Docs",
+                "Getting started",
+                "How it works, end to end",
+                "CLI reference",
+                multi_select=True,
+            )
+        ],
+        {"Which docs pages?": "Getting started, How it works, end to end"},
+        {},
+    ),
+    "omitted_with_notes": (
+        [auq_question("First unanswered?", "One", "A", "B"), auq_question("Second answered?", "Two", "C", "D")],
+        {"Second answered?": "C"},
+        {"First unanswered?": {"notes": "leave this one alone"}},
+    ),
+    "preview_and_notes": (
+        [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")],
+        {"How far should enable go?": "Full turnkey (Recommended)"},
+        {"How far should enable go?": {"preview": "$ tool enable\n==> done", "notes": "make it turnkey"}},
+    ),
+    "full_round": (
+        [
+            auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory"),
+            auq_question(
+                "Which docs pages?",
+                "Docs",
+                "Getting started",
+                "How it works, end to end",
+                "CLI reference",
+                multi_select=True,
+            ),
+        ],
+        {"Which adapter?": "Storage (Recommended)", "Which docs pages?": "Getting started, How it works, end to end"},
+        {"Which adapter?": {"notes": "and never use the memory one again"}},
+    ),
+}
+
+
+@requires_rust
+@pytest.mark.parametrize("name", STRUCTURED_ROUNDS)
+def test_ask_user_question_structured_matches_banner(name: str) -> None:
+    """Structured payload, banner, and both-present all mine the same non-empty signals."""
+    questions, answers, annotations = STRUCTURED_ROUNDS[name]
+    structured = to_bytes(auq_round_structured(questions, answers, annotations, content="answered"))
+    banner = to_bytes(auq_round_banner(questions, answers, annotations))
+    both = to_bytes(
+        auq_round_structured(
+            questions, answers, annotations, content=answered(render_pairs(questions, answers, annotations))
+        )
+    )
+    for raw in (structured, banner, both):
+        assert rust_dicts(raw, SPEC) == py_dicts(raw, SPEC)
+    banner_signals = py_dicts(banner, SPEC)
+    assert banner_signals
+    assert py_dicts(structured, SPEC) == banner_signals
+    assert py_dicts(both, SPEC) == banner_signals
+
+
+@requires_rust
+def test_ask_user_question_structured_omitted_matches_no_option_selected() -> None:
+    """A question absent from ``answers`` mines exactly as the banner's ``(no option selected)``."""
+    questions = [auq_question("First unanswered?", "One", "A", "B"), auq_question("Second answered?", "Two", "C", "D")]
+    answers = {"Second answered?": "C"}
+    annotations = {"First unanswered?": {"notes": "leave this one alone"}}
+    structured = py_dicts(to_bytes(auq_round_structured(questions, answers, annotations, content="answered")), SPEC)
+    banner = py_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
+    assert structured == banner
+    omitted = next(signal for signal in structured if signal["evidence"]["question"] == "First unanswered?")
+    assert omitted["evidence"]["option_pick"] is False
+    assert omitted["evidence"]["picked_labels"] == []
+    assert omitted["text"] == "leave this one alone"
+
+
+@requires_rust
+def test_ask_user_question_structured_annotations_flow_into_evidence() -> None:
+    """Preview and notes from ``annotations`` land in evidence exactly as the banner path's do."""
+    questions = [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")]
+    answers = {"How far should enable go?": "Full turnkey (Recommended)"}
+    annotations = {"How far should enable go?": {"preview": "$ tool enable\n==> done", "notes": "make it turnkey"}}
+    structured = to_bytes(auq_round_structured(questions, answers, annotations, content="answered"))
+    structured_signals = py_dicts(structured, SPEC)
+    assert rust_dicts(structured, SPEC) == structured_signals
+    assert structured_signals == py_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
+    [signal] = structured_signals
+    assert signal["evidence"]["preview"] == "$ tool enable\n==> done"
+    assert signal["evidence"]["notes"] == "make it turnkey"
+    assert signal["text"] == "make it turnkey"
+
+
+@requires_rust
+def test_ask_user_question_error_round_with_payload_mines_nothing() -> None:
+    """An is_error round yields zero signals on both paths, both backends."""
+    questions = [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")]
+    answers = {"Which adapter?": "Storage (Recommended)"}
+    raw = to_bytes(
+        auq_round_structured(questions, answers, content=answered(render_pairs(questions, answers, {})), is_error=True)
+    )
+    assert py_dicts(raw, SPEC) == []
+    assert rust_dicts(raw, SPEC) == []
+
+
+@requires_rust
+def test_ask_user_question_payload_without_questions_falls_back_to_use_questions() -> None:
+    """A payload carrying only ``answers`` mines via the tool-use input's questions."""
+    questions = [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")]
+    answers = {"Which adapter?": "Storage (Recommended)"}
+    raw = to_bytes(
+        [
+            assistant("a1", tool_use("t1", "AskUserQuestion", questions=questions)),
+            user_result(
+                "u1",
+                "t1",
+                answered(render_pairs(questions, answers, {})),
+                is_error=False,
+                toolUseResult={"answers": answers},
+            ),
+        ]
+    )
+    signals = py_dicts(raw, SPEC)
+    assert rust_dicts(raw, SPEC) == signals
+    banner_signals = py_dicts(to_bytes(auq_round_banner(questions, answers)), SPEC)
+    assert banner_signals
+    assert signals == banner_signals
 
 
 def test_structured_user_rejected_denial_mines_without_banner() -> None:

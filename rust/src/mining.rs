@@ -14,7 +14,7 @@ use crate::generated::mining::{
     DETECTOR_REVIEW_COMMENT, DETECTOR_TRANSCRIPT_MESSAGE, INTERRUPT_REJECTION, LOW, NONE,
     NO_OPTION_SELECTED, PLAN_REVIEW, QUESTION_ANSWER, REVIEW_COMMENT, TRANSCRIPT_MESSAGE,
 };
-use crate::parse::{parse_bytes, ParseError};
+use crate::parse::{parse_bytes, parse_questions, ParseError};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
     DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
@@ -1013,14 +1013,6 @@ fn iter_review_comment<'py>(
     Ok(())
 }
 
-/// The answered AskUserQuestion tool-result blocks of a user event
-/// (signals.py answered_question_results): non-error blocks whose content
-/// starts with the answered banner.
-fn answered_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
-    user.tool_results()
-        .filter(|b| !b.is_error && b.content.starts_with(ANSWERED_PREFIX))
-}
-
 struct AnsweredPair<'a> {
     question: &'a Question,
     answer: Option<&'a str>,
@@ -1097,6 +1089,42 @@ fn answered_pairs<'a>(body: &'a str, questions: &'a [Question]) -> Vec<AnsweredP
     pairs
 }
 
+/// structured_answered_pairs (signals.py structured_answered_pairs): one pair per
+/// question (the caller passes the payload's own `questions`, falling back to the
+/// tool-use input's), answer from `answers` (None ⇒ the banner's `(no option
+/// selected)`), preview/notes from `annotations`.
+fn structured_answered_pairs<'a>(payload: &'a Value, questions: &'a [Question]) -> Vec<AnsweredPair<'a>> {
+    let answers = field(payload, "answers");
+    let annotations = field(payload, "annotations");
+    questions
+        .iter()
+        .map(|question| {
+            let annotation = annotations.and_then(|a| field(a, &question.question));
+            AnsweredPair {
+                question,
+                answer: answers.and_then(|a| field_str(a, &question.question)),
+                preview: annotation.and_then(|a| field_str(a, "preview")),
+                notes: annotation.and_then(|a| field_str(a, "notes")),
+            }
+        })
+        .collect()
+}
+
+/// banner_answered_pairs (signals.py banner_answered_pairs): old-transcript fallback —
+/// re-parse the prefix/trailer-wrapped answered banner against the tool-use questions.
+fn banner_answered_pairs<'a>(block: &'a ToolResultBlock, use_block: &'a ToolUseBlock) -> Vec<AnsweredPair<'a>> {
+    let content = &block.content;
+    if block.is_error
+        || !content.starts_with(ANSWERED_PREFIX)
+        || !content.ends_with(ANSWERED_TRAILER)
+        || content.len() < ANSWERED_PREFIX.len() + ANSWERED_TRAILER.len()
+    {
+        return Vec::new();
+    }
+    let Some(questions) = use_block.questions.as_deref() else { return Vec::new() };
+    answered_pairs(&content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()], questions)
+}
+
 /// join_labels (signals.py join_labels): the multiSelect resolution — split the
 /// answer on ', ' and greedily re-join consecutive parts until each accumulation
 /// equals the next unused label in option order; succeeds only when every part is
@@ -1150,8 +1178,9 @@ fn resolve_pick(answer: Option<&str>, labels: &[String]) -> (Vec<String>, bool) 
 }
 
 /// iter_ask_user_question_signals (signals.py iter_ask_user_question_signals):
-/// one signal per answered question/answer pair, with the pick resolution facts
-/// as evidence (absent preview/notes keys are omitted, never None).
+/// one signal per answered question/answer pair — pairs built structurally from the
+/// `toolUseResult` payload when it carries `answers`, else banner-parsed — with the
+/// pick resolution facts as evidence (absent preview/notes keys are omitted, never None).
 fn iter_ask_user_question<'py>(
     py: Python<'py>,
     events: &Events,
@@ -1161,21 +1190,28 @@ fn iter_ask_user_question<'py>(
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
         let Entry::User(user) = entry else { continue };
-        for block in answered_results(user) {
+        for block in user.tool_results() {
             let Some(use_block) = uses.get(block.tool_use_id.as_str()) else { continue };
             if use_block.name != "AskUserQuestion" {
                 continue;
             }
-            let content = &block.content;
-            if !content.ends_with(ANSWERED_TRAILER)
-                || content.len() < ANSWERED_PREFIX.len() + ANSWERED_TRAILER.len()
-            {
-                continue;
-            }
-            let body = &content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()];
-            let Some(questions) = use_block.questions.as_deref() else { continue };
+            let structured = block
+                .tool_use_result
+                .as_ref()
+                .filter(|payload| !block.is_error && field(payload, "answers").is_some());
+            let structured_questions = structured.and_then(|payload| parse_questions(payload));
+            let pairs = match structured {
+                Some(payload) => structured_answered_pairs(
+                    payload,
+                    structured_questions
+                        .as_deref()
+                        .or(use_block.questions.as_deref())
+                        .unwrap_or(&[]),
+                ),
+                None => banner_answered_pairs(block, use_block),
+            };
             let trigger = events.nearest_assistant_index(index);
-            for pair in answered_pairs(body, questions) {
+            for pair in pairs {
                 let (picked, option_pick) = resolve_pick(pair.answer, &pair.question.labels);
                 let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
                 let Some(text) = pair.notes.or(pair.answer) else { continue };

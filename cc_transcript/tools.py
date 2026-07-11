@@ -712,8 +712,10 @@ class AskUserQuestionResult(ToolResultBase):
         questions: The rounds echoed in the payload, lifted via
             :func:`~cc_transcript.models.parse_questions`.
         answers: A mapping from each round's question text to the chosen answer.
+            Non-string answer values are dropped, mirroring the Rust lift.
         annotations: A mapping from question text to the reviewer's
             :class:`QuestionAnnotation`, present only for annotated rounds.
+            Non-string preview/notes leaves read as None, mirroring the Rust lift.
     """
 
     answers: Mapping[str, str] = field(default_factory=dict)
@@ -724,9 +726,14 @@ class AskUserQuestionResult(ToolResultBase):
         return cls(
             name=name,
             raw=raw,
-            answers=answers if isinstance(answers := raw.get("answers"), Mapping) else {},
+            answers={question: answer for question, answer in answers.items() if isinstance(answer, str)}
+            if isinstance(answers := raw.get("answers"), Mapping)
+            else {},
             annotations={
-                question: QuestionAnnotation(preview=value.get("preview"), notes=value.get("notes"))
+                question: QuestionAnnotation(
+                    preview=preview if isinstance(preview := value.get("preview"), str) else None,
+                    notes=notes if isinstance(notes := value.get("notes"), str) else None,
+                )
                 for question, value in annotations.items()
                 if isinstance(value, Mapping)
             }
