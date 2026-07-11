@@ -8,6 +8,7 @@ Typed events for Claude Code transcripts: discovery, a superset JSONL parser —
 ```
 cc-transcript/
 ├── cc_transcript/      # The package
+│   ├── __init__.py     # The platform façade: the one-spine public API re-exports
 │   ├── models.py       # Typed superset event model (the central contract)
 │   ├── ids.py          # Identity primitives shared by every layer of the platform
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
@@ -20,15 +21,19 @@ cc-transcript/
 │   ├── command.py      # Parsed bash command lines: Command/CommandLine/CommandLineQuery, tree-sitter-backed
 │   ├── facts.py        # Tool-call analytics substrate lifted from session activity
 │   ├── activity.py     # Session activity lifted from parsed transcript events
+│   ├── activity_probe.py # Dual-backend is_waiting oracle over one transcript (captain-hook's probe)
+│   ├── notifications.py # Harness notification-delivery queue, replayed from a session's events
 │   ├── query.py        # Session-level queries over lifted activity
 │   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
 │   ├── evidence.py     # Evidence harvest around a feedback anchor
+│   ├── ledger.py       # SyncLedger — the append-only SQLite base under both family ledgers
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
 │   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes
 │   ├── corrections_cli.py # The corrections CLI: the ledger for non-Python consumers
 │   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
 │   ├── cost.py         # Token-usage → USD cost model (cost_of, PRICING)
 │   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
+│   ├── __main__.py     # python -m cc_transcript → the CLI
 │   ├── render.py       # The one renderer — every cut happens here, under a Budget
 │   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
 │   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
@@ -36,12 +41,16 @@ cc-transcript/
 │   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
 │   └── sentiment/      # Sentiment domain: event buckets + composable score spec
 ├── rust/               # Rust extension (cc_transcript._parser_rs)
+├── rust-swift/         # swift-bridge crate (cc_transcript_swift) over the Rust core
+├── swift/              # Generated Swift package: bridge sources + the committed macos-arm64 xcframework
 ├── tests/              # Pytest suite
-├── docs/               # Great Docs site: guides + curated API reference
-├── scripts/            # Maintenance scripts: lexicon data build
+├── docs/               # Guide and getting-started sources for the docs site
+├── great-docs/         # The Great Docs Quarto project: site config + curated API reference
+├── scripts/            # Maintenance scripts: lexicon data, Rust literals, the Swift package build
 ├── .claude-plugin/     # Claude Code plugin + marketplace manifests
 ├── skills/             # cc-transcript-investigate skill (CLI-driven transcript investigation)
 ├── .github/            # CI, docs, and PyPI release workflows
+├── Package.swift       # Root SPM manifest: CCTranscript over the committed xcframework
 ├── AGENTS.md           # This file — shared conventions
 └── README.md           # Project overview
 ```
