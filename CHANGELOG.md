@@ -4,6 +4,65 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.7.0] - 2026-07-10
+
+### Added
+- **Generated Rust literals.** Every constant the Rust backend used to hand-mirror
+  from Python — the CC-protocol marker strings and patterns, the mining source-kind
+  and detector ids, the answer separators and confidence floors, and the bash
+  command tables — is now rendered by `scripts/build_rust_literals.py` from the
+  Python source of truth into committed `rust/src/generated/` modules. One manifest
+  drives both the emission and the drift gate: `_parser_rs.embedded_literals()`
+  exposes every embedded value, and `tests/test_literals_parity.py` asserts
+  whole-dict equality against the Python constants plus byte-for-byte freshness of
+  the committed files. The "mirror this in Rust" comment discipline is gone with
+  the duplication it policed.
+- **`Question` and `ToolUseBlock.questions`.** A typed lift of AskUserQuestion
+  rounds onto the event model, mirroring the Rust parse layer field-for-field —
+  including its leniency on malformed input — so the mining detectors consume
+  typed rounds instead of hand-parsing `input` dicts.
+- **`ToolUseBlock.file_path`.** The uniform raw lift of the input's `file_path`
+  (a string, else `None`), matching the Rust parse-time field byte-for-byte;
+  denial evidence reads it instead of reaching into the raw input.
+- **`compile_groups(..., multiline=...)`.** The one group compiler now covers the
+  review-format case; see Removed.
+- **Toolchain pin test.** `tests/test_toolchain_parity.py` asserts `tree-sitter-bash`
+  resolves to the same version in `Cargo.lock` and `uv.lock` (and the core crate
+  stays on one minor), so a grammar bump on one side of the bash-parsing parity
+  pair fails fast instead of drifting silently.
+
+### Changed
+- **One sync-ledger implementation.** `CorrectionLog` and `DecisionLog` now share
+  a `SyncLedger` base owning the connection setup, schema-driven append, and
+  session queries. Schemas, dedup semantics, and every public query are unchanged.
+
+### Removed
+- **`mining.spec.compile_review_format`.** Folded into
+  `filterspec.compile_groups(multiline=True)`; the compiled pattern string and
+  flags are byte-identical.
+
+### Fixed
+- **Sentiment buckets apply the junk filter.** `SENTIMENT_JUNK_GROUPS` existed but
+  nothing in the sentiment path consumed it, so `ConversationBucketer` scored CC
+  protocol noise — slash-command wrappers, interrupt markers, stop-hook feedback,
+  bash-mode echoes — as authored prose. `bucket_events` now drops junk turns
+  before `MIN_USER_TURNS` eligibility, the junk set gains the bash-mode command
+  echoes, `<local-command-stderr>` joins its sibling wrappers, and the command-echo
+  pattern is start-anchored so a turn that merely mentions `<bash-input>`
+  mid-sentence stays scored. Sentiment scores over noisy sessions change
+  accordingly — a deliberate correction.
+- **The interrupt marker folds identically in both engines.** The leading "i" of
+  "interrupted" is ASCII-pinned via `(?-i:[Ii])`, closing a dotted/dotless-I
+  divergence where Python `re.IGNORECASE` matched U+0130/U+0131 substitutions and
+  the Rust regex crate did not — the same discipline `role_reminder` already uses.
+- **`--no-default-features` builds need no Python.** `pyo3-build-config` is now an
+  optional, feature-gated build dependency, so the Swift consumer's build resolves
+  zero pyo3 crates and runs on machines without a Python toolchain.
+- **The lexicon spaCy-parity test is hermetic.** It sampled live transcripts from
+  the running machine, so pass/fail depended on what happened to be on disk; it now
+  runs a frozen adversarial fixture covering both scoring axes and asserts the
+  protocol-wrapper strings are junk-filtered before scoring.
+
 ## [10.6.0] - 2026-07-10
 
 ### Fixed
