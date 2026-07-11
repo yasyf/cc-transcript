@@ -22,6 +22,7 @@ from cc_transcript.filterspec import (
     WordCountAtMost,
     annotate_spec,
     apply_spec,
+    interrupt_marker,
     is_agent_injection,
     keep,
     labels_for,
@@ -221,6 +222,17 @@ def test_is_agent_injection_helper(text: str, injected: bool) -> None:
 def test_is_agent_injection_matches_agent_injection_group_drop(text: str, injected: bool) -> None:
     s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
     assert is_agent_injection(text) is (not keep(user(text), s))
+
+
+def test_interrupt_marker_ascii_pins_leading_i() -> None:
+    assert (
+        interrupt_marker("  [request INTERRUPTED by user for tool use]")
+        == "[request INTERRUPTED by user for tool use]"
+    )
+    # The leading "i" is ASCII-pinned: re.IGNORECASE must no longer fold the dotted/
+    # dotless-I forms (U+0130/U+0131) that Rust regex never matched — Rust parity.
+    assert interrupt_marker("[Request ınterrupted by user]") is None
+    assert interrupt_marker("[Request İnterrupted by user]") is None
 
 
 def test_applies_to_gates_evaluation() -> None:

@@ -92,6 +92,10 @@ mod tests {
             Some("[request INTERRUPTED by user for tool use]")
         );
         assert_eq!(interrupt_marker("she typed [Request interrupted by user] mid-text"), None);
+        // The leading "i" of "interrupted" is ASCII-pinned: the dotted/dotless-I forms
+        // (U+0130/U+0131) that Python re once folded must never match on either backend.
+        assert_eq!(interrupt_marker("[Request \u{0131}nterrupted by user]"), None);
+        assert_eq!(interrupt_marker("[Request \u{0130}nterrupted by user]"), None);
     }
 
     #[test]

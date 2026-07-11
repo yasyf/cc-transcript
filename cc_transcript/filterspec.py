@@ -67,7 +67,12 @@ AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
     ("role_reminder", r"\A\s*\[Role Rem(?-i:[Ii])nder(?:[\s:\]]|$)"),
 )
 
-INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (("interrupt", r"^\s*\[Request interrupted by user"),)
+# The leading "i" of "interrupted" is ASCII-pinned (?-i:[Ii]) so Python re.IGNORECASE
+# doesn't fold the dotted/dotless-I forms (U+0130/U+0131) that Rust regex never matches.
+# Dialect-hardened for Rust-regex parity — see cc-notes doc "rust-regex-dialect-parity".
+INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (
+    ("interrupt", r"^\s*\[Request (?-i:[Ii])nterrupted by user"),
+)
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
 # Raw CC-injected protocol strings carried in tool-result content: the denial banner

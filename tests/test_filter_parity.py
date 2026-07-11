@@ -121,6 +121,7 @@ BATTERY = [
     "[Request interrupted by user]",
     "  [request INTERRUPTED by user for tool use]",  # leading whitespace + case fold: still matches
     "she quoted [Request interrupted by user] mid-text",  # ^-anchored: mid-text marker kept
+    "[Request ınterrupted by user]",  # dotless-I (U+0131) leading i: ASCII-pinned, no fold either backend
     "Stop hook feedback: ruff failed",
     "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
     "go ahead and commit and push all the repos",

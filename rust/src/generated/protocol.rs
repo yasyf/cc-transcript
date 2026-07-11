@@ -6,5 +6,5 @@ pub const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n
 pub const USER_SAID_TRAILER: &str = "Note: The user's next message";
 pub const ANSWERED_PREFIX: &str = "Your questions have been answered: ";
 pub const ANSWERED_TRAILER: &str = ". You can now continue with these answers in mind.";
-pub const INTERRUPT_MARKER_PATTERN: &str = "(?:^\\s*\\[Request interrupted by user)";
+pub const INTERRUPT_MARKER_PATTERN: &str = "(?:^\\s*\\[Request (?-i:[Ii])nterrupted by user)";
 pub const AGENT_INJECTION_PATTERN: &str = "(?:\\A\\s*<(?:teammate-message|scheduled-task)(?:[\\s/>]|$))|(?:\\A\\s*# Augment Agent(?:\\s|$))|(?:\\A\\s*\\[Role Rem(?-i:[Ii])nder(?:[\\s:\\]]|$))";
