@@ -4,6 +4,66 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [12.0.0] - 2026-07-11
+
+The sentiment lexicon is rebuilt around one principle: AFINN is surface-keyed,
+so lookup is surface-keyed too. Both lemmatizers are gone, scoring is
+deterministic and identical across backends, and the lexicon carries no
+models, no downloads, and no optional extra. One breaking change (the lexicon
+API).
+
+### Changed
+- **BREAKING: surface-only lexicon lookup with a shared deterministic tokenizer.**
+  Both backends lemmatized each token and looked the lemma up in surface-keyed
+  tables — a category error against AFINN, which calibrates inflections as
+  separate rows. Lookup is now surface-form over the same package-data TSVs on
+  both sides (`importlib.resources` in Python, `include_str!` in Rust), behind
+  one tokenizer: maximal runs of Unicode letter characters (Python
+  `str.isalpha` semantics; Rust matches them exactly through a generated
+  660-range table pinned to Unicode 15.1.0), lowercased per run.
+  `Lexicon.has_hit` loses its `floor` parameter — the ±3 floor is fixed — and
+  `clamp_positive()`/`demote_mild_irritation()` lose theirs with it (no caller
+  ever overrode them). The domain-override table grows 38 → 61 rows: audited
+  inflection closures for the strong families, the break-family calibration
+  (`broke`/`breaks`/`breaking` at -2 versus `broken` at -3, now reliably
+  reachable), and the dictionary-sweep additions `dies`, `panicking`, `misled`,
+  `crises`, and `quitted`. A 252k-word sweep against both old lemmatizers
+  pinned those five as the entire real regression surface.
+- **rustfmt is the enforced baseline.** `cargo fmt` over the crate, an edition
+  pin in `rust/rustfmt.toml`, and a `cargo fmt --check` gate in CI.
+
+### Removed
+- **The `[sentiment]` extra and both lemmatizers.** The spaCy `NLP` class and
+  model-download machinery, `Lexicon.ensure_ready`,
+  `FilteredEngine.prepare_lexicon`, the `lexicon_available` binding, and the
+  Rust UDPipe machinery with its scoring-path mutex, LINDAT mirror workaround,
+  and `udpipe-rs`/`dirs` dependencies. The lexicon needs nothing beyond the
+  wheel.
+- **`scripts/build_lexicon_data.py`.** The TSVs under
+  `cc_transcript/sentiment/data/` are the canonical vendored data (AFINN-165
+  provenance in the header); `tests/test_lexicon_parity.py` owns their
+  validation.
+
+### Fixed
+- **Cross-backend scoring nondeterminism.** spaCy and UDPipe picked different
+  rows for the same text — "this is broken" crossed the hostile floor on Rust
+  but not on Python — and 23% of floor-relevant vocabulary disagreed across
+  backends. One deterministic path remains.
+- **Strong inflections scored zero.** "lost" and "losing" carry -3 in AFINN,
+  but the lemma "lose" has no row, so both backends scored them 0. Surface
+  lookup restores them (`lost` appeared 304 times in the audit's
+  real-transcript sample).
+
+### Added
+- **A hermetic exact-equality lexicon parity suite.** The shared tokenizer
+  fixture (Unicode edge cases pinned), the break/broken and lost/losing
+  regressions, `has_hit`/`polarity` equality over every override row plus a
+  deterministic AFINN sample, and reachability invariants — zero models, zero
+  skips.
+- **Single-sourced command-prefix pins.** The 32-row battery lives once in
+  `rust/data/command_prefix_pins.tsv`, read by both `tests/test_command.py`
+  and the Rust test suite.
+
 ## [11.0.0] - 2026-07-11
 
 Structured-first protocol parsing: every semantic signal the transcripts carry
