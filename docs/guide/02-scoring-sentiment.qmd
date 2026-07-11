@@ -124,14 +124,14 @@ lexicon — see below):
 | --- | --- | --- | --- |
 | `flag_frustration(*, score=1)` | `FrustrationShortCircuit` | short-circuit | pure |
 | `clamp_resume()` | `ResumeClamp` | post-process | pure |
-| `clamp_positive(*, floor=3, max_words=SHORT_MESSAGE_MAX_WORDS)` | `PositiveClamp` | post-process | lexicon-gated |
-| `demote_mild_irritation(*, floor=3)` | `MildIrritationDemote` | post-process | lexicon-gated |
+| `clamp_positive(*, max_words=SHORT_MESSAGE_MAX_WORDS)` | `PositiveClamp` | post-process | lexicon-gated |
+| `demote_mild_irritation()` | `MildIrritationDemote` | post-process | lexicon-gated |
 
 `flag_frustration` and `clamp_resume` are the two you just ran. The other two add
-sharper post-processing but pull in the lexicon, so we illustrate them statically
-rather than running them here (executing them downloads a UDPipe model at build time):
+sharper post-processing by consulting the lexicon — deterministic in-package data,
+so they run here like everything else:
 
-```python
+```{python}
 from cc_transcript.sentiment import build_score_spec, clamp_positive, demote_mild_irritation, flag_frustration, clamp_resume
 
 # A fuller spec. clamp_positive lowers an over-eager 5 to 3 on a terse message
@@ -156,31 +156,19 @@ subject of the next section.
 
 ## The lexicon
 
-`Lexicon.has_hit(text, *, floor, want_negative)` lemmatizes each token in a message
-and scores it for polarity, then reports whether any token reaches `floor` (or drops
-to `-floor` when `want_negative=True`). That's what lets `clamp_positive` distinguish
-a terse-but-warm "perfect, ship it" from a flat "ok" — and `demote_mild_irritation`
+`Lexicon.has_hit(text, *, want_negative)` tokenizes a message into lowercased
+alphabetic runs and scores each token for polarity — domain overrides first, then
+AFINN — reporting whether any token reaches the polarity floor (`+3`, or `-3` when
+`want_negative=True`). That's what lets `clamp_positive` distinguish a
+terse-but-warm "perfect, ship it" from a flat "ok" — and `demote_mild_irritation`
 tell genuine hostility from mere impatience.
 
-It has two backends and a fail-open default:
-
-- **Rust UDPipe (default).** When the extension is built, `has_hit` lemmatizes and
-  scores in Rust against an English Universal Dependencies model, downloaded and
-  cached at runtime on first use.
-- **spaCy + AFINN (at parity).** The optional `[sentiment]` extra installs the Python
-  path used when the Rust lexicon isn't available. Enable it with:
-
-  ```bash
-  uv add cc-transcript[sentiment]
-  ```
-
-- **Fail open.** When *neither* backend is present, `has_hit` returns `True` rather
-  than guessing. A clamp that depends on it then treats the message as carrying
-  sentiment — the spec degrades toward leaving the model's score alone rather than
-  silently dropping a stage.
-
-Because a lexicon-gated stage triggers a one-time model download, keep it out of
-hermetic contexts (like this page) unless that download is acceptable.
+The lookup is surface-form: AFINN calibrates inflections as separate rows
+("broken" carries a different strength than "break"), so tokens match the tables
+exactly as written. Both tables ship inside the package as TSV data, and both
+backends read the same files — Rust when the extension is built, Python
+otherwise, with identical results. There is no extra to install and nothing to
+download.
 
 ## No preset spec
 
