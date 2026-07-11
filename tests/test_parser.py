@@ -14,21 +14,29 @@ from cc_transcript.models import (
     AssistantEvent,
     Attribution,
     CacheCreation,
+    CompactBoundary,
     EventUuid,
     FallbackBlock,
+    HookInfo,
     McpServer,
     ModeEvent,
+    ModelRefusalFallback,
     ModelUsage,
     OtherBlock,
     OtherEvent,
+    OtherSystemDetail,
+    PreservedMessages,
+    PreservedSegment,
     ServerToolUse,
     SessionId,
+    StopHookSummary,
     SystemEvent,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseId,
+    TurnDuration,
     Usage,
     UserEvent,
 )
@@ -577,6 +585,159 @@ def test_system_entry() -> None:
     assert isinstance(event, SystemEvent)
     assert event.subtype == "stop_hook_summary"
     assert event.content == "hook ran"
+
+
+def test_system_stop_hook_summary_detail() -> None:
+    event = parse_event(
+        envelope(
+            type="system",
+            subtype="stop_hook_summary",
+            content="hook ran",
+            level="info",
+            hookCount=2,
+            hookInfos=[{"command": "fmt", "durationMs": 12}, {"command": "lint"}, {"durationMs": 99}],
+            hookErrors=["boom"],
+            hookAdditionalContext=["ctx"],
+            preventedContinuation=True,
+            stopReason="stop-here",
+            hasOutput=True,
+            toolUseID="toolu_hook",
+        )
+    )
+    assert isinstance(event, SystemEvent)
+    assert event.level == "info"
+    assert event.detail == StopHookSummary(
+        hook_count=2,
+        hook_infos=(HookInfo(command="fmt", duration_ms=12), HookInfo(command="lint")),
+        hook_errors=("boom",),
+        hook_additional_context=("ctx",),
+        prevented_continuation=True,
+        stop_reason="stop-here",
+        has_output=True,
+        tool_use_id=ToolUseId("toolu_hook"),
+    )
+
+
+def test_system_compact_boundary_detail() -> None:
+    event = parse_event(
+        envelope(
+            type="system",
+            subtype="compact_boundary",
+            level="warning",
+            logicalParentUuid="uuid-logical",
+            compactMetadata={
+                "trigger": "manual",
+                "preTokens": 1000,
+                "postTokens": 200,
+                "cumulativeDroppedTokens": 800,
+                "durationMs": 4242,
+                "preCompactDiscoveredTools": ["Read", "Bash"],
+                "preservedSegment": {"headUuid": "uuid-head", "anchorUuid": "uuid-anchor", "tailUuid": "uuid-tail"},
+                "preservedMessages": {
+                    "anchorUuid": "uuid-anchor",
+                    "uuids": ["uuid-head", "uuid-tail"],
+                    "allUuids": ["uuid-head", "uuid-mid", "uuid-tail"],
+                },
+                "precomputed": True,
+            },
+        )
+    )
+    assert isinstance(event, SystemEvent)
+    assert event.level == "warning"
+    assert event.detail == CompactBoundary(
+        trigger="manual",
+        pre_tokens=1000,
+        post_tokens=200,
+        duration_ms=4242,
+        cumulative_dropped_tokens=800,
+        pre_compact_discovered_tools=("Read", "Bash"),
+        preserved_segment=PreservedSegment(
+            head_uuid=EventUuid("uuid-head"),
+            anchor_uuid=EventUuid("uuid-anchor"),
+            tail_uuid=EventUuid("uuid-tail"),
+        ),
+        preserved_messages=PreservedMessages(
+            anchor_uuid=EventUuid("uuid-anchor"),
+            uuids=(EventUuid("uuid-head"), EventUuid("uuid-tail")),
+            all_uuids=(EventUuid("uuid-head"), EventUuid("uuid-mid"), EventUuid("uuid-tail")),
+        ),
+        logical_parent_uuid=EventUuid("uuid-logical"),
+        precomputed=True,
+    )
+
+
+def test_system_turn_duration_detail() -> None:
+    event = parse_event(
+        envelope(
+            type="system",
+            subtype="turn_duration",
+            durationMs=5000,
+            messageCount=7,
+            pendingWorkflowCount=2,
+            pendingBackgroundAgentCount=1,
+        )
+    )
+    assert isinstance(event, SystemEvent)
+    assert event.level is None
+    assert event.detail == TurnDuration(
+        duration_ms=5000,
+        message_count=7,
+        pending_workflow_count=2,
+        pending_background_agent_count=1,
+    )
+
+
+def test_system_model_refusal_fallback_detail() -> None:
+    event = parse_event(
+        envelope(
+            type="system",
+            subtype="model_refusal_fallback",
+            level="error",
+            apiRefusalCategory="policy",
+            apiRefusalExplanation="nope",
+            trigger="refusal",
+            direction="downgrade",
+            originalModel="claude-opus-4-8",
+            fallbackModel="claude-sonnet-4",
+            retractedMessageUuids=["uuid-r1", "uuid-r2"],
+            refusedUserMessageUuid="uuid-refused",
+        )
+    )
+    assert isinstance(event, SystemEvent)
+    assert event.detail == ModelRefusalFallback(
+        api_refusal_category="policy",
+        api_refusal_explanation="nope",
+        trigger="refusal",
+        direction="downgrade",
+        original_model="claude-opus-4-8",
+        fallback_model="claude-sonnet-4",
+        retracted_message_uuids=(EventUuid("uuid-r1"), EventUuid("uuid-r2")),
+        refused_user_message_uuid=EventUuid("uuid-refused"),
+    )
+
+
+def test_system_sparse_detail_uses_defaults() -> None:
+    event = parse_event(envelope(type="system", subtype="stop_hook_summary"))
+    assert isinstance(event, SystemEvent)
+    assert event.level is None
+    assert event.detail == StopHookSummary()
+    assert event.detail.hook_infos == ()
+
+
+def test_system_unknown_subtype_is_other_detail_verbatim() -> None:
+    record = envelope(type="system", subtype="weird_future", content="mystery")
+    event = parse_event(record)
+    assert isinstance(event, SystemEvent)
+    assert event.subtype == "weird_future"
+    assert event.detail == OtherSystemDetail(raw=record)
+
+
+def test_system_local_command_is_other_detail() -> None:
+    record = envelope(type="system", subtype="local_command", content="/clear", level="info")
+    event = parse_event(record)
+    assert isinstance(event, SystemEvent)
+    assert event.level == "info"
+    assert event.detail == OtherSystemDetail(raw=record)
 
 
 def test_mode_entry() -> None:

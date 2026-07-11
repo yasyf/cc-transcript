@@ -351,6 +351,167 @@ class AssistantEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class HookInfo:
+    """One hook invocation recorded in a stop-hook summary.
+
+    Attributes:
+        command: The hook command that ran.
+        duration_ms: The hook's wall-clock duration in milliseconds, when recorded.
+    """
+
+    command: str
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StopHookSummary:
+    """The typed detail of a ``stop_hook_summary`` system entry.
+
+    Attributes:
+        hook_count: The number of hooks that ran.
+        hook_infos: The per-hook command and duration records.
+        hook_errors: The error strings raised by hooks.
+        hook_additional_context: The extra context strings hooks contributed.
+        prevented_continuation: Whether a hook blocked the turn from continuing.
+        stop_reason: The reason the turn stopped, when recorded.
+        has_output: Whether the hooks produced output.
+        tool_use_id: The tool-use id the summary is tied to, when present.
+    """
+
+    hook_count: int | None = None
+    hook_infos: tuple[HookInfo, ...] = ()
+    hook_errors: tuple[str, ...] = ()
+    hook_additional_context: tuple[str, ...] = ()
+    prevented_continuation: bool = False
+    stop_reason: str | None = None
+    has_output: bool = False
+    tool_use_id: ToolUseId | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreservedSegment:
+    """The head/anchor/tail uuids of the segment preserved across a compaction.
+
+    Attributes:
+        head_uuid: The first preserved event's uuid.
+        anchor_uuid: The anchor event's uuid.
+        tail_uuid: The last preserved event's uuid.
+    """
+
+    head_uuid: EventUuid | None = None
+    anchor_uuid: EventUuid | None = None
+    tail_uuid: EventUuid | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreservedMessages:
+    """The message uuids preserved across a compaction.
+
+    Attributes:
+        anchor_uuid: The anchor event's uuid.
+        uuids: The uuids of the preserved messages, in order.
+        all_uuids: The uuids of every message considered for preservation,
+            in order.
+    """
+
+    anchor_uuid: EventUuid | None = None
+    uuids: tuple[EventUuid, ...] = ()
+    all_uuids: tuple[EventUuid, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CompactBoundary:
+    """The typed detail of a ``compact_boundary`` system entry.
+
+    Attributes:
+        trigger: What triggered the compaction, such as ``manual`` or ``auto``.
+        pre_tokens: The context token count before compaction.
+        post_tokens: The context token count after compaction.
+        duration_ms: The compaction's wall-clock duration in milliseconds.
+        cumulative_dropped_tokens: The session's running total of tokens dropped
+            by compactions.
+        pre_compact_discovered_tools: The tool names discovered before compaction.
+        preserved_segment: The head/anchor/tail segment preserved, when recorded.
+        preserved_messages: The preserved message uuids, when recorded.
+        logical_parent_uuid: The uuid the post-compaction thread logically
+            continues from.
+        precomputed: Whether the compaction was precomputed, when recorded.
+    """
+
+    trigger: str | None = None
+    pre_tokens: int | None = None
+    post_tokens: int | None = None
+    duration_ms: int | None = None
+    cumulative_dropped_tokens: int | None = None
+    pre_compact_discovered_tools: tuple[str, ...] = ()
+    preserved_segment: PreservedSegment | None = None
+    preserved_messages: PreservedMessages | None = None
+    logical_parent_uuid: EventUuid | None = None
+    precomputed: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnDuration:
+    """The typed detail of a ``turn_duration`` system entry.
+
+    Attributes:
+        duration_ms: The turn's wall-clock duration in milliseconds.
+        message_count: The number of messages in the turn.
+        pending_workflow_count: The workflows still pending, when recorded.
+        pending_background_agent_count: The background agents still pending, when
+            recorded.
+    """
+
+    duration_ms: int | None = None
+    message_count: int | None = None
+    pending_workflow_count: int | None = None
+    pending_background_agent_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRefusalFallback:
+    """The typed detail of a ``model_refusal_fallback`` system entry.
+
+    Attributes:
+        api_refusal_category: The refusal category the API reported, when present.
+        api_refusal_explanation: The refusal explanation the API reported, when present.
+        trigger: What triggered the fallback.
+        direction: The fallback direction.
+        original_model: The model that refused.
+        fallback_model: The model fallen back to.
+        retracted_message_uuids: The uuids of messages retracted by the fallback.
+        refused_user_message_uuid: The user message uuid that drew the refusal,
+            when present.
+    """
+
+    api_refusal_category: str | None = None
+    api_refusal_explanation: str | None = None
+    trigger: str | None = None
+    direction: str | None = None
+    original_model: str | None = None
+    fallback_model: str | None = None
+    retracted_message_uuids: tuple[EventUuid, ...] = ()
+    refused_user_message_uuid: EventUuid | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OtherSystemDetail:
+    """The catch-all detail for a system entry without a typed subtype.
+
+    Carries the entry's full decoded payload verbatim, so no system entry is
+    lossy regardless of subtype.
+
+    Attributes:
+        raw: The entry's full decoded payload.
+    """
+
+    raw: Mapping[str, Any]
+
+
+SystemDetail = StopHookSummary | CompactBoundary | TurnDuration | ModelRefusalFallback | OtherSystemDetail
+
+
+@dataclass(frozen=True, slots=True)
 class SystemEvent:
     """A system entry, such as a hook summary or notice.
 
@@ -358,11 +519,18 @@ class SystemEvent:
         meta: The entry envelope metadata.
         subtype: The system entry's subtype.
         content: The entry's text content, when present.
+        level: The entry's severity level, when present.
+        detail: The typed detail for the subtype — a :class:`StopHookSummary`,
+            :class:`CompactBoundary`, :class:`TurnDuration`, or
+            :class:`ModelRefusalFallback` when recognized, else an
+            :class:`OtherSystemDetail` carrying the full payload. Always set.
     """
 
     meta: EntryMeta
     subtype: str
     content: str | None
+    level: str | None
+    detail: SystemDetail
 
 
 @dataclass(frozen=True, slots=True)

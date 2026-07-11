@@ -4,7 +4,16 @@ from datetime import UTC, datetime, timedelta
 
 import anyio
 
-from cc_transcript.models import AssistantEvent, EntryMeta, EventUuid, ModeEvent, SessionId, SystemEvent, UserEvent
+from cc_transcript.models import (
+    AssistantEvent,
+    EntryMeta,
+    EventUuid,
+    ModeEvent,
+    OtherSystemDetail,
+    SessionId,
+    SystemEvent,
+    UserEvent,
+)
 from cc_transcript.sentiment import (
     FilteredEngine,
     SentimentScore,
@@ -108,7 +117,7 @@ def test_bucketer_ignores_whitespace_only_user_turns() -> None:
 def test_bucketer_ignores_non_conversational_events() -> None:
     events = [
         user("please fix the login bug", minutes=0),
-        SystemEvent(meta=meta("sys0"), subtype="hook", content="noise"),
+        SystemEvent(meta=meta("sys0"), subtype="hook", content="noise", level=None, detail=OtherSystemDetail(raw={})),
         assistant("on it", minutes=0.5),
         ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
         user("now add validation too", minutes=1),

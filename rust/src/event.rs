@@ -6,16 +6,18 @@ use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
     models_type, API_ERROR_CLS, ASSISTANT_EVENT_CLS, ATTRIBUTION_CLS, CACHE_CREATION_CLS,
-    ENTRY_META_CLS, FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS,
-    MODEL_USAGE_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, PRINT_MESSAGE_CLS,
-    PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
-    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS, USER_EVENT_CLS,
+    COMPACT_BOUNDARY_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS, HOOK_INFO_CLS, INIT_INFO_CLS,
+    MCP_SERVER_CLS, MODEL_REFUSAL_FALLBACK_CLS, MODEL_USAGE_CLS, MODE_EVENT_CLS, OTHER_BLOCK_CLS,
+    OTHER_EVENT_CLS, OTHER_SYSTEM_DETAIL_CLS, PLUGIN_CLS, PRESERVED_MESSAGES_CLS,
+    PRESERVED_SEGMENT_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS,
+    STOP_HOOK_SUMMARY_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
+    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, TURN_DURATION_CLS, USAGE_CLS, USER_EVENT_CLS,
 };
 use crate::parse::ParseError;
 use crate::protocol::{interrupt_marker, is_agent_injection};
 use crate::types::{
     joined_text, ApiError, Attribution, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage,
-    PrintBody, PrintMessage, PrintResult, Usage, UserContent,
+    PrintBody, PrintMessage, PrintResult, SystemDetail, Usage, UserContent,
 };
 
 impl From<ParseError> for PyErr {
@@ -213,6 +215,79 @@ fn build_usage_value<'py>(py: Python<'py>, usage: &Usage) -> PyResult<Bound<'py,
     ))
 }
 
+fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<Bound<'py, PyAny>> {
+    match detail {
+        SystemDetail::StopHookSummary(s) => {
+            let hook_infos = s
+                .hook_infos
+                .iter()
+                .map(|hi| models_type(py, &HOOK_INFO_CLS, "HookInfo")?.call1((&hi.command, hi.duration_ms)))
+                .collect::<PyResult<Vec<_>>>()?;
+            models_type(py, &STOP_HOOK_SUMMARY_CLS, "StopHookSummary")?.call1((
+                s.hook_count,
+                PyTuple::new(py, hook_infos)?,
+                PyTuple::new(py, &s.hook_errors)?,
+                PyTuple::new(py, &s.hook_additional_context)?,
+                s.prevented_continuation,
+                s.stop_reason.as_deref(),
+                s.has_output,
+                s.tool_use_id.as_deref(),
+            ))
+        }
+        SystemDetail::CompactBoundary(c) => {
+            let preserved_segment = match &c.preserved_segment {
+                Some(ps) => models_type(py, &PRESERVED_SEGMENT_CLS, "PreservedSegment")?.call1((
+                    ps.head_uuid.as_deref(),
+                    ps.anchor_uuid.as_deref(),
+                    ps.tail_uuid.as_deref(),
+                ))?,
+                None => py.None().into_bound(py),
+            };
+            let preserved_messages = match &c.preserved_messages {
+                Some(pm) => models_type(py, &PRESERVED_MESSAGES_CLS, "PreservedMessages")?.call1((
+                    pm.anchor_uuid.as_deref(),
+                    PyTuple::new(py, &pm.uuids)?,
+                    PyTuple::new(py, &pm.all_uuids)?,
+                ))?,
+                None => py.None().into_bound(py),
+            };
+            models_type(py, &COMPACT_BOUNDARY_CLS, "CompactBoundary")?.call1((
+                c.trigger.as_deref(),
+                c.pre_tokens,
+                c.post_tokens,
+                c.duration_ms,
+                c.cumulative_dropped_tokens,
+                PyTuple::new(py, &c.pre_compact_discovered_tools)?,
+                preserved_segment,
+                preserved_messages,
+                c.logical_parent_uuid.as_deref(),
+                c.precomputed,
+            ))
+        }
+        SystemDetail::TurnDuration(t) => models_type(py, &TURN_DURATION_CLS, "TurnDuration")?.call1((
+            t.duration_ms,
+            t.message_count,
+            t.pending_workflow_count,
+            t.pending_background_agent_count,
+        )),
+        SystemDetail::ModelRefusalFallback(m) => {
+            models_type(py, &MODEL_REFUSAL_FALLBACK_CLS, "ModelRefusalFallback")?.call1((
+                m.api_refusal_category.as_deref(),
+                m.api_refusal_explanation.as_deref(),
+                m.trigger.as_deref(),
+                m.direction.as_deref(),
+                m.original_model.as_deref(),
+                m.fallback_model.as_deref(),
+                PyTuple::new(py, &m.retracted_message_uuids)?,
+                m.refused_user_message_uuid.as_deref(),
+            ))
+        }
+        SystemDetail::Other(raw) => {
+            models_type(py, &OTHER_SYSTEM_DETAIL_CLS, "OtherSystemDetail")?.call1((json_to_py(py, raw)?,))
+        }
+    }
+}
+
 pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, PyAny>> {
     match entry {
         Entry::User(user) => {
@@ -262,11 +337,16 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 api_error,
             ))
         }
-        Entry::System(system) => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((
-            build_meta(py, &system.meta)?,
-            &system.subtype,
-            system.content.as_deref(),
-        )),
+        Entry::System(system) => {
+            let detail = build_system_detail(py, &system.detail)?;
+            models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((
+                build_meta(py, &system.meta)?,
+                &system.subtype,
+                system.content.as_deref(),
+                system.level.as_deref(),
+                detail,
+            ))
+        }
         Entry::Mode(mode) => models_type(py, &MODE_EVENT_CLS, "ModeEvent")?.call1((
             &mode.session_id,
             mode.channel.as_str(),

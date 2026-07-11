@@ -76,6 +76,15 @@ reference:
       - UserEvent
       - AssistantEvent
       - SystemEvent
+      - SystemDetail
+      - StopHookSummary
+      - HookInfo
+      - CompactBoundary
+      - PreservedSegment
+      - PreservedMessages
+      - TurnDuration
+      - ModelRefusalFallback
+      - OtherSystemDetail
       - ModeEvent
       - OtherEvent
       - PrintMessage

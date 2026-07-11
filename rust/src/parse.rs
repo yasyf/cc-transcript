@@ -4,10 +4,11 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
 use crate::types::{
-    ApiError, AssistantEntry, Attribution, CacheCreation, ContentBlock, Entry, EntryMeta,
-    FallbackBlock, InitInfo, McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin,
-    PrintBody, PrintMessage, PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock,
-    ToolUseBlock, Usage, UserContent, UserEntry,
+    ApiError, AssistantEntry, Attribution, CacheCreation, CompactBoundary, ContentBlock, Entry,
+    EntryMeta, FallbackBlock, HookInfo, InitInfo, McpServer, ModeChannel, ModeEntry, ModelRefusalFallback,
+    ModelUsage, OtherEntry, Plugin, PreservedMessages, PreservedSegment, PrintBody, PrintMessage,
+    PrintResult, Question, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry, ToolResultBlock,
+    ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -266,6 +267,104 @@ fn parse_usage_value(usage: &Value) -> Result<Usage, ParseError> {
     })
 }
 
+fn opt_str(data: &Value, key: &str) -> Option<String> {
+    field_str(data, key).map(str::to_string)
+}
+
+fn opt_i64(data: &Value, key: &str) -> Option<i64> {
+    field(data, key).and_then(JsonValueTrait::as_i64)
+}
+
+fn str_array(data: &Value, key: &str) -> Vec<String> {
+    field(data, key)
+        .and_then(JsonContainerTrait::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValueTrait::as_str)
+        .map(String::from)
+        .collect()
+}
+
+fn parse_hook_infos(data: &Value) -> Vec<HookInfo> {
+    field(data, "hookInfos")
+        .and_then(JsonContainerTrait::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|info| {
+            Some(HookInfo {
+                command: field_str(info, "command")?.to_string(),
+                duration_ms: opt_i64(info, "durationMs"),
+            })
+        })
+        .collect()
+}
+
+fn parse_preserved_segment(segment: Option<&Value>) -> Option<PreservedSegment> {
+    let segment = segment.filter(|v| v.is_object())?;
+    Some(PreservedSegment {
+        head_uuid: truthy_str(segment, "headUuid").map(str::to_string),
+        anchor_uuid: truthy_str(segment, "anchorUuid").map(str::to_string),
+        tail_uuid: truthy_str(segment, "tailUuid").map(str::to_string),
+    })
+}
+
+fn parse_preserved_messages(messages: Option<&Value>) -> Option<PreservedMessages> {
+    let messages = messages.filter(|v| v.is_object())?;
+    Some(PreservedMessages {
+        anchor_uuid: truthy_str(messages, "anchorUuid").map(str::to_string),
+        uuids: str_array(messages, "uuids"),
+        all_uuids: str_array(messages, "allUuids"),
+    })
+}
+
+fn parse_system_detail(data: &Value) -> SystemDetail {
+    match field_str(data, "subtype") {
+        Some("stop_hook_summary") => SystemDetail::StopHookSummary(StopHookSummary {
+            hook_count: opt_i64(data, "hookCount"),
+            hook_infos: parse_hook_infos(data),
+            hook_errors: str_array(data, "hookErrors"),
+            hook_additional_context: str_array(data, "hookAdditionalContext"),
+            prevented_continuation: field_bool(data, "preventedContinuation"),
+            stop_reason: opt_str(data, "stopReason"),
+            has_output: field_bool(data, "hasOutput"),
+            tool_use_id: truthy_str(data, "toolUseID").map(str::to_string),
+        }),
+        Some("compact_boundary") => {
+            let empty = Value::default();
+            let metadata = field(data, "compactMetadata").unwrap_or(&empty);
+            SystemDetail::CompactBoundary(CompactBoundary {
+                trigger: opt_str(metadata, "trigger"),
+                pre_tokens: opt_i64(metadata, "preTokens"),
+                post_tokens: opt_i64(metadata, "postTokens"),
+                duration_ms: opt_i64(metadata, "durationMs"),
+                cumulative_dropped_tokens: opt_i64(metadata, "cumulativeDroppedTokens"),
+                pre_compact_discovered_tools: str_array(metadata, "preCompactDiscoveredTools"),
+                preserved_segment: parse_preserved_segment(field(metadata, "preservedSegment")),
+                preserved_messages: parse_preserved_messages(field(metadata, "preservedMessages")),
+                logical_parent_uuid: truthy_str(data, "logicalParentUuid").map(str::to_string),
+                precomputed: field(metadata, "precomputed").and_then(JsonValueTrait::as_bool),
+            })
+        }
+        Some("turn_duration") => SystemDetail::TurnDuration(TurnDuration {
+            duration_ms: opt_i64(data, "durationMs"),
+            message_count: opt_i64(data, "messageCount"),
+            pending_workflow_count: opt_i64(data, "pendingWorkflowCount"),
+            pending_background_agent_count: opt_i64(data, "pendingBackgroundAgentCount"),
+        }),
+        Some("model_refusal_fallback") => SystemDetail::ModelRefusalFallback(ModelRefusalFallback {
+            api_refusal_category: opt_str(data, "apiRefusalCategory"),
+            api_refusal_explanation: opt_str(data, "apiRefusalExplanation"),
+            trigger: opt_str(data, "trigger"),
+            direction: opt_str(data, "direction"),
+            original_model: opt_str(data, "originalModel"),
+            fallback_model: opt_str(data, "fallbackModel"),
+            retracted_message_uuids: str_array(data, "retractedMessageUuids"),
+            refused_user_message_uuid: truthy_str(data, "refusedUserMessageUuid").map(str::to_string),
+        }),
+        _ => SystemDetail::Other(data.clone()),
+    }
+}
+
 /// Parse one JSONL transcript line into the typed model. Consumes the value so
 /// unrecognized entry kinds keep their payload verbatim without a copy.
 pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
@@ -315,6 +414,8 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 meta: parse_meta(&data)?,
                 subtype: require_str(&data, "subtype")?.to_string(),
                 content: field_str(&data, "content").map(str::to_string),
+                level: field_str(&data, "level").map(str::to_string),
+                detail: parse_system_detail(&data),
             }));
         }
         "mode" => {

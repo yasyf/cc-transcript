@@ -88,26 +88,35 @@ EXPORTS: dict[str, str] = {
             "Attribution",
             "CacheCreation",
             "CcVersion",
+            "CompactBoundary",
             "ContentBlock",
             "EntryMeta",
             "FallbackBlock",
+            "HookInfo",
             "InitInfo",
             "McpServer",
+            "ModelRefusalFallback",
             "ModeEvent",
             "ModelUsage",
             "OtherBlock",
             "OtherEvent",
+            "OtherSystemDetail",
             "Plugin",
+            "PreservedMessages",
+            "PreservedSegment",
             "PrintMessage",
             "PrintResult",
             "Question",
             "ServerToolUse",
+            "StopHookSummary",
+            "SystemDetail",
             "SystemEvent",
             "TextBlock",
             "ThinkingBlock",
             "ToolResultBlock",
             "ToolUseBlock",
             "TranscriptEvent",
+            "TurnDuration",
             "Usage",
             "UserEvent",
             "thinking_chars",
@@ -511,6 +520,9 @@ if TYPE_CHECKING:
         CcVersion as CcVersion,
     )
     from cc_transcript.models import (
+        CompactBoundary as CompactBoundary,
+    )
+    from cc_transcript.models import (
         ContentBlock as ContentBlock,
     )
     from cc_transcript.models import (
@@ -518,6 +530,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         FallbackBlock as FallbackBlock,
+    )
+    from cc_transcript.models import (
+        HookInfo as HookInfo,
     )
     from cc_transcript.models import (
         InitInfo as InitInfo,
@@ -529,6 +544,9 @@ if TYPE_CHECKING:
         ModeEvent as ModeEvent,
     )
     from cc_transcript.models import (
+        ModelRefusalFallback as ModelRefusalFallback,
+    )
+    from cc_transcript.models import (
         ModelUsage as ModelUsage,
     )
     from cc_transcript.models import (
@@ -538,7 +556,16 @@ if TYPE_CHECKING:
         OtherEvent as OtherEvent,
     )
     from cc_transcript.models import (
+        OtherSystemDetail as OtherSystemDetail,
+    )
+    from cc_transcript.models import (
         Plugin as Plugin,
+    )
+    from cc_transcript.models import (
+        PreservedMessages as PreservedMessages,
+    )
+    from cc_transcript.models import (
+        PreservedSegment as PreservedSegment,
     )
     from cc_transcript.models import (
         PrintMessage as PrintMessage,
@@ -551,6 +578,12 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         ServerToolUse as ServerToolUse,
+    )
+    from cc_transcript.models import (
+        StopHookSummary as StopHookSummary,
+    )
+    from cc_transcript.models import (
+        SystemDetail as SystemDetail,
     )
     from cc_transcript.models import (
         SystemEvent as SystemEvent,
@@ -569,6 +602,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         TranscriptEvent as TranscriptEvent,
+    )
+    from cc_transcript.models import (
+        TurnDuration as TurnDuration,
     )
     from cc_transcript.models import (
         Usage as Usage,
@@ -630,10 +666,19 @@ if TYPE_CHECKING:
         TOOL_ALIASES as TOOL_ALIASES,
     )
     from cc_transcript.tools import (
+        AskUserQuestionResult as AskUserQuestionResult,
+    )
+    from cc_transcript.tools import (
         BashCall as BashCall,
     )
     from cc_transcript.tools import (
+        BashResult as BashResult,
+    )
+    from cc_transcript.tools import (
         EditCall as EditCall,
+    )
+    from cc_transcript.tools import (
+        EditResult as EditResult,
     )
     from cc_transcript.tools import (
         EditSpan as EditSpan,
@@ -660,10 +705,22 @@ if TYPE_CHECKING:
         OtherCall as OtherCall,
     )
     from cc_transcript.tools import (
+        OtherResult as OtherResult,
+    )
+    from cc_transcript.tools import (
+        QuestionAnnotation as QuestionAnnotation,
+    )
+    from cc_transcript.tools import (
         ReadCall as ReadCall,
     )
     from cc_transcript.tools import (
+        ReadResult as ReadResult,
+    )
+    from cc_transcript.tools import (
         SkillCall as SkillCall,
+    )
+    from cc_transcript.tools import (
+        SkillResult as SkillResult,
     )
     from cc_transcript.tools import (
         TaskCall as TaskCall,
@@ -672,7 +729,16 @@ if TYPE_CHECKING:
         TaskCreateCall as TaskCreateCall,
     )
     from cc_transcript.tools import (
+        TaskLaunchResult as TaskLaunchResult,
+    )
+    from cc_transcript.tools import (
+        TaskResult as TaskResult,
+    )
+    from cc_transcript.tools import (
         TaskUpdateCall as TaskUpdateCall,
+    )
+    from cc_transcript.tools import (
+        TextResult as TextResult,
     )
     from cc_transcript.tools import (
         ToolCall as ToolCall,
@@ -684,10 +750,22 @@ if TYPE_CHECKING:
         ToolInputError as ToolInputError,
     )
     from cc_transcript.tools import (
+        ToolResult as ToolResult,
+    )
+    from cc_transcript.tools import (
+        ToolResultBase as ToolResultBase,
+    )
+    from cc_transcript.tools import (
+        ToolResultError as ToolResultError,
+    )
+    from cc_transcript.tools import (
         WorkflowCall as WorkflowCall,
     )
     from cc_transcript.tools import (
         WriteCall as WriteCall,
+    )
+    from cc_transcript.tools import (
+        WriteResult as WriteResult,
     )
     from cc_transcript.tools import (
         expand_tool_names as expand_tool_names,
@@ -711,50 +789,8 @@ if TYPE_CHECKING:
         parse_tool_call as parse_tool_call,
     )
     from cc_transcript.tools import (
-        tool_name_matches as tool_name_matches,
-    )
-    from cc_transcript.tools import (
-        AskUserQuestionResult as AskUserQuestionResult,
-    )
-    from cc_transcript.tools import (
-        BashResult as BashResult,
-    )
-    from cc_transcript.tools import (
-        EditResult as EditResult,
-    )
-    from cc_transcript.tools import (
-        OtherResult as OtherResult,
-    )
-    from cc_transcript.tools import (
-        QuestionAnnotation as QuestionAnnotation,
-    )
-    from cc_transcript.tools import (
-        ReadResult as ReadResult,
-    )
-    from cc_transcript.tools import (
-        SkillResult as SkillResult,
-    )
-    from cc_transcript.tools import (
-        TaskLaunchResult as TaskLaunchResult,
-    )
-    from cc_transcript.tools import (
-        TaskResult as TaskResult,
-    )
-    from cc_transcript.tools import (
-        TextResult as TextResult,
-    )
-    from cc_transcript.tools import (
-        ToolResult as ToolResult,
-    )
-    from cc_transcript.tools import (
-        ToolResultBase as ToolResultBase,
-    )
-    from cc_transcript.tools import (
-        ToolResultError as ToolResultError,
-    )
-    from cc_transcript.tools import (
-        WriteResult as WriteResult,
-    )
-    from cc_transcript.tools import (
         parse_tool_result as parse_tool_result,
+    )
+    from cc_transcript.tools import (
+        tool_name_matches as tool_name_matches,
     )

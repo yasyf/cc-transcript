@@ -25,21 +25,29 @@ from cc_transcript.models import (
     Attribution,
     CacheCreation,
     CcVersion,
+    CompactBoundary,
     ContentBlock,
     EntryMeta,
     EventUuid,
     FallbackBlock,
+    HookInfo,
     InitInfo,
     McpServer,
     ModeEvent,
+    ModelRefusalFallback,
     ModelUsage,
     OtherBlock,
     OtherEvent,
+    OtherSystemDetail,
     Plugin,
+    PreservedMessages,
+    PreservedSegment,
     PrintMessage,
     PrintResult,
     ServerToolUse,
     SessionId,
+    StopHookSummary,
+    SystemDetail,
     SystemEvent,
     TextBlock,
     ThinkingBlock,
@@ -47,6 +55,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     ToolUseId,
     TranscriptEvent,
+    TurnDuration,
     Usage,
     UserEvent,
 )
@@ -198,6 +207,91 @@ def parse_usage(usage: Mapping[str, Any]) -> Usage:
     )
 
 
+def parse_hook_infos(infos: object) -> tuple[HookInfo, ...]:
+    if not isinstance(infos, list):
+        return ()
+    return tuple(
+        HookInfo(command=command, duration_ms=info.get("durationMs"))
+        for info in infos
+        if isinstance(info, dict) and isinstance(command := info.get("command"), str)
+    )
+
+
+def parse_preserved_segment(segment: object) -> PreservedSegment | None:
+    if not isinstance(segment, Mapping):
+        return None
+    return PreservedSegment(
+        head_uuid=EventUuid(h) if (h := segment.get("headUuid")) else None,
+        anchor_uuid=EventUuid(a) if (a := segment.get("anchorUuid")) else None,
+        tail_uuid=EventUuid(t) if (t := segment.get("tailUuid")) else None,
+    )
+
+
+def parse_preserved_messages(messages: object) -> PreservedMessages | None:
+    if not isinstance(messages, Mapping):
+        return None
+    return PreservedMessages(
+        anchor_uuid=EventUuid(a) if (a := messages.get("anchorUuid")) else None,
+        uuids=tuple(EventUuid(u) for u in messages.get("uuids") or () if isinstance(u, str)),
+        all_uuids=tuple(EventUuid(u) for u in messages.get("allUuids") or () if isinstance(u, str)),
+    )
+
+
+def parse_system_detail(data: Mapping[str, Any]) -> SystemDetail:
+    match data.get("subtype"):
+        case "stop_hook_summary":
+            return StopHookSummary(
+                hook_count=data.get("hookCount"),
+                hook_infos=parse_hook_infos(data.get("hookInfos")),
+                hook_errors=tuple(e for e in data.get("hookErrors") or () if isinstance(e, str)),
+                hook_additional_context=tuple(
+                    c for c in data.get("hookAdditionalContext") or () if isinstance(c, str)
+                ),
+                prevented_continuation=bool(data.get("preventedContinuation")),
+                stop_reason=data.get("stopReason"),
+                has_output=bool(data.get("hasOutput")),
+                tool_use_id=ToolUseId(tuid) if (tuid := data.get("toolUseID")) else None,
+            )
+        case "compact_boundary":
+            metadata = data.get("compactMetadata") or {}
+            return CompactBoundary(
+                trigger=metadata.get("trigger"),
+                pre_tokens=metadata.get("preTokens"),
+                post_tokens=metadata.get("postTokens"),
+                duration_ms=metadata.get("durationMs"),
+                cumulative_dropped_tokens=metadata.get("cumulativeDroppedTokens"),
+                pre_compact_discovered_tools=tuple(
+                    t for t in metadata.get("preCompactDiscoveredTools") or () if isinstance(t, str)
+                ),
+                preserved_segment=parse_preserved_segment(metadata.get("preservedSegment")),
+                preserved_messages=parse_preserved_messages(metadata.get("preservedMessages")),
+                logical_parent_uuid=EventUuid(lpu) if (lpu := data.get("logicalParentUuid")) else None,
+                precomputed=metadata.get("precomputed"),
+            )
+        case "turn_duration":
+            return TurnDuration(
+                duration_ms=data.get("durationMs"),
+                message_count=data.get("messageCount"),
+                pending_workflow_count=data.get("pendingWorkflowCount"),
+                pending_background_agent_count=data.get("pendingBackgroundAgentCount"),
+            )
+        case "model_refusal_fallback":
+            return ModelRefusalFallback(
+                api_refusal_category=data.get("apiRefusalCategory"),
+                api_refusal_explanation=data.get("apiRefusalExplanation"),
+                trigger=data.get("trigger"),
+                direction=data.get("direction"),
+                original_model=data.get("originalModel"),
+                fallback_model=data.get("fallbackModel"),
+                retracted_message_uuids=tuple(
+                    EventUuid(u) for u in data.get("retractedMessageUuids") or () if isinstance(u, str)
+                ),
+                refused_user_message_uuid=EventUuid(u) if (u := data.get("refusedUserMessageUuid")) else None,
+            )
+        case _:
+            return OtherSystemDetail(raw=data)
+
+
 def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     match data["type"]:
         case "user":
@@ -238,7 +332,13 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 api_error=parse_api_error(data),
             )
         case "system":
-            return SystemEvent(meta=parse_meta(data), subtype=data["subtype"], content=data.get("content"))
+            return SystemEvent(
+                meta=parse_meta(data),
+                subtype=data["subtype"],
+                content=data.get("content"),
+                level=data.get("level"),
+                detail=parse_system_detail(data),
+            )
         case "mode":
             return ModeEvent(session_id=SessionId(data["sessionId"]), channel="mode", value=data["mode"])
         case "permission-mode":

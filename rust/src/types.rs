@@ -173,10 +173,90 @@ pub struct AssistantEntry {
 }
 
 #[derive(Debug)]
+pub struct HookInfo {
+    pub command: String,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct StopHookSummary {
+    pub hook_count: Option<i64>,
+    pub hook_infos: Vec<HookInfo>,
+    pub hook_errors: Vec<String>,
+    pub hook_additional_context: Vec<String>,
+    pub prevented_continuation: bool,
+    pub stop_reason: Option<String>,
+    pub has_output: bool,
+    pub tool_use_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct PreservedSegment {
+    pub head_uuid: Option<String>,
+    pub anchor_uuid: Option<String>,
+    pub tail_uuid: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct PreservedMessages {
+    pub anchor_uuid: Option<String>,
+    pub uuids: Vec<String>,
+    pub all_uuids: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct CompactBoundary {
+    pub trigger: Option<String>,
+    pub pre_tokens: Option<i64>,
+    pub post_tokens: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub cumulative_dropped_tokens: Option<i64>,
+    pub pre_compact_discovered_tools: Vec<String>,
+    pub preserved_segment: Option<PreservedSegment>,
+    pub preserved_messages: Option<PreservedMessages>,
+    pub logical_parent_uuid: Option<String>,
+    pub precomputed: Option<bool>,
+}
+
+#[derive(Debug)]
+pub struct TurnDuration {
+    pub duration_ms: Option<i64>,
+    pub message_count: Option<i64>,
+    pub pending_workflow_count: Option<i64>,
+    pub pending_background_agent_count: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct ModelRefusalFallback {
+    pub api_refusal_category: Option<String>,
+    pub api_refusal_explanation: Option<String>,
+    pub trigger: Option<String>,
+    pub direction: Option<String>,
+    pub original_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub retracted_message_uuids: Vec<String>,
+    pub refused_user_message_uuid: Option<String>,
+}
+
+/// The typed detail of a system entry. Recognized subtypes carry their typed
+/// struct; every other subtype carries the full record verbatim under `Other`,
+/// so no system entry is lossy.
+#[derive(Debug)]
+pub enum SystemDetail {
+    StopHookSummary(StopHookSummary),
+    CompactBoundary(CompactBoundary),
+    TurnDuration(TurnDuration),
+    ModelRefusalFallback(ModelRefusalFallback),
+    Other(Value),
+}
+
+#[derive(Debug)]
 pub struct SystemEntry {
     pub meta: EntryMeta,
     pub subtype: String,
     pub content: Option<String>,
+    pub level: Option<String>,
+    pub detail: SystemDetail,
 }
 
 #[derive(Debug)]
