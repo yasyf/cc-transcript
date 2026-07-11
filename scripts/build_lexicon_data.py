@@ -19,7 +19,7 @@ from pathlib import Path
 
 from cc_transcript.sentiment.lexicon import Lexicon
 
-DATA = Path(__file__).resolve().parent.parent / "rust" / "data"
+DATA = Path(__file__).resolve().parent.parent / "cc_transcript" / "sentiment" / "data"
 
 
 def afinn_single_word_scores() -> dict[str, int]:

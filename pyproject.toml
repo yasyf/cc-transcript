@@ -74,6 +74,7 @@ module-name = "cc_transcript._parser_rs"
 manifest-path = "rust/Cargo.toml"
 python-source = "."
 features = ["extension-module"]
+include = ["cc_transcript/sentiment/data/*.tsv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

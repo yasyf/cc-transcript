@@ -7,7 +7,8 @@
   reaches the comparison. Skips when the UDPipe model can't be fetched (offline) or
   spaCy isn't installed.
 - Single source: the Rust-embedded overrides equal `Lexicon.DOMAIN_OVERRIDES`, and
-  the generated `rust/data/*.tsv` still match the installed `afinn` + overrides.
+  the generated `cc_transcript/sentiment/data/*.tsv` still match the installed
+  `afinn` + overrides.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
 POSITIVE_FLOOR = 3
 HOSTILE_FLOOR = 3
 MILD_IMPATIENCE_RE = compile_groups(MILD_IMPATIENCE_GROUPS, True)
-RUST_DATA = Path(__file__).resolve().parent.parent / "rust" / "data"
+LEXICON_DATA = Path(__file__).resolve().parent.parent / "cc_transcript" / "sentiment" / "data"
 
 sentiment_extra = importlib.util.find_spec("spacy") is not None and importlib.util.find_spec("afinn") is not None
 requires_sentiment = pytest.mark.skipif(not sentiment_extra, reason="spaCy/afinn ([sentiment]) not installed")
@@ -100,7 +101,7 @@ FIXTURE_USER_TEXTS: tuple[str, ...] = GENUINE_USER_TEXTS + WRAPPER_NOISE_TEXTS
 
 
 def parse_tsv(name: str) -> dict[str, int]:
-    text = (RUST_DATA / name).read_text(encoding="utf-8")
+    text = (LEXICON_DATA / name).read_text(encoding="utf-8")
     return {w: int(s) for w, _, s in (line.partition("\t") for line in text.splitlines()) if s}
 
 

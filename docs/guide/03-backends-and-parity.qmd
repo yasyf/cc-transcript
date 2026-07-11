@@ -151,7 +151,8 @@ always there: set `CC_TRANSCRIPT_DISABLE_RUST` to run everything through Python.
 ## Single-source data
 
 The lexicon data is generated, never hand-edited. `scripts/build_lexicon_data.py`
-writes `rust/data/afinn-en-165.tsv` and `rust/data/domain_overrides.tsv` from the
+writes `cc_transcript/sentiment/data/afinn-en-165.tsv` and
+`cc_transcript/sentiment/data/domain_overrides.tsv` from the
 canonical Python sources — the `afinn` package's single-word scores and
 `Lexicon.DOMAIN_OVERRIDES`. The Rust crate `include_str!`s those two TSVs at
 compile time, because it cannot call the Python `afinn` library while building.

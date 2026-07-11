@@ -9,8 +9,9 @@ use udpipe_rs::{download_model_from_url, Model};
 // The override + AFINN scoring data is generated from the canonical Python sources
 // (cc_transcript DOMAIN_OVERRIDES + the afinn package) by scripts/build_lexicon_data.py
 // and embedded here at compile time. A parity test guards against drift.
-const AFINN_DATA: &str = include_str!("../data/afinn-en-165.tsv");
-const OVERRIDES_DATA: &str = include_str!("../data/domain_overrides.tsv");
+const AFINN_DATA: &str = include_str!("../../cc_transcript/sentiment/data/afinn-en-165.tsv");
+const OVERRIDES_DATA: &str =
+    include_str!("../../cc_transcript/sentiment/data/domain_overrides.tsv");
 const MIN_MAGNITUDE: i32 = 2;
 const MODEL_FILE: &str = "english-ewt-ud-2.5-191206.udpipe";
 // udpipe-rs's bundled download_model hits a LINDAT DSpace landing page (HTML), so
