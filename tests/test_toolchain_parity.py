@@ -16,8 +16,10 @@ CARGO_LOCK = ROOT / "Cargo.lock"
 UV_LOCK = ROOT / "uv.lock"
 
 
-def resolved_versions(lock: Path) -> dict[str, str]:
-    return {pkg["name"]: pkg["version"] for pkg in tomllib.loads(lock.read_text())["package"]}
+def resolved_version(lock: Path, name: str) -> str:
+    versions = [pkg["version"] for pkg in tomllib.loads(lock.read_text())["package"] if pkg["name"] == name]
+    assert len(versions) == 1, f"{name} resolves to {len(versions)} entries in {lock.name}: {versions}"
+    return versions[0]
 
 
 def minor_pair(version: str) -> tuple[int, int]:
@@ -26,10 +28,10 @@ def minor_pair(version: str) -> tuple[int, int]:
 
 
 def test_tree_sitter_bash_versions_match_exactly() -> None:
-    assert resolved_versions(CARGO_LOCK)["tree-sitter-bash"] == resolved_versions(UV_LOCK)["tree-sitter-bash"]
+    assert resolved_version(CARGO_LOCK, "tree-sitter-bash") == resolved_version(UV_LOCK, "tree-sitter-bash")
 
 
 def test_tree_sitter_core_shares_major_minor() -> None:
-    assert minor_pair(resolved_versions(CARGO_LOCK)["tree-sitter"]) == minor_pair(
-        resolved_versions(UV_LOCK)["tree-sitter"]
+    assert minor_pair(resolved_version(CARGO_LOCK, "tree-sitter")) == minor_pair(
+        resolved_version(UV_LOCK, "tree-sitter")
     )

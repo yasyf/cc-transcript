@@ -3,9 +3,11 @@
 Rust can't import `cc_transcript.filterspec` at compile time, so it embeds a copy
 of the CC-protocol marker strings and the flattened interrupt/agent-injection
 alternations, rendered here into `rust/src/generated/`. `filterspec.py` stays the
-canonical source; this only mirrors it for the Rust build. `render()` is a pure
-function so `tests/test_literals_parity.py` can reuse it to assert the committed
-files still match byte-for-byte (drift guard).
+canonical source; this only mirrors it for the Rust build. `literals()` is the single
+manifest keyed `"domain.NAME"`: `render()` emits the Rust files purely from it, and
+`tests/test_literals_parity.py` derives both its byte-for-byte drift guard and its
+`_parser_rs.embedded_literals()` parity expectation from it — so a constant added here
+but missing from `python.rs`'s accessor fails the parity test automatically.
 
 Run: ``uv run python scripts/build_rust_literals.py``
 """
@@ -89,7 +91,7 @@ def float_const(name: str, value: float) -> str:
     return f"pub const {name}: f64 = {value!r};"
 
 
-def str_slice_const(name: str, values: frozenset[str]) -> str:
+def str_slice_const(name: str, values: tuple[str, ...]) -> str:
     # rustfmt: one line if it fits, else a single block-indented line, else one item per
     # line — it never packs multiple items onto a continuation line.
     items = [rust_str(value) for value in sorted(values)]
@@ -103,65 +105,56 @@ def str_slice_const(name: str, values: frozenset[str]) -> str:
     return f"pub const {name}: &[&str] = &[\n{body}\n];"
 
 
-def protocol_rs() -> str:
-    consts = (
-        ("DENIAL_PREFIX", DENIAL_PREFIX),
-        ("USER_SAID_MARKER", USER_SAID_MARKER),
-        ("USER_SAID_TRAILER", USER_SAID_TRAILER),
-        ("ANSWERED_PREFIX", ANSWERED_PREFIX),
-        ("ANSWERED_TRAILER", ANSWERED_TRAILER),
-        ("INTERRUPT_MARKER_PATTERN", group_pattern(INTERRUPT_MARKER_GROUPS)),
-        ("AGENT_INJECTION_PATTERN", group_pattern(AGENT_INJECTION_GROUPS)),
-    )
-    return "\n".join((HEADER, "", *(const(name, value) for name, value in consts))) + "\n"
+def render_const(name: str, value: str | float | tuple[str, ...]) -> str:
+    match value:
+        case str():
+            return const(name, value)
+        case float():
+            return float_const(name, value)
+        case tuple():
+            return str_slice_const(name, value)
 
 
-def mining_rs() -> str:
-    str_consts = (
-        ("TRANSCRIPT_MESSAGE", TRANSCRIPT_MESSAGE),
-        ("PLAN_REVIEW", PLAN_REVIEW),
-        ("INTERRUPT_REJECTION", INTERRUPT_REJECTION),
-        ("REVIEW_COMMENT", REVIEW_COMMENT),
-        ("QUESTION_ANSWER", QUESTION_ANSWER),
-        ("DETECTOR_TRANSCRIPT_MESSAGE", TRANSCRIPT_MESSAGE_DETECTOR),
-        ("DETECTOR_EXIT_PLAN_REJECTION", EXIT_PLAN_REJECTION_DETECTOR),
-        ("DETECTOR_PLAN_REENTRY", PLAN_REENTRY_DETECTOR),
-        ("DETECTOR_DENIAL", DENIAL_DETECTOR),
-        ("DETECTOR_INTERRUPT", INTERRUPT_DETECTOR),
-        ("DETECTOR_REVIEW_COMMENT", REVIEW_COMMENT_DETECTOR),
-        ("DETECTOR_ASK_USER_QUESTION", ASK_USER_QUESTION_DETECTOR),
-        ("ANSWER_PREVIEW_SEP", ANSWER_PREVIEW_SEP),
-        ("ANSWER_NOTES_SEP", ANSWER_NOTES_SEP),
-        ("NO_OPTION_SELECTED", NO_OPTION_SELECTED),
-    )
-    float_consts = (("NONE", NONE), ("LOW", LOW))
-    return (
-        "\n".join(
-            (
-                HEADER,
-                "",
-                *(const(name, value) for name, value in str_consts),
-                *(float_const(name, value) for name, value in float_consts),
-            )
-        )
-        + "\n"
-    )
+def literals() -> dict[str, str | float | tuple[str, ...]]:
+    return {
+        "protocol.DENIAL_PREFIX": DENIAL_PREFIX,
+        "protocol.USER_SAID_MARKER": USER_SAID_MARKER,
+        "protocol.USER_SAID_TRAILER": USER_SAID_TRAILER,
+        "protocol.ANSWERED_PREFIX": ANSWERED_PREFIX,
+        "protocol.ANSWERED_TRAILER": ANSWERED_TRAILER,
+        "protocol.INTERRUPT_MARKER_PATTERN": group_pattern(INTERRUPT_MARKER_GROUPS),
+        "protocol.AGENT_INJECTION_PATTERN": group_pattern(AGENT_INJECTION_GROUPS),
+        "mining.TRANSCRIPT_MESSAGE": TRANSCRIPT_MESSAGE,
+        "mining.PLAN_REVIEW": PLAN_REVIEW,
+        "mining.INTERRUPT_REJECTION": INTERRUPT_REJECTION,
+        "mining.REVIEW_COMMENT": REVIEW_COMMENT,
+        "mining.QUESTION_ANSWER": QUESTION_ANSWER,
+        "mining.DETECTOR_TRANSCRIPT_MESSAGE": TRANSCRIPT_MESSAGE_DETECTOR,
+        "mining.DETECTOR_EXIT_PLAN_REJECTION": EXIT_PLAN_REJECTION_DETECTOR,
+        "mining.DETECTOR_PLAN_REENTRY": PLAN_REENTRY_DETECTOR,
+        "mining.DETECTOR_DENIAL": DENIAL_DETECTOR,
+        "mining.DETECTOR_INTERRUPT": INTERRUPT_DETECTOR,
+        "mining.DETECTOR_REVIEW_COMMENT": REVIEW_COMMENT_DETECTOR,
+        "mining.DETECTOR_ASK_USER_QUESTION": ASK_USER_QUESTION_DETECTOR,
+        "mining.ANSWER_PREVIEW_SEP": ANSWER_PREVIEW_SEP,
+        "mining.ANSWER_NOTES_SEP": ANSWER_NOTES_SEP,
+        "mining.NO_OPTION_SELECTED": NO_OPTION_SELECTED,
+        "mining.NONE": NONE,
+        "mining.LOW": LOW,
+        "command.WRAPPER_COMMANDS": tuple(sorted(WRAPPER_COMMANDS)),
+        "command.MULTI_LEVEL_TOOLS": tuple(sorted(MULTI_LEVEL_TOOLS)),
+        "command.COMPOUND_OPS": tuple(sorted(COMPOUND_OPS)),
+        "command.ASSIGNMENT_PATTERN": ASSIGNMENT_RE.pattern,
+    }
 
 
-def command_rs() -> str:
-    return (
-        "\n".join(
-            (
-                HEADER,
-                "",
-                str_slice_const("WRAPPER_COMMANDS", WRAPPER_COMMANDS),
-                str_slice_const("MULTI_LEVEL_TOOLS", MULTI_LEVEL_TOOLS),
-                str_slice_const("COMPOUND_OPS", COMPOUND_OPS),
-                const("ASSIGNMENT_PATTERN", ASSIGNMENT_RE.pattern),
-            )
-        )
-        + "\n"
+def render_domain(domain: str, manifest: dict[str, str | float | tuple[str, ...]]) -> str:
+    lines = (
+        render_const(name.partition(".")[2], value)
+        for name, value in manifest.items()
+        if name.partition(".")[0] == domain
     )
+    return "\n".join((HEADER, "", *lines)) + "\n"
 
 
 def mod_rs() -> str:
@@ -169,11 +162,10 @@ def mod_rs() -> str:
 
 
 def render() -> dict[str, str]:
-    return {
-        "rust/src/generated/mod.rs": mod_rs(),
-        "rust/src/generated/command.rs": command_rs(),
-        "rust/src/generated/mining.rs": mining_rs(),
-        "rust/src/generated/protocol.rs": protocol_rs(),
+    manifest = literals()
+    return {"rust/src/generated/mod.rs": mod_rs()} | {
+        f"rust/src/generated/{domain}.rs": render_domain(domain, manifest)
+        for domain in dict.fromkeys(name.partition(".")[0] for name in manifest)
     }
 
 
