@@ -12,9 +12,8 @@ pub use crate::generated::protocol::{
 /// compiled case-insensitively, anchored at the start of the haystack with leading
 /// whitespace tolerated. Shared with mining's structural fallback so both uses
 /// carry identical case semantics.
-pub static INTERRUPT_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!("(?i){INTERRUPT_MARKER_PATTERN}")).expect("interrupt regex")
-});
+pub static INTERRUPT_MARKER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(&format!("(?i){INTERRUPT_MARKER_PATTERN}")).expect("interrupt regex"));
 
 /// The agent-injection regex (filterspec.py AGENT_INJECTION_RE): the group
 /// alternation compiled case-insensitively, matched with search semantics
@@ -34,7 +33,14 @@ pub fn is_agent_injection(text: &str) -> bool {
 pub fn embedded_user_text(content: &str) -> Option<String> {
     let start = content.find(USER_SAID_MARKER)?;
     let after = &content[start + USER_SAID_MARKER.len()..];
-    Some(after.split(USER_SAID_TRAILER).next().unwrap_or(after).trim().to_string())
+    Some(
+        after
+            .split(USER_SAID_TRAILER)
+            .next()
+            .unwrap_or(after)
+            .trim()
+            .to_string(),
+    )
 }
 
 /// interrupt_marker (filterspec.py interrupt_marker): the bracketed interrupt prefix
@@ -64,8 +70,12 @@ mod tests {
 
     #[test]
     fn embedded_text_extracts_between_markers() {
-        let content = format!("{DENIAL_PREFIX}\n\n{USER_SAID_MARKER}do it this way\n{USER_SAID_TRAILER} ...");
-        assert_eq!(embedded_user_text(&content), Some("do it this way".to_string()));
+        let content =
+            format!("{DENIAL_PREFIX}\n\n{USER_SAID_MARKER}do it this way\n{USER_SAID_TRAILER} ...");
+        assert_eq!(
+            embedded_user_text(&content),
+            Some("do it this way".to_string())
+        );
     }
 
     #[test]
@@ -92,36 +102,61 @@ mod tests {
             interrupt_marker("  [request INTERRUPTED by user for tool use]"),
             Some("[request INTERRUPTED by user for tool use]")
         );
-        assert_eq!(interrupt_marker("she typed [Request interrupted by user] mid-text"), None);
+        assert_eq!(
+            interrupt_marker("she typed [Request interrupted by user] mid-text"),
+            None
+        );
         // The leading "i" of "interrupted" is ASCII-pinned: the dotted/dotless-I forms
         // (U+0130/U+0131) that Python re once folded must never match on either backend.
-        assert_eq!(interrupt_marker("[Request \u{0131}nterrupted by user]"), None);
-        assert_eq!(interrupt_marker("[Request \u{0130}nterrupted by user]"), None);
+        assert_eq!(
+            interrupt_marker("[Request \u{0131}nterrupted by user]"),
+            None
+        );
+        assert_eq!(
+            interrupt_marker("[Request \u{0130}nterrupted by user]"),
+            None
+        );
     }
 
     #[test]
     fn bare_marker_detection() {
         assert!(is_bare_interrupt_marker("[Request interrupted by user]"));
-        assert!(!is_bare_interrupt_marker("[Request interrupted by user] no do it differently"));
+        assert!(!is_bare_interrupt_marker(
+            "[Request interrupted by user] no do it differently"
+        ));
     }
 
     #[test]
     fn agent_injection_matches_relay_banners() {
-        assert!(is_agent_injection("<teammate-message from='r'>rebase</teammate-message>"));
-        assert!(is_agent_injection("<scheduled-task id='7'>run the suite</scheduled-task>"));
+        assert!(is_agent_injection(
+            "<teammate-message from='r'>rebase</teammate-message>"
+        ));
+        assert!(is_agent_injection(
+            "<scheduled-task id='7'>run the suite</scheduled-task>"
+        ));
         assert!(is_agent_injection("[Role Reminder: You are a Coordinator."));
         assert!(is_agent_injection("# Augment Agent\nyou have these tools"));
         // Leading whitespace before the marker is tolerated.
-        assert!(is_agent_injection("   <teammate-message from='mate'>ping</teammate-message>"));
+        assert!(is_agent_injection(
+            "   <teammate-message from='mate'>ping</teammate-message>"
+        ));
     }
 
     #[test]
     fn agent_injection_rejects_prose_and_mid_text_mentions() {
-        assert!(!is_agent_injection("remind me what the teammate coordinator does"));
+        assert!(!is_agent_injection(
+            "remind me what the teammate coordinator does"
+        ));
         // Start-anchored: a relay tag mentioned mid-text is authored, not injected.
-        assert!(!is_agent_injection("as noted in the <teammate-message> above"));
-        assert!(!is_agent_injection("Why did the transcript contain <teammate-message from=a>?"));
-        assert!(!is_agent_injection("we discussed the [Role Reminder] banner mid-sentence"));
+        assert!(!is_agent_injection(
+            "as noted in the <teammate-message> above"
+        ));
+        assert!(!is_agent_injection(
+            "Why did the transcript contain <teammate-message from=a>?"
+        ));
+        assert!(!is_agent_injection(
+            "we discussed the [Role Reminder] banner mid-sentence"
+        ));
         // A combining mark (U+0301) after the tag name is not a portable word boundary; and
         // dotless-I must not fold to ASCII "i" — Python re once matched both, Rust never did.
         assert!(!is_agent_injection("<teammate-message\u{0301}>"));

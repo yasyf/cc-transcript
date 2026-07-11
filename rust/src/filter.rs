@@ -31,9 +31,14 @@ enum CompiledPredicate {
     MetaFlag(fn(&EntryMeta) -> bool),
     EntrypointIn(HashSet<String>),
     ModelIs(HashSet<String>),
-    TextEmpty { consider_tool_use: bool },
+    TextEmpty {
+        consider_tool_use: bool,
+    },
     TextMatchesAny(Regex),
-    TextInSet { phrases: HashSet<String>, strip_trailing: String },
+    TextInSet {
+        phrases: HashSet<String>,
+        strip_trailing: String,
+    },
     WordCountAtMost(usize),
 }
 
@@ -88,14 +93,25 @@ fn compile_regex(predicate: &Value) -> Result<Regex, String> {
 
 /// Joins ``(name, pattern)`` group pairs into one alternation, matching the Python
 /// ``compile_groups`` (so the score executor's regex stages share its semantics).
-pub(crate) fn compile_group_array(groups: &sonic_rs::Array, ignore_case: bool) -> Result<Regex, String> {
+pub(crate) fn compile_group_array(
+    groups: &sonic_rs::Array,
+    ignore_case: bool,
+) -> Result<Regex, String> {
     let joined = groups
         .iter()
-        .filter_map(|group| 1usize.value_index_into(group).and_then(JsonValueTrait::as_str))
+        .filter_map(|group| {
+            1usize
+                .value_index_into(group)
+                .and_then(JsonValueTrait::as_str)
+        })
         .map(|pattern| format!("(?:{pattern})"))
         .collect::<Vec<_>>()
         .join("|");
-    let pattern = if ignore_case { format!("(?i){joined}") } else { joined };
+    let pattern = if ignore_case {
+        format!("(?i){joined}")
+    } else {
+        joined
+    };
     Regex::new(&pattern).map_err(|e| format!("invalid regex {pattern:?}: {e}"))
 }
 
@@ -105,7 +121,10 @@ fn compile_predicate(predicate: &Value) -> Result<CompiledPredicate, String> {
         "MetaFlag" => Ok(CompiledPredicate::MetaFlag(meta_flag(
             field_str(predicate, "flag").ok_or("MetaFlag missing 'flag'")?,
         )?)),
-        "EntrypointIn" => Ok(CompiledPredicate::EntrypointIn(str_set(predicate, "entrypoints"))),
+        "EntrypointIn" => Ok(CompiledPredicate::EntrypointIn(str_set(
+            predicate,
+            "entrypoints",
+        ))),
         "ModelIs" => Ok(CompiledPredicate::ModelIs(str_set(predicate, "models"))),
         "TextEmpty" => Ok(CompiledPredicate::TextEmpty {
             consider_tool_use: field_bool(predicate, "consider_tool_use"),
@@ -113,7 +132,9 @@ fn compile_predicate(predicate: &Value) -> Result<CompiledPredicate, String> {
         "TextMatchesAny" => Ok(CompiledPredicate::TextMatchesAny(compile_regex(predicate)?)),
         "TextInSet" => Ok(CompiledPredicate::TextInSet {
             phrases: str_set(predicate, "phrases"),
-            strip_trailing: field_str(predicate, "strip_trailing").unwrap_or("").to_string(),
+            strip_trailing: field_str(predicate, "strip_trailing")
+                .unwrap_or("")
+                .to_string(),
         }),
         "WordCountAtMost" => Ok(CompiledPredicate::WordCountAtMost(
             field(predicate, "n")
@@ -126,7 +147,9 @@ fn compile_predicate(predicate: &Value) -> Result<CompiledPredicate, String> {
 
 fn compile_clause(clause: &Value) -> Result<CompiledClause, String> {
     Ok(CompiledClause {
-        predicate: compile_predicate(field(clause, "predicate").ok_or("clause missing 'predicate'")?)?,
+        predicate: compile_predicate(
+            field(clause, "predicate").ok_or("clause missing 'predicate'")?,
+        )?,
         applies_to: kind_array(clause, "applies_to")?,
         negate: field_bool(clause, "negate"),
     })
@@ -182,15 +205,19 @@ fn predicate_matches(predicate: &CompiledPredicate, entry: &Entry, kind: Kind, t
         CompiledPredicate::TextEmpty { consider_tool_use } => match entry {
             Entry::Assistant(assistant) if *consider_tool_use => {
                 text.trim().is_empty()
-                    && !assistant.blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse(_)))
+                    && !assistant
+                        .blocks
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolUse(_)))
             }
             Entry::User(_) | Entry::Assistant(_) => text.trim().is_empty(),
             _ => false,
         },
         CompiledPredicate::TextMatchesAny(re) => re.is_match(text),
-        CompiledPredicate::TextInSet { phrases, strip_trailing } => {
-            phrases.contains(&normalize_bare(text, strip_trailing))
-        }
+        CompiledPredicate::TextInSet {
+            phrases,
+            strip_trailing,
+        } => phrases.contains(&normalize_bare(text, strip_trailing)),
         CompiledPredicate::WordCountAtMost(n) => text.split_whitespace().count() <= *n,
         CompiledPredicate::MetaFlag(flag) => entry.meta().is_some_and(flag),
         CompiledPredicate::EntrypointIn(set) => entry
@@ -248,12 +275,23 @@ mod tests {
     #[test]
     fn keeps_real_pushback_drops_noise() {
         let spec = pushback_spec();
-        assert!(spec_keep(&spec, &user("please refactor the parser carefully")));
+        assert!(spec_keep(
+            &spec,
+            &user("please refactor the parser carefully")
+        ));
         assert!(!spec_keep(&spec, &user("ok")));
         assert!(!spec_keep(&spec, &user("go ahead.")));
         assert!(!spec_keep(&spec, &user("fix it"))); // two words -> dropped
-        assert!(spec_keep(&spec, &user("[Request interrupted by user] no, do it this way")) == false);
-        assert!(spec_keep(&spec, &user("she quoted [Request interrupted by user] mid-text here"))); // head-anchored: mid-text marker kept
+        assert!(
+            spec_keep(
+                &spec,
+                &user("[Request interrupted by user] no, do it this way")
+            ) == false
+        );
+        assert!(spec_keep(
+            &spec,
+            &user("she quoted [Request interrupted by user] mid-text here")
+        )); // head-anchored: mid-text marker kept
     }
 
     #[test]

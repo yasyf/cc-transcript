@@ -16,9 +16,24 @@ enum ShortStage {
 }
 
 enum PostStage {
-    PositiveClamp { from: i64, to: i64, max_words: usize, floor: i32 },
-    MildIrritation { trigger: Regex, hostile: Regex, from: i64, to: i64, floor: i32 },
-    ResumeClamp { phrases: HashSet<String>, strip: String, to: i64 },
+    PositiveClamp {
+        from: i64,
+        to: i64,
+        max_words: usize,
+        floor: i32,
+    },
+    MildIrritation {
+        trigger: Regex,
+        hostile: Regex,
+        from: i64,
+        to: i64,
+        floor: i32,
+    },
+    ResumeClamp {
+        phrases: HashSet<String>,
+        strip: String,
+        to: i64,
+    },
 }
 
 struct CompiledScoreSpec {
@@ -49,7 +64,8 @@ fn str_set(stage: &Value, key: &str) -> HashSet<String> {
 }
 
 fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
-    let root: Value = sonic_rs::from_str(spec_json).map_err(|e| format!("invalid score spec json: {e}"))?;
+    let root: Value =
+        sonic_rs::from_str(spec_json).map_err(|e| format!("invalid score spec json: {e}"))?;
     let stages = field(&root, "stages")
         .and_then(JsonContainerTrait::as_array)
         .ok_or("score spec missing 'stages' array")?;
@@ -58,7 +74,10 @@ fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
     for stage in stages {
         match field_str(stage, "kind").ok_or("score stage missing 'kind'")? {
             "FrustrationShortCircuit" => short.push(ShortStage::Frustration {
-                re: compile_group_array(group_array(stage, "groups")?, field_bool(stage, "ignore_case"))?,
+                re: compile_group_array(
+                    group_array(stage, "groups")?,
+                    field_bool(stage, "ignore_case"),
+                )?,
                 score: int_field(stage, "score")?,
             }),
             "PositiveClamp" => post.push(PostStage::PositiveClamp {
@@ -68,8 +87,14 @@ fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
                 floor: int_field(stage, "positive_floor")? as i32,
             }),
             "MildIrritationDemote" => post.push(PostStage::MildIrritation {
-                trigger: compile_group_array(group_array(stage, "trigger_groups")?, field_bool(stage, "ignore_case"))?,
-                hostile: compile_group_array(group_array(stage, "hostile_groups")?, field_bool(stage, "ignore_case"))?,
+                trigger: compile_group_array(
+                    group_array(stage, "trigger_groups")?,
+                    field_bool(stage, "ignore_case"),
+                )?,
+                hostile: compile_group_array(
+                    group_array(stage, "hostile_groups")?,
+                    field_bool(stage, "ignore_case"),
+                )?,
                 from: int_field(stage, "from_score")?,
                 to: int_field(stage, "to_score")?,
                 floor: int_field(stage, "hostile_floor")? as i32,
@@ -85,44 +110,73 @@ fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
     Ok(CompiledScoreSpec { short, post })
 }
 
-pub fn score_short_circuit(spec_json: &str, buckets: &[Vec<String>]) -> Result<Vec<Option<i64>>, String> {
+pub fn score_short_circuit(
+    spec_json: &str,
+    buckets: &[Vec<String>],
+) -> Result<Vec<Option<i64>>, String> {
     let spec = compile_spec(spec_json)?;
-    Ok(buckets.iter().map(|texts| short_circuit_one(&spec, texts)).collect())
+    Ok(buckets
+        .iter()
+        .map(|texts| short_circuit_one(&spec, texts))
+        .collect())
 }
 
 fn short_circuit_one(spec: &CompiledScoreSpec, texts: &[String]) -> Option<i64> {
     spec.short.iter().find_map(|stage| match stage {
-        ShortStage::Frustration { re, score } => texts.iter().any(|t| re.is_match(t)).then_some(*score),
+        ShortStage::Frustration { re, score } => {
+            texts.iter().any(|t| re.is_match(t)).then_some(*score)
+        }
     })
 }
 
-pub fn score_post_process(spec_json: &str, buckets: &[Vec<String>], raw: &[i64]) -> Result<Vec<i64>, String> {
+pub fn score_post_process(
+    spec_json: &str,
+    buckets: &[Vec<String>],
+    raw: &[i64],
+) -> Result<Vec<i64>, String> {
     let spec = compile_spec(spec_json)?;
     Ok(buckets
         .iter()
         .zip(raw.iter())
-        .map(|(texts, &score)| spec.post.iter().fold(score, |score, stage| apply_post(stage, texts, score)))
+        .map(|(texts, &score)| {
+            spec.post
+                .iter()
+                .fold(score, |score, stage| apply_post(stage, texts, score))
+        })
         .collect())
 }
 
 fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
     match stage {
-        PostStage::PositiveClamp { from, to, max_words, floor } => {
+        PostStage::PositiveClamp {
+            from,
+            to,
+            max_words,
+            floor,
+        } => {
             let clamp = score == *from
-                && texts
-                    .iter()
-                    .any(|t| t.split_whitespace().count() <= *max_words && !lexicon::has_hit(t, *floor, false));
+                && texts.iter().any(|t| {
+                    t.split_whitespace().count() <= *max_words
+                        && !lexicon::has_hit(t, *floor, false)
+                });
             if clamp {
                 *to
             } else {
                 score
             }
         }
-        PostStage::MildIrritation { trigger, hostile, from, to, floor } => {
+        PostStage::MildIrritation {
+            trigger,
+            hostile,
+            from,
+            to,
+            floor,
+        } => {
             let demote = score == *from
-                && texts
-                    .iter()
-                    .any(|t| trigger.is_match(t) && !(hostile.is_match(t) || lexicon::has_hit(t, *floor, true)));
+                && texts.iter().any(|t| {
+                    trigger.is_match(t)
+                        && !(hostile.is_match(t) || lexicon::has_hit(t, *floor, true))
+                });
             if demote {
                 *to
             } else {
@@ -130,7 +184,10 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
             }
         }
         PostStage::ResumeClamp { phrases, strip, to } => {
-            if texts.iter().any(|t| phrases.contains(&normalize_bare(t, strip))) {
+            if texts
+                .iter()
+                .any(|t| phrases.contains(&normalize_bare(t, strip)))
+            {
                 *to
             } else {
                 score
@@ -154,14 +211,26 @@ mod tests {
 
     #[test]
     fn frustration_short_circuits_first() {
-        let buckets = [bucket(&["wtf is this"]), bucket(&["please continue carefully"])];
-        assert_eq!(score_short_circuit(SPEC, &buckets).unwrap(), vec![Some(1), None]);
+        let buckets = [
+            bucket(&["wtf is this"]),
+            bucket(&["please continue carefully"]),
+        ];
+        assert_eq!(
+            score_short_circuit(SPEC, &buckets).unwrap(),
+            vec![Some(1), None]
+        );
     }
 
     #[test]
     fn resume_clamps_in_post_process() {
-        let buckets = [bucket(&["go ahead."]), bucket(&["a normal longer message here"])];
-        assert_eq!(score_post_process(SPEC, &buckets, &[5, 5]).unwrap(), vec![3, 5]);
+        let buckets = [
+            bucket(&["go ahead."]),
+            bucket(&["a normal longer message here"]),
+        ];
+        assert_eq!(
+            score_post_process(SPEC, &buckets, &[5, 5]).unwrap(),
+            vec![3, 5]
+        );
     }
 
     #[test]

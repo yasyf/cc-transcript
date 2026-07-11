@@ -16,11 +16,12 @@ use crate::generated::mining::{
 };
 use crate::parse::{parse_bytes, parse_questions, ParseError};
 use crate::protocol::{
-    embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
-    DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
+    embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
+    ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
 use crate::types::{
-    matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry,
+    matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock,
+    UserEntry,
 };
 use crate::value::{field, field_bool, field_str};
 
@@ -243,12 +244,24 @@ fn compile_review_regex(fmt: &Value) -> Result<Regex, String> {
     let groups = group_array(fmt, "groups")?;
     let joined = groups
         .iter()
-        .filter_map(|group| 1usize.value_index_into(group).and_then(JsonValueTrait::as_str))
+        .filter_map(|group| {
+            1usize
+                .value_index_into(group)
+                .and_then(JsonValueTrait::as_str)
+        })
         .map(|pattern| format!("(?:{pattern})"))
         .collect::<Vec<_>>()
         .join("|");
-    let multiline = if field_bool(fmt, "multiline") { "(?m)" } else { "" };
-    let ignore_case = if field_bool(fmt, "ignore_case") { "(?i)" } else { "" };
+    let multiline = if field_bool(fmt, "multiline") {
+        "(?m)"
+    } else {
+        ""
+    };
+    let ignore_case = if field_bool(fmt, "ignore_case") {
+        "(?i)"
+    } else {
+        ""
+    };
     let pattern = format!("{multiline}{ignore_case}{joined}");
     Regex::new(&pattern).map_err(|e| format!("invalid review regex {pattern:?}: {e}"))
 }
@@ -319,7 +332,13 @@ fn bump(mut sig: CandidateSig, delta: f64, reason: &str) -> CandidateSig {
     sig
 }
 
-fn apply_conf_stage(stage: &ConfStage, text: &str, index: i64, trigger: Option<i64>, sig: CandidateSig) -> CandidateSig {
+fn apply_conf_stage(
+    stage: &ConfStage,
+    text: &str,
+    index: i64,
+    trigger: Option<i64>,
+    sig: CandidateSig,
+) -> CandidateSig {
     match stage {
         ConfStage::Base { band, reason } => CandidateSig {
             confidence: *band,
@@ -330,22 +349,27 @@ fn apply_conf_stage(stage: &ConfStage, text: &str, index: i64, trigger: Option<i
             },
             durable: sig.durable,
         },
-        ConfStage::BumpIfSubstantive { groups, delta, min_words, reason }
-            if word_count(text) > *min_words && !groups.is_match(text) =>
-        {
-            bump(sig, *delta, reason)
-        }
-        ConfStage::DemoteIfHedged { groups, delta, reason } if groups.is_match(text) => {
-            bump(sig, *delta, reason)
-        }
-        ConfStage::DemoteIfShort { max_words, delta, reason } if word_count(text) <= *max_words => {
-            bump(sig, *delta, reason)
-        }
-        ConfStage::BumpIfProximate { within, delta, reason }
-            if trigger.is_some_and(|t| index - t <= *within) =>
-        {
-            bump(sig, *delta, reason)
-        }
+        ConfStage::BumpIfSubstantive {
+            groups,
+            delta,
+            min_words,
+            reason,
+        } if word_count(text) > *min_words && !groups.is_match(text) => bump(sig, *delta, reason),
+        ConfStage::DemoteIfHedged {
+            groups,
+            delta,
+            reason,
+        } if groups.is_match(text) => bump(sig, *delta, reason),
+        ConfStage::DemoteIfShort {
+            max_words,
+            delta,
+            reason,
+        } if word_count(text) <= *max_words => bump(sig, *delta, reason),
+        ConfStage::BumpIfProximate {
+            within,
+            delta,
+            reason,
+        } if trigger.is_some_and(|t| index - t <= *within) => bump(sig, *delta, reason),
         _ => sig,
     }
 }
@@ -358,7 +382,12 @@ fn run_confidence(
     base: CandidateSig,
 ) -> CandidateSig {
     for stage in &spec.stages {
-        if let ConfStage::NoiseIfStructural { groups, band, reason } = stage {
+        if let ConfStage::NoiseIfStructural {
+            groups,
+            band,
+            reason,
+        } = stage
+        {
             if groups.is_match(text) {
                 return CandidateSig {
                     confidence: *band,
@@ -368,9 +397,9 @@ fn run_confidence(
             }
         }
     }
-    spec.stages
-        .iter()
-        .fold(base, |sig, stage| apply_conf_stage(stage, text, index, trigger, sig))
+    spec.stages.iter().fold(base, |sig, stage| {
+        apply_conf_stage(stage, text, index, trigger, sig)
+    })
 }
 
 /// Scores ``text`` by folding ``calibrated`` over a ``firm(seed)`` base
@@ -391,13 +420,22 @@ fn calibrated(spec: &CompiledConfSpec, text: &str, seed: &str) -> CandidateSig {
 
 /// Scores a transcript user message (mining/spec.py score_user_message: NONE band,
 /// empty reasons, durable=true seed).
-fn score_user_message(spec: &CompiledConfSpec, text: &str, index: i64, trigger: Option<i64>) -> CandidateSig {
+fn score_user_message(
+    spec: &CompiledConfSpec,
+    text: &str,
+    index: i64,
+    trigger: Option<i64>,
+) -> CandidateSig {
     run_confidence(
         spec,
         text,
         index,
         trigger,
-        CandidateSig { confidence: NONE, reasons: vec![], durable: true },
+        CandidateSig {
+            confidence: NONE,
+            reasons: vec![],
+            durable: true,
+        },
     )
 }
 
@@ -450,7 +488,11 @@ impl Events {
         let lo = index.saturating_sub(spec.reentry_lookback);
         (lo..index)
             .rev()
-            .find(|&i| self.entries[i].tool_uses().any(|tu| matches_names(&tu.name, &spec.edit_tools)))
+            .find(|&i| {
+                self.entries[i]
+                    .tool_uses()
+                    .any(|tu| matches_names(&tu.name, &spec.edit_tools))
+            })
             .map(|i| i as i64)
     }
 }
@@ -458,15 +500,24 @@ impl Events {
 /// marker_in (mining/signals.py marker_in): whether any tool-result block's
 /// content carries the interrupt marker.
 fn marker_in(user: &UserEntry) -> bool {
-    user.tool_results().any(|b| interrupt_marker(&b.content).is_some())
+    user.tool_results()
+        .any(|b| interrupt_marker(&b.content).is_some())
 }
 
 fn weak(reason: &str) -> CandidateSig {
-    CandidateSig { confidence: LOW, reasons: vec![reason.to_string()], durable: true }
+    CandidateSig {
+        confidence: LOW,
+        reasons: vec![reason.to_string()],
+        durable: true,
+    }
 }
 
 fn noise(reason: &str) -> CandidateSig {
-    CandidateSig { confidence: NONE, reasons: vec![reason.to_string()], durable: true }
+    CandidateSig {
+        confidence: NONE,
+        reasons: vec![reason.to_string()],
+        durable: true,
+    }
 }
 
 struct ScoredText {
@@ -504,9 +555,15 @@ fn first_followup(events: &Events, mut index: usize) -> Option<String> {
 /// weak(bare_marker), else a followup noise(structural_only), else None.
 fn marker_correction(events: &Events, index: usize, structural: &Regex) -> Option<ScoredText> {
     if let Some(correction) = correction_text(events, index, structural) {
-        return Some(ScoredText { text: correction, signal: weak("bare_marker") });
+        return Some(ScoredText {
+            text: correction,
+            signal: weak("bare_marker"),
+        });
     }
-    first_followup(events, index).map(|followup| ScoredText { text: followup, signal: noise("structural_only") })
+    first_followup(events, index).map(|followup| ScoredText {
+        text: followup,
+        signal: noise("structural_only"),
+    })
 }
 
 /// denial_correction (mining/signals.py denial_correction): the embedded
@@ -630,11 +687,15 @@ fn iter_plan_rejection<'py>(
     for (index, entry) in events.entries.iter().enumerate() {
         let Entry::User(user) = entry else { continue };
         for result in denial_results(user) {
-            let Some(use_block) = uses.get(result.tool_use_id.as_str()) else { continue };
+            let Some(use_block) = uses.get(result.tool_use_id.as_str()) else {
+                continue;
+            };
             if !matches_names(&use_block.name, &spec.plan_tools) {
                 continue;
             }
-            let Some(text) = embedded_user_text(&result.content) else { continue };
+            let Some(text) = embedded_user_text(&result.content) else {
+                continue;
+            };
             let trigger = events.nearest_assistant_index(index);
             let sig = calibrated(&spec.calibrated, &text, "embedded_text");
             out.push(build_signal_dict(
@@ -666,12 +727,16 @@ fn iter_plan_reentry<'py>(
         if mode.value != "plan" {
             continue;
         }
-        let Some((user_index, user)) = events.next_user_message(index) else { continue };
+        let Some((user_index, user)) = events.next_user_message(index) else {
+            continue;
+        };
         let uuid = user.meta.uuid.as_str();
         if seen.contains(uuid) || is_bare_interrupt_marker(&events.texts[user_index]) {
             continue;
         }
-        let Some(edit) = events.last_edit_index(user_index, spec) else { continue };
+        let Some(edit) = events.last_edit_index(user_index, spec) else {
+            continue;
+        };
         seen.insert(uuid);
         let text = &events.texts[user_index];
         let trigger = events.nearest_assistant_index(user_index);
@@ -704,11 +769,15 @@ fn iter_tool_denial<'py>(
         let Entry::User(user) = entry else { continue };
         for block in denial_results(user) {
             let paired = uses.get(block.tool_use_id.as_str()).copied();
-            if paired.is_some_and(|use_block| matches_names(&use_block.name, &spec.denial_excluded_tools)) {
+            if paired.is_some_and(|use_block| {
+                matches_names(&use_block.name, &spec.denial_excluded_tools)
+            }) {
                 continue;
             }
             let embedded = embedded_user_text(&block.content);
-            let Some(scored) = denial_correction(events, index, embedded, spec, structural) else { continue };
+            let Some(scored) = denial_correction(events, index, embedded, spec, structural) else {
+                continue;
+            };
             let trigger = events.nearest_assistant_index(index);
             let evidence = PyDict::new(py);
             if let Some(use_block) = paired {
@@ -743,7 +812,9 @@ fn iter_interrupt<'py>(
         if !marker_in(user) {
             continue;
         }
-        let Some(scored) = marker_correction(events, index, structural) else { continue };
+        let Some(scored) = marker_correction(events, index, structural) else {
+            continue;
+        };
         let trigger = events.nearest_assistant_index(index);
         out.push(build_signal_dict(
             py,
@@ -776,7 +847,11 @@ struct ScanText {
 
 /// classify_provenance (mining/spec.py classify_provenance): typed for absent tool,
 /// surfaced for a non-subagent main-chain tool (per tools.py matches_names), else claude.
-fn classify_provenance(subagent_tools: &HashSet<String>, tool_name: Option<&str>, is_sidechain: bool) -> &'static str {
+fn classify_provenance(
+    subagent_tools: &HashSet<String>,
+    tool_name: Option<&str>,
+    is_sidechain: bool,
+) -> &'static str {
     match (tool_name, is_sidechain) {
         (None, _) => "typed",
         (Some(name), false) if !matches_names(name, subagent_tools) => "surfaced",
@@ -804,12 +879,19 @@ fn review_scan_texts(
         });
     }
     for block in user.tool_results() {
-        let tool_name = uses.get(block.tool_use_id.as_str()).map(|tu| tu.name.as_str());
-        let provenance = classify_provenance(&spec.subagent_tools, tool_name, user.meta.is_sidechain);
+        let tool_name = uses
+            .get(block.tool_use_id.as_str())
+            .map(|tu| tu.name.as_str());
+        let provenance =
+            classify_provenance(&spec.subagent_tools, tool_name, user.meta.is_sidechain);
         if provenance == "typed" || !surfaces.contains(provenance) {
             continue;
         }
-        scans.push(ScanText { text: block.content.clone(), provenance, trigger_index: None });
+        scans.push(ScanText {
+            text: block.content.clone(),
+            provenance,
+            trigger_index: None,
+        });
     }
     scans
 }
@@ -833,12 +915,21 @@ fn line_bounds(value: Option<&Value>) -> Result<(Option<i64>, Option<i64>), Stri
         Some(v) => match v.as_str() {
             Some(s) if s.contains('-') => {
                 let (start, end) = s.split_once('-').expect("contains '-'");
-                let start = start.trim().parse::<i64>().map_err(|e| format!("invalid line {start:?}: {e}"))?;
-                let end = end.trim().parse::<i64>().map_err(|e| format!("invalid line {end:?}: {e}"))?;
+                let start = start
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|e| format!("invalid line {start:?}: {e}"))?;
+                let end = end
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|e| format!("invalid line {end:?}: {e}"))?;
                 Ok((Some(start), Some(end)))
             }
             Some(s) if !s.trim().is_empty() && s.trim().chars().all(|c| c.is_ascii_digit()) => {
-                let n = s.trim().parse::<i64>().map_err(|e| format!("invalid line {s:?}: {e}"))?;
+                let n = s
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|e| format!("invalid line {s:?}: {e}"))?;
                 Ok((Some(n), Some(n)))
             }
             _ => Ok((None, None)),
@@ -854,7 +945,11 @@ fn json_str(value: &Value) -> String {
         return s.to_string();
     }
     if let Some(b) = value.as_bool() {
-        return if b { "True".to_string() } else { "False".to_string() };
+        return if b {
+            "True".to_string()
+        } else {
+            "False".to_string()
+        };
     }
     if let Some(i) = value.as_i64() {
         return i.to_string();
@@ -880,7 +975,12 @@ fn review_comment(obj: &Value, fmt: &CompiledStructuredFormat) -> Result<ReviewC
         .map(json_str)
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(ReviewComment { file, line_start, line_end, comment })
+    Ok(ReviewComment {
+        file,
+        line_start,
+        line_end,
+        comment,
+    })
 }
 
 /// findings (mining/formats.py findings): list -> items; dict -> the first
@@ -915,7 +1015,10 @@ fn findings<'a>(payload: &'a Value, keys: &[String], acc: &mut Vec<&'a Value>) {
 
 /// StructuredFormat.extract (mining/formats.py StructuredFormat.extract): the
 /// review comments for every finding object that carries a comment value.
-fn extract_structured_format(payload: &Value, fmt: &CompiledStructuredFormat) -> Result<Vec<ReviewComment>, String> {
+fn extract_structured_format(
+    payload: &Value,
+    fmt: &CompiledStructuredFormat,
+) -> Result<Vec<ReviewComment>, String> {
     let mut found = Vec::new();
     findings(payload, &fmt.finding_keys, &mut found);
     found
@@ -934,8 +1037,13 @@ fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewCom
     fmt.regex
         .captures_iter(text)
         .map(|caps| {
-            let group = |index: Option<usize>| index.and_then(|i| caps.get(i)).map(|m| m.as_str().to_string());
-            let int_group = |index: Option<usize>| group(index).and_then(|v| v.trim().parse::<i64>().ok());
+            let group = |index: Option<usize>| {
+                index
+                    .and_then(|i| caps.get(i))
+                    .map(|m| m.as_str().to_string())
+            };
+            let int_group =
+                |index: Option<usize>| group(index).and_then(|v| v.trim().parse::<i64>().ok());
             ReviewComment {
                 file: group(fmt.file_group),
                 line_start: int_group(fmt.line_start_group),
@@ -956,12 +1064,19 @@ fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewCom
 /// review_comments (mining/signals.py review_comments): regex formats then
 /// structured formats, in order. Callable formats are non-portable and never reach
 /// the Rust backend.
-fn review_comments(spec: &CompiledMiningSpec, text: &str) -> Result<Vec<(String, ReviewComment)>, String> {
+fn review_comments(
+    spec: &CompiledMiningSpec,
+    text: &str,
+) -> Result<Vec<(String, ReviewComment)>, String> {
     let mut out: Vec<(String, ReviewComment)> = spec
         .review
         .regex_formats
         .iter()
-        .flat_map(|fmt| regex_review_comments(fmt, text).into_iter().map(move |c| (fmt.name.clone(), c)))
+        .flat_map(|fmt| {
+            regex_review_comments(fmt, text)
+                .into_iter()
+                .map(move |c| (fmt.name.clone(), c))
+        })
         .collect();
     if !spec.review.structured_formats.is_empty() {
         if let Ok(payload) = sonic_rs::from_str::<Value>(text) {
@@ -985,8 +1100,8 @@ fn iter_review_comment<'py>(
     for (index, entry) in events.entries.iter().enumerate() {
         let Entry::User(user) = entry else { continue };
         for scan in review_scan_texts(events, user, index, spec, uses) {
-            for (fmt_name, comment) in
-                review_comments(spec, &scan.text).map_err(pyo3::exceptions::PyValueError::new_err)?
+            for (fmt_name, comment) in review_comments(spec, &scan.text)
+                .map_err(pyo3::exceptions::PyValueError::new_err)?
             {
                 let evidence = PyDict::new(py);
                 evidence.set_item("format", &fmt_name)?;
@@ -1036,7 +1151,11 @@ fn split_answer_segment(segment: &str) -> (&str, Option<&str>, Option<&str>) {
         };
     }
     match segment.find(ANSWER_NOTES_SEP) {
-        Some(at) => (&segment[..at], None, Some(&segment[at + ANSWER_NOTES_SEP.len()..])),
+        Some(at) => (
+            &segment[..at],
+            None,
+            Some(&segment[at + ANSWER_NOTES_SEP.len()..]),
+        ),
         None => (segment, None, None),
     }
 }
@@ -1065,7 +1184,9 @@ fn answered_pairs<'a>(body: &'a str, questions: &'a [Question]) -> Vec<AnsweredP
     let mut pos = 0usize;
     for question in questions {
         let anchor = format!("\"{}\"=", question.question);
-        let Some(at) = find_anchor(body, &anchor, pos) else { continue };
+        let Some(at) = find_anchor(body, &anchor, pos) else {
+            continue;
+        };
         found.push((question, at, at + anchor.len()));
         pos = at + anchor.len();
     }
@@ -1084,7 +1205,12 @@ fn answered_pairs<'a>(body: &'a str, questions: &'a [Question]) -> Vec<AnsweredP
         } else {
             continue;
         };
-        pairs.push(AnsweredPair { question, answer, preview, notes });
+        pairs.push(AnsweredPair {
+            question,
+            answer,
+            preview,
+            notes,
+        });
     }
     pairs
 }
@@ -1093,7 +1219,10 @@ fn answered_pairs<'a>(body: &'a str, questions: &'a [Question]) -> Vec<AnsweredP
 /// question (the caller passes the payload's own `questions`, falling back to the
 /// tool-use input's), answer from `answers` (None ⇒ the banner's `(no option
 /// selected)`), preview/notes from `annotations`.
-fn structured_answered_pairs<'a>(payload: &'a Value, questions: &'a [Question]) -> Vec<AnsweredPair<'a>> {
+fn structured_answered_pairs<'a>(
+    payload: &'a Value,
+    questions: &'a [Question],
+) -> Vec<AnsweredPair<'a>> {
     let answers = field(payload, "answers");
     let annotations = field(payload, "annotations");
     questions
@@ -1112,7 +1241,10 @@ fn structured_answered_pairs<'a>(payload: &'a Value, questions: &'a [Question]) 
 
 /// banner_answered_pairs (signals.py banner_answered_pairs): old-transcript fallback —
 /// re-parse the prefix/trailer-wrapped answered banner against the tool-use questions.
-fn banner_answered_pairs<'a>(block: &'a ToolResultBlock, use_block: &'a ToolUseBlock) -> Vec<AnsweredPair<'a>> {
+fn banner_answered_pairs<'a>(
+    block: &'a ToolResultBlock,
+    use_block: &'a ToolUseBlock,
+) -> Vec<AnsweredPair<'a>> {
     let content = &block.content;
     if block.is_error
         || !content.starts_with(ANSWERED_PREFIX)
@@ -1121,8 +1253,13 @@ fn banner_answered_pairs<'a>(block: &'a ToolResultBlock, use_block: &'a ToolUseB
     {
         return Vec::new();
     }
-    let Some(questions) = use_block.questions.as_deref() else { return Vec::new() };
-    answered_pairs(&content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()], questions)
+    let Some(questions) = use_block.questions.as_deref() else {
+        return Vec::new();
+    };
+    answered_pairs(
+        &content[ANSWERED_PREFIX.len()..content.len() - ANSWERED_TRAILER.len()],
+        questions,
+    )
 }
 
 /// join_labels (signals.py join_labels): the multiSelect resolution — split the
@@ -1157,7 +1294,9 @@ fn ordinal_label(answer: &str, labels: &[String]) -> Option<(String, bool)> {
     let rest = answer.trim_start_matches(|c: char| c.is_ascii_digit());
     let digits = &answer[..answer.len() - rest.len()];
     let n: usize = digits.parse().ok()?;
-    if !(1..=labels.len()).contains(&n) || (!rest.is_empty() && !rest.starts_with([',', '.', ' ', ')'])) {
+    if !(1..=labels.len()).contains(&n)
+        || (!rest.is_empty() && !rest.starts_with([',', '.', ' ', ')']))
+    {
         return None;
     }
     Some((labels[n - 1].clone(), rest.is_empty()))
@@ -1167,7 +1306,9 @@ fn ordinal_label(answer: &str, labels: &[String]) -> Option<(String, bool)> {
 /// pick; leading ordinal → resolved label with option_pick only when bare; else
 /// pure freeform.
 fn resolve_pick(answer: Option<&str>, labels: &[String]) -> (Vec<String>, bool) {
-    let Some(answer) = answer else { return (Vec::new(), false) };
+    let Some(answer) = answer else {
+        return (Vec::new(), false);
+    };
     if let Some(joined) = join_labels(answer, labels) {
         return (joined, true);
     }
@@ -1191,7 +1332,9 @@ fn iter_ask_user_question<'py>(
     for (index, entry) in events.entries.iter().enumerate() {
         let Entry::User(user) = entry else { continue };
         for block in user.tool_results() {
-            let Some(use_block) = uses.get(block.tool_use_id.as_str()) else { continue };
+            let Some(use_block) = uses.get(block.tool_use_id.as_str()) else {
+                continue;
+            };
             if use_block.name != "AskUserQuestion" {
                 continue;
             }
@@ -1214,7 +1357,9 @@ fn iter_ask_user_question<'py>(
             for pair in pairs {
                 let (picked, option_pick) = resolve_pick(pair.answer, &pair.question.labels);
                 let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
-                let Some(text) = pair.notes.or(pair.answer) else { continue };
+                let Some(text) = pair.notes.or(pair.answer) else {
+                    continue;
+                };
                 let sig = if option_pick && pair.notes.is_none_or(str::is_empty) {
                     weak("option_pick")
                 } else {
@@ -1290,10 +1435,22 @@ mod tests {
 
     #[test]
     fn line_bounds_variants() {
-        assert_eq!(line_bounds(Some(&sonic_rs::from_str("7").unwrap())).unwrap(), (Some(7), Some(7)));
-        assert_eq!(line_bounds(Some(&sonic_rs::from_str("\"24-51\"").unwrap())).unwrap(), (Some(24), Some(51)));
-        assert_eq!(line_bounds(Some(&sonic_rs::from_str("\"007\"").unwrap())).unwrap(), (Some(7), Some(7)));
-        assert_eq!(line_bounds(Some(&sonic_rs::from_str("\"x\"").unwrap())).unwrap(), (None, None));
+        assert_eq!(
+            line_bounds(Some(&sonic_rs::from_str("7").unwrap())).unwrap(),
+            (Some(7), Some(7))
+        );
+        assert_eq!(
+            line_bounds(Some(&sonic_rs::from_str("\"24-51\"").unwrap())).unwrap(),
+            (Some(24), Some(51))
+        );
+        assert_eq!(
+            line_bounds(Some(&sonic_rs::from_str("\"007\"").unwrap())).unwrap(),
+            (Some(7), Some(7))
+        );
+        assert_eq!(
+            line_bounds(Some(&sonic_rs::from_str("\"x\"").unwrap())).unwrap(),
+            (None, None)
+        );
         assert_eq!(line_bounds(None).unwrap(), (None, None));
     }
 
@@ -1308,14 +1465,33 @@ mod tests {
 
         let edit_names: HashSet<String> = ["Edit".to_string(), "ccx_code_edit".to_string()].into();
         assert!(matches_names("mcp__cc-context__ccx_code_edit", &edit_names));
-        assert!(!matches_names("mcp__cc-context__ccx_code_read", &edit_names));
+        assert!(!matches_names(
+            "mcp__cc-context__ccx_code_read",
+            &edit_names
+        ));
     }
 
     #[test]
     fn bump_clamps_to_unit_interval() {
-        let high = bump(CandidateSig { confidence: 0.9, reasons: vec![], durable: true }, 0.25, "r");
+        let high = bump(
+            CandidateSig {
+                confidence: 0.9,
+                reasons: vec![],
+                durable: true,
+            },
+            0.25,
+            "r",
+        );
         assert_eq!(high.confidence, 1.0);
-        let low = bump(CandidateSig { confidence: 0.1, reasons: vec![], durable: true }, -0.25, "r");
+        let low = bump(
+            CandidateSig {
+                confidence: 0.1,
+                reasons: vec![],
+                durable: true,
+            },
+            -0.25,
+            "r",
+        );
         assert_eq!(low.confidence, 0.0);
     }
 
@@ -1359,19 +1535,29 @@ mod tests {
 
     #[test]
     fn join_labels_greedy_over_comma_containing_label() {
-        let labels = vec!["BeforeEdit / AfterEdit".to_string(), "One, Two".to_string(), "Three".to_string()];
+        let labels = vec![
+            "BeforeEdit / AfterEdit".to_string(),
+            "One, Two".to_string(),
+            "Three".to_string(),
+        ];
         assert_eq!(
             join_labels("One, Two, Three", &labels),
             Some(vec!["One, Two".to_string(), "Three".to_string()])
         );
         assert_eq!(join_labels("One, Two, Four", &labels), None);
-        assert_eq!(join_labels("Three", &labels), Some(vec!["Three".to_string()]));
+        assert_eq!(
+            join_labels("Three", &labels),
+            Some(vec!["Three".to_string()])
+        );
     }
 
     #[test]
     fn ordinal_label_bounds_and_separators() {
         let labels = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-        assert_eq!(ordinal_label("3, and more", &labels), Some(("C".to_string(), false)));
+        assert_eq!(
+            ordinal_label("3, and more", &labels),
+            Some(("C".to_string(), false))
+        );
         assert_eq!(ordinal_label("2", &labels), Some(("B".to_string(), true)));
         assert_eq!(ordinal_label("2026 timeline works", &labels), None);
         assert_eq!(ordinal_label("1x", &labels), None);

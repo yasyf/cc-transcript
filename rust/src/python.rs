@@ -36,7 +36,11 @@ struct ParsedFile {
 
 // The drop-spec evaluates on the typed entry, so dropped lines are parsed but
 // never materialized into Python objects.
-fn parse_file_internal(path: &str, mtime: f64, filter: Option<&CompiledSpec>) -> Option<ParsedFile> {
+fn parse_file_internal(
+    path: &str,
+    mtime: f64,
+    filter: Option<&CompiledSpec>,
+) -> Option<ParsedFile> {
     let bytes = std::fs::read(path).ok()?;
     let lines = parse_bytes(&bytes, |entry| {
         filter.is_none_or(|spec| spec_keep(spec, entry))
@@ -126,7 +130,9 @@ fn stream_parse(
     spec_json: Option<String>,
 ) -> PyResult<ParseStream> {
     let filter: Option<Arc<CompiledSpec>> = match spec_json {
-        Some(json) => Some(Arc::new(compile_spec(&json).map_err(PyValueError::new_err)?)),
+        Some(json) => Some(Arc::new(
+            compile_spec(&json).map_err(PyValueError::new_err)?,
+        )),
         None => None,
     };
     let depth = prefetch.max(1);
@@ -156,8 +162,8 @@ fn stream_parse(
 
 #[pyfunction]
 fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
-    let value: Value =
-        sonic_rs::from_slice(raw).map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    let value: Value = sonic_rs::from_slice(raw)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
     let result = parse_print_envelope(&value)?;
     build_print_result(py, &result)
 }
@@ -188,26 +194,53 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
-    dict.set_item("protocol.DENIAL_KIND_USER_REJECTED", protocol::DENIAL_KIND_USER_REJECTED)?;
-    dict.set_item("protocol.DENIAL_KIND_PERMISSION_RULE", protocol::DENIAL_KIND_PERMISSION_RULE)?;
+    dict.set_item(
+        "protocol.DENIAL_KIND_USER_REJECTED",
+        protocol::DENIAL_KIND_USER_REJECTED,
+    )?;
+    dict.set_item(
+        "protocol.DENIAL_KIND_PERMISSION_RULE",
+        protocol::DENIAL_KIND_PERMISSION_RULE,
+    )?;
     dict.set_item("protocol.USER_SAID_MARKER", protocol::USER_SAID_MARKER)?;
     dict.set_item("protocol.USER_SAID_TRAILER", protocol::USER_SAID_TRAILER)?;
     dict.set_item("protocol.ANSWERED_PREFIX", protocol::ANSWERED_PREFIX)?;
     dict.set_item("protocol.ANSWERED_TRAILER", protocol::ANSWERED_TRAILER)?;
-    dict.set_item("protocol.INTERRUPT_MARKER_PATTERN", protocol::INTERRUPT_MARKER_PATTERN)?;
-    dict.set_item("protocol.AGENT_INJECTION_PATTERN", protocol::AGENT_INJECTION_PATTERN)?;
+    dict.set_item(
+        "protocol.INTERRUPT_MARKER_PATTERN",
+        protocol::INTERRUPT_MARKER_PATTERN,
+    )?;
+    dict.set_item(
+        "protocol.AGENT_INJECTION_PATTERN",
+        protocol::AGENT_INJECTION_PATTERN,
+    )?;
     dict.set_item("mining.TRANSCRIPT_MESSAGE", mining::TRANSCRIPT_MESSAGE)?;
     dict.set_item("mining.PLAN_REVIEW", mining::PLAN_REVIEW)?;
     dict.set_item("mining.INTERRUPT_REJECTION", mining::INTERRUPT_REJECTION)?;
     dict.set_item("mining.REVIEW_COMMENT", mining::REVIEW_COMMENT)?;
     dict.set_item("mining.QUESTION_ANSWER", mining::QUESTION_ANSWER)?;
-    dict.set_item("mining.DETECTOR_TRANSCRIPT_MESSAGE", mining::DETECTOR_TRANSCRIPT_MESSAGE)?;
-    dict.set_item("mining.DETECTOR_EXIT_PLAN_REJECTION", mining::DETECTOR_EXIT_PLAN_REJECTION)?;
-    dict.set_item("mining.DETECTOR_PLAN_REENTRY", mining::DETECTOR_PLAN_REENTRY)?;
+    dict.set_item(
+        "mining.DETECTOR_TRANSCRIPT_MESSAGE",
+        mining::DETECTOR_TRANSCRIPT_MESSAGE,
+    )?;
+    dict.set_item(
+        "mining.DETECTOR_EXIT_PLAN_REJECTION",
+        mining::DETECTOR_EXIT_PLAN_REJECTION,
+    )?;
+    dict.set_item(
+        "mining.DETECTOR_PLAN_REENTRY",
+        mining::DETECTOR_PLAN_REENTRY,
+    )?;
     dict.set_item("mining.DETECTOR_DENIAL", mining::DETECTOR_DENIAL)?;
     dict.set_item("mining.DETECTOR_INTERRUPT", mining::DETECTOR_INTERRUPT)?;
-    dict.set_item("mining.DETECTOR_REVIEW_COMMENT", mining::DETECTOR_REVIEW_COMMENT)?;
-    dict.set_item("mining.DETECTOR_ASK_USER_QUESTION", mining::DETECTOR_ASK_USER_QUESTION)?;
+    dict.set_item(
+        "mining.DETECTOR_REVIEW_COMMENT",
+        mining::DETECTOR_REVIEW_COMMENT,
+    )?;
+    dict.set_item(
+        "mining.DETECTOR_ASK_USER_QUESTION",
+        mining::DETECTOR_ASK_USER_QUESTION,
+    )?;
     dict.set_item("mining.ANSWER_PREVIEW_SEP", mining::ANSWER_PREVIEW_SEP)?;
     dict.set_item("mining.ANSWER_NOTES_SEP", mining::ANSWER_NOTES_SEP)?;
     dict.set_item("mining.NO_OPTION_SELECTED", mining::NO_OPTION_SELECTED)?;
@@ -226,7 +259,11 @@ fn score_short_circuit(spec_json: String, buckets: Vec<Vec<String>>) -> PyResult
 }
 
 #[pyfunction]
-fn score_post_process(spec_json: String, buckets: Vec<Vec<String>>, raw: Vec<i64>) -> PyResult<Vec<i64>> {
+fn score_post_process(
+    spec_json: String,
+    buckets: Vec<Vec<String>>,
+    raw: Vec<i64>,
+) -> PyResult<Vec<i64>> {
     score::score_post_process(&spec_json, &buckets, &raw).map_err(PyValueError::new_err)
 }
 
@@ -246,7 +283,8 @@ fn session_activity_probe<'py>(
     let defaults = ActivityOpts::default();
     let opts = ActivityOpts {
         waiting_tools: waiting_tools.map_or(defaults.waiting_tools, HashSet::from_iter),
-        human_facing_tools: human_facing_tools.map_or(defaults.human_facing_tools, HashSet::from_iter),
+        human_facing_tools: human_facing_tools
+            .map_or(defaults.human_facing_tools, HashSet::from_iter),
     };
     let activity = py.detach(|| -> PyResult<SessionActivity> {
         let bytes = std::fs::read(&path)?;

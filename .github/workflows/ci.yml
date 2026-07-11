@@ -55,9 +55,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+          components: rustfmt
 
       # cache-bin (default true) also keeps the swift-bridge-cli install warm.
       - uses: Swatinem/rust-cache@v2
+
+      - name: Format check (rustfmt)
+        working-directory: rust
+        run: cargo fmt --check
 
       - name: Build bridge crate
         run: cargo build --release -p cc_transcript_swift --target aarch64-apple-darwin

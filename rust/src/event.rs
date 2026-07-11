@@ -117,7 +117,10 @@ fn build_attribution<'py>(
     }
 }
 
-fn build_api_error<'py>(py: Python<'py>, api_error: Option<&ApiError>) -> PyResult<Bound<'py, PyAny>> {
+fn build_api_error<'py>(
+    py: Python<'py>,
+    api_error: Option<&ApiError>,
+) -> PyResult<Bound<'py, PyAny>> {
     match api_error {
         Some(e) => models_type(py, &API_ERROR_CLS, "ApiError")?.call1((
             e.error.as_deref(),
@@ -169,7 +172,11 @@ fn build_user_blocks<'py>(py: Python<'py>, content: &UserContent) -> PyResult<Bo
             let objs = blocks
                 .iter()
                 .filter(|b| matches!(b, ContentBlock::Text(_)))
-                .chain(blocks.iter().filter(|b| matches!(b, ContentBlock::ToolResult(_))))
+                .chain(
+                    blocks
+                        .iter()
+                        .filter(|b| matches!(b, ContentBlock::ToolResult(_))),
+                )
                 .map(|b| build_block(py, b))
                 .collect::<PyResult<Vec<_>>>()?;
             PyTuple::new(py, objs)
@@ -224,7 +231,10 @@ fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<
             let hook_infos = s
                 .hook_infos
                 .iter()
-                .map(|hi| models_type(py, &HOOK_INFO_CLS, "HookInfo")?.call1((&hi.command, hi.duration_ms)))
+                .map(|hi| {
+                    models_type(py, &HOOK_INFO_CLS, "HookInfo")?
+                        .call1((&hi.command, hi.duration_ms))
+                })
                 .collect::<PyResult<Vec<_>>>()?;
             models_type(py, &STOP_HOOK_SUMMARY_CLS, "StopHookSummary")?.call1((
                 s.hook_count,
@@ -239,19 +249,23 @@ fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<
         }
         SystemDetail::CompactBoundary(c) => {
             let preserved_segment = match &c.preserved_segment {
-                Some(ps) => models_type(py, &PRESERVED_SEGMENT_CLS, "PreservedSegment")?.call1((
-                    ps.head_uuid.as_deref(),
-                    ps.anchor_uuid.as_deref(),
-                    ps.tail_uuid.as_deref(),
-                ))?,
+                Some(ps) => {
+                    models_type(py, &PRESERVED_SEGMENT_CLS, "PreservedSegment")?.call1((
+                        ps.head_uuid.as_deref(),
+                        ps.anchor_uuid.as_deref(),
+                        ps.tail_uuid.as_deref(),
+                    ))?
+                }
                 None => py.None().into_bound(py),
             };
             let preserved_messages = match &c.preserved_messages {
-                Some(pm) => models_type(py, &PRESERVED_MESSAGES_CLS, "PreservedMessages")?.call1((
-                    pm.anchor_uuid.as_deref(),
-                    PyTuple::new(py, &pm.uuids)?,
-                    PyTuple::new(py, &pm.all_uuids)?,
-                ))?,
+                Some(pm) => {
+                    models_type(py, &PRESERVED_MESSAGES_CLS, "PreservedMessages")?.call1((
+                        pm.anchor_uuid.as_deref(),
+                        PyTuple::new(py, &pm.uuids)?,
+                        PyTuple::new(py, &pm.all_uuids)?,
+                    ))?
+                }
                 None => py.None().into_bound(py),
             };
             models_type(py, &COMPACT_BOUNDARY_CLS, "CompactBoundary")?.call1((
@@ -267,12 +281,13 @@ fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<
                 c.precomputed,
             ))
         }
-        SystemDetail::TurnDuration(t) => models_type(py, &TURN_DURATION_CLS, "TurnDuration")?.call1((
-            t.duration_ms,
-            t.message_count,
-            t.pending_workflow_count,
-            t.pending_background_agent_count,
-        )),
+        SystemDetail::TurnDuration(t) => models_type(py, &TURN_DURATION_CLS, "TurnDuration")?
+            .call1((
+                t.duration_ms,
+                t.message_count,
+                t.pending_workflow_count,
+                t.pending_background_agent_count,
+            )),
         SystemDetail::ModelRefusalFallback(m) => {
             models_type(py, &MODEL_REFUSAL_FALLBACK_CLS, "ModelRefusalFallback")?.call1((
                 m.api_refusal_category.as_deref(),
@@ -285,25 +300,28 @@ fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<
                 m.refused_user_message_uuid.as_deref(),
             ))
         }
-        SystemDetail::Other(raw) => {
-            models_type(py, &OTHER_SYSTEM_DETAIL_CLS, "OtherSystemDetail")?.call1((json_to_py(py, raw)?,))
-        }
+        SystemDetail::Other(raw) => models_type(py, &OTHER_SYSTEM_DETAIL_CLS, "OtherSystemDetail")?
+            .call1((json_to_py(py, raw)?,)),
     }
 }
 
-fn build_attachment_detail<'py>(py: Python<'py>, detail: &AttachmentDetail) -> PyResult<Bound<'py, PyAny>> {
+fn build_attachment_detail<'py>(
+    py: Python<'py>,
+    detail: &AttachmentDetail,
+) -> PyResult<Bound<'py, PyAny>> {
     match detail {
-        AttachmentDetail::HookSuccess(h) => models_type(py, &HOOK_SUCCESS_CLS, "HookSuccess")?.call1((
-            h.hook_name.as_deref(),
-            h.hook_event.as_deref(),
-            h.tool_use_id.as_deref(),
-            h.command.as_deref(),
-            h.content.as_deref(),
-            h.stdout.as_deref(),
-            h.stderr.as_deref(),
-            h.exit_code,
-            h.duration_ms,
-        )),
+        AttachmentDetail::HookSuccess(h) => models_type(py, &HOOK_SUCCESS_CLS, "HookSuccess")?
+            .call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.tool_use_id.as_deref(),
+                h.command.as_deref(),
+                h.content.as_deref(),
+                h.stdout.as_deref(),
+                h.stderr.as_deref(),
+                h.exit_code,
+                h.duration_ms,
+            )),
         AttachmentDetail::HookBlockingError(h) => {
             let blocking_error = match &h.blocking_error {
                 Some(v) => json_to_py(py, v)?,
@@ -328,15 +346,17 @@ fn build_attachment_detail<'py>(py: Python<'py>, detail: &AttachmentDetail) -> P
                 h.duration_ms,
             ))
         }
-        AttachmentDetail::HookCancelled(h) => models_type(py, &HOOK_CANCELLED_CLS, "HookCancelled")?.call1((
-            h.hook_name.as_deref(),
-            h.hook_event.as_deref(),
-            h.tool_use_id.as_deref(),
-            h.command.as_deref(),
-            h.duration_ms,
-            h.timed_out,
-            h.timeout_ms,
-        )),
+        AttachmentDetail::HookCancelled(h) => {
+            models_type(py, &HOOK_CANCELLED_CLS, "HookCancelled")?.call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.tool_use_id.as_deref(),
+                h.command.as_deref(),
+                h.duration_ms,
+                h.timed_out,
+                h.timeout_ms,
+            ))
+        }
         AttachmentDetail::HookAdditionalContext(h) => {
             models_type(py, &HOOK_ADDITIONAL_CONTEXT_CLS, "HookAdditionalContext")?.call1((
                 h.hook_name.as_deref(),
@@ -360,11 +380,12 @@ fn build_attachment_detail<'py>(py: Python<'py>, detail: &AttachmentDetail) -> P
                 response,
             ))
         }
-        AttachmentDetail::QueuedCommand(q) => models_type(py, &QUEUED_COMMAND_CLS, "QueuedCommand")?
-            .call1((q.prompt.as_deref(), q.command_mode.as_deref())),
-        AttachmentDetail::Other(raw) => {
-            models_type(py, &OTHER_ATTACHMENT_CLS, "OtherAttachment")?.call1((json_to_py(py, raw)?,))
+        AttachmentDetail::QueuedCommand(q) => {
+            models_type(py, &QUEUED_COMMAND_CLS, "QueuedCommand")?
+                .call1((q.prompt.as_deref(), q.command_mode.as_deref()))
         }
+        AttachmentDetail::Other(raw) => models_type(py, &OTHER_ATTACHMENT_CLS, "OtherAttachment")?
+            .call1((json_to_py(py, raw)?,)),
     }
 }
 
@@ -394,10 +415,14 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 user.queue_priority.as_deref().into_bound_py_any(py)?,
                 image_paste_ids,
                 user.source_tool_use_id.as_deref().into_bound_py_any(py)?,
-                user.source_tool_assistant_uuid.as_deref().into_bound_py_any(py)?,
+                user.source_tool_assistant_uuid
+                    .as_deref()
+                    .into_bound_py_any(py)?,
                 mcp_meta,
                 user.permission_mode.as_deref().into_bound_py_any(py)?,
-                user.interrupted_message_id.as_deref().into_bound_py_any(py)?,
+                user.interrupted_message_id
+                    .as_deref()
+                    .into_bound_py_any(py)?,
             ];
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1(PyTuple::new(py, args)?)
         }
@@ -477,7 +502,10 @@ fn build_init<'py>(py: Python<'py>, init: &InitInfo) -> PyResult<Bound<'py, PyAn
     ))
 }
 
-fn build_print_message<'py>(py: Python<'py>, message: &PrintMessage) -> PyResult<Bound<'py, PyAny>> {
+fn build_print_message<'py>(
+    py: Python<'py>,
+    message: &PrintMessage,
+) -> PyResult<Bound<'py, PyAny>> {
     let (role, model, text, blocks): (&str, Bound<'py, PyAny>, String, Bound<'py, PyTuple>) =
         match &message.body {
             PrintBody::Assistant { model, blocks } => (
@@ -503,7 +531,10 @@ fn build_print_message<'py>(py: Python<'py>, message: &PrintMessage) -> PyResult
     ))
 }
 
-pub fn build_print_result<'py>(py: Python<'py>, result: &PrintResult) -> PyResult<Bound<'py, PyAny>> {
+pub fn build_print_result<'py>(
+    py: Python<'py>,
+    result: &PrintResult,
+) -> PyResult<Bound<'py, PyAny>> {
     let model_usage = PyDict::new(py);
     for (model, usage) in &result.model_usage {
         model_usage.set_item(model, build_model_usage(py, usage)?)?;

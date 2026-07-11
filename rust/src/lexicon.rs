@@ -73,9 +73,13 @@ pub(crate) fn available() -> bool {
 /// Whether any alphabetic token's lemma polarity crosses ``floor`` (``<= -floor``
 /// when ``want_negative``). Lemmatizes with UDPipe — the spaCy-equivalent path.
 pub(crate) fn has_hit(text: &str, floor: i32, want_negative: bool) -> bool {
-    let Some(lock) = MODEL.as_ref() else { return false };
+    let Some(lock) = MODEL.as_ref() else {
+        return false;
+    };
     let model = lock.lock().expect("lexicon model mutex poisoned");
-    let Ok(words) = model.parse(text) else { return false };
+    let Ok(words) = model.parse(text) else {
+        return false;
+    };
     words
         .iter()
         .filter(|word| !word.form.is_empty() && word.form.chars().all(char::is_alphabetic))

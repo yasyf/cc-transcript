@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 
-use crate::types::{matches_names, AttachmentDetail, Entry, ToolResultBlock, ToolUseBlock, UserEntry};
+use crate::types::{
+    matches_names, AttachmentDetail, Entry, ToolResultBlock, ToolUseBlock, UserEntry,
+};
 use crate::value::field_str;
 
 const NOTIFICATION_MARKER: &str = "<task-notification>";
@@ -102,7 +104,8 @@ fn ephemeral_wait(tool_use: &ToolUseBlock, waiting_tools: &HashSet<String>) -> O
     if matches_names(&tool_use.name, waiting_tools) {
         return Some(PendingKind::WaitingTool);
     }
-    if matches_names(&tool_use.name, &BACKGROUND_TOOLS) && tool_use.run_in_background == Some(true) {
+    if matches_names(&tool_use.name, &BACKGROUND_TOOLS) && tool_use.run_in_background == Some(true)
+    {
         return Some(PendingKind::Background);
     }
     if matches_names(&tool_use.name, &TASK_TOOLS) && tool_use.subagent_type.is_none() {
@@ -149,8 +152,9 @@ impl Notifications {
                 if other.ty == "queue-operation" {
                     match field_str(&other.raw, "operation") {
                         Some("enqueue") => {
-                            let content =
-                                field_str(&other.raw, "content").unwrap_or_default().to_string();
+                            let content = field_str(&other.raw, "content")
+                                .unwrap_or_default()
+                                .to_string();
                             enqueued.push(content.clone());
                             queued.push(content);
                         }
@@ -169,7 +173,11 @@ impl Notifications {
                 delivered.push(text);
             }
         }
-        Self { queued, delivered, enqueued }
+        Self {
+            queued,
+            delivered,
+            enqueued,
+        }
     }
 
     /// notifications.py ``Notifications.completed``: delivered, or enqueued at
@@ -183,7 +191,9 @@ impl Notifications {
     /// notifications.py ``Notifications.has_pending``: any queued item is an
     /// undelivered task notification.
     fn has_pending(&self) -> bool {
-        self.queued.iter().any(|text| text.contains(NOTIFICATION_MARKER))
+        self.queued
+            .iter()
+            .any(|text| text.contains(NOTIFICATION_MARKER))
     }
 }
 
@@ -317,7 +327,11 @@ mod tests {
     }
 
     fn delivered_notification(id: &str) -> Vec<Entry> {
-        vec![queue_op(&notification(id)), queue_entry("dequeue", ""), user(&notification(id))]
+        vec![
+            queue_op(&notification(id)),
+            queue_entry("dequeue", ""),
+            user(&notification(id)),
+        ]
     }
 
     fn notification(id: &str) -> String {
@@ -448,7 +462,10 @@ mod tests {
         );
         assert!(!notifications.has_pending());
         let activity = activity(&entries);
-        assert!(!activity.is_waiting, "draining the notification closes the workflow's async wait");
+        assert!(
+            !activity.is_waiting,
+            "draining the notification closes the workflow's async wait"
+        );
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
     }
@@ -457,7 +474,10 @@ mod tests {
     fn orphan_undelivered_notification_is_waiting() {
         let entries = vec![user("hi"), queue_op(&notification("tu_ghost"))];
         let activity = activity(&entries);
-        assert!(activity.is_waiting, "a queued task notification holds the session on its own");
+        assert!(
+            activity.is_waiting,
+            "a queued task notification holds the session on its own"
+        );
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
     }
@@ -466,12 +486,19 @@ mod tests {
     fn attachment_delivery_completes() {
         let entries = vec![
             user("go"),
-            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            tool_use(
+                "Agent",
+                "a1",
+                r#"{"subagent_type":"Explore","prompt":"look"}"#,
+            ),
             result_entry("a1", false, true),
             attachment(&notification("a1")),
         ];
         let activity = activity(&entries);
-        assert!(!activity.is_waiting, "the queued_command attachment alone closes the async task");
+        assert!(
+            !activity.is_waiting,
+            "the queued_command attachment alone closes the async task"
+        );
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
         let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:08Z")
@@ -484,12 +511,19 @@ mod tests {
     fn plain_user_delivery_completes() {
         let entries = vec![
             user("go"),
-            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            tool_use(
+                "Agent",
+                "a1",
+                r#"{"subagent_type":"Explore","prompt":"look"}"#,
+            ),
             result_entry("a1", false, true),
             user(&notification("a1")),
         ];
         let activity = activity(&entries);
-        assert!(!activity.is_waiting, "a user turn carrying the notification closes the async task");
+        assert!(
+            !activity.is_waiting,
+            "a user turn carrying the notification closes the async task"
+        );
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
         let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:07Z")
@@ -502,7 +536,11 @@ mod tests {
     fn compact_summary_user_does_not_open_turn() {
         let entries = vec![
             user("build it"),
-            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Bash",
+                "b1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
             tool_result("b1"),
             user_with("compact recap", r#""isCompactSummary":true,"#),
         ];
@@ -518,7 +556,11 @@ mod tests {
     fn agent_injected_banner_does_not_open_turn() {
         let entries = vec![
             user("build it"),
-            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Bash",
+                "b1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
             tool_result("b1"),
             user("<teammate-message from='mate'>ping</teammate-message>"),
         ];
@@ -557,7 +599,11 @@ mod tests {
     fn background_bash_in_current_turn_is_waiting() {
         let entries = vec![
             user("build it"),
-            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Bash",
+                "b1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
             tool_result("b1"),
         ];
         let activity = activity(&entries);
@@ -570,7 +616,11 @@ mod tests {
     fn background_bash_in_previous_turn_is_not_waiting() {
         let entries = vec![
             user("build it"),
-            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Bash",
+                "b1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
             tool_result("b1"),
             user("now do something else"),
         ];
@@ -583,7 +633,11 @@ mod tests {
     fn background_execute_alias_in_current_turn_is_waiting() {
         let entries = vec![
             user("build it"),
-            tool_use("Execute", "e1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Execute",
+                "e1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
         ];
         let activity = activity(&entries);
         assert!(activity.is_waiting);
@@ -606,7 +660,11 @@ mod tests {
     fn typed_agent_with_sync_result_is_not_waiting() {
         let entries = vec![
             user("go"),
-            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            tool_use(
+                "Agent",
+                "a1",
+                r#"{"subagent_type":"Explore","prompt":"look"}"#,
+            ),
             tool_result("a1"),
         ];
         assert!(!activity(&entries).is_waiting);
@@ -616,7 +674,11 @@ mod tests {
     fn async_agent_in_previous_turn_still_pending() {
         let entries = vec![
             user("go"),
-            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            tool_use(
+                "Agent",
+                "a1",
+                r#"{"subagent_type":"Explore","prompt":"look"}"#,
+            ),
             result_entry("a1", false, true),
             user("while that runs, plan"),
         ];
@@ -629,7 +691,11 @@ mod tests {
     fn async_agent_delivered_notification_clears_waiting() {
         let mut entries = vec![
             user("go"),
-            tool_use("Agent", "a1", r#"{"subagent_type":"Explore","prompt":"look"}"#),
+            tool_use(
+                "Agent",
+                "a1",
+                r#"{"subagent_type":"Explore","prompt":"look"}"#,
+            ),
             result_entry("a1", false, true),
             user("while that runs, plan"),
         ];
@@ -639,7 +705,10 @@ mod tests {
 
     #[test]
     fn waiting_tool_in_current_turn_is_waiting() {
-        let entries = vec![user("watch it"), tool_use("Monitor", "m1", r#"{"until":"done"}"#)];
+        let entries = vec![
+            user("watch it"),
+            tool_use("Monitor", "m1", r#"{"until":"done"}"#),
+        ];
         let activity = activity(&entries);
         assert!(activity.is_waiting);
         assert!(activity.mid_tool, "an unmatched Monitor is also mid-tool");
@@ -673,7 +742,11 @@ mod tests {
     fn mcp_prefixed_human_facing_tool_is_not_mid_tool() {
         let entries = vec![
             user("choose"),
-            tool_use("mcp__someserver__AskUserQuestion", "q1", r#"{"questions":[]}"#),
+            tool_use(
+                "mcp__someserver__AskUserQuestion",
+                "q1",
+                r#"{"questions":[]}"#,
+            ),
         ];
         let activity = activity(&entries);
         assert!(!activity.is_waiting);
@@ -713,7 +786,11 @@ mod tests {
     fn meta_sidechain_and_interrupt_users_do_not_open_turns() {
         let entries = vec![
             user("build it"),
-            tool_use("Bash", "b1", r#"{"command":"make","run_in_background":true}"#),
+            tool_use(
+                "Bash",
+                "b1",
+                r#"{"command":"make","run_in_background":true}"#,
+            ),
             tool_result("b1"),
             user_with("injected context", r#""isMeta":true,"#),
             user_with("sidechain prompt", r#""isSidechain":true,"#),

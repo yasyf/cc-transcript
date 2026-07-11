@@ -9,7 +9,7 @@ use crate::types::{
     HookAdditionalContext, HookBlockingError, HookCancelled, HookInfo, HookNonBlockingError,
     HookSuccess, InitInfo, McpServer, ModeChannel, ModeEntry, ModelRefusalFallback, ModelUsage,
     OtherEntry, Plugin, PreservedMessages, PreservedSegment, PrintBody, PrintMessage, PrintResult,
-    QueuedCommand, Question, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
+    Question, QueuedCommand, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
     ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
@@ -62,10 +62,9 @@ pub(crate) fn parse_timestamp(raw: &str) -> Result<DateTime<FixedOffset>, ParseE
 }
 
 fn require_array(content: &Value) -> Result<&[Value], ParseError> {
-    content
-        .as_array()
-        .map(|a| a.as_slice())
-        .ok_or_else(|| ParseError::Value("message content is neither a string nor a list".to_string()))
+    content.as_array().map(|a| a.as_slice()).ok_or_else(|| {
+        ParseError::Value("message content is neither a string nor a list".to_string())
+    })
 }
 
 fn flatten_result_content(content: &Value) -> String {
@@ -145,7 +144,8 @@ fn parse_tool_result(
     let content = flatten_result_content(require(block, "content")?);
     let is_error = field_bool(block, "is_error");
     let denial_kind = tool_denial_kind.map(str::to_string).or_else(|| {
-        (is_error && content.starts_with(DENIAL_PREFIX)).then(|| DENIAL_KIND_USER_REJECTED.to_string())
+        (is_error && content.starts_with(DENIAL_PREFIX))
+            .then(|| DENIAL_KIND_USER_REJECTED.to_string())
     });
     Ok(ContentBlock::ToolResult(ToolResultBlock {
         tool_use_id: require_str(block, "tool_use_id")?.to_string(),
@@ -168,8 +168,12 @@ fn parse_user_content(
             let blocks = require_array(content)?
                 .iter()
                 .filter_map(|b| match block_type(b) {
-                    Some("text") => field_str(b, "text").map(|t| Ok(ContentBlock::Text(t.to_string()))),
-                    Some("tool_result") => Some(parse_tool_result(b, tool_use_result, tool_denial_kind)),
+                    Some("text") => {
+                        field_str(b, "text").map(|t| Ok(ContentBlock::Text(t.to_string())))
+                    }
+                    Some("tool_result") => {
+                        Some(parse_tool_result(b, tool_use_result, tool_denial_kind))
+                    }
                     _ => None,
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -204,7 +208,9 @@ pub(crate) fn parse_questions(input: &Value) -> Option<Vec<Question>> {
 fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
     match block_type(block) {
         Some("text") => Ok(ContentBlock::Text(require_str(block, "text")?.to_string())),
-        Some("thinking") => Ok(ContentBlock::Thinking(require_str(block, "thinking")?.to_string())),
+        Some("thinking") => Ok(ContentBlock::Thinking(
+            require_str(block, "thinking")?.to_string(),
+        )),
         Some("tool_use") => {
             let id = require_str(block, "id")?.to_string();
             let name = require_str(block, "name")?.to_string();
@@ -212,7 +218,8 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
             Ok(ContentBlock::ToolUse(ToolUseBlock {
                 id,
                 name,
-                run_in_background: field(input, "run_in_background").and_then(JsonValueTrait::as_bool),
+                run_in_background: field(input, "run_in_background")
+                    .and_then(JsonValueTrait::as_bool),
                 subagent_type: field_str(input, "subagent_type").map(str::to_string),
                 file_path: field_str(input, "file_path").map(str::to_string),
                 questions: parse_questions(input),
@@ -232,7 +239,10 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
 }
 
 fn parse_assistant_blocks(content: &Value) -> Result<Vec<ContentBlock>, ParseError> {
-    require_array(content)?.iter().map(parse_assistant_block).collect()
+    require_array(content)?
+        .iter()
+        .map(parse_assistant_block)
+        .collect()
 }
 
 fn parse_usage(message: &Value) -> Result<Option<Usage>, ParseError> {
@@ -353,16 +363,19 @@ fn parse_system_detail(data: &Value) -> SystemDetail {
             pending_workflow_count: opt_i64(data, "pendingWorkflowCount"),
             pending_background_agent_count: opt_i64(data, "pendingBackgroundAgentCount"),
         }),
-        Some("model_refusal_fallback") => SystemDetail::ModelRefusalFallback(ModelRefusalFallback {
-            api_refusal_category: opt_str(data, "apiRefusalCategory"),
-            api_refusal_explanation: opt_str(data, "apiRefusalExplanation"),
-            trigger: opt_str(data, "trigger"),
-            direction: opt_str(data, "direction"),
-            original_model: opt_str(data, "originalModel"),
-            fallback_model: opt_str(data, "fallbackModel"),
-            retracted_message_uuids: str_array(data, "retractedMessageUuids"),
-            refused_user_message_uuid: truthy_str(data, "refusedUserMessageUuid").map(str::to_string),
-        }),
+        Some("model_refusal_fallback") => {
+            SystemDetail::ModelRefusalFallback(ModelRefusalFallback {
+                api_refusal_category: opt_str(data, "apiRefusalCategory"),
+                api_refusal_explanation: opt_str(data, "apiRefusalExplanation"),
+                trigger: opt_str(data, "trigger"),
+                direction: opt_str(data, "direction"),
+                original_model: opt_str(data, "originalModel"),
+                fallback_model: opt_str(data, "fallbackModel"),
+                retracted_message_uuids: str_array(data, "retractedMessageUuids"),
+                refused_user_message_uuid: truthy_str(data, "refusedUserMessageUuid")
+                    .map(str::to_string),
+            })
+        }
         _ => SystemDetail::Other(data.clone()),
     }
 }
@@ -388,16 +401,18 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
             blocking_error: field(att, "blockingError").cloned(),
         }),
-        Some("hook_non_blocking_error") => AttachmentDetail::HookNonBlockingError(HookNonBlockingError {
-            hook_name: opt_str(att, "hookName"),
-            hook_event: opt_str(att, "hookEvent"),
-            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
-            command: opt_str(att, "command"),
-            stdout: opt_str(att, "stdout"),
-            stderr: opt_str(att, "stderr"),
-            exit_code: opt_i64(att, "exitCode"),
-            duration_ms: opt_i64(att, "durationMs"),
-        }),
+        Some("hook_non_blocking_error") => {
+            AttachmentDetail::HookNonBlockingError(HookNonBlockingError {
+                hook_name: opt_str(att, "hookName"),
+                hook_event: opt_str(att, "hookEvent"),
+                tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+                command: opt_str(att, "command"),
+                stdout: opt_str(att, "stdout"),
+                stderr: opt_str(att, "stderr"),
+                exit_code: opt_i64(att, "exitCode"),
+                duration_ms: opt_i64(att, "durationMs"),
+            })
+        }
         Some("hook_cancelled") => AttachmentDetail::HookCancelled(HookCancelled {
             hook_name: opt_str(att, "hookName"),
             hook_event: opt_str(att, "hookEvent"),
@@ -407,12 +422,14 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             timed_out: field(att, "timedOut").and_then(JsonValueTrait::as_bool),
             timeout_ms: opt_i64(att, "timeoutMs"),
         }),
-        Some("hook_additional_context") => AttachmentDetail::HookAdditionalContext(HookAdditionalContext {
-            hook_name: opt_str(att, "hookName"),
-            hook_event: opt_str(att, "hookEvent"),
-            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
-            content: str_array(att, "content"),
-        }),
+        Some("hook_additional_context") => {
+            AttachmentDetail::HookAdditionalContext(HookAdditionalContext {
+                hook_name: opt_str(att, "hookName"),
+                hook_event: opt_str(att, "hookEvent"),
+                tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+                content: str_array(att, "content"),
+            })
+        }
         Some("async_hook_response") => AttachmentDetail::AsyncHookResponse(AsyncHookResponse {
             hook_name: opt_str(att, "hookName"),
             hook_event: opt_str(att, "hookEvent"),
@@ -455,7 +472,8 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                     .map(str::to_string),
                 mcp_meta: field(&data, "mcpMeta").cloned(),
                 permission_mode: field_str(&data, "permissionMode").map(str::to_string),
-                interrupted_message_id: field_str(&data, "interruptedMessageId").map(str::to_string),
+                interrupted_message_id: field_str(&data, "interruptedMessageId")
+                    .map(str::to_string),
             }));
         }
         "assistant" => {
@@ -624,7 +642,11 @@ fn parse_print_message(element: &Value) -> Result<PrintMessage, ParseError> {
             blocks: parse_assistant_blocks(require(message, "content")?)?,
             model: field_str(message, "model").map(str::to_string),
         },
-        "user" => PrintBody::User(parse_user_content(require(message, "content")?, None, None)?),
+        "user" => PrintBody::User(parse_user_content(
+            require(message, "content")?,
+            None,
+            None,
+        )?),
         other => {
             return Err(ParseError::Value(format!(
                 "not a conversational element: {other:?}"
@@ -776,7 +798,10 @@ mod tests {
         assert_eq!(result.content, "ok");
         assert!(!result.is_error);
         assert!(result.is_async);
-        assert!(field_bool(result.tool_use_result.as_ref().unwrap(), "isAsync"));
+        assert!(field_bool(
+            result.tool_use_result.as_ref().unwrap(),
+            "isAsync"
+        ));
     }
 
     #[test]
@@ -817,12 +842,19 @@ mod tests {
         assert_eq!(uses[0].subagent_type, None);
         assert_eq!(uses[0].file_path, None);
         assert!(uses[0].questions.is_none());
-        assert_eq!(uses[0].input, parse(r#"{"command":"ls","run_in_background":true}"#));
+        assert_eq!(
+            uses[0].input,
+            parse(r#"{"command":"ls","run_in_background":true}"#)
+        );
         assert_eq!(uses[1].run_in_background, None);
         assert_eq!(uses[1].subagent_type.as_deref(), Some("Explore"));
         assert_eq!(uses[2].file_path.as_deref(), Some("/x.py"));
         let questions = uses[3].questions.as_deref().unwrap();
-        assert_eq!(questions.len(), 1, "question without string text is dropped");
+        assert_eq!(
+            questions.len(),
+            1,
+            "question without string text is dropped"
+        );
         assert_eq!(questions[0].question, "Q?");
         assert_eq!(questions[0].header.as_deref(), Some("H"));
         assert!(questions[0].multi_select);
@@ -844,7 +876,9 @@ mod tests {
     #[test]
     fn mode_and_permission_mode_channels() {
         let mode = parse_entry(parse(r#"{"type":"mode","sessionId":"s1","mode":"plan"}"#)).unwrap();
-        let Entry::Mode(m) = &mode else { panic!("expected mode entry") };
+        let Entry::Mode(m) = &mode else {
+            panic!("expected mode entry")
+        };
         assert_eq!(m.channel.as_str(), "mode");
         assert_eq!(m.value, "plan");
         assert_eq!(mode.session_id(), Some("s1"));
