@@ -22,6 +22,9 @@ from cc_transcript.filterspec import (
 from cc_transcript.models import (
     ApiError,
     AssistantEvent,
+    AsyncHookResponse,
+    AttachmentDetail,
+    AttachmentEvent,
     Attribution,
     CacheCreation,
     CcVersion,
@@ -30,12 +33,18 @@ from cc_transcript.models import (
     EntryMeta,
     EventUuid,
     FallbackBlock,
+    HookAdditionalContext,
+    HookBlockingError,
+    HookCancelled,
     HookInfo,
+    HookNonBlockingError,
+    HookSuccess,
     InitInfo,
     McpServer,
     ModeEvent,
     ModelRefusalFallback,
     ModelUsage,
+    OtherAttachment,
     OtherBlock,
     OtherEvent,
     OtherSystemDetail,
@@ -44,6 +53,7 @@ from cc_transcript.models import (
     PreservedSegment,
     PrintMessage,
     PrintResult,
+    QueuedCommand,
     ServerToolUse,
     SessionId,
     StopHookSummary,
@@ -292,6 +302,95 @@ def parse_system_detail(data: Mapping[str, Any]) -> SystemDetail:
             return OtherSystemDetail(raw=data)
 
 
+# Rust-parity readers over an attachment payload (parse.rs opt_str / opt_i64 /
+# str_array): a mistyped value reads as absent, never as a wrongly-typed field.
+def opt_str(data: Mapping[str, Any], key: str) -> str | None:
+    return value if isinstance(value := data.get(key), str) else None
+
+
+def opt_int(data: Mapping[str, Any], key: str) -> int | None:
+    return value if isinstance(value := data.get(key), int) and not isinstance(value, bool) else None
+
+
+def opt_bool(data: Mapping[str, Any], key: str) -> bool | None:
+    return value if isinstance(value := data.get(key), bool) else None
+
+
+def str_tuple(data: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    return tuple(v for v in values if isinstance(v, str)) if isinstance(values := data.get(key), list) else ()
+
+
+def parse_attachment_detail(data: Mapping[str, Any]) -> AttachmentDetail:
+    attachment = data.get("attachment")
+    if not isinstance(attachment, dict):
+        return OtherAttachment(raw=data)
+    match attachment.get("type"):
+        case "hook_success":
+            return HookSuccess(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                tool_use_id=ToolUseId(tuid) if (tuid := opt_str(attachment, "toolUseID")) else None,
+                command=opt_str(attachment, "command"),
+                content=opt_str(attachment, "content"),
+                stdout=opt_str(attachment, "stdout"),
+                stderr=opt_str(attachment, "stderr"),
+                exit_code=opt_int(attachment, "exitCode"),
+                duration_ms=opt_int(attachment, "durationMs"),
+            )
+        case "hook_blocking_error":
+            return HookBlockingError(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                tool_use_id=ToolUseId(tuid) if (tuid := opt_str(attachment, "toolUseID")) else None,
+                blocking_error=attachment.get("blockingError"),
+            )
+        case "hook_non_blocking_error":
+            return HookNonBlockingError(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                tool_use_id=ToolUseId(tuid) if (tuid := opt_str(attachment, "toolUseID")) else None,
+                command=opt_str(attachment, "command"),
+                stdout=opt_str(attachment, "stdout"),
+                stderr=opt_str(attachment, "stderr"),
+                exit_code=opt_int(attachment, "exitCode"),
+                duration_ms=opt_int(attachment, "durationMs"),
+            )
+        case "hook_cancelled":
+            return HookCancelled(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                tool_use_id=ToolUseId(tuid) if (tuid := opt_str(attachment, "toolUseID")) else None,
+                command=opt_str(attachment, "command"),
+                duration_ms=opt_int(attachment, "durationMs"),
+                timed_out=opt_bool(attachment, "timedOut"),
+                timeout_ms=opt_int(attachment, "timeoutMs"),
+            )
+        case "hook_additional_context":
+            return HookAdditionalContext(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                tool_use_id=ToolUseId(tuid) if (tuid := opt_str(attachment, "toolUseID")) else None,
+                content=str_tuple(attachment, "content"),
+            )
+        case "async_hook_response":
+            return AsyncHookResponse(
+                hook_name=opt_str(attachment, "hookName"),
+                hook_event=opt_str(attachment, "hookEvent"),
+                process_id=opt_str(attachment, "processId"),
+                stdout=opt_str(attachment, "stdout"),
+                stderr=opt_str(attachment, "stderr"),
+                exit_code=opt_int(attachment, "exitCode"),
+                response=attachment.get("response"),
+            )
+        case "queued_command":
+            return QueuedCommand(
+                prompt=opt_str(attachment, "prompt"),
+                command_mode=opt_str(attachment, "commandMode"),
+            )
+        case _:
+            return OtherAttachment(raw=data)
+
+
 def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     match data["type"]:
         case "user":
@@ -338,6 +437,13 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 content=data.get("content"),
                 level=data.get("level"),
                 detail=parse_system_detail(data),
+            )
+        case "attachment":
+            attachment = data.get("attachment")
+            return AttachmentEvent(
+                meta=parse_meta(data),
+                attachment_type=(opt_str(attachment, "type") or "") if isinstance(attachment, dict) else "",
+                detail=parse_attachment_detail(data),
             )
         case "mode":
             return ModeEvent(session_id=SessionId(data["sessionId"]), channel="mode", value=data["mode"])

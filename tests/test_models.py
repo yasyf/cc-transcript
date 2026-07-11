@@ -8,11 +8,13 @@ import pytest
 from cc_transcript.ids import tool_digest
 from cc_transcript.models import (
     AssistantEvent,
+    AttachmentEvent,
     EntryMeta,
     EventUuid,
     ModeEvent,
     OtherEvent,
     OtherSystemDetail,
+    QueuedCommand,
     SessionId,
     SystemEvent,
     TextBlock,
@@ -58,6 +60,8 @@ def event_kind(event: TranscriptEvent) -> str:
             return "mode"
         case OtherEvent():
             return "other"
+        case AttachmentEvent():
+            return "attachment"
 
 
 def test_blocks_are_frozen() -> None:
@@ -93,6 +97,13 @@ def test_event_is_frozen() -> None:
         ),
         pytest.param(ModeEvent(session_id=SessionId("s1"), channel="mode", value="normal"), "mode", id="mode"),
         pytest.param(OtherEvent(type="summary", raw={"type": "summary"}), "other", id="other"),
+        pytest.param(
+            AttachmentEvent(
+                meta=make_meta(), attachment_type="queued_command", detail=QueuedCommand(prompt="go")
+            ),
+            "attachment",
+            id="attachment",
+        ),
     ],
 )
 def test_match_narrows_union(event: TranscriptEvent, expected: str) -> None:

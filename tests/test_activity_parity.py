@@ -7,7 +7,15 @@ import pytest
 
 from cc_transcript.activity_probe import PendingItem, probe_events, session_activity_probe
 from cc_transcript.filterspec import is_agent_injection
-from cc_transcript.models import AssistantEvent, OtherEvent, ToolResultBlock, ToolUseBlock, UserEvent
+from cc_transcript.models import (
+    AssistantEvent,
+    AttachmentEvent,
+    OtherEvent,
+    QueuedCommand,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserEvent,
+)
 from cc_transcript.parser import parse_events_from_bytes
 from tests.support import real_corpus, requires_rust, rust_not_disabled
 
@@ -63,7 +71,13 @@ def queue_op(content: str, operation: str = "enqueue") -> dict[str, Any]:
 
 
 def attachment(prompt: str) -> dict[str, Any]:
-    return {"type": "attachment", "attachment": {"type": "queued_command", "prompt": prompt}}
+    return {
+        "type": "attachment",
+        "uuid": "att",
+        "sessionId": "s1",
+        "timestamp": "2026-01-02T03:04:08Z",
+        "attachment": {"type": "queued_command", "prompt": prompt},
+    }
 
 
 def notification(tool_id: str) -> str:
@@ -121,10 +135,8 @@ def reference_is_waiting(events: list[TranscriptEvent]) -> bool:
                     queued = [item for item in queued if item not in content]
         if isinstance(event, UserEvent) and "<task-notification>" in event.text:
             delivered_texts.append(event.text)
-        elif isinstance(event, OtherEvent) and event.type == "attachment":
-            payload = event.raw.get("attachment") or {}
-            if payload.get("type") == "queued_command":
-                delivered_texts.append(str(payload.get("prompt", "")))
+        elif isinstance(event, AttachmentEvent) and isinstance(event.detail, QueuedCommand):
+            delivered_texts.append(event.detail.prompt or "")
 
     def completed(tool_use_id: str) -> bool:
         marker = f"<tool-use-id>{tool_use_id}</tool-use-id>"

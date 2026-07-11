@@ -27,7 +27,15 @@ from typing import TYPE_CHECKING, Literal
 
 import orjson
 
-from cc_transcript.models import AssistantEvent, ModeEvent, OtherEvent, SystemEvent, ToolUseBlock, UserEvent
+from cc_transcript.models import (
+    AssistantEvent,
+    AttachmentEvent,
+    ModeEvent,
+    OtherEvent,
+    SystemEvent,
+    ToolUseBlock,
+    UserEvent,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
@@ -35,7 +43,7 @@ if TYPE_CHECKING:
 
     from cc_transcript.models import EntryMeta, SessionId, ToolUseId, TranscriptEvent
 
-EventKind = Literal["user", "assistant", "system", "mode", "other"]
+EventKind = Literal["user", "assistant", "system", "mode", "other", "attachment"]
 MetaFlagName = Literal["is_sidechain", "is_meta", "is_compact_summary", "is_visible_in_transcript_only"]
 
 TRAILING_PUNCT = ".!?…,;:"
@@ -374,6 +382,8 @@ def event_kind(event: TranscriptEvent) -> EventKind:
             return "mode"
         case OtherEvent():
             return "other"
+        case AttachmentEvent():
+            return "attachment"
 
 
 def event_text(event: TranscriptEvent) -> str:
@@ -386,7 +396,7 @@ def event_text(event: TranscriptEvent) -> str:
 
 def event_meta(event: TranscriptEvent) -> EntryMeta | None:
     match event:
-        case UserEvent(meta=meta) | AssistantEvent(meta=meta) | SystemEvent(meta=meta):
+        case UserEvent(meta=meta) | AssistantEvent(meta=meta) | SystemEvent(meta=meta) | AttachmentEvent(meta=meta):
             return meta
         case _:
             return None

@@ -556,9 +556,10 @@ class ModeEvent:
 class OtherEvent:
     """Any recognized entry without a guaranteed conversational envelope.
 
-    Covers attachment, ai-title, last-prompt, summary, queue-operation,
+    Covers ai-title, last-prompt, summary, queue-operation,
     file-history-snapshot, and similar entry types whose shape carries no
-    :class:`EntryMeta`.
+    :class:`EntryMeta`. Attachments are typed separately as
+    :class:`AttachmentEvent`.
 
     Attributes:
         type: The entry's ``type`` field.
@@ -567,6 +568,200 @@ class OtherEvent:
 
     type: str
     raw: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class HookSuccess:
+    """A hook that fired and exited cleanly, attached to the turn it ran on.
+
+    Attributes:
+        hook_name: The hook matcher that fired, e.g. ``PostToolUse:Bash``, or None.
+        hook_event: The lifecycle event that triggered it, e.g. ``PostToolUse``, or None.
+        tool_use_id: The tool-use the hook ran against, or None for lifecycle hooks.
+        command: The hook command line, or None.
+        content: The additional context the hook injected, or None.
+        stdout: The hook's captured stdout, or None.
+        stderr: The hook's captured stderr, or None.
+        exit_code: The hook's exit status, or None.
+        duration_ms: The hook's wall-clock duration in milliseconds, or None.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    tool_use_id: ToolUseId | None = None
+    command: str | None = None
+    content: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    exit_code: int | None = None
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookBlockingError:
+    """A hook that blocked the turn, carrying the structured blocking payload.
+
+    Attributes:
+        hook_name: The hook matcher that fired, or None.
+        hook_event: The lifecycle event that triggered it, or None.
+        tool_use_id: The tool-use the hook ran against, or None.
+        blocking_error: The verbatim ``blockingError`` payload, or None.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    tool_use_id: ToolUseId | None = None
+    blocking_error: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookNonBlockingError:
+    """A hook that failed without blocking the turn.
+
+    Attributes:
+        hook_name: The hook matcher that fired, or None.
+        hook_event: The lifecycle event that triggered it, or None.
+        tool_use_id: The tool-use the hook ran against, or None.
+        command: The hook command line, or None.
+        stdout: The hook's captured stdout, or None.
+        stderr: The hook's captured stderr, or None.
+        exit_code: The hook's exit status, or None.
+        duration_ms: The hook's wall-clock duration in milliseconds, or None.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    tool_use_id: ToolUseId | None = None
+    command: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    exit_code: int | None = None
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookCancelled:
+    """A hook the harness cancelled, typically on timeout.
+
+    Attributes:
+        hook_name: The hook matcher that fired, or None.
+        hook_event: The lifecycle event that triggered it, or None.
+        tool_use_id: The tool-use the hook ran against, or None.
+        command: The hook command line, or None.
+        duration_ms: How long it ran before cancellation, or None.
+        timed_out: Whether the cancellation was a timeout, or None.
+        timeout_ms: The configured timeout in milliseconds, or None.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    tool_use_id: ToolUseId | None = None
+    command: str | None = None
+    duration_ms: int | None = None
+    timed_out: bool | None = None
+    timeout_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookAdditionalContext:
+    """Context a hook injected into the turn without blocking it.
+
+    Attributes:
+        hook_name: The hook matcher that fired, or None.
+        hook_event: The lifecycle event that triggered it, or None.
+        tool_use_id: The tool-use the hook ran against, or None.
+        content: The injected context lines, in order.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    tool_use_id: ToolUseId | None = None
+    content: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AsyncHookResponse:
+    """The result of an asynchronously-executed hook, matched back by process id.
+
+    Attributes:
+        hook_name: The hook matcher that fired, or None.
+        hook_event: The lifecycle event that triggered it, or None.
+        process_id: The async execution's process id, or None.
+        stdout: The hook's captured stdout, or None.
+        stderr: The hook's captured stderr, or None.
+        exit_code: The hook's exit status, or None.
+        response: The verbatim ``response`` payload, or None.
+    """
+
+    hook_name: str | None = None
+    hook_event: str | None = None
+    process_id: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    exit_code: int | None = None
+    response: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedCommand:
+    """A user command queued for delivery to the agent, replayed as an attachment.
+
+    Attributes:
+        prompt: The queued command's prompt text, or None when it carries no
+            plain-string prompt (e.g. an image-paste payload).
+        command_mode: How the command was queued, e.g. ``prompt`` or
+            ``task-notification``, or None.
+    """
+
+    prompt: str | None = None
+    command_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OtherAttachment:
+    """Any attachment whose type has no typed detail, carried verbatim.
+
+    Covers the many informational attachment types (skill/tool/agent listings,
+    reminders, plan-mode markers, file references, and anything future) whose
+    shape is not further decomposed, mirroring :class:`OtherSystemDetail`.
+
+    Attributes:
+        raw: The attachment entry's full decoded payload.
+    """
+
+    raw: Mapping[str, Any]
+
+
+AttachmentDetail = (
+    HookSuccess
+    | HookBlockingError
+    | HookNonBlockingError
+    | HookCancelled
+    | HookAdditionalContext
+    | AsyncHookResponse
+    | QueuedCommand
+    | OtherAttachment
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentEvent:
+    """A harness attachment record — a hook firing, a queued command, or an
+    informational injection — carrying the full envelope it was written with.
+
+    Recognized attachment types carry their typed :class:`AttachmentDetail`;
+    every other type carries the full record verbatim under
+    :class:`OtherAttachment`, so no attachment is lossy.
+
+    Attributes:
+        meta: The entry envelope metadata.
+        attachment_type: The raw ``attachment.type`` string, e.g. ``hook_success``.
+        detail: The typed attachment payload.
+    """
+
+    meta: EntryMeta
+    attachment_type: str
+    detail: AttachmentDetail
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,7 +951,7 @@ class PrintResult:
     messages: tuple[PrintMessage, ...]
 
 
-TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent
+TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent | AttachmentEvent
 """The union of every typed event a parsed transcript can yield."""
 
 

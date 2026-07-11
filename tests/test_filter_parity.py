@@ -38,6 +38,7 @@ from cc_transcript.filterspec import (
     is_portable,
     spec_to_json,
 )
+from cc_transcript.models import AttachmentEvent
 from cc_transcript.parser import parse_events_from_bytes
 from tests.support import fixture_bytes, real_corpus, requires_rust
 
@@ -87,11 +88,18 @@ PUSHBACK_SPEC = build_spec(
     drop_short(2),
 )
 
+# Positive attachment coverage: keep_only("attachment") exercises Kind::Attachment
+# through parse_kind, and an unscoped MetaFlag reaches attachment envelopes.
+ATTACHMENTS_ONLY_SPEC = build_spec(keep_only("attachment"))
+SIDECHAIN_DROP_SPEC = build_spec(drop_sidechain())
+
 PRESETS = {
     "sentiment": SENTIMENT_SPEC,
     "pushback": PUSHBACK_SPEC,
     "all_groups": ALL_GROUPS_SPEC,
     "noise": NOISE_SPEC,
+    "attachments_only": ATTACHMENTS_ONLY_SPEC,
+    "sidechain_drop": SIDECHAIN_DROP_SPEC,
 }
 
 # One line per named group (positive), plus near-misses and case folds. The
@@ -188,6 +196,22 @@ def test_fixture_parity(tmp_path: Path, preset: str) -> None:
     path = tmp_path / "fixture.jsonl"
     path.write_bytes(fixture_bytes())
     assert rust_filtered(path, PRESETS[preset]) == py_filtered(path, PRESETS[preset])
+
+
+@requires_rust
+def test_attachment_positive_parity(tmp_path: Path) -> None:
+    """KindIs("attachment") keeps attachments and MetaFlag drops sidechain ones, identically on both backends."""
+    path = tmp_path / "fixture.jsonl"
+    path.write_bytes(fixture_bytes())
+    kept = py_filtered(path, ATTACHMENTS_ONLY_SPEC)
+    assert kept == rust_filtered(path, ATTACHMENTS_ONLY_SPEC)
+    assert kept
+    assert all(isinstance(event, AttachmentEvent) for event in kept)
+    assert any(event.meta.is_sidechain for event in kept)
+    survivors = py_filtered(path, SIDECHAIN_DROP_SPEC)
+    assert survivors == rust_filtered(path, SIDECHAIN_DROP_SPEC)
+    assert any(isinstance(event, AttachmentEvent) for event in survivors)
+    assert not any(isinstance(event, AttachmentEvent) and event.meta.is_sidechain for event in survivors)
 
 
 @requires_rust

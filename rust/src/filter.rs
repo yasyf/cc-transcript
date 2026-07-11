@@ -13,6 +13,7 @@ pub(crate) enum Kind {
     System,
     Mode,
     Other,
+    Attachment,
 }
 
 pub struct CompiledSpec {
@@ -43,6 +44,7 @@ fn parse_kind(name: &str) -> Result<Kind, String> {
         "system" => Ok(Kind::System),
         "mode" => Ok(Kind::Mode),
         "other" => Ok(Kind::Other),
+        "attachment" => Ok(Kind::Attachment),
         other => Err(format!("unknown event kind: {other}")),
     }
 }
@@ -152,6 +154,7 @@ fn entry_kind(entry: &Entry) -> Kind {
         Entry::System(_) => Kind::System,
         Entry::Mode(_) => Kind::Mode,
         Entry::Other(_) => Kind::Other,
+        Entry::Attachment(_) => Kind::Attachment,
     }
 }
 

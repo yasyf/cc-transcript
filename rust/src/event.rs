@@ -5,19 +5,22 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, API_ERROR_CLS, ASSISTANT_EVENT_CLS, ATTRIBUTION_CLS, CACHE_CREATION_CLS,
-    COMPACT_BOUNDARY_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS, HOOK_INFO_CLS, INIT_INFO_CLS,
-    MCP_SERVER_CLS, MODEL_REFUSAL_FALLBACK_CLS, MODEL_USAGE_CLS, MODE_EVENT_CLS, OTHER_BLOCK_CLS,
-    OTHER_EVENT_CLS, OTHER_SYSTEM_DETAIL_CLS, PLUGIN_CLS, PRESERVED_MESSAGES_CLS,
-    PRESERVED_SEGMENT_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS,
-    STOP_HOOK_SUMMARY_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
-    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, TURN_DURATION_CLS, USAGE_CLS, USER_EVENT_CLS,
+    models_type, API_ERROR_CLS, ASSISTANT_EVENT_CLS, ASYNC_HOOK_RESPONSE_CLS, ATTACHMENT_EVENT_CLS,
+    ATTRIBUTION_CLS, CACHE_CREATION_CLS, COMPACT_BOUNDARY_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS,
+    HOOK_ADDITIONAL_CONTEXT_CLS, HOOK_BLOCKING_ERROR_CLS, HOOK_CANCELLED_CLS, HOOK_INFO_CLS,
+    HOOK_NON_BLOCKING_ERROR_CLS, HOOK_SUCCESS_CLS, INIT_INFO_CLS, MCP_SERVER_CLS,
+    MODEL_REFUSAL_FALLBACK_CLS, MODEL_USAGE_CLS, MODE_EVENT_CLS, OTHER_ATTACHMENT_CLS,
+    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, OTHER_SYSTEM_DETAIL_CLS, PLUGIN_CLS, PRESERVED_MESSAGES_CLS,
+    PRESERVED_SEGMENT_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS, QUEUED_COMMAND_CLS,
+    SERVER_TOOL_USE_CLS, STOP_HOOK_SUMMARY_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS,
+    THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, TURN_DURATION_CLS, USAGE_CLS,
+    USER_EVENT_CLS,
 };
 use crate::parse::ParseError;
 use crate::protocol::{interrupt_marker, is_agent_injection};
 use crate::types::{
-    joined_text, ApiError, Attribution, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage,
-    PrintBody, PrintMessage, PrintResult, SystemDetail, Usage, UserContent,
+    joined_text, ApiError, AttachmentDetail, Attribution, ContentBlock, Entry, EntryMeta, InitInfo,
+    ModelUsage, PrintBody, PrintMessage, PrintResult, SystemDetail, Usage, UserContent,
 };
 
 impl From<ParseError> for PyErr {
@@ -288,6 +291,83 @@ fn build_system_detail<'py>(py: Python<'py>, detail: &SystemDetail) -> PyResult<
     }
 }
 
+fn build_attachment_detail<'py>(py: Python<'py>, detail: &AttachmentDetail) -> PyResult<Bound<'py, PyAny>> {
+    match detail {
+        AttachmentDetail::HookSuccess(h) => models_type(py, &HOOK_SUCCESS_CLS, "HookSuccess")?.call1((
+            h.hook_name.as_deref(),
+            h.hook_event.as_deref(),
+            h.tool_use_id.as_deref(),
+            h.command.as_deref(),
+            h.content.as_deref(),
+            h.stdout.as_deref(),
+            h.stderr.as_deref(),
+            h.exit_code,
+            h.duration_ms,
+        )),
+        AttachmentDetail::HookBlockingError(h) => {
+            let blocking_error = match &h.blocking_error {
+                Some(v) => json_to_py(py, v)?,
+                None => py.None().into_bound(py),
+            };
+            models_type(py, &HOOK_BLOCKING_ERROR_CLS, "HookBlockingError")?.call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.tool_use_id.as_deref(),
+                blocking_error,
+            ))
+        }
+        AttachmentDetail::HookNonBlockingError(h) => {
+            models_type(py, &HOOK_NON_BLOCKING_ERROR_CLS, "HookNonBlockingError")?.call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.tool_use_id.as_deref(),
+                h.command.as_deref(),
+                h.stdout.as_deref(),
+                h.stderr.as_deref(),
+                h.exit_code,
+                h.duration_ms,
+            ))
+        }
+        AttachmentDetail::HookCancelled(h) => models_type(py, &HOOK_CANCELLED_CLS, "HookCancelled")?.call1((
+            h.hook_name.as_deref(),
+            h.hook_event.as_deref(),
+            h.tool_use_id.as_deref(),
+            h.command.as_deref(),
+            h.duration_ms,
+            h.timed_out,
+            h.timeout_ms,
+        )),
+        AttachmentDetail::HookAdditionalContext(h) => {
+            models_type(py, &HOOK_ADDITIONAL_CONTEXT_CLS, "HookAdditionalContext")?.call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.tool_use_id.as_deref(),
+                PyTuple::new(py, &h.content)?,
+            ))
+        }
+        AttachmentDetail::AsyncHookResponse(h) => {
+            let response = match &h.response {
+                Some(v) => json_to_py(py, v)?,
+                None => py.None().into_bound(py),
+            };
+            models_type(py, &ASYNC_HOOK_RESPONSE_CLS, "AsyncHookResponse")?.call1((
+                h.hook_name.as_deref(),
+                h.hook_event.as_deref(),
+                h.process_id.as_deref(),
+                h.stdout.as_deref(),
+                h.stderr.as_deref(),
+                h.exit_code,
+                response,
+            ))
+        }
+        AttachmentDetail::QueuedCommand(q) => models_type(py, &QUEUED_COMMAND_CLS, "QueuedCommand")?
+            .call1((q.prompt.as_deref(), q.command_mode.as_deref())),
+        AttachmentDetail::Other(raw) => {
+            models_type(py, &OTHER_ATTACHMENT_CLS, "OtherAttachment")?.call1((json_to_py(py, raw)?,))
+        }
+    }
+}
+
 pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, PyAny>> {
     match entry {
         Entry::User(user) => {
@@ -354,6 +434,14 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
         )),
         Entry::Other(other) => models_type(py, &OTHER_EVENT_CLS, "OtherEvent")?
             .call1((&other.ty, json_to_py(py, &other.raw)?)),
+        Entry::Attachment(att) => {
+            let detail = build_attachment_detail(py, &att.detail)?;
+            models_type(py, &ATTACHMENT_EVENT_CLS, "AttachmentEvent")?.call1((
+                build_meta(py, &att.meta)?,
+                &att.attachment_type,
+                detail,
+            ))
+        }
     }
 }
 

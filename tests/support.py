@@ -575,7 +575,138 @@ def fixture_entries() -> list[dict[str, Any]]:
         {"type": "mode", "mode": "normal", "sessionId": "sess-1"},
         {"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "sess-1"},
         {"type": "summary", "summary": "did stuff", "leafUuid": "uuid-x", "nested": {"a": [1, 2, 3], "b": 1.5}},
+        # One record per typed AttachmentDetail (distinctive values), a queued
+        # command, an unknown attachment type -> OtherAttachment, and a typeless
+        # attachment -> OtherAttachment with an empty attachment_type.
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_success",
+                "hookName": "PostToolUse:Bash",
+                "hookEvent": "PostToolUse",
+                "toolUseID": "toolu_hook",
+                "command": "uvx capt-hook run",
+                "content": "hook-injected context",
+                "stdout": "HOOK-STDOUT",
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 42,
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_blocking_error",
+                "hookName": "Stop",
+                "hookEvent": "Stop",
+                "toolUseID": "toolu_stop",
+                "blockingError": {"blockingError": "review your changes"},
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_non_blocking_error",
+                "hookName": "PostToolUse:Edit",
+                "hookEvent": "PostToolUse",
+                "toolUseID": "toolu_edit",
+                "command": "ruff check",
+                "stdout": "",
+                "stderr": "E501 line too long",
+                "exitCode": 1,
+                "durationMs": 88,
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_cancelled",
+                "hookName": "UserPromptSubmit",
+                "hookEvent": "UserPromptSubmit",
+                "toolUseID": "toolu_ups",
+                "command": "ccstatusline --hook",
+                "durationMs": 289,
+                "timedOut": True,
+                "timeoutMs": 30000,
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_additional_context",
+                "hookName": "SessionStart",
+                "hookEvent": "SessionStart",
+                "toolUseID": "SessionStart",
+                "content": ["first context line", "second context line"],
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "async_hook_response",
+                "hookName": "SessionStart:startup",
+                "hookEvent": "SessionStart",
+                "processId": "async_hook_9001",
+                "stdout": "",
+                "stderr": "ASYNC-STDERR",
+                "exitCode": 1,
+                "response": {"decision": "approve"},
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={"type": "queued_command", "prompt": "run the tests", "commandMode": "prompt"},
+        ),
+        raw_envelope(type="attachment", attachment={"type": "skill_listing", "names": ["a", "b"], "skillCount": 2}),
         raw_envelope(type="attachment", attachment={"kind": "file", "size": 9999999999}),
+        # A sidechain attachment: MetaFlag clauses and sidechain stats must see it.
+        raw_envelope(
+            type="attachment",
+            isSidechain=True,
+            attachment={"type": "queued_command", "prompt": "sidechain queued command", "commandMode": "prompt"},
+        ),
+        # Malformed attachment shapes degrade identically on both backends: a
+        # non-mapping payload or non-string type -> OtherAttachment with an empty
+        # attachment_type; mistyped scalars and a non-list content read as absent
+        # (parse.rs opt_str / opt_i64 / str_array parity).
+        raw_envelope(type="attachment", attachment="malformed-string-payload"),
+        raw_envelope(type="attachment", attachment=[1, "malformed-list-payload"]),
+        raw_envelope(type="attachment", attachment={"type": 7, "weird": True}),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_success",
+                "hookName": 12,
+                "hookEvent": None,
+                "toolUseID": "",
+                "command": ["not", "a", "string"],
+                "content": 3,
+                "stdout": True,
+                "stderr": "KEPT-STDERR",
+                "exitCode": 1.5,
+                "durationMs": "42",
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={"type": "hook_cancelled", "hookName": "Stop", "timedOut": "yes", "timeoutMs": 30.5},
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_additional_context",
+                "hookName": "SessionStart",
+                "content": "not-a-list-so-reads-empty",
+            },
+        ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "queued_command",
+                "prompt": [{"type": "text", "text": "list prompts read as absent"}],
+                "commandMode": 9,
+            },
+        ),
         {"type": "queue-operation", "operation": "enqueue", "items": []},
         {"type": "file-history-snapshot", "snapshot": {"files": ["a", "b"]}},
         {"type": "ai-title", "title": "Some Title"},

@@ -12,10 +12,12 @@ from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import tool_names
 from cc_transcript.models import (
     AssistantEvent,
+    AttachmentEvent,
     CcVersion,
     EntryMeta,
     EventUuid,
     FallbackBlock,
+    HookSuccess,
     ModeEvent,
     OtherBlock,
     OtherEvent,
@@ -387,10 +389,21 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
         pytest.param(
             12,
-            OtherEvent(type="attachment", raw={"type": "attachment"}),
+            OtherEvent(type="summary", raw={"type": "summary"}),
             False,
-            "   12 other          attachment",
+            "   12 other          summary",
             id="other-no-meta-blank-time",
+        ),
+        pytest.param(
+            18,
+            AttachmentEvent(
+                meta=meta(),
+                attachment_type="hook_success",
+                detail=HookSuccess(hook_name="PostToolUse:Bash", hook_event="PostToolUse", content="hook ran ok"),
+            ),
+            False,
+            "   18 att   03:04:05 hook_success hook ran ok",
+            id="attachment-hook-success",
         ),
         pytest.param(
             13,
@@ -619,6 +632,11 @@ STATS_TRANSCRIPTS = (
             ),
             ModeEvent(session_id=SessionId("sess-2"), channel="mode", value="plan"),
             OtherEvent(type="summary", raw={"type": "summary"}),
+            AttachmentEvent(
+                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC)),
+                attachment_type="hook_success",
+                detail=HookSuccess(hook_name="Stop", hook_event="Stop", content="ok"),
+            ),
         ),
     ),
     ParsedTranscript(
@@ -639,8 +657,8 @@ STATS_TRANSCRIPTS = (
 
 EXPECTED_STATS = Stats(
     files=2,
-    events=8,
-    kinds={"user": 3, "assistant": 2, "system": 1, "mode": 1, "other": 1},
+    events=9,
+    kinds={"user": 3, "assistant": 2, "system": 1, "mode": 1, "other": 1, "attachment": 1},
     models={"claude-opus-4-7": 1, "claude-haiku": 1},
     tools={"Read": 1},
     text_chars=14,
@@ -682,8 +700,8 @@ def test_render_stats_exact_output() -> None:
     assert render_stats(EXPECTED_STATS) == "\n".join(
         (
             "files        2",
-            "events       8",
-            "kinds        user 3 · assistant 2 · system 1 · mode 1 · other 1",
+            "events       9",
+            "kinds        user 3 · assistant 2 · system 1 · mode 1 · other 1 · attachment 1",
             "models       claude-opus-4-7 1 · claude-haiku 1",
             "tools        Read 1",
             "text         14B",

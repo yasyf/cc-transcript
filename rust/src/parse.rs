@@ -4,11 +4,13 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
 use crate::types::{
-    ApiError, AssistantEntry, Attribution, CacheCreation, CompactBoundary, ContentBlock, Entry,
-    EntryMeta, FallbackBlock, HookInfo, InitInfo, McpServer, ModeChannel, ModeEntry, ModelRefusalFallback,
-    ModelUsage, OtherEntry, Plugin, PreservedMessages, PreservedSegment, PrintBody, PrintMessage,
-    PrintResult, Question, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry, ToolResultBlock,
-    ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
+    ApiError, AssistantEntry, AsyncHookResponse, AttachmentDetail, AttachmentEntry, Attribution,
+    CacheCreation, CompactBoundary, ContentBlock, Entry, EntryMeta, FallbackBlock,
+    HookAdditionalContext, HookBlockingError, HookCancelled, HookInfo, HookNonBlockingError,
+    HookSuccess, InitInfo, McpServer, ModeChannel, ModeEntry, ModelRefusalFallback, ModelUsage,
+    OtherEntry, Plugin, PreservedMessages, PreservedSegment, PrintBody, PrintMessage, PrintResult,
+    QueuedCommand, Question, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
+    ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -365,6 +367,69 @@ fn parse_system_detail(data: &Value) -> SystemDetail {
     }
 }
 
+fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
+    let empty = Value::default();
+    let att = field(data, "attachment").unwrap_or(&empty);
+    match field_str(att, "type") {
+        Some("hook_success") => AttachmentDetail::HookSuccess(HookSuccess {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+            command: opt_str(att, "command"),
+            content: opt_str(att, "content"),
+            stdout: opt_str(att, "stdout"),
+            stderr: opt_str(att, "stderr"),
+            exit_code: opt_i64(att, "exitCode"),
+            duration_ms: opt_i64(att, "durationMs"),
+        }),
+        Some("hook_blocking_error") => AttachmentDetail::HookBlockingError(HookBlockingError {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+            blocking_error: field(att, "blockingError").cloned(),
+        }),
+        Some("hook_non_blocking_error") => AttachmentDetail::HookNonBlockingError(HookNonBlockingError {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+            command: opt_str(att, "command"),
+            stdout: opt_str(att, "stdout"),
+            stderr: opt_str(att, "stderr"),
+            exit_code: opt_i64(att, "exitCode"),
+            duration_ms: opt_i64(att, "durationMs"),
+        }),
+        Some("hook_cancelled") => AttachmentDetail::HookCancelled(HookCancelled {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+            command: opt_str(att, "command"),
+            duration_ms: opt_i64(att, "durationMs"),
+            timed_out: field(att, "timedOut").and_then(JsonValueTrait::as_bool),
+            timeout_ms: opt_i64(att, "timeoutMs"),
+        }),
+        Some("hook_additional_context") => AttachmentDetail::HookAdditionalContext(HookAdditionalContext {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
+            content: str_array(att, "content"),
+        }),
+        Some("async_hook_response") => AttachmentDetail::AsyncHookResponse(AsyncHookResponse {
+            hook_name: opt_str(att, "hookName"),
+            hook_event: opt_str(att, "hookEvent"),
+            process_id: opt_str(att, "processId"),
+            stdout: opt_str(att, "stdout"),
+            stderr: opt_str(att, "stderr"),
+            exit_code: opt_i64(att, "exitCode"),
+            response: field(att, "response").cloned(),
+        }),
+        Some("queued_command") => AttachmentDetail::QueuedCommand(QueuedCommand {
+            prompt: opt_str(att, "prompt"),
+            command_mode: opt_str(att, "commandMode"),
+        }),
+        _ => AttachmentDetail::Other(data.clone()),
+    }
+}
+
 /// Parse one JSONL transcript line into the typed model. Consumes the value so
 /// unrecognized entry kinds keep their payload verbatim without a copy.
 pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
@@ -430,6 +495,18 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 session_id: require_str(&data, "sessionId")?.to_string(),
                 channel: ModeChannel::PermissionMode,
                 value: require_str(&data, "permissionMode")?.to_string(),
+            }));
+        }
+        "attachment" => {
+            let detail = parse_attachment_detail(&data);
+            let attachment_type = field(&data, "attachment")
+                .and_then(|att| field_str(att, "type"))
+                .unwrap_or("")
+                .to_string();
+            return Ok(Entry::Attachment(AttachmentEntry {
+                meta: parse_meta(&data)?,
+                attachment_type,
+                detail,
             }));
         }
         _ => {}

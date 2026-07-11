@@ -85,6 +85,9 @@ EXPORTS: dict[str, str] = {
         "cc_transcript.models": (
             "ApiError",
             "AssistantEvent",
+            "AsyncHookResponse",
+            "AttachmentDetail",
+            "AttachmentEvent",
             "Attribution",
             "CacheCreation",
             "CcVersion",
@@ -92,12 +95,18 @@ EXPORTS: dict[str, str] = {
             "ContentBlock",
             "EntryMeta",
             "FallbackBlock",
+            "HookAdditionalContext",
+            "HookBlockingError",
+            "HookCancelled",
             "HookInfo",
+            "HookNonBlockingError",
+            "HookSuccess",
             "InitInfo",
             "McpServer",
             "ModelRefusalFallback",
             "ModeEvent",
             "ModelUsage",
+            "OtherAttachment",
             "OtherBlock",
             "OtherEvent",
             "OtherSystemDetail",
@@ -107,6 +116,7 @@ EXPORTS: dict[str, str] = {
             "PrintMessage",
             "PrintResult",
             "Question",
+            "QueuedCommand",
             "ServerToolUse",
             "StopHookSummary",
             "SystemDetail",
@@ -511,6 +521,15 @@ if TYPE_CHECKING:
         AssistantEvent as AssistantEvent,
     )
     from cc_transcript.models import (
+        AsyncHookResponse as AsyncHookResponse,
+    )
+    from cc_transcript.models import (
+        AttachmentDetail as AttachmentDetail,
+    )
+    from cc_transcript.models import (
+        AttachmentEvent as AttachmentEvent,
+    )
+    from cc_transcript.models import (
         Attribution as Attribution,
     )
     from cc_transcript.models import (
@@ -532,7 +551,22 @@ if TYPE_CHECKING:
         FallbackBlock as FallbackBlock,
     )
     from cc_transcript.models import (
+        HookAdditionalContext as HookAdditionalContext,
+    )
+    from cc_transcript.models import (
+        HookBlockingError as HookBlockingError,
+    )
+    from cc_transcript.models import (
+        HookCancelled as HookCancelled,
+    )
+    from cc_transcript.models import (
         HookInfo as HookInfo,
+    )
+    from cc_transcript.models import (
+        HookNonBlockingError as HookNonBlockingError,
+    )
+    from cc_transcript.models import (
+        HookSuccess as HookSuccess,
     )
     from cc_transcript.models import (
         InitInfo as InitInfo,
@@ -548,6 +582,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         ModelUsage as ModelUsage,
+    )
+    from cc_transcript.models import (
+        OtherAttachment as OtherAttachment,
     )
     from cc_transcript.models import (
         OtherBlock as OtherBlock,
@@ -575,6 +612,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         Question as Question,
+    )
+    from cc_transcript.models import (
+        QueuedCommand as QueuedCommand,
     )
     from cc_transcript.models import (
         ServerToolUse as ServerToolUse,

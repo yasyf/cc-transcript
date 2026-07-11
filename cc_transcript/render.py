@@ -14,10 +14,19 @@ import orjson
 from cc_transcript.filterspec import event_kind, event_meta, event_text
 from cc_transcript.models import (
     AssistantEvent,
+    AsyncHookResponse,
+    AttachmentEvent,
     FallbackBlock,
+    HookAdditionalContext,
+    HookBlockingError,
+    HookCancelled,
+    HookNonBlockingError,
+    HookSuccess,
     ModeEvent,
+    OtherAttachment,
     OtherBlock,
     OtherEvent,
+    QueuedCommand,
     SystemEvent,
     TextBlock,
     ThinkingBlock,
@@ -34,13 +43,13 @@ if TYPE_CHECKING:
 
     from cc_transcript.activity import SessionActivity, ToolUse, Turn
     from cc_transcript.backend import ParsedTranscript
-    from cc_transcript.models import ContentBlock, SessionId, ToolUseId, TranscriptEvent
     from cc_transcript.facts import ToolFact
+    from cc_transcript.models import AttachmentDetail, ContentBlock, SessionId, ToolUseId, TranscriptEvent
     from cc_transcript.tools import ToolCall
 
 PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
 SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
-TAGS = {"user": "user", "assistant": "asst", "system": "sys", "mode": "mode", "other": "other"}
+TAGS = {"user": "user", "assistant": "asst", "system": "sys", "mode": "mode", "other": "other", "attachment": "att"}
 BLANK_TIME = " " * 8
 WHERE_ALL = frozenset({"text", "thinking", "tools"})
 UNCLIPPED = sys.maxsize
@@ -197,6 +206,28 @@ def event_payload(event: TranscriptEvent, *, names: Mapping[ToolUseId, str], wid
             return f"{channel}={value}"
         case OtherEvent(type=type_):
             return type_
+        case AttachmentEvent(attachment_type=attachment_type, detail=detail):
+            return f"{attachment_type} {truncate(attachment_text(detail), width)}".strip()
+
+
+def attachment_text(detail: AttachmentDetail) -> str:
+    match detail:
+        case HookSuccess(content=content, stdout=stdout, command=command):
+            return content or stdout or command or ""
+        case HookNonBlockingError(stderr=stderr, stdout=stdout, command=command):
+            return stderr or stdout or command or ""
+        case HookBlockingError(blocking_error=blocking_error):
+            return orjson.dumps(blocking_error).decode() if blocking_error else ""
+        case HookCancelled(command=command):
+            return command or ""
+        case HookAdditionalContext(content=content):
+            return " ".join(content)
+        case AsyncHookResponse(stdout=stdout, stderr=stderr):
+            return stdout or stderr or ""
+        case QueuedCommand(prompt=prompt):
+            return prompt or ""
+        case OtherAttachment(raw=raw):
+            return orjson.dumps(raw).decode()
 
 
 def user_payload(event: UserEvent, *, names: Mapping[ToolUseId, str], width: int) -> str:
@@ -267,6 +298,8 @@ def haystack(event: TranscriptEvent, *, where: frozenset[str]) -> str:
             return f"{channel}={value}"
         case OtherEvent(type=type_) if "text" in where:
             return type_
+        case AttachmentEvent(attachment_type=attachment_type, detail=detail) if "text" in where:
+            return f"{attachment_type} {attachment_text(detail)}".strip()
         case _:
             return ""
 

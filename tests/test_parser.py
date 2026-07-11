@@ -12,21 +12,27 @@ from cc_transcript import parse_event
 from cc_transcript.models import (
     ApiError,
     AssistantEvent,
+    AttachmentEvent,
     Attribution,
     CacheCreation,
     CompactBoundary,
     EventUuid,
     FallbackBlock,
+    HookAdditionalContext,
+    HookCancelled,
     HookInfo,
+    HookSuccess,
     McpServer,
     ModeEvent,
     ModelRefusalFallback,
     ModelUsage,
+    OtherAttachment,
     OtherBlock,
     OtherEvent,
     OtherSystemDetail,
     PreservedMessages,
     PreservedSegment,
+    QueuedCommand,
     ServerToolUse,
     SessionId,
     StopHookSummary,
@@ -754,7 +760,6 @@ def test_permission_mode_entry() -> None:
     ("data", "expected_type"),
     [
         pytest.param(summary_entry(), "summary", id="summary"),
-        pytest.param(attachment_entry(), "attachment", id="attachment"),
         pytest.param(queue_operation_entry(), "queue-operation", id="queue-operation"),
     ],
 )
@@ -763,6 +768,125 @@ def test_other_events(data: dict[str, Any], expected_type: str) -> None:
     assert isinstance(event, OtherEvent)
     assert event.type == expected_type
     assert event.raw == data
+
+
+def test_attachment_untyped_is_other_attachment() -> None:
+    data = attachment_entry()
+    event = parse_event(data)
+    assert isinstance(event, AttachmentEvent)
+    assert event.attachment_type == ""
+    assert event.detail == OtherAttachment(raw=data)
+    assert event.meta.session_id == SessionId("sess-1")
+
+
+def test_attachment_hook_success_is_typed() -> None:
+    event = parse_event(
+        envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_success",
+                "hookName": "PostToolUse:Bash",
+                "hookEvent": "PostToolUse",
+                "toolUseID": "toolu_1",
+                "command": "ruff",
+                "content": "ctx",
+                "stdout": "OUT",
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 12,
+            },
+        )
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert event.attachment_type == "hook_success"
+    assert event.detail == HookSuccess(
+        hook_name="PostToolUse:Bash",
+        hook_event="PostToolUse",
+        tool_use_id=ToolUseId("toolu_1"),
+        command="ruff",
+        content="ctx",
+        stdout="OUT",
+        stderr="",
+        exit_code=0,
+        duration_ms=12,
+    )
+
+
+def test_attachment_queued_command_is_typed() -> None:
+    event = parse_event(
+        envelope(type="attachment", attachment={"type": "queued_command", "prompt": "go", "commandMode": "prompt"})
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert event.detail == QueuedCommand(prompt="go", command_mode="prompt")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("malformed-string-payload", id="string"),
+        pytest.param([1, "list-payload"], id="list"),
+        pytest.param(None, id="null"),
+        pytest.param(7, id="int"),
+    ],
+)
+def test_attachment_non_mapping_payload_degrades(payload: object) -> None:
+    data = envelope(type="attachment", attachment=payload)
+    event = parse_event(data)
+    assert isinstance(event, AttachmentEvent)
+    assert event.attachment_type == ""
+    assert event.detail == OtherAttachment(raw=data)
+
+
+def test_attachment_non_string_type_reads_empty() -> None:
+    data = envelope(type="attachment", attachment={"type": 7, "weird": True})
+    event = parse_event(data)
+    assert isinstance(event, AttachmentEvent)
+    assert event.attachment_type == ""
+    assert event.detail == OtherAttachment(raw=data)
+
+
+def test_attachment_scalars_are_type_gated() -> None:
+    event = parse_event(
+        envelope(
+            type="attachment",
+            attachment={
+                "type": "hook_success",
+                "hookName": 12,
+                "hookEvent": None,
+                "toolUseID": "",
+                "command": ["not", "a", "string"],
+                "content": 3,
+                "stdout": True,
+                "stderr": "KEPT-STDERR",
+                "exitCode": 1.5,
+                "durationMs": "42",
+            },
+        )
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert event.detail == HookSuccess(stderr="KEPT-STDERR")
+
+
+def test_attachment_cancelled_bool_and_int_gates() -> None:
+    event = parse_event(
+        envelope(
+            type="attachment",
+            attachment={"type": "hook_cancelled", "hookName": "Stop", "timedOut": "yes", "timeoutMs": 30.5},
+        )
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert event.detail == HookCancelled(hook_name="Stop")
+
+
+def test_attachment_context_content_requires_list() -> None:
+    event = parse_event(
+        envelope(
+            type="attachment",
+            attachment={"type": "hook_additional_context", "hookName": "SessionStart", "content": "not-a-list"},
+        )
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert event.detail == HookAdditionalContext(hook_name="SessionStart")
 
 
 def test_parse_events_from_bytes_skips_blank_and_undecodable() -> None:

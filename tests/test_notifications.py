@@ -7,10 +7,11 @@ import pytest
 
 from cc_transcript.activity import SessionActivity, native_user_classifier
 from cc_transcript.ids import SessionId
-from cc_transcript.models import OtherEvent, UserEvent
+from cc_transcript.models import AttachmentEvent, OtherAttachment, OtherEvent, QueuedCommand, UserEvent
 from cc_transcript.notifications import NOTIFICATION_MARKER, Notifications, tool_use_marker
 from cc_transcript.query import Session
 from tests.support import assistant as _assistant
+from tests.support import meta as _meta
 from tests.support import user as _user
 
 if TYPE_CHECKING:
@@ -50,8 +51,10 @@ def pop_all(content: str) -> OtherEvent:
     return queue_op("popAll", content)
 
 
-def attachment(prompt: str) -> OtherEvent:
-    return OtherEvent(type="attachment", raw={"attachment": {"type": "queued_command", "prompt": prompt}})
+def attachment(prompt: str) -> AttachmentEvent:
+    return AttachmentEvent(
+        meta=_meta("att", session=SESSION), attachment_type="queued_command", detail=QueuedCommand(prompt=prompt)
+    )
 
 
 def notif(tool_use_id: str, *, body: str = "background task finished") -> str:
@@ -98,12 +101,19 @@ def session(*events: TranscriptEvent, user_classifier: UserClassifier = native_u
             id="queued-command-attachment-completes-while-still-queued",
         ),
         pytest.param(
-            (OtherEvent(type="attachment", raw={"type": "attachment", "attachment": None}), enqueue(notif(TID))),
+            (
+                AttachmentEvent(
+                    meta=_meta("att", session=SESSION),
+                    attachment_type="",
+                    detail=OtherAttachment(raw={"type": "attachment", "attachment": None}),
+                ),
+                enqueue(notif(TID)),
+            ),
             TID,
             False,
             True,
             True,
-            id="null-attachment-payload-does-not-crash",
+            id="non-queued-command-attachment-not-delivered",
         ),
         pytest.param(
             (enqueue(notif(TID)), remove()),

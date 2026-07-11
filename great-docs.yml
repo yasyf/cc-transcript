@@ -87,6 +87,16 @@ reference:
       - OtherSystemDetail
       - ModeEvent
       - OtherEvent
+      - AttachmentEvent
+      - AttachmentDetail
+      - HookSuccess
+      - HookBlockingError
+      - HookNonBlockingError
+      - HookCancelled
+      - HookAdditionalContext
+      - AsyncHookResponse
+      - QueuedCommand
+      - OtherAttachment
       - PrintMessage
       - PrintResult
       - ContentBlock

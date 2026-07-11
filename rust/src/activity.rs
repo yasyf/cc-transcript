@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 
-use crate::types::{matches_names, Entry, ToolResultBlock, ToolUseBlock, UserEntry};
-use crate::value::{field, field_str};
+use crate::types::{matches_names, AttachmentDetail, Entry, ToolResultBlock, ToolUseBlock, UserEntry};
+use crate::value::field_str;
 
 const NOTIFICATION_MARKER: &str = "<task-notification>";
 
@@ -195,11 +195,10 @@ fn delivered_text(entry: &Entry) -> Option<String> {
             let text = user.content.text();
             text.contains(NOTIFICATION_MARKER).then_some(text)
         }
-        Entry::Other(other) if other.ty == "attachment" => {
-            let attachment = field(&other.raw, "attachment")?;
-            (field_str(attachment, "type") == Some("queued_command"))
-                .then(|| field_str(attachment, "prompt").unwrap_or_default().to_string())
-        }
+        Entry::Attachment(att) => match &att.detail {
+            AttachmentDetail::QueuedCommand(qc) => Some(qc.prompt.clone().unwrap_or_default()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -312,7 +311,7 @@ mod tests {
 
     fn attachment(prompt: &str) -> Entry {
         parse(&format!(
-            r#"{{"type":"attachment","attachment":{{"type":"queued_command","prompt":{}}}}}"#,
+            r#"{{"type":"attachment","uuid":"att","sessionId":"s1","timestamp":"2026-01-02T03:04:08Z","attachment":{{"type":"queued_command","prompt":{}}}}}"#,
             sonic_rs::to_string(&prompt).unwrap()
         ))
     }
@@ -475,7 +474,7 @@ mod tests {
         assert!(!activity.is_waiting, "the queued_command attachment alone closes the async task");
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
-        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:07Z")
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:08Z")
             .unwrap()
             .timestamp();
         assert_eq!(activity.last_event_epoch, Some(expected));

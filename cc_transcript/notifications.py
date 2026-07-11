@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cc_transcript.models import OtherEvent, UserEvent
+from cc_transcript.models import AttachmentEvent, OtherEvent, QueuedCommand, UserEvent
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,10 +32,8 @@ def delivered_text(event: TranscriptEvent) -> str | None:
     match event:
         case UserEvent(text=text) if NOTIFICATION_MARKER in text:
             return text
-        case OtherEvent(type="attachment", raw=raw) if (attachment := raw.get("attachment") or {}).get(
-            "type"
-        ) == "queued_command":
-            return str(attachment.get("prompt", ""))
+        case AttachmentEvent(attachment_type="queued_command", detail=QueuedCommand(prompt=prompt)):
+            return prompt or ""
         case _:
             return None
 

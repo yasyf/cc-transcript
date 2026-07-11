@@ -29,9 +29,11 @@ from cc_transcript.filterspec import (
 )
 from cc_transcript.models import (
     AssistantEvent,
+    AttachmentEvent,
     EntryMeta,
     EventUuid,
     ModeEvent,
+    QueuedCommand,
     SessionId,
     ToolUseBlock,
     ToolUseId,
@@ -71,11 +73,24 @@ def spec(*clauses: Clause) -> FilterSpec:
     return FilterSpec(clauses=clauses)
 
 
+def attachment() -> AttachmentEvent:
+    return AttachmentEvent(meta=meta(), attachment_type="queued_command", detail=QueuedCommand(prompt="go"))
+
+
 def test_kind_is_keeps_matching() -> None:
     s = spec(Clause(KindIs(frozenset({"user"})), negate=True))
     assert keep(user("hi"), s)
     assert not keep(assistant(), s)
     assert not keep(ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"), s)
+
+
+def test_kind_is_attachment_keeps_and_drops() -> None:
+    keep_attachments = spec(Clause(KindIs(frozenset({"attachment"})), negate=True))
+    assert keep(attachment(), keep_attachments)
+    assert not keep(user("hi"), keep_attachments)
+    drop_attachments = spec(Clause(KindIs(frozenset({"attachment"}))))
+    assert not keep(attachment(), drop_attachments)
+    assert keep(user("hi"), drop_attachments)
 
 
 @pytest.mark.parametrize(

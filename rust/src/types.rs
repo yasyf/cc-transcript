@@ -288,6 +288,97 @@ pub struct OtherEntry {
     pub raw: Value,
 }
 
+#[derive(Debug)]
+pub struct HookSuccess {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub command: Option<String>,
+    pub content: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct HookBlockingError {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub blocking_error: Option<Value>,
+}
+
+#[derive(Debug)]
+pub struct HookNonBlockingError {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub command: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct HookCancelled {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub command: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub timed_out: Option<bool>,
+    pub timeout_ms: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct HookAdditionalContext {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub content: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct AsyncHookResponse {
+    pub hook_name: Option<String>,
+    pub hook_event: Option<String>,
+    pub process_id: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i64>,
+    pub response: Option<Value>,
+}
+
+#[derive(Debug)]
+pub struct QueuedCommand {
+    pub prompt: Option<String>,
+    pub command_mode: Option<String>,
+}
+
+/// The typed detail of an attachment entry. Recognized attachment types carry
+/// their typed struct; every other type carries the full record verbatim under
+/// `Other`, so no attachment entry is lossy.
+#[derive(Debug)]
+pub enum AttachmentDetail {
+    HookSuccess(HookSuccess),
+    HookBlockingError(HookBlockingError),
+    HookNonBlockingError(HookNonBlockingError),
+    HookCancelled(HookCancelled),
+    HookAdditionalContext(HookAdditionalContext),
+    AsyncHookResponse(AsyncHookResponse),
+    QueuedCommand(QueuedCommand),
+    Other(Value),
+}
+
+#[derive(Debug)]
+pub struct AttachmentEntry {
+    pub meta: EntryMeta,
+    pub attachment_type: String,
+    pub detail: AttachmentDetail,
+}
+
 /// One parsed JSONL transcript line. Each line is parsed exactly once into this
 /// model; Python objects are materialized from it afterwards.
 #[derive(Debug)]
@@ -297,6 +388,7 @@ pub enum Entry {
     System(SystemEntry),
     Mode(ModeEntry),
     Other(OtherEntry),
+    Attachment(AttachmentEntry),
 }
 
 impl Entry {
@@ -305,6 +397,7 @@ impl Entry {
             Entry::User(u) => Some(&u.meta),
             Entry::Assistant(a) => Some(&a.meta),
             Entry::System(s) => Some(&s.meta),
+            Entry::Attachment(a) => Some(&a.meta),
             Entry::Mode(_) | Entry::Other(_) => None,
         }
     }

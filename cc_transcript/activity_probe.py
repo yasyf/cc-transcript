@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Literal
 from cc_transcript.activity import native_user_classifier
 from cc_transcript.models import (
     AssistantEvent,
+    AttachmentEvent,
     SystemEvent,
     ToolResultBlock,
     ToolUseBlock,
@@ -170,7 +171,7 @@ def probe_events(
             (
                 int(event.meta.timestamp.timestamp())
                 for event in events
-                if isinstance(event, UserEvent | AssistantEvent | SystemEvent)
+                if isinstance(event, UserEvent | AssistantEvent | SystemEvent | AttachmentEvent)
             ),
             default=None,
         ),
