@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.8.0] - 2026-07-11
+
+### Added
+- **`unjudged(probe_hydration=)`.** A keyword-only flag on
+  `VerdictStoreMixin.unjudged`; passing `False` skips the per-row
+  `hydratable()` transcript-discovery probe, for dashboard-style callers
+  that only count backlog rows and can tolerate rows whose transcripts are
+  no longer discoverable. The default (`True`) preserves every existing
+  caller byte-for-byte.
+
+### Changed
+- **`find_transcript_sync` memoizes positive hits.** By-UUID lookups used
+  to rescan the full projects tree on every call; a module-level memo keyed
+  by session id and resolved root now returns warm hits in O(1). Misses are
+  never cached (a transcript may appear later), and a cached path that no
+  longer exists falls through to a fresh scan. `find_transcript` inherits
+  the memo through its sync core.
+
 ## [10.7.0] - 2026-07-10
 
 ### Added
