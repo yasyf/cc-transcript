@@ -4,6 +4,73 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.0.0] - 2026-07-11
+
+Structured-first protocol parsing: every semantic signal the transcripts carry
+as JSON is now read from the structured field, with the legacy text sniff kept
+only as the fallback for old transcripts. One breaking change (attachments).
+
+### Changed
+- **BREAKING: attachment records are a typed `AttachmentEvent`.** `type:"attachment"`
+  records now parse to a new `TranscriptEvent` member carrying a full `EntryMeta`
+  envelope and a typed `AttachmentDetail` union — `HookSuccess`,
+  `HookBlockingError`, `HookNonBlockingError`, `HookCancelled`,
+  `HookAdditionalContext`, `AsyncHookResponse`, `QueuedCommand`, and a non-lossy
+  `OtherAttachment(raw)` — instead of landing untyped in `OtherEvent`. Fallout:
+  match arms on `OtherEvent` with a raw `type=="attachment"` no longer fire;
+  `EventKind` gains `"attachment"`, so `keep_only("other")` no longer retains
+  attachments and a `KindIs({"other"})` drop no longer removes them; attachments
+  now carry meta, so `session_id_of`, `MetaFlag`/`EntrypointIn` predicates
+  (including `drop_sidechain()`), turn stamps, stats spans, and
+  `last_event_epoch` observe them, and a malformed attachment line fails the
+  file like any other typed record. Malformed payloads degrade identically in
+  both backends, pinned by parity fixtures.
+- **Denial detection reads `toolDenialKind`.** `ToolResultBlock.denial_kind` is
+  computed once at the parse layer — the record-level field when present, else
+  `user-rejected` via the legacy banner on error blocks — and `facts.is_denial`,
+  `ToolFact`, rendering, and both mining `denial_results` are pure field reads.
+  A `permission-rule` hook block is never a user denial and `ToolFact.denied`
+  keeps meaning human rejection only; hook blocks that the banner sniff could
+  never see now surface via `ToolFact.denial_kind`.
+- **AskUserQuestion mining is structured-first.** When a non-error result block's
+  `toolUseResult` carries `answers`, mined pairs come from the payload's
+  `questions`/`answers`/`annotations` (falling back to the joined tool-use
+  questions when the payload omits them); the rendered-banner re-parser remains
+  only as the fallback for old transcripts. Both paths yield identical signals
+  for the same round, non-string answer and annotation leaves read as absent in
+  both languages, and error rounds never mine.
+
+### Added
+- **`ToolResultBlock.tool_use_result` and the typed result hierarchy.** The
+  record-level `toolUseResult` payload rides on every result block verbatim
+  (dict, string, or absent; `is_async` derives from it), and `tools.py` gains a
+  stdlib-only per-tool result hierarchy — `BashResult`, `EditResult`,
+  `WriteResult`, `ReadResult`, `TaskResult`/`TaskLaunchResult`, `SkillResult`,
+  `AskUserQuestionResult`, `TextResult`, `OtherResult` — behind
+  `parse_tool_result`, joined by tool name at `activity.ToolUse.typed_result`.
+- **`SystemEvent.level` and a typed `detail` union.** `SystemEvent` was the one
+  lossy event kind; it now carries `StopHookSummary`, `CompactBoundary`
+  (field-complete against the corpus, including `preservedMessages.allUuids`),
+  `TurnDuration`, and `ModelRefusalFallback` typed from their subtype payloads,
+  with every other subtype preserved whole in `OtherSystemDetail(raw)`.
+- **`AssistantEvent.api_error`.** Rate-limit/outage markers
+  (`isApiErrorMessage`, `apiErrorStatus`, `error`, `errorDetails`) surface as a
+  typed `ApiError` instead of being dropped.
+- **`UserEvent.interrupted_message_id`** (the `msg_` API id of the interrupted
+  assistant turn), and `UserEvent.interrupted` is now the text marker OR the
+  structured field — the marker stays primary since field coverage is partial.
+- **Envelope fields.** `EntryMeta.user_type`/`slug`; `UserEvent.prompt_id`,
+  `prompt_source`, `queue_priority`, `image_paste_ids`, `source_tool_use_id`,
+  `source_tool_assistant_uuid`, `mcp_meta`, `permission_mode`;
+  `AssistantEvent.request_id`, `forked_from`, and a typed `Attribution`
+  (plugin/skill/MCP provenance).
+
+### Fixed
+- **Rust number parsing matches orjson exactly.** sonic-rs collapsed `-0`/`-0.0`
+  to positive zero and disagreed with orjson on beyond-u64 integers; the Rust
+  backend now preserves sign and magnitude semantics byte-for-byte, pinned by a
+  type-and-repr parity test.
+
 ## [10.8.0] - 2026-07-11
 
 ### Added
