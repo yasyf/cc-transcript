@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"02e25b0079aa1746b4a61515ef7559c3","status":"met"}]}
+{"v":1,"lamport":5,"ops":[{"kind":"add_comment","body":"Resolved by the sweep: 6c73625d wired the sentiment junk filter into bucket_events (+ the local-command-stderr gap), 705ba7f9 froze a hermetic adversarial fixture (spaCy path exercised locally, 8/8 green), 6d4f833e anchored command-echo matching. Remaining lexicon-data divergence tracked separately in 03ebf89 (break/broken DOMAIN_OVERRIDES)."}]}
