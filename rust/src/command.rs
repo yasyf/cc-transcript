@@ -176,62 +176,48 @@ pub fn prefixes(command: &str) -> Vec<String> {
 mod tests {
     use super::prefixes;
 
-    fn pins() -> Vec<(&'static str, Vec<&'static str>)> {
-        vec![
-            // command.py TestCommandPrefixes.test_command_prefixes
-            ("VAR=1 sudo docker compose up -d", vec!["docker compose"]),
-            (
-                "git add . && git commit -m 'x; y'",
-                vec!["git add", "git commit"],
-            ),
-            ("git --version", vec!["git"]),
-            ("cat a && grep b", vec!["cat", "grep"]),
-            ("ls -la", vec!["ls"]),
-            ("echo \"unterminated", vec!["echo"]),
-            ("for f in *.py; do python $f; done", vec!["python"]),
-            ("while true; do sleep 1; done", vec!["true", "sleep"]),
-            (
-                "if grep -q x f; then echo y; else echo z; fi",
-                vec!["grep", "echo", "echo"],
-            ),
-            ("", vec![]),
-            ("timeout 30 git push", vec!["git push"]),
-            // command.py TestPrefix.test_prefix (single command)
-            ("git commit -m x", vec!["git commit"]),
-            ("docker compose up -d", vec!["docker compose"]),
-            ("sudo docker compose up", vec!["docker compose"]),
-            ("nice -n 10 cargo build", vec!["cargo build"]),
-            ("sudo", vec![]),
-            // command.py TestUnwrapped nested wrappers + env skip
-            ("env -i FOO=bar make test", vec!["make"]),
-            ("sudo env FOO=1 timeout 5 ls -la", vec!["ls"]),
-            // command.py TestCommandLine.test_prefixes / drops empty executable
-            ("sudo git push -f && echo hi", vec!["git push", "echo"]),
-            ("> out.txt", vec![]),
-            // command.py TestCommandPrefixes — empty argv tokens
-            ("sudo ''", vec![]),
-            ("git '' status", vec!["git"]),
-            // command.py TestCommandPrefixes — digit skip is ASCII-only both sides
-            ("timeout ٣ git push", vec!["٣"]),
-            // command.py TestCommandPrefixes — one-layer dequoting keeps inner quotes
-            ("git \"'commit'\"", vec!["git 'commit'"]),
-            // command.py TestCommandPrefixes — substitutions, functions, multiline
-            ("diff <(sort a.txt) <(sort b.txt)", vec!["diff"]),
-            ("cat <(git log) | head -3", vec!["cat", "head"]),
-            ("echo $((1 + 2))", vec!["echo"]),
-            ("x=$((COUNT + 1)) make build", vec!["make"]),
-            ("echo `git rev-parse HEAD`", vec!["echo"]),
-            ("foo() { git status; }; foo", vec!["git status", "foo"]),
-            ("git commit -m \"line1\nline2\"", vec!["git commit"]),
-            ("git add .\ngit commit -m x", vec!["git add", "git commit"]),
-        ]
+    const PIN_DELIM: char = '|';
+    const PINS_TSV: &str = include_str!("../data/command_prefix_pins.tsv");
+
+    fn decode_pin(field: &str) -> String {
+        let mut out = String::with_capacity(field.len());
+        let mut chars = field.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                out.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        }
+        out
+    }
+
+    fn pins() -> Vec<(String, Vec<String>)> {
+        PINS_TSV
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let mut fields = line.split('\t');
+                let _id = fields.next().unwrap();
+                let command = decode_pin(fields.next().unwrap());
+                let expected = match fields.next().unwrap() {
+                    "" => Vec::new(),
+                    field => field.split(PIN_DELIM).map(str::to_string).collect(),
+                };
+                (command, expected)
+            })
+            .collect()
     }
 
     #[test]
     fn prefix_battery_matches_python_pins() {
         for (command, expected) in pins() {
             assert_eq!(
-                prefixes(command),
+                prefixes(&command),
                 expected,
                 "prefixes mismatch for {command:?}"
             );

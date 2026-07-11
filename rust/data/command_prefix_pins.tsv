@@ -1,0 +1,40 @@
+# command_prefix_pins.tsv
+# Single source for rust/src/command.rs pins() and tests/test_command.py TestCommandPrefixes.
+# Both consumers parse this file directly; there is no inline copy of these rows.
+# Columns (tab-separated): id<TAB>command<TAB>expected
+#   command  — the raw command line. Escape scheme: backslash -> \\, newline -> \n.
+#              Decode by scanning for '\': '\n' -> newline, '\\' -> backslash.
+#   expected — the expected prefix tuple, prefixes joined by '|' (U+007C, verified
+#              absent from every prefix value here). An empty field is the empty tuple.
+assignment-wrapper-multilevel	VAR=1 sudo docker compose up -d	docker compose
+quoted-operator-not-split	git add . && git commit -m 'x; y'	git add|git commit
+multilevel-only-flags	git --version	git
+two-plain-segments	cat a && grep b	cat|grep
+single-plain-command	ls -la	ls
+unterminated-quote-recovered	echo "unterminated	echo
+loop-do-unwraps-body	for f in *.py; do python $f; done	python
+while-condition-and-body	while true; do sleep 1; done	true|sleep
+if-condition-then-else	if grep -q x f; then echo y; else echo z; fi	grep|echo|echo
+empty		
+timeout-integer-arg-unwrapped	timeout 30 git push	git push
+single-git-subcommand	git commit -m x	git commit
+single-docker-compose-subcommand	docker compose up -d	docker compose
+sudo-wrapper-keeps-subcommand	sudo docker compose up	docker compose
+nice-wrapper-numeric-flag-stripped	nice -n 10 cargo build	cargo build
+bare-wrapper-yields-nothing	sudo	
+env-wrapper-flags-and-assignment-stripped	env -i FOO=bar make test	make
+stacked-wrappers-unwrapped	sudo env FOO=1 timeout 5 ls -la	ls
+sudo-wrapper-two-segments	sudo git push -f && echo hi	git push|echo
+redirect-only-empty-executable	> out.txt	
+empty-token-stops-unwrap	sudo ''	
+empty-token-not-a-subcommand	git '' status	git
+arabic-digit-not-skipped	timeout ٣ git push	٣
+quoted-subcommand-keeps-inner-quotes	git "'commit'"	git 'commit'
+process-substitution	diff <(sort a.txt) <(sort b.txt)	diff
+process-substitution-in-pipeline	cat <(git log) | head -3	cat|head
+arithmetic-expansion	echo $((1 + 2))	echo
+arithmetic-assignment-prefix	x=$((COUNT + 1)) make build	make
+backtick-substitution	echo `git rev-parse HEAD`	echo
+function-definition-body-and-call	foo() { git status; }; foo	git status|foo
+multiline-quoted-string	git commit -m "line1\nline2"	git commit
+newline-separated-commands	git add .\ngit commit -m x	git add|git commit

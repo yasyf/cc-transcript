@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from cc_transcript.command import (
@@ -382,60 +384,37 @@ class TestEdgeCases:
         assert mtest_cmd.redirects == (Redirect(op=">&", target="1", fd=2),)
 
 
+PIN_DELIM = "|"
+PINS_PATH = Path(__file__).resolve().parent.parent / "rust" / "data" / "command_prefix_pins.tsv"
+
+
+def decode_pin(field: str) -> str:
+    chars = iter(field)
+    out: list[str] = []
+    for ch in chars:
+        if ch != "\\":
+            out.append(ch)
+            continue
+        nxt = next(chars)
+        out.append("\n" if nxt == "n" else nxt)
+    return "".join(out)
+
+
+def load_prefix_pins() -> tuple[list[tuple[str, tuple[str, ...]]], list[str]]:
+    rows = [
+        line.split("\t")
+        for line in PINS_PATH.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    cases = [(decode_pin(cmd), tuple(exp.split(PIN_DELIM)) if exp else ()) for _id, cmd, exp in rows]
+    return cases, [row[0] for row in rows]
+
+
+PREFIX_PIN_CASES, PREFIX_PIN_IDS = load_prefix_pins()
+
+
 class TestCommandPrefixes:
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            ("VAR=1 sudo docker compose up -d", ("docker compose",)),
-            ("git add . && git commit -m 'x; y'", ("git add", "git commit")),
-            ("git --version", ("git",)),
-            ("cat a && grep b", ("cat", "grep")),
-            ("ls -la", ("ls",)),
-            ('echo "unterminated', ("echo",)),
-            ("for f in *.py; do python $f; done", ("python",)),
-            ("while true; do sleep 1; done", ("true", "sleep")),
-            ("if grep -q x f; then echo y; else echo z; fi", ("grep", "echo", "echo")),
-            ("", ()),
-            ("timeout 30 git push", ("git push",)),
-            ("sudo ''", ()),
-            ("git '' status", ("git",)),
-            ("timeout ٣ git push", ("٣",)),
-            ("git \"'commit'\"", ("git 'commit'",)),
-            ("diff <(sort a.txt) <(sort b.txt)", ("diff",)),
-            ("cat <(git log) | head -3", ("cat", "head")),
-            ("echo $((1 + 2))", ("echo",)),
-            ("x=$((COUNT + 1)) make build", ("make",)),
-            ("echo `git rev-parse HEAD`", ("echo",)),
-            ("foo() { git status; }; foo", ("git status", "foo")),
-            ('git commit -m "line1\nline2"', ("git commit",)),
-            ("git add .\ngit commit -m x", ("git add", "git commit")),
-        ],
-        ids=[
-            "assignment-wrapper-multilevel",
-            "quoted-operator-not-split",
-            "multilevel-only-flags",
-            "two-plain-segments",
-            "single-plain-command",
-            "unterminated-quote-recovered",
-            "loop-do-unwraps-body",
-            "while-condition-and-body",
-            "if-condition-then-else",
-            "empty",
-            "timeout-integer-arg-unwrapped",
-            "empty-token-stops-unwrap",
-            "empty-token-not-a-subcommand",
-            "arabic-digit-not-skipped",
-            "quoted-subcommand-keeps-inner-quotes",
-            "process-substitution",
-            "process-substitution-in-pipeline",
-            "arithmetic-expansion",
-            "arithmetic-assignment-prefix",
-            "backtick-substitution",
-            "function-definition-body-and-call",
-            "multiline-quoted-string",
-            "newline-separated-commands",
-        ],
-    )
+    @pytest.mark.parametrize(("command", "expected"), PREFIX_PIN_CASES, ids=PREFIX_PIN_IDS)
     def test_command_prefixes(self, command: str, expected: tuple[str, ...]) -> None:
         assert command_prefixes(command) == expected
 
