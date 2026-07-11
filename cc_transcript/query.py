@@ -24,7 +24,16 @@ from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes
-from cc_transcript.tools import BashCall, SkillCall, TaskCall, file_path_of, hunks_of, tool_name_matches
+from cc_transcript.tools import (
+    BashCall,
+    SkillCall,
+    TaskCall,
+    expand_tool_names,
+    file_path_of,
+    hunks_of,
+    matches_names,
+    tool_name_matches,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -432,9 +441,9 @@ class Session:
         if last is None:
             return False
         positions = event_positions(self.turns)
-        spec = "|".join(invalidated_by)
+        expanded = expand_tool_names("|".join(invalidated_by))
         return not any(
-            positions[use.ref.event_uuid] > last and tool_name_matches(use.call.name, spec)
+            positions[use.ref.event_uuid] > last and matches_names(use.call.name, expanded)
             for use in self.tool_calls.with_errors
         )
 

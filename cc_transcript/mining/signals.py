@@ -151,7 +151,7 @@ def next_user_message(events: Sequence[TranscriptEvent], index: int) -> tuple[in
 
 
 def denied_tool_payload(use: ToolUseBlock) -> dict[str, Any]:
-    return {"tool": use.name, "file_path": use.input.get("file_path")}
+    return {"tool": use.name, "file_path": use.file_path}
 
 
 def marker_in(event: UserEvent) -> str | None:

@@ -64,6 +64,17 @@ class ToolUseBlock:
         """The cross-language content digest of this call."""
         return tool_digest(self.name, self.input)
 
+    @property
+    def file_path(self) -> str | None:
+        """The raw ``file_path`` input argument when it is a string, else None.
+
+        Mirrors the Rust parse-layer lift in ``rust/src/parse.rs``: the value is
+        read verbatim from the input for every tool, and a non-string value reads
+        as None. Mining denial evidence consumes this uniform lift rather than the
+        type-dispatched :func:`~cc_transcript.tools.file_path_of`.
+        """
+        return p if isinstance(p := self.input.get("file_path"), str) else None
+
 
 @dataclass(frozen=True, slots=True)
 class ToolResultBlock:
