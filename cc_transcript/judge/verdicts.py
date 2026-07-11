@@ -282,6 +282,7 @@ class VerdictStoreMixin:
         prompt_version: int,
         limit: int | None = None,
         refresh_summary: bool = False,
+        probe_hydration: bool = True,
     ) -> list[dict[str, object]]:
         """Returns events lacking a verdict for ``(role, prompt_version)``, unjudged first.
 
@@ -298,7 +299,15 @@ class VerdictStoreMixin:
                 full fidelity once their windows hydrate again. A summary row
                 whose context window no longer hydrates — its transcript expired
                 or a ref was compacted away — is dropped, so a dead transcript
-                stops burning the cap.
+                stops burning the cap (unless ``probe_hydration`` is False).
+            probe_hydration: When True (default), each summary-refresh row is
+                probed with a transcript-discovery hydration check and dropped
+                when its window no longer hydrates. When False, that per-row
+                probe — and the recursive transcript scan behind it — is skipped
+                entirely: every summary-refresh row is returned unprobed, so some
+                may name a transcript that is no longer discoverable. Only the
+                ``refresh_summary`` path probes, so this flag is a no-op
+                otherwise. The default preserves the probing behavior exactly.
 
         Returns:
             One dict per event with the columns needed to build its prompt.
@@ -327,7 +336,8 @@ class VerdictStoreMixin:
         ) as cur:
             async for raw in cur:
                 row = dict(raw)
-                if row.pop("verdict_id") is None or await hydratable(str(row["context_json"])):
+                fresh = row.pop("verdict_id") is None
+                if not probe_hydration or fresh or await hydratable(str(row["context_json"])):
                     kept.append(row)
                     if limit is not None and len(kept) >= limit:
                         break

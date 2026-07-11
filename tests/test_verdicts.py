@@ -531,6 +531,66 @@ def test_unjudged_keeps_an_unjudged_event_then_drops_it_once_its_dead_transcript
     assert result["after"] == []
 
 
+def test_unjudged_probe_hydration_false_skips_the_transcript_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_: object, **__: object) -> None:
+        raise AssertionError("probe_hydration=False must not scan for transcripts")
+
+    monkeypatch.setattr("cc_transcript.activity.find_transcript", boom)
+
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            for i, key in enumerate(("fresh", "summ")):
+                await store.store.conn.execute(
+                    INSERT_EVENT_CONTEXT,
+                    (key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", "t", window_json()),
+                )
+            await store.record_verdict(
+                DedupKey("summ"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            rows = await store.unjudged(
+                role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False
+            )
+            return {
+                "keys": [str(row["dedup_key"]) for row in rows],
+                "has_verdict_id": any("verdict_id" in row for row in rows),
+            }
+
+    result = anyio.run(go)
+    assert result["keys"] == ["fresh", "summ"]
+    assert result["has_verdict_id"] is False
+
+
+def test_unjudged_probe_hydration_false_keeps_a_dead_transcript_row(
+    tmp_path: Path, dead_transcript: None
+) -> None:
+    async def go() -> dict[str, object]:
+        async with await open_generic(tmp_path) as store:
+            await store.store.conn.execute(
+                INSERT_EVENT_CONTEXT, ("dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json())
+            )
+            await store.record_verdict(
+                DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
+            )
+            return {
+                "probed": [
+                    str(row["dedup_key"])
+                    for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+                ],
+                "unprobed": [
+                    str(row["dedup_key"])
+                    for row in await store.unjudged(
+                        role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False
+                    )
+                ],
+            }
+
+    result = anyio.run(go)
+    assert result["probed"] == []
+    assert result["unprobed"] == ["dead"]
+
+
 def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
     rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(4)]
     persisted: list[tuple[str, str]] = []
