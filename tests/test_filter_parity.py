@@ -130,6 +130,7 @@ BATTERY = [
     "restart the subagents please",
     "<bash-input>uv run pytest</bash-input>",
     "<bash-stdout>123 passed</bash-stdout>",
+    "why does <bash-input>uv run pytest</bash-input> show up here",  # \A-anchored: mid-text mention kept
     "we need to force-push, you should have rebased first",  # near-miss: 'push' mid-sentence, NOT continuation
     "wtf this is broken",
     "stop guessing the imports",

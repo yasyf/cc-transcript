@@ -171,7 +171,10 @@ def test_command_echo_drops_bash_mode_turns() -> None:
     s = spec(Clause(TextMatchesAny(COMMAND_ECHO_GROUPS), applies_to=frozenset({"user"})))
     assert not keep(user("<bash-input>uv run pytest</bash-input>"), s)
     assert not keep(user("<bash-stdout>123 passed</bash-stdout>"), s)
+    assert not keep(user("   <bash-stdout>123 passed</bash-stdout>"), s)  # leading whitespace: still an echo
     assert keep(user("run the bash input parser through pytest"), s)
+    # A bash tag mentioned mid-sentence is authored prose, not an echo.
+    assert keep(user("why does <bash-input>uv run pytest</bash-input> appear in my transcript?"), s)
 
 
 JUNK_USER_MESSAGE_ROWS = [
@@ -181,6 +184,11 @@ JUNK_USER_MESSAGE_ROWS = [
     pytest.param("<local-command-stdout>3 files changed</local-command-stdout>", True, id="local-command-stdout"),
     pytest.param("<local-command-stderr>fatal: not a git repo</local-command-stderr>", True, id="local-command-stderr"),
     pytest.param("<bash-input>uv run pytest</bash-input>", True, id="bash-echo"),
+    pytest.param("<bash-stdout>123 passed</bash-stdout>", True, id="bash-stdout-echo"),
+    pytest.param("   <bash-stdout>123 passed</bash-stdout>", True, id="bash-stdout-echo-leading-ws"),
+    pytest.param(
+        "why does <bash-input>uv run pytest</bash-input> appear in my transcript?", False, id="bash-tag-mid-text"
+    ),
     pytest.param("the command-line tool works now", False, id="benign-neighbor"),
 ]
 

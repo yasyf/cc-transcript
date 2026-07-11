@@ -144,6 +144,22 @@ def test_bucketer_drops_junk_user_turns() -> None:
     ]
 
 
+def test_bucketer_keeps_mid_text_bash_tag_mention() -> None:
+    # A genuine turn that merely mentions a bash tag mid-sentence is authored prose,
+    # not a command echo. Dropping it as junk would leave one genuine turn, push the
+    # session below MIN_USER_TURNS_PER_SESSION, and kill the bucket outright.
+    events = [
+        user("please fix the login bug", minutes=0),
+        assistant("on it", minutes=0.5),
+        user("why does <bash-input>uv run pytest</bash-input> appear in my transcript?", minutes=1),
+    ]
+    (bucket,) = bucket_events(events)
+    assert [e.text for e in bucket.events if isinstance(e, UserEvent)] == [
+        "please fix the login bug",
+        "why does <bash-input>uv run pytest</bash-input> appear in my transcript?",
+    ]
+
+
 def test_frustration_stage_short_circuits_to_one() -> None:
     spec = build_score_spec(flag_frustration())
     assert py_short_circuit(spec, [["wtf this is broken", "still broken"]]) == [SentimentScore(1)]

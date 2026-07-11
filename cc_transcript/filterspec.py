@@ -96,8 +96,10 @@ CONTINUATION_GROUPS: tuple[tuple[str, str], ...] = (
 )
 
 # Bash-mode (`!`) command echoes recorded as user turns — the command line and its
-# captured stdout/stderr, not authored feedback.
-COMMAND_ECHO_GROUPS: tuple[tuple[str, str], ...] = (("command_echo", r"<bash-(?:input|stdout|stderr)\b"),)
+# captured stdout/stderr, not authored feedback. Start-anchored (\A\s*) so a mid-text
+# mention of a bash tag is authored prose, not an echo — a real echo begins with the tag.
+# Dialect-hardened for Rust-regex parity — see cc-notes doc "rust-regex-dialect-parity".
+COMMAND_ECHO_GROUPS: tuple[tuple[str, str], ...] = (("command_echo", r"\A\s*<bash-(?:input|stdout|stderr)\b"),)
 
 # Interrupt and stop-hook stay separate categories: they carry pushback and must never fold into structural noise.
 JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
