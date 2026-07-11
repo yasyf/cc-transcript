@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
 import pytest
 
 from cc_transcript.activity import SessionActivity, native_user_classifier
-from cc_transcript.ids import EventUuid, SessionId
-from cc_transcript.models import AssistantEvent, CcVersion, EntryMeta, OtherEvent, UserEvent
+from cc_transcript.ids import SessionId
+from cc_transcript.models import OtherEvent, UserEvent
 from cc_transcript.notifications import NOTIFICATION_MARKER, Notifications, tool_use_marker
 from cc_transcript.query import Session
+from tests.support import assistant as _assistant
+from tests.support import user as _user
 
 if TYPE_CHECKING:
     from cc_transcript.activity import UserClassifier
     from cc_transcript.models import TranscriptEvent
 
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("22222222-2222-2222-2222-222222222222")
 
 TID = "toolu_bg01"
@@ -25,31 +26,8 @@ COLON_TID = "3f2a1b7c:inner"
 USER_MSG = "please run the full test suite"
 
 
-def meta(uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=is_sidechain,
-        is_meta=is_meta,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str = "", *, secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=(), interrupted=False)
-
-
-def assistant(uuid: str, text: str = "", *, secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-8", text=text, blocks=(), stop_reason=None, usage=None
-    )
+user = partial(_user, session=SESSION)
+assistant = partial(_assistant, session=SESSION)
 
 
 def queue_op(operation: str, content: str = "") -> OtherEvent:

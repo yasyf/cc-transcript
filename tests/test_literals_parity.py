@@ -14,7 +14,7 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
-from tests.test_backend_parity import requires_rust
+from tests.support import requires_rust
 
 ROOT = Path(__file__).resolve().parent.parent
 GENERATOR = ROOT / "scripts" / "build_rust_literals.py"
@@ -32,8 +32,7 @@ def test_embedded_literals_match_python_source() -> None:
     from cc_transcript import _parser_rs
 
     assert _parser_rs.embedded_literals() == {
-        key: list(value) if isinstance(value, tuple) else value
-        for key, value in load_generator().literals().items()
+        key: list(value) if isinstance(value, tuple) else value for key, value in load_generator().literals().items()
     }
 
 

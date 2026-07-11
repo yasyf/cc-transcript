@@ -39,7 +39,7 @@ from cc_transcript.filterspec import (
     spec_to_json,
 )
 from cc_transcript.parser import parse_events_from_bytes
-from tests.test_backend_parity import fixture_bytes, real_corpus, requires_rust
+from tests.support import fixture_bytes, real_corpus, requires_rust
 
 if TYPE_CHECKING:
     from pathlib import Path

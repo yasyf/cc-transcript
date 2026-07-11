@@ -19,9 +19,10 @@ from cc_transcript.evidence import (
     parse_show_hunks,
     record_harvest,
 )
-from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId, tool_digest
-from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, ToolUseBlock, UserEvent
+from cc_transcript.ids import EventRef, EventUuid, ToolUseId, tool_digest
+from cc_transcript.models import ToolUseBlock
 from cc_transcript.tools import Hunk
+from tests.support import SESSION, assistant, user
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -29,39 +30,10 @@ if TYPE_CHECKING:
 
     from cc_transcript.models import TranscriptEvent
 
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 INCORRECT_LINE = "total = compute_total(rows)"
 FIXED_LINE = "total = compute_grand_total(rows)"
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
-
-
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str, *, secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=(), interrupted=False)
-
-
-def assistant(uuid: str, *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text="", blocks=blocks, stop_reason=None, usage=None
-    )
 
 
 def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:

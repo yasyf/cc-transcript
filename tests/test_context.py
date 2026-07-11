@@ -19,15 +19,12 @@ from cc_transcript.context import (
 )
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId, tool_digest
 from cc_transcript.models import (
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
     TextBlock,
     ToolUseBlock,
-    UserEvent,
 )
 from cc_transcript.render import Budget
+from tests.support import assistant as _assistant
+from tests.support import user as _user
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,31 +38,8 @@ LONG_NEW = "n" * 120
 EDIT_INPUT = {"file_path": "/a.py", "old_string": LONG_OLD, "new_string": LONG_NEW}
 
 
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str, *, secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=(), interrupted=False)
-
-
-def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None, usage=None
-    )
+user = partial(_user, session=SESSION, base=BASE)
+assistant = partial(_assistant, session=SESSION, base=BASE)
 
 
 def ref(uuid: str, tool_use_id: str | None = None) -> EventRef:
@@ -178,9 +152,7 @@ def test_capture_window_builds_refs_previews_and_digests() -> None:
     assert window.trigger is not None
     assert window.trigger.role == "user"
     assert window.trigger.refs == (ref("u2"), ref("a2"))
-    assert window.trigger.preview == (
-        f"user: three\nEdit /a.py\n- {'o' * 50}…(+70ch)\n+ {'n' * 50}…(+70ch)"
-    )
+    assert window.trigger.preview == (f"user: three\nEdit /a.py\n- {'o' * 50}…(+70ch)\n+ {'n' * 50}…(+70ch)")
     assert window.trigger.tool_digests == (tool_digest("Edit", EDIT_INPUT),)
     assert [turn_ref.preview.splitlines()[0] for turn_ref in window.before] == ["user: one", "user: two"]
     assert [turn_ref.refs for turn_ref in window.after] == [(ref("u3"), ref("a3"))]

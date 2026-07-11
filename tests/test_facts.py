@@ -1,57 +1,24 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cc_transcript.backend import ParsedTranscript
+from cc_transcript.facts import ToolFact, command_prefix_counts, is_denial, mcp_summary, tool_facts
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
-from cc_transcript.ids import EventUuid, SessionId, ToolUseId
+from cc_transcript.ids import ToolUseId
 from cc_transcript.models import (
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
     ModeEvent,
     ToolResultBlock,
     ToolUseBlock,
-    UserEvent,
 )
-from cc_transcript.facts import ToolFact, command_prefix_counts, is_denial, mcp_summary, tool_facts
+from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 PATH = Path("/proj/session.jsonl")
-
-
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=blocks, interrupted=False)
-
-
-def assistant(uuid: str, *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text="", blocks=blocks, stop_reason=None, usage=None
-    )
 
 
 def tool_use(id: str, name: str, **input: Any) -> ToolUseBlock:

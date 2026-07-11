@@ -31,22 +31,9 @@ from cc_transcript.models import (
     UserEvent,
 )
 from cc_transcript.parser import parse_events_async, parse_events_from_bytes, parse_print_result
+from tests.support import raw_envelope as envelope
 
 TESTDATA = Path(__file__).parent / "testdata"
-
-
-def envelope(**overrides: Any) -> dict[str, Any]:
-    return {
-        "uuid": "uuid-1",
-        "parentUuid": "uuid-0",
-        "sessionId": "sess-1",
-        "timestamp": "2026-01-02T03:04:05.000Z",
-        "cwd": "/repo",
-        "gitBranch": "main",
-        "version": "1.2.3",
-        "isSidechain": False,
-        "entrypoint": "cli",
-    } | overrides
 
 
 def user_str() -> dict[str, Any]:
@@ -109,9 +96,7 @@ def user_interrupt() -> dict[str, Any]:
 
 
 def user_interrupt_casefolded_leading_whitespace() -> dict[str, Any]:
-    return envelope(
-        type="user", message={"role": "user", "content": "  [request INTERRUPTED by user for tool use]"}
-    )
+    return envelope(type="user", message={"role": "user", "content": "  [request INTERRUPTED by user for tool use]"})
 
 
 def user_marker_mid_text() -> dict[str, Any]:
@@ -497,7 +482,5 @@ def test_parse_print_result_haiku_envelope() -> None:
         for message in env.messages
         for block in message.blocks
     )
-    assert any(
-        message.role == "assistant" and TextBlock("pong") in message.blocks for message in env.messages
-    )
+    assert any(message.role == "assistant" and TextBlock("pong") in message.blocks for message in env.messages)
     assert any(message.model == "claude-haiku-4-5-20251001" for message in env.messages)

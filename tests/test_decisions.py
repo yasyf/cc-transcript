@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from cc_transcript.decisions import Decision, DecisionLog
-from tests.test_ledger import DIGEST_A, DIGEST_B, OTHER_SESSION, SESSION, decision
+from tests.support import DIGEST_A, DIGEST_B, OTHER_SESSION, SESSION, decision
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -5,7 +5,7 @@ from typing import Any
 
 from cc_transcript.corrections import Correction, CorrectionLog
 from cc_transcript.ids import EventUuid
-from tests.test_ledger import ANCHOR, DIGEST_A, DIGEST_B, DIGEST_C, OTHER_SESSION, SESSION, correction
+from tests.support import ANCHOR, DIGEST_A, DIGEST_B, DIGEST_C, OTHER_SESSION, SESSION, correction
 
 OTHER_ANCHOR = EventUuid("anchor-2")
 

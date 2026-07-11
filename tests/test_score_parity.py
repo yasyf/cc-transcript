@@ -21,7 +21,7 @@ from cc_transcript.sentiment.scorespec import (
     py_short_circuit,
     score_spec_to_json,
 )
-from tests.test_backend_parity import requires_rust
+from tests.support import requires_rust
 
 BUCKETS: list[list[str]] = [
     ["wtf this is broken"],

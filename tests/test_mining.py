@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
 import anyio
@@ -55,7 +55,6 @@ from cc_transcript.mining.spec import ProvenanceSpec, classify_provenance
 from cc_transcript.models import (
     AssistantEvent,
     CcVersion,
-    ContentBlock,
     EntryMeta,
     EventUuid,
     ModeEvent,
@@ -66,32 +65,24 @@ from cc_transcript.models import (
     ToolUseId,
     UserEvent,
 )
+from tests.support import (
+    BASE,
+    MATCHER_ANSWER,
+    MATCHER_LABELS,
+    MATCHER_QUESTION,
+    ROUND1_CONTENT,
+    TOMBSTONE_LABELS,
+    TOMBSTONE_QUESTION,
+)
+from tests.support import (
+    assistant as _assistant,
+)
+from tests.support import (
+    user as _user,
+)
 
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 SESSION = SessionId("sess-1")
 SPEC = MiningSpec()
-
-# An answered AskUserQuestion round captured byte-verbatim from the mirror corpus
-# (captain-hook session 1786702b, toolu_01CmqCAkZFs5TP2WUJAukLa3): the second
-# question carries nested double quotes and its ordinal-shorthand answer embeds
-# commas, so the pair anchors and exact-suffix strips are exercised on real bytes.
-TOMBSTONE_QUESTION = "What should the hook do when a tombstone comment is confirmed?"
-TOMBSTONE_LABELS = ("Advisory warn (Recommended)", "Block the edit", "Turn-end Stop gate")
-MATCHER_QUESTION = (
-    'Which cheap-trigger matcher should run on the extracted comments? (You said "ast/nlp triggered" — AST comment '
-    "extraction is in either way; this is about the text-matching layer. Evidence: spaCy's en_core_web_sm has no "
-    "runtime provisioning path — RESOURCES.spacy raises if it's missing, and nothing in pack install provisions it — "
-    "so NLP would error/no-op in the ~17 general-pack repos until each machine installs the model.)"
-)
-MATCHER_LABELS = ("Regex phrases (Recommended)", "Regex + NLP lemma layer", "NLP-only (as originally floated)")
-MATCHER_ANSWER = (
-    "3, and figure out why NLP is not being installed when you install capt-hook, it should be downloading the "
-    "model live whenyou start it up, look at the git history"
-)
-ROUND1_CONTENT = (
-    f'{ANSWERED_PREFIX}"{TOMBSTONE_QUESTION}"="Advisory warn (Recommended)", '
-    f'"{MATCHER_QUESTION}"="{MATCHER_ANSWER}"{ANSWERED_TRAILER}'
-)
 
 
 def review_spec(
@@ -104,31 +95,8 @@ def review_spec(
     )
 
 
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=blocks, interrupted=False)
-
-
-def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None, usage=None
-    )
+user = partial(_user, session=SESSION)
+assistant = partial(_assistant, session=SESSION)
 
 
 def mode(value: str = "normal") -> ModeEvent:

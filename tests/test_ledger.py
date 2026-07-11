@@ -1,75 +1,26 @@
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from cc_transcript.corrections import CORRECTIONS_DDL, Correction, CorrectionLog
-from cc_transcript.decisions import DECISIONS_DDL, Decision, DecisionLog
-from cc_transcript.ids import EventUuid, SessionId, ToolDigest
+from cc_transcript.corrections import CORRECTIONS_DDL, CorrectionLog
+from cc_transcript.decisions import DECISIONS_DDL, DecisionLog
 from cc_transcript.ledger import LedgerRecord, SyncLedger
+from tests.support import (
+    BASE_CORRECTION,
+    OTHER_SESSION,
+    SESSION,
+    correction,
+    correction_distinct,
+    decision,
+    decision_distinct,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-SESSION = SessionId("11111111-1111-1111-1111-111111111111")
-OTHER_SESSION = SessionId("22222222-2222-2222-2222-222222222222")
-ANCHOR = EventUuid("anchor-1")
-DIGEST_A = ToolDigest("a" * 64)
-DIGEST_B = ToolDigest("b" * 64)
-DIGEST_C = ToolDigest("c" * 64)
-DIGESTS = (DIGEST_A, DIGEST_B, DIGEST_C)
-
-BASE_CORRECTION = Correction(
-    ts_ms=1_000,
-    session_id=SESSION,
-    source="cc-pushback",
-    anchor_uuid=ANCHOR,
-    incorrect_digest=DIGEST_A,
-    incorrect_file="/a.py",
-    incorrect_old="alpha = 1",
-    incorrect_new="alpha = 2",
-    correction_origin="session",
-    correction_file="/a.py",
-    correction_old="alpha = 2",
-    correction_new="alpha = 3",
-    correction_commit=None,
-    overlap=0.5,
-    detail={"rule": "overlap", "turn": 3},
-)
-
-BASE_DECISION = Decision(
-    ts_ms=0,
-    session_id=SESSION,
-    source="captain-hook",
-    kind="no-defensive-code",
-    source_file="primitives/nudge.py",
-    event="PreToolUse",
-    action="nudge",
-    tool_name="Edit",
-    tool_digest=DIGEST_A,
-    event_uuid=EventUuid("e-1"),
-    message="prefer failing fast",
-    detail={"rule": "defensive", "turn": 3},
-)
-
-
-def correction(**overrides: Any) -> Correction:
-    return replace(BASE_CORRECTION, **overrides)
-
-
-def decision(ts_ms: int, **overrides: Any) -> Decision:
-    return replace(BASE_DECISION, ts_ms=ts_ms, **overrides)
-
-
-def correction_distinct(ts_ms: int, *, session_id: SessionId = SESSION, seq: int = 0) -> Correction:
-    return correction(ts_ms=ts_ms, session_id=session_id, incorrect_digest=DIGESTS[seq])
-
-
-def decision_distinct(ts_ms: int, *, session_id: SessionId = SESSION, seq: int = 0) -> Decision:
-    return decision(ts_ms, session_id=session_id)
 
 
 @dataclass(frozen=True, slots=True)

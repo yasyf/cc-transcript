@@ -18,7 +18,6 @@ extension is unavailable.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,8 +50,19 @@ from cc_transcript.mining.spec import (
     signal_to_dict,
 )
 from cc_transcript.parser import parse_events_from_bytes
-from tests.test_backend_parity import envelope, fixture_bytes, requires_rust
-from tests.test_mining import MATCHER_LABELS, MATCHER_QUESTION, ROUND1_CONTENT, TOMBSTONE_LABELS, TOMBSTONE_QUESTION
+from tests.support import (
+    MATCHER_LABELS,
+    MATCHER_QUESTION,
+    ROUND1_CONTENT,
+    TOMBSTONE_LABELS,
+    TOMBSTONE_QUESTION,
+    fixture_bytes,
+    requires_rust,
+    rust_not_disabled,
+)
+from tests.support import (
+    raw_envelope as envelope,
+)
 
 if TYPE_CHECKING:
     from typing import Any
@@ -110,10 +120,6 @@ STRUCTURED_PAYLOAD = orjson.dumps(
         ]
     }
 ).decode()
-
-rust_active = pytest.mark.skipif(
-    bool(os.environ.get("CC_TRANSCRIPT_DISABLE_RUST")), reason="Rust force-disabled via CC_TRANSCRIPT_DISABLE_RUST"
-)
 
 
 # ── raw-bytes builders (the JSONL envelope shape parse_events_from_bytes reads) ──
@@ -621,7 +627,7 @@ def mirror_corpus() -> list[Path]:
 
 
 @requires_rust
-@rust_active
+@rust_not_disabled
 def test_default_spec_is_portable() -> None:
     assert rust_mine_backend(SPEC) is not None
 

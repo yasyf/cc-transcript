@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -10,16 +9,12 @@ from cc_transcript.activity_probe import PendingItem, probe_events, session_acti
 from cc_transcript.filterspec import is_agent_injection
 from cc_transcript.models import AssistantEvent, OtherEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import parse_events_from_bytes
-from tests.test_backend_parity import real_corpus, requires_rust
+from tests.support import real_corpus, requires_rust, rust_not_disabled
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.models import TranscriptEvent
-
-rust_enabled = pytest.mark.skipif(
-    bool(os.environ.get("CC_TRANSCRIPT_DISABLE_RUST")), reason="Rust force-disabled via CC_TRANSCRIPT_DISABLE_RUST"
-)
 
 WAITING_TOOLS = {"Monitor", "ScheduleWakeup", "SendMessage", "TeamCreate"}
 
@@ -434,7 +429,7 @@ CASES = [
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 @pytest.mark.parametrize(("lines", "is_waiting", "mid_tool", "pending"), CASES)
 def test_fixture_probe(
     tmp_path: Path,
@@ -454,7 +449,7 @@ def test_fixture_probe(
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 @pytest.mark.parametrize(("lines", "is_waiting", "mid_tool", "pending"), CASES)
 def test_python_twin_parity(
     tmp_path: Path,
@@ -472,7 +467,7 @@ def test_python_twin_parity(
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_empty_session_is_idle(tmp_path: Path) -> None:
     probe = session_activity_probe(write(tmp_path, []))
     assert probe.is_waiting is False
@@ -482,14 +477,14 @@ def test_empty_session_is_idle(tmp_path: Path) -> None:
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_last_event_epoch_is_max_meta_timestamp(tmp_path: Path) -> None:
     path = write(tmp_path, [user("hi"), tool_use("Bash", "b1", {"command": "ls"}), queue_op("no meta here")])
     assert session_activity_probe(path).last_event_epoch == 1767323046
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_custom_tool_sets_flow_through(tmp_path: Path) -> None:
     path = write(tmp_path, [user("go"), tool_use("MyWait", "w1", {}), tool_use("MyPrompt", "p1", {})])
     probe = session_activity_probe(
@@ -503,7 +498,7 @@ def test_custom_tool_sets_flow_through(tmp_path: Path) -> None:
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_execute_alias_background_is_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A backgrounded Execute (Bash's alias) classifies like a backgrounded Bash on both backends."""
     path = write(
@@ -517,7 +512,7 @@ def test_execute_alias_background_is_waiting(tmp_path: Path, monkeypatch: pytest
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_mcp_prefixed_waiting_tool_is_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An mcp__<server>__ spelling of a configured waiting tool matches on both backends."""
     path = write(tmp_path, [user("ping the pool"), tool_use("mcp__pool__SendMessage", "s1", {"text": "hi"})])
@@ -529,7 +524,7 @@ def test_mcp_prefixed_waiting_tool_is_waiting(tmp_path: Path, monkeypatch: pytes
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 def test_mcp_prefixed_human_facing_tool_is_not_mid_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An mcp__<server>__ spelling of a human-facing tool is the user's move, never mid-tool, on both backends."""
     path = write(tmp_path, [user("choose"), tool_use("mcp__someserver__AskUserQuestion", "q1", {"questions": []})])
@@ -542,7 +537,7 @@ def test_mcp_prefixed_human_facing_tool_is_not_mid_tool(tmp_path: Path, monkeypa
 
 
 @requires_rust
-@rust_enabled
+@rust_not_disabled
 @pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_real_corpus_probe_parity(path: Path) -> None:
     probe = session_activity_probe(path)

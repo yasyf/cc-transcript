@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,48 +11,14 @@ pytest.importorskip("spawnllm")
 from cc_transcript.activity import SessionActivity  # noqa: E402
 from cc_transcript.corrections import CorrectionLog  # noqa: E402
 from cc_transcript.extract import CorrectionPick, extract_correction, usable_backend  # noqa: E402
-from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId  # noqa: E402
+from cc_transcript.ids import EventRef, EventUuid, ToolUseId  # noqa: E402
 from cc_transcript.models import (  # noqa: E402
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
     ToolUseBlock,
-    UserEvent,
 )
+from tests.support import SESSION, assistant, user  # noqa: E402
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
-
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-SESSION = SessionId("11111111-1111-1111-1111-111111111111")
-
-
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(uuid: str, text: str, *, secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=(), interrupted=False)
-
-
-def assistant(uuid: str, *, blocks: tuple[ContentBlock, ...], secs: int) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text="", blocks=blocks, stop_reason=None, usage=None
-    )
 
 
 def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:

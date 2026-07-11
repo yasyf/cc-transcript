@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -10,72 +10,20 @@ import pytest
 
 from cc_transcript.activity import Edit, SessionActivity, ToolUse, Turn, hunk_overlap, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError
-from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId
+from cc_transcript.ids import EventRef, EventUuid, ToolUseId
 from cc_transcript.models import (
-    AssistantEvent,
-    CcVersion,
-    ContentBlock,
-    EntryMeta,
     ModeEvent,
     ToolResultBlock,
     ToolUseBlock,
     UserEvent,
 )
 from cc_transcript.tools import BashCall, EditCall, Hunk, OtherCall
+from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.models import TranscriptEvent
-
-BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-SESSION = SessionId("11111111-1111-1111-1111-111111111111")
-
-
-def meta(
-    uuid: str, *, secs: int = 0, is_meta: bool = False, is_sidechain: bool = False, is_compact_summary: bool = False
-) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=is_sidechain,
-        is_meta=is_meta,
-        entrypoint="cli",
-        is_compact_summary=is_compact_summary,
-        is_visible_in_transcript_only=False,
-    )
-
-
-def user(
-    uuid: str,
-    text: str = "",
-    *,
-    blocks: tuple[ContentBlock, ...] = (),
-    secs: int = 0,
-    interrupted: bool = False,
-    is_meta: bool = False,
-    is_sidechain: bool = False,
-    is_compact_summary: bool = False,
-    is_agent_injected: bool = False,
-) -> UserEvent:
-    return UserEvent(
-        meta=meta(uuid, secs=secs, is_meta=is_meta, is_sidechain=is_sidechain, is_compact_summary=is_compact_summary),
-        text=text,
-        blocks=blocks,
-        interrupted=interrupted,
-        is_agent_injected=is_agent_injected,
-    )
-
-
-def assistant(uuid: str, text: str = "", *, blocks: tuple[ContentBlock, ...] = (), secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs), model="claude-opus-4-7", text=text, blocks=blocks, stop_reason=None, usage=None
-    )
 
 
 def bash(id: str, command: str) -> ToolUseBlock:
