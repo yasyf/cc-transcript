@@ -9,6 +9,7 @@ pub static MODE_EVENT_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static OTHER_EVENT_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static ENTRY_META_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static ATTRIBUTION_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+pub static API_ERROR_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static TEXT_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static THINKING_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 pub static TOOL_USE_BLOCK_CLS: PyOnceLock<Py<PyType>> = PyOnceLock::new();

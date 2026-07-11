@@ -3,10 +3,10 @@ use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::types::{
-    AssistantEntry, Attribution, CacheCreation, ContentBlock, Entry, EntryMeta, FallbackBlock,
-    InitInfo, McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin, PrintBody,
-    PrintMessage, PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock, ToolUseBlock,
-    Usage, UserContent, UserEntry,
+    ApiError, AssistantEntry, Attribution, CacheCreation, ContentBlock, Entry, EntryMeta,
+    FallbackBlock, InitInfo, McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin,
+    PrintBody, PrintMessage, PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock,
+    ToolUseBlock, Usage, UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -119,6 +119,17 @@ fn parse_attribution(data: &Value) -> Option<Attribution> {
         skill,
         mcp_server,
         mcp_tool,
+    })
+}
+
+fn parse_api_error(data: &Value) -> Option<ApiError> {
+    if !field_bool(data, "isApiErrorMessage") {
+        return None;
+    }
+    Some(ApiError {
+        error: field_str(data, "error").map(str::to_string),
+        status: field(data, "apiErrorStatus").and_then(JsonValueTrait::as_i64),
+        details: field_str(data, "errorDetails").map(str::to_string),
     })
 }
 
@@ -262,6 +273,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                     .map(str::to_string),
                 mcp_meta: field(&data, "mcpMeta").cloned(),
                 permission_mode: field_str(&data, "permissionMode").map(str::to_string),
+                interrupted_message_id: field_str(&data, "interruptedMessageId").map(str::to_string),
             }));
         }
         "assistant" => {
@@ -277,6 +289,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 request_id: field_str(&data, "requestId").map(str::to_string),
                 forked_from: field_str(&data, "forkedFrom").map(str::to_string),
                 attribution: parse_attribution(&data),
+                api_error: parse_api_error(&data),
             }));
         }
         "system" => {

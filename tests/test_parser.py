@@ -10,6 +10,7 @@ import pytest
 
 from cc_transcript import parse_event
 from cc_transcript.models import (
+    ApiError,
     AssistantEvent,
     Attribution,
     CacheCreation,
@@ -233,6 +234,48 @@ def assistant_with_attribution() -> dict[str, Any]:
             "content": [{"type": "text", "text": "attributed turn"}],
         },
     )
+
+
+def assistant_api_error() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        isApiErrorMessage=True,
+        error="rate_limit",
+        apiErrorStatus=429,
+        errorDetails="retry after 60s",
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "stop_reason": None,
+            "content": [{"type": "text", "text": "API Error: 429"}],
+        },
+    )
+
+
+def assistant_error_without_flag() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        error="rate_limit",
+        apiErrorStatus=429,
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "no flag, no api_error"}],
+        },
+    )
+
+
+def user_field_only_interrupt() -> dict[str, Any]:
+    return envelope(
+        type="user",
+        interruptedMessageId="msg_field_only_01",
+        message={"role": "user", "content": "the assistant kept going so I stopped it"},
+    )
+
+
+def user_marker_only_interrupt() -> dict[str, Any]:
+    return envelope(type="user", message={"role": "user", "content": "[Request interrupted by user]"})
 
 
 def system_entry() -> dict[str, Any]:
@@ -482,6 +525,45 @@ def test_assistant_attribution_present_with_single_field() -> None:
     assert event.attribution == Attribution(
         plugin=None, skill="lonely-skill", mcp_server=None, mcp_tool=None
     )
+
+
+def test_assistant_api_error_populated_when_flag_set() -> None:
+    event = parse_event(assistant_api_error())
+    assert isinstance(event, AssistantEvent)
+    assert event.api_error == ApiError(error="rate_limit", status=429, details="retry after 60s")
+
+
+def test_assistant_api_error_none_without_flag() -> None:
+    event = parse_event(assistant_error_without_flag())
+    assert isinstance(event, AssistantEvent)
+    assert event.api_error is None
+
+
+def test_assistant_api_error_none_on_plain_record() -> None:
+    event = parse_event(assistant_text())
+    assert isinstance(event, AssistantEvent)
+    assert event.api_error is None
+
+
+def test_user_field_only_interrupt_surfaces_id_and_flags_interrupted() -> None:
+    event = parse_event(user_field_only_interrupt())
+    assert isinstance(event, UserEvent)
+    assert event.interrupted is True
+    assert event.interrupted_message_id == "msg_field_only_01"
+
+
+def test_user_marker_only_interrupt_has_no_id() -> None:
+    event = parse_event(user_marker_only_interrupt())
+    assert isinstance(event, UserEvent)
+    assert event.interrupted is True
+    assert event.interrupted_message_id is None
+
+
+def test_user_interrupted_message_id_none_on_bare_record() -> None:
+    event = parse_event(user_str())
+    assert isinstance(event, UserEvent)
+    assert event.interrupted_message_id is None
+    assert event.interrupted is False
 
 
 def test_system_entry() -> None:

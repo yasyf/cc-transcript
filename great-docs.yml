@@ -94,6 +94,8 @@ reference:
       - ModelUsage
       - CacheCreation
       - ServerToolUse
+      - Attribution
+      - ApiError
       - McpServer
       - Plugin
       - InitInfo

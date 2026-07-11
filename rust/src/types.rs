@@ -35,6 +35,15 @@ pub struct Attribution {
     pub mcp_tool: Option<String>,
 }
 
+/// The upstream API error an assistant turn failed with, present only when the
+/// entry's ``isApiErrorMessage`` flag is set.
+#[derive(Debug)]
+pub struct ApiError {
+    pub error: Option<String>,
+    pub status: Option<i64>,
+    pub details: Option<String>,
+}
+
 /// One AskUserQuestion round, lifted from a tool-use input's ``questions``
 /// array. Questions without string text are dropped — ``answered_pairs``
 /// (mining/signals.py) never anchors them.
@@ -116,6 +125,7 @@ pub struct UserEntry {
     pub source_tool_assistant_uuid: Option<String>,
     pub mcp_meta: Option<Value>,
     pub permission_mode: Option<String>,
+    pub interrupted_message_id: Option<String>,
 }
 
 impl UserEntry {
@@ -152,6 +162,7 @@ pub struct AssistantEntry {
     pub request_id: Option<String>,
     pub forked_from: Option<String>,
     pub attribution: Option<Attribution>,
+    pub api_error: Option<ApiError>,
 }
 
 #[derive(Debug)]

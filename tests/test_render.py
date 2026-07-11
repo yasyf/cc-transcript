@@ -558,6 +558,7 @@ def test_event_dict_user_round_trips_through_orjson() -> None:
         "source_tool_assistant_uuid": None,
         "mcp_meta": None,
         "permission_mode": None,
+        "interrupted_message_id": None,
     }
 
 

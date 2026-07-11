@@ -234,6 +234,10 @@ class UserEvent:
             this turn, else None.
         mcp_meta: The verbatim ``mcpMeta`` payload attached to the turn, or None.
         permission_mode: The permission mode in effect for the turn, or None.
+        interrupted_message_id: The API message id (``msg_...``) of the assistant
+            turn this interruption cut short, or None. Set from the raw
+            ``interruptedMessageId`` field; it names the interrupted assistant's
+            API message, not a transcript event uuid.
     """
 
     meta: EntryMeta
@@ -249,6 +253,7 @@ class UserEvent:
     source_tool_assistant_uuid: EventUuid | None = None
     mcp_meta: Mapping[str, Any] | None = None
     permission_mode: str | None = None
+    interrupted_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +277,24 @@ class Attribution:
 
 
 @dataclass(frozen=True, slots=True)
+class ApiError:
+    """The upstream API error an assistant turn failed with.
+
+    Present on an :class:`AssistantEvent` only when the entry's
+    ``isApiErrorMessage`` flag is set; each component is independently optional.
+
+    Attributes:
+        error: The error kind the API reported, e.g. ``rate_limit``, or None.
+        status: The HTTP status of the failed request, e.g. ``429``, or None.
+        details: The free-text error detail, or None.
+    """
+
+    error: str | None
+    status: int | None
+    details: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantEvent:
     """An assistant turn.
 
@@ -287,6 +310,8 @@ class AssistantEvent:
         forked_from: The id of the message this turn was forked from, or None.
         attribution: The plugin/skill/MCP attribution for the turn, or None when the
             entry carries no attribution field.
+        api_error: The upstream API error the turn failed with, or None when the
+            entry is not an API-error message.
     """
 
     meta: EntryMeta
@@ -298,6 +323,7 @@ class AssistantEvent:
     request_id: str | None = None
     forked_from: str | None = None
     attribution: Attribution | None = None
+    api_error: ApiError | None = None
 
 
 @dataclass(frozen=True, slots=True)

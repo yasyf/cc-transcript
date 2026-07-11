@@ -68,6 +68,7 @@ EXPORTS: dict[str, str] = {
             "parse_command_line",
         ),
         "cc_transcript.models": (
+            "ApiError",
             "AssistantEvent",
             "Attribution",
             "CacheCreation",
@@ -478,6 +479,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.ids import (
         tool_digest as tool_digest,
+    )
+    from cc_transcript.models import (
+        ApiError as ApiError,
     )
     from cc_transcript.models import (
         AssistantEvent as AssistantEvent,

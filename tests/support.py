@@ -303,6 +303,47 @@ def fixture_entries() -> list[dict[str, Any]]:
                 "content": [{"type": "text", "text": "attributed turn"}],
             },
         ),
+        # An API-error assistant record: the isApiErrorMessage flag is set, so the full
+        # error/status/details quartet materializes into ApiError with distinct values.
+        raw_envelope(
+            type="assistant",
+            isApiErrorMessage=True,
+            error="rate_limit",
+            apiErrorStatus=429,
+            errorDetails="detail-cc",
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": None,
+                "content": [{"type": "text", "text": "API Error: 429 rate_limit"}],
+            },
+        ),
+        # error/apiErrorStatus present but no isApiErrorMessage flag: api_error must stay None
+        # on both backends — the flag gates materialization, not the quartet's presence.
+        raw_envelope(
+            type="assistant",
+            error="rate_limit",
+            apiErrorStatus=429,
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "error field but no flag"}],
+            },
+        ),
+        # A field-only interrupt: interruptedMessageId is present with no text marker, so the
+        # OR-merge must flag interrupted True and surface the msg_ id on both backends.
+        raw_envelope(
+            type="user",
+            interruptedMessageId="msg_parity_dd",
+            message={"role": "user", "content": "field-only interrupt with no marker text"},
+        ),
+        # A marker-only interrupt (old format): the text marker flags interrupted, and
+        # interrupted_message_id stays None because the raw field is absent.
+        raw_envelope(
+            type="user",
+            message={"role": "user", "content": "[request interrupted by user for tool use]"},
+        ),
         raw_envelope(type="system", subtype="stop_hook_summary", content="hook ran"),
         raw_envelope(type="system", subtype="turn_duration"),
         {"type": "mode", "mode": "normal", "sessionId": "sess-1"},

@@ -5,17 +5,17 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, ATTRIBUTION_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS,
-    FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS,
-    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS,
-    SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
+    models_type, API_ERROR_CLS, ASSISTANT_EVENT_CLS, ATTRIBUTION_CLS, CACHE_CREATION_CLS,
+    ENTRY_META_CLS, FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS,
+    MODEL_USAGE_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, PRINT_MESSAGE_CLS,
+    PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
     TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS, USER_EVENT_CLS,
 };
 use crate::parse::ParseError;
 use crate::protocol::{interrupt_marker, is_agent_injection};
 use crate::types::{
-    joined_text, Attribution, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage, PrintBody,
-    PrintMessage, PrintResult, Usage, UserContent,
+    joined_text, ApiError, Attribution, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage,
+    PrintBody, PrintMessage, PrintResult, Usage, UserContent,
 };
 
 impl From<ParseError> for PyErr {
@@ -85,6 +85,17 @@ fn build_attribution<'py>(
             a.skill.as_deref(),
             a.mcp_server.as_deref(),
             a.mcp_tool.as_deref(),
+        )),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+fn build_api_error<'py>(py: Python<'py>, api_error: Option<&ApiError>) -> PyResult<Bound<'py, PyAny>> {
+    match api_error {
+        Some(e) => models_type(py, &API_ERROR_CLS, "ApiError")?.call1((
+            e.error.as_deref(),
+            e.status,
+            e.details.as_deref(),
         )),
         None => Ok(py.None().into_bound(py)),
     }
@@ -172,7 +183,8 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
     match entry {
         Entry::User(user) => {
             let text = user.content.text();
-            let interrupted = interrupt_marker(&text).is_some();
+            let interrupted =
+                interrupt_marker(&text).is_some() || user.interrupted_message_id.is_some();
             let is_agent_injected = is_agent_injection(&text);
             let image_paste_ids = match &user.image_paste_ids {
                 Some(ids) => PyTuple::new(py, ids.iter().copied())?.into_any(),
@@ -182,7 +194,7 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 Some(value) => json_to_py(py, value)?,
                 None => py.None().into_bound(py),
             };
-            let args: [Bound<'py, PyAny>; 13] = [
+            let args: [Bound<'py, PyAny>; 14] = [
                 build_meta(py, &user.meta)?,
                 text.into_bound_py_any(py)?,
                 build_user_blocks(py, &user.content)?.into_any(),
@@ -196,11 +208,13 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 user.source_tool_assistant_uuid.as_deref().into_bound_py_any(py)?,
                 mcp_meta,
                 user.permission_mode.as_deref().into_bound_py_any(py)?,
+                user.interrupted_message_id.as_deref().into_bound_py_any(py)?,
             ];
             models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1(PyTuple::new(py, args)?)
         }
         Entry::Assistant(assistant) => {
             let attribution = build_attribution(py, assistant.attribution.as_ref())?;
+            let api_error = build_api_error(py, assistant.api_error.as_ref())?;
             models_type(py, &ASSISTANT_EVENT_CLS, "AssistantEvent")?.call1((
                 build_meta(py, &assistant.meta)?,
                 &assistant.model,
@@ -211,6 +225,7 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 assistant.request_id.as_deref(),
                 assistant.forked_from.as_deref(),
                 attribution,
+                api_error,
             ))
         }
         Entry::System(system) => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((

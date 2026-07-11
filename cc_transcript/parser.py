@@ -13,6 +13,7 @@ import orjson
 from cc_transcript.backend import Backend, ParsedTranscript
 from cc_transcript.filterspec import apply_spec, interrupt_marker, is_agent_injection
 from cc_transcript.models import (
+    ApiError,
     AssistantEvent,
     Attribution,
     CacheCreation,
@@ -77,6 +78,16 @@ def parse_attribution(data: Mapping[str, Any]) -> Attribution | None:
         data.get("attributionMcpTool"),
     )
     return Attribution(*parts) if any(part is not None for part in parts) else None
+
+
+def parse_api_error(data: Mapping[str, Any]) -> ApiError | None:
+    if not data.get("isApiErrorMessage"):
+        return None
+    return ApiError(
+        error=data.get("error"),
+        status=data.get("apiErrorStatus"),
+        details=data.get("errorDetails"),
+    )
 
 
 def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
@@ -166,11 +177,12 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 data["message"]["content"],
                 is_async=isinstance(tur := data.get("toolUseResult"), dict) and tur.get("isAsync") is True,
             )
+            interrupted_message_id = data.get("interruptedMessageId")
             return UserEvent(
                 meta=parse_meta(data),
                 text=text,
                 blocks=blocks,
-                interrupted=interrupt_marker(text) is not None,
+                interrupted=interrupt_marker(text) is not None or interrupted_message_id is not None,
                 is_agent_injected=is_agent_injection(text),
                 prompt_id=data.get("promptId"),
                 prompt_source=data.get("promptSource"),
@@ -180,6 +192,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 source_tool_assistant_uuid=EventUuid(auid) if (auid := data.get("sourceToolAssistantUUID")) else None,
                 mcp_meta=data.get("mcpMeta"),
                 permission_mode=data.get("permissionMode"),
+                interrupted_message_id=interrupted_message_id,
             )
         case "assistant":
             text, blocks = parse_assistant_blocks(data["message"]["content"])
@@ -193,6 +206,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 request_id=data.get("requestId"),
                 forked_from=data.get("forkedFrom"),
                 attribution=parse_attribution(data),
+                api_error=parse_api_error(data),
             )
         case "system":
             return SystemEvent(meta=parse_meta(data), subtype=data["subtype"], content=data.get("content"))
