@@ -75,20 +75,15 @@ INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (
 )
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
-# Raw CC-injected protocol strings carried in tool-result content: the denial banner
-# and the markers that wrap the user's verbatim instruction in a rejected tool use,
-# and the banner pair that wraps an answered AskUserQuestion round.
+# Raw CC-injected protocol strings carried in tool-result content, not user-authored text.
 DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
 USER_SAID_TRAILER = "Note: The user's next message"
 ANSWERED_PREFIX = "Your questions have been answered: "
 ANSWERED_TRAILER = ". You can now continue with these answers in mind."
 
-# Approve-and-advance directives: a user telling the agent to proceed/commit/push or
-# to resume killed work. They follow an assistant turn but advance it rather than
-# correcting it — the opposite of pushback — so a pushback consumer drops them. The
-# approve-and-advance arm is start-anchored so a mid-sentence "commit"/"push" inside
-# a real correction never matches; only the resume arm searches anywhere.
+# Approve-and-advance directives advance the prior assistant turn rather than correct it — the opposite of
+# pushback — so pushback consumers drop them; start-anchoring keeps a mid-correction "commit"/"push" from matching.
 CONTINUATION_GROUPS: tuple[tuple[str, str], ...] = (
     (
         "continuation",
@@ -104,9 +99,7 @@ CONTINUATION_GROUPS: tuple[tuple[str, str], ...] = (
 # captured stdout/stderr, not authored feedback.
 COMMAND_ECHO_GROUPS: tuple[tuple[str, str], ...] = (("command_echo", r"<bash-(?:input|stdout|stderr)\b"),)
 
-# Named junk categories a consumer composes via ``drop_junk(...)``. Interrupt and
-# stop-hook are kept separate because they carry pushback and must never be folded
-# into the structural-noise default.
+# Interrupt and stop-hook stay separate categories: they carry pushback and must never fold into structural noise.
 JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
     "structural": STRUCTURAL_GROUPS,
     "agent_injection": AGENT_INJECTION_GROUPS,
@@ -116,12 +109,10 @@ JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
     "command_echo": COMMAND_ECHO_GROUPS,
 }
 
-# The superset of structural noise (structural ∪ agent-injection), WITHOUT
-# interrupt/stop-hook — those carry pushback and must never live here.
+# Structural ∪ agent-injection, WITHOUT interrupt/stop-hook — those carry pushback and must never live here.
 STRUCTURAL_NOISE_GROUPS: tuple[tuple[str, str], ...] = STRUCTURAL_GROUPS + AGENT_INJECTION_GROUPS
 
-# The sentiment junk set: the historical monolithic JUNK_USER_MESSAGE_RE
-# (structural + interrupt + stop-hook) plus bash-mode command echoes.
+# The historical monolithic JUNK_USER_MESSAGE_RE plus bash-mode command echoes.
 SENTIMENT_JUNK_GROUPS: tuple[tuple[str, str], ...] = (
     STRUCTURAL_GROUPS + INTERRUPT_MARKER_GROUPS + STOP_HOOK_GROUPS + COMMAND_ECHO_GROUPS
 )

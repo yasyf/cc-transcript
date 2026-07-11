@@ -75,9 +75,7 @@ if TYPE_CHECKING:
     from cc_transcript.mining.spec import ReviewSpec
     from cc_transcript.models import CcVersion, EventUuid, Question, SessionId, ToolUseId, TranscriptEvent
 
-# An answered AskUserQuestion round renders each pair as '"Q"="A"' (or
-# '"Q"=(no option selected)'), optionally followed by ' selected preview:\n<raw>'
-# and/or ' notes: <text>', with pairs joined by ', ' inside the ANSWERED banner.
+# Separators inside the ANSWERED banner's rendered '"Q"="A"' pairs.
 ANSWER_PREVIEW_SEP = " selected preview:\n"
 ANSWER_NOTES_SEP = " notes: "
 NO_OPTION_SELECTED = "(no option selected)"

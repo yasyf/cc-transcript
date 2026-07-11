@@ -108,8 +108,6 @@ pub struct CompiledMiningSpec {
     review: CompiledReviewSpec,
 }
 
-// ── spec compilation ────────────────────────────────────────────────────────
-
 fn group_array<'a>(stage: &'a Value, key: &str) -> Result<&'a sonic_rs::Array, String> {
     field(stage, key)
         .and_then(JsonContainerTrait::as_array)
@@ -311,8 +309,6 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
     })
 }
 
-// ── confidence fold (mining/spec.py run_confidence) ──────────────────────────
-
 fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
 }
@@ -405,8 +401,6 @@ fn score_user_message(spec: &CompiledConfSpec, text: &str, index: i64, trigger: 
     )
 }
 
-// ── event view & cross-event pass ────────────────────────────────────────────
-
 struct Events {
     entries: Vec<Entry>,
     texts: Vec<String>,
@@ -461,16 +455,11 @@ impl Events {
     }
 }
 
-// ── text-shape helpers (mining/signals.py) ───────────────────────────────────
-
 /// marker_in (mining/signals.py marker_in): whether any tool-result block's
 /// content carries the interrupt marker.
 fn marker_in(user: &UserEntry) -> bool {
     user.tool_results().any(|b| interrupt_marker(&b.content).is_some())
 }
-
-// ── confidence band literals for marker_correction (mining/confidence.py weak /
-// noise) ──────────────────────────────────────────────────────────────────────
 
 fn weak(reason: &str) -> CandidateSig {
     CandidateSig { confidence: LOW, reasons: vec![reason.to_string()], durable: true }
@@ -545,8 +534,6 @@ fn denial_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
         .filter(|b| b.is_error && b.content.starts_with(DENIAL_PREFIX))
 }
 
-// ── signal dict construction (mining/spec.py signal_to_dict) ─────────────────
-
 #[allow(clippy::too_many_arguments)]
 fn build_signal_dict<'py>(
     py: Python<'py>,
@@ -586,8 +573,6 @@ fn build_signal_dict<'py>(
 fn occurred_at_iso<'py>(py: Python<'py>, dt: DateTime<FixedOffset>) -> PyResult<Bound<'py, PyAny>> {
     dt.into_pyobject(py)?.call_method0("isoformat")
 }
-
-// ── detectors ────────────────────────────────────────────────────────────────
 
 /// Compiled structural-noise regex shared by the marker-correction paths
 /// (mining/signals.py structural_re): the user-message spec's NoiseIfStructural
@@ -774,8 +759,6 @@ fn iter_interrupt<'py>(
     }
     Ok(())
 }
-
-// ── review-comment detector (formats.py port) ────────────────────────────────
 
 struct ReviewComment {
     file: Option<String>,
@@ -1028,8 +1011,6 @@ fn iter_review_comment<'py>(
     }
     Ok(())
 }
-
-// ── dispatch (mining/signals.py mine) ────────────────────────────────────────
 
 /// The answered AskUserQuestion tool-result blocks of a user event
 /// (signals.py answered_question_results): non-error blocks whose content
