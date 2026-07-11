@@ -355,8 +355,8 @@ def group_pattern(groups: tuple[tuple[str, str], ...]) -> str:
 
 
 @cache
-def compile_groups(groups: tuple[tuple[str, str], ...], ignore_case: bool) -> re.Pattern[str]:
-    return re.compile(group_pattern(groups), re.IGNORECASE if ignore_case else 0)
+def compile_groups(groups: tuple[tuple[str, str], ...], ignore_case: bool, *, multiline: bool = False) -> re.Pattern[str]:
+    return re.compile(group_pattern(groups), (re.IGNORECASE if ignore_case else 0) | (re.MULTILINE if multiline else 0))
 
 
 def event_kind(event: TranscriptEvent) -> EventKind:

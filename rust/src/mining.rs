@@ -238,7 +238,7 @@ fn compile_regex_format(fmt: &Value) -> Result<CompiledRegexFormat, String> {
 }
 
 /// Compiles a review-format regex with the same flags as
-/// ``compile_review_format`` (mining/spec.py compile_review_format): the
+/// ``compile_groups`` (filterspec.py compile_groups, multiline branch): the
 /// ``(?:p)|...`` join from ``compile_group_array`` plus a ``(?m)`` prefix when
 /// ``multiline`` is set.
 fn compile_review_regex(fmt: &Value) -> Result<Regex, String> {

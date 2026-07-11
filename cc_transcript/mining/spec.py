@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from functools import cache, reduce
+from functools import reduce
 from typing import TYPE_CHECKING, Literal, NewType
 
 import orjson
@@ -37,7 +37,6 @@ from cc_transcript.filterspec import (
     PORTABLE_GROUP_NAMES,
     STRUCTURAL_NOISE_GROUPS,
     compile_groups,
-    group_pattern,
 )
 from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence, firm
 from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, StructuredFormat
@@ -341,15 +340,9 @@ def classify_provenance(spec: ProvenanceSpec, tool_name: str | None, *, is_sidec
             return "claude"
 
 
-@cache
-def compile_review_format(groups: tuple[tuple[str, str], ...], ignore_case: bool, multiline: bool) -> re.Pattern[str]:
-    flags = (re.IGNORECASE if ignore_case else 0) | (re.MULTILINE if multiline else 0)
-    return re.compile(group_pattern(groups), flags)
-
-
 def regex_review_comments(fmt: RegexReviewFormat, text: str) -> tuple[ReviewComment, ...]:
     """Extracts comments from ``text`` per ``fmt``'s declarative group map."""
-    pattern = compile_review_format(fmt.groups, fmt.ignore_case, fmt.multiline)
+    pattern = compile_groups(fmt.groups, fmt.ignore_case, multiline=fmt.multiline)
     return tuple(
         ReviewComment(
             file=group_value(match, fmt.file_group),
