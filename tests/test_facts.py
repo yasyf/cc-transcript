@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING, Any
 
 from cc_transcript.backend import ParsedTranscript
 from cc_transcript.facts import ToolFact, command_prefix_counts, is_denial, mcp_summary, tool_facts
-from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.filterspec import (
+    DENIAL_KIND_PERMISSION_RULE,
+    DENIAL_KIND_USER_REJECTED,
+    DENIAL_PREFIX,
+    USER_SAID_MARKER,
+    USER_SAID_TRAILER,
+)
 from cc_transcript.ids import ToolUseId
 from cc_transcript.models import (
     ModeEvent,
@@ -29,8 +35,11 @@ def bash(id: str, command: str) -> ToolUseBlock:
     return tool_use(id, "Bash", command=command)
 
 
-def result(id: str, content: str = "ok", *, is_error: bool = False) -> ToolResultBlock:
-    return ToolResultBlock(tool_use_id=ToolUseId(id), content=content, is_error=is_error)
+def result(
+    id: str, content: str = "ok", *, is_error: bool = False, denial_kind: str | None = None
+) -> ToolResultBlock:
+    kind = denial_kind or (DENIAL_KIND_USER_REJECTED if is_error and content.startswith(DENIAL_PREFIX) else None)
+    return ToolResultBlock(tool_use_id=ToolUseId(id), content=content, is_error=is_error, denial_kind=kind)
 
 
 def denial(said: str) -> str:
@@ -41,8 +50,14 @@ def parsed(*events: TranscriptEvent, path: Path = PATH) -> ParsedTranscript:
     return ParsedTranscript(path=path, mtime=0.0, events=events)
 
 
-def test_is_denial_requires_error_and_prefix() -> None:
+def test_is_denial_keys_on_structured_user_rejected_kind() -> None:
+    # Structured user-rejected without the legacy banner is still a denial.
+    assert is_denial(result("t1", "just stop", is_error=True, denial_kind=DENIAL_KIND_USER_REJECTED)) is True
+    # Legacy banner-only (no structured field) resolves to user-rejected at the parse layer.
     assert is_denial(result("t1", denial("stop"), is_error=True)) is True
+    # A permission-rule hook/guard block is automation, never a user denial.
+    assert is_denial(result("t1", "Error: BLOCKED: x", is_error=True, denial_kind=DENIAL_KIND_PERMISSION_RULE)) is False
+    # A plain error carries no denial kind.
     assert is_denial(result("t1", "boom", is_error=True)) is False
     assert is_denial(result("t1", denial("stop"), is_error=False)) is False
 
@@ -111,9 +126,30 @@ def test_denied_result_sets_denied_and_extracts_user_said() -> None:
         ]
     )
     assert fact.denied is True
+    assert fact.denial_kind == DENIAL_KIND_USER_REJECTED
     assert fact.user_said == "do not run that"
     assert fact.is_error is True
     assert fact.duration_ms == 1000
+
+
+def test_permission_rule_block_is_not_a_denial() -> None:
+    (fact,) = tool_facts(
+        [
+            parsed(
+                user("u0", "cleanup"),
+                assistant("a0", blocks=(bash("t1", "rm -rf /tmp/x"),), secs=1),
+                user(
+                    "u1",
+                    blocks=(result("t1", "Error: BLOCKED: dangerous", is_error=True, denial_kind=DENIAL_KIND_PERMISSION_RULE),),
+                    secs=2,
+                ),
+            )
+        ]
+    )
+    assert fact.is_error is True
+    assert fact.denied is False
+    assert fact.denial_kind == DENIAL_KIND_PERMISSION_RULE
+    assert fact.user_said is None
 
 
 def test_error_result_without_denial_sets_is_error_only() -> None:
@@ -128,6 +164,7 @@ def test_error_result_without_denial_sets_is_error_only() -> None:
     )
     assert fact.is_error is True
     assert fact.denied is False
+    assert fact.denial_kind is None
     assert fact.user_said is None
     assert fact.file_path == "/missing.py"
 

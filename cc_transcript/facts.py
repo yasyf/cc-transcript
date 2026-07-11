@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.filterspec import DENIAL_PREFIX, embedded_user_text, session_id_of
+from cc_transcript.filterspec import DENIAL_KIND_USER_REJECTED, embedded_user_text, session_id_of
 from cc_transcript.tools import BashCall, file_path_of, mcp_access, mcp_parts
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 def is_denial(block: ToolResultBlock) -> bool:
-    return block.is_error and block.content.startswith(DENIAL_PREFIX)
+    return block.denial_kind == DENIAL_KIND_USER_REJECTED
 
 
 def denial_fields(result: ToolResultBlock | None) -> tuple[bool, str | None]:
@@ -67,6 +67,8 @@ class ToolFact:
         file_path: The file the call targets, when it targets one.
         is_error: Whether the call's result reported a failure.
         denied: Whether the result is a user rejection of the tool use.
+        denial_kind: The structured tool-denial kind (``user-rejected`` for a human
+            rejection, ``permission-rule`` for a hook/guard block), or None.
         user_said: The user's verbatim instruction embedded in a denial, else None.
         duration_ms: Milliseconds from the call to its result, or None without one.
     """
@@ -84,6 +86,7 @@ class ToolFact:
     file_path: str | None
     is_error: bool
     denied: bool
+    denial_kind: str | None
     user_said: str | None
     duration_ms: int | None
 
@@ -106,6 +109,7 @@ def fact_of(use: ToolUse, session_id: SessionId, path: Path, prefixes: tuple[str
         file_path=file_path_of(call),
         is_error=use.result.is_error if use.result is not None else False,
         denied=denied,
+        denial_kind=use.result.denial_kind if use.result is not None else None,
         user_said=user_said,
         duration_ms=use.duration_ms,
     )

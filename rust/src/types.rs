@@ -78,6 +78,10 @@ pub struct ToolResultBlock {
     pub is_async: bool,
     /// The record-level ``toolUseResult`` payload verbatim; Python receives it exactly as written.
     pub tool_use_result: Option<Value>,
+    /// The tool-denial kind, computed at parse time (parser.py parse_tool_result_block): the
+    /// record-level ``toolDenialKind`` when present, else ``user-rejected`` for a legacy-banner
+    /// error block, else None.
+    pub denial_kind: Option<String>,
 }
 
 #[derive(Debug)]

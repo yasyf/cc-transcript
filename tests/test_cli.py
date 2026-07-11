@@ -815,6 +815,7 @@ def test_tools_json_row_shape(runner: CliRunner, transcript: Path) -> None:
         "file_path": "/x",
         "is_error": False,
         "denied": False,
+        "denial_kind": None,
         "user_said": None,
         "duration_ms": 1000,
     }
@@ -859,6 +860,7 @@ def test_permissions_json_row_shape(runner: CliRunner, rich: Path) -> None:
             "tool": "Bash",
             "command": "rm -rf /tmp/x",
             "file_path": None,
+            "denial_kind": "user-rejected",
             "user_said": "do not delete that",
         }
     ]

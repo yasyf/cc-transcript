@@ -2,6 +2,8 @@
 
 pub const DENIAL_PREFIX: &str =
     "The user doesn't want to proceed with this tool use. The tool use was rejected";
+pub const DENIAL_KIND_USER_REJECTED: &str = "user-rejected";
+pub const DENIAL_KIND_PERMISSION_RULE: &str = "permission-rule";
 pub const USER_SAID_MARKER: &str = "To tell you how to proceed, the user said:\n";
 pub const USER_SAID_TRAILER: &str = "Note: The user's next message";
 pub const ANSWERED_PREFIX: &str = "Your questions have been answered: ";

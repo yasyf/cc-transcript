@@ -147,6 +147,11 @@ class ToolResultBlock:
             mapping for structured results, a plain string for denials, or None
             when the record carried none. Pass a tool name and this payload to
             :func:`~cc_transcript.tools.parse_tool_result` for the typed result.
+        denial_kind: The tool-denial kind, computed at the parse layer — the
+            record-level ``toolDenialKind`` (``user-rejected`` for a human
+            rejection, ``permission-rule`` for a hook/guard block) when present,
+            else ``user-rejected`` when this error block carries the legacy denial
+            banner, else None.
     """
 
     tool_use_id: ToolUseId
@@ -154,6 +159,7 @@ class ToolResultBlock:
     is_error: bool
     is_async: bool = False
     tool_use_result: Mapping[str, Any] | str | None = None
+    denial_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

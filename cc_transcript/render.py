@@ -424,6 +424,7 @@ def fact_dict(fact: ToolFact) -> dict[str, Any]:
         "file_path": fact.file_path,
         "is_error": fact.is_error,
         "denied": fact.denied,
+        "denial_kind": fact.denial_kind,
         "user_said": fact.user_said,
         "duration_ms": fact.duration_ms,
     }
@@ -445,6 +446,7 @@ def denial_dict(fact: ToolFact) -> dict[str, Any]:
         "tool": fact.tool,
         "command": fact.command,
         "file_path": fact.file_path,
+        "denial_kind": fact.denial_kind,
         "user_said": fact.user_said,
     }
 

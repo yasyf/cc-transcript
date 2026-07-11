@@ -24,6 +24,8 @@ from __future__ import annotations
 from cc_transcript.filterspec import (
     ANSWERED_PREFIX,
     ANSWERED_TRAILER,
+    DENIAL_KIND_PERMISSION_RULE,
+    DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
     USER_SAID_MARKER,
     USER_SAID_TRAILER,

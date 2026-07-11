@@ -13,7 +13,7 @@ from cc_transcript.corrections import Correction
 from cc_transcript.decisions import Decision
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest
-from cc_transcript.mining import ANSWERED_PREFIX, ANSWERED_TRAILER
+from cc_transcript.mining import ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX
 from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, UserEvent
 from cc_transcript.parser import load_rust_backend
 
@@ -251,6 +251,85 @@ def fixture_entries() -> list[dict[str, Any]]:
             message={
                 "role": "user",
                 "content": [{"type": "tool_result", "tool_use_id": "toolu_deny", "content": "denied", "is_error": True}],
+            },
+        ),
+        # Structured toolDenialKind, both kinds, plus a legacy banner-only and a plain error —
+        # every denial_kind precedence path both backends must resolve identically at parse time.
+        raw_envelope(
+            type="user",
+            toolDenialKind="user-rejected",
+            toolUseResult=f"{DENIAL_PREFIX}. structured and bannered",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_deny_struct_banner",
+                        "content": f"{DENIAL_PREFIX}. structured and bannered",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolDenialKind="user-rejected",
+            toolUseResult="just take a different approach entirely",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_deny_struct_nobanner",
+                        "content": "just take a different approach entirely",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolDenialKind="permission-rule",
+            toolUseResult="Error: BLOCKED: policy forbids writing to /etc",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_deny_permission",
+                        "content": "Error: BLOCKED: policy forbids writing to /etc",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolUseResult=f"{DENIAL_PREFIX}. legacy banner without the structured field",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_deny_legacy",
+                        "content": f"{DENIAL_PREFIX}. legacy banner without the structured field",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_plain_error",
+                        "content": "ENOENT: no such file",
+                        "is_error": True,
+                    }
+                ],
             },
         ),
         raw_envelope(

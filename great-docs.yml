@@ -328,6 +328,8 @@ reference:
       - mining.mining_spec_to_json
       - mining.mining_spec_is_portable
       - mining.DENIAL_PREFIX
+      - mining.DENIAL_KIND_USER_REJECTED
+      - mining.DENIAL_KIND_PERMISSION_RULE
       - mining.USER_SAID_MARKER
       - mining.USER_SAID_TRAILER
       - mining.ANSWERED_PREFIX

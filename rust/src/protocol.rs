@@ -4,7 +4,8 @@ use regex::Regex;
 use crate::generated::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
 
 pub use crate::generated::protocol::{
-    ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER,
+    ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX, USER_SAID_MARKER,
+    USER_SAID_TRAILER,
 };
 
 /// The one interrupt-marker regex (filterspec.py INTERRUPT_MARKER_RE): the pattern

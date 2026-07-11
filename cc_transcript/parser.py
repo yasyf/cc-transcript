@@ -12,7 +12,13 @@ import anyio.to_thread
 import orjson
 
 from cc_transcript.backend import Backend, ParsedTranscript
-from cc_transcript.filterspec import apply_spec, interrupt_marker, is_agent_injection
+from cc_transcript.filterspec import (
+    DENIAL_KIND_USER_REJECTED,
+    DENIAL_PREFIX,
+    apply_spec,
+    interrupt_marker,
+    is_agent_injection,
+)
 from cc_transcript.models import (
     ApiError,
     AssistantEvent,
@@ -101,8 +107,31 @@ def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
             raise ValueError(f"unexpected result content shape: {type(content).__name__}")
 
 
+def parse_tool_result_block(
+    block: dict[str, Any],
+    *,
+    is_async: bool,
+    tool_use_result: Mapping[str, Any] | str | None,
+    tool_denial_kind: str | None,
+) -> ToolResultBlock:
+    content = flatten_result_content(block["content"])
+    is_error = bool(block.get("is_error"))
+    return ToolResultBlock(
+        tool_use_id=ToolUseId(block["tool_use_id"]),
+        content=content,
+        is_error=is_error,
+        is_async=is_async,
+        tool_use_result=tool_use_result,
+        denial_kind=tool_denial_kind
+        or (DENIAL_KIND_USER_REJECTED if is_error and content.startswith(DENIAL_PREFIX) else None),
+    )
+
+
 def parse_user_blocks(
-    content: str | list[dict[str, Any]], *, tool_use_result: Mapping[str, Any] | str | None = None
+    content: str | list[dict[str, Any]],
+    *,
+    tool_use_result: Mapping[str, Any] | str | None = None,
+    tool_denial_kind: str | None = None,
 ) -> tuple[str, tuple[ContentBlock, ...]]:
     match content:
         case str():
@@ -111,12 +140,8 @@ def parse_user_blocks(
             is_async = isinstance(tool_use_result, Mapping) and tool_use_result.get("isAsync") is True
             texts = [block["text"] for block in content if block.get("type") == "text"]
             blocks: tuple[ContentBlock, ...] = tuple(TextBlock(text) for text in texts) + tuple(
-                ToolResultBlock(
-                    tool_use_id=ToolUseId(block["tool_use_id"]),
-                    content=flatten_result_content(block["content"]),
-                    is_error=bool(block.get("is_error")),
-                    is_async=is_async,
-                    tool_use_result=tool_use_result,
+                parse_tool_result_block(
+                    block, is_async=is_async, tool_use_result=tool_use_result, tool_denial_kind=tool_denial_kind
                 )
                 for block in content
                 if block.get("type") == "tool_result"
@@ -179,6 +204,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
             text, blocks = parse_user_blocks(
                 data["message"]["content"],
                 tool_use_result=data.get("toolUseResult"),
+                tool_denial_kind=data.get("toolDenialKind"),
             )
             interrupted_message_id = data.get("interruptedMessageId")
             return UserEvent(

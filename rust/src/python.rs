@@ -188,6 +188,8 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
+    dict.set_item("protocol.DENIAL_KIND_USER_REJECTED", protocol::DENIAL_KIND_USER_REJECTED)?;
+    dict.set_item("protocol.DENIAL_KIND_PERMISSION_RULE", protocol::DENIAL_KIND_PERMISSION_RULE)?;
     dict.set_item("protocol.USER_SAID_MARKER", protocol::USER_SAID_MARKER)?;
     dict.set_item("protocol.USER_SAID_TRAILER", protocol::USER_SAID_TRAILER)?;
     dict.set_item("protocol.ANSWERED_PREFIX", protocol::ANSWERED_PREFIX)?;

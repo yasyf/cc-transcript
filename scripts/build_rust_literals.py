@@ -22,6 +22,8 @@ from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     ANSWERED_PREFIX,
     ANSWERED_TRAILER,
+    DENIAL_KIND_PERMISSION_RULE,
+    DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
     INTERRUPT_MARKER_GROUPS,
     USER_SAID_MARKER,
@@ -118,6 +120,8 @@ def render_const(name: str, value: str | float | tuple[str, ...]) -> str:
 def literals() -> dict[str, str | float | tuple[str, ...]]:
     return {
         "protocol.DENIAL_PREFIX": DENIAL_PREFIX,
+        "protocol.DENIAL_KIND_USER_REJECTED": DENIAL_KIND_USER_REJECTED,
+        "protocol.DENIAL_KIND_PERMISSION_RULE": DENIAL_KIND_PERMISSION_RULE,
         "protocol.USER_SAID_MARKER": USER_SAID_MARKER,
         "protocol.USER_SAID_TRAILER": USER_SAID_TRAILER,
         "protocol.ANSWERED_PREFIX": ANSWERED_PREFIX,

@@ -2,6 +2,7 @@ use chrono::{DateTime, FixedOffset};
 use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
+use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
 use crate::types::{
     ApiError, AssistantEntry, Attribution, CacheCreation, ContentBlock, Entry, EntryMeta,
     FallbackBlock, InitInfo, McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin,
@@ -133,17 +134,31 @@ fn parse_api_error(data: &Value) -> Option<ApiError> {
     })
 }
 
-fn parse_tool_result(block: &Value, tool_use_result: Option<&Value>) -> Result<ContentBlock, ParseError> {
+fn parse_tool_result(
+    block: &Value,
+    tool_use_result: Option<&Value>,
+    tool_denial_kind: Option<&str>,
+) -> Result<ContentBlock, ParseError> {
+    let content = flatten_result_content(require(block, "content")?);
+    let is_error = field_bool(block, "is_error");
+    let denial_kind = tool_denial_kind.map(str::to_string).or_else(|| {
+        (is_error && content.starts_with(DENIAL_PREFIX)).then(|| DENIAL_KIND_USER_REJECTED.to_string())
+    });
     Ok(ContentBlock::ToolResult(ToolResultBlock {
         tool_use_id: require_str(block, "tool_use_id")?.to_string(),
-        content: flatten_result_content(require(block, "content")?),
-        is_error: field_bool(block, "is_error"),
+        content,
+        is_error,
         is_async: tool_use_result.is_some_and(|tur| field_bool(tur, "isAsync")),
         tool_use_result: tool_use_result.cloned(),
+        denial_kind,
     }))
 }
 
-fn parse_user_content(content: &Value, tool_use_result: Option<&Value>) -> Result<UserContent, ParseError> {
+fn parse_user_content(
+    content: &Value,
+    tool_use_result: Option<&Value>,
+    tool_denial_kind: Option<&str>,
+) -> Result<UserContent, ParseError> {
     match content.as_str() {
         Some(s) => Ok(UserContent::Plain(s.to_string())),
         None => {
@@ -151,7 +166,7 @@ fn parse_user_content(content: &Value, tool_use_result: Option<&Value>) -> Resul
                 .iter()
                 .filter_map(|b| match block_type(b) {
                     Some("text") => field_str(b, "text").map(|t| Ok(ContentBlock::Text(t.to_string()))),
-                    Some("tool_result") => Some(parse_tool_result(b, tool_use_result)),
+                    Some("tool_result") => Some(parse_tool_result(b, tool_use_result, tool_denial_kind)),
                     _ => None,
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -258,8 +273,12 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
     match ty.as_str() {
         "user" => {
             let tool_use_result = field(&data, "toolUseResult");
-            let content =
-                parse_user_content(require(require(&data, "message")?, "content")?, tool_use_result)?;
+            let tool_denial_kind = field_str(&data, "toolDenialKind");
+            let content = parse_user_content(
+                require(require(&data, "message")?, "content")?,
+                tool_use_result,
+                tool_denial_kind,
+            )?;
             return Ok(Entry::User(UserEntry {
                 meta: parse_meta(&data)?,
                 content,
@@ -427,7 +446,7 @@ fn parse_print_message(element: &Value) -> Result<PrintMessage, ParseError> {
             blocks: parse_assistant_blocks(require(message, "content")?)?,
             model: field_str(message, "model").map(str::to_string),
         },
-        "user" => PrintBody::User(parse_user_content(require(message, "content")?, None)?),
+        "user" => PrintBody::User(parse_user_content(require(message, "content")?, None, None)?),
         other => {
             return Err(ParseError::Value(format!(
                 "not a conversational element: {other:?}"

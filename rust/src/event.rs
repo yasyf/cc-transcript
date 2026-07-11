@@ -145,6 +145,7 @@ fn build_block<'py>(py: Python<'py>, block: &ContentBlock) -> PyResult<Bound<'py
                 tr.is_error,
                 tr.is_async,
                 tool_use_result,
+                tr.denial_kind.as_deref(),
             ))
         }
         ContentBlock::Fallback(fb) => models_type(py, &FALLBACK_BLOCK_CLS, "FallbackBlock")?

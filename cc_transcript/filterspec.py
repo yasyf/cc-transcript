@@ -77,6 +77,9 @@ STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedb
 
 # Raw CC-injected protocol strings carried in tool-result content, not user-authored text.
 DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+# Record-level ``toolDenialKind`` values: a human rejection versus a hook/guard block.
+DENIAL_KIND_USER_REJECTED = "user-rejected"
+DENIAL_KIND_PERMISSION_RULE = "permission-rule"
 USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
 USER_SAID_TRAILER = "Note: The user's next message"
 ANSWERED_PREFIX = "Your questions have been answered: "

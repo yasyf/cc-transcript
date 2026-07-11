@@ -17,7 +17,7 @@ use crate::generated::mining::{
 use crate::parse::{parse_bytes, ParseError};
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX, ANSWERED_TRAILER,
-    DENIAL_PREFIX, INTERRUPT_MARKER_RE,
+    DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
 use crate::types::{
     matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock, UserEntry,
@@ -527,11 +527,12 @@ fn denial_correction(
     }
 }
 
-/// The denial tool-result blocks of a user event (mining/signals.py
-/// denial_results): error blocks whose content starts with the denial banner.
+/// The denial tool-result blocks of a user event (mining/signals.py denial_results via
+/// facts.py is_denial): blocks the parse layer marked ``user-rejected`` — a human
+/// rejection, never a permission-rule hook/guard block.
 fn denial_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
     user.tool_results()
-        .filter(|b| b.is_error && b.content.starts_with(DENIAL_PREFIX))
+        .filter(|b| b.denial_kind.as_deref() == Some(DENIAL_KIND_USER_REJECTED))
 }
 
 #[allow(clippy::too_many_arguments)]

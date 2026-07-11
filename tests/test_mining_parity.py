@@ -336,6 +336,30 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             ],
             SPEC,
         ),
+        # ── structured toolDenialKind: user-rejected mines without a banner; permission-rule never ──
+        "denial_structured_user_rejected_no_banner": (
+            [
+                assistant("a1", tool_use("t1", "Bash", command="rm -rf /tmp/x")),
+                user_result("u1", "t1", "stop that right now", toolDenialKind="user-rejected"),
+                user_text("u2", "never run destructive commands like that one"),
+            ],
+            SPEC,
+        ),
+        "denial_permission_rule_not_mined": (
+            [
+                assistant("a1", tool_use("t1", "Bash", command="rm -rf /tmp/x")),
+                user_result("u1", "t1", "Error: BLOCKED: policy forbids that", toolDenialKind="permission-rule"),
+            ],
+            SPEC,
+        ),
+        "denial_structured_user_rejected_non_error": (
+            [
+                assistant("a1", tool_use("t1", "Bash", command="rm -rf /tmp/x")),
+                user_result("u1", "t1", "stop", is_error=False, toolDenialKind="user-rejected"),
+                user_text("u2", "never run destructive commands like that one"),
+            ],
+            SPEC,
+        ),
         # ── interrupt: bare marker + correction, and case-folded marker ──
         "interrupt_marker_then_correction": (
             [
@@ -650,6 +674,17 @@ def test_alias_plan_denials_mine_as_plan_rejections_not_denials(name: str) -> No
     detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
     assert "exit_plan_rejection" in detectors
     assert "denial" not in detectors
+
+
+def test_structured_user_rejected_denial_mines_without_banner() -> None:
+    entries, spec = battery()["denial_structured_user_rejected_no_banner"]
+    detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
+    assert "denial" in detectors
+
+
+def test_permission_rule_block_is_not_mined_as_denial() -> None:
+    entries, spec = battery()["denial_permission_rule_not_mined"]
+    assert all(signal["detector"] != "denial" for signal in py_dicts(to_bytes(entries), spec))
 
 
 @requires_rust

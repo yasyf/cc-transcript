@@ -14,6 +14,7 @@ from cc_transcript.ids import EventRef, tool_digest
 from cc_transcript.mining import (
     ANSWERED_PREFIX,
     ANSWERED_TRAILER,
+    DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
     HIGH,
     INTERRUPT_REJECTION,
@@ -105,6 +106,12 @@ def mode(value: str = "normal") -> ModeEvent:
 
 def denial_content(said: str) -> str:
     return f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}{said}\n{USER_SAID_TRAILER} will follow."
+
+
+def denial_block(tool_use_id: str, content: str) -> ToolResultBlock:
+    return ToolResultBlock(
+        tool_use_id=ToolUseId(tool_use_id), content=content, is_error=True, denial_kind=DENIAL_KIND_USER_REJECTED
+    )
 
 
 def anchor(uuid: str) -> EventRef:
@@ -255,11 +262,7 @@ def test_iter_tool_denial_signals_extracts_embedded_text() -> None:
         ),
         user(
             "u0",
-            blocks=(
-                ToolResultBlock(
-                    tool_use_id=ToolUseId("t1"), content=denial_content("use a different approach"), is_error=True
-                ),
-            ),
+            blocks=(denial_block("t1", denial_content("use a different approach")),),
         ),
     ]
     signals = list(iter_tool_denial_signals(events, SPEC))
@@ -294,7 +297,7 @@ def test_tool_denial_embedded_text_calibration(said: str, expected: CandidateSig
         assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "rm -rf /"}),)),
         user(
             "u0",
-            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
+            blocks=(denial_block("t1", denial_content(said)),),
         ),
     ]
     assert [signal.signal for signal in iter_tool_denial_signals(events, SPEC)] == [expected]
@@ -320,7 +323,7 @@ def test_tool_denial_bare_marker_followup_calibration(followup: str, expected: C
         assistant("a0", blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "ls"}),)),
         user(
             "u0",
-            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=f"{DENIAL_PREFIX}.", is_error=True),),
+            blocks=(denial_block("t1", f"{DENIAL_PREFIX}."),),
         ),
         user("u1", followup),
     ]
@@ -348,7 +351,7 @@ def test_plan_rejection_signal_calibration(said: str, expected: CandidateSignal)
         ),
         user(
             "u0",
-            blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content=denial_content(said), is_error=True),),
+            blocks=(denial_block("t1", denial_content(said)),),
         ),
     ]
     assert [signal.signal for signal in iter_plan_rejection_signals(events, SPEC)] == [expected]
