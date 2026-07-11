@@ -1,8 +1,7 @@
 """Rust score executor == Python score interpreter, over a stage battery.
 
-Both backends call the same Rust udpipe lexicon for lexicon stages, so a confirmed
-match proves the dual-backend score pipeline agrees. Skips when the extension or the
-udpipe model is unavailable.
+Both backends score lexicon stages against the same surface lexicon (no model, fully
+deterministic), so a confirmed match proves the dual-backend score pipeline agrees.
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from cc_transcript.sentiment.buckets import SentimentScore
-from cc_transcript.sentiment.lexicon import rust_lexicon
 from cc_transcript.sentiment.scorespec import (
     build_score_spec,
     clamp_positive,
@@ -44,8 +42,6 @@ def test_rust_python_score_executor_parity() -> None:
 
     if not hasattr(_parser_rs, "score_short_circuit"):
         pytest.skip("score executor not built")
-    if rust_lexicon() is None:
-        pytest.skip("udpipe lexicon model unavailable")
 
     spec = build_score_spec(flag_frustration(), clamp_positive(), demote_mild_irritation(), clamp_resume())
     spec_json = score_spec_to_json(spec)

@@ -1,0 +1,360 @@
+[
+  {
+    "id": "lost_losing",
+    "input_repr": "LOST losing",
+    "input_codepoints": [
+      "U+004C",
+      "U+004F",
+      "U+0053",
+      "U+0054",
+      "U+0020",
+      "U+006C",
+      "U+006F",
+      "U+0073",
+      "U+0069",
+      "U+006E",
+      "U+0067"
+    ],
+    "expected_tokens": [
+      "lost",
+      "losing"
+    ],
+    "expected_tokens_escaped": [
+      "lost",
+      "losing"
+    ]
+  },
+  {
+    "id": "naive_nfc",
+    "input_repr": "na\\xefve",
+    "input_codepoints": [
+      "U+006E",
+      "U+0061",
+      "U+00EF",
+      "U+0076",
+      "U+0065"
+    ],
+    "expected_tokens": [
+      "naïve"
+    ],
+    "expected_tokens_escaped": [
+      "na\\xefve"
+    ]
+  },
+  {
+    "id": "naive_nfd",
+    "input_repr": "nai\\u0308ve",
+    "input_codepoints": [
+      "U+006E",
+      "U+0061",
+      "U+0069",
+      "U+0308",
+      "U+0076",
+      "U+0065"
+    ],
+    "expected_tokens": [
+      "nai",
+      "ve"
+    ],
+    "expected_tokens_escaped": [
+      "nai",
+      "ve"
+    ]
+  },
+  {
+    "id": "cant_ascii_apostrophe",
+    "input_repr": "can't",
+    "input_codepoints": [
+      "U+0063",
+      "U+0061",
+      "U+006E",
+      "U+0027",
+      "U+0074"
+    ],
+    "expected_tokens": [
+      "can",
+      "t"
+    ],
+    "expected_tokens_escaped": [
+      "can",
+      "t"
+    ]
+  },
+  {
+    "id": "wont_u2019_rsquo",
+    "input_repr": "won\\u2019t",
+    "input_codepoints": [
+      "U+0077",
+      "U+006F",
+      "U+006E",
+      "U+2019",
+      "U+0074"
+    ],
+    "expected_tokens": [
+      "won",
+      "t"
+    ],
+    "expected_tokens_escaped": [
+      "won",
+      "t"
+    ]
+  },
+  {
+    "id": "cant_u02bc_modifier_letter",
+    "input_repr": "can\\u02bct",
+    "input_codepoints": [
+      "U+0063",
+      "U+0061",
+      "U+006E",
+      "U+02BC",
+      "U+0074"
+    ],
+    "expected_tokens": [
+      "canʼt"
+    ],
+    "expected_tokens_escaped": [
+      "can\\u02bct"
+    ]
+  },
+  {
+    "id": "turkish_I_greek_OS_sharp_s",
+    "input_repr": "\\u0130 \\u039f\\u03a3 STRA\\u1e9eE",
+    "input_codepoints": [
+      "U+0130",
+      "U+0020",
+      "U+039F",
+      "U+03A3",
+      "U+0020",
+      "U+0053",
+      "U+0054",
+      "U+0052",
+      "U+0041",
+      "U+1E9E",
+      "U+0045"
+    ],
+    "expected_tokens": [
+      "i̇",
+      "ος",
+      "straße"
+    ],
+    "expected_tokens_escaped": [
+      "i\\u0307",
+      "\\u03bf\\u03c2",
+      "stra\\xdfe"
+    ]
+  },
+  {
+    "id": "cafe_emdash_cjk_alnum",
+    "input_repr": "caf\\xe9\\u2014\\u6771\\u4eac abc123def",
+    "input_codepoints": [
+      "U+0063",
+      "U+0061",
+      "U+0066",
+      "U+00E9",
+      "U+2014",
+      "U+6771",
+      "U+4EAC",
+      "U+0020",
+      "U+0061",
+      "U+0062",
+      "U+0063",
+      "U+0031",
+      "U+0032",
+      "U+0033",
+      "U+0064",
+      "U+0065",
+      "U+0066"
+    ],
+    "expected_tokens": [
+      "café",
+      "東京",
+      "abc",
+      "def"
+    ],
+    "expected_tokens_escaped": [
+      "caf\\xe9",
+      "\\u6771\\u4eac",
+      "abc",
+      "def"
+    ]
+  },
+  {
+    "id": "digits_underscore_emoji",
+    "input_repr": "abc_def 123 gh\\U0001f600i",
+    "input_codepoints": [
+      "U+0061",
+      "U+0062",
+      "U+0063",
+      "U+005F",
+      "U+0064",
+      "U+0065",
+      "U+0066",
+      "U+0020",
+      "U+0031",
+      "U+0032",
+      "U+0033",
+      "U+0020",
+      "U+0067",
+      "U+0068",
+      "U+1F600",
+      "U+0069"
+    ],
+    "expected_tokens": [
+      "abc",
+      "def",
+      "gh",
+      "i"
+    ],
+    "expected_tokens_escaped": [
+      "abc",
+      "def",
+      "gh",
+      "i"
+    ]
+  },
+  {
+    "id": "hebrew_point_adjacency",
+    "input_repr": "lost\\u05b0x",
+    "input_codepoints": [
+      "U+006C",
+      "U+006F",
+      "U+0073",
+      "U+0074",
+      "U+05B0",
+      "U+0078"
+    ],
+    "expected_tokens": [
+      "lost",
+      "x"
+    ],
+    "expected_tokens_escaped": [
+      "lost",
+      "x"
+    ]
+  },
+  {
+    "id": "greek_ypogegrammeni_adjacency",
+    "input_repr": "a\\u0345b",
+    "input_codepoints": [
+      "U+0061",
+      "U+0345",
+      "U+0062"
+    ],
+    "expected_tokens": [
+      "a",
+      "b"
+    ],
+    "expected_tokens_escaped": [
+      "a",
+      "b"
+    ]
+  },
+  {
+    "id": "devanagari_sign_adjacency",
+    "input_repr": "ka\\u093ex",
+    "input_codepoints": [
+      "U+006B",
+      "U+0061",
+      "U+093E",
+      "U+0078"
+    ],
+    "expected_tokens": [
+      "ka",
+      "x"
+    ],
+    "expected_tokens_escaped": [
+      "ka",
+      "x"
+    ]
+  },
+  {
+    "id": "roman_numeral_four_adjacency",
+    "input_repr": "a\\u2163b",
+    "input_codepoints": [
+      "U+0061",
+      "U+2163",
+      "U+0062"
+    ],
+    "expected_tokens": [
+      "a",
+      "b"
+    ],
+    "expected_tokens_escaped": [
+      "a",
+      "b"
+    ]
+  },
+  {
+    "id": "astral_math_bold_A",
+    "input_repr": "x\\U0001d400y",
+    "input_codepoints": [
+      "U+0078",
+      "U+1D400",
+      "U+0079"
+    ],
+    "expected_tokens": [
+      "x𝐀y"
+    ],
+    "expected_tokens_escaped": [
+      "x\\U0001d400y"
+    ]
+  },
+  {
+    "id": "astral_deseret_pair",
+    "input_repr": "\\U00010428\\U00010400",
+    "input_codepoints": [
+      "U+10428",
+      "U+10400"
+    ],
+    "expected_tokens": [
+      "𐐨𐐨"
+    ],
+    "expected_tokens_escaped": [
+      "\\U00010428\\U00010428"
+    ]
+  },
+  {
+    "id": "empty",
+    "input_repr": "",
+    "input_codepoints": [],
+    "expected_tokens": [],
+    "expected_tokens_escaped": []
+  },
+  {
+    "id": "only_punct",
+    "input_repr": "...",
+    "input_codepoints": [
+      "U+002E",
+      "U+002E",
+      "U+002E"
+    ],
+    "expected_tokens": [],
+    "expected_tokens_escaped": []
+  },
+  {
+    "id": "sharp_s_capital_alone",
+    "input_repr": "\\u1e9e",
+    "input_codepoints": [
+      "U+1E9E"
+    ],
+    "expected_tokens": [
+      "ß"
+    ],
+    "expected_tokens_escaped": [
+      "\\xdf"
+    ]
+  },
+  {
+    "id": "turkish_I_alone",
+    "input_repr": "\\u0130",
+    "input_codepoints": [
+      "U+0130"
+    ],
+    "expected_tokens": [
+      "i̇"
+    ],
+    "expected_tokens_escaped": [
+      "i\\u0307"
+    ]
+  }
+]

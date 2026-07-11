@@ -44,10 +44,6 @@ dev = [
     "ty>=0.0.44",
     "ruff>=0.8",
 ]
-sentiment = [
-    "spacy>=3.8",
-    "afinn>=0.1",
-]
 llm = ["spawnllm>=0.5.4,<0.6"]
 judge = [
     "sqlite-vec>=0.1.9",

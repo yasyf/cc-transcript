@@ -1,7 +1,8 @@
 """Score-stage behavior: frustration/mild-impatience/resume/positive-clamp logic
 and FilteredEngine orchestration. Re-homed from cc-sentiment when the score
 pipeline moved into cc-transcript. Lexicon-dependent stages monkeypatch
-``Lexicon.has_hit`` so they are deterministic without the udpipe model / spaCy."""
+``Lexicon.has_hit`` to isolate the stage logic from the lexicon lookup; the
+floor is now fixed, so the patched signature is ``(text, *, want_negative)``."""
 
 from __future__ import annotations
 
@@ -168,12 +169,12 @@ class StubEngine:
 
 @pytest.fixture
 def no_lexicon_hit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, floor, want_negative: False)
+    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, want_negative: False)
 
 
 @pytest.fixture
 def lexicon_hit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, floor, want_negative: True)
+    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, want_negative: True)
 
 
 @pytest.mark.parametrize("text", FRUSTRATION_HITS)

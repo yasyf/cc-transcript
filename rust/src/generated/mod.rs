@@ -3,3 +3,4 @@
 pub mod command;
 pub mod mining;
 pub mod protocol;
+pub mod unicode;

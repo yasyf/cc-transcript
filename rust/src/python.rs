@@ -169,18 +169,18 @@ fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, P
 }
 
 #[pyfunction]
-fn lexicon_available() -> bool {
-    lexicon::available()
+fn lexicon_tokenize(text: &str) -> Vec<String> {
+    lexicon::tokenize(text)
 }
 
 #[pyfunction]
-fn lexicon_polarity(lemma: &str) -> i32 {
-    lexicon::polarity(lemma)
+fn lexicon_polarity(token: &str) -> i32 {
+    lexicon::polarity(token)
 }
 
 #[pyfunction]
-fn lexicon_has_hit(text: &str, floor: i32, want_negative: bool) -> bool {
-    lexicon::has_hit(text, floor, want_negative)
+fn lexicon_has_hit(text: &str, want_negative: bool) -> bool {
+    lexicon::has_hit(text, want_negative)
 }
 
 #[pyfunction]
@@ -324,7 +324,7 @@ fn mine_signals<'py>(
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
-    m.add_function(wrap_pyfunction!(lexicon_available, m)?)?;
+    m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;

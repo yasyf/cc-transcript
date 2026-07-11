@@ -20,14 +20,12 @@ enum PostStage {
         from: i64,
         to: i64,
         max_words: usize,
-        floor: i32,
     },
     MildIrritation {
         trigger: Regex,
         hostile: Regex,
         from: i64,
         to: i64,
-        floor: i32,
     },
     ResumeClamp {
         phrases: HashSet<String>,
@@ -84,7 +82,6 @@ fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
                 from: int_field(stage, "from_score")?,
                 to: int_field(stage, "to_score")?,
                 max_words: int_field(stage, "max_words")? as usize,
-                floor: int_field(stage, "positive_floor")? as i32,
             }),
             "MildIrritationDemote" => post.push(PostStage::MildIrritation {
                 trigger: compile_group_array(
@@ -97,7 +94,6 @@ fn compile_spec(spec_json: &str) -> Result<CompiledScoreSpec, String> {
                 )?,
                 from: int_field(stage, "from_score")?,
                 to: int_field(stage, "to_score")?,
-                floor: int_field(stage, "hostile_floor")? as i32,
             }),
             "ResumeClamp" => post.push(PostStage::ResumeClamp {
                 phrases: str_set(stage, "phrases"),
@@ -152,12 +148,10 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
             from,
             to,
             max_words,
-            floor,
         } => {
             let clamp = score == *from
                 && texts.iter().any(|t| {
-                    t.split_whitespace().count() <= *max_words
-                        && !lexicon::has_hit(t, *floor, false)
+                    t.split_whitespace().count() <= *max_words && !lexicon::has_hit(t, false)
                 });
             if clamp {
                 *to
@@ -170,12 +164,10 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
             hostile,
             from,
             to,
-            floor,
         } => {
             let demote = score == *from
                 && texts.iter().any(|t| {
-                    trigger.is_match(t)
-                        && !(hostile.is_match(t) || lexicon::has_hit(t, *floor, true))
+                    trigger.is_match(t) && !(hostile.is_match(t) || lexicon::has_hit(t, true))
                 });
             if demote {
                 *to

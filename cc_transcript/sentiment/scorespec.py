@@ -53,21 +53,20 @@ class PositiveClamp:
     from_score: int = 5
     to_score: int = 3
     max_words: int = SHORT_MESSAGE_MAX_WORDS
-    positive_floor: int = 3
 
 
 @dataclass(frozen=True, slots=True)
 class MildIrritationDemote:
     """Lowers ``from_score`` to ``to_score`` for mild-impatience messages that are not hostile.
 
-    Hostile means a ``hostile_groups`` regex hit OR lexicon polarity ``<= -hostile_floor``.
+    Hostile means a ``hostile_groups`` regex hit OR a negative lexicon hit at the
+    fixed polarity floor (``Lexicon.FLOOR``).
     """
 
     trigger_groups: tuple[tuple[str, str], ...]
     hostile_groups: tuple[tuple[str, str], ...]
     from_score: int = 1
     to_score: int = 2
-    hostile_floor: int = 3
     ignore_case: bool = True
 
 
@@ -95,16 +94,14 @@ def flag_frustration(*, score: int = 1) -> FrustrationShortCircuit:
     return FrustrationShortCircuit(groups=FRUSTRATION_GROUPS, score=score)
 
 
-def clamp_positive(*, floor: int = 3, max_words: int = SHORT_MESSAGE_MAX_WORDS) -> PositiveClamp:
+def clamp_positive(*, max_words: int = SHORT_MESSAGE_MAX_WORDS) -> PositiveClamp:
     """Composes the post-process stage that lowers a top score on a short message lacking positive lexicon."""
-    return PositiveClamp(positive_floor=floor, max_words=max_words)
+    return PositiveClamp(max_words=max_words)
 
 
-def demote_mild_irritation(*, floor: int = 3) -> MildIrritationDemote:
+def demote_mild_irritation() -> MildIrritationDemote:
     """Composes the post-process stage that softens a non-hostile mild-impatience message off the floor score."""
-    return MildIrritationDemote(
-        trigger_groups=MILD_IMPATIENCE_GROUPS, hostile_groups=FRUSTRATION_GROUPS, hostile_floor=floor
-    )
+    return MildIrritationDemote(trigger_groups=MILD_IMPATIENCE_GROUPS, hostile_groups=FRUSTRATION_GROUPS)
 
 
 def clamp_resume() -> ResumeClamp:
@@ -130,18 +127,15 @@ def stage_to_dict(stage: ScoreStage) -> dict[str, Any]:
                 "score": score,
                 "ignore_case": ignore_case,
             }
-        case PositiveClamp(from_score=fr, to_score=to, max_words=mw, positive_floor=pf):
-            return {"kind": "PositiveClamp", "from_score": fr, "to_score": to, "max_words": mw, "positive_floor": pf}
-        case MildIrritationDemote(
-            trigger_groups=tg, hostile_groups=hg, from_score=fr, to_score=to, hostile_floor=hf, ignore_case=ic
-        ):
+        case PositiveClamp(from_score=fr, to_score=to, max_words=mw):
+            return {"kind": "PositiveClamp", "from_score": fr, "to_score": to, "max_words": mw}
+        case MildIrritationDemote(trigger_groups=tg, hostile_groups=hg, from_score=fr, to_score=to, ignore_case=ic):
             return {
                 "kind": "MildIrritationDemote",
                 "trigger_groups": [list(group) for group in tg],
                 "hostile_groups": [list(group) for group in hg],
                 "from_score": fr,
                 "to_score": to,
-                "hostile_floor": hf,
                 "ignore_case": ic,
             }
         case ResumeClamp(phrases=phrases, to_score=to, strip_trailing=strip):
@@ -194,14 +188,14 @@ def py_post_process(
 
 def apply_post_process(stage: ScoreStage, texts: Sequence[str], score: SentimentScore) -> SentimentScore:
     match stage:
-        case PositiveClamp(from_score=fr, to_score=to, max_words=mw, positive_floor=pf) if int(score) == fr and any(
-            len(text.split()) <= mw and not Lexicon.has_hit(text, floor=pf, want_negative=False) for text in texts
+        case PositiveClamp(from_score=fr, to_score=to, max_words=mw) if int(score) == fr and any(
+            len(text.split()) <= mw and not Lexicon.has_hit(text, want_negative=False) for text in texts
         ):
             return SentimentScore(to)
         case MildIrritationDemote(
-            trigger_groups=tg, hostile_groups=hg, from_score=fr, to_score=to, hostile_floor=hf, ignore_case=ic
+            trigger_groups=tg, hostile_groups=hg, from_score=fr, to_score=to, ignore_case=ic
         ) if int(score) == fr and any(
-            compile_groups(tg, ic).search(text) and not is_hostile(text, hg, ic, hf) for text in texts
+            compile_groups(tg, ic).search(text) and not is_hostile(text, hg, ic) for text in texts
         ):
             return SentimentScore(to)
         case ResumeClamp(phrases=phrases, to_score=to, strip_trailing=strip) if any(
@@ -212,7 +206,8 @@ def apply_post_process(stage: ScoreStage, texts: Sequence[str], score: Sentiment
             return score
 
 
-def is_hostile(text: str, hostile_groups: tuple[tuple[str, str], ...], ignore_case: bool, hostile_floor: int) -> bool:
-    return compile_groups(hostile_groups, ignore_case).search(text) is not None or Lexicon.has_hit(
-        text, floor=hostile_floor, want_negative=True
+def is_hostile(text: str, hostile_groups: tuple[tuple[str, str], ...], ignore_case: bool) -> bool:
+    return (
+        compile_groups(hostile_groups, ignore_case).search(text) is not None
+        or Lexicon.has_hit(text, want_negative=True)
     )

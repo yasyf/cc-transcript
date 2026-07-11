@@ -4,12 +4,9 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-import anyio
-import anyio.to_thread
-
 from cc_transcript.models import UserEvent
 from cc_transcript.sentiment.buckets import ConversationBucket, SentimentScore
-from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
+from cc_transcript.sentiment.lexicon import rust_lexicon
 from cc_transcript.sentiment.scorespec import (
     ScoreSpec,
     has_lexicon_stage,
@@ -41,7 +38,7 @@ class InferenceEngine(Protocol):
 
 def rust_score_backend(spec: ScoreSpec) -> ModuleType | None:
     """The Rust score executor when built, the spec is portable, and (for lexicon
-    stages) the udpipe model is available; otherwise None → the Python interpreter."""
+    stages) the Rust lexicon is available; otherwise None → the Python interpreter."""
     if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
         return None
     try:
@@ -70,9 +67,6 @@ class FilteredEngine:
         *,
         on_progress: Callable[[int], None] = NOOP_PROGRESS,
     ) -> list[SentimentScore]:
-        if has_lexicon_stage(self.spec):
-            await self.prepare_lexicon()
-
         texts = [[e.text for e in bucket.events if isinstance(e, UserEvent)] for bucket in buckets]
         rust = rust_score_backend(self.spec)
         spec_json = score_spec_to_json(self.spec) if rust is not None else ""
@@ -94,12 +88,6 @@ class FilteredEngine:
         if rust is not None:
             return [SentimentScore(s) for s in rust.score_post_process(spec_json, texts, [int(s) for s in scored])]
         return py_post_process(self.spec, texts, scored)
-
-    async def prepare_lexicon(self) -> None:
-        if await anyio.to_thread.run_sync(rust_lexicon) is not None:
-            return
-        await NLP.ensure_ready()
-        await Lexicon.ensure_ready()
 
     def peak_memory_gb(self) -> float:
         return self.inner.peak_memory_gb()

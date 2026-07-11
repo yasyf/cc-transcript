@@ -15,6 +15,7 @@ Run: ``uv run python scripts/build_rust_literals.py``
 from __future__ import annotations
 
 import math
+import unicodedata
 from pathlib import Path
 
 from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
@@ -161,16 +162,45 @@ def render_domain(domain: str, manifest: dict[str, str | float | tuple[str, ...]
     return "\n".join((HEADER, "", *lines)) + "\n"
 
 
+def alpha_ranges() -> list[tuple[int, int]]:
+    # The exact codepoint ranges where chr(cp).isalpha() — gc in {Lu,Ll,Lt,Lm,Lo} on
+    # this CPython. char::is_alphabetic() is a 10k-codepoint superset (Nl + Other_Alphabetic
+    # + …), so the Rust tokenizer binary-searches THESE instead, pinned to one Unicode version.
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    for cp in range(0x110000):
+        if chr(cp).isalpha():
+            start = cp if start is None else start
+        elif start is not None:
+            ranges.append((start, cp - 1))
+            start = None
+    if start is not None:
+        ranges.append((start, 0x10FFFF))
+    return ranges
+
+
+def render_unicode() -> str:
+    note = f"// str.isalpha() codepoint ranges — CPython, Unicode {unicodedata.unidata_version}."
+    items = "\n".join(f"    (0x{lo:04X}, 0x{hi:04X})," for lo, hi in alpha_ranges())
+    body = f"pub const ALPHA_RANGES: &[(u32, u32)] = &[\n{items}\n];"
+    return "\n".join((HEADER, note, "", body)) + "\n"
+
+
 def mod_rs() -> str:
-    return "\n".join((HEADER, "", "pub mod command;", "pub mod mining;", "pub mod protocol;")) + "\n"
+    mods = ("pub mod command;", "pub mod mining;", "pub mod protocol;", "pub mod unicode;")
+    return "\n".join((HEADER, "", *mods)) + "\n"
 
 
 def render() -> dict[str, str]:
     manifest = literals()
-    return {"rust/src/generated/mod.rs": mod_rs()} | {
-        f"rust/src/generated/{domain}.rs": render_domain(domain, manifest)
-        for domain in dict.fromkeys(name.partition(".")[0] for name in manifest)
-    }
+    return (
+        {"rust/src/generated/mod.rs": mod_rs()}
+        | {
+            f"rust/src/generated/{domain}.rs": render_domain(domain, manifest)
+            for domain in dict.fromkeys(name.partition(".")[0] for name in manifest)
+        }
+        | {"rust/src/generated/unicode.rs": render_unicode()}
+    )
 
 
 def main() -> None:

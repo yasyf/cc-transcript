@@ -1,11 +1,22 @@
+# cc-transcript coding-domain sentiment overrides — surface-form polarity that supersedes AFINN.
+# Base lexicon: AFINN-165 by Finn Årup Nielsen (https://github.com/fnielsen/afinn), Open Database License (ODbL) v1.0.
+# 61 rows, tab-separated word<TAB>score, sorted by word. Per-row justifications live in the lexicon-redesign audit.
 absurd	-2
 break	-2
+breaking	-2
+breaks	-2
+broke	-2
 broken	-3
 bug	-2
 cease	-3
+ceased	-3
+ceases	-3
+ceasing	-3
 continue	2
 correct	2
+crises	-3
 crisp	2
+dies	-3
 done	2
 exactly	2
 finally	2
@@ -16,16 +27,25 @@ garbage	-3
 guess	-2
 guessing	-2
 halt	-3
+halted	-3
+halting	-3
+halts	-3
 hang	-2
 impossible	-2
 incorrect	-2
 incredible	3
 magic	2
+misled	-3
 neat	2
 nightmare	-3
+nightmares	-3
 nope	-2
+panicking	-3
 proceed	2
 quit	-3
+quits	-3
+quitted	-3
+quitting	-3
 regression	-2
 resume	2
 ship	2
@@ -33,6 +53,12 @@ slow	-2
 smooth	2
 solve	2
 stop	-3
+stopped	-3
+stopping	-3
+stops	-3
 tight	2
 trash	-3
+trashed	-3
+trashes	-3
+trashing	-3
 work	2

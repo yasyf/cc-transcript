@@ -1,172 +1,139 @@
-"""Parity + drift guards for the dual-backend lexicon.
+"""Hermetic parity + well-formedness guards for the surface-only lexicon.
 
-- The Rust (udpipe) path reproduces the spaCy path's *filter decisions* over a
-  frozen adversarial fixture — the gate that proves sentiment scores don't shift.
-  The fixture is routed through the same ``JUNK_USER_MESSAGE_RE`` the sentiment
-  engine applies, so protocol wrappers drop before scoring and only genuine prose
-  reaches the comparison. Skips when the UDPipe model can't be fetched (offline) or
-  spaCy isn't installed.
-- Single source: the Rust-embedded overrides equal `Lexicon.DOMAIN_OVERRIDES`, and
-  the generated `cc_transcript/sentiment/data/*.tsv` still match the installed
-  `afinn` + overrides.
+Zero models, zero network, zero lemmatizers: the Python :class:`Lexicon` and the
+Rust fast path both tokenize identically (a pinned ``str.isalpha`` table) and look
+up token surfaces in the same two TSVs. These tests assert the two backends produce
+byte-identical tokenizations and polarities, pin the two historical bugs the
+redesign fixes, and validate the checked-in override table.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import warnings
+import json
 from pathlib import Path
 
-import anyio
 import pytest
 
-from cc_transcript.filterspec import (
-    JUNK_USER_MESSAGE_RE,
-    MILD_IMPATIENCE_GROUPS,
-    SHORT_MESSAGE_MAX_WORDS,
-    compile_groups,
-)
-from cc_transcript.sentiment.lexicon import NLP, Lexicon, rust_lexicon
+from cc_transcript.sentiment.lexicon import AFINN, DOMAIN_OVERRIDES, Lexicon, tokenize
+from tests.support import requires_rust
 
-POSITIVE_FLOOR = 3
-HOSTILE_FLOOR = 3
-MILD_IMPATIENCE_RE = compile_groups(MILD_IMPATIENCE_GROUPS, True)
+TOKENIZER_FIXTURE = Path(__file__).resolve().parent / "testdata" / "tokenizer_fixture.json"
 LEXICON_DATA = Path(__file__).resolve().parent.parent / "cc_transcript" / "sentiment" / "data"
 
-sentiment_extra = importlib.util.find_spec("spacy") is not None and importlib.util.find_spec("afinn") is not None
-requires_sentiment = pytest.mark.skipif(not sentiment_extra, reason="spaCy/afinn ([sentiment]) not installed")
 
-# Genuine-prose fixture for the spaCy/Rust filter-parity comparison, keyed by the
-# tokenizer/lemmatizer divergence source each group probes. Every entry survives
-# JUNK_USER_MESSAGE_RE; the short subset drives the positive-axis check and the mild
-# subset the negative-axis check, mirroring the PositiveClamp and mild-irritation stages.
-ADVERSARIAL_USER_TEXTS: dict[str, tuple[str, ...]] = {
-    "positive": (
-        "this is exactly the fix I wanted",
-        "this is incredible work",
-        "that was an amazing and wonderful solution",
-        "the résumé looks incredible",
-    ),
-    "negative": (
-        "the whole build is completely broken and useless",
-        "this is a terrible and horrible regression",
-        "the deploy is garbage and the server keeps crashing",
-        "the migration script is an absolute nightmare",
-    ),
-    "neutral": (
-        "please update the readme and ship it",
-        "add a new column to the users table",
-        "the parser reads the transcript into events",
-    ),
-    "short_boundary": (
-        "finally it works",
-        "this is broken",
-        "great crisp work",
-        "incredible smooth ship",
-        "absolutely terrible garbage",
-        "it is amazing",
-        "totally useless nonsense",
-        "done",
-    ),
-    "unicode": (
-        "café finally works",
-        "naïve fix broke everything",
-        "café works perfectly",
-    ),
-    "mild_impatience": (
-        "it's broken yet again",
-        "the deploy failed once again",
-        "flaky and broken for the third time",
-        "this terrible bug is back yet again",
-        "still broken once again after the fix",
-    ),
-    "empty_ish": (
-        "",
-        "   ",
-        "...",
-    ),
-}
+def fixture_cases() -> list[tuple[str, str, list[str]]]:
+    cases = json.loads(TOKENIZER_FIXTURE.read_text(encoding="utf-8"))
+    return [
+        (case["id"], "".join(chr(int(cp[2:], 16)) for cp in case["input_codepoints"]), case["expected_tokens"])
+        for case in cases
+    ]
 
-# Protocol wrappers the sentiment junk filter drops before scoring. The tag-glued
-# 'Login successful' case diverges between spaCy and udpipe, so it must never score.
-WRAPPER_NOISE_TEXTS: tuple[str, ...] = (
-    "<local-command-stdout>Login successful</local-command-stdout>",
-    "<local-command-stderr>fatal: not a git repo</local-command-stderr>",
-    "<command-name>commit</command-name>",
-    "<bash-input>uv run pytest</bash-input>",
-)
 
-GENUINE_USER_TEXTS: tuple[str, ...] = tuple(t for group in ADVERSARIAL_USER_TEXTS.values() for t in group)
-FIXTURE_USER_TEXTS: tuple[str, ...] = GENUINE_USER_TEXTS + WRAPPER_NOISE_TEXTS
+FIXTURE_CASES = fixture_cases()
 
 
 def parse_tsv(name: str) -> dict[str, int]:
     text = (LEXICON_DATA / name).read_text(encoding="utf-8")
-    return {w: int(s) for w, _, s in (line.partition("\t") for line in text.splitlines()) if s}
+    return {
+        word: int(score)
+        for line in text.splitlines()
+        for word, sep, score in [line.partition("\t")]
+        if sep and not word.startswith("#")
+    }
 
 
-def test_embedded_overrides_match_python_source() -> None:
-    rust = rust_lexicon()
-    if rust is None:
-        pytest.skip("Rust lexicon (udpipe model) unavailable")
-    assert dict(rust.lexicon_overrides()) == Lexicon.DOMAIN_OVERRIDES
+# ---- tokenizer parity (source: testdata/tokenizer_fixture.json) --------------------
 
 
-def test_generated_overrides_tsv_matches_source() -> None:
-    assert parse_tsv("domain_overrides.tsv") == Lexicon.DOMAIN_OVERRIDES
+@pytest.mark.parametrize(("case_id", "text", "expected"), FIXTURE_CASES, ids=[c[0] for c in FIXTURE_CASES])
+def test_python_tokenizer_matches_fixture(case_id: str, text: str, expected: list[str]) -> None:
+    assert tokenize(text) == expected
 
 
-@requires_sentiment
-def test_generated_afinn_tsv_matches_installed_package() -> None:
-    warnings.simplefilter("ignore", SyntaxWarning)
-    from afinn import Afinn
+@requires_rust
+@pytest.mark.parametrize(("case_id", "text", "expected"), FIXTURE_CASES, ids=[c[0] for c in FIXTURE_CASES])
+def test_rust_tokenizer_matches_python_and_fixture(case_id: str, text: str, expected: list[str]) -> None:
+    from cc_transcript import _parser_rs
 
-    afinn = Afinn(language="en", emoticons=False)
-    expected = {word: int(score) for word, score in afinn._dict.items() if " " not in word}  # noqa: SLF001
-    assert parse_tsv("afinn-en-165.tsv") == expected
+    assert list(_parser_rs.lexicon_tokenize(text)) == tokenize(text) == expected
 
 
-@pytest.mark.parametrize("text", WRAPPER_NOISE_TEXTS)
-def test_wrapper_noise_filtered_before_scoring(text: str) -> None:
-    assert JUNK_USER_MESSAGE_RE.search(text) is not None
+# ---- the two historical bugs the redesign fixes (per DELIVERABLE_5) -----------------
 
 
-@requires_sentiment
-def test_rust_filter_decisions_match_spacy(monkeypatch: pytest.MonkeyPatch) -> None:
-    rust = rust_lexicon()
-    if rust is None:
-        pytest.skip("Rust lexicon (udpipe model) unavailable")
-    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
-    try:
-        anyio.run(NLP.ensure_ready)
-        anyio.run(Lexicon.ensure_ready)
-    except RuntimeError:
-        pytest.skip("en_core_web_sm not available")
+@requires_rust
+def test_bug_broken_is_hostile_both_backends() -> None:
+    # Was a live spaCy(-2, miss) vs UDPipe(-3, hit) split; the surface path pins -3 both sides.
+    from cc_transcript import _parser_rs
 
-    nlp = NLP.get()
-    assert nlp is not None
+    assert Lexicon.polarity("broken") == -3
+    assert _parser_rs.lexicon_polarity("broken") == -3
+    assert Lexicon.has_hit("this is broken", want_negative=True) is True
+    assert _parser_rs.lexicon_has_hit("this is broken", True) is True
 
-    def spacy_hit(text: str, floor: int, *, want_negative: bool) -> bool:
-        if want_negative:
-            return any(Lexicon.polarity(t.lemma_) <= -floor for t in nlp(text) if t.is_alpha)
-        return any(Lexicon.polarity(t.lemma_) >= floor for t in nlp(text) if t.is_alpha)
 
-    prose = [t for t in FIXTURE_USER_TEXTS if not JUNK_USER_MESSAGE_RE.search(t)]
-    assert prose == list(GENUINE_USER_TEXTS), "junk filter must drop the wrappers and keep every genuine-prose entry"
+@requires_rust
+def test_bug_lost_recovers_signal_both_backends() -> None:
+    # Both old lemmatizers collapsed 'lost'/'losing' to 'lose' (0); the surface keeps AFINN -3.
+    from cc_transcript import _parser_rs
 
-    short = [t for t in prose if len(t.split()) <= SHORT_MESSAGE_MAX_WORDS]
-    mild = [t for t in prose if MILD_IMPATIENCE_RE.search(t)]
-    assert short and mild, "frozen fixture must exercise both the short and mild subsets"
+    for surface in ("lost", "losing"):
+        assert Lexicon.polarity(surface) == -3
+        assert _parser_rs.lexicon_polarity(surface) == -3
+    assert Lexicon.has_hit("we lost the data", want_negative=True) is True
+    assert _parser_rs.lexicon_has_hit("we lost the data", True) is True
 
-    pos_bad = [
-        t
-        for t in short
-        if rust.lexicon_has_hit(t, POSITIVE_FLOOR, False) != spacy_hit(t, POSITIVE_FLOOR, want_negative=False)
-    ]
-    hos_bad = [
-        t
-        for t in mild
-        if rust.lexicon_has_hit(t, HOSTILE_FLOOR, True) != spacy_hit(t, HOSTILE_FLOOR, want_negative=True)
-    ]
-    assert not pos_bad, f"positive(short) divergences: {pos_bad[:5]}"
-    assert not hos_bad, f"hostile(mild) divergences: {hos_bad[:5]}"
+
+# ---- full-lexicon polarity + has_hit equality, both backends -----------------------
+
+
+@requires_rust
+def test_embedded_overrides_match_source() -> None:
+    from cc_transcript import _parser_rs
+
+    assert dict(_parser_rs.lexicon_overrides()) == DOMAIN_OVERRIDES
+
+
+@requires_rust
+def test_full_lexicon_polarity_and_has_hit_parity() -> None:
+    from cc_transcript import _parser_rs
+
+    # Every override key plus a deterministic AFINN slice, through polarity and both
+    # has_hit axes on both backends — exact equality, no sampling luck.
+    keys = list(DOMAIN_OVERRIDES) + sorted(AFINN)[::97]
+    assert len(keys) > len(DOMAIN_OVERRIDES)
+    for key in keys:
+        assert _parser_rs.lexicon_polarity(key) == Lexicon.polarity(key), key
+        for want_negative in (True, False):
+            assert _parser_rs.lexicon_has_hit(key, want_negative) == Lexicon.has_hit(
+                key, want_negative=want_negative
+            ), (key, want_negative)
+
+
+# ---- every override key must be tokenizer-reachable --------------------------------
+
+
+def test_every_override_key_is_tokenizer_reachable() -> None:
+    unreachable = [key for key in DOMAIN_OVERRIDES if tokenize(key) != [key]]
+    assert unreachable == []
+
+
+# ---- TSV well-formedness (the validation the old build script owned) ---------------
+
+
+def test_domain_overrides_tsv_wellformed() -> None:
+    overrides = parse_tsv("domain_overrides.tsv")
+    assert overrides == DOMAIN_OVERRIDES
+    assert len(overrides) == 61
+    assert list(overrides) == sorted(overrides), "domain_overrides.tsv must stay word-sorted"
+    assert all(1 <= abs(score) <= 5 for score in overrides.values())
+    header = [line for line in (LEXICON_DATA / "domain_overrides.tsv").read_text(encoding="utf-8").splitlines() if line.startswith("#")]
+    assert header and any("ODbL" in line and "AFINN" in line for line in header)
+
+
+def test_afinn_tsv_wellformed() -> None:
+    afinn = parse_tsv("afinn-en-165.tsv")
+    assert afinn == AFINN
+    assert len(afinn) > 3000
+    assert all(1 <= abs(score) <= 5 for score in afinn.values())
+    assert all(" " not in word for word in afinn)

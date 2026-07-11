@@ -6,9 +6,9 @@ Built directly on the core event spine. Consumers bucket ``UserEvent`` /
 ``AssistantEvent`` streams via :func:`bucket_events`, compose a
 :class:`ScoreSpec` from the builders (:func:`flag_frustration`,
 :func:`clamp_positive`, :func:`demote_mild_irritation`, :func:`clamp_resume`),
-and run it via :class:`FilteredEngine`. The lexicon-backed stages lemmatize with
-the Rust udpipe backend when available, falling back to spaCy + AFINN (the
-``[sentiment]`` extra).
+and run it via :class:`FilteredEngine`. The lexicon-backed stages score token
+surfaces against a bundled AFINN snapshot plus coding-domain overrides — a
+deterministic, dependency-free lookup shared with the Rust fast path.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from cc_transcript.sentiment.buckets import (
     extract_bucket_keys,
 )
 from cc_transcript.sentiment.engine import NOOP_PROGRESS, FilteredEngine, InferenceEngine
-from cc_transcript.sentiment.lexicon import NLP, Lexicon
+from cc_transcript.sentiment.lexicon import Lexicon
 from cc_transcript.sentiment.scorespec import (
     FrustrationShortCircuit,
     MildIrritationDemote,
