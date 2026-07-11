@@ -14,6 +14,15 @@ if TYPE_CHECKING:
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
+TRANSCRIPT_MEMO: dict[tuple[SessionId, Path], Path] = {}
+"""Positive-hit memo for :func:`find_transcript_sync`, keyed by ``(session_id, resolved root)``.
+
+Only successful lookups are cached: a miss may become a hit once Claude Code
+writes the file, so ``None`` is never stored. A cached hit is revalidated with
+``Path.exists`` before it is reused — a transcript file can be pruned from disk —
+and a stale entry falls through to a fresh scan.
+"""
+
 
 class TranscriptExpiredError(RuntimeError):
     """A session's transcript file is gone from disk.
@@ -106,10 +115,18 @@ def find_transcript_sync(session_id: SessionId, *, root: Path | None = None) -> 
     :data:`CLAUDE_PROJECTS_DIR`), resolving symlinks — cc-pool gives one
     transcript several path spellings — and deduping by resolved real path.
 
+    A successful lookup is memoized in ``TRANSCRIPT_MEMO`` under
+    ``(session_id, resolved root)`` and revalidated on the next hit, so a
+    repeated probe skips the recursive glob while a pruned transcript still
+    forces a fresh scan.
+
     Returns:
         The newest-mtime real path, or None when no transcript exists.
     """
     base = root or CLAUDE_PROJECTS_DIR
+    key = (session_id, base.resolve())
+    if (cached := TRANSCRIPT_MEMO.get(key)) is not None and cached.exists():
+        return cached
     if not base.exists():
         return None
     candidates: dict[Path, float] = {}
@@ -120,7 +137,9 @@ def find_transcript_sync(session_id: SessionId, *, root: Path | None = None) -> 
             candidates[real] = real.stat().st_mtime
         except OSError:
             continue
-    return max(candidates, key=candidates.__getitem__, default=None)
+    if (hit := max(candidates, key=candidates.__getitem__, default=None)) is not None:
+        TRANSCRIPT_MEMO[key] = hit
+    return hit
 
 
 async def find_transcript(session_id: SessionId, *, root: Path | None = None) -> Path | None:

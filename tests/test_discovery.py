@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
+import pytest
 
 from cc_transcript.discovery import (
+    TRANSCRIPT_MEMO,
     TranscriptDiscovery,
     TranscriptExpiredError,
     find_transcript,
@@ -14,7 +17,17 @@ from cc_transcript.discovery import (
 )
 from cc_transcript.ids import SessionId, ToolUseId
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 SESSION = SessionId("0c8e6f54-aaaa-bbbb-cccc-d1d2d3d4d5d6")
+
+
+@pytest.fixture(autouse=True)
+def clear_transcript_memo() -> Iterator[None]:
+    TRANSCRIPT_MEMO.clear()
+    yield
+    TRANSCRIPT_MEMO.clear()
 
 
 def write(path: Path, mtime: float) -> Path:
@@ -65,6 +78,36 @@ def test_find_transcript_sync_newest_mtime_wins(tmp_path: Path) -> None:
     write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
     newer = write(tmp_path / "proj-b" / f"{SESSION}.jsonl", 200.0)
     assert find_transcript_sync(SESSION, root=tmp_path) == newer.resolve()
+
+
+def test_find_transcript_sync_memoizes_a_hit_and_skips_the_rescan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) == real.resolve()
+    assert TRANSCRIPT_MEMO[(SESSION, tmp_path.resolve())] == real.resolve()
+
+    def boom(*_: object, **__: object) -> None:
+        raise AssertionError("a memo hit must not rescan the projects tree")
+
+    monkeypatch.setattr(Path, "rglob", boom)
+    assert find_transcript_sync(SESSION, root=tmp_path) == real.resolve()
+
+
+def test_find_transcript_sync_never_memoizes_a_miss(tmp_path: Path) -> None:
+    assert find_transcript_sync(SESSION, root=tmp_path) is None
+    assert (SESSION, tmp_path.resolve()) not in TRANSCRIPT_MEMO
+    later = write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) == later.resolve()
+
+
+def test_find_transcript_sync_revalidates_a_deleted_cached_path(tmp_path: Path) -> None:
+    stale = write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) == stale.resolve()
+    stale.unlink()
+    fresh = write(tmp_path / "proj-b" / f"{SESSION}.jsonl", 200.0)
+    assert find_transcript_sync(SESSION, root=tmp_path) == fresh.resolve()
+    assert TRANSCRIPT_MEMO[(SESSION, tmp_path.resolve())] == fresh.resolve()
 
 
 def test_find_transcript_missing_session_returns_none(tmp_path: Path) -> None:
