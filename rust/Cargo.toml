@@ -2,6 +2,8 @@
 name = "cc_transcript_parser"
 version = "0.9.0"
 edition = "2021"
+# include_str! reaches into cc_transcript/ two levels up; the crate only builds in-repo.
+publish = false
 
 [lib]
 name = "_parser_rs"

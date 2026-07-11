@@ -30,7 +30,7 @@ def lexicon_polarity(token: str, /) -> int:
     """Polarity of a single token surface: domain override, else AFINN floored at MIN_MAGNITUDE."""
 
 def lexicon_has_hit(text: str, want_negative: bool, /) -> bool:
-    """Whether any token surface's polarity crosses the fixed floor (``<= -floor`` when ``want_negative``)."""
+    """Whether any token surface's polarity crosses the fixed ±3 floor (the negative side when ``want_negative``)."""
 
 def lexicon_overrides() -> list[tuple[str, int]]:
     """The embedded domain-override entries (for the single-source drift guard)."""

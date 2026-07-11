@@ -118,6 +118,12 @@ def test_every_override_key_is_tokenizer_reachable() -> None:
     assert unreachable == []
 
 
+def test_afinn_unreachable_keys_are_the_audited_inventory() -> None:
+    unreachable = {key for key in AFINN if tokenize(key) != [key]}
+    assert len(unreachable) == 28
+    assert all("-" in key or any(ch.isdigit() for ch in key) for key in unreachable)
+
+
 # ---- TSV well-formedness (the validation the old build script owned) ---------------
 
 
