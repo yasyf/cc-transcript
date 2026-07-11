@@ -30,8 +30,11 @@ EXPORTS: dict[str, str] = {
         ),
         "cc_transcript.tools": (
             "TOOL_ALIASES",
+            "AskUserQuestionResult",
             "BashCall",
+            "BashResult",
             "EditCall",
+            "EditResult",
             "EditSpan",
             "ExitPlanModeCall",
             "GlobCall",
@@ -40,16 +43,27 @@ EXPORTS: dict[str, str] = {
             "MultiEditCall",
             "NotebookEditCall",
             "OtherCall",
+            "OtherResult",
+            "QuestionAnnotation",
             "ReadCall",
+            "ReadResult",
             "SkillCall",
+            "SkillResult",
             "TaskCall",
             "TaskCreateCall",
+            "TaskLaunchResult",
+            "TaskResult",
             "TaskUpdateCall",
+            "TextResult",
             "ToolCall",
             "ToolCallBase",
             "ToolInputError",
+            "ToolResult",
+            "ToolResultBase",
+            "ToolResultError",
             "WorkflowCall",
             "WriteCall",
+            "WriteResult",
             "expand_tool_names",
             "file_path_of",
             "hunks_of",
@@ -57,6 +71,7 @@ EXPORTS: dict[str, str] = {
             "mcp_access",
             "mcp_parts",
             "parse_tool_call",
+            "parse_tool_result",
             "tool_name_matches",
         ),
         "cc_transcript.command": (
@@ -697,4 +712,49 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         tool_name_matches as tool_name_matches,
+    )
+    from cc_transcript.tools import (
+        AskUserQuestionResult as AskUserQuestionResult,
+    )
+    from cc_transcript.tools import (
+        BashResult as BashResult,
+    )
+    from cc_transcript.tools import (
+        EditResult as EditResult,
+    )
+    from cc_transcript.tools import (
+        OtherResult as OtherResult,
+    )
+    from cc_transcript.tools import (
+        QuestionAnnotation as QuestionAnnotation,
+    )
+    from cc_transcript.tools import (
+        ReadResult as ReadResult,
+    )
+    from cc_transcript.tools import (
+        SkillResult as SkillResult,
+    )
+    from cc_transcript.tools import (
+        TaskLaunchResult as TaskLaunchResult,
+    )
+    from cc_transcript.tools import (
+        TaskResult as TaskResult,
+    )
+    from cc_transcript.tools import (
+        TextResult as TextResult,
+    )
+    from cc_transcript.tools import (
+        ToolResult as ToolResult,
+    )
+    from cc_transcript.tools import (
+        ToolResultBase as ToolResultBase,
+    )
+    from cc_transcript.tools import (
+        ToolResultError as ToolResultError,
+    )
+    from cc_transcript.tools import (
+        WriteResult as WriteResult,
+    )
+    from cc_transcript.tools import (
+        parse_tool_result as parse_tool_result,
     )

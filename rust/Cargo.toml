@@ -24,7 +24,9 @@ extension-module = ["python", "pyo3/extension-module"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"], optional = true }
-sonic-rs = "0.5"
+# arbitrary_precision keeps each number's raw text so json_to_py (event.rs) can
+# mirror Python json semantics for numbers sonic-rs stores lossily as f64.
+sonic-rs = { version = "0.5", features = ["arbitrary_precision"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rayon = { version = "1.10", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }

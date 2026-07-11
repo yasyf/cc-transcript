@@ -17,7 +17,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.tools import BashCall, EditCall, Hunk, OtherCall
+from cc_transcript.tools import AskUserQuestionResult, BashCall, BashResult, EditCall, Hunk, OtherCall
 from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
@@ -373,3 +373,43 @@ def test_from_session_raises_expired_when_transcript_gone(tmp_path: Path) -> Non
     with pytest.raises(TranscriptExpiredError) as excinfo:
         anyio.run(partial(SessionActivity.from_session, SESSION, root=tmp_path))
     assert excinfo.value.session_id == SESSION
+
+
+def test_typed_result_dispatches_on_the_use_tool_name() -> None:
+    ask_input = {"questions": [{"question": "Q?", "options": [{"label": "A"}], "multiSelect": False}]}
+    a = assistant(
+        "a1",
+        blocks=(
+            bash("t_bash", "ls"),
+            ToolUseBlock(id=ToolUseId("t_ask"), name="AskUserQuestion", input=ask_input),
+        ),
+    )
+    u = user(
+        "u1",
+        "next",
+        blocks=(
+            ToolResultBlock(
+                tool_use_id=ToolUseId("t_bash"),
+                content="out",
+                is_error=False,
+                tool_use_result={"stdout": "out", "stderr": ""},
+            ),
+            ToolResultBlock(
+                tool_use_id=ToolUseId("t_ask"),
+                content="A",
+                is_error=False,
+                tool_use_result={"answers": {"Q?": "A"}, "annotations": {}},
+            ),
+        ),
+    )
+    uses = {use.call.name: use for turn in activity(a, u).turns for use in turn.tool_uses}
+    assert isinstance(uses["Bash"].typed_result, BashResult)
+    assert uses["Bash"].typed_result.stdout == "out"
+    assert isinstance(uses["AskUserQuestion"].typed_result, AskUserQuestionResult)
+    assert uses["AskUserQuestion"].typed_result.answers == {"Q?": "A"}
+
+
+def test_typed_result_is_none_without_a_result() -> None:
+    (use,) = activity(assistant("a1", blocks=(bash("t_x", "ls"),))).turns[0].tool_uses
+    assert use.result is None
+    assert use.typed_result is None

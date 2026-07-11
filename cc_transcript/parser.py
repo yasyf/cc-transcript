@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -45,7 +46,7 @@ from cc_transcript.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Sequence
     from pathlib import Path
 
     from cc_transcript.filterspec import FilterSpec
@@ -101,12 +102,13 @@ def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
 
 
 def parse_user_blocks(
-    content: str | list[dict[str, Any]], *, is_async: bool = False
+    content: str | list[dict[str, Any]], *, tool_use_result: Mapping[str, Any] | str | None = None
 ) -> tuple[str, tuple[ContentBlock, ...]]:
     match content:
         case str():
             return content, ()
         case list():
+            is_async = isinstance(tool_use_result, Mapping) and tool_use_result.get("isAsync") is True
             texts = [block["text"] for block in content if block.get("type") == "text"]
             blocks: tuple[ContentBlock, ...] = tuple(TextBlock(text) for text in texts) + tuple(
                 ToolResultBlock(
@@ -114,6 +116,7 @@ def parse_user_blocks(
                     content=flatten_result_content(block["content"]),
                     is_error=bool(block.get("is_error")),
                     is_async=is_async,
+                    tool_use_result=tool_use_result,
                 )
                 for block in content
                 if block.get("type") == "tool_result"
@@ -175,7 +178,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
         case "user":
             text, blocks = parse_user_blocks(
                 data["message"]["content"],
-                is_async=isinstance(tur := data.get("toolUseResult"), dict) and tur.get("isAsync") is True,
+                tool_use_result=data.get("toolUseResult"),
             )
             interrupted_message_id = data.get("interruptedMessageId")
             return UserEvent(

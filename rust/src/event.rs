@@ -31,11 +31,13 @@ fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>
     match value.get_type() {
         JsonType::Null => Ok(py.None().into_bound(py)),
         JsonType::Boolean => value.as_bool().unwrap().into_bound_py_any(py),
-        JsonType::Number => match (value.as_i64(), value.as_u64(), value.as_f64()) {
-            (Some(i), _, _) => i.into_bound_py_any(py),
-            (_, Some(u), _) => u.into_bound_py_any(py),
-            (_, _, Some(f)) => f.into_bound_py_any(py),
-            _ => unreachable!("a JSON number is i64, u64, or f64"),
+        JsonType::Number => match (value.as_i64(), value.as_u64()) {
+            (Some(i), _) => i.into_bound_py_any(py),
+            (_, Some(u)) => u.into_bound_py_any(py),
+            // sonic-rs stores the rest as f64, collapsing `-0` (orjson int 0)
+            // and `-0.0` (orjson float -0.0) into +0.0; re-parse the raw text
+            // with orjson's semantics.
+            _ => number_from_raw(py, value),
         },
         JsonType::String => Ok(PyString::new(py, value.as_str().unwrap()).into_any()),
         JsonType::Array => {
@@ -53,6 +55,26 @@ fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>
             Ok(dict.into_any())
         }
     }
+}
+
+// orjson (the PythonBackend decoder) semantics over the raw text: a frac/exp
+// marker means float (the f64 text parse keeps -0.0's sign); an integer
+// literal is int when it fits i64/u64 (`-0` -> 0) and a lossy float beyond.
+fn number_from_raw<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    let raw = value
+        .as_raw_number()
+        .expect("a parsed JSON number carries raw text under arbitrary_precision");
+    let text = raw.as_str();
+    if !text.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
+        match (text.parse::<i64>(), text.parse::<u64>()) {
+            (Ok(i), _) => return i.into_bound_py_any(py),
+            (_, Ok(u)) => return u.into_bound_py_any(py),
+            _ => {}
+        }
+    }
+    text.parse::<f64>()
+        .expect("JSON number text parses as f64")
+        .into_bound_py_any(py)
 }
 
 fn build_meta<'py>(py: Python<'py>, meta: &EntryMeta) -> PyResult<Bound<'py, PyAny>> {
@@ -112,8 +134,19 @@ fn build_block<'py>(py: Python<'py>, block: &ContentBlock) -> PyResult<Bound<'py
             &tu.name,
             json_to_py(py, &tu.input)?,
         )),
-        ContentBlock::ToolResult(tr) => models_type(py, &TOOL_RESULT_BLOCK_CLS, "ToolResultBlock")?
-            .call1((&tr.tool_use_id, &tr.content, tr.is_error, tr.is_async)),
+        ContentBlock::ToolResult(tr) => {
+            let tool_use_result = match &tr.tool_use_result {
+                Some(value) => json_to_py(py, value)?,
+                None => py.None().into_bound(py),
+            };
+            models_type(py, &TOOL_RESULT_BLOCK_CLS, "ToolResultBlock")?.call1((
+                &tr.tool_use_id,
+                &tr.content,
+                tr.is_error,
+                tr.is_async,
+                tool_use_result,
+            ))
+        }
         ContentBlock::Fallback(fb) => models_type(py, &FALLBACK_BLOCK_CLS, "FallbackBlock")?
             .call1((&fb.from_model, &fb.to_model)),
         ContentBlock::Other { ty, raw } => {

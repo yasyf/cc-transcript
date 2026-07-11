@@ -74,7 +74,10 @@ pub struct ToolResultBlock {
     pub tool_use_id: String,
     pub content: String,
     pub is_error: bool,
+    /// Computed at parse time from the payload's ``isAsync`` marker (parser.py parse_user_blocks).
     pub is_async: bool,
+    /// The record-level ``toolUseResult`` payload verbatim; Python receives it exactly as written.
+    pub tool_use_result: Option<Value>,
 }
 
 #[derive(Debug)]

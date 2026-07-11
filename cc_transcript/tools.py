@@ -11,16 +11,18 @@ lazily so the tree-sitter grammar never loads on the hook hot path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript.ids import ToolDigest, tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Container, Mapping
+    from collections.abc import Container
     from typing import Any, Self
 
     from cc_transcript.command import CommandLine
+    from cc_transcript.models import Question
 
 TOOL_ALIASES: dict[str, str] = {
     "Bash": "Execute",
@@ -457,6 +459,358 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
         if on_error == "raise":
             raise ToolInputError(f"{name} input missing or malformed: {error}") from error
         return OtherCall(name=name, raw=input)
+
+
+class ToolResultError(ValueError):
+    """A known tool's result payload did not match its expected shape."""
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionAnnotation:
+    """A reviewer's annotation on one answered AskUserQuestion round.
+
+    Attributes:
+        preview: The short preview the picker rendered under the answer, if any.
+        notes: The free-text note the reviewer attached, if any.
+    """
+
+    preview: str | None = None
+    notes: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResultBase:
+    """Common shape of every typed tool result.
+
+    Attributes:
+        name: The tool name exactly as invoked (aliases are not normalized).
+        raw: The verbatim ``toolUseResult`` payload — a mapping for structured
+            results, a plain string for denials, or None when the record carried
+            none. Excluded from equality and repr.
+    """
+
+    name: str
+    raw: Mapping[str, Any] | str | None = field(repr=False, compare=False)
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        """Extract this result type's fields from the tool ``name`` and raw payload."""
+        return cls(name=name, raw=raw)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BashResult(ToolResultBase):
+    """A Bash/Execute execution result."""
+
+    stdout: str | None = None
+    stderr: str | None = None
+    interrupted: bool = False
+    is_image: bool = False
+    no_output_expected: bool = False
+    background_task_id: str | None = None
+    return_code_interpretation: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            stdout=raw.get("stdout"),
+            stderr=raw.get("stderr"),
+            interrupted=raw.get("interrupted", False),
+            is_image=raw.get("isImage", False),
+            no_output_expected=raw.get("noOutputExpected", False),
+            background_task_id=raw.get("backgroundTaskId"),
+            return_code_interpretation=raw.get("returnCodeInterpretation"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EditResult(ToolResultBase):
+    """An Edit result: the applied replacement and its structured patch.
+
+    ``structured_patch`` and ``original_file`` are kept verbatim — the patch as
+    the raw hunk list Claude Code emits, the original file as its full text.
+    """
+
+    file_path: str | None = None
+    old_string: str | None = None
+    new_string: str | None = None
+    replace_all: bool = False
+    user_modified: bool = False
+    stale_recovered: bool = False
+    structured_patch: list[Any] | None = None
+    original_file: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            file_path=raw.get("filePath"),
+            old_string=raw.get("oldString"),
+            new_string=raw.get("newString"),
+            replace_all=raw.get("replaceAll", False),
+            user_modified=raw.get("userModified", False),
+            stale_recovered=raw.get("staleRecovered", False),
+            structured_patch=raw.get("structuredPatch"),
+            original_file=raw.get("originalFile"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WriteResult(ToolResultBase):
+    """A Write/Create result: the written content and its structured patch."""
+
+    content: str | None = None
+    file_path: str | None = None
+    original_file: str | None = None
+    structured_patch: list[Any] | None = None
+    user_modified: bool = False
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            content=raw.get("content"),
+            file_path=raw.get("filePath"),
+            original_file=raw.get("originalFile"),
+            structured_patch=raw.get("structuredPatch"),
+            user_modified=raw.get("userModified", False),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReadResult(ToolResultBase):
+    """A Read result: the file payload and its content type.
+
+    ``file`` is kept verbatim — the raw mapping (``filePath``, ``content``,
+    ``numLines``, …) Claude Code emits for the read window.
+    """
+
+    file: Mapping[str, Any] | None = None
+    type: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(name=name, raw=raw, file=raw.get("file"), type=raw.get("type"))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TaskResultBase(ToolResultBase):
+    """The Agent/Task result family head; :meth:`from_raw` picks the variant.
+
+    A terminal run (``totalDurationMs``/``usage`` present) becomes a
+    :class:`TaskResult`; an in-flight launch (``outputFile`` present) becomes a
+    :class:`TaskLaunchResult`; a payload matching neither shape degrades to
+    :class:`OtherResult` rather than an all-None variant.
+    """
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> TaskResult | TaskLaunchResult | OtherResult:
+        if raw.get("totalDurationMs") is not None or raw.get("usage") is not None:
+            return TaskResult.from_raw(name, raw)
+        if raw.get("outputFile") is not None:
+            return TaskLaunchResult.from_raw(name, raw)
+        return OtherResult(name=name, raw=raw)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TaskResult(TaskResultBase):
+    """A completed Agent/Task subagent run.
+
+    ``tool_stats``, ``usage``, and ``content`` are kept verbatim — the raw
+    per-tool stats, usage mapping, and final content-block list the subagent
+    returned.
+    """
+
+    agent_id: str | None = None
+    agent_type: str | None = None
+    status: str | None = None
+    total_duration_ms: int | None = None
+    total_tokens: int | None = None
+    total_tool_use_count: int | None = None
+    tool_stats: Mapping[str, Any] | None = None
+    usage: Mapping[str, Any] | None = None
+    content: list[Any] | None = None
+    prompt: str | None = None
+    resolved_model: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            agent_id=raw.get("agentId"),
+            agent_type=raw.get("agentType"),
+            status=raw.get("status"),
+            total_duration_ms=raw.get("totalDurationMs"),
+            total_tokens=raw.get("totalTokens"),
+            total_tool_use_count=raw.get("totalToolUseCount"),
+            tool_stats=raw.get("toolStats"),
+            usage=raw.get("usage"),
+            content=raw.get("content"),
+            prompt=raw.get("prompt"),
+            resolved_model=raw.get("resolvedModel"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TaskLaunchResult(TaskResultBase):
+    """An in-flight Agent/Task launch (async or backgrounded subagent)."""
+
+    agent_id: str | None = None
+    output_file: str | None = None
+    is_async: bool = False
+    can_read_output_file: bool = False
+    description: str | None = None
+    prompt: str | None = None
+    status: str | None = None
+    resolved_model: str | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            agent_id=raw.get("agentId"),
+            output_file=raw.get("outputFile"),
+            is_async=raw.get("isAsync", False),
+            can_read_output_file=raw.get("canReadOutputFile", False),
+            description=raw.get("description"),
+            prompt=raw.get("prompt"),
+            status=raw.get("status"),
+            resolved_model=raw.get("resolvedModel"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SkillResult(ToolResultBase):
+    """A Skill invocation result."""
+
+    command_name: str | None = None
+    success: bool = False
+    allowed_tools: tuple[str, ...] | None = None
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            command_name=raw.get("commandName"),
+            success=raw.get("success", False),
+            allowed_tools=tuple(tools) if isinstance(tools := raw.get("allowedTools"), list) else None,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AskUserQuestionResult(ToolResultBase):
+    """An AskUserQuestion result: the rounds, the answers, and any annotations.
+
+    Attributes:
+        questions: The rounds echoed in the payload, lifted via
+            :func:`~cc_transcript.models.parse_questions`.
+        answers: A mapping from each round's question text to the chosen answer.
+        annotations: A mapping from question text to the reviewer's
+            :class:`QuestionAnnotation`, present only for annotated rounds.
+    """
+
+    answers: Mapping[str, str] = field(default_factory=dict)
+    annotations: Mapping[str, QuestionAnnotation] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, name: str, raw: Mapping[str, Any]) -> Self:
+        return cls(
+            name=name,
+            raw=raw,
+            answers=answers if isinstance(answers := raw.get("answers"), Mapping) else {},
+            annotations={
+                question: QuestionAnnotation(preview=value.get("preview"), notes=value.get("notes"))
+                for question, value in annotations.items()
+                if isinstance(value, Mapping)
+            }
+            if isinstance(annotations := raw.get("annotations"), Mapping)
+            else {},
+        )
+
+    @property
+    def questions(self) -> tuple[Question, ...]:
+        """The AskUserQuestion rounds echoed in the result payload."""
+        from cc_transcript.models import parse_questions
+
+        rounds = self.raw.get("questions") if isinstance(self.raw, Mapping) else None
+        return parse_questions(rounds) or ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextResult(ToolResultBase):
+    """A plain-string tool result — denials and other unstructured payloads."""
+
+    text: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OtherResult(ToolResultBase):
+    """A tool result the platform does not type: unknown tools, untyped tools
+    (such as TodoWrite), and known tools whose payload shape did not match."""
+
+
+ToolResult = (
+    BashResult
+    | EditResult
+    | WriteResult
+    | ReadResult
+    | TaskResult
+    | TaskLaunchResult
+    | SkillResult
+    | AskUserQuestionResult
+    | TextResult
+    | OtherResult
+)
+
+TOOL_RESULT_TYPES: dict[str, type[ToolResultBase]] = {
+    "Bash": BashResult,
+    "Edit": EditResult,
+    "Write": WriteResult,
+    "Read": ReadResult,
+    "Agent": TaskResultBase,
+    "Skill": SkillResult,
+    "AskUserQuestion": AskUserQuestionResult,
+}
+
+
+def parse_tool_result(
+    name: str, payload: Mapping[str, Any] | str | None, *, on_error: Literal["raise", "other"] = "raise"
+) -> ToolResult:
+    """Parse a tool's name and record-level ``toolUseResult`` into the typed hierarchy.
+
+    The payload is the verbatim ``toolUseResult`` — dict, string, or absent.
+    A plain-string payload (a denial) is a :class:`TextResult`; a payload for a
+    tool the platform does not type is an :class:`OtherResult`, as is an absent
+    (None) payload. Strict by default: a known tool whose mapping payload is
+    malformed raises :class:`ToolResultError`; the activity lift passes
+    ``on_error='other'`` so a Claude Code shape change degrades to
+    :class:`OtherResult` instead of crashing the session lift.
+
+    Example:
+        >>> parse_tool_result("Bash", {"stdout": "hi", "stderr": ""}).stdout
+        'hi'
+    """
+    match payload:
+        case str():
+            return TextResult(name=name, raw=payload, text=payload)
+        case Mapping():
+            if (cls := TOOL_RESULT_TYPES.get(TOOL_ALIASES_REVERSE.get(name, name))) is None:
+                return OtherResult(name=name, raw=payload)
+            try:
+                return cls.from_raw(name, payload)
+            except (KeyError, TypeError) as error:
+                if on_error == "raise":
+                    raise ToolResultError(f"{name} result missing or malformed: {error}") from error
+                return OtherResult(name=name, raw=payload)
+        case _:
+            return OtherResult(name=name, raw=payload)
 
 
 def hunks_of(call: ToolCall) -> tuple[Hunk, ...]:

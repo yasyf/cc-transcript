@@ -133,16 +133,17 @@ fn parse_api_error(data: &Value) -> Option<ApiError> {
     })
 }
 
-fn parse_tool_result(block: &Value, is_async: bool) -> Result<ContentBlock, ParseError> {
+fn parse_tool_result(block: &Value, tool_use_result: Option<&Value>) -> Result<ContentBlock, ParseError> {
     Ok(ContentBlock::ToolResult(ToolResultBlock {
         tool_use_id: require_str(block, "tool_use_id")?.to_string(),
         content: flatten_result_content(require(block, "content")?),
         is_error: field_bool(block, "is_error"),
-        is_async,
+        is_async: tool_use_result.is_some_and(|tur| field_bool(tur, "isAsync")),
+        tool_use_result: tool_use_result.cloned(),
     }))
 }
 
-fn parse_user_content(content: &Value, is_async: bool) -> Result<UserContent, ParseError> {
+fn parse_user_content(content: &Value, tool_use_result: Option<&Value>) -> Result<UserContent, ParseError> {
     match content.as_str() {
         Some(s) => Ok(UserContent::Plain(s.to_string())),
         None => {
@@ -150,7 +151,7 @@ fn parse_user_content(content: &Value, is_async: bool) -> Result<UserContent, Pa
                 .iter()
                 .filter_map(|b| match block_type(b) {
                     Some("text") => field_str(b, "text").map(|t| Ok(ContentBlock::Text(t.to_string()))),
-                    Some("tool_result") => Some(parse_tool_result(b, is_async)),
+                    Some("tool_result") => Some(parse_tool_result(b, tool_use_result)),
                     _ => None,
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -256,11 +257,9 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
     let ty = require_str(&data, "type")?.to_string();
     match ty.as_str() {
         "user" => {
-            let is_async = field(&data, "toolUseResult")
-                .map(|tur| field_bool(tur, "isAsync"))
-                .unwrap_or(false);
+            let tool_use_result = field(&data, "toolUseResult");
             let content =
-                parse_user_content(require(require(&data, "message")?, "content")?, is_async)?;
+                parse_user_content(require(require(&data, "message")?, "content")?, tool_use_result)?;
             return Ok(Entry::User(UserEntry {
                 meta: parse_meta(&data)?,
                 content,
@@ -428,7 +427,7 @@ fn parse_print_message(element: &Value) -> Result<PrintMessage, ParseError> {
             blocks: parse_assistant_blocks(require(message, "content")?)?,
             model: field_str(message, "model").map(str::to_string),
         },
-        "user" => PrintBody::User(parse_user_content(require(message, "content")?, false)?),
+        "user" => PrintBody::User(parse_user_content(require(message, "content")?, None)?),
         other => {
             return Err(ParseError::Value(format!(
                 "not a conversational element: {other:?}"
@@ -580,6 +579,7 @@ mod tests {
         assert_eq!(result.content, "ok");
         assert!(!result.is_error);
         assert!(result.is_async);
+        assert!(field_bool(result.tool_use_result.as_ref().unwrap(), "isAsync"));
     }
 
     #[test]

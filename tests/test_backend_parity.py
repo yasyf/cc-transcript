@@ -105,6 +105,46 @@ def test_real_corpus_parity(path: Path) -> None:
 
 
 @requires_rust
+def test_tool_use_result_number_types_match_orjson(tmp_path: Path) -> None:
+    """`-0` is int 0, `-0.0` is float -0.0, and a beyond-u64 integer is a lossy
+    float through both backends — orjson (the PythonBackend decoder) is the
+    reference, and equality masks int/float and signed-zero drift, so the types
+    and reprs are pinned. Raw bytes, because Python has no int -0 to round-trip
+    through orjson."""
+    from cc_transcript.models import ToolResultBlock, UserEvent
+
+    path = tmp_path / "zeros.jsonl"
+    path.write_bytes(
+        b'{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z",'
+        b'"toolUseResult":{"neg_zero_int":-0,"neg_zero_float":-0.0,"int":5,"float":1.0,'
+        b'"big":18446744073709551616,"exp":1e2},'
+        b'"message":{"role":"user","content":'
+        b'[{"type":"tool_result","tool_use_id":"t1","content":"x","is_error":false}]}}'
+    )
+
+    def payload(events: list[TranscriptEvent]) -> dict[str, Any]:
+        (event,) = events
+        assert isinstance(event, UserEvent)
+        (block,) = (b for b in event.blocks if isinstance(b, ToolResultBlock))
+        assert isinstance(block.tool_use_result, dict)
+        return dict(block.tool_use_result)
+
+    py, rs = payload(parse_events_from_bytes(path.read_bytes())), payload(rust_events(path))
+    expected = {
+        "neg_zero_int": 0,
+        "neg_zero_float": -0.0,
+        "int": 5,
+        "float": 1.0,
+        "big": 1.8446744073709552e19,
+        "exp": 100.0,
+    }
+    for backend in (py, rs):
+        assert {k: (type(v), repr(v)) for k, v in backend.items()} == {
+            k: (type(v), repr(v)) for k, v in expected.items()
+        }
+
+
+@requires_rust
 def test_real_corpus_is_present() -> None:
     if not real_corpus():
         pytest.skip(f"no transcripts under {CLAUDE_PROJECTS_DIR}")

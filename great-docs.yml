@@ -147,6 +147,24 @@ reference:
       - expand_tool_names
       - matches_names
       - tool_name_matches
+  - title: Tool results
+    desc: One typed per-tool result hierarchy over the record-level toolUseResult payload.
+    contents:
+      - ToolResult
+      - ToolResultBase
+      - parse_tool_result
+      - ToolResultError
+      - BashResult
+      - EditResult
+      - WriteResult
+      - ReadResult
+      - TaskResult
+      - TaskLaunchResult
+      - SkillResult
+      - AskUserQuestionResult
+      - QuestionAnnotation
+      - TextResult
+      - OtherResult
   - title: Command lines
     desc: Parsed bash command lines — the one command-parsing layer, tree-sitter-backed.
     contents:

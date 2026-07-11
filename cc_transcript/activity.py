@@ -21,7 +21,7 @@ from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
-from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call
+from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call, parse_tool_result
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from cc_transcript.ids import SessionId, ToolUseId
     from cc_transcript.models import TranscriptEvent
-    from cc_transcript.tools import Hunk, ToolCall
+    from cc_transcript.tools import Hunk, ToolCall, ToolResult
 
 UserClassifier = Callable[["UserEvent"], bool]
 """Decides which :class:`~cc_transcript.models.UserEvent` objects open a turn."""
@@ -77,6 +77,18 @@ class ToolUse:
     def duration_ms(self) -> int | None:
         """Milliseconds from the call to its result, or None without a result."""
         return None if self.result_ts is None else round((self.result_ts - self.ts).total_seconds() * 1000)
+
+    @property
+    def typed_result(self) -> ToolResult | None:
+        """The result parsed into the typed result hierarchy, or None without a result.
+
+        The join point for :func:`~cc_transcript.tools.parse_tool_result`: pairs
+        this use's tool name with its result block's ``tool_use_result`` payload,
+        degrading to :class:`~cc_transcript.tools.OtherResult` on any shape drift.
+        """
+        if self.result is None:
+            return None
+        return parse_tool_result(self.call.name, self.result.tool_use_result, on_error="other")
 
 
 @dataclass(frozen=True, slots=True)

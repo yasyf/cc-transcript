@@ -340,7 +340,13 @@ def test_tool_result_is_async_from_entry_level_flag() -> None:
     event = parse_event(user_async_tool_result())
     assert isinstance(event, UserEvent)
     assert event.blocks == (
-        ToolResultBlock(tool_use_id=ToolUseId("toolu_async"), content="launched", is_error=False, is_async=True),
+        ToolResultBlock(
+            tool_use_id=ToolUseId("toolu_async"),
+            content="launched",
+            is_error=False,
+            is_async=True,
+            tool_use_result={"isAsync": True, "status": "async_launched"},
+        ),
     )
 
 

@@ -4,20 +4,32 @@ import pytest
 
 from cc_transcript.command import CommandLine
 from cc_transcript.ids import tool_digest
+from cc_transcript.models import Question
 from cc_transcript.tools import (
+    AskUserQuestionResult,
     BashCall,
+    BashResult,
     EditCall,
+    EditResult,
     EditSpan,
     GrepCall,
     Hunk,
     MultiEditCall,
     NotebookEditCall,
     OtherCall,
+    OtherResult,
+    QuestionAnnotation,
+    ReadResult,
+    SkillResult,
     TaskCall,
+    TaskLaunchResult,
+    TaskResult,
     TaskUpdateCall,
+    TextResult,
     ToolInputError,
     WorkflowCall,
     WriteCall,
+    WriteResult,
     expand_tool_names,
     file_path_of,
     hunks_of,
@@ -25,6 +37,7 @@ from cc_transcript.tools import (
     mcp_access,
     mcp_parts,
     parse_tool_call,
+    parse_tool_result,
     tool_name_matches,
 )
 
@@ -360,3 +373,186 @@ def test_mcp_parts(name: str, expected: tuple[str, str] | None) -> None:
 )
 def test_mcp_access(tool: str, expected: str) -> None:
     assert mcp_access(tool) == expected
+
+
+def test_bash_result_parses_typed_fields() -> None:
+    result = parse_tool_result(
+        "Bash",
+        {
+            "stdout": "hi",
+            "stderr": "err",
+            "interrupted": False,
+            "isImage": False,
+            "noOutputExpected": True,
+            "backgroundTaskId": "bg1",
+            "returnCodeInterpretation": "exit 0",
+        },
+    )
+    assert result == BashResult(
+        name="Bash",
+        raw={},  # raw excluded from equality
+        stdout="hi",
+        stderr="err",
+        interrupted=False,
+        is_image=False,
+        no_output_expected=True,
+        background_task_id="bg1",
+        return_code_interpretation="exit 0",
+    )
+    assert isinstance(result, BashResult) and result.raw["stdout"] == "hi"
+
+
+def test_execute_alias_parses_to_bash_result() -> None:
+    result = parse_tool_result("Execute", {"stdout": "x"})
+    assert isinstance(result, BashResult) and result.name == "Execute" and result.stdout == "x"
+
+
+def test_edit_result_keeps_structured_patch_and_original_file_raw() -> None:
+    result = parse_tool_result(
+        "Edit",
+        {
+            "filePath": "/a.py",
+            "oldString": "x",
+            "newString": "y",
+            "replaceAll": True,
+            "userModified": True,
+            "staleRecovered": False,
+            "structuredPatch": [{"lines": ["-x", "+y"]}],
+            "originalFile": "x\n",
+        },
+    )
+    assert result == EditResult(
+        name="Edit",
+        raw={},
+        file_path="/a.py",
+        old_string="x",
+        new_string="y",
+        replace_all=True,
+        user_modified=True,
+        stale_recovered=False,
+        structured_patch=[{"lines": ["-x", "+y"]}],
+        original_file="x\n",
+    )
+
+
+def test_write_result_fields() -> None:
+    result = parse_tool_result(
+        "Create",  # Write alias
+        {"content": "body", "filePath": "/w.py", "originalFile": None, "structuredPatch": [], "userModified": False},
+    )
+    assert isinstance(result, WriteResult) and result.name == "Create"
+    assert result.content == "body" and result.file_path == "/w.py" and result.structured_patch == []
+
+
+def test_read_result_keeps_file_mapping_raw() -> None:
+    result = parse_tool_result("Read", {"type": "text", "file": {"filePath": "/r.py", "numLines": 3}})
+    assert result == ReadResult(name="Read", raw={}, file={"filePath": "/r.py", "numLines": 3}, type="text")
+
+
+def test_task_result_terminal_shape() -> None:
+    result = parse_tool_result(
+        "Agent",
+        {
+            "agentId": "a1",
+            "agentType": "Explore",
+            "status": "completed",
+            "totalDurationMs": 100,
+            "totalTokens": 50,
+            "totalToolUseCount": 2,
+            "toolStats": {"Read": 1},
+            "usage": {"input_tokens": 3},
+            "content": [{"type": "text", "text": "done"}],
+            "prompt": "go",
+            "resolvedModel": "m",
+        },
+    )
+    assert isinstance(result, TaskResult)
+    assert result.agent_id == "a1" and result.total_duration_ms == 100 and result.total_tool_use_count == 2
+    assert result.tool_stats == {"Read": 1} and result.content == [{"type": "text", "text": "done"}]
+
+
+def test_task_launch_result_inflight_shape() -> None:
+    result = parse_tool_result(
+        "Task",  # Agent alias
+        {
+            "agentId": "a2",
+            "outputFile": "/out",
+            "isAsync": True,
+            "canReadOutputFile": True,
+            "description": "d",
+            "prompt": "p",
+            "status": "async_launched",
+            "resolvedModel": "claude-opus-4-8",
+        },
+    )
+    assert isinstance(result, TaskLaunchResult) and result.name == "Task"
+    assert result.output_file == "/out" and result.is_async is True and result.can_read_output_file is True
+    assert result.resolved_model == "claude-opus-4-8" and result.status == "async_launched"
+
+
+def test_task_payload_matching_neither_shape_degrades_to_other_result() -> None:
+    result = parse_tool_result(
+        "Agent",
+        {
+            "agent_id": "team-1",
+            "agent_type": "reviewer",
+            "name": "rev",
+            "status": "spawned",
+            "team_name": "core",
+            "tmux_pane_id": "%1",
+        },
+    )
+    assert isinstance(result, OtherResult) and result.raw["agent_id"] == "team-1"
+
+
+def test_skill_result_extracts_allowed_tools() -> None:
+    result = parse_tool_result("Skill", {"commandName": "codex", "success": True, "allowedTools": ["Bash", "Read"]})
+    assert result == SkillResult(
+        name="Skill", raw={}, command_name="codex", success=True, allowed_tools=("Bash", "Read")
+    )
+
+
+def test_ask_user_question_result_lifts_questions_answers_annotations() -> None:
+    result = parse_tool_result(
+        "AskUserQuestion",
+        {
+            "questions": [
+                {
+                    "question": "Which approach?",
+                    "header": "Approach",
+                    "options": [{"label": "A", "description": "first"}, {"label": "B", "description": "second"}],
+                    "multiSelect": False,
+                }
+            ],
+            "answers": {"Which approach?": "A"},
+            "annotations": {"Which approach?": {"preview": "picked A", "notes": "with a caveat"}},
+        },
+    )
+    assert isinstance(result, AskUserQuestionResult)
+    assert result.answers == {"Which approach?": "A"}
+    assert result.annotations == {"Which approach?": QuestionAnnotation(preview="picked A", notes="with a caveat")}
+    assert result.questions == (
+        Question(question="Which approach?", header="Approach", multi_select=False, labels=("A", "B")),
+    )
+
+
+def test_string_payload_becomes_text_result() -> None:
+    result = parse_tool_result("Bash", "The user doesn't want to proceed with this tool use.")
+    assert result == TextResult(name="Bash", raw="", text="The user doesn't want to proceed with this tool use.")
+
+
+def test_absent_payload_becomes_other_result() -> None:
+    result = parse_tool_result("Bash", None)
+    assert isinstance(result, OtherResult) and result.name == "Bash" and result.raw is None
+
+
+def test_unknown_and_untyped_tools_become_other_result() -> None:
+    assert isinstance(parse_tool_result("TodoWrite", {"todos": []}), OtherResult)
+    assert isinstance(parse_tool_result("mcp__x__do", {"k": "v"}), OtherResult)
+
+
+def test_missing_keys_fall_back_to_defaults() -> None:
+    result = parse_tool_result("Bash", {})
+    assert isinstance(result, BashResult)
+    assert result.stdout is None and result.interrupted is False and result.is_image is False
+    assert result.background_task_id is None and result.return_code_interpretation is None

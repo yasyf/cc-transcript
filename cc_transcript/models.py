@@ -53,6 +53,37 @@ class Question:
     labels: tuple[str, ...]
 
 
+def parse_questions(rounds: object) -> tuple[Question, ...] | None:
+    """Lift an AskUserQuestion ``questions`` array into typed rounds, or None.
+
+    Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/src/parse.rs``):
+    a missing or non-list ``rounds`` reads as None; within the array each entry
+    lacking a string ``question`` is dropped, ``header`` reads as None unless a
+    string, ``multi_select`` is False unless ``multiSelect`` is a bool, and
+    ``labels`` collects each option's string ``label``, skipping any without one.
+
+    The single owner of the lift: :attr:`ToolUseBlock.questions` reads it from a
+    tool-use input, and :attr:`~cc_transcript.tools.AskUserQuestionResult.questions`
+    from the echoed result payload.
+    """
+    if not isinstance(rounds, list):
+        return None
+    return tuple(
+        Question(
+            question=text,
+            header=h if isinstance(h := q.get("header"), str) else None,
+            multi_select=isinstance(m := q.get("multiSelect"), bool) and m,
+            labels=tuple(
+                label
+                for option in (q.get("options") if isinstance(q.get("options"), list) else ())
+                if isinstance(option, dict) and isinstance(label := option.get("label"), str)
+            ),
+        )
+        for q in rounds
+        if isinstance(q, dict) and isinstance(text := q.get("question"), str)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ToolUseBlock:
     """An assistant request to invoke a tool.
@@ -96,28 +127,9 @@ class ToolUseBlock:
     def questions(self) -> tuple[Question, ...] | None:
         """The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
 
-        Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/src/parse.rs``):
-        a missing or non-list ``questions`` reads as None; within the array each entry
-        lacking a string ``question`` is dropped, ``header`` reads as None unless a
-        string, ``multi_select`` is False unless ``multiSelect`` is a bool, and
-        ``labels`` collects each option's string ``label``, skipping any without one.
+        Delegates to :func:`parse_questions`, which mirrors the Rust parse layer.
         """
-        if not isinstance(rounds := self.input.get("questions"), list):
-            return None
-        return tuple(
-            Question(
-                question=text,
-                header=h if isinstance(h := q.get("header"), str) else None,
-                multi_select=isinstance(m := q.get("multiSelect"), bool) and m,
-                labels=tuple(
-                    label
-                    for option in (q.get("options") if isinstance(q.get("options"), list) else ())
-                    if isinstance(option, dict) and isinstance(label := option.get("label"), str)
-                ),
-            )
-            for q in rounds
-            if isinstance(q, dict) and isinstance(text := q.get("question"), str)
-        )
+        return parse_questions(self.input.get("questions"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,14 +140,20 @@ class ToolResultBlock:
         tool_use_id: The id of the originating tool-use block.
         content: The result text, flattened from string or block content.
         is_error: Whether the tool reported a failure.
-        is_async: Whether the originating tool ran asynchronously, read from the
-            entry-level ``toolUseResult.isAsync`` marker.
+        is_async: Whether the originating tool ran asynchronously — computed at
+            the parse layer from :attr:`tool_use_result`'s ``isAsync`` marker,
+            then stored (like :attr:`UserEvent.interrupted`).
+        tool_use_result: The record-level ``toolUseResult`` payload verbatim — a
+            mapping for structured results, a plain string for denials, or None
+            when the record carried none. Pass a tool name and this payload to
+            :func:`~cc_transcript.tools.parse_tool_result` for the typed result.
     """
 
     tool_use_id: ToolUseId
     content: str
     is_error: bool
     is_async: bool = False
+    tool_use_result: Mapping[str, Any] | str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -171,6 +171,88 @@ def fixture_entries() -> list[dict[str, Any]]:
                 ],
             },
         ),
+        # Object toolUseResult payloads (Bash, Edit, Task, AskUserQuestion), one plain-string
+        # denial payload, and an absent payload (toolu_1, above) — every payload shape both
+        # backends must clone onto ToolResultBlock.tool_use_result byte-for-byte.
+        raw_envelope(
+            type="user",
+            toolUseResult={
+                "stdout": "hello",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+                "noOutputExpected": False,
+                "returnCodeInterpretation": "Command exited with code 0",
+            },
+            message={
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_bash", "content": "hello", "is_error": False}],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolUseResult={
+                "filePath": "/x.py",
+                "oldString": "alpha",
+                "newString": "beta",
+                "replaceAll": False,
+                "userModified": False,
+                "staleRecovered": False,
+                "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-alpha", "+beta"]}],
+                "originalFile": "alpha\n",
+            },
+            message={
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_edit", "content": "ok", "is_error": False}],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolUseResult={
+                "agentId": "agent-77",
+                "agentType": "Explore",
+                "status": "completed",
+                "totalDurationMs": 1234,
+                "totalTokens": 567,
+                "totalToolUseCount": 3,
+                "toolStats": {"Read": 2, "Grep": 1},
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "content": [{"type": "text", "text": "found it"}],
+                "prompt": "investigate the parser",
+                "resolvedModel": "claude-opus-4-8",
+            },
+            message={
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_task", "content": "found it", "is_error": False}],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolUseResult={
+                "questions": [
+                    {
+                        "question": "Which approach?",
+                        "header": "Approach",
+                        "options": [{"label": "A", "description": "first"}, {"label": "B", "description": "second"}],
+                        "multiSelect": False,
+                    }
+                ],
+                "answers": {"Which approach?": "A"},
+                "annotations": {"Which approach?": {"preview": "picked A", "notes": "with a caveat"}},
+            },
+            message={
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_ask", "content": "A", "is_error": False}],
+            },
+        ),
+        raw_envelope(
+            type="user",
+            toolUseResult="The user doesn't want to proceed with this tool use.",
+            message={
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_deny", "content": "denied", "is_error": True}],
+            },
+        ),
         raw_envelope(
             type="user",
             isCompactSummary=True,
