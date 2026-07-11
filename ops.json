@@ -1,1 +1,1 @@
-{"v":1,"lamport":8,"ops":[{"kind":"add_comment","body":"19 commits fe35ba84..5a4dd4ae. All four criteria verified and marked met; two codex review passes, every confirmed finding fixed or accepted with rationale. support.py (not conftest.py) is the shared test home — no custom fixtures were needed."}]}
+{"v":1,"lamport":9,"ops":[{"kind":"add_comment","body":"Correction: the docs fix commit was amended in place after a writing-docs skill pass — final range is fe35ba84..ec00ab0d (5a4dd4ae superseded by ec00ab0d, same message)."}]}
