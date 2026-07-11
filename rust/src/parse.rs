@@ -3,10 +3,10 @@ use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::types::{
-    AssistantEntry, CacheCreation, ContentBlock, Entry, EntryMeta, FallbackBlock, InitInfo,
-    McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin, PrintBody, PrintMessage,
-    PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock, ToolUseBlock, Usage,
-    UserContent, UserEntry,
+    AssistantEntry, Attribution, CacheCreation, ContentBlock, Entry, EntryMeta, FallbackBlock,
+    InitInfo, McpServer, ModeChannel, ModeEntry, ModelUsage, OtherEntry, Plugin, PrintBody,
+    PrintMessage, PrintResult, Question, ServerToolUse, SystemEntry, ToolResultBlock, ToolUseBlock,
+    Usage, UserContent, UserEntry,
 };
 use crate::value::{block_type, field, field_bool, field_str};
 
@@ -91,6 +91,34 @@ fn parse_meta(data: &Value) -> Result<EntryMeta, ParseError> {
         entrypoint: field_str(data, "entrypoint").map(str::to_string),
         is_compact_summary: field_bool(data, "isCompactSummary"),
         is_visible_in_transcript_only: field_bool(data, "isVisibleInTranscriptOnly"),
+        user_type: field_str(data, "userType").map(str::to_string),
+        slug: field_str(data, "slug").map(str::to_string),
+    })
+}
+
+fn parse_image_paste_ids(data: &Value) -> Option<Vec<i64>> {
+    Some(
+        field(data, "imagePasteIds")?
+            .as_array()?
+            .iter()
+            .filter_map(JsonValueTrait::as_i64)
+            .collect(),
+    )
+}
+
+fn parse_attribution(data: &Value) -> Option<Attribution> {
+    let plugin = field_str(data, "attributionPlugin").map(str::to_string);
+    let skill = field_str(data, "attributionSkill").map(str::to_string);
+    let mcp_server = field_str(data, "attributionMcpServer").map(str::to_string);
+    let mcp_tool = field_str(data, "attributionMcpTool").map(str::to_string);
+    if plugin.is_none() && skill.is_none() && mcp_server.is_none() && mcp_tool.is_none() {
+        return None;
+    }
+    Some(Attribution {
+        plugin,
+        skill,
+        mcp_server,
+        mcp_tool,
     })
 }
 
@@ -225,6 +253,15 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
             return Ok(Entry::User(UserEntry {
                 meta: parse_meta(&data)?,
                 content,
+                prompt_id: field_str(&data, "promptId").map(str::to_string),
+                prompt_source: field_str(&data, "promptSource").map(str::to_string),
+                queue_priority: field_str(&data, "queuePriority").map(str::to_string),
+                image_paste_ids: parse_image_paste_ids(&data),
+                source_tool_use_id: truthy_str(&data, "sourceToolUseID").map(str::to_string),
+                source_tool_assistant_uuid: truthy_str(&data, "sourceToolAssistantUUID")
+                    .map(str::to_string),
+                mcp_meta: field(&data, "mcpMeta").cloned(),
+                permission_mode: field_str(&data, "permissionMode").map(str::to_string),
             }));
         }
         "assistant" => {
@@ -237,6 +274,9 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 blocks,
                 stop_reason: field_str(message, "stop_reason").map(str::to_string),
                 usage: parse_usage(message)?,
+                request_id: field_str(&data, "requestId").map(str::to_string),
+                forked_from: field_str(&data, "forkedFrom").map(str::to_string),
+                attribution: parse_attribution(&data),
             }));
         }
         "system" => {

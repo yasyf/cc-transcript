@@ -11,6 +11,7 @@ import pytest
 from cc_transcript import parse_event
 from cc_transcript.models import (
     AssistantEvent,
+    Attribution,
     CacheCreation,
     EventUuid,
     FallbackBlock,
@@ -197,6 +198,43 @@ def assistant_unknown_block() -> dict[str, Any]:
     )
 
 
+def user_all_envelope_fields() -> dict[str, Any]:
+    return envelope(
+        type="user",
+        userType="external",
+        slug="slug-value-11",
+        promptId="prompt-id-22",
+        promptSource="queued",
+        queuePriority="later",
+        imagePasteIds=[7, 42],
+        sourceToolUseID="toolu_src_33",
+        sourceToolAssistantUUID="asst-uuid-44",
+        mcpMeta={"_meta": {"frontLoadedTabGroupId": 1149555059}},
+        permissionMode="plan",
+        message={"role": "user", "content": "envelope with all new fields"},
+    )
+
+
+def assistant_with_attribution() -> dict[str, Any]:
+    return envelope(
+        type="assistant",
+        userType="external",
+        slug="slug-asst-55",
+        requestId="req-id-66",
+        forkedFrom="forked-77",
+        attributionPlugin="plugin-88",
+        attributionSkill="skill-99",
+        attributionMcpServer="server-aa",
+        attributionMcpTool="tool-bb",
+        message={
+            "role": "assistant",
+            "model": "claude-opus-4-8",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "attributed turn"}],
+        },
+    )
+
+
 def system_entry() -> dict[str, Any]:
     return envelope(type="system", subtype="stop_hook_summary", content="hook ran")
 
@@ -367,6 +405,83 @@ def test_assistant_unknown_block_degrades_to_other() -> None:
     event = parse_event(assistant_unknown_block())
     assert isinstance(event, AssistantEvent)
     assert event.blocks == (OtherBlock(type="future_block", raw={"type": "future_block", "payload": {"n": 1}}),)
+
+
+def test_user_envelope_and_prompt_fields() -> None:
+    event = parse_event(user_all_envelope_fields())
+    assert isinstance(event, UserEvent)
+    assert event.meta.user_type == "external"
+    assert event.meta.slug == "slug-value-11"
+    assert event.prompt_id == "prompt-id-22"
+    assert event.prompt_source == "queued"
+    assert event.queue_priority == "later"
+    assert event.image_paste_ids == (7, 42)
+    assert event.source_tool_use_id == ToolUseId("toolu_src_33")
+    assert event.source_tool_assistant_uuid == EventUuid("asst-uuid-44")
+    assert event.mcp_meta == {"_meta": {"frontLoadedTabGroupId": 1149555059}}
+    assert event.permission_mode == "plan"
+
+
+def test_user_new_fields_default_none_on_bare_record() -> None:
+    event = parse_event(user_str())
+    assert isinstance(event, UserEvent)
+    assert event.meta.user_type is None
+    assert event.meta.slug is None
+    assert event.prompt_id is None
+    assert event.prompt_source is None
+    assert event.queue_priority is None
+    assert event.image_paste_ids is None
+    assert event.source_tool_use_id is None
+    assert event.source_tool_assistant_uuid is None
+    assert event.mcp_meta is None
+    assert event.permission_mode is None
+
+
+def test_image_paste_ids_empty_list_is_empty_tuple_not_none() -> None:
+    event = parse_event(
+        envelope(type="user", imagePasteIds=[], message={"role": "user", "content": "no images"})
+    )
+    assert isinstance(event, UserEvent)
+    assert event.image_paste_ids == ()
+
+
+def test_assistant_attribution_and_request_fields() -> None:
+    event = parse_event(assistant_with_attribution())
+    assert isinstance(event, AssistantEvent)
+    assert event.request_id == "req-id-66"
+    assert event.forked_from == "forked-77"
+    assert event.attribution == Attribution(
+        plugin="plugin-88", skill="skill-99", mcp_server="server-aa", mcp_tool="tool-bb"
+    )
+    assert event.meta.user_type == "external"
+    assert event.meta.slug == "slug-asst-55"
+
+
+def test_assistant_without_attribution_is_none() -> None:
+    event = parse_event(assistant_text())
+    assert isinstance(event, AssistantEvent)
+    assert event.attribution is None
+    assert event.request_id is None
+    assert event.forked_from is None
+
+
+def test_assistant_attribution_present_with_single_field() -> None:
+    event = parse_event(
+        envelope(
+            type="assistant",
+            attributionSkill="lonely-skill",
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": None,
+                "content": [{"type": "text", "text": "x"}],
+            },
+        )
+    )
+    assert isinstance(event, AssistantEvent)
+    assert event.attribution == Attribution(
+        plugin=None, skill="lonely-skill", mcp_server=None, mcp_tool=None
+    )
 
 
 def test_system_entry() -> None:

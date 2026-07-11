@@ -21,6 +21,18 @@ pub struct EntryMeta {
     pub entrypoint: Option<String>,
     pub is_compact_summary: bool,
     pub is_visible_in_transcript_only: bool,
+    pub user_type: Option<String>,
+    pub slug: Option<String>,
+}
+
+/// The plugin/skill/MCP attribution of an assistant turn, present only when the
+/// entry carries at least one of the four attribution fields.
+#[derive(Debug)]
+pub struct Attribution {
+    pub plugin: Option<String>,
+    pub skill: Option<String>,
+    pub mcp_server: Option<String>,
+    pub mcp_tool: Option<String>,
 }
 
 /// One AskUserQuestion round, lifted from a tool-use input's ``questions``
@@ -96,6 +108,14 @@ impl UserContent {
 pub struct UserEntry {
     pub meta: EntryMeta,
     pub content: UserContent,
+    pub prompt_id: Option<String>,
+    pub prompt_source: Option<String>,
+    pub queue_priority: Option<String>,
+    pub image_paste_ids: Option<Vec<i64>>,
+    pub source_tool_use_id: Option<String>,
+    pub source_tool_assistant_uuid: Option<String>,
+    pub mcp_meta: Option<Value>,
+    pub permission_mode: Option<String>,
 }
 
 impl UserEntry {
@@ -129,6 +149,9 @@ pub struct AssistantEntry {
     pub blocks: Vec<ContentBlock>,
     pub stop_reason: Option<String>,
     pub usage: Option<Usage>,
+    pub request_id: Option<String>,
+    pub forked_from: Option<String>,
+    pub attribution: Option<Attribution>,
 }
 
 #[derive(Debug)]

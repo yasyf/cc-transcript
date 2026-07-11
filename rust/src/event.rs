@@ -5,17 +5,17 @@ use pyo3::IntoPyObjectExt;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::model::{
-    models_type, ASSISTANT_EVENT_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS, FALLBACK_BLOCK_CLS,
-    INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS, OTHER_BLOCK_CLS, OTHER_EVENT_CLS,
-    PLUGIN_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS, SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS,
-    TEXT_BLOCK_CLS, THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS,
-    USER_EVENT_CLS,
+    models_type, ASSISTANT_EVENT_CLS, ATTRIBUTION_CLS, CACHE_CREATION_CLS, ENTRY_META_CLS,
+    FALLBACK_BLOCK_CLS, INIT_INFO_CLS, MCP_SERVER_CLS, MODE_EVENT_CLS, MODEL_USAGE_CLS,
+    OTHER_BLOCK_CLS, OTHER_EVENT_CLS, PLUGIN_CLS, PRINT_MESSAGE_CLS, PRINT_RESULT_CLS,
+    SERVER_TOOL_USE_CLS, SYSTEM_EVENT_CLS, TEXT_BLOCK_CLS, THINKING_BLOCK_CLS,
+    TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, USAGE_CLS, USER_EVENT_CLS,
 };
 use crate::parse::ParseError;
 use crate::protocol::{interrupt_marker, is_agent_injection};
 use crate::types::{
-    joined_text, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage, PrintBody, PrintMessage,
-    PrintResult, Usage, UserContent,
+    joined_text, Attribution, ContentBlock, Entry, EntryMeta, InitInfo, ModelUsage, PrintBody,
+    PrintMessage, PrintResult, Usage, UserContent,
 };
 
 impl From<ParseError> for PyErr {
@@ -56,20 +56,38 @@ fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>
 }
 
 fn build_meta<'py>(py: Python<'py>, meta: &EntryMeta) -> PyResult<Bound<'py, PyAny>> {
-    models_type(py, &ENTRY_META_CLS, "EntryMeta")?.call1((
-        &meta.uuid,
-        meta.parent_uuid.as_deref(),
-        &meta.session_id,
-        meta.timestamp,
-        meta.cwd.as_deref(),
-        meta.git_branch.as_deref(),
-        meta.version.as_deref(),
-        meta.is_sidechain,
-        meta.is_meta,
-        meta.entrypoint.as_deref(),
-        meta.is_compact_summary,
-        meta.is_visible_in_transcript_only,
-    ))
+    let args: [Bound<'py, PyAny>; 14] = [
+        meta.uuid.as_str().into_bound_py_any(py)?,
+        meta.parent_uuid.as_deref().into_bound_py_any(py)?,
+        meta.session_id.as_str().into_bound_py_any(py)?,
+        meta.timestamp.into_bound_py_any(py)?,
+        meta.cwd.as_deref().into_bound_py_any(py)?,
+        meta.git_branch.as_deref().into_bound_py_any(py)?,
+        meta.version.as_deref().into_bound_py_any(py)?,
+        meta.is_sidechain.into_bound_py_any(py)?,
+        meta.is_meta.into_bound_py_any(py)?,
+        meta.entrypoint.as_deref().into_bound_py_any(py)?,
+        meta.is_compact_summary.into_bound_py_any(py)?,
+        meta.is_visible_in_transcript_only.into_bound_py_any(py)?,
+        meta.user_type.as_deref().into_bound_py_any(py)?,
+        meta.slug.as_deref().into_bound_py_any(py)?,
+    ];
+    models_type(py, &ENTRY_META_CLS, "EntryMeta")?.call1(PyTuple::new(py, args)?)
+}
+
+fn build_attribution<'py>(
+    py: Python<'py>,
+    attribution: Option<&Attribution>,
+) -> PyResult<Bound<'py, PyAny>> {
+    match attribution {
+        Some(a) => models_type(py, &ATTRIBUTION_CLS, "Attribution")?.call1((
+            a.plugin.as_deref(),
+            a.skill.as_deref(),
+            a.mcp_server.as_deref(),
+            a.mcp_tool.as_deref(),
+        )),
+        None => Ok(py.None().into_bound(py)),
+    }
 }
 
 fn build_block<'py>(py: Python<'py>, block: &ContentBlock) -> PyResult<Bound<'py, PyAny>> {
@@ -156,15 +174,33 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
             let text = user.content.text();
             let interrupted = interrupt_marker(&text).is_some();
             let is_agent_injected = is_agent_injection(&text);
-            models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1((
+            let image_paste_ids = match &user.image_paste_ids {
+                Some(ids) => PyTuple::new(py, ids.iter().copied())?.into_any(),
+                None => py.None().into_bound(py),
+            };
+            let mcp_meta = match &user.mcp_meta {
+                Some(value) => json_to_py(py, value)?,
+                None => py.None().into_bound(py),
+            };
+            let args: [Bound<'py, PyAny>; 13] = [
                 build_meta(py, &user.meta)?,
-                text,
-                build_user_blocks(py, &user.content)?,
-                interrupted,
-                is_agent_injected,
-            ))
+                text.into_bound_py_any(py)?,
+                build_user_blocks(py, &user.content)?.into_any(),
+                interrupted.into_bound_py_any(py)?,
+                is_agent_injected.into_bound_py_any(py)?,
+                user.prompt_id.as_deref().into_bound_py_any(py)?,
+                user.prompt_source.as_deref().into_bound_py_any(py)?,
+                user.queue_priority.as_deref().into_bound_py_any(py)?,
+                image_paste_ids,
+                user.source_tool_use_id.as_deref().into_bound_py_any(py)?,
+                user.source_tool_assistant_uuid.as_deref().into_bound_py_any(py)?,
+                mcp_meta,
+                user.permission_mode.as_deref().into_bound_py_any(py)?,
+            ];
+            models_type(py, &USER_EVENT_CLS, "UserEvent")?.call1(PyTuple::new(py, args)?)
         }
         Entry::Assistant(assistant) => {
+            let attribution = build_attribution(py, assistant.attribution.as_ref())?;
             models_type(py, &ASSISTANT_EVENT_CLS, "AssistantEvent")?.call1((
                 build_meta(py, &assistant.meta)?,
                 &assistant.model,
@@ -172,6 +208,9 @@ pub fn build_event<'py>(py: Python<'py>, entry: &Entry) -> PyResult<Bound<'py, P
                 build_assistant_blocks(py, &assistant.blocks)?,
                 assistant.stop_reason.as_deref(),
                 build_usage(py, assistant.usage.as_ref())?,
+                assistant.request_id.as_deref(),
+                assistant.forked_from.as_deref(),
+                attribution,
             ))
         }
         Entry::System(system) => models_type(py, &SYSTEM_EVENT_CLS, "SystemEvent")?.call1((

@@ -190,6 +190,8 @@ class EntryMeta:
         entrypoint: The entrypoint that produced the entry, e.g. ``cli``.
         is_compact_summary: Whether the entry is a compaction summary.
         is_visible_in_transcript_only: Whether the entry is transcript-only.
+        user_type: The ``userType`` recorded for the entry, e.g. ``external``, or None when absent.
+        slug: The session slug recorded for the entry, or None when absent.
     """
 
     uuid: EventUuid
@@ -204,6 +206,8 @@ class EntryMeta:
     entrypoint: str | None
     is_compact_summary: bool
     is_visible_in_transcript_only: bool
+    user_type: str | None = None
+    slug: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +222,18 @@ class UserEvent:
         is_agent_injected: Whether the turn is an agent-injected relay banner —
             a teammate-message digest, scheduled-task banner, or foreign-agent
             header — rather than an authored prompt.
+        prompt_id: The client-assigned id of the prompt this turn belongs to, or None.
+        prompt_source: How the prompt was submitted, e.g. ``typed``, ``queued``,
+            ``system``, or ``sdk``, or None when absent.
+        queue_priority: The queue priority recorded for a queued prompt, or None.
+        image_paste_ids: The paste ids of images attached to the turn, or None when
+            the turn carries no image-paste marker.
+        source_tool_use_id: The id of the tool-use that produced this turn, when the
+            turn originates from a tool result, else None.
+        source_tool_assistant_uuid: The uuid of the assistant entry whose tool produced
+            this turn, else None.
+        mcp_meta: The verbatim ``mcpMeta`` payload attached to the turn, or None.
+        permission_mode: The permission mode in effect for the turn, or None.
     """
 
     meta: EntryMeta
@@ -225,6 +241,34 @@ class UserEvent:
     blocks: tuple[ContentBlock, ...]
     interrupted: bool
     is_agent_injected: bool = False
+    prompt_id: str | None = None
+    prompt_source: str | None = None
+    queue_priority: str | None = None
+    image_paste_ids: tuple[int, ...] | None = None
+    source_tool_use_id: ToolUseId | None = None
+    source_tool_assistant_uuid: EventUuid | None = None
+    mcp_meta: Mapping[str, Any] | None = None
+    permission_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Attribution:
+    """The plugin, skill, or MCP tool an assistant turn is attributed to.
+
+    Present on an :class:`AssistantEvent` only when the entry carries at least one
+    of the four attribution fields; each component is independently optional.
+
+    Attributes:
+        plugin: The plugin the turn is attributed to, or None.
+        skill: The skill the turn is attributed to, or None.
+        mcp_server: The MCP server the turn is attributed to, or None.
+        mcp_tool: The MCP tool the turn is attributed to, or None.
+    """
+
+    plugin: str | None
+    skill: str | None
+    mcp_server: str | None
+    mcp_tool: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +283,10 @@ class AssistantEvent:
         stop_reason: The model's stop reason, when present.
         usage: Token usage for the turn, or None when the entry carries no usage
             (older transcripts, API-error messages).
+        request_id: The API request id that produced the turn, or None.
+        forked_from: The id of the message this turn was forked from, or None.
+        attribution: The plugin/skill/MCP attribution for the turn, or None when the
+            entry carries no attribution field.
     """
 
     meta: EntryMeta
@@ -247,6 +295,9 @@ class AssistantEvent:
     blocks: tuple[ContentBlock, ...]
     stop_reason: str | None
     usage: Usage | None
+    request_id: str | None = None
+    forked_from: str | None = None
+    attribution: Attribution | None = None
 
 
 @dataclass(frozen=True, slots=True)

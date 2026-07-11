@@ -14,6 +14,7 @@ from cc_transcript.backend import Backend, ParsedTranscript
 from cc_transcript.filterspec import apply_spec, interrupt_marker, is_agent_injection
 from cc_transcript.models import (
     AssistantEvent,
+    Attribution,
     CacheCreation,
     CcVersion,
     ContentBlock,
@@ -63,7 +64,19 @@ def parse_meta(data: Mapping[str, Any]) -> EntryMeta:
         entrypoint=data.get("entrypoint"),
         is_compact_summary=bool(data.get("isCompactSummary")),
         is_visible_in_transcript_only=bool(data.get("isVisibleInTranscriptOnly")),
+        user_type=data.get("userType"),
+        slug=data.get("slug"),
     )
+
+
+def parse_attribution(data: Mapping[str, Any]) -> Attribution | None:
+    parts = (
+        data.get("attributionPlugin"),
+        data.get("attributionSkill"),
+        data.get("attributionMcpServer"),
+        data.get("attributionMcpTool"),
+    )
+    return Attribution(*parts) if any(part is not None for part in parts) else None
 
 
 def flatten_result_content(content: str | list[dict[str, Any]]) -> str:
@@ -159,6 +172,14 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 blocks=blocks,
                 interrupted=interrupt_marker(text) is not None,
                 is_agent_injected=is_agent_injection(text),
+                prompt_id=data.get("promptId"),
+                prompt_source=data.get("promptSource"),
+                queue_priority=data.get("queuePriority"),
+                image_paste_ids=tuple(ids) if (ids := data.get("imagePasteIds")) is not None else None,
+                source_tool_use_id=ToolUseId(tuid) if (tuid := data.get("sourceToolUseID")) else None,
+                source_tool_assistant_uuid=EventUuid(auid) if (auid := data.get("sourceToolAssistantUUID")) else None,
+                mcp_meta=data.get("mcpMeta"),
+                permission_mode=data.get("permissionMode"),
             )
         case "assistant":
             text, blocks = parse_assistant_blocks(data["message"]["content"])
@@ -169,6 +190,9 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
                 blocks=blocks,
                 stop_reason=data["message"].get("stop_reason"),
                 usage=parse_usage(usage) if (usage := data["message"].get("usage")) else None,
+                request_id=data.get("requestId"),
+                forked_from=data.get("forkedFrom"),
+                attribution=parse_attribution(data),
             )
         case "system":
             return SystemEvent(meta=parse_meta(data), subtype=data["subtype"], content=data.get("content"))

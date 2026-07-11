@@ -69,6 +69,7 @@ EXPORTS: dict[str, str] = {
         ),
         "cc_transcript.models": (
             "AssistantEvent",
+            "Attribution",
             "CacheCreation",
             "CcVersion",
             "ContentBlock",
@@ -480,6 +481,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         AssistantEvent as AssistantEvent,
+    )
+    from cc_transcript.models import (
+        Attribution as Attribution,
     )
     from cc_transcript.models import (
         CacheCreation as CacheCreation,

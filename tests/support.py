@@ -268,6 +268,41 @@ def fixture_entries() -> list[dict[str, Any]]:
                 "content": [{"type": "future_block", "payload": {"n": 1, "deep": [True, None, 2.5]}}],
             },
         ),
+        # A user record carrying every new envelope/meta field, each with a distinct value so a
+        # positional misassignment in the Rust event.rs dataclass build cannot survive parity.
+        raw_envelope(
+            type="user",
+            userType="external",
+            slug="slug-value-11",
+            promptId="prompt-id-22",
+            promptSource="queued",
+            queuePriority="later",
+            imagePasteIds=[7, 42],
+            sourceToolUseID="toolu_src_33",
+            sourceToolAssistantUUID="asst-uuid-44",
+            mcpMeta={"_meta": {"frontLoadedTabGroupId": 1149555059}},
+            permissionMode="plan",
+            message={"role": "user", "content": "envelope with all new fields"},
+        ),
+        # An assistant record carrying requestId/forkedFrom and all four attribution keys, each
+        # distinct — attribution is materialized because at least one attribution field is present.
+        raw_envelope(
+            type="assistant",
+            userType="external",
+            slug="slug-asst-55",
+            requestId="req-id-66",
+            forkedFrom="forked-77",
+            attributionPlugin="plugin-88",
+            attributionSkill="skill-99",
+            attributionMcpServer="server-aa",
+            attributionMcpTool="tool-bb",
+            message={
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "attributed turn"}],
+            },
+        ),
         raw_envelope(type="system", subtype="stop_hook_summary", content="hook ran"),
         raw_envelope(type="system", subtype="turn_duration"),
         {"type": "mode", "mode": "normal", "sessionId": "sess-1"},

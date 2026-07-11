@@ -543,11 +543,21 @@ def test_event_dict_user_round_trips_through_orjson() -> None:
             "entrypoint": "cli",
             "is_compact_summary": False,
             "is_visible_in_transcript_only": False,
+            "user_type": None,
+            "slug": None,
         },
         "text": "hi",
         "blocks": [{"text": "hi"}],
         "interrupted": False,
         "is_agent_injected": False,
+        "prompt_id": None,
+        "prompt_source": None,
+        "queue_priority": None,
+        "image_paste_ids": None,
+        "source_tool_use_id": None,
+        "source_tool_assistant_uuid": None,
+        "mcp_meta": None,
+        "permission_mode": None,
     }
 
 
