@@ -83,6 +83,7 @@ EXPORTS: dict[str, str] = {
             "Plugin",
             "PrintMessage",
             "PrintResult",
+            "Question",
             "ServerToolUse",
             "SystemEvent",
             "TextBlock",
@@ -521,6 +522,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         PrintResult as PrintResult,
+    )
+    from cc_transcript.models import (
+        Question as Question,
     )
     from cc_transcript.models import (
         ServerToolUse as ServerToolUse,

@@ -83,6 +83,7 @@ reference:
       - ContentBlock
       - TextBlock
       - ThinkingBlock
+      - Question
       - ToolUseBlock
       - ToolResultBlock
       - FallbackBlock

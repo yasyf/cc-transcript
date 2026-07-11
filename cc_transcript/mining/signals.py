@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from cc_transcript.mining.formats import ReviewComment
     from cc_transcript.mining.sourcekind import SourceKind
     from cc_transcript.mining.spec import ReviewSpec
-    from cc_transcript.models import CcVersion, EventUuid, SessionId, ToolUseId, TranscriptEvent
+    from cc_transcript.models import CcVersion, EventUuid, Question, SessionId, ToolUseId, TranscriptEvent
 
 # An answered AskUserQuestion round renders each pair as '"Q"="A"' (or
 # '"Q"=(no option selected)'), optionally followed by ' selected preview:\n<raw>'
@@ -412,7 +412,7 @@ def iter_review_comment_signals(events: Sequence[TranscriptEvent], spec: MiningS
 
 
 class AnsweredPair(NamedTuple):
-    question: Mapping[str, Any]
+    question: Question
     answer: str | None
     preview: str | None
     notes: str | None
@@ -447,13 +447,11 @@ def find_anchor(body: str, anchor: str, pos: int) -> int:
     return -1
 
 
-def answered_pairs(body: str, questions: Sequence[Mapping[str, Any]]) -> Iterator[AnsweredPair]:
-    found: list[tuple[Mapping[str, Any], int, int]] = []
+def answered_pairs(body: str, questions: Sequence[Question]) -> Iterator[AnsweredPair]:
+    found: list[tuple[Question, int, int]] = []
     pos = 0
     for question in questions:
-        if not isinstance(text := question.get("question"), str):
-            continue
-        anchor = f'"{text}"='
+        anchor = f'"{question.question}"='
         if (at := find_anchor(body, anchor, pos)) == -1:
             continue
         found.append((question, at, at + len(anchor)))
@@ -505,20 +503,14 @@ def resolve_pick(answer: str | None, labels: Sequence[str]) -> tuple[list[str], 
 def question_answer_signal(
     events: Sequence[TranscriptEvent], event: UserEvent, index: int, pair: AnsweredPair, spec: MiningSpec
 ) -> MiningSignal | None:
-    options = pair.question.get("options")
-    labels = [
-        label
-        for option in (options if isinstance(options, list) else ())
-        if isinstance(option, dict) and isinstance(label := option.get("label"), str)
-    ]
-    picked, option_pick = resolve_pick(pair.answer, labels)
+    picked, option_pick = resolve_pick(pair.answer, pair.question.labels)
     text = pair.notes if pair.notes is not None else pair.answer
     if text is None:
         return None
     evidence: dict[str, Any] = {
-        "question": question if isinstance(question := pair.question.get("question"), str) else None,
-        "header": header if isinstance(header := pair.question.get("header"), str) else None,
-        "multi_select": isinstance(multi := pair.question.get("multiSelect"), bool) and multi,
+        "question": pair.question.question,
+        "header": pair.question.header,
+        "multi_select": pair.question.multi_select,
         "option_pick": option_pick,
         "picked_labels": picked,
         "recommended_pick": any("(Recommended)" in label for label in picked),
@@ -554,7 +546,8 @@ def iter_ask_user_question_signals(events: Sequence[TranscriptEvent], spec: Mini
         if (use := uses.get(block.tool_use_id)) is not None
         if use.name == "AskUserQuestion"
         if block.content.endswith(ANSWERED_TRAILER)
-        for pair in answered_pairs(block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], use.input["questions"])
+        if (questions := use.questions) is not None
+        for pair in answered_pairs(block.content[len(ANSWERED_PREFIX) : -len(ANSWERED_TRAILER)], questions)
         if (signal := question_answer_signal(events, event, index, pair, spec)) is not None
     )
 

@@ -37,6 +37,23 @@ class ThinkingBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class Question:
+    """One AskUserQuestion round lifted from a tool-use input's ``questions`` array.
+
+    Attributes:
+        question: The prompt text shown to the user.
+        header: The round's short header, or None when the input omits one.
+        multi_select: Whether the round accepted more than one selection.
+        labels: The option labels offered, in presentation order.
+    """
+
+    question: str
+    header: str | None
+    multi_select: bool
+    labels: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ToolUseBlock:
     """An assistant request to invoke a tool.
 
@@ -74,6 +91,33 @@ class ToolUseBlock:
         type-dispatched :func:`~cc_transcript.tools.file_path_of`.
         """
         return p if isinstance(p := self.input.get("file_path"), str) else None
+
+    @property
+    def questions(self) -> tuple[Question, ...] | None:
+        """The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
+
+        Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/src/parse.rs``):
+        a missing or non-list ``questions`` reads as None; within the array each entry
+        lacking a string ``question`` is dropped, ``header`` reads as None unless a
+        string, ``multi_select`` is False unless ``multiSelect`` is a bool, and
+        ``labels`` collects each option's string ``label``, skipping any without one.
+        """
+        if not isinstance(rounds := self.input.get("questions"), list):
+            return None
+        return tuple(
+            Question(
+                question=text,
+                header=h if isinstance(h := q.get("header"), str) else None,
+                multi_select=isinstance(m := q.get("multiSelect"), bool) and m,
+                labels=tuple(
+                    label
+                    for option in (q.get("options") if isinstance(q.get("options"), list) else ())
+                    if isinstance(option, dict) and isinstance(label := option.get("label"), str)
+                ),
+            )
+            for q in rounds
+            if isinstance(q, dict) and isinstance(text := q.get("question"), str)
+        )
 
 
 @dataclass(frozen=True, slots=True)
