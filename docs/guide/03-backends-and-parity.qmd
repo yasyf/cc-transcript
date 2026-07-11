@@ -137,8 +137,9 @@ hand-built battery and the real on-disk corpus. Run them with `uv run pytest`:
   `score_post_process` against the Python interpreter across raw scores 1..5, so
   every clamp and short-circuit agrees at every input.
 - **`tests/test_lexicon_parity.py`** — the embedded lexicon data matches the
-  Python source, *and* the UDPipe filter decisions match spaCy over the real
-  corpus.
+  Python source, *and* the UDPipe filter decisions match spaCy over a frozen
+  adversarial fixture of positive, negative, and mild-impatience prose that
+  exercises both scoring axes.
 - **`tests/test_toolchain_parity.py`** — the tree-sitter grammar pins in
   `Cargo.lock` and `uv.lock` agree, so both bash parsers build from the same
   grammar.
