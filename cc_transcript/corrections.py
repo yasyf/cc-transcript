@@ -19,8 +19,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal
+
+from cc_transcript.ledger import SyncLedger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -56,12 +57,6 @@ CREATE INDEX IF NOT EXISTS idx_corrections_incorrect_digest ON corrections (inco
 """
 
 Origin = Literal["session", "git", "review"]
-
-CORRECTION_COLUMNS = (
-    "ts_ms, session_id, source, anchor_uuid, incorrect_digest, incorrect_file, incorrect_old, "
-    "incorrect_new, correction_origin, correction_file, correction_old, correction_new, "
-    "correction_commit, correction_text, overlap, detail_json"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +106,7 @@ class Correction:
     detail: Mapping[str, Any] = field(default_factory=dict)
 
 
-class CorrectionLog:
+class CorrectionLog(SyncLedger[Correction]):
     """The ``corrections`` ledger at ``~/.cc-transcript/corrections.db``.
 
     Opened in WAL mode with a busy timeout because writers across the family
@@ -124,66 +119,46 @@ class CorrectionLog:
         >>> log.by_digest(session_id, incorrect_digest=digest)
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+    DDL = CORRECTIONS_DDL
+    FILENAME = "corrections.db"
+    TABLE = "corrections"
+    COLUMNS = (
+        "ts_ms",
+        "session_id",
+        "source",
+        "anchor_uuid",
+        "incorrect_digest",
+        "incorrect_file",
+        "incorrect_old",
+        "incorrect_new",
+        "correction_origin",
+        "correction_file",
+        "correction_old",
+        "correction_new",
+        "correction_commit",
+        "correction_text",
+        "overlap",
+        "detail_json",
+    )
 
-    @classmethod
-    def open(cls, path: Path | None = None) -> Self:
-        """Opens (creating if needed) the ledger at ``path``.
-
-        Args:
-            path: The database file path; its parents are created if absent.
-                Defaults to ``~/.cc-transcript/corrections.db``.
-
-        Returns:
-            The opened log.
-        """
-        path = path or Path.home() / ".cc-transcript" / "corrections.db"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, autocommit=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 2000")
-        conn.executescript(CORRECTIONS_DDL)
-        return cls(conn)
-
-    def append(self, correction: Correction) -> None:
-        """Appends ``correction`` as a single ``INSERT OR IGNORE``.
-
-        Idempotent on the UNIQUE key ``(session_id, anchor_uuid,
-        incorrect_digest)`` — re-harvesting the same edit, across reruns or
-        across the pairs of one event, writes one row.
-        """
-        self.conn.execute(
-            f"INSERT OR IGNORE INTO corrections ({CORRECTION_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                correction.ts_ms,
-                correction.session_id,
-                correction.source,
-                correction.anchor_uuid,
-                correction.incorrect_digest,
-                correction.incorrect_file,
-                correction.incorrect_old,
-                correction.incorrect_new,
-                correction.correction_origin,
-                correction.correction_file,
-                correction.correction_old,
-                correction.correction_new,
-                correction.correction_commit,
-                correction.correction_text,
-                correction.overlap,
-                json.dumps(dict(correction.detail)),
-            ),
-        )
-
-    def for_session(self, session_id: SessionId) -> tuple[Correction, ...]:
-        """All corrections for ``session_id``, ordered by timestamp."""
-        return tuple(
-            correction_of(row)
-            for row in self.conn.execute(
-                "SELECT * FROM corrections WHERE session_id = ? ORDER BY ts_ms, id", (session_id,)
-            )
+    def row_to_record(self, row: sqlite3.Row) -> Correction:
+        return Correction(
+            ts_ms=row["ts_ms"],
+            session_id=row["session_id"],
+            source=row["source"],
+            anchor_uuid=row["anchor_uuid"],
+            incorrect_digest=row["incorrect_digest"],
+            incorrect_file=row["incorrect_file"],
+            incorrect_old=row["incorrect_old"],
+            incorrect_new=row["incorrect_new"],
+            correction_origin=row["correction_origin"],
+            correction_file=row["correction_file"],
+            correction_old=row["correction_old"],
+            correction_new=row["correction_new"],
+            correction_commit=row["correction_commit"],
+            correction_text=row["correction_text"],
+            overlap=row["overlap"],
+            detail=json.loads(row["detail_json"]),
         )
 
     def for_repo(self, repo: str) -> tuple[Correction, ...]:
@@ -193,7 +168,7 @@ class CorrectionLog:
         captain-hook reviewer) can pull every correction for its repo at once.
         """
         return tuple(
-            correction_of(row)
+            self.row_to_record(row)
             for row in self.conn.execute(
                 "SELECT * FROM corrections WHERE json_extract(detail_json, '$.repo') = ? ORDER BY ts_ms, id",
                 (repo,),
@@ -212,12 +187,12 @@ class CorrectionLog:
             rows = self.conn.execute(
                 "SELECT * FROM corrections WHERE ts_ms > ? AND source = ? ORDER BY ts_ms, id", (ts_ms, source)
             )
-        return tuple(correction_of(row) for row in rows)
+        return tuple(self.row_to_record(row) for row in rows)
 
     def for_anchor(self, session_id: SessionId, anchor_uuid: EventUuid) -> tuple[Correction, ...]:
         """The corrections harvested around one feedback ``anchor_uuid``."""
         return tuple(
-            correction_of(row)
+            self.row_to_record(row)
             for row in self.conn.execute(
                 "SELECT * FROM corrections WHERE session_id = ? AND anchor_uuid = ? ORDER BY ts_ms, id",
                 (session_id, anchor_uuid),
@@ -232,30 +207,9 @@ class CorrectionLog:
         corrected.
         """
         return tuple(
-            correction_of(row)
+            self.row_to_record(row)
             for row in self.conn.execute(
                 "SELECT * FROM corrections WHERE session_id = ? AND incorrect_digest = ? ORDER BY ts_ms, id",
                 (session_id, incorrect_digest),
             )
         )
-
-
-def correction_of(row: sqlite3.Row) -> Correction:
-    return Correction(
-        ts_ms=row["ts_ms"],
-        session_id=row["session_id"],
-        source=row["source"],
-        anchor_uuid=row["anchor_uuid"],
-        incorrect_digest=row["incorrect_digest"],
-        incorrect_file=row["incorrect_file"],
-        incorrect_old=row["incorrect_old"],
-        incorrect_new=row["incorrect_new"],
-        correction_origin=row["correction_origin"],
-        correction_file=row["correction_file"],
-        correction_old=row["correction_old"],
-        correction_new=row["correction_new"],
-        correction_commit=row["correction_commit"],
-        correction_text=row["correction_text"],
-        overlap=row["overlap"],
-        detail=json.loads(row["detail_json"]),
-    )

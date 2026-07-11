@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal
+
+from cc_transcript.ledger import SyncLedger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -47,11 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_decisions_source_file ON decisions (source_file);
 """
 
 Action = Literal["allow", "block", "warn", "nudge", "note"]
-
-DECISION_COLUMNS = (
-    "ts_ms, session_id, source, kind, source_file, event, action, "
-    "tool_name, tool_digest, event_uuid, message, detail_json"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +87,7 @@ class Decision:
     detail: Mapping[str, Any] = field(default_factory=dict)
 
 
-class DecisionLog:
+class DecisionLog(SyncLedger[Decision]):
     """The ``decisions`` ledger at ``~/.cc-transcript/decisions.db``.
 
     Opened in WAL mode with a busy timeout because cc-review's Go daemon
@@ -104,62 +100,38 @@ class DecisionLog:
         >>> log.attribute_tool(session_id, tool_digest=digest, near_ts_ms=ts)
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+    DDL = DECISIONS_DDL
+    FILENAME = "decisions.db"
+    TABLE = "decisions"
+    COLUMNS = (
+        "ts_ms",
+        "session_id",
+        "source",
+        "kind",
+        "source_file",
+        "event",
+        "action",
+        "tool_name",
+        "tool_digest",
+        "event_uuid",
+        "message",
+        "detail_json",
+    )
 
-    @classmethod
-    def open(cls, path: Path | None = None) -> Self:
-        """Opens (creating if needed) the ledger at ``path``.
-
-        Args:
-            path: The database file path; its parents are created if absent.
-                Defaults to ``~/.cc-transcript/decisions.db``.
-
-        Returns:
-            The opened log.
-        """
-        path = path or Path.home() / ".cc-transcript" / "decisions.db"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, autocommit=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 2000")
-        conn.executescript(DECISIONS_DDL)
-        return cls(conn)
-
-    def append(self, decision: Decision) -> None:
-        """Appends ``decision`` as a single ``INSERT OR IGNORE``.
-
-        Idempotent on the UNIQUE key ``(session_id, ts_ms, source, kind,
-        tool_digest)`` when ``tool_digest`` is present; SQLite treats NULL
-        digests as distinct, so digestless rows rely on the writer not
-        re-running the same integer-ms timestamp.
-        """
-        self.conn.execute(
-            f"INSERT OR IGNORE INTO decisions ({DECISION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                decision.ts_ms,
-                decision.session_id,
-                decision.source,
-                decision.kind,
-                decision.source_file,
-                decision.event,
-                decision.action,
-                decision.tool_name,
-                decision.tool_digest,
-                decision.event_uuid,
-                decision.message,
-                json.dumps(dict(decision.detail)),
-            ),
-        )
-
-    def for_session(self, session_id: SessionId) -> tuple[Decision, ...]:
-        """All decisions for ``session_id``, ordered by timestamp."""
-        return tuple(
-            decision_of(row)
-            for row in self.conn.execute(
-                "SELECT * FROM decisions WHERE session_id = ? ORDER BY ts_ms, id", (session_id,)
-            )
+    def row_to_record(self, row: sqlite3.Row) -> Decision:
+        return Decision(
+            ts_ms=row["ts_ms"],
+            session_id=row["session_id"],
+            source=row["source"],
+            kind=row["kind"],
+            source_file=row["source_file"],
+            event=row["event"],
+            action=row["action"],
+            tool_name=row["tool_name"],
+            tool_digest=row["tool_digest"],
+            event_uuid=row["event_uuid"],
+            message=row["message"],
+            detail=json.loads(row["detail_json"]),
         )
 
     def attribute_tool(
@@ -181,7 +153,7 @@ class DecisionLog:
             " ORDER BY ts_ms DESC, id DESC LIMIT 1",
             (session_id, tool_digest, near_ts_ms - window_ms, near_ts_ms),
         ).fetchone()
-        return decision_of(row) if row else None
+        return self.row_to_record(row) if row else None
 
     def attribute_nearest(
         self,
@@ -209,21 +181,4 @@ class DecisionLog:
             " ORDER BY ABS(ts_ms - ?), id DESC LIMIT 1",
             (session_id, event, *kind_params, near_ts_ms - window_ms, near_ts_ms + window_ms, near_ts_ms),
         ).fetchone()
-        return decision_of(row) if row else None
-
-
-def decision_of(row: sqlite3.Row) -> Decision:
-    return Decision(
-        ts_ms=row["ts_ms"],
-        session_id=row["session_id"],
-        source=row["source"],
-        kind=row["kind"],
-        source_file=row["source_file"],
-        event=row["event"],
-        action=row["action"],
-        tool_name=row["tool_name"],
-        tool_digest=row["tool_digest"],
-        event_uuid=row["event_uuid"],
-        message=row["message"],
-        detail=json.loads(row["detail_json"]),
-    )
+        return self.row_to_record(row) if row else None
