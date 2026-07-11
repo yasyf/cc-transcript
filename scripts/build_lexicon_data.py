@@ -5,7 +5,9 @@ the AFINN single-word scores plus the `DOMAIN_OVERRIDES`, generated here from th
 installed `afinn` package and `cc_transcript.sentiment.lexicon.Lexicon`. The
 `afinn` PyPI package stays the canonical source for the Python path; this only
 mirrors it for the Rust `include_str!`. `tests/test_lexicon_parity.py` asserts the
-embedded copy still matches the installed sources (drift guard).
+embedded copy still matches the installed sources (drift guard). The sibling
+``scripts/build_rust_literals.py`` does the same for the protocol/mining/command
+literals.
 
 Run: ``uv run --extra sentiment python scripts/build_lexicon_data.py``
 """

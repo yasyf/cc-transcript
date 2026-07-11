@@ -139,6 +139,9 @@ hand-built battery and the real on-disk corpus. Run them with `uv run pytest`:
 - **`tests/test_lexicon_parity.py`** — the embedded lexicon data matches the
   Python source, *and* the UDPipe filter decisions match spaCy over the real
   corpus.
+- **`tests/test_toolchain_parity.py`** — the tree-sitter grammar pins in
+  `Cargo.lock` and `uv.lock` agree, so both bash parsers build from the same
+  grammar.
 
 When the extension or a model is unavailable, the relevant test skips rather than
 fails, and the Python backend stands in as the reference. The escape hatch is
@@ -157,3 +160,14 @@ re-derives the data from the installed sources and asserts the checked-in TSVs
 still match. The Python `afinn` package and `Lexicon.DOMAIN_OVERRIDES` remain the
 one source of truth; the TSVs are a build artifact of it. If a score needs to
 change, change the Python source and regenerate — never edit the TSVs by hand.
+
+The protocol, mining, and command literals follow the same one-way flow. The
+Python constants — the CC-protocol markers, the mining ids, separators, and
+confidence floors, the command tables — are the source of truth;
+`scripts/build_rust_literals.py` renders them into the committed
+`rust/src/generated/` modules the crate compiles in. The generator is
+manifest-driven, and `_parser_rs.embedded_literals()` exposes everything the
+extension embedded, so `tests/test_literals_parity.py` asserts the built
+extension matches the Python source as one whole dict — a constant that drifts,
+or one added without regenerating, fails the suite. Same rule as the TSVs:
+change the Python constant and regenerate; never hand-edit the generated Rust.
