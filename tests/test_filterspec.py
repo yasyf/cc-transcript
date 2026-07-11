@@ -8,6 +8,7 @@ from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     COMMAND_ECHO_GROUPS,
     CONTINUATION_GROUPS,
+    JUNK_USER_MESSAGE_RE,
     Action,
     Clause,
     EntrypointIn,
@@ -170,6 +171,22 @@ def test_command_echo_drops_bash_mode_turns() -> None:
     assert not keep(user("<bash-input>uv run pytest</bash-input>"), s)
     assert not keep(user("<bash-stdout>123 passed</bash-stdout>"), s)
     assert keep(user("run the bash input parser through pytest"), s)
+
+
+JUNK_USER_MESSAGE_ROWS = [
+    pytest.param("<command-name>commit</command-name>", True, id="command-name"),
+    pytest.param("<command-message>running commit</command-message>", True, id="command-message"),
+    pytest.param("<command-args>--all</command-args>", True, id="command-args"),
+    pytest.param("<local-command-stdout>3 files changed</local-command-stdout>", True, id="local-command-stdout"),
+    pytest.param("<local-command-stderr>fatal: not a git repo</local-command-stderr>", True, id="local-command-stderr"),
+    pytest.param("<bash-input>uv run pytest</bash-input>", True, id="bash-echo"),
+    pytest.param("the command-line tool works now", False, id="benign-neighbor"),
+]
+
+
+@pytest.mark.parametrize(("text", "is_junk"), JUNK_USER_MESSAGE_ROWS)
+def test_junk_user_message_re_classifies_protocol_noise(text: str, is_junk: bool) -> None:
+    assert bool(JUNK_USER_MESSAGE_RE.search(text)) is is_junk
 
 
 def test_role_reminder_is_agent_injection_noise() -> None:

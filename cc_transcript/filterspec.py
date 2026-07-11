@@ -43,7 +43,7 @@ TRAILING_PUNCT = ".!?…,;:"
 STRUCTURAL_TAG_GROUP: tuple[str, str] = (
     "xml_tags",
     r"<(?:system[_-](?:instruction|reminder)"
-    r"|local-command-(?:stdout|caveat)"
+    r"|local-command-(?:stdout|stderr|caveat)"
     r"|command-(?:name|message|args)"
     r"|task-notification"
     r"|persisted-output"
@@ -115,9 +115,11 @@ JUNK_CATEGORIES: dict[str, tuple[tuple[str, str], ...]] = {
 # interrupt/stop-hook — those carry pushback and must never live here.
 STRUCTURAL_NOISE_GROUPS: tuple[tuple[str, str], ...] = STRUCTURAL_GROUPS + AGENT_INJECTION_GROUPS
 
-# The sentiment junk set: structural (narrow) + interrupt + stop-hook. This
-# reproduces the historical monolithic JUNK_USER_MESSAGE_RE behavior.
-SENTIMENT_JUNK_GROUPS: tuple[tuple[str, str], ...] = STRUCTURAL_GROUPS + INTERRUPT_MARKER_GROUPS + STOP_HOOK_GROUPS
+# The sentiment junk set: the historical monolithic JUNK_USER_MESSAGE_RE
+# (structural + interrupt + stop-hook) plus bash-mode command echoes.
+SENTIMENT_JUNK_GROUPS: tuple[tuple[str, str], ...] = (
+    STRUCTURAL_GROUPS + INTERRUPT_MARKER_GROUPS + STOP_HOOK_GROUPS + COMMAND_ECHO_GROUPS
+)
 
 FRUSTRATION_GROUPS: tuple[tuple[str, str], ...] = (
     (

@@ -118,6 +118,32 @@ def test_bucketer_ignores_non_conversational_events() -> None:
     assert all(isinstance(e, UserEvent | AssistantEvent) for e in only.events)
 
 
+def test_bucketer_drops_junk_user_turns() -> None:
+    # A protocol-noise turn must not pad MIN_USER_TURNS eligibility: one genuine
+    # user turn plus one junk turn leaves the session below the floor, so nothing
+    # buckets — before this the junk turn would have counted and yielded a bucket.
+    padded = [
+        user("please fix the login bug", minutes=0),
+        assistant("on it", minutes=0.5),
+        user("<local-command-stderr>fatal: not a git repo</local-command-stderr>", minutes=1),
+    ]
+    assert bucket_events(padded) == []
+
+    # Two genuine turns clear the floor; the junk turn is dropped from the bucket.
+    kept = [
+        user("please fix the login bug", minutes=0),
+        assistant("on it", minutes=0.5),
+        user("<local-command-stdout>3 files changed</local-command-stdout>", minutes=1),
+        user("now add validation too", minutes=1.5),
+        assistant("done", minutes=2),
+    ]
+    (bucket,) = bucket_events(kept)
+    assert [e.text for e in bucket.events if isinstance(e, UserEvent)] == [
+        "please fix the login bug",
+        "now add validation too",
+    ]
+
+
 def test_frustration_stage_short_circuits_to_one() -> None:
     spec = build_score_spec(flag_frustration())
     assert py_short_circuit(spec, [["wtf this is broken", "still broken"]]) == [SentimentScore(1)]

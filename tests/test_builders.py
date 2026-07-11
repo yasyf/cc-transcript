@@ -71,7 +71,7 @@ def test_drop_entrypoints() -> None:
 
 
 def test_drop_junk_concatenates_named_categories_in_order() -> None:
-    assert drop_junk("structural", "interrupt", "stop_hook") == Clause(
+    assert drop_junk("structural", "interrupt", "stop_hook", "command_echo") == Clause(
         TextMatchesAny(SENTIMENT_JUNK_GROUPS), applies_to=USERS
     )
     assert drop_junk("structural", "agent_injection") == Clause(

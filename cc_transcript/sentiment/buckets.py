@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, NewType
 
+from cc_transcript.filterspec import JUNK_USER_MESSAGE_RE
 from cc_transcript.models import AssistantEvent, SessionId, UserEvent
 
 if TYPE_CHECKING:
@@ -42,8 +43,12 @@ class ConversationBucketer:
     """Groups conversational transcript events into per-session, time-aligned buckets worth scoring.
 
     User and assistant events are selected from the stream; system, mode, and
-    other events are ignored. Sessions below ``MIN_USER_TURNS_PER_SESSION`` and
-    windows lacking a substantive user turn or any assistant turn are dropped.
+    other events are ignored, and user turns that are protocol noise
+    (``JUNK_USER_MESSAGE_RE`` — slash-command wrappers, interrupt markers,
+    stop-hook feedback, bash-mode echoes) are dropped before counting so they
+    neither reach the model nor pad bucket eligibility. Sessions below
+    ``MIN_USER_TURNS_PER_SESSION`` and windows lacking a substantive user turn
+    or any assistant turn are dropped.
     """
 
     @staticmethod
@@ -65,6 +70,8 @@ class ConversationBucketer:
         by_session: dict[SessionId, list[ConversationEvent]] = defaultdict(list)
         for event in events:
             match event:
+                case UserEvent() if JUNK_USER_MESSAGE_RE.search(event.text):
+                    continue
                 case UserEvent() | AssistantEvent():
                     by_session[event.meta.session_id].append(event)
 
