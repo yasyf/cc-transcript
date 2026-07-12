@@ -65,6 +65,7 @@ from cc_transcript.mining.formats import (
     StructuredFormat,
     extract_structured,
 )
+from cc_transcript.mining.sampling import sample_windows
 from cc_transcript.mining.signals import (
     MiningSignal,
     mine,
