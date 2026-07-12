@@ -26,11 +26,14 @@ from cc_transcript.builders import (
 )
 from cc_transcript.corrections_cli import corrections
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery, find_transcript_sync
-from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, keep, tool_names
+from cc_transcript.facts import command_prefix_counts, mcp_summary, tool_facts
+from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, event_meta, keep, tool_names
 from cc_transcript.ids import SessionId, tool_digest
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import TranscriptParser
 from cc_transcript.render import (
+    BLANK_TIME,
+    TAGS,
     WHERE_ALL,
     Budget,
     collect_stats,
@@ -39,6 +42,7 @@ from cc_transcript.render import (
     denial_line,
     display_path,
     event_dict,
+    event_payload,
     fact_dict,
     fact_line,
     haystack,
@@ -49,9 +53,10 @@ from cc_transcript.render import (
     render_tool_call,
     stats_dict,
     transcript_header,
+    truncate,
 )
-from cc_transcript.facts import command_prefix_counts, mcp_summary, tool_facts
 from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
+from cc_transcript.watch import watch
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -61,6 +66,7 @@ if TYPE_CHECKING:
     from cc_transcript.facts import ToolFact
     from cc_transcript.filterspec import FilterSpec
     from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
+    from cc_transcript.watch import WatchEvent
 
     type Row = tuple[int, TranscriptEvent]
 
@@ -278,6 +284,29 @@ def slice_line(meta: EntryMeta, block: ToolUseBlock) -> dict[str, Any]:
         "file_path": file_path_of(call),
         "summary": render_tool_call(call, budget=Budget()),
     }
+
+
+
+def watch_dict(item: WatchEvent) -> dict[str, Any]:
+    meta = event_meta(item.event)
+    kind = event_kind(item.event)
+    return {
+        "path": str(item.path),
+        "session_id": item.session_id,
+        "is_sidechain": item.is_sidechain,
+        "uuid": meta.uuid if meta is not None else None,
+        "kind": kind,
+        "role": kind if kind in ("user", "assistant") else None,
+        "preview": truncate(event_payload(item.event, names={}, width=120, thinking=False), 120),
+    }
+
+
+def watch_line(item: WatchEvent) -> str:
+    meta = event_meta(item.event)
+    time = meta.timestamp.strftime("%H:%M:%S") if meta is not None else BLANK_TIME
+    tag = TAGS[event_kind(item.event)] + ("*" if item.is_sidechain else "")
+    payload = event_payload(item.event, names={}, width=100, thinking=False)
+    return f"{time} {item.session_id[:8]} {tag:<5} {payload}".rstrip()
 
 
 @click.group()
@@ -672,3 +701,28 @@ def digest(check: Path | None) -> None:
             ),
         )
     )
+@cli.command("watch")
+@click.option(
+    "--root",
+    "roots",
+    multiple=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Projects directory to tail; repeatable [default: ~/.claude/projects].",
+)
+@click.option("--poll", default=1.0, show_default=True, help="Seconds between filesystem polls.")
+@click.option("--from-start", is_flag=True, help="Replay preexisting transcript content instead of tailing from EOF.")
+@click.option("--json", "as_json", is_flag=True, help="Emit one NDJSON object per event.")
+def watch_(roots: tuple[Path, ...], poll: float, from_start: bool, as_json: bool) -> None:
+    """Tail transcripts live, one line per newly appended event, until interrupted."""
+
+    async def run() -> None:
+        async for item in watch(roots or (CLAUDE_PROJECTS_DIR,), poll=poll, from_start=from_start):
+            click.echo(orjson.dumps(watch_dict(item)) if as_json else watch_line(item))
+
+    try:
+        anyio.run(run)
+    except KeyboardInterrupt:
+        return
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise SystemExit(0) from None

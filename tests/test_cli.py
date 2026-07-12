@@ -281,6 +281,7 @@ def test_help_lists_all_commands(runner: CliRunner) -> None:
         "commands",
         "permissions",
         "mcp",
+        "watch",
     }
 
 

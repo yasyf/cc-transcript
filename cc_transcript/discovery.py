@@ -151,6 +151,15 @@ async def find_transcript(session_id: SessionId, *, root: Path | None = None) ->
     return await anyio.to_thread.run_sync(partial(find_transcript_sync, session_id, root=root))
 
 
+def is_subagent_path(path: Path) -> bool:
+    """Whether ``path`` names a subagent sidechain transcript.
+
+    Matches the ``agent-<tool_use_id>.jsonl`` naming convention that
+    :func:`subagent_paths` discovers.
+    """
+    return path.suffix == ".jsonl" and path.name.startswith("agent-")
+
+
 def subagent_paths(path: Path) -> tuple[Path, ...]:
     """Sidechain transcript files spawned by the session transcript at ``path``.
 
