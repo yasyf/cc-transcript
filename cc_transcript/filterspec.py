@@ -1,9 +1,12 @@
-"""Declarative, both-backend filtering of a transcript event stream.
+"""Declarative filtering of a transcript event stream.
 
 A :class:`FilterSpec` is an ordered list of :class:`Clause` rules — *filters as
-data*. The same spec is interpreted by the Python interpreter here and, when
-:func:`is_portable` holds, serialized via :func:`spec_to_json` and executed by
-the Rust backend, which drops events before ever materializing a Python object.
+data*. Parse-time filtering runs in Rust: :func:`spec_to_json` serializes the spec to
+the JSON contract the Rust backend executes, dropping events during parsing before
+they ever materialize (pass a spec to
+:meth:`~cc_transcript.TranscriptParser.stream_transcripts`). Already-materialized
+events — a list the caller already holds — are filtered with :func:`apply_spec` or
+:func:`keep`.
 
 Consumers compose specs from the builders in :mod:`cc_transcript.builders` over
 named building blocks: the junk regex is split into categories
@@ -166,20 +169,6 @@ MILD_IMPATIENCE_GROUPS: tuple[tuple[str, str], ...] = (
 # Hedging cues that soften a correction; a mining demote stage drops confidence on a hit.
 HEDGE_GROUPS: tuple[tuple[str, str], ...] = (
     ("hedged", r"\b(?:maybe|perhaps|possibly|might|not sure|i think|i guess|if you (?:want|prefer)|up to you)\b"),
-)
-
-PORTABLE_GROUP_NAMES: frozenset[str] = frozenset(
-    name
-    for name, _ in (
-        *STRUCTURAL_NOISE_GROUPS,
-        *INTERRUPT_MARKER_GROUPS,
-        *STOP_HOOK_GROUPS,
-        *CONTINUATION_GROUPS,
-        *COMMAND_ECHO_GROUPS,
-        *FRUSTRATION_GROUPS,
-        *MILD_IMPATIENCE_GROUPS,
-        *HEDGE_GROUPS,
-    )
 )
 
 RESUME_PHRASE_SET: frozenset[str] = frozenset(
@@ -491,7 +480,11 @@ def clause_matches(clause: Clause, event: TranscriptEvent, kind: EventKind) -> b
 
 
 def keep(event: TranscriptEvent, spec: FilterSpec) -> bool:
-    """Returns whether ``event`` survives every ``DROP`` clause of ``spec``."""
+    """Returns whether ``event`` survives every ``DROP`` clause of ``spec``.
+
+    Filters an already-materialized :class:`~cc_transcript.models.TranscriptEvent`;
+    parse-time filtering runs in Rust before materialization via :func:`spec_to_json`.
+    """
     kind = event_kind(event)
     return not any(clause.action is Action.DROP and clause_matches(clause, event, kind) for clause in spec.clauses)
 
@@ -509,7 +502,7 @@ def labels_for(event: TranscriptEvent, spec: FilterSpec) -> tuple[str, ...]:
 
 
 def apply_spec(events: Iterable[TranscriptEvent], spec: FilterSpec) -> Iterator[TranscriptEvent]:
-    """Yields the events that survive every ``DROP`` clause of ``spec``."""
+    """Yields the already-materialized events that survive every ``DROP`` clause of ``spec``."""
     return (event for event in events if keep(event, spec))
 
 
@@ -518,24 +511,6 @@ def annotate_spec(
 ) -> Iterator[tuple[TranscriptEvent, tuple[str, ...]]]:
     """Yields ``(event, labels)`` for events surviving ``spec``, with TAG labels."""
     return ((event, labels_for(event, spec)) for event in events if keep(event, spec))
-
-
-def is_portable(spec: FilterSpec) -> bool:
-    """Returns whether every clause is executable by the Rust interpreter.
-
-    A spec is portable when each :class:`TextMatchesAny` uses only group names
-    proven to match identically under the Rust ``regex`` crate; non-portable
-    specs fall back to the Python interpreter.
-    """
-    return all(clause_portable(clause) for clause in spec.clauses)
-
-
-def clause_portable(clause: Clause) -> bool:
-    match clause.predicate:
-        case TextMatchesAny(groups=groups):
-            return all(name in PORTABLE_GROUP_NAMES for name, _ in groups)
-        case _:
-            return True
 
 
 def spec_to_json(spec: FilterSpec) -> str:

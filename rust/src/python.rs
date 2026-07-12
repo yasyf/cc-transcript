@@ -310,13 +310,15 @@ fn session_activity_probe<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (raw, spec_json))]
+#[pyo3(signature = (raw, spec_json, callable_formats))]
 fn mine_signals<'py>(
     py: Python<'py>,
     raw: &[u8],
     spec_json: String,
+    callable_formats: Vec<(String, Py<PyAny>, Py<PyAny>)>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let spec = mining::compile_spec(&spec_json).map_err(PyValueError::new_err)?;
+    let mut spec = mining::compile_spec(&spec_json).map_err(PyValueError::new_err)?;
+    mining::attach_callable_formats(&mut spec, callable_formats);
     mining::mine(py, raw, &spec)
 }
 

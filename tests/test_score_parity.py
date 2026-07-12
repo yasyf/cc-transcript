@@ -1,22 +1,23 @@
-"""Rust score executor == Python score interpreter, over a stage battery.
+"""Golden regression for the Rust score executor over a stage battery.
 
-Both backends score lexicon stages against the same surface lexicon (no model, fully
-deterministic), so a confirmed match proves the dual-backend score pipeline agrees.
+The Rust backend is the sole score executor. Its output for the full four-stage spec
+over a fixed bucket battery is frozen in ``testdata/score_golden.json`` (captured from
+the historical Python reference, proven equal), so this asserts the Rust executor
+stays stable across short-circuit and post-process — no model, fully deterministic.
 """
 
 from __future__ import annotations
 
-import pytest
+import json
+from pathlib import Path
 
-from cc_transcript.sentiment.buckets import SentimentScore
+from cc_transcript import _parser_rs
 from cc_transcript.sentiment.scorespec import (
     build_score_spec,
     clamp_positive,
     clamp_resume,
     demote_mild_irritation,
     flag_frustration,
-    py_post_process,
-    py_short_circuit,
     score_spec_to_json,
 )
 from tests.support import requires_rust
@@ -35,21 +36,15 @@ BUCKETS: list[list[str]] = [
     ["héllo 🤖 漢字"],
 ]
 
+GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "score_golden.json").read_text(encoding="utf-8"))
+
 
 @requires_rust
-def test_rust_python_score_executor_parity() -> None:
-    from cc_transcript import _parser_rs
-
-    if not hasattr(_parser_rs, "score_short_circuit"):
-        pytest.skip("score executor not built")
-
-    spec = build_score_spec(flag_frustration(), clamp_positive(), demote_mild_irritation(), clamp_resume())
-    spec_json = score_spec_to_json(spec)
-
-    expected_sc = [None if s is None else int(s) for s in py_short_circuit(spec, BUCKETS)]
-    assert _parser_rs.score_short_circuit(spec_json, BUCKETS) == expected_sc
-
+def test_rust_score_executor_golden() -> None:
+    spec_json = score_spec_to_json(
+        build_score_spec(flag_frustration(), clamp_positive(), demote_mild_irritation(), clamp_resume())
+    )
+    assert _parser_rs.score_short_circuit(spec_json, BUCKETS) == GOLDEN["short_circuit"]
     for raw_value in range(1, 6):
         raw = [raw_value] * len(BUCKETS)
-        expected_pp = [int(s) for s in py_post_process(spec, BUCKETS, [SentimentScore(r) for r in raw])]
-        assert _parser_rs.score_post_process(spec_json, BUCKETS, raw) == expected_pp, raw_value
+        assert _parser_rs.score_post_process(spec_json, BUCKETS, raw) == GOLDEN["post_process"][str(raw_value)], raw_value

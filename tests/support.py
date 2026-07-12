@@ -12,16 +12,14 @@ import pytest
 from cc_transcript import _parser_rs
 from cc_transcript.corrections import Correction
 from cc_transcript.decisions import Decision
-from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest
 from cc_transcript.mining import ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX
-from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, UserEvent
+from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, TranscriptEvent, UserEvent
 
 SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 OTHER_SESSION = SessionId("22222222-2222-2222-2222-222222222222")
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
-REAL_CORPUS_SAMPLE = 25
 RUST_BACKEND = _parser_rs
 requires_rust = pytest.mark.skipif(False, reason="_parser_rs is a hard requirement")
 rust_not_disabled = pytest.mark.skipif(
@@ -728,16 +726,15 @@ def fixture_bytes() -> bytes:
     )
 
 
-def real_corpus() -> list[Path]:
-    if not CLAUDE_PROJECTS_DIR.exists():
-        return []
-    paths = sorted(CLAUDE_PROJECTS_DIR.rglob("*.jsonl"), key=lambda p: p.stat().st_size)
-    if not paths:
-        return []
-    agents = [p for p in paths if p.name.startswith("agent-")][:5]
-    others = [p for p in paths if not p.name.startswith("agent-")]
-    spread = [others[i] for i in range(0, len(others), max(1, len(others) // REAL_CORPUS_SAMPLE))]
-    return list(dict.fromkeys(agents + spread))[:REAL_CORPUS_SAMPLE]
+def project_survivor(event: TranscriptEvent) -> dict[str, str | bool]:
+    """A stable, JSON-able projection of a filter survivor for golden comparison."""
+    proj: dict[str, str | bool] = {"type": type(event).__name__}
+    if (text := getattr(event, "text", None)) is not None:
+        proj["text"] = text
+    if (meta := getattr(event, "meta", None)) is not None:
+        proj["uuid"] = str(meta.uuid)
+        proj["is_sidechain"] = meta.is_sidechain
+    return proj
 
 
 # An answered AskUserQuestion round captured byte-verbatim from the mirror corpus

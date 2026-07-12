@@ -1,0 +1,2502 @@
+{
+ "fixture": [
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 0,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "  fix the bug  ",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "  fix the bug  ",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 2,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "here is context and more",
+   "cc_version": null,
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 6,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "she quoted [Request interrupted by user] mid",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 18,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 19,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "<teammate-message from='reviewer'>please rebase</teammate-message>",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.0,
+    "reasons": [
+     "structural_only"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 20,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "<scheduled-task id='7'>run the nightly suite</scheduled-task>",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.0,
+    "reasons": [
+     "structural_only"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 21,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "we discussed the [Role Reminder] banner mid-sentence",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 22,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "why did the transcript contain <teammate-message from=a> above",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 23,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "<teammate-message\u0301>",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.25,
+    "reasons": [
+     "user_message",
+     "short_followup"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 29,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "envelope with all new fields",
+   "cc_version": "1.2.3",
+   "trigger_index": 28,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "user_message",
+     "trigger_proximate"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 33,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "field-only interrupt with no marker text",
+   "cc_version": "1.2.3",
+   "trigger_index": 32,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "user_message",
+     "trigger_proximate"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "interrupt_rejection",
+   "detector": "denial",
+   "session_id": "sess-1",
+   "event_index": 13,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.25,
+    "reasons": [
+     "bare_marker"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "interrupt_rejection",
+   "detector": "denial",
+   "session_id": "sess-1",
+   "event_index": 14,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.25,
+    "reasons": [
+     "bare_marker"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "interrupt_rejection",
+   "detector": "denial",
+   "session_id": "sess-1",
+   "event_index": 16,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.25,
+    "reasons": [
+     "bare_marker"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  }
+ ],
+ "battery": {
+  "user_substantive": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "this is completely wrong, please rewrite the parser module entirely",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "user_short_followup": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "no stop",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.5,
+     "reasons": [
+      "user_message",
+      "short_followup",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "user_hedged": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "maybe you could possibly reconsider the whole approach here",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "user_structural_noise": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "<system-reminder> background context follows in this block here</system-reminder>",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.0,
+     "reasons": [
+      "structural_only"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "user_unicode": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "this is wrong h\u00e9llo \ud83e\udd16 \u6f22\u5b57 fix the whole thing now",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "user_empty_skipped": [],
+  "plan_rejection_embedded": [
+   {
+    "kind": "plan_review",
+    "detector": "exit_plan_rejection",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "actually take a totally different direction with the design",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "embedded_text",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "plan_rejection_bare_no_embedded": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "no, take a totally different direction please",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "plan_rejection_exitspecmode_alias": [
+   {
+    "kind": "plan_review",
+    "detector": "exit_plan_rejection",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "the plan skips the rollout ordering entirely",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "embedded_text",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "plan_rejection_mcp_exitplanmode": [
+   {
+    "kind": "plan_review",
+    "detector": "exit_plan_rejection",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "route the plan through the staging service first",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "embedded_text",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "plan_reentry_after_edit": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "the edit was wrong, reconsider the plan from scratch",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "plan_review",
+    "detector": "plan_reentry",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "the edit was wrong, reconsider the plan from scratch",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "reentry_after_edit",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": 0,
+    "evidence": {}
+   }
+  ],
+  "plan_reentry_after_ccx_mcp_edit": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "the edit was wrong, reconsider the plan from scratch",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "plan_review",
+    "detector": "plan_reentry",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "the edit was wrong, reconsider the plan from scratch",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "reentry_after_edit",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": 0,
+    "evidence": {}
+   }
+  ],
+  "plan_reentry_lookback_at_boundary": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 40,
+    "event_uuid": "uu",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "reconsider this plan completely and start over",
+    "cc_version": "1.2.3",
+    "trigger_index": 38,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "plan_review",
+    "detector": "plan_reentry",
+    "session_id": "sess-1",
+    "event_index": 40,
+    "event_uuid": "uu",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "reconsider this plan completely and start over",
+    "cc_version": "1.2.3",
+    "trigger_index": 38,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "reentry_after_edit",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": 0,
+    "evidence": {}
+   }
+  ],
+  "plan_reentry_lookback_beyond": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 41,
+    "event_uuid": "uu",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "reconsider this plan completely and start over",
+    "cc_version": "1.2.3",
+    "trigger_index": 39,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "denial_embedded_with_filepath": [
+   {
+    "kind": "interrupt_rejection",
+    "detector": "denial",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "do not touch that file, edit y.py instead",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "embedded_text",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "tool": "Edit",
+     "file_path": "/x.py"
+    }
+   }
+  ],
+  "denial_followup_after_bare": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "denial",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "tool": "Bash",
+     "file_path": null
+    }
+   }
+  ],
+  "denial_notebookedit_no_filepath": [
+   {
+    "kind": "interrupt_rejection",
+    "detector": "denial",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "edit the markdown cell instead of code",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "embedded_text",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "tool": "NotebookEdit",
+     "file_path": null
+    }
+   }
+  ],
+  "denial_non_error_not_a_denial": [],
+  "denial_askuserquestion_skipped": [],
+  "denial_structured_user_rejected_no_banner": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "denial",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "tool": "Bash",
+     "file_path": null
+    }
+   }
+  ],
+  "denial_permission_rule_not_mined": [],
+  "denial_structured_user_rejected_non_error": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "denial",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "never run destructive commands like that one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "tool": "Bash",
+     "file_path": null
+    }
+   }
+  ],
+  "interrupt_marker_then_correction": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "stop that, do something else entirely instead",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "interrupt",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "stop that, do something else entirely instead",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "interrupt_marker_casefolded": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "do it the other way around please",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "interrupt",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "do it the other way around please",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "interrupt_bare_no_correction": [],
+  "interrupt_custom_spec_structural_between": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "<system-reminder>injected background context for the session</system-reminder>",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 3,
+    "event_uuid": "u3",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "actually stop and rework the entire approach",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.5,
+     "reasons": [
+      "user_message"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "interrupt",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "<system-reminder>injected background context for the session</system-reminder>",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "interrupt_custom_spec_casefolded_fallback": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 2,
+    "event_uuid": "u2",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "[request INTERRUPTED by user] leftover fragment",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 3,
+    "event_uuid": "u3",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "use the other module instead of this one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.5,
+     "reasons": [
+      "user_message"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "interrupt_rejection",
+    "detector": "interrupt",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "use the other module instead of this one",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "bare_marker"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "review_regex_inline": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "src/foo.py:42: this needs a guard\nsrc/bar.py:7: rename this symbol",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "this needs a guard",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "inline",
+     "file": "src/foo.py",
+     "line_start": 42,
+     "line_end": 42,
+     "provenance": "typed"
+    }
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "rename this symbol",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "inline",
+     "file": "src/bar.py",
+     "line_start": 7,
+     "line_end": 7,
+     "provenance": "typed"
+    }
+   }
+  ],
+  "review_structured_line_forms": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "{\"findings\":[{\"file\":\"a.py\",\"line\":96,\"comment\":\"int line form\",\"fix\":\"guard the None case\"},{\"file\":\"b.py\",\"line\":\"96\",\"comment\":\"string-int line form\"},{\"file\":\"c.py\",\"line\":\"24-51\",\"comment\":\"range line form\",\"suggestion\":\"narrow the slice\"},{\"path\":\"d.py\",\"message\":\"no line cited at all\"}]}",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "int line form guard the None case",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "findings_fmt",
+     "file": "a.py",
+     "line_start": 96,
+     "line_end": 96,
+     "provenance": "typed"
+    }
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "string-int line form",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "findings_fmt",
+     "file": "b.py",
+     "line_start": 96,
+     "line_end": 96,
+     "provenance": "typed"
+    }
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "range line form narrow the slice",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "findings_fmt",
+     "file": "c.py",
+     "line_start": 24,
+     "line_end": 51,
+     "provenance": "typed"
+    }
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "no line cited at all",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "findings_fmt",
+     "file": "d.py",
+     "line_start": null,
+     "line_end": null,
+     "provenance": "typed"
+    }
+   }
+  ],
+  "review_structured_nonjson_no_match": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "this is just prose, not a JSON document",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   }
+  ],
+  "review_regex_whitespace_padded_groups": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "R[x.py][ 12 ][ first ][   ][ second ]",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "first second",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.5,
+     "reasons": [
+      "format_match"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "padded",
+     "file": "x.py",
+     "line_start": 12,
+     "line_end": 12,
+     "provenance": "typed"
+    }
+   }
+  ],
+  "review_regex_unparseable_line_group": [
+   {
+    "kind": "transcript_message",
+    "detector": "transcript_message",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "R[y.py][12a][note the guard][][]",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "user_message",
+      "trigger_proximate"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {}
+   },
+   {
+    "kind": "review_comment",
+    "detector": "review_comment",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "note the guard",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "format_match",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "format": "padded",
+     "file": "y.py",
+     "line_start": null,
+     "line_end": null,
+     "provenance": "typed"
+    }
+   }
+  ],
+  "auq_single_pick": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Storage (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ],
+  "auq_fixture_round1_nested_quotes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Advisory warn (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "What should the hook do when a tombstone comment is confirmed?",
+     "header": "Enforcement",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Advisory warn (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   },
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "3, and figure out why NLP is not being installed when you install capt-hook, it should be downloading the model live whenyou start it up, look at the git history",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which cheap-trigger matcher should run on the extracted comments? (You said \"ast/nlp triggered\" \u2014 AST comment extraction is in either way; this is about the text-matching layer. Evidence: spaCy's en_core_web_sm has no runtime provisioning path \u2014 RESOURCES.spacy raises if it's missing, and nothing in pack install provisions it \u2014 so NLP would error/no-op in the ~17 general-pack repos until each machine installs the model.)",
+     "header": "Matcher",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [
+      "NLP-only (as originally floated)"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_ordinal_shorthand": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "1, but shouldnt those be default contexts? were they not before?",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Name the contexts?",
+     "header": "Names",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [
+      "BeforeEdit / AfterEdit (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ],
+  "auq_multiselect_join": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Getting started, How it works, end to end",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which docs pages?",
+     "header": "Docs",
+     "multi_select": true,
+     "option_pick": true,
+     "picked_labels": [
+      "Getting started",
+      "How it works, end to end"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_preview": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Full turnkey (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "How far should enable go?",
+     "header": "Install",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Full turnkey (Recommended)"
+     ],
+     "recommended_pick": true,
+     "preview": "$ tool enable\n==> done"
+    }
+   }
+  ],
+  "auq_no_option_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "fix it upstream so it skips invalid files",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Add CI coverage?",
+     "header": "CI",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [],
+     "recommended_pick": false,
+     "notes": "fix it upstream so it skips invalid files"
+    }
+   }
+  ],
+  "auq_pick_with_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "and never use the memory one again",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true,
+     "notes": "and never use the memory one again"
+    }
+   }
+  ],
+  "auq_pick_trailing_empty_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true,
+     "notes": ""
+    }
+   }
+  ],
+  "auq_pair_omitted": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "C",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Second answered?",
+     "header": "Two",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "C"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_malformed_question_skipped": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "C",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Second answered?",
+     "header": "Two",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "C"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_error_zero": [],
+  "auq_unpaired_zero": [],
+  "auq_answer_embeds_later_anchor": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "I think \"Second?\"=maybe",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.5,
+     "reasons": [
+      "freeform_answer",
+      "substantive",
+      "hedged"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "First?",
+     "header": "One",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [],
+     "recommended_pick": false
+    }
+   },
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "C",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Second?",
+     "header": "Two",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "C"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_answer_trailing_quote": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "call it \"beta\"",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which name?",
+     "header": "Name",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_structured_only": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Storage (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ],
+  "auq_structured_multiselect": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Getting started, How it works, end to end",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which docs pages?",
+     "header": "Docs",
+     "multi_select": true,
+     "option_pick": true,
+     "picked_labels": [
+      "Getting started",
+      "How it works, end to end"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_structured_omitted": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "leave this one alone",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "First unanswered?",
+     "header": "One",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [],
+     "recommended_pick": false,
+     "notes": "leave this one alone"
+    }
+   },
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "C",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Second answered?",
+     "header": "Two",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "C"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "auq_structured_annotations": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "make it turnkey",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "How far should enable go?",
+     "header": "Install",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Full turnkey (Recommended)"
+     ],
+     "recommended_pick": true,
+     "preview": "$ tool enable\n==> done",
+     "notes": "make it turnkey"
+    }
+   }
+  ],
+  "auq_structured_error_zero": [],
+  "auq_structured_numeric_notes_leaf": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Storage (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ],
+  "auq_structured_no_questions_key": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Storage (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ]
+ },
+ "structured_rounds": {
+  "single_pick": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Storage (Recommended)",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true
+    }
+   }
+  ],
+  "pick_with_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "and never use the memory one again",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true,
+     "notes": "and never use the memory one again"
+    }
+   }
+  ],
+  "multiselect_comma_label": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Getting started, How it works, end to end",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which docs pages?",
+     "header": "Docs",
+     "multi_select": true,
+     "option_pick": true,
+     "picked_labels": [
+      "Getting started",
+      "How it works, end to end"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "omitted_with_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "leave this one alone",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "First unanswered?",
+     "header": "One",
+     "multi_select": false,
+     "option_pick": false,
+     "picked_labels": [],
+     "recommended_pick": false,
+     "notes": "leave this one alone"
+    }
+   },
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "C",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Second answered?",
+     "header": "Two",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "C"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ],
+  "preview_and_notes": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "make it turnkey",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "How far should enable go?",
+     "header": "Install",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Full turnkey (Recommended)"
+     ],
+     "recommended_pick": true,
+     "preview": "$ tool enable\n==> done",
+     "notes": "make it turnkey"
+    }
+   }
+  ],
+  "full_round": [
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "and never use the memory one again",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.75,
+     "reasons": [
+      "freeform_answer",
+      "substantive"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which adapter?",
+     "header": "Adapter",
+     "multi_select": false,
+     "option_pick": true,
+     "picked_labels": [
+      "Storage (Recommended)"
+     ],
+     "recommended_pick": true,
+     "notes": "and never use the memory one again"
+    }
+   },
+   {
+    "kind": "question_answer",
+    "detector": "ask_user_question",
+    "session_id": "sess-1",
+    "event_index": 1,
+    "event_uuid": "u1",
+    "occurred_at": "2026-01-02T03:04:05+00:00",
+    "text": "Getting started, How it works, end to end",
+    "cc_version": "1.2.3",
+    "trigger_index": 0,
+    "signal": {
+     "confidence": 0.25,
+     "reasons": [
+      "option_pick"
+     ],
+     "durable": true
+    },
+    "lower_bound": null,
+    "evidence": {
+     "question": "Which docs pages?",
+     "header": "Docs",
+     "multi_select": true,
+     "option_pick": true,
+     "picked_labels": [
+      "Getting started",
+      "How it works, end to end"
+     ],
+     "recommended_pick": false
+    }
+   }
+  ]
+ },
+ "captain_hook": [
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "In cc_transcript/filter.py:L12-15: this branch never runs, drop it\nIn parser.py: missing a newline guard here\n\n### T1 [CORRECTNESS] \u2014 Guard against the empty spec\nFIX: add an early return\nTests: cover the empty-spec case\n\n- file: cc_transcript/mining/spec.py:88\n- theme: dead code\n- claim: UNPORTABLE_RE gives false confidence\n- suggestion: delete the gate\n",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "user_message",
+     "trigger_proximate"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "review_comment",
+   "detector": "review_comment",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "UNPORTABLE_RE gives false confidence delete the gate",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "format_match",
+     "substantive"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {
+    "format": "conductor-finding",
+    "file": "cc_transcript/mining/spec.py",
+    "line_start": 88,
+    "line_end": null,
+    "provenance": "typed"
+   }
+  },
+  {
+   "kind": "review_comment",
+   "detector": "review_comment",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "this branch never runs, drop it",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "format_match",
+     "substantive"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {
+    "format": "superset-inline",
+    "file": "cc_transcript/filter.py",
+    "line_start": 12,
+    "line_end": 15,
+    "provenance": "typed"
+   }
+  },
+  {
+   "kind": "review_comment",
+   "detector": "review_comment",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "missing a newline guard here",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "format_match",
+     "substantive"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {
+    "format": "superset-inline",
+    "file": "parser.py",
+    "line_start": null,
+    "line_end": null,
+    "provenance": "typed"
+   }
+  },
+  {
+   "kind": "review_comment",
+   "detector": "review_comment",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "T1 [CORRECTNESS] Guard against the empty spec FIX: add an early return Tests: cover the empty-spec case",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "format_match",
+     "substantive"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {
+    "format": "conductor-workstream",
+    "file": null,
+    "line_start": null,
+    "line_end": null,
+    "provenance": "typed"
+   }
+  }
+ ],
+ "callable": [
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "CALLABLE_MARKER here is the inline comment",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "user_message",
+     "trigger_proximate"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "review_comment",
+   "detector": "review_comment",
+   "session_id": "sess-1",
+   "event_index": 1,
+   "event_uuid": "u1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "CALLABLE_MARKER here is the inline comment",
+   "cc_version": "1.2.3",
+   "trigger_index": 0,
+   "signal": {
+    "confidence": 0.75,
+    "reasons": [
+     "format_match",
+     "substantive"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {
+    "format": "cb",
+    "file": "cb.py",
+    "line_start": 1,
+    "line_end": 1,
+    "provenance": "typed"
+   }
+  }
+ ]
+}

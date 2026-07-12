@@ -3,24 +3,20 @@
 
 A :class:`MiningSpec` packages the full mining policy as data: which detectors run,
 the confidence-scoring stages each detector folds over a candidate, the provenance
-classification set, and the review-format policy. The Python reference executor in
-:mod:`cc_transcript.mining.signals` interprets the spec; the same JSON contract
-(:func:`mining_spec_to_json`) is executed by the Rust backend when
-:func:`mining_spec_is_portable` holds.
+classification set, and the review-format policy. Its JSON contract
+(:func:`mining_spec_to_json`) is executed solely by the Rust backend.
 
 Confidence scoring is an ordered tuple of :class:`ConfStage` folded over a
-:class:`ScoreCtx`, exactly mirroring :func:`~cc_transcript.sentiment.scorespec.py_post_process`.
-:class:`NoiseIfStructural` short-circuits to noise like
+:class:`ScoreCtx`. :class:`NoiseIfStructural` short-circuits to noise like
 :class:`~cc_transcript.sentiment.scorespec.FrustrationShortCircuit`. The stage order
 in :data:`CALIBRATED_SPEC` and :data:`USER_MESSAGE_SPEC` reproduces the historical
 ``firm → +substantive → −hedged`` and ``structural → firm − short + proximate``
 sequences verbatim, so mined confidences and reason tuples stay byte-identical.
 
-Review formats split by portability: a :class:`RegexReviewFormat` (one named regex
-plus a declarative group map) is executable by Rust, while a
-:class:`CallableReviewFormat` (arbitrary pattern plus a Python extractor) is an
-escape hatch that forces the review-comment detector to Python for that one format,
-exactly as a non-portable filter group forces Python in the filter backend.
+Review formats come in two shapes: a :class:`RegexReviewFormat` (one named regex
+plus a declarative group map) executes directly in Rust, while a
+:class:`CallableReviewFormat` (arbitrary pattern plus a Python extractor) is invoked
+through a pyo3 callback side-channel — single-threaded, under the held GIL.
 """
 
 from __future__ import annotations
@@ -34,7 +30,6 @@ import orjson
 
 from cc_transcript.filterspec import (
     HEDGE_GROUPS,
-    PORTABLE_GROUP_NAMES,
     STRUCTURAL_NOISE_GROUPS,
     compile_groups,
 )
@@ -82,10 +77,6 @@ TIGHT_PROXIMITY = 2
 
 Provenance = Literal["typed", "surfaced", "claude"]
 DEFAULT_SURFACES: frozenset[Provenance] = frozenset({"typed", "surfaced"})
-
-# Lookaround and backreferences the Rust ``regex`` crate rejects; a review format
-# whose pattern uses them can never run in Rust regardless of its group names.
-UNPORTABLE_RE = re.compile(r"\(\?<?[=!]|\\[1-9]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,10 +214,11 @@ class RegexReviewFormat:
 
 @dataclass(frozen=True, slots=True)
 class CallableReviewFormat:
-    """An escape hatch: an arbitrary pattern plus a Python extractor; never portable.
+    """An escape hatch: an arbitrary pattern plus a Python extractor.
 
-    Serializes to its name alone — a marker telling the Rust backend this format
-    runs in Python — exactly as a non-portable filter group marks a spec non-portable.
+    The Rust mining executor invokes ``pattern`` and ``extract`` through a pyo3
+    callback side-channel — single-threaded, under the held GIL — passing the format
+    by position. Both are ordinary Python objects the Rust JSON contract never carries.
 
     Attributes:
         name: The format's identifier.
@@ -284,7 +276,7 @@ def run_confidence(spec: ConfidenceSpec, ctx: ScoreCtx, base: CandidateSignal) -
     """Folds ``spec``'s stages over ``ctx``, seeded by ``base``.
 
     A :class:`NoiseIfStructural` hit short-circuits to its band with only its reason,
-    mirroring :func:`~cc_transcript.sentiment.scorespec.first_short_circuit`.
+    like the score spec's :class:`~cc_transcript.sentiment.scorespec.FrustrationShortCircuit`.
     """
     for stage in spec.stages:
         if isinstance(stage, NoiseIfStructural) and compile_groups(stage.groups, stage.ignore_case).search(ctx.text):
@@ -424,40 +416,27 @@ def structured_format_to_dict(fmt: StructuredFormat) -> dict[str, Any]:
     }
 
 
-def review_format_to_dict(fmt: ReviewFormat) -> dict[str, Any]:
-    match fmt:
-        case RegexReviewFormat(
-            name=name,
-            groups=groups,
-            file_group=fg,
-            line_start_group=lsg,
-            line_end_group=leg,
-            comment_groups=cg,
-            join=join,
-            multiline=ml,
-            ignore_case=ic,
-        ):
-            return {
-                "kind": "RegexReviewFormat",
-                "name": name,
-                "groups": [list(group) for group in groups],
-                "file_group": fg,
-                "line_start_group": lsg,
-                "line_end_group": leg,
-                "comment_groups": list(cg),
-                "join": join,
-                "multiline": ml,
-                "ignore_case": ic,
-            }
-        case CallableReviewFormat(name=name):
-            return {"kind": "CallableReviewFormat", "name": name}
+def regex_format_to_dict(fmt: RegexReviewFormat) -> dict[str, Any]:
+    return {
+        "kind": "RegexReviewFormat",
+        "name": fmt.name,
+        "groups": [list(group) for group in fmt.groups],
+        "file_group": fmt.file_group,
+        "line_start_group": fmt.line_start_group,
+        "line_end_group": fmt.line_end_group,
+        "comment_groups": list(fmt.comment_groups),
+        "join": fmt.join,
+        "multiline": fmt.multiline,
+        "ignore_case": fmt.ignore_case,
+    }
 
 
 def review_spec_to_dict(spec: ReviewSpec) -> dict[str, Any]:
+    """Serializes the Rust-executed review formats. Callable formats travel
+    out-of-band via the pyo3 side-channel, so they carry no JSON representation."""
     return {
         "surfaces": sorted(spec.surfaces),
-        "regex_formats": [review_format_to_dict(fmt) for fmt in spec.regex_formats],
-        "callable_formats": [review_format_to_dict(fmt) for fmt in spec.callable_formats],
+        "regex_formats": [regex_format_to_dict(fmt) for fmt in spec.regex_formats],
         "structured_formats": [structured_format_to_dict(fmt) for fmt in spec.structured_formats],
     }
 
@@ -477,37 +456,6 @@ def mining_spec_to_json(spec: MiningSpec) -> str:
             "review": review_spec_to_dict(spec.review),
         }
     ).decode()
-
-
-def conf_spec_portable(spec: ConfidenceSpec) -> bool:
-    return all(
-        name in PORTABLE_GROUP_NAMES
-        for stage in spec.stages
-        if isinstance(stage, BumpIfSubstantive | DemoteIfHedged | NoiseIfStructural)
-        for name, _ in stage.groups
-    )
-
-
-def regex_format_portable(fmt: RegexReviewFormat) -> bool:
-    return not any(UNPORTABLE_RE.search(pattern) for _, pattern in fmt.groups)
-
-
-def review_portable(spec: ReviewSpec) -> bool:
-    return not spec.callable_formats and all(regex_format_portable(fmt) for fmt in spec.regex_formats)
-
-
-def mining_spec_is_portable(spec: MiningSpec) -> bool:
-    """Returns whether the entire spec is executable by the Rust backend.
-
-    Confidence specs are portable when every regex-bearing stage uses Rust-portable
-    group names; the review spec is portable only when it has no callable formats and
-    every regex format avoids lookaround and backreferences.
-    """
-    return (
-        conf_spec_portable(spec.user_message)
-        and conf_spec_portable(spec.calibrated)
-        and review_portable(spec.review)
-    )
 
 
 def signal_to_dict(signal: MiningSignal) -> dict[str, Any]:

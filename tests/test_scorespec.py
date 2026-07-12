@@ -1,8 +1,8 @@
 """Score-stage behavior: frustration/mild-impatience/resume/positive-clamp logic
-and FilteredEngine orchestration. Re-homed from cc-sentiment when the score
-pipeline moved into cc-transcript. Lexicon-dependent stages monkeypatch
-``Lexicon.has_hit`` to isolate the stage logic from the lexicon lookup; the
-floor is now fixed, so the patched signature is ``(text, *, want_negative)``."""
+and FilteredEngine orchestration. Re-homed from cc-sentiment when the score pipeline
+moved into cc-transcript. Every deterministic stage runs in the Rust executor over
+the real vendored lexicon; the texts are chosen so the real lexicon supplies the
+hit/no-hit each case needs (the frustration and resume stages are lexicon-free)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,12 @@ from datetime import UTC, datetime
 import anyio
 import pytest
 
+from cc_transcript import _parser_rs
 from cc_transcript.models import AssistantEvent, EntryMeta, EventUuid, SessionId, UserEvent
 from cc_transcript.sentiment import (
     ConversationBucket,
     FilteredEngine,
+    ScoreSpec,
     SentimentScore,
     build_score_spec,
     clamp_positive,
@@ -23,10 +25,18 @@ from cc_transcript.sentiment import (
     flag_frustration,
 )
 from cc_transcript.sentiment.buckets import BucketIndex
-from cc_transcript.sentiment.lexicon import Lexicon
-from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
+from cc_transcript.sentiment.scorespec import score_spec_to_json
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def short_circuit(spec: ScoreSpec, buckets: list[list[str]]) -> list[SentimentScore | None]:
+    return [None if s is None else SentimentScore(s) for s in _parser_rs.score_short_circuit(score_spec_to_json(spec), buckets)]
+
+
+def post_process(spec: ScoreSpec, buckets: list[list[str]], raw: list[SentimentScore]) -> list[SentimentScore]:
+    scored = _parser_rs.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
+    return [SentimentScore(s) for s in scored]
 
 FRUSTRATION_SPEC = build_score_spec(flag_frustration())
 RESUME_SPEC = build_score_spec(clamp_resume())
@@ -167,69 +177,61 @@ class StubEngine:
         return None
 
 
-@pytest.fixture
-def no_lexicon_hit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, want_negative: False)
-
-
-@pytest.fixture
-def lexicon_hit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Lexicon, "has_hit", lambda text, *, want_negative: True)
-
-
 @pytest.mark.parametrize("text", FRUSTRATION_HITS)
 def test_frustration_short_circuits(text: str) -> None:
-    assert py_short_circuit(FRUSTRATION_SPEC, [[text]]) == [SentimentScore(1)]
+    assert short_circuit(FRUSTRATION_SPEC, [[text]]) == [SentimentScore(1)]
 
 
 @pytest.mark.parametrize("text", FRUSTRATION_MISSES)
 def test_frustration_does_not_short_circuit(text: str) -> None:
-    assert py_short_circuit(FRUSTRATION_SPEC, [[text]]) == [None]
+    assert short_circuit(FRUSTRATION_SPEC, [[text]]) == [None]
 
 
 @pytest.mark.parametrize("text", RESUME_PHRASES)
 def test_resume_clamps_to_three(text: str) -> None:
-    assert py_post_process(RESUME_SPEC, [[text]], [SentimentScore(5)]) == [SentimentScore(3)]
+    assert post_process(RESUME_SPEC, [[text]], [SentimentScore(5)]) == [SentimentScore(3)]
 
 
 @pytest.mark.parametrize("text", NON_RESUME)
 def test_non_resume_unchanged(text: str) -> None:
-    assert py_post_process(RESUME_SPEC, [[text]], [SentimentScore(5)]) == [SentimentScore(5)]
+    assert post_process(RESUME_SPEC, [[text]], [SentimentScore(5)]) == [SentimentScore(5)]
 
 
 @pytest.mark.parametrize("text", MILD_IMPATIENCE_HITS)
-def test_mild_impatience_demotes_when_not_hostile(text: str, no_lexicon_hit: None) -> None:
-    assert py_post_process(DEMOTE_SPEC, [[text]], [SentimentScore(1)]) == [SentimentScore(2)]
+def test_mild_impatience_demotes_when_not_hostile(text: str) -> None:
+    assert post_process(DEMOTE_SPEC, [[text]], [SentimentScore(1)]) == [SentimentScore(2)]
 
 
 @pytest.mark.parametrize("text", MILD_IMPATIENCE_MISSES)
-def test_mild_impatience_no_trigger_no_demote(text: str, no_lexicon_hit: None) -> None:
-    assert py_post_process(DEMOTE_SPEC, [[text]], [SentimentScore(1)]) == [SentimentScore(1)]
+def test_mild_impatience_no_trigger_no_demote(text: str) -> None:
+    assert post_process(DEMOTE_SPEC, [[text]], [SentimentScore(1)]) == [SentimentScore(1)]
 
 
-def test_mild_impatience_kept_when_hostile(lexicon_hit: None) -> None:
-    assert py_post_process(DEMOTE_SPEC, [["and again! this is broken"]], [SentimentScore(1)]) == [SentimentScore(1)]
+def test_mild_impatience_kept_when_hostile_lexicon() -> None:
+    # 'broken' is a fixed negative-floor override, so the real lexicon marks it hostile.
+    assert post_process(DEMOTE_SPEC, [["and again! this is broken"]], [SentimentScore(1)]) == [SentimentScore(1)]
 
 
-def test_mild_impatience_hostile_via_frustration_regex(no_lexicon_hit: None) -> None:
-    # "fuck you" trips the frustration (hostile) regex even with lexicon disabled.
-    assert py_post_process(DEMOTE_SPEC, [["and again! fuck you"]], [SentimentScore(1)]) == [SentimentScore(1)]
+def test_mild_impatience_hostile_via_frustration_regex() -> None:
+    # "fuck you" trips the frustration (hostile) regex.
+    assert post_process(DEMOTE_SPEC, [["and again! fuck you"]], [SentimentScore(1)]) == [SentimentScore(1)]
 
 
-def test_positive_clamp_lowers_5_when_short_no_positive(no_lexicon_hit: None) -> None:
-    assert py_post_process(CLAMP_SPEC, [["status?"]], [SentimentScore(5)]) == [SentimentScore(3)]
+def test_positive_clamp_lowers_5_when_short_no_positive() -> None:
+    assert post_process(CLAMP_SPEC, [["status?"]], [SentimentScore(5)]) == [SentimentScore(3)]
 
 
-def test_positive_clamp_keeps_5_when_positive_present(lexicon_hit: None) -> None:
-    assert py_post_process(CLAMP_SPEC, [["amazing!"]], [SentimentScore(5)]) == [SentimentScore(5)]
+def test_positive_clamp_keeps_5_when_positive_present() -> None:
+    # 'amazing' is above the positive floor in the real lexicon.
+    assert post_process(CLAMP_SPEC, [["amazing!"]], [SentimentScore(5)]) == [SentimentScore(5)]
 
 
-def test_positive_clamp_keeps_5_when_long(no_lexicon_hit: None) -> None:
-    assert py_post_process(CLAMP_SPEC, [["are we doing well today"]], [SentimentScore(5)]) == [SentimentScore(5)]
+def test_positive_clamp_keeps_5_when_long() -> None:
+    assert post_process(CLAMP_SPEC, [["are we doing well today"]], [SentimentScore(5)]) == [SentimentScore(5)]
 
 
-def test_positive_clamp_ignores_non_5(no_lexicon_hit: None) -> None:
-    assert py_post_process(CLAMP_SPEC, [["status?"]], [SentimentScore(4)]) == [SentimentScore(4)]
+def test_positive_clamp_ignores_non_5() -> None:
+    assert post_process(CLAMP_SPEC, [["status?"]], [SentimentScore(4)]) == [SentimentScore(4)]
 
 
 def test_engine_forwards_with_empty_spec() -> None:

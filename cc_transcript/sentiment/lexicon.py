@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
 from importlib.resources import files
-from itertools import groupby
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
-if TYPE_CHECKING:
-    from types import ModuleType
+from cc_transcript import _parser_rs
 
 
 def load_polarities(name: str) -> dict[str, int]:
@@ -27,27 +24,15 @@ def tokenize(text: str) -> list[str]:
     """Split ``text`` into lowercased maximal runs of alphabetic characters.
 
     The shared, deterministic tokenizer: each run is a maximal span of
-    ``str.isalpha`` characters, lowercased whole-run with ``str.lower`` so
-    context-sensitive cases (Greek final-sigma, the German sharp-s) resolve
-    correctly. The Rust tokenizer mirrors this exactly over a pinned Unicode
-    ``isalpha`` table.
+    ``str.isalpha`` characters, lowercased whole-run so context-sensitive cases
+    (Greek final-sigma, the German sharp-s) resolve correctly. Executes in Rust
+    over a pinned Unicode ``isalpha`` table.
 
     Example:
         >>> tokenize("LOST losing — can't")
         ['lost', 'losing', 'can', 't']
     """
-    return ["".join(run).lower() for alpha, run in groupby(text, str.isalpha) if alpha]
-
-
-def rust_lexicon() -> ModuleType | None:
-    """The Rust lexicon backend when the extension is built and not force-disabled."""
-    if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
-        return None
-    try:
-        from cc_transcript import _parser_rs
-    except ImportError:
-        return None
-    return _parser_rs if hasattr(_parser_rs, "lexicon_has_hit") else None
+    return _parser_rs.lexicon_tokenize(text)
 
 
 class Lexicon:
@@ -71,21 +56,16 @@ class Lexicon:
 
         A domain override when present, else its AFINN score zeroed below
         ``MIN_MAGNITUDE``. ``token`` is a tokenizer surface: already lowercased
-        and alphabetic.
+        and alphabetic. Executes in Rust.
         """
-        if (override := DOMAIN_OVERRIDES.get(token)) is not None:
-            return override
-        return score if abs(score := AFINN.get(token, 0)) >= cls.MIN_MAGNITUDE else 0
+        return _parser_rs.lexicon_polarity(token)
 
     @classmethod
     def has_hit(cls, text: str, *, want_negative: bool) -> bool:
         """Whether any token in ``text`` reaches the polarity ``FLOOR``.
 
-        ``<= -FLOOR`` when ``want_negative`` else ``>= FLOOR``. Tokenizes with
-        the shared :func:`tokenize` and scores each surface with
-        :meth:`polarity` — no lemmatization, no model, fully deterministic.
+        ``<= -FLOOR`` when ``want_negative`` else ``>= FLOOR``. Tokenizes and
+        scores each surface — no lemmatization, no model, fully deterministic.
+        Executes in Rust.
         """
-        tokens = tokenize(text)
-        if want_negative:
-            return any(cls.polarity(token) <= -cls.FLOOR for token in tokens)
-        return any(cls.polarity(token) >= cls.FLOOR for token in tokens)
+        return _parser_rs.lexicon_has_hit(text, want_negative)

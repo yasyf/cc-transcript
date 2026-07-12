@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import orjson
@@ -34,17 +36,12 @@ from cc_transcript.filterspec import (
     Clause,
     FilterSpec,
     TextMatchesAny,
-    apply_spec,
-    is_portable,
     spec_to_json,
 )
 from cc_transcript.models import AttachmentEvent
-from cc_transcript.parser import parse_events_from_bytes
-from tests.support import fixture_bytes, real_corpus, requires_rust
+from tests.support import fixture_bytes, project_survivor, requires_rust
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from cc_transcript.models import TranscriptEvent
 
 ALL_GROUPS_SPEC = FilterSpec(
@@ -167,6 +164,9 @@ def battery_bytes() -> bytes:
     return b"\n".join(line(text) for text in BATTERY)
 
 
+GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "filter_golden.json").read_text(encoding="utf-8"))
+
+
 def rust_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
     from cc_transcript import _parser_rs
 
@@ -174,48 +174,33 @@ def rust_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
     return [] if out is None else out[2]
 
 
-def py_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
-    return list(apply_spec(parse_events_from_bytes(path.read_bytes()), spec))
-
-
-def test_presets_are_portable() -> None:
-    assert all(is_portable(spec) for spec in PRESETS.values())
-
-
 @requires_rust
 @pytest.mark.parametrize("preset", PRESETS, ids=list(PRESETS))
-def test_battery_parity(tmp_path: Path, preset: str) -> None:
+def test_battery_golden(tmp_path: Path, preset: str) -> None:
     path = tmp_path / "battery.jsonl"
     path.write_bytes(battery_bytes())
-    assert rust_filtered(path, PRESETS[preset]) == py_filtered(path, PRESETS[preset])
+    assert [project_survivor(e) for e in rust_filtered(path, PRESETS[preset])] == GOLDEN["battery"][preset]
 
 
 @requires_rust
 @pytest.mark.parametrize("preset", PRESETS, ids=list(PRESETS))
-def test_fixture_parity(tmp_path: Path, preset: str) -> None:
+def test_fixture_golden(tmp_path: Path, preset: str) -> None:
     path = tmp_path / "fixture.jsonl"
     path.write_bytes(fixture_bytes())
-    assert rust_filtered(path, PRESETS[preset]) == py_filtered(path, PRESETS[preset])
+    assert [project_survivor(e) for e in rust_filtered(path, PRESETS[preset])] == GOLDEN["fixture"][preset]
 
 
 @requires_rust
-def test_attachment_positive_parity(tmp_path: Path) -> None:
-    """KindIs("attachment") keeps attachments and MetaFlag drops sidechain ones, identically on both backends."""
+def test_attachment_positive_golden(tmp_path: Path) -> None:
+    """KindIs("attachment") keeps attachments and MetaFlag drops the sidechain ones in Rust."""
     path = tmp_path / "fixture.jsonl"
     path.write_bytes(fixture_bytes())
-    kept = py_filtered(path, ATTACHMENTS_ONLY_SPEC)
-    assert kept == rust_filtered(path, ATTACHMENTS_ONLY_SPEC)
+    kept = rust_filtered(path, ATTACHMENTS_ONLY_SPEC)
+    assert [project_survivor(e) for e in kept] == GOLDEN["fixture"]["attachments_only"]
     assert kept
     assert all(isinstance(event, AttachmentEvent) for event in kept)
     assert any(event.meta.is_sidechain for event in kept)
-    survivors = py_filtered(path, SIDECHAIN_DROP_SPEC)
-    assert survivors == rust_filtered(path, SIDECHAIN_DROP_SPEC)
+    survivors = rust_filtered(path, SIDECHAIN_DROP_SPEC)
+    assert [project_survivor(e) for e in survivors] == GOLDEN["fixture"]["sidechain_drop"]
     assert any(isinstance(event, AttachmentEvent) for event in survivors)
     assert not any(isinstance(event, AttachmentEvent) and event.meta.is_sidechain for event in survivors)
-
-
-@requires_rust
-@pytest.mark.parametrize("path", real_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
-def test_real_corpus_parity(path: Path) -> None:
-    for spec in PRESETS.values():
-        assert rust_filtered(path, spec) == py_filtered(path, spec), f"diverged on {path}"

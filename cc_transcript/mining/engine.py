@@ -1,56 +1,38 @@
-"""Dual-backend mining entry — the mining analogue of
-:func:`~cc_transcript.sentiment.engine.rust_score_backend`.
+"""The mining entry point over the Rust executor.
 
-:func:`rust_mine_backend` resolves the Rust executor when the extension is built and
-the :class:`~cc_transcript.mining.spec.MiningSpec` is portable, else None to fall
-back to the Python reference. :func:`mine_signals` is the public dual-backend entry:
-it takes RAW transcript bytes plus a spec and returns
-:class:`~cc_transcript.mining.signals.MiningSignal` objects, routing to the Rust
-parse+detect fast path or the Python :func:`~cc_transcript.mining.signals.mine` over
-parsed events. The Rust path rehydrates the returned dicts into ``MiningSignal``
-objects byte-identical to the Python path.
+:func:`mine_signals` takes RAW transcript bytes plus a
+:class:`~cc_transcript.mining.spec.MiningSpec` and returns
+:class:`~cc_transcript.mining.signals.MiningSignal` objects. The Rust backend parses
+and detects in one pass — invoking any
+:class:`~cc_transcript.mining.spec.CallableReviewFormat` through a pyo3 callback
+side-channel — and :func:`rehydrate_signal` rebuilds the returned dicts.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from cc_transcript import _parser_rs
 from cc_transcript.mining.confidence import CandidateSignal, Confidence
-from cc_transcript.mining.signals import MiningSignal, mine
+from cc_transcript.mining.signals import MiningSignal
 from cc_transcript.mining.sourcekind import SourceKind
-from cc_transcript.mining.spec import mining_spec_is_portable, mining_spec_to_json
+from cc_transcript.mining.spec import mining_spec_to_json
 from cc_transcript.models import CcVersion, EventUuid, SessionId
-from cc_transcript.parser import parse_events_from_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
-    from types import ModuleType
 
     from cc_transcript.mining.spec import MiningSpec
 
 
-def rust_mine_backend(spec: MiningSpec) -> ModuleType | None:
-    """The Rust mining executor when built and the spec is portable; else None → Python."""
-    if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
-        return None
-    try:
-        from cc_transcript import _parser_rs
-    except ImportError:
-        return None
-    if not hasattr(_parser_rs, "mine_signals") or not mining_spec_is_portable(spec):
-        return None
-    return _parser_rs
-
-
 def mine_signals(raw: bytes, spec: MiningSpec) -> Iterator[MiningSignal]:
-    """Mines every :class:`MiningSignal` from raw transcript bytes via the active backend.
+    """Mines every :class:`MiningSignal` from raw transcript bytes via the Rust executor.
 
-    The Rust backend parses and detects over ``raw`` in one pass when the extension is
-    built and ``spec`` is portable; otherwise the bytes are parsed to events in Python
-    and the reference :func:`~cc_transcript.mining.signals.mine` runs. Both paths yield
-    byte-identical ``MiningSignal`` objects.
+    The Rust backend parses and detects over ``raw`` in one pass, invoking each
+    :class:`~cc_transcript.mining.spec.CallableReviewFormat`'s Python pattern and
+    extractor through a positional side-channel. The Rust call runs eagerly, so a
+    malformed spec pattern raises here rather than mid-stream.
 
     Args:
         raw: The raw bytes of a ``.jsonl`` transcript.
@@ -60,11 +42,9 @@ def mine_signals(raw: bytes, spec: MiningSpec) -> Iterator[MiningSignal]:
     Yields:
         Neutral mined facts, one per recognized transcript shape, in detector order.
     """
-    rust = rust_mine_backend(spec)
-    if rust is None:
-        yield from mine(parse_events_from_bytes(raw), spec)
-        return
-    yield from (rehydrate_signal(payload) for payload in rust.mine_signals(raw, mining_spec_to_json(spec)))
+    callable_formats = [(fmt.name, fmt.pattern, fmt.extract) for fmt in spec.review.callable_formats]
+    payloads = _parser_rs.mine_signals(raw, mining_spec_to_json(spec), callable_formats)
+    return (rehydrate_signal(payload) for payload in payloads)
 
 
 def rehydrate_signal(payload: Mapping[str, Any]) -> MiningSignal:

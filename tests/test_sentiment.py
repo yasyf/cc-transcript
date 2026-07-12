@@ -23,9 +23,19 @@ from cc_transcript.sentiment import (
     extract_bucket_keys,
     flag_frustration,
 )
-from cc_transcript.sentiment.scorespec import py_post_process, py_short_circuit
+from cc_transcript import _parser_rs
+from cc_transcript.sentiment.scorespec import ScoreSpec, score_spec_to_json
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def short_circuit(spec: ScoreSpec, buckets: list[list[str]]) -> list[SentimentScore | None]:
+    return [None if s is None else SentimentScore(s) for s in _parser_rs.score_short_circuit(score_spec_to_json(spec), buckets)]
+
+
+def post_process(spec: ScoreSpec, buckets: list[list[str]], raw: list[SentimentScore]) -> list[SentimentScore]:
+    scored = _parser_rs.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
+    return [SentimentScore(s) for s in scored]
 
 
 def meta(uuid: str, *, minutes: float = 0.0, session: str = "s") -> EntryMeta:
@@ -171,14 +181,14 @@ def test_bucketer_keeps_mid_text_bash_tag_mention() -> None:
 
 def test_frustration_stage_short_circuits_to_one() -> None:
     spec = build_score_spec(flag_frustration())
-    assert py_short_circuit(spec, [["wtf this is broken", "still broken"]]) == [SentimentScore(1)]
-    assert py_short_circuit(spec, [["please fix the bug"]]) == [None]
+    assert short_circuit(spec, [["wtf this is broken", "still broken"]]) == [SentimentScore(1)]
+    assert short_circuit(spec, [["please fix the bug"]]) == [None]
 
 
 def test_resume_stage_clamps_to_three() -> None:
     spec = build_score_spec(clamp_resume())
-    assert py_post_process(spec, [["go ahead", "continue"]], [SentimentScore(5)]) == [SentimentScore(3)]
-    assert py_post_process(spec, [["a longer real message"]], [SentimentScore(5)]) == [SentimentScore(5)]
+    assert post_process(spec, [["go ahead", "continue"]], [SentimentScore(5)]) == [SentimentScore(3)]
+    assert post_process(spec, [["a longer real message"]], [SentimentScore(5)]) == [SentimentScore(5)]
 
 
 def test_filtered_engine_short_circuit_bypasses_inference() -> None:

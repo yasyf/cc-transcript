@@ -1,24 +1,22 @@
-"""Rust mining executor == Python mining interpreter, over raw transcript bytes.
+"""Golden regression + callback coverage for the Rust mining executor.
 
-The dual-backend :func:`~cc_transcript.mining.engine.mine_signals` is the boundary
-both sides feed: the Python reference parses bytes to events and runs
-:func:`~cc_transcript.mining.signals.mine`; the Rust fast path parses and detects in
-one pass and rehydrates the dicts. The raw-bytes parity contract is
-
-    ``[signal_to_dict(s) for s in mine(parse_events_from_bytes(raw), spec)]``
-        ``== _parser_rs.mine_signals(raw, mining_spec_to_json(spec))``
-
-compared dict-by-value. This module proves it three ways: a hand-built battery with
-one case per detector (plus near-misses, case-folds, and unicode), a deterministic
-sample of real mirror transcripts, and a force-Python switch that must reproduce the
-Rust result. A portability guard confirms a callable/lookaround review format never
-reaches Rust yet still mines correctly through the Python path. Skips when the
-extension is unavailable.
+The Rust backend is the sole mining executor. This module freezes its correct output
+— captured from the historical Python reference, proven equal for portable specs and
+the sole correct reference for callable review formats — into
+``testdata/mining_golden.json`` and asserts the Rust executor still reproduces it: a
+hand-built battery with one case per detector (plus near-misses, case-folds, and
+unicode), the structured/banner AskUserQuestion rounds, and a captain-hook-shaped
+review spec that exercises the pyo3 callback side-channel (superset-inline lookahead
+and conductor-workstream multi-pass callables alongside a conductor-finding regex). A
+lookaround :class:`RegexReviewFormat`, which the Rust ``regex`` crate rejects, raises
+at mine time.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,9 +31,9 @@ from cc_transcript.filterspec import (
     USER_SAID_TRAILER,
 )
 from cc_transcript.mining.confidence import MEDIUM
-from cc_transcript.mining.engine import mine_signals, rust_mine_backend
+from cc_transcript.mining.engine import mine_signals
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
-from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED, mine
+from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED
 from cc_transcript.mining.spec import (
     Base,
     BumpIfProximate,
@@ -45,11 +43,8 @@ from cc_transcript.mining.spec import (
     MiningSpec,
     RegexReviewFormat,
     ReviewSpec,
-    mining_spec_is_portable,
-    mining_spec_to_json,
     signal_to_dict,
 )
-from cc_transcript.parser import parse_events_from_bytes
 from tests.support import (
     MATCHER_LABELS,
     MATCHER_QUESTION,
@@ -58,7 +53,6 @@ from tests.support import (
     TOMBSTONE_QUESTION,
     fixture_bytes,
     requires_rust,
-    rust_not_disabled,
 )
 from tests.support import (
     raw_envelope as envelope,
@@ -71,11 +65,9 @@ if TYPE_CHECKING:
 
 SPEC = MiningSpec()
 
-# Deterministic real-corpus sample. The mirror holds ~11k transcripts; mining every
-# one would make this test minutes long, so we sample a fixed, reproducible slice.
-# This cap is intentional and visible — never silently truncated. See mirror_corpus().
-MIRROR_DIR = "/Users/yasyf/.cc-pushback/mirrors/yasyf"
-MIRROR_SAMPLE = 150
+GOLDEN: dict[str, Any] = json.loads(
+    (Path(__file__).resolve().parent / "testdata" / "mining_golden.json").read_text(encoding="utf-8")
+)
 
 # A portable review spec: an inline ``file:line: comment`` regex plus a JSON
 # structured format exercising int / "96" / "24-51" line forms and a fix-key append.
@@ -726,6 +718,15 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
     }
 
 
+def rust_dicts(raw: bytes, spec: MiningSpec) -> list[dict[str, Any]]:
+    return [signal_to_dict(signal) for signal in mine_signals(raw, spec)]
+
+
+def assert_signal_valid(signal: MiningSignal) -> None:
+    assert isinstance(signal.occurred_at, datetime)
+    assert isinstance(signal.text, str)
+
+
 def callable_review_spec() -> MiningSpec:
     def extract(text: str) -> tuple[ReviewComment, ...]:
         return (ReviewComment(file="cb.py", line_start=1, line_end=1, comment=text.strip()),)
@@ -735,6 +736,8 @@ def callable_review_spec() -> MiningSpec:
 
 
 def lookaround_review_spec() -> MiningSpec:
+    # Lookbehind the Rust regex crate rejects: a Rust-executed RegexReviewFormat that
+    # must raise at mine time, not silently mine nothing (D4 — no fancy-regex fallback).
     fmt = RegexReviewFormat(
         name="look",
         groups=(("look", r"(?<=PREFIX )(?P<c>\w+)"),),
@@ -746,86 +749,106 @@ def lookaround_review_spec() -> MiningSpec:
     return MiningSpec(review=ReviewSpec(regex_formats=(fmt,)))
 
 
-def unportable_cases() -> dict[str, tuple[MiningSpec, list[dict[str, Any]], str]]:
-    return {
-        "callable_format": (
-            callable_review_spec(),
-            [
-                assistant("a1", {"type": "text", "text": "ok"}),
-                user_text("u1", "CALLABLE_MARKER here is the inline comment"),
-            ],
-            "CALLABLE_MARKER here is the inline comment",
+# captain-hook's three real review formats: conductor-finding executes as a Rust
+# RegexReviewFormat, while superset-inline (lookahead) and conductor-workstream
+# (multi-pass) reach Rust only through the pyo3 callback side-channel.
+SUPERSET_INLINE_RE = re.compile(r"^In ((?=\S*[./]|\S+?:L)\S+?)(?::L(\d+)(?:-(\d+))?)?: (.+)$", re.MULTILINE)
+CONDUCTOR_WORKSTREAM_RE = re.compile(
+    r"^### (?P<id>[A-Z][\w-]*\d*)\s*\[(?P<kind>[A-Z]+)\]\s*—\s*(?P<title>.+)$", re.MULTILINE
+)
+CONDUCTOR_FINDING_FMT = RegexReviewFormat(
+    name="conductor-finding",
+    groups=(
+        (
+            "conductor-finding",
+            r"^- file: (\S+?):(\d+)\s*$(?:\n- theme: .+$)?(?:\n- claim: (.+)$)?(?:\n- suggestion: (.+)$)?",
         ),
-        "lookaround_regex": (
-            lookaround_review_spec(),
-            [assistant("a1", {"type": "text", "text": "ok"}), user_text("u1", "PREFIX matched")],
-            "matched",
-        ),
-    }
+    ),
+    file_group=1,
+    line_start_group=2,
+    line_end_group=None,
+    comment_groups=(3, 4),
+    multiline=True,
+)
+
+CAPTAIN_HOOK_REVIEW = (
+    "In cc_transcript/filter.py:L12-15: this branch never runs, drop it\n"
+    "In parser.py: missing a newline guard here\n"
+    "\n"
+    "### T1 [CORRECTNESS] — Guard against the empty spec\n"
+    "FIX: add an early return\n"
+    "Tests: cover the empty-spec case\n"
+    "\n"
+    "- file: cc_transcript/mining/spec.py:88\n"
+    "- theme: dead code\n"
+    "- claim: UNPORTABLE_RE gives false confidence\n"
+    "- suggestion: delete the gate\n"
+)
 
 
-def py_dicts(raw: bytes, spec: MiningSpec) -> list[dict[str, Any]]:
-    return [signal_to_dict(signal) for signal in mine(parse_events_from_bytes(raw), spec)]
+def extract_superset_inline(text: str) -> tuple[ReviewComment, ...]:
+    return tuple(
+        ReviewComment(
+            file=match.group(1),
+            line_start=int(match.group(2)) if match.group(2) else None,
+            line_end=int(match.group(3)) if match.group(3) else None,
+            comment=match.group(4).strip(),
+        )
+        for match in SUPERSET_INLINE_RE.finditer(text)
+    )
 
 
-def rust_dicts(raw: bytes, spec: MiningSpec) -> list[dict[str, Any]]:
-    from cc_transcript import _parser_rs
+def extract_conductor_workstream(text: str) -> tuple[ReviewComment, ...]:
+    headers = list(CONDUCTOR_WORKSTREAM_RE.finditer(text))
+    return tuple(
+        ReviewComment(
+            file=None,
+            line_start=None,
+            line_end=None,
+            comment=" ".join(
+                [f"{header.group('id')} [{header.group('kind')}] {header.group('title').strip()}"]
+                + [
+                    line.group(0).strip()
+                    for line in re.finditer(r"^(?:FIX|Tests): .+$", text[header.end() : end], re.MULTILINE)
+                ]
+            ),
+        )
+        for header, end in zip(headers, [*(h.start() for h in headers[1:]), len(text)], strict=True)
+    )
 
-    return _parser_rs.mine_signals(raw, mining_spec_to_json(spec))
 
-
-def assert_parity(raw: bytes, spec: MiningSpec) -> None:
-    """The raw-bytes contract: Python dicts == Rust dicts, by value."""
-    assert rust_dicts(raw, spec) == py_dicts(raw, spec)
-
-
-def assert_signal_eq(a: MiningSignal, b: MiningSignal) -> None:
-    assert signal_to_dict(a) == signal_to_dict(b)
-    assert a.occurred_at == b.occurred_at
-    assert a == b
-
-
-def mirror_corpus() -> list[Path]:
-    """A deterministic stride sample of real mirror transcripts, capped at MIRROR_SAMPLE.
-
-    Sorts every ``*.jsonl`` under the mirror by path and takes a fixed stride so the
-    same files are picked on every run. The MIRROR_SAMPLE cap is deliberate and
-    visible — the full ~11k corpus would make this test minutes long.
-    """
-    mirror = Path(MIRROR_DIR)
-    if not mirror.exists():
-        return []
-    paths = sorted(mirror.rglob("*.jsonl"))
-    if not paths:
-        return []
-    return paths[:: max(1, len(paths) // MIRROR_SAMPLE)][:MIRROR_SAMPLE]
+def captain_hook_review_spec() -> MiningSpec:
+    return MiningSpec(
+        review=ReviewSpec(
+            regex_formats=(CONDUCTOR_FINDING_FMT,),
+            callable_formats=(
+                CallableReviewFormat("superset-inline", SUPERSET_INLINE_RE, extract_superset_inline),
+                CallableReviewFormat("conductor-workstream", CONDUCTOR_WORKSTREAM_RE, extract_conductor_workstream),
+            ),
+            surfaces=frozenset({"typed"}),
+        )
+    )
 
 
 # ── tests ────────────────────────────────────────────────────────────────────
 
 
 @requires_rust
-@rust_not_disabled
-def test_default_spec_is_portable() -> None:
-    assert rust_mine_backend(SPEC) is not None
-
-
-@requires_rust
-def test_fixture_corpus_mining_parity() -> None:
-    assert_parity(fixture_bytes(), SPEC)
+def test_fixture_corpus_mining_golden() -> None:
+    assert rust_dicts(fixture_bytes(), SPEC) == GOLDEN["fixture"]
 
 
 @requires_rust
 @pytest.mark.parametrize("name", battery())
-def test_battery_detector_parity(name: str) -> None:
+def test_battery_detector_golden(name: str) -> None:
     entries, spec = battery()[name]
-    assert_parity(to_bytes(entries), spec)
+    assert rust_dicts(to_bytes(entries), spec) == GOLDEN["battery"][name]
 
 
 @pytest.mark.parametrize("name", ["plan_rejection_exitspecmode_alias", "plan_rejection_mcp_exitplanmode"])
 def test_alias_plan_denials_mine_as_plan_rejections_not_denials(name: str) -> None:
     entries, spec = battery()[name]
-    detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
+    detectors = {signal["detector"] for signal in rust_dicts(to_bytes(entries), spec)}
     assert "exit_plan_rejection" in detectors
     assert "denial" not in detectors
 
@@ -889,7 +912,7 @@ STRUCTURED_ROUNDS: dict[str, tuple[list[dict[str, Any]], dict[str, str], dict[st
 @requires_rust
 @pytest.mark.parametrize("name", STRUCTURED_ROUNDS)
 def test_ask_user_question_structured_matches_banner(name: str) -> None:
-    """Structured payload, banner, and both-present all mine the same non-empty signals."""
+    """Structured payload, banner, and both-present all mine the frozen banner signals."""
     questions, answers, annotations = STRUCTURED_ROUNDS[name]
     structured = to_bytes(auq_round_structured(questions, answers, annotations, content="answered"))
     banner = to_bytes(auq_round_banner(questions, answers, annotations))
@@ -898,12 +921,10 @@ def test_ask_user_question_structured_matches_banner(name: str) -> None:
             questions, answers, annotations, content=answered(render_pairs(questions, answers, annotations))
         )
     )
+    expected = GOLDEN["structured_rounds"][name]
+    assert expected
     for raw in (structured, banner, both):
-        assert rust_dicts(raw, SPEC) == py_dicts(raw, SPEC)
-    banner_signals = py_dicts(banner, SPEC)
-    assert banner_signals
-    assert py_dicts(structured, SPEC) == banner_signals
-    assert py_dicts(both, SPEC) == banner_signals
+        assert rust_dicts(raw, SPEC) == expected
 
 
 @requires_rust
@@ -912,9 +933,8 @@ def test_ask_user_question_structured_omitted_matches_no_option_selected() -> No
     questions = [auq_question("First unanswered?", "One", "A", "B"), auq_question("Second answered?", "Two", "C", "D")]
     answers = {"Second answered?": "C"}
     annotations = {"First unanswered?": {"notes": "leave this one alone"}}
-    structured = py_dicts(to_bytes(auq_round_structured(questions, answers, annotations, content="answered")), SPEC)
-    banner = py_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
-    assert structured == banner
+    structured = rust_dicts(to_bytes(auq_round_structured(questions, answers, annotations, content="answered")), SPEC)
+    assert structured == rust_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
     omitted = next(signal for signal in structured if signal["evidence"]["question"] == "First unanswered?")
     assert omitted["evidence"]["option_pick"] is False
     assert omitted["evidence"]["picked_labels"] == []
@@ -927,11 +947,9 @@ def test_ask_user_question_structured_annotations_flow_into_evidence() -> None:
     questions = [auq_question("How far should enable go?", "Install", "Full turnkey (Recommended)", "Install only")]
     answers = {"How far should enable go?": "Full turnkey (Recommended)"}
     annotations = {"How far should enable go?": {"preview": "$ tool enable\n==> done", "notes": "make it turnkey"}}
-    structured = to_bytes(auq_round_structured(questions, answers, annotations, content="answered"))
-    structured_signals = py_dicts(structured, SPEC)
-    assert rust_dicts(structured, SPEC) == structured_signals
-    assert structured_signals == py_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
-    [signal] = structured_signals
+    structured = rust_dicts(to_bytes(auq_round_structured(questions, answers, annotations, content="answered")), SPEC)
+    assert structured == rust_dicts(to_bytes(auq_round_banner(questions, answers, annotations)), SPEC)
+    [signal] = structured
     assert signal["evidence"]["preview"] == "$ tool enable\n==> done"
     assert signal["evidence"]["notes"] == "make it turnkey"
     assert signal["text"] == "make it turnkey"
@@ -939,13 +957,12 @@ def test_ask_user_question_structured_annotations_flow_into_evidence() -> None:
 
 @requires_rust
 def test_ask_user_question_error_round_with_payload_mines_nothing() -> None:
-    """An is_error round yields zero signals on both paths, both backends."""
+    """An is_error round yields zero signals."""
     questions = [auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")]
     answers = {"Which adapter?": "Storage (Recommended)"}
     raw = to_bytes(
         auq_round_structured(questions, answers, content=answered(render_pairs(questions, answers, {})), is_error=True)
     )
-    assert py_dicts(raw, SPEC) == []
     assert rust_dicts(raw, SPEC) == []
 
 
@@ -966,83 +983,72 @@ def test_ask_user_question_payload_without_questions_falls_back_to_use_questions
             ),
         ]
     )
-    signals = py_dicts(raw, SPEC)
-    assert rust_dicts(raw, SPEC) == signals
-    banner_signals = py_dicts(to_bytes(auq_round_banner(questions, answers)), SPEC)
+    signals = rust_dicts(raw, SPEC)
+    banner_signals = rust_dicts(to_bytes(auq_round_banner(questions, answers)), SPEC)
     assert banner_signals
     assert signals == banner_signals
 
 
 def test_structured_user_rejected_denial_mines_without_banner() -> None:
     entries, spec = battery()["denial_structured_user_rejected_no_banner"]
-    detectors = {signal["detector"] for signal in py_dicts(to_bytes(entries), spec)}
+    detectors = {signal["detector"] for signal in rust_dicts(to_bytes(entries), spec)}
     assert "denial" in detectors
 
 
 def test_permission_rule_block_is_not_mined_as_denial() -> None:
     entries, spec = battery()["denial_permission_rule_not_mined"]
-    assert all(signal["detector"] != "denial" for signal in py_dicts(to_bytes(entries), spec))
+    assert all(signal["detector"] != "denial" for signal in rust_dicts(to_bytes(entries), spec))
 
 
 @requires_rust
-@pytest.mark.parametrize("path", mirror_corpus(), ids=lambda p: f"{p.parent.name}/{p.name}")
-def test_mirror_corpus_mining_parity(path: Path) -> None:
-    # Logs the sample cap so the corpus test's reach is never silent.
-    print(f"[mirror sample cap = {MIRROR_SAMPLE}] {path}")
-    assert_parity(path.read_bytes(), SPEC)
-
-
-@requires_rust
-def test_mirror_corpus_has_teeth() -> None:
-    """The sampled corpus must actually mine signals, or its parity proves nothing."""
-    sample = mirror_corpus()
-    if not sample:
-        pytest.skip(f"no transcripts under {MIRROR_DIR}")
-    producing = sum(1 for path in sample if py_dicts(path.read_bytes(), SPEC))
-    print(f"[mirror sample] cap={MIRROR_SAMPLE} sampled={len(sample)} produced_signals={producing}")
-    assert producing > 0
-
-
-@requires_rust
-def test_non_object_lines_skipped_parity() -> None:
+def test_non_object_lines_skipped_keep_event_index() -> None:
     """Bare scalars and arrays between events never shift mined event_index (parser.py decode_line)."""
     entries = [
         assistant("a1", {"type": "text", "text": "I will refactor"}),
         user_text("u1", "this is completely wrong, please rewrite the parser module entirely"),
     ]
     raw = b"\n".join([orjson.dumps(entries[0]), b"42", b"[1, 2]", b'"scalar"', orjson.dumps(entries[1])])
-    assert_parity(raw, SPEC)
-    assert [signal["event_index"] for signal in py_dicts(raw, SPEC)] == [1]
+    assert [signal["event_index"] for signal in rust_dicts(raw, SPEC)] == [1]
 
 
 @requires_rust
-def test_rehydration_yields_objects_identical_to_python() -> None:
+def test_mine_signals_rehydrates_objects_matching_golden() -> None:
     raw = fixture_bytes()
-    rust = list(mine_signals(raw, SPEC))
-    python = list(mine(parse_events_from_bytes(raw), SPEC))
-    assert len(rust) == len(python)
-    for r, p in zip(rust, python, strict=True):
-        assert_signal_eq(r, p)
+    signals = list(mine_signals(raw, SPEC))
+    for signal in signals:
+        assert_signal_valid(signal)
+    assert [signal_to_dict(signal) for signal in signals] == GOLDEN["fixture"]
 
 
 @requires_rust
-@pytest.mark.parametrize("name", unportable_cases())
-def test_unportable_review_format_stays_python_yet_mines(name: str) -> None:
-    spec, entries, expected_text = unportable_cases()[name]
-    assert mining_spec_is_portable(spec) is False
-    assert rust_mine_backend(spec) is None
-    raw = to_bytes(entries)
-    via_entry = [signal_to_dict(s) for s in mine_signals(raw, spec)]
-    assert via_entry == py_dicts(raw, spec)
-    assert [s["text"] for s in via_entry if s["detector"] == "review_comment"] == [expected_text]
+def test_captain_hook_review_spec_mines_via_callback() -> None:
+    """The load-bearing consumer: a conductor-finding regex plus superset-inline and
+    conductor-workstream callables mine identical candidates on the Rust path, the two
+    callables invoked through the pyo3 side-channel."""
+    entries = [assistant("a1", {"type": "text", "text": "here is my review"}), user_text("u1", CAPTAIN_HOOK_REVIEW)]
+    signals = rust_dicts(to_bytes(entries), captain_hook_review_spec())
+    assert signals == GOLDEN["captain_hook"]
+    formats = sorted(s["evidence"]["format"] for s in signals if s["detector"] == "review_comment")
+    assert formats == ["conductor-finding", "conductor-workstream", "superset-inline", "superset-inline"]
 
 
-def test_disable_rust_matches_rust_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CC_TRANSCRIPT_DISABLE_RUST=1 reproduces the Rust path for the same inputs."""
-    raw = fixture_bytes()
-    if rust_mine_backend(SPEC) is None:
-        pytest.skip("_parser_rs unavailable; cannot compare the disabled path to Rust")
-    rust = rust_dicts(raw, SPEC)
-    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
-    assert rust_mine_backend(SPEC) is None
-    assert [signal_to_dict(s) for s in mine_signals(raw, SPEC)] == rust
+@requires_rust
+def test_callable_review_format_mines_via_callback() -> None:
+    entries = [
+        assistant("a1", {"type": "text", "text": "ok"}),
+        user_text("u1", "CALLABLE_MARKER here is the inline comment"),
+    ]
+    signals = rust_dicts(to_bytes(entries), callable_review_spec())
+    assert signals == GOLDEN["callable"]
+    assert [s["text"] for s in signals if s["detector"] == "review_comment"] == [
+        "CALLABLE_MARKER here is the inline comment"
+    ]
+
+
+@requires_rust
+def test_lookaround_regex_review_format_raises() -> None:
+    """A RegexReviewFormat with lookbehind — rejected by the Rust regex crate — raises at
+    mine time rather than silently mining nothing (D4: no fancy-regex fallback)."""
+    entries = [assistant("a1", {"type": "text", "text": "ok"}), user_text("u1", "PREFIX matched")]
+    with pytest.raises(ValueError):
+        list(mine_signals(to_bytes(entries), lookaround_review_spec()))

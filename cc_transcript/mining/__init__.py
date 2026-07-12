@@ -3,10 +3,10 @@
 """The correction/feedback mining mechanism.
 
 Neutral fact-detectors over Claude Code transcripts, driven by a declarative
-:class:`MiningSpec`: :func:`mine` interprets the spec and yields a
-:class:`MiningSignal` per recognized transcript shape — a neutral fact carrying a
-candidate trigger, confidence, and evidence, but no policy. Apps map signals to
-their own candidate records with policy injected (their filter spec, their
+:class:`MiningSpec`: :func:`mine_signals` runs the Rust executor over raw transcript
+bytes and yields a :class:`MiningSignal` per recognized transcript shape — a neutral
+fact carrying a candidate trigger, confidence, and evidence, but no policy. Apps map
+signals to their own candidate records with policy injected (their filter spec, their
 disqualification rules, their review formats), capture each candidate's durable
 :class:`~cc_transcript.context.ContextWindow` via
 :func:`~cc_transcript.context.capture_window`, and persist them through
@@ -16,8 +16,7 @@ from :func:`sample_windows`.
 
 The :class:`MiningSpec` is the mining analogue of :class:`~cc_transcript.FilterSpec`
 and :class:`~cc_transcript.sentiment.ScoreSpec`: a frozen-dataclass tree with a JSON
-contract (:func:`mining_spec_to_json`) that the Python reference executor here and,
-when :func:`mining_spec_is_portable` holds, the Rust backend both interpret.
+contract (:func:`mining_spec_to_json`) that the Rust backend is the sole executor of.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ from cc_transcript.mining.confidence import (
     strong,
     weak,
 )
-from cc_transcript.mining.engine import mine_signals, rehydrate_signal, rust_mine_backend
+from cc_transcript.mining.engine import mine_signals, rehydrate_signal
 from cc_transcript.mining.filterspec import (
     CandidateClause,
     CandidateFilterSpec,
@@ -69,7 +68,6 @@ from cc_transcript.mining.formats import (
 from cc_transcript.mining.sampling import sample_windows
 from cc_transcript.mining.signals import (
     MiningSignal,
-    mine,
 )
 from cc_transcript.mining.sourcekind import (
     INTERRUPT_REJECTION,
@@ -99,7 +97,6 @@ from cc_transcript.mining.spec import (
     RegexReviewFormat,
     ReviewFormat,
     ReviewSpec,
-    mining_spec_is_portable,
     mining_spec_to_json,
     signal_to_dict,
 )

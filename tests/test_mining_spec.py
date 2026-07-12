@@ -1,5 +1,5 @@
-"""The declarative mining spec: JSON round-trip, portability gating, and the
-regex-review-format extractor that the Rust backend must reproduce.
+"""The declarative mining spec: JSON round-trip and the regex-review-format
+extractor that the Rust backend must reproduce.
 """
 
 from __future__ import annotations
@@ -14,18 +14,13 @@ from cc_transcript.mining import (
     RegexReviewFormat,
     ReviewSpec,
     StructuredFormat,
-    mining_spec_is_portable,
     mining_spec_to_json,
     signal_to_dict,
 )
 from cc_transcript.mining.confidence import HIGH, MEDIUM, CandidateSignal
-from cc_transcript.mining.signals import MiningSignal, mine
+from cc_transcript.mining.signals import MiningSignal
 from cc_transcript.mining.sourcekind import REVIEW_COMMENT
-from cc_transcript.mining.spec import (
-    ConfidenceSpec,
-    DemoteIfHedged,
-    regex_review_comments,
-)
+from cc_transcript.mining.spec import regex_review_comments
 from cc_transcript.models import CcVersion, EntryMeta, EventUuid, SessionId
 
 CONDUCTOR_FINDING_RE = re.compile(
@@ -85,7 +80,6 @@ def test_default_spec_to_json_shape() -> None:
     assert payload["review"] == {
         "surfaces": ["surfaced", "typed"],
         "regex_formats": [],
-        "callable_formats": [],
         "structured_formats": [],
     }
 
@@ -139,7 +133,6 @@ def test_review_spec_to_json_serializes_each_format_arm() -> None:
             "ignore_case": False,
         }
     ]
-    assert review["callable_formats"] == [{"kind": "CallableReviewFormat", "name": "superset-inline"}]
     assert review["structured_formats"][0]["finding_keys"] == [
         "findings",
         "bugs",
@@ -150,52 +143,6 @@ def test_review_spec_to_json_serializes_each_format_arm() -> None:
         "confirmedHigh",
         "confirmedCritical",
     ]
-
-
-def test_default_spec_is_portable() -> None:
-    assert mining_spec_is_portable(MiningSpec()) is True
-
-
-def test_regex_review_format_is_portable() -> None:
-    spec = MiningSpec(review=ReviewSpec(regex_formats=(CONDUCTOR_FINDING,)))
-    assert mining_spec_is_portable(spec) is True
-
-
-def test_callable_review_format_forces_non_portable() -> None:
-    spec = MiningSpec(review=ReviewSpec(callable_formats=(SUPERSET_INLINE,)))
-    assert mining_spec_is_portable(spec) is False
-
-
-def test_lookaround_regex_format_is_non_portable() -> None:
-    lookahead = RegexReviewFormat(
-        name="superset-inline-regex",
-        groups=(("superset-inline-regex", SUPERSET_INLINE_RE.pattern),),
-        file_group=1,
-        line_start_group=2,
-        line_end_group=3,
-        comment_groups=(4,),
-    )
-    spec = MiningSpec(review=ReviewSpec(regex_formats=(lookahead,)))
-    assert mining_spec_is_portable(spec) is False
-
-
-def test_backreference_regex_format_is_non_portable() -> None:
-    backref = RegexReviewFormat(
-        name="dup",
-        groups=(("dup", r"^(\w+) \1$"),),
-        file_group=None,
-        line_start_group=None,
-        line_end_group=None,
-        comment_groups=(1,),
-    )
-    assert mining_spec_is_portable(MiningSpec(review=ReviewSpec(regex_formats=(backref,)))) is False
-
-
-def test_confidence_spec_with_unportable_group_is_non_portable() -> None:
-    spec = MiningSpec(
-        calibrated=ConfidenceSpec((DemoteIfHedged(groups=(("not_whitelisted", r"\bfoo\b"),)),))
-    )
-    assert mining_spec_is_portable(spec) is False
 
 
 def test_regex_review_comments_joins_claim_and_suggestion() -> None:
@@ -297,18 +244,3 @@ def test_signal_to_dict_round_trips_through_json() -> None:
         signal=CandidateSignal(MEDIUM, ("format_match",)),
     )
     assert json.loads(json.dumps(signal_to_dict(signal)))["cc_version"] is None
-
-
-def test_mine_dispatches_only_enabled_detectors() -> None:
-    from cc_transcript.models import AssistantEvent, UserEvent
-
-    events = [
-        AssistantEvent(
-            meta=meta("a0"), model="claude", text="made the change", blocks=(), stop_reason=None, usage=None
-        ),
-        UserEvent(meta=meta("u0"), text="no, revert it", blocks=(), interrupted=False),
-    ]
-    full = list(mine(events, MiningSpec()))
-    assert [s.detector for s in full] == ["transcript_message"]
-    none_enabled = list(mine(events, MiningSpec(detectors=frozenset())))
-    assert none_enabled == []

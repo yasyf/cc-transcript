@@ -91,9 +91,19 @@ struct CompiledStructuredFormat {
     finding_keys: Vec<String>,
 }
 
+/// A review format whose pattern and extractor are Python code, held as strong
+/// references and invoked single-threaded under the held GIL. Positional, never
+/// keyed by name: two specs with identical JSON but different callables must not collide.
+struct CompiledCallableFormat {
+    name: String,
+    pattern: Py<PyAny>,
+    extract: Py<PyAny>,
+}
+
 struct CompiledReviewSpec {
     surfaces: HashSet<String>,
     regex_formats: Vec<CompiledRegexFormat>,
+    callable_formats: Vec<CompiledCallableFormat>,
     structured_formats: Vec<CompiledStructuredFormat>,
 }
 
@@ -293,6 +303,7 @@ fn compile_review_spec(review: &Value) -> Result<CompiledReviewSpec, String> {
     Ok(CompiledReviewSpec {
         surfaces: str_set(review, "surfaces"),
         regex_formats,
+        callable_formats: Vec::new(),
         structured_formats,
     })
 }
@@ -320,6 +331,22 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
         )?,
         review: compile_review_spec(field(&root, "review").ok_or("mining spec missing 'review'")?)?,
     })
+}
+
+/// Binds the per-spec callable review formats — ``(name, compiled re.Pattern,
+/// extractor)`` in the JSON's callable-format order — onto a compiled spec.
+pub fn attach_callable_formats(
+    spec: &mut CompiledMiningSpec,
+    formats: Vec<(String, Py<PyAny>, Py<PyAny>)>,
+) {
+    spec.review.callable_formats = formats
+        .into_iter()
+        .map(|(name, pattern, extract)| CompiledCallableFormat {
+            name,
+            pattern,
+            extract,
+        })
+        .collect();
 }
 
 fn word_count(text: &str) -> usize {
@@ -1061,13 +1088,15 @@ fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewCom
         .collect()
 }
 
-/// review_comments (mining/signals.py review_comments): regex formats then
-/// structured formats, in order. Callable formats are non-portable and never reach
-/// the Rust backend.
-fn review_comments(
+/// review_comments (mining/signals.py review_comments): regex formats, then
+/// callable formats, then structured formats, in order. Callable formats invoke
+/// their Python pattern and extractor via the pyo3 side-channel, single-threaded
+/// on the calling thread under the held GIL, propagating any PyErr.
+fn review_comments<'py>(
+    py: Python<'py>,
     spec: &CompiledMiningSpec,
     text: &str,
-) -> Result<Vec<(String, ReviewComment)>, String> {
+) -> PyResult<Vec<(String, ReviewComment)>> {
     let mut out: Vec<(String, ReviewComment)> = spec
         .review
         .regex_formats
@@ -1078,10 +1107,29 @@ fn review_comments(
                 .map(move |c| (fmt.name.clone(), c))
         })
         .collect();
+    for fmt in &spec.review.callable_formats {
+        if fmt.pattern.bind(py).call_method1("search", (text,))?.is_none() {
+            continue;
+        }
+        for item in fmt.extract.bind(py).call1((text,))?.try_iter()? {
+            let comment = item?;
+            out.push((
+                fmt.name.clone(),
+                ReviewComment {
+                    file: comment.getattr("file")?.extract()?,
+                    line_start: comment.getattr("line_start")?.extract()?,
+                    line_end: comment.getattr("line_end")?.extract()?,
+                    comment: comment.getattr("comment")?.extract()?,
+                },
+            ));
+        }
+    }
     if !spec.review.structured_formats.is_empty() {
         if let Ok(payload) = sonic_rs::from_str::<Value>(text) {
             for fmt in &spec.review.structured_formats {
-                for comment in extract_structured_format(&payload, fmt)? {
+                for comment in extract_structured_format(&payload, fmt)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?
+                {
                     out.push((fmt.name.clone(), comment));
                 }
             }
@@ -1100,9 +1148,7 @@ fn iter_review_comment<'py>(
     for (index, entry) in events.entries.iter().enumerate() {
         let Entry::User(user) = entry else { continue };
         for scan in review_scan_texts(events, user, index, spec, uses) {
-            for (fmt_name, comment) in review_comments(spec, &scan.text)
-                .map_err(pyo3::exceptions::PyValueError::new_err)?
-            {
+            for (fmt_name, comment) in review_comments(py, spec, &scan.text)? {
                 let evidence = PyDict::new(py);
                 evidence.set_item("format", &fmt_name)?;
                 evidence.set_item("file", &comment.file)?;

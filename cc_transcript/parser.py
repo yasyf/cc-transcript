@@ -14,10 +14,8 @@ from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import (
     DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
-    apply_spec,
     interrupt_marker,
     is_agent_injection,
-    is_portable,
     spec_to_json,
 )
 from cc_transcript.models import (
@@ -587,18 +585,15 @@ class TranscriptParser:
             paths: Pairs of ``(path, mtime)`` to parse.
             prefetch: Files to keep in flight; defaults to :attr:`PREFETCH`.
             spec: Optional :class:`~cc_transcript.FilterSpec` applied during
-                parsing; events failing it are dropped from each result. A
-                portable spec runs inside Rust, others in the Python interpreter.
+                parsing; events failing it are dropped inside Rust before they
+                ever materialize as Python objects.
 
         Yields:
             One :class:`ParsedTranscript` per input path.
         """
         if not paths:
             return
-        rust_spec = spec_to_json(spec) if spec is not None and is_portable(spec) else None
-        # TODO(wave-2): once the universal Rust executor lands, non-portable specs
-        # run inside Rust too; until then they fall back to the Python apply_spec.
-        python_spec = spec if spec is not None and rust_spec is None else None
+        rust_spec = spec_to_json(spec) if spec is not None else None
         stream = _parser_rs.stream_parse(
             [(str(path), mtime) for path, mtime in paths],
             prefetch if prefetch is not None else cls.PREFETCH,
@@ -606,5 +601,4 @@ class TranscriptParser:
         )
         while batch := await anyio.to_thread.run_sync(stream.recv_many, cls.RECV_BATCH):
             for path, mtime, events in batch:
-                kept = tuple(apply_spec(events, python_spec)) if python_spec is not None else tuple(events)
-                yield ParsedTranscript(path=Path(path), mtime=mtime, events=kept)
+                yield ParsedTranscript(path=Path(path), mtime=mtime, events=tuple(events))

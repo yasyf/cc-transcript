@@ -1,0 +1,2146 @@
+{
+ "battery": {
+  "sentiment": [
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message>hi",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task>auto",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  <teammate-message>indented banner",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does the transcript mention <teammate-message x> here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Rem\u0131nder: dotless-i lookalike",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "leading then Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "### Alpha ### ### Beta ### ### Gamma ###",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "# Augment Agent",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "this # Augment Agent not at start",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid-text",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request \u0131nterrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "go ahead and commit and push all the repos",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "ok push the branch",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we hit rate limits, you must resume them",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "restart the subagents please",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-input>uv run pytest</bash-input>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-stdout>123 passed</bash-stdout>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does <bash-input>uv run pytest</bash-input> show up here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we need to force-push, you should have rebased first",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "wtf this is broken",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "stop guessing the imports",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "you're useless",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "and again it broke",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "for the third time, fix it",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "please refactor the parser carefully",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "system reminder without brackets",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "interrupted by user without the bracket",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "h\u00e9llo \ud83e\udd16 \u6f22\u5b57 unicode",
+    "uuid": "u",
+    "is_sidechain": false
+   }
+  ],
+  "pushback": [
+   {
+    "type": "UserEvent",
+    "text": "why does the transcript mention <teammate-message x> here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Rem\u0131nder: dotless-i lookalike",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "leading then Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "### Alpha ### ### Beta ### ### Gamma ###",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "this # Augment Agent not at start",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid-text",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request \u0131nterrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does <bash-input>uv run pytest</bash-input> show up here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we need to force-push, you should have rebased first",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "wtf this is broken",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "stop guessing the imports",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "and again it broke",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "for the third time, fix it",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "please refactor the parser carefully",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "system reminder without brackets",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "interrupted by user without the bracket",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "h\u00e9llo \ud83e\udd16 \u6f22\u5b57 unicode",
+    "uuid": "u",
+    "is_sidechain": false
+   }
+  ],
+  "all_groups": [
+   {
+    "type": "UserEvent",
+    "text": "why does the transcript mention <teammate-message x> here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Rem\u0131nder: dotless-i lookalike",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "leading then Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "### Alpha ### ### Beta ### ### Gamma ###",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "this # Augment Agent not at start",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid-text",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request \u0131nterrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does <bash-input>uv run pytest</bash-input> show up here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we need to force-push, you should have rebased first",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "please refactor the parser carefully",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "system reminder without brackets",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "interrupted by user without the bracket",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "h\u00e9llo \ud83e\udd16 \u6f22\u5b57 unicode",
+    "uuid": "u",
+    "is_sidechain": false
+   }
+  ],
+  "noise": [
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message>hi",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task>auto",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  <teammate-message>indented banner",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does the transcript mention <teammate-message x> here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Rem\u0131nder: dotless-i lookalike",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "leading then Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "### Alpha ### ### Beta ### ### Gamma ###",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "# Augment Agent",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "this # Augment Agent not at start",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid-text",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request \u0131nterrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Stop hook feedback: ruff failed",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "go ahead and commit and push all the repos",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "ok push the branch",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we hit rate limits, you must resume them",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "restart the subagents please",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-input>uv run pytest</bash-input>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-stdout>123 passed</bash-stdout>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does <bash-input>uv run pytest</bash-input> show up here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we need to force-push, you should have rebased first",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "wtf this is broken",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "stop guessing the imports",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "you're useless",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "and again it broke",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "for the third time, fix it",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "please refactor the parser carefully",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "system reminder without brackets",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "interrupted by user without the bracket",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "h\u00e9llo \ud83e\udd16 \u6f22\u5b57 unicode",
+    "uuid": "u",
+    "is_sidechain": false
+   }
+  ],
+  "attachments_only": [],
+  "sidechain_drop": [
+   {
+    "type": "UserEvent",
+    "text": "<system-reminder>do this</system-reminder>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<SYSTEM-REMINDER>uppercase</SYSTEM-REMINDER>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<local-command-stdout>out",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<command-message>m",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<task-notification>n",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message>hi",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task>auto",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  <teammate-message>indented banner",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does the transcript mention <teammate-message x> here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Rem\u0131nder: dotless-i lookalike",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<persisted-output>p",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<output-file>f",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Caveat: The messages below were generated by the user while running local commands.",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "REMAINING_TASKS_ACKNOWLEDGED",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<<some-key>>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "leading then Base directory for this skill: /x",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "### Alpha ### ### Beta ### ### Gamma ###",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "# Augment Agent",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "this # Augment Agent not at start",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid-text",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request \u0131nterrupted by user]",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Stop hook feedback: ruff failed",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Role Reminder: You are a Coordinator. You NEVER edit files directly.",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "go ahead and commit and push all the repos",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "ok push the branch",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we hit rate limits, you must resume them",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "restart the subagents please",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-input>uv run pytest</bash-input>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<bash-stdout>123 passed</bash-stdout>",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why does <bash-input>uv run pytest</bash-input> show up here",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we need to force-push, you should have rebased first",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "wtf this is broken",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "stop guessing the imports",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "you're useless",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "and again it broke",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "for the third time, fix it",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "please refactor the parser carefully",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "system reminder without brackets",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "interrupted by user without the bracket",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "h\u00e9llo \ud83e\udd16 \u6f22\u5b57 unicode",
+    "uuid": "u",
+    "is_sidechain": false
+   }
+  ]
+ },
+ "fixture": {
+  "sentiment": [
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "here is context and more",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message from='reviewer'>please rebase</teammate-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task id='7'>run the nightly suite</scheduled-task>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we discussed the [Role Reminder] banner mid-sentence",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "let me read",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "done",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "envelope with all new fields",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "attributed turn",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "API Error: 429 rate_limit",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "error field but no flag",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "field-only interrupt with no marker text",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   }
+  ],
+  "pushback": [
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "here is context and more",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we discussed the [Role Reminder] banner mid-sentence",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "envelope with all new fields",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "field-only interrupt with no marker text",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[request interrupted by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   }
+  ],
+  "all_groups": [
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "here is context and more",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": true
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we discussed the [Role Reminder] banner mid-sentence",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "let me read",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "done",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "noop",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "envelope with all new fields",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "attributed turn",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "API Error: 429 rate_limit",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "error field but no flag",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "field-only interrupt with no marker text",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": true
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   }
+  ],
+  "noise": [
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "here is context and more",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": true
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message from='reviewer'>please rebase</teammate-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task id='7'>run the nightly suite</scheduled-task>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we discussed the [Role Reminder] banner mid-sentence",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "let me read",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "done",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "noop",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "envelope with all new fields",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "attributed turn",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "API Error: 429 rate_limit",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "error field but no flag",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "field-only interrupt with no marker text",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[request interrupted by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": true
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   }
+  ],
+  "attachments_only": [
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": true
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   }
+  ],
+  "sidechain_drop": [
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  fix the bug  ",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "here is context and more",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[Request interrupted by user]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "  [request INTERRUPTED by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "she quoted [Request interrupted by user] mid",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "compact unicode h\u00e9llo \ud83e\udd16 \u6f22\u5b57",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message from='reviewer'>please rebase</teammate-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<scheduled-task id='7'>run the nightly suite</scheduled-task>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "we discussed the [Role Reminder] banner mid-sentence",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<teammate-message\u0301>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "let me read",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "done",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "noop",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "envelope with all new fields",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "attributed turn",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "API Error: 429 rate_limit",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AssistantEvent",
+    "text": "error field but no flag",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "field-only interrupt with no marker text",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "[request interrupted by user for tool use]",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "SystemEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "ModeEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   },
+   {
+    "type": "OtherEvent"
+   }
+  ]
+ }
+}
