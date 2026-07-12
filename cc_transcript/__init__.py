@@ -147,7 +147,7 @@ EXPORTS: dict[str, str] = {
             "cost_of_assistant",
             "resolve_pricing",
         ),
-        "cc_transcript.backend": ("Backend", "ParsedTranscript"),
+        "cc_transcript.backend": ("ParsedTranscript",),
         "cc_transcript.discovery": (
             "CLAUDE_PROJECTS_DIR",
             "TranscriptDiscovery",
@@ -275,7 +275,6 @@ if TYPE_CHECKING:
     from cc_transcript.activity import (
         result_index as result_index,
     )
-    from cc_transcript.backend import Backend as Backend
     from cc_transcript.backend import ParsedTranscript as ParsedTranscript
     from cc_transcript.builders import (
         NOISE_SPEC as NOISE_SPEC,

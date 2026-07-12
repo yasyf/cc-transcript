@@ -9,21 +9,21 @@ from typing import Any
 import orjson
 import pytest
 
+from cc_transcript import _parser_rs
 from cc_transcript.corrections import Correction
 from cc_transcript.decisions import Decision
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest
 from cc_transcript.mining import ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX
 from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, UserEvent
-from cc_transcript.parser import load_rust_backend
 
 SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 OTHER_SESSION = SessionId("22222222-2222-2222-2222-222222222222")
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 REAL_CORPUS_SAMPLE = 25
-RUST_BACKEND = load_rust_backend()
-requires_rust = pytest.mark.skipif(RUST_BACKEND is None, reason="_parser_rs extension is not built")
+RUST_BACKEND = _parser_rs
+requires_rust = pytest.mark.skipif(False, reason="_parser_rs is a hard requirement")
 rust_not_disabled = pytest.mark.skipif(
     bool(os.environ.get("CC_TRANSCRIPT_DISABLE_RUST")), reason="Rust force-disabled via CC_TRANSCRIPT_DISABLE_RUST"
 )

@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-import asyncio
-import os
 from collections.abc import Mapping
-from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import anyio
 import anyio.to_thread
 import orjson
 
-from cc_transcript.backend import Backend, ParsedTranscript
+from cc_transcript import _parser_rs
+from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import (
     DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
     apply_spec,
     interrupt_marker,
     is_agent_injection,
+    is_portable,
+    spec_to_json,
 )
 from cc_transcript.models import (
     ApiError,
@@ -72,7 +73,6 @@ from cc_transcript.models import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
-    from pathlib import Path
 
     from cc_transcript.filterspec import FilterSpec
 
@@ -546,111 +546,32 @@ async def parse_events_async(path: Path) -> list[TranscriptEvent]:
     return parse_events_from_bytes(await anyio.Path(path).read_bytes())
 
 
-def parse_one(path: Path, mtime: float) -> ParsedTranscript:
-    return ParsedTranscript(path=path, mtime=mtime, events=tuple(parse_events_from_bytes(path.read_bytes())))
-
-
-def parse_one_filtered(path: Path, mtime: float, spec: FilterSpec | None) -> ParsedTranscript:
-    parsed = parse_one(path, mtime)
-    if spec is None:
-        return parsed
-    return ParsedTranscript(path=parsed.path, mtime=parsed.mtime, events=tuple(apply_spec(parsed.events, spec)))
-
-
-def load_rust_backend() -> Backend | None:
-    try:
-        from cc_transcript import _parser_rs
-        from cc_transcript.rust import RustBackend
-    except ImportError:
-        return None
-    return RustBackend() if hasattr(_parser_rs, "stream_parse") else None
-
-
-class PythonBackend:
-    """The reference pure-Python parsing backend.
-
-    Parses each file off the event loop via :mod:`anyio` worker threads,
-    keeping at most ``prefetch`` files in flight at once.
-    """
-
-    name: ClassVar[Literal["rust", "python"]] = "python"
-
-    async def parse_batch(
-        self,
-        paths: Sequence[tuple[Path, float]],
-        *,
-        prefetch: int,
-        spec: FilterSpec | None = None,
-    ) -> AsyncIterator[ParsedTranscript]:
-        """See :meth:`Backend.parse_batch`."""
-        if not paths:
-            return
-        send_ch, recv_ch = anyio.create_memory_object_stream[ParsedTranscript](max_buffer_size=prefetch)
-        limiter = anyio.CapacityLimiter(prefetch)
-
-        async def worker(path: Path, mtime: float) -> None:
-            async with limiter:
-                try:
-                    parsed = await anyio.to_thread.run_sync(parse_one_filtered, path, mtime, spec)
-                except (OSError, ValueError, KeyError, TypeError):
-                    return
-                try:
-                    await send_ch.send(parsed)
-                except anyio.BrokenResourceError:
-                    return
-
-        async def drive() -> None:
-            try:
-                async with anyio.create_task_group() as tg:
-                    for path, mtime in paths:
-                        tg.start_soon(worker, path, mtime)
-            finally:
-                await send_ch.aclose()
-
-        driver = asyncio.ensure_future(drive())
-        try:
-            async with recv_ch:
-                async for parsed in recv_ch:
-                    yield parsed
-        finally:
-            driver.cancel()
-            with suppress(asyncio.CancelledError):
-                await driver
-
-
 class TranscriptParser:
-    """The public facade over the active parsing backend.
+    """The public facade over the Rust parsing backend.
 
-    Resolves a :class:`Backend` once and streams parsed transcripts through it.
+    Streams transcript files through the ``_parser_rs`` extension: a portable
+    spec runs inside Rust with events dropped before materialization, a
+    non-portable one is applied in Python post-parse.
     """
 
     PREFETCH: ClassVar[int] = 8
-    backend_instance: ClassVar[Backend | None] = None
+    RECV_BATCH: ClassVar[int] = 32
 
     @classmethod
-    def backend(cls) -> Backend:
-        """Returns the resolved backend, resolving it on first use."""
-        if cls.backend_instance is None:
-            cls.backend_instance = cls.resolve_backend()
-        return cls.backend_instance
+    def backend_name(cls) -> Literal["rust"]:
+        """Returns the active parsing backend's name."""
+        return "rust"
 
     @classmethod
-    def resolve_backend(cls) -> Backend:
-        """Selects the parsing backend, honoring ``CC_TRANSCRIPT_DISABLE_RUST``.
-
-        Returns the :class:`RustBackend` when the ``_parser_rs`` extension is
-        importable and exposes ``stream_parse``; otherwise the pure-Python
-        :class:`PythonBackend`. Set ``CC_TRANSCRIPT_DISABLE_RUST`` to force
-        Python regardless.
-        """
-        if os.environ.get("CC_TRANSCRIPT_DISABLE_RUST"):
-            return PythonBackend()
-        return load_rust_backend() or PythonBackend()
+    def parse_file(cls, path: Path) -> list[TranscriptEvent]:
+        """Parses the transcript at ``path`` into events, synchronously."""
+        result = _parser_rs.stream_parse([(str(path), 0.0)], 1).recv()
+        return list(result[2]) if result is not None else []
 
     @classmethod
-    def backend_name(cls) -> Literal["rust", "python"]:
-        """Returns the resolved backend's name."""
-        return cls.backend().name
+    async def parse_file_async(cls, path: Path) -> list[TranscriptEvent]:
+        """Parses the transcript at ``path`` into events, off the event loop."""
+        return await anyio.to_thread.run_sync(cls.parse_file, path)
 
     @classmethod
     async def stream_transcripts(
@@ -660,18 +581,30 @@ class TranscriptParser:
         prefetch: int | None = None,
         spec: FilterSpec | None = None,
     ) -> AsyncIterator[ParsedTranscript]:
-        """Streams parsed transcripts for ``paths`` via the active backend.
+        """Streams parsed transcripts for ``paths`` through the Rust backend.
 
         Args:
             paths: Pairs of ``(path, mtime)`` to parse.
             prefetch: Files to keep in flight; defaults to :attr:`PREFETCH`.
             spec: Optional :class:`~cc_transcript.FilterSpec` applied during
-                parsing; events failing it are dropped from each result.
+                parsing; events failing it are dropped from each result. A
+                portable spec runs inside Rust, others in the Python interpreter.
 
         Yields:
             One :class:`ParsedTranscript` per input path.
         """
-        async for parsed in cls.backend().parse_batch(
-            paths, prefetch=prefetch if prefetch is not None else cls.PREFETCH, spec=spec
-        ):
-            yield parsed
+        if not paths:
+            return
+        rust_spec = spec_to_json(spec) if spec is not None and is_portable(spec) else None
+        # TODO(wave-2): once the universal Rust executor lands, non-portable specs
+        # run inside Rust too; until then they fall back to the Python apply_spec.
+        python_spec = spec if spec is not None and rust_spec is None else None
+        stream = _parser_rs.stream_parse(
+            [(str(path), mtime) for path, mtime in paths],
+            prefetch if prefetch is not None else cls.PREFETCH,
+            rust_spec,
+        )
+        while batch := await anyio.to_thread.run_sync(stream.recv_many, cls.RECV_BATCH):
+            for path, mtime, events in batch:
+                kept = tuple(apply_spec(events, python_spec)) if python_spec is not None else tuple(events)
+                yield ParsedTranscript(path=Path(path), mtime=mtime, events=kept)

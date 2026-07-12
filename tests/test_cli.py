@@ -225,12 +225,6 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture
-def python_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CC_TRANSCRIPT_DISABLE_RUST", "1")
-    monkeypatch.setattr(TranscriptParser, "backend_instance", None)
-
-
-@pytest.fixture
 def unparseable(tmp_path: Path) -> Path:
     bad = tmp_path / "bad.jsonl"
     bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
@@ -413,7 +407,7 @@ def test_show_negative_slicer_usage_error(runner: CliRunner, transcript: Path, o
     assert "is not in the range" in result.stderr
 
 
-def test_show_tolerates_null_line(runner: CliRunner, tmp_path: Path, python_backend: None) -> None:
+def test_show_tolerates_null_line(runner: CliRunner, tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_bytes(orjson.dumps(user_entry(0, "hello world")) + b"\nnull\n")
     result = runner.invoke(cli, ["show", str(path)])
@@ -531,7 +525,7 @@ def test_grep_mode_kind_matches_channel_value(runner: CliRunner, transcript: Pat
 
 
 def test_grep_bad_sibling_keeps_healthy_matches(
-    runner: CliRunner, root: tuple[Path, Path, Path], python_backend: None
+    runner: CliRunner, root: tuple[Path, Path, Path]
 ) -> None:
     rootdir, old, new = root
     bad = rootdir / "-Users-x-proj-c" / "bad.jsonl"
@@ -636,7 +630,7 @@ def test_stats_per_file(runner: CliRunner, transcript: Path) -> None:
 
 
 def test_stats_warns_on_unparseable_file(
-    runner: CliRunner, transcript: Path, unparseable: Path, python_backend: None
+    runner: CliRunner, transcript: Path, unparseable: Path
 ) -> None:
     result = runner.invoke(cli, ["stats", str(transcript), str(unparseable)])
     assert result.exit_code == 0
@@ -736,7 +730,7 @@ def test_slice_bad_timestamp_usage_error(runner: CliRunner, session_root: Path, 
 
 
 def test_slice_unparseable_transcript_exits_two_with_empty_stdout(
-    runner: CliRunner, tmp_path: Path, python_backend: None
+    runner: CliRunner, tmp_path: Path
 ) -> None:
     root = tmp_path / "projects"
     bad = root / "-Users-x-proj-a" / "sess-9.jsonl"

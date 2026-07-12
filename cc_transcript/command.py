@@ -495,22 +495,8 @@ def command_prefixes(command: str) -> tuple[str, ...]:
     return parse_command_line(command).prefixes
 
 
-def load_rust_prefixes() -> Callable[[list[str]], list[list[str]]] | None:
-    # Stale-extension guard (mirrors parser.load_rust_backend): the compiled
-    # extension may be absent or predate the command_prefixes symbol.
-    try:
-        from cc_transcript import _parser_rs
-    except ImportError:
-        return None
-    return _parser_rs.command_prefixes if hasattr(_parser_rs, "command_prefixes") else None
-
-
 def bulk_command_prefixes(commands: Sequence[str]) -> list[tuple[str, ...]]:
-    """``command_prefixes`` over many commands at once, on the Rust fast path when available.
+    """``command_prefixes`` over many commands at once, on the Rust fast path."""
+    from cc_transcript import _parser_rs
 
-    Falls back to the Python parser when the compiled extension is missing or
-    predates the ``command_prefixes`` symbol.
-    """
-    if rust := load_rust_prefixes():
-        return [tuple(prefixes) for prefixes in rust(list(commands))]
-    return [command_prefixes(command) for command in commands]
+    return [tuple(prefixes) for prefixes in _parser_rs.command_prefixes(list(commands))]

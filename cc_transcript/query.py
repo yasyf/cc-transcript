@@ -23,7 +23,7 @@ from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.notifications import Notifications
-from cc_transcript.parser import parse_events_async, parse_events_from_bytes
+from cc_transcript.parser import TranscriptParser
 from cc_transcript.tools import (
     BashCall,
     SkillCall,
@@ -261,7 +261,7 @@ class Session:
     @classmethod
     def from_path(cls, path: Path, *, user_classifier: UserClassifier = native_user_classifier) -> Session:
         """Parses and lifts the transcript at ``path``, synchronously."""
-        events = parse_events_from_bytes(path.read_bytes())
+        events = TranscriptParser.parse_file(path)
         session_id = session_id_of(events) or SessionId(path.stem)
         return cls.from_activity(
             SessionActivity.from_events(session_id, events, user_classifier=user_classifier), path=path
@@ -284,7 +284,9 @@ class Session:
         if (path := await find_transcript(session_id, root=root)) is None:
             raise TranscriptExpiredError(session_id)
         return cls.from_activity(
-            SessionActivity.from_events(session_id, await parse_events_async(path), user_classifier=user_classifier),
+            SessionActivity.from_events(
+                session_id, await TranscriptParser.parse_file_async(path), user_classifier=user_classifier
+            ),
             path=path,
         )
 
