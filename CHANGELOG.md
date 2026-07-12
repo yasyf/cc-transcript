@@ -4,6 +4,60 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [13.0.0] - 2026-07-12
+
+One engine, and a real one. The Rust extension is now the only executor — the
+Python reference backend, every portability gate, and `CC_TRANSCRIPT_DISABLE_RUST`
+are gone — and with a single implementation to maintain, proper NLP is
+affordable again: v12's `str.isalpha` tokenizer is replaced by an embedded
+UDPipe model, and sentiment scoring understands negation. Two breaking themes
+(execution model, sentiment behavior); prebuilt wheels still install without a
+toolchain.
+
+### Changed
+- **BREAKING: `_parser_rs` is a hard requirement; there is no Python executor.**
+  The `Backend` protocol, `PythonBackend`, `rust.RustBackend`, the
+  `is_portable`/`score_spec_is_portable`/`mining_spec_is_portable` gates, and the
+  `CC_TRANSCRIPT_DISABLE_RUST` escape hatch are deleted. `FilterSpec`,
+  `ScoreSpec`, and `MiningSpec` execute only in Rust; parsing, the activity
+  probe, and command-prefix extraction import the extension directly.
+  `TranscriptParser.backend_name()` returns the literal `"rust"`. Cross-backend
+  parity suites are replaced by golden regression fixtures
+  (`tests/testdata/{filter,score,mining}_golden.json`).
+- **BREAKING: the sentiment lexicon tokenizes with a real NLP pipeline.** The
+  generated `str.isalpha` Unicode table is gone; tokenization, POS tagging,
+  lemmatization, and dependency parsing run over an embedded UDPipe model
+  (UD_English-EWT, shipped in the wheel, no download) via `udpipe-rs`. The
+  tokenizer splits multiword tokens the way Universal Dependencies does
+  (`can't` → `ca` + `n't`), so tokenizer output and the AFINN
+  tokenizer-unreachable inventory both change (28 → 26 keys).
+- **BREAKING: `Lexicon.has_hit` is negation-aware.** A negated term's surface
+  polarity is sign-flipped, so "isn't great" reaches the negative floor and "no
+  damage" the positive one. Polarity lookup stays surface-keyed — never the
+  lemma (the v12 fix stands); POS and negation only gate and flip. An audit over
+  a real-transcript sample (`scripts/audit_lexicon.py`, re-runnable) reclassifies
+  ~7.5% of sampled buckets, all negation-driven. POS-based suppression is a
+  highlighter concern and does not touch scoring.
+
+### Added
+- **`cc_transcript.nlp`** — a public token substrate. `analyze(text)` returns
+  frozen `Token`s carrying the surface form, lowercased form, lemma, UPOS tag,
+  codepoint span, surface polarity, and a negation flag.
+- **`MiningSpec.CallableReviewFormat` runs against the Rust miner** through a
+  pyo3 callback: an arbitrary Python extractor invoked single-threaded under the
+  held GIL for review-comment shapes no declarative format covers.
+- **`scripts/train_udpipe_model.sh`** — the reproducible recipe (UDPipe @
+  9158bf7, UD_English-EWT @ r2.18) that produces the shipped model; see `NOTICE`
+  for the CC BY-SA 4.0 attribution.
+
+### Removed
+- The `str.isalpha` codepoint table (`rust/src/generated/unicode.rs`) and its
+  generator, dissolving the tokenizer's Unicode-version drift question.
+- The Python spec interpreters (`apply_spec` execution internals,
+  `py_short_circuit`/`py_post_process`, the `mine()` detectors) and the
+  `rust_*_backend` fallback selectors. `filterspec.keep`/`apply_spec` remain as
+  the post-parse filter over already-materialized events (the CLI's `show`/`grep`).
+
 ## [12.0.0] - 2026-07-11
 
 The sentiment lexicon is rebuilt around one principle: AFINN is surface-keyed,
