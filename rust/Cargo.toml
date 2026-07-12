@@ -19,6 +19,7 @@ python = [
     "dep:num_cpus",
     "dep:tree-sitter",
     "dep:tree-sitter-bash",
+    "dep:udpipe-rs",
 ]
 extension-module = ["python", "pyo3/extension-module"]
 
@@ -38,6 +39,10 @@ regex = "1"
 # bash grammar), tree-sitter core 0.26 matches the wheel's tree-sitter 0.26.0.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-bash = { version = "0.25", optional = true }
+# UDPipe C++ FFI engine backing the NLP substrate (nlp.rs). python-gated so the
+# Swift xcframework build (--no-default-features) never links libudpipe or embeds
+# the model. The dead ureq/rustls/ring transitive deps are accepted (no fork).
+udpipe-rs = { version = "0.2", optional = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"], optional = true }

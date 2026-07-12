@@ -30,10 +30,17 @@ def lexicon_polarity(token: str, /) -> int:
     """Polarity of a single token surface: domain override, else AFINN floored at MIN_MAGNITUDE."""
 
 def lexicon_has_hit(text: str, want_negative: bool, /) -> bool:
-    """Whether any token surface's polarity crosses the fixed ±3 floor (the negative side when ``want_negative``)."""
+    """Whether any content token's effective (negation-flipped) polarity crosses the fixed ±3 floor."""
 
 def lexicon_overrides() -> list[tuple[str, int]]:
     """The embedded domain-override entries (for the single-source drift guard)."""
+
+def nlp_analyze(text: str, /) -> list[tuple[str, str, str, str, int, int, int, bool]]:
+    """Analyze ``text`` with the embedded UDPipe model.
+
+    Per token: ``(form, lower, lemma, upos, char_start, char_end, polarity, negated)``,
+    where offsets are codepoint indices and polarity is the surface-keyed lexicon score.
+    """
 
 def embedded_literals() -> dict[str, str | float | list[str]]:
     """The generated protocol, mining, and command literals keyed ``module.NAME`` (for the single-source drift guard)."""

@@ -169,8 +169,8 @@ fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, P
 }
 
 #[pyfunction]
-fn lexicon_tokenize(text: &str) -> Vec<String> {
-    lexicon::tokenize(text)
+fn lexicon_tokenize(text: &str) -> PyResult<Vec<String>> {
+    lexicon::tokenize(text).map_err(PyValueError::new_err)
 }
 
 #[pyfunction]
@@ -179,8 +179,8 @@ fn lexicon_polarity(token: &str) -> i32 {
 }
 
 #[pyfunction]
-fn lexicon_has_hit(text: &str, want_negative: bool) -> bool {
-    lexicon::has_hit(text, want_negative)
+fn lexicon_has_hit(text: &str, want_negative: bool) -> PyResult<bool> {
+    lexicon::has_hit(text, want_negative).map_err(PyValueError::new_err)
 }
 
 #[pyfunction]
@@ -336,6 +336,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(mine_signals, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())
 }

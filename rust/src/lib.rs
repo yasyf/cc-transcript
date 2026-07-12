@@ -19,6 +19,8 @@ mod mining;
 #[cfg(feature = "python")]
 mod model;
 #[cfg(feature = "python")]
+mod nlp;
+#[cfg(feature = "python")]
 mod python;
 #[cfg(feature = "python")]
 mod score;

@@ -131,33 +131,33 @@ pub fn score_post_process(
     raw: &[i64],
 ) -> Result<Vec<i64>, String> {
     let spec = compile_spec(spec_json)?;
-    Ok(buckets
+    buckets
         .iter()
         .zip(raw.iter())
         .map(|(texts, &score)| {
             spec.post
                 .iter()
-                .fold(score, |score, stage| apply_post(stage, texts, score))
+                .try_fold(score, |score, stage| apply_post(stage, texts, score))
         })
-        .collect())
+        .collect()
 }
 
-fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
+fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> Result<i64, String> {
     match stage {
         PostStage::PositiveClamp {
             from,
             to,
             max_words,
         } => {
-            let clamp = score == *from
-                && texts.iter().any(|t| {
-                    t.split_whitespace().count() <= *max_words && !lexicon::has_hit(t, false)
-                });
-            if clamp {
-                *to
-            } else {
-                score
+            if score != *from {
+                return Ok(score);
             }
+            for text in texts {
+                if text.split_whitespace().count() <= *max_words && !lexicon::has_hit(text, false)? {
+                    return Ok(*to);
+                }
+            }
+            Ok(score)
         }
         PostStage::MildIrritation {
             trigger,
@@ -165,24 +165,25 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> i64 {
             from,
             to,
         } => {
-            let demote = score == *from
-                && texts.iter().any(|t| {
-                    trigger.is_match(t) && !(hostile.is_match(t) || lexicon::has_hit(t, true))
-                });
-            if demote {
-                *to
-            } else {
-                score
+            if score != *from {
+                return Ok(score);
             }
+            for text in texts {
+                if trigger.is_match(text) && !(hostile.is_match(text) || lexicon::has_hit(text, true)?)
+                {
+                    return Ok(*to);
+                }
+            }
+            Ok(score)
         }
         PostStage::ResumeClamp { phrases, strip, to } => {
             if texts
                 .iter()
                 .any(|t| phrases.contains(&normalize_bare(t, strip)))
             {
-                *to
+                Ok(*to)
             } else {
-                score
+                Ok(score)
             }
         }
     }

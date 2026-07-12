@@ -1,10 +1,11 @@
-"""Hermetic contract + well-formedness guards for the surface-only lexicon.
+"""Hermetic contract + well-formedness guards for the UDPipe-backed lexicon.
 
-Zero models, zero network, zero lemmatizers: :class:`Lexicon` and :func:`tokenize`
-delegate to the Rust fast path (a pinned ``str.isalpha`` table plus the two vendored
-TSVs). These tests pin the Rust tokenizer against a fixture, check the Rust polarity
-and ``has_hit`` against the TSV data and the fixed magnitude floors, pin the two
-historical bugs the redesign fixes, and validate the checked-in override table.
+Zero network: :class:`Lexicon`, :func:`tokenize`, and :func:`analyze` delegate to the
+Rust fast path over the embedded UD-English-EWT model plus the two vendored TSVs.
+These tests pin the Rust tokenizer against a fixture, check the Rust polarity against
+the TSV data, cross-check the negation-aware ``has_hit`` against a Python re-derivation
+of the same rule, pin the two historical bugs the redesign fixes, pin the
+tokenizer-unreachable AFINN inventory, and validate the checked-in override table.
 """
 
 from __future__ import annotations
@@ -12,11 +13,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from cc_transcript.nlp import analyze
 from cc_transcript.sentiment.lexicon import AFINN, DOMAIN_OVERRIDES, Lexicon, tokenize
 from tests.support import requires_rust
 
 TOKENIZER_FIXTURE = Path(__file__).resolve().parent / "testdata" / "tokenizer_fixture.json"
 LEXICON_DATA = Path(__file__).resolve().parent.parent / "cc_transcript" / "sentiment" / "data"
+
+# Keys UDPipe does not tokenize back to themselves: hyphenated compounds, one leet-digit
+# form (n00b), and one clitic-split (wits -> wit + s). Was 28 under the old str.isalpha
+# tokenizer; digit forms like gr8 now tokenize whole (reachable), wits became unreachable.
+AFINN_UNREACHABLE = frozenset(
+    {
+        "cover-up", "environment-friendly", "game-changing", "ill-fated", "loving-kindness",
+        "made-up", "n00b", "once-in-a-lifetime", "self-abuse", "self-confident",
+        "self-contradictory", "self-deluded", "short-sighted", "short-sightedness",
+        "side-effect", "side-effects", "son-of-a-bitch", "violence-related", "well-being",
+        "well-championed", "well-developed", "well-established", "well-focused",
+        "well-groomed", "well-proportioned", "wits",
+    }
+)
 
 
 def fixture_cases() -> list[tuple[str, str, list[str]]]:
@@ -48,10 +64,20 @@ def expected_polarity(token: str) -> int:
 
 
 def expected_has_hit(text: str, *, want_negative: bool) -> bool:
-    polarities = [expected_polarity(token) for token in tokenize(text)]
-    if want_negative:
-        return any(p <= -Lexicon.FLOOR for p in polarities)
-    return any(p >= Lexicon.FLOOR for p in polarities)
+    """The negation-flipped has_hit contract — Python re-derivation.
+
+    Consumes :func:`analyze` for tokenization and negation (the shared UDPipe
+    substrate), but computes polarity from the TSV data so that axis stays independent
+    of the Rust executor under test. No POS gate — every token's surface polarity counts.
+    """
+    for token in analyze(text):
+        p = expected_polarity(token.lower)
+        effective = -p if token.negated else p
+        if want_negative and effective <= -Lexicon.FLOOR:
+            return True
+        if not want_negative and effective >= Lexicon.FLOOR:
+            return True
+    return False
 
 
 # ---- tokenizer fixture (source: testdata/tokenizer_fixture.json) -------------------
@@ -117,8 +143,8 @@ def test_every_override_key_is_tokenizer_reachable() -> None:
 @requires_rust
 def test_afinn_unreachable_keys_are_the_audited_inventory() -> None:
     unreachable = {key for key in AFINN if tokenize(key) != [key]}
-    assert len(unreachable) == 28
-    assert all("-" in key or any(ch.isdigit() for ch in key) for key in unreachable)
+    assert unreachable == AFINN_UNREACHABLE
+    assert len(unreachable) == 26
 
 
 # ---- TSV well-formedness (the validation the old build script owned) ---------------

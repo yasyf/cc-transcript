@@ -1,0 +1,46 @@
+cc-transcript
+Copyright (c) The cc-transcript authors.
+
+This product includes a trained natural-language model bundled as package data:
+
+    cc_transcript/sentiment/data/en-ewt.udpipe
+
+------------------------------------------------------------------------------
+UD_English-EWT (Universal Dependencies English Web Treebank)
+------------------------------------------------------------------------------
+
+The en-ewt.udpipe model is a UDPipe 1 model (tokenizer, POS tagger, lemmatizer,
+and dependency parser) trained solely on the Universal Dependencies English Web
+Treebank, tag r2.18. It is a derivative of that treebank's annotations and is
+therefore distributed under the same license, CC BY-SA 4.0. No external word
+embeddings or other data were used in training. It is reproduced by
+scripts/train_udpipe_model.sh.
+
+    Title:    Universal Dependencies English Web Treebank (UD_English-EWT),
+              v2.18 (2026-05-15)
+    Source:   https://github.com/UniversalDependencies/UD_English-EWT
+    License:  Creative Commons Attribution-ShareAlike 4.0 International
+              (CC BY-SA 4.0) — https://creativecommons.org/licenses/by-sa/4.0/
+
+    UD English Web Treebank annotations (C) 2013-2021 by The Board of Trustees
+    of The Leland Stanford Junior University. All Rights Reserved. The
+    annotations and database rights are licensed under CC BY-SA 4.0.
+
+    The underlying texts come from various sources collected for the LDC
+    English Web Treebank (LDC2012T13). Some parts are in the public domain.
+    Portions may be (C) 2012 Google Inc., (C) 2011 Yahoo! Inc., (C) 2012
+    Trustees of the University of Pennsylvania and/or (C) other original
+    authors.
+
+Changes: the model is a statistical artifact trained from the treebank's
+CoNLL-U annotations; no treebank text is redistributed verbatim.
+
+------------------------------------------------------------------------------
+UDPipe
+------------------------------------------------------------------------------
+
+The model was produced with the UDPipe 1 trainer (github.com/ufal/udpipe,
+version 1.4.1-dev). UDPipe is (C) Institute of Formal and Applied Linguistics,
+Faculty of Mathematics and Physics, Charles University, and is distributed
+under the Mozilla Public License 2.0. The UDPipe software itself is not
+redistributed here; only a model file it produced is.

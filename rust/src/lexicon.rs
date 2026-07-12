@@ -1,9 +1,8 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
 
-use crate::generated::unicode::ALPHA_RANGES;
+use crate::nlp;
 
 // The override + AFINN scoring data is the canonical vendored snapshot in
 // cc_transcript/sentiment/data/, embedded here at compile time; the Python Lexicon
@@ -27,45 +26,10 @@ fn parse_tsv(data: &str) -> HashMap<String, i32> {
         .collect()
 }
 
-// Membership in Python's str.isalpha() set via binary search over the generated,
-// version-pinned ranges — NOT char::is_alphabetic(), a ~10k-codepoint superset.
-fn is_alpha(c: char) -> bool {
-    let cp = c as u32;
-    ALPHA_RANGES
-        .binary_search_by(|&(lo, hi)| {
-            if cp < lo {
-                Ordering::Greater
-            } else if cp > hi {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
-        })
-        .is_ok()
-}
-
-/// Split `text` into lowercased maximal runs of alphabetic characters — the shared,
-/// deterministic tokenizer that mirrors the Python `tokenize`. Each whole run is
-/// lowercased with `str::to_lowercase`.
-///
-/// Documented limitation: Greek final-sigma lowercasing can diverge from Python next to
-/// exotic Cased-property characters (Unicode 15.1 vs rustc's tables, e.g. U+0295); this
-/// is out of corpus scope, and the parity fixture pins the common cases (ΟΣ → ος agrees).
-pub(crate) fn tokenize(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut run = String::new();
-    for c in text.chars() {
-        if is_alpha(c) {
-            run.push(c);
-        } else if !run.is_empty() {
-            tokens.push(run.to_lowercase());
-            run.clear();
-        }
-    }
-    if !run.is_empty() {
-        tokens.push(run.to_lowercase());
-    }
-    tokens
+/// The lowercased surface of every UDPipe token in `text`, in order (punctuation
+/// included). The shared tokenizer over the embedded UD-EWT model.
+pub(crate) fn tokenize(text: &str) -> Result<Vec<String>, String> {
+    Ok(nlp::analyze(text)?.into_iter().map(|t| t.lower).collect())
 }
 
 /// Polarity of a single token surface — mirrors `Lexicon.polarity`: override first, then
@@ -81,17 +45,21 @@ pub(crate) fn polarity(token: &str) -> i32 {
     }
 }
 
-/// Whether any token surface's polarity crosses the fixed `FLOOR` (`<= -FLOOR` when
-/// `want_negative`, else `>= FLOOR`). Tokenizes with `tokenize` and scores each surface.
-pub(crate) fn has_hit(text: &str, want_negative: bool) -> bool {
-    tokenize(text).iter().any(|token| {
-        let p = polarity(token);
+/// Whether any token's effective polarity crosses the fixed `FLOOR` (`<= -FLOOR` when
+/// `want_negative`, else `>= FLOOR`). Surface polarity with negation sign-flip and no
+/// POS gate: every token's surface polarity counts, and a negated token's polarity is
+/// sign-flipped, so a negated positive ("isn't great") registers on the negative axis.
+/// POS-based suppression is a highlighter concern, not a scoring one.
+pub(crate) fn has_hit(text: &str, want_negative: bool) -> Result<bool, String> {
+    Ok(nlp::analyze(text)?.iter().any(|token| {
+        let p = polarity(&token.lower);
+        let effective = if token.negated { -p } else { p };
         if want_negative {
-            p <= -FLOOR
+            effective <= -FLOOR
         } else {
-            p >= FLOOR
+            effective >= FLOOR
         }
-    })
+    }))
 }
 
 pub(crate) fn overrides_entries() -> Vec<(String, i32)> {
@@ -113,15 +81,28 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_lowercases_alpha_runs() {
-        assert_eq!(tokenize("LOST losing"), vec!["lost", "losing"]);
-        assert_eq!(tokenize("can't"), vec!["can", "t"]);
-        assert!(tokenize("...").is_empty());
+    fn tokenize_lowercases_and_splits_contractions() {
+        assert_eq!(tokenize("LOST losing").unwrap(), vec!["lost", "losing"]);
+        assert_eq!(tokenize("can't").unwrap(), vec!["ca", "n't"]); // MWT split
     }
 
     #[test]
     fn has_hit_pins_the_two_bugs() {
-        assert!(has_hit("this is broken", true)); // override -3, deterministic both backends
-        assert!(has_hit("we lost the data", true)); // AFINN surface -3, was lost to the lemma path
+        assert!(has_hit("this is broken", true).unwrap()); // override -3, un-negated
+        assert!(has_hit("we lost the data", true).unwrap()); // AFINN surface -3, off the lemma path
+    }
+
+    #[test]
+    fn negation_flips_the_axis() {
+        assert!(has_hit("this is amazing", false).unwrap()); // ADJ +4 positive hit
+        assert!(!has_hit("this isn't amazing", false).unwrap()); // negated positive is not a positive hit
+        assert!(has_hit("this isn't amazing", true).unwrap()); // ...it registers on the negative axis
+    }
+
+    #[test]
+    fn has_hit_counts_surface_polarity_regardless_of_pos() {
+        // UDPipe mistags "splendid" to a non-content POS; the removed POS gate must not
+        // drop its AFINN +3 — surface polarity alone decides the hit.
+        assert!(has_hit("this is splendid", false).unwrap());
     }
 }

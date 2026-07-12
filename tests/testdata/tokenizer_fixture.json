@@ -18,51 +18,10 @@
     "expected_tokens": [
       "lost",
       "losing"
-    ],
-    "expected_tokens_escaped": [
-      "lost",
-      "losing"
     ]
   },
   {
-    "id": "naive_nfc",
-    "input_repr": "na\\xefve",
-    "input_codepoints": [
-      "U+006E",
-      "U+0061",
-      "U+00EF",
-      "U+0076",
-      "U+0065"
-    ],
-    "expected_tokens": [
-      "naïve"
-    ],
-    "expected_tokens_escaped": [
-      "na\\xefve"
-    ]
-  },
-  {
-    "id": "naive_nfd",
-    "input_repr": "nai\\u0308ve",
-    "input_codepoints": [
-      "U+006E",
-      "U+0061",
-      "U+0069",
-      "U+0308",
-      "U+0076",
-      "U+0065"
-    ],
-    "expected_tokens": [
-      "nai",
-      "ve"
-    ],
-    "expected_tokens_escaped": [
-      "nai",
-      "ve"
-    ]
-  },
-  {
-    "id": "cant_ascii_apostrophe",
+    "id": "contraction_mwt",
     "input_repr": "can't",
     "input_codepoints": [
       "U+0063",
@@ -72,17 +31,109 @@
       "U+0074"
     ],
     "expected_tokens": [
-      "can",
-      "t"
-    ],
-    "expected_tokens_escaped": [
-      "can",
-      "t"
+      "ca",
+      "n't"
     ]
   },
   {
-    "id": "wont_u2019_rsquo",
-    "input_repr": "won\\u2019t",
+    "id": "isnt_broken",
+    "input_repr": "this isn't broken",
+    "input_codepoints": [
+      "U+0074",
+      "U+0068",
+      "U+0069",
+      "U+0073",
+      "U+0020",
+      "U+0069",
+      "U+0073",
+      "U+006E",
+      "U+0027",
+      "U+0074",
+      "U+0020",
+      "U+0062",
+      "U+0072",
+      "U+006F",
+      "U+006B",
+      "U+0065",
+      "U+006E"
+    ],
+    "expected_tokens": [
+      "this",
+      "is",
+      "n't",
+      "broken"
+    ]
+  },
+  {
+    "id": "not_great",
+    "input_repr": "this is not great",
+    "input_codepoints": [
+      "U+0074",
+      "U+0068",
+      "U+0069",
+      "U+0073",
+      "U+0020",
+      "U+0069",
+      "U+0073",
+      "U+0020",
+      "U+006E",
+      "U+006F",
+      "U+0074",
+      "U+0020",
+      "U+0067",
+      "U+0072",
+      "U+0065",
+      "U+0061",
+      "U+0074"
+    ],
+    "expected_tokens": [
+      "this",
+      "is",
+      "not",
+      "great"
+    ]
+  },
+  {
+    "id": "looks_amazing",
+    "input_repr": "the progress looks amazing",
+    "input_codepoints": [
+      "U+0074",
+      "U+0068",
+      "U+0065",
+      "U+0020",
+      "U+0070",
+      "U+0072",
+      "U+006F",
+      "U+0067",
+      "U+0072",
+      "U+0065",
+      "U+0073",
+      "U+0073",
+      "U+0020",
+      "U+006C",
+      "U+006F",
+      "U+006F",
+      "U+006B",
+      "U+0073",
+      "U+0020",
+      "U+0061",
+      "U+006D",
+      "U+0061",
+      "U+007A",
+      "U+0069",
+      "U+006E",
+      "U+0067"
+    ],
+    "expected_tokens": [
+      "the",
+      "progress",
+      "looks",
+      "amazing"
+    ]
+  },
+  {
+    "id": "curly_apostrophe",
+    "input_repr": "won’t",
     "input_codepoints": [
       "U+0077",
       "U+006F",
@@ -91,234 +142,133 @@
       "U+0074"
     ],
     "expected_tokens": [
-      "won",
-      "t"
-    ],
-    "expected_tokens_escaped": [
-      "won",
-      "t"
+      "wo",
+      "n’t"
     ]
   },
   {
-    "id": "cant_u02bc_modifier_letter",
-    "input_repr": "can\\u02bct",
+    "id": "accented_naive_cafe",
+    "input_repr": "naïve café",
     "input_codepoints": [
-      "U+0063",
-      "U+0061",
       "U+006E",
-      "U+02BC",
-      "U+0074"
-    ],
-    "expected_tokens": [
-      "canʼt"
-    ],
-    "expected_tokens_escaped": [
-      "can\\u02bct"
-    ]
-  },
-  {
-    "id": "turkish_I_greek_OS_sharp_s",
-    "input_repr": "\\u0130 \\u039f\\u03a3 STRA\\u1e9eE",
-    "input_codepoints": [
-      "U+0130",
+      "U+0061",
+      "U+00EF",
+      "U+0076",
+      "U+0065",
       "U+0020",
-      "U+039F",
-      "U+03A3",
-      "U+0020",
-      "U+0053",
-      "U+0054",
-      "U+0052",
-      "U+0041",
-      "U+1E9E",
-      "U+0045"
-    ],
-    "expected_tokens": [
-      "i̇",
-      "ος",
-      "straße"
-    ],
-    "expected_tokens_escaped": [
-      "i\\u0307",
-      "\\u03bf\\u03c2",
-      "stra\\xdfe"
-    ]
-  },
-  {
-    "id": "cafe_emdash_cjk_alnum",
-    "input_repr": "caf\\xe9\\u2014\\u6771\\u4eac abc123def",
-    "input_codepoints": [
       "U+0063",
       "U+0061",
       "U+0066",
-      "U+00E9",
-      "U+2014",
-      "U+6771",
-      "U+4EAC",
-      "U+0020",
-      "U+0061",
-      "U+0062",
-      "U+0063",
-      "U+0031",
-      "U+0032",
-      "U+0033",
-      "U+0064",
-      "U+0065",
-      "U+0066"
+      "U+00E9"
     ],
     "expected_tokens": [
-      "café",
-      "東京",
-      "abc",
-      "def"
-    ],
-    "expected_tokens_escaped": [
-      "caf\\xe9",
-      "\\u6771\\u4eac",
-      "abc",
-      "def"
+      "naïve",
+      "café"
     ]
   },
   {
-    "id": "digits_underscore_emoji",
-    "input_repr": "abc_def 123 gh\\U0001f600i",
+    "id": "emoji_between_words",
+    "input_repr": "wow 😀 amazing work",
     "input_codepoints": [
-      "U+0061",
-      "U+0062",
-      "U+0063",
-      "U+005F",
-      "U+0064",
-      "U+0065",
-      "U+0066",
+      "U+0077",
+      "U+006F",
+      "U+0077",
       "U+0020",
-      "U+0031",
-      "U+0032",
-      "U+0033",
-      "U+0020",
-      "U+0067",
-      "U+0068",
       "U+1F600",
-      "U+0069"
+      "U+0020",
+      "U+0061",
+      "U+006D",
+      "U+0061",
+      "U+007A",
+      "U+0069",
+      "U+006E",
+      "U+0067",
+      "U+0020",
+      "U+0077",
+      "U+006F",
+      "U+0072",
+      "U+006B"
     ],
     "expected_tokens": [
-      "abc",
-      "def",
-      "gh",
-      "i"
-    ],
-    "expected_tokens_escaped": [
-      "abc",
-      "def",
-      "gh",
-      "i"
+      "wow",
+      "😀",
+      "amazing",
+      "work"
     ]
   },
   {
-    "id": "hebrew_point_adjacency",
-    "input_repr": "lost\\u05b0x",
+    "id": "punctuation_run",
+    "input_repr": "well... really?",
     "input_codepoints": [
+      "U+0077",
+      "U+0065",
+      "U+006C",
+      "U+006C",
+      "U+002E",
+      "U+002E",
+      "U+002E",
+      "U+0020",
+      "U+0072",
+      "U+0065",
+      "U+0061",
+      "U+006C",
+      "U+006C",
+      "U+0079",
+      "U+003F"
+    ],
+    "expected_tokens": [
+      "well",
+      "...",
+      "really",
+      "?"
+    ]
+  },
+  {
+    "id": "cjk_mixed",
+    "input_repr": "héllo 漢字 ok",
+    "input_codepoints": [
+      "U+0068",
+      "U+00E9",
+      "U+006C",
       "U+006C",
       "U+006F",
-      "U+0073",
-      "U+0074",
-      "U+05B0",
-      "U+0078"
+      "U+0020",
+      "U+6F22",
+      "U+5B57",
+      "U+0020",
+      "U+006F",
+      "U+006B"
     ],
     "expected_tokens": [
-      "lost",
-      "x"
-    ],
-    "expected_tokens_escaped": [
-      "lost",
-      "x"
+      "héllo",
+      "漢字",
+      "ok"
     ]
   },
   {
-    "id": "greek_ypogegrammeni_adjacency",
-    "input_repr": "a\\u0345b",
+    "id": "hyphenated",
+    "input_repr": "cover-up",
     "input_codepoints": [
-      "U+0061",
-      "U+0345",
-      "U+0062"
+      "U+0063",
+      "U+006F",
+      "U+0076",
+      "U+0065",
+      "U+0072",
+      "U+002D",
+      "U+0075",
+      "U+0070"
     ],
     "expected_tokens": [
-      "a",
-      "b"
-    ],
-    "expected_tokens_escaped": [
-      "a",
-      "b"
-    ]
-  },
-  {
-    "id": "devanagari_sign_adjacency",
-    "input_repr": "ka\\u093ex",
-    "input_codepoints": [
-      "U+006B",
-      "U+0061",
-      "U+093E",
-      "U+0078"
-    ],
-    "expected_tokens": [
-      "ka",
-      "x"
-    ],
-    "expected_tokens_escaped": [
-      "ka",
-      "x"
-    ]
-  },
-  {
-    "id": "roman_numeral_four_adjacency",
-    "input_repr": "a\\u2163b",
-    "input_codepoints": [
-      "U+0061",
-      "U+2163",
-      "U+0062"
-    ],
-    "expected_tokens": [
-      "a",
-      "b"
-    ],
-    "expected_tokens_escaped": [
-      "a",
-      "b"
-    ]
-  },
-  {
-    "id": "astral_math_bold_A",
-    "input_repr": "x\\U0001d400y",
-    "input_codepoints": [
-      "U+0078",
-      "U+1D400",
-      "U+0079"
-    ],
-    "expected_tokens": [
-      "x𝐀y"
-    ],
-    "expected_tokens_escaped": [
-      "x\\U0001d400y"
-    ]
-  },
-  {
-    "id": "astral_deseret_pair",
-    "input_repr": "\\U00010428\\U00010400",
-    "input_codepoints": [
-      "U+10428",
-      "U+10400"
-    ],
-    "expected_tokens": [
-      "𐐨𐐨"
-    ],
-    "expected_tokens_escaped": [
-      "\\U00010428\\U00010428"
+      "cover",
+      "-",
+      "up"
     ]
   },
   {
     "id": "empty",
     "input_repr": "",
     "input_codepoints": [],
-    "expected_tokens": [],
-    "expected_tokens_escaped": []
+    "expected_tokens": []
   },
   {
     "id": "only_punct",
@@ -328,33 +278,8 @@
       "U+002E",
       "U+002E"
     ],
-    "expected_tokens": [],
-    "expected_tokens_escaped": []
-  },
-  {
-    "id": "sharp_s_capital_alone",
-    "input_repr": "\\u1e9e",
-    "input_codepoints": [
-      "U+1E9E"
-    ],
     "expected_tokens": [
-      "ß"
-    ],
-    "expected_tokens_escaped": [
-      "\\xdf"
-    ]
-  },
-  {
-    "id": "turkish_I_alone",
-    "input_repr": "\\u0130",
-    "input_codepoints": [
-      "U+0130"
-    ],
-    "expected_tokens": [
-      "i̇"
-    ],
-    "expected_tokens_escaped": [
-      "i\\u0307"
+      "..."
     ]
   }
 ]

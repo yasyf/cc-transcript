@@ -21,16 +21,16 @@ AFINN: dict[str, int] = load_polarities("afinn-en-165.tsv")
 
 
 def tokenize(text: str) -> list[str]:
-    """Split ``text`` into lowercased maximal runs of alphabetic characters.
+    """The lowercased surface of every UDPipe token in ``text``, in order.
 
-    The shared, deterministic tokenizer: each run is a maximal span of
-    ``str.isalpha`` characters, lowercased whole-run so context-sensitive cases
-    (Greek final-sigma, the German sharp-s) resolve correctly. Executes in Rust
-    over a pinned Unicode ``isalpha`` table.
+    The shared tokenizer over the embedded UD-English-EWT model: multi-word tokens
+    split (``can't`` → ``ca``, ``n't``) and punctuation surfaces as its own token.
+    Executes in Rust. For POS, lemma, offsets, or negation use
+    :func:`cc_transcript.nlp.analyze`.
 
     Example:
-        >>> tokenize("LOST losing — can't")
-        ['lost', 'losing', 'can', 't']
+        >>> tokenize("LOST losing")
+        ['lost', 'losing']
     """
     return _parser_rs.lexicon_tokenize(text)
 
@@ -64,8 +64,10 @@ class Lexicon:
     def has_hit(cls, text: str, *, want_negative: bool) -> bool:
         """Whether any token in ``text`` reaches the polarity ``FLOOR``.
 
-        ``<= -FLOOR`` when ``want_negative`` else ``>= FLOOR``. Tokenizes and
-        scores each surface — no lemmatization, no model, fully deterministic.
-        Executes in Rust.
+        ``<= -FLOOR`` when ``want_negative`` else ``>= FLOOR``. Surface polarity with
+        negation sign-flip and no POS gate: every token's surface polarity counts, and
+        a negated token's polarity is sign-flipped — so ``isn't great`` reaches the
+        negative floor, not the positive one. POS-based suppression is a highlighter
+        concern, not a scoring one. Executes in Rust over the UDPipe substrate.
         """
         return _parser_rs.lexicon_has_hit(text, want_negative)
