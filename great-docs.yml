@@ -314,6 +314,11 @@ reference:
       - AttributionRange
       - load_export
       - export_activity
+  - title: NLP
+    desc: The UDPipe-backed token substrate — typed tokens with form, lemma, POS, codepoint span, polarity, and negation.
+    contents:
+      - nlp.analyze
+      - nlp.Token
   - title: Sentiment
     desc: Conversation buckets and a composable score spec around any inference engine.
     contents:

@@ -155,9 +155,10 @@ subject of the next section.
 
 ## The lexicon
 
-`Lexicon.has_hit(text, *, want_negative)` tokenizes a message into lowercased
-alphabetic runs and scores each token for polarity — domain overrides first, then
-AFINN — reporting whether any token reaches the polarity floor (`+3`, or `-3` when
+`Lexicon.has_hit(text, *, want_negative)` tokenizes a message with the embedded
+UDPipe model and scores each token's lowercased surface for polarity — domain
+overrides first, then AFINN, with a negated token's polarity sign-flipped —
+reporting whether any token reaches the polarity floor (`+3`, or `-3` when
 `want_negative=True`). That's what lets `clamp_positive` distinguish a
 terse-but-warm "perfect, ship it" from a flat "ok" — and `demote_mild_irritation`
 tell genuine hostility from mere impatience.

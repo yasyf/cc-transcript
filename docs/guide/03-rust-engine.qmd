@@ -62,10 +62,23 @@ print(spec_to_json(spec)[:120])
 `ScoreSpec` and `MiningSpec` follow the same shape. `score_spec_to_json`
 feeds the `score_short_circuit` and `score_post_process` entry points that
 bracket model inference; `mining_spec_to_json` feeds `mine_signals`, which
-parses and detects in one pass over raw transcript bytes. The lexicon needs no
-spec at all: `rust/src/lexicon.rs` compiles the two packaged TSVs in at build
-time and tokenizes over a generated Unicode table pinned to CPython's, so
-`Lexicon.has_hit` is a straight FFI call.
+parses and detects in one pass over raw transcript bytes.
+
+The lexicon needs no spec at all: `rust/src/lexicon.rs` compiles the two
+packaged TSVs in at build time, and tokenization runs a real NLP pipeline —
+tokenizer, POS tagger, lemmatizer, and dependency parse — over the embedded
+UD-English-EWT model, via `udpipe-rs`. The model ships in the wheel
+(`cc_transcript/sentiment/data/en-ewt.udpipe`) and compiles into the
+extension the same way the TSVs do: no download, no runtime file read. One
+engine is what makes a real pipeline affordable again — there is no Python
+toolchain left to hold at parity. The tokenizer splits contractions the way
+Universal Dependencies does (`can't` yields `ca` and `n't`), and
+`Lexicon.has_hit` is negation-aware: a negated token's polarity is
+sign-flipped, so "isn't great" reaches the negative floor, not the positive
+one. Polarity lookup itself stays keyed on the token's surface — never its
+lemma — and the whole thing remains a straight FFI call. For the typed view,
+`cc_transcript.nlp.analyze` returns `Token` objects carrying the form,
+lemma, POS tag, codepoint span, polarity, and negation flag.
 
 ## Wheels without a toolchain
 
@@ -112,7 +125,7 @@ pytest` runs all of it.
 
 **Generated literals, one direction.** The Python constants — the CC-protocol
 markers, the mining ids, separators, and confidence floors, the command
-tables, the tokenizer's Unicode ranges — are the single source of truth.
+tables — are the single source of truth.
 `scripts/build_rust_literals.py` renders them into the committed
 `rust/src/generated/` modules the crate compiles in; to change one, edit the
 Python constant, regenerate, and commit. Never hand-edit the generated Rust.
@@ -125,7 +138,7 @@ must match a fresh render byte for byte.
 under `cc_transcript/sentiment/data/`. The crate `include_str!`s the same
 files Python reads, so editing a TSV changes both sides at the next build.
 `tests/test_lexicon_parity.py` holds the files to their format and pins the
-tokenizer against a Unicode-edge-case fixture.
+tokenizer against a fixture of contraction splits and Unicode edge cases.
 
 **Toolchain pins.** The extension and the Python package embed independent
 tree-sitter-bash builds; `command.py` remains the typed `CommandLine` layer
