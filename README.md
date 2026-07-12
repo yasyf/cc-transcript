@@ -77,7 +77,7 @@ Each block reports text, thinking, and tool-io bytes plus per-tool call counts; 
 - [Filtering events](https://yasyf.github.io/cc-transcript/docs/guide/filtering-events.html) covers composable clauses, specs, and the ready-made `NOISE_SPEC`.
 - [Sentiment scoring](https://yasyf.github.io/cc-transcript/docs/guide/scoring-sentiment.html) buckets conversations and scores them around any inference engine.
 - [Feedback mining](https://yasyf.github.io/cc-transcript/docs/guide/mining-feedback.html) runs detectors, confidence calibration, and LLM verdict passes over your corpus.
-- [Two backends, one protocol](https://yasyf.github.io/cc-transcript/docs/guide/backends-and-parity.html) pairs a Rust fast path with a Python reference, parity-asserted against each other.
+- [The Rust engine](https://yasyf.github.io/cc-transcript/docs/guide/rust-engine.html) executes parsing, filtering, scoring, and mining, its correctness pinned by generated literals and golden fixtures.
 - [API reference](https://yasyf.github.io/cc-transcript/reference/index.html) documents the complete typed surface, from `TranscriptEvent` to `SessionActivity`.
 
 Read the [docs](https://yasyf.github.io/cc-transcript/) for the full guide. Licensed under [PolyForm Noncommercial 1.0.0](https://github.com/yasyf/cc-transcript/blob/main/LICENSE).

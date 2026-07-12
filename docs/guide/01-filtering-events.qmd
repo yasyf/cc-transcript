@@ -1,6 +1,6 @@
 ---
 title: Filtering events
-description: Compose declarative, both-backend event filters from small builders over named junk categories.
+description: Compose declarative event filters from small builders over named junk categories.
 ---
 
 The parser is deliberately non-lossy: it hands you every event, including the
@@ -12,12 +12,12 @@ The central type is a `FilterSpec`: **filters as data** — an ordered list of
 `Clause` rules. Each clause pairs a predicate (a condition on one event) with an
 action (`DROP` or `TAG`). You rarely write clauses by hand; instead you compose a
 spec from small builders (`keep_only`, `drop_junk`, `drop_short`, …) that each
-return a frozen clause. Because the spec is plain data, the *same* spec is
-interpreted by the Python reference engine here and, when it is portable,
-serialized to JSON and executed by the Rust backend — which drops events before
-ever materializing a Python object. This guide covers the builder vocabulary and
-the spec model; for how one spec achieves bit-for-bit parity across the two
-engines, see [Backends & parity](03-backends-and-parity.qmd).
+return a frozen clause. Because the spec is plain data, the *same* spec works at
+two moments: `apply_spec` filters events you already hold, as this guide does,
+and a spec passed to the parser is serialized to JSON and executed inside Rust,
+dropping events before a Python object is ever built. This guide covers the
+builder vocabulary and the spec model; for the engine itself and how its
+correctness is pinned, see [The Rust engine](03-rust-engine.qmd).
 
 Every cell below runs against the same parsed fixture, so parse it first:
 

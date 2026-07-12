@@ -21,10 +21,9 @@ type — you don't configure it:
 
 `FilteredEngine` is the wrapper that ties the two together: it asks the spec which
 buckets short-circuit, runs the inner engine only on the rest, then post-processes
-every score. The deterministic stages execute in Rust when the extension is built and
-the spec is portable, and in pure Python at parity otherwise — same scores either way.
-See [Backends & parity](03-backends-and-parity.qmd) for how that fallback is chosen; this
-page treats the two as interchangeable.
+every score. Every deterministic stage executes in Rust; only model inference stays
+Python-side. See [The Rust engine](03-rust-engine.qmd) for the executor and its
+correctness story.
 
 ## Setup
 
@@ -165,10 +164,9 @@ tell genuine hostility from mere impatience.
 
 The lookup is surface-form: AFINN calibrates inflections as separate rows
 ("broken" carries a different strength than "break"), so tokens match the tables
-exactly as written. Both tables ship inside the package as TSV data, and both
-backends read the same files — Rust when the extension is built, Python
-otherwise, with identical results. There is no extra to install and nothing to
-download.
+exactly as written. Both tables ship inside the package as TSV data, and the
+Rust engine compiles them in at build time. There is no extra to install and
+nothing to download.
 
 ## No preset spec
 

@@ -124,4 +124,4 @@ The final cell prints `[1, 5, 3]`. That is the promised end state: a typed parse
 
 ## Next steps
 
-From here, head to the [Guides](../guide/index.qmd) for discovery, incremental ingestion, the full filter and score builder sets, and the backend protocol.
+From here, head to the [Guides](../guide/index.qmd) for discovery, incremental ingestion, the full filter and score builder sets, and the Rust engine that executes them.

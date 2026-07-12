@@ -547,9 +547,9 @@ async def parse_events_async(path: Path) -> list[TranscriptEvent]:
 class TranscriptParser:
     """The public facade over the Rust parsing backend.
 
-    Streams transcript files through the ``_parser_rs`` extension: a portable
-    spec runs inside Rust with events dropped before materialization, a
-    non-portable one is applied in Python post-parse.
+    Streams transcript files through the ``_parser_rs`` extension; a spec
+    passed to :meth:`stream_transcripts` runs inside Rust with events dropped
+    before materialization.
     """
 
     PREFETCH: ClassVar[int] = 8

@@ -175,11 +175,12 @@ this pattern pay off:
 - **Testable.** A spec is a value, so you assert on its result directly: parse a
   fixture, `apply_spec(events, FILTER_SPEC)`, and check the survivors. No mocks,
   no engine, no I/O.
-- **Serializable.** Filter specs round-trip to JSON (`spec_to_json` /
-  `is_portable` in `cc_transcript.filterspec`), so a policy can travel out of
-  process or get pinned in a fixture.
-- **Executed in Rust at parity.** The same spec runs on the Rust backend with
-  identical results, so declaring policy as data costs nothing at speed.
+- **Serializable.** Filter specs round-trip to JSON (`spec_to_json` in
+  `cc_transcript.filterspec`), so a policy can travel out of process or get
+  pinned in a fixture.
+- **Executed in Rust.** A spec handed to the parser runs inside the Rust
+  engine, dropping events at parse time, so declaring policy as data costs
+  nothing at speed.
 
 Note where the names come from. The public surface is import-controlled — there is
 no `__all__`; the public API is exactly what `cc_transcript` and

@@ -1,4 +1,4 @@
-"""Declarative, both-backend mining policy — the mining analogue of
+"""Declarative mining policy — the mining analogue of
 :class:`~cc_transcript.FilterSpec` and :class:`~cc_transcript.sentiment.ScoreSpec`.
 
 A :class:`MiningSpec` packages the full mining policy as data: which detectors run,
@@ -246,7 +246,7 @@ class ReviewSpec:
 
 @dataclass(frozen=True, slots=True)
 class MiningSpec:
-    """The full declarative mining policy interpreted by both backends.
+    """The full declarative mining policy the Rust executor interprets.
 
     Attributes:
         detectors: The detector ids to run; absent detectors are skipped.

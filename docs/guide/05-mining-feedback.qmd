@@ -6,9 +6,11 @@ description: "Detect user corrections — tool denials, plan rejections, interru
 When a user rejects a tool call, kills a plan, or interrupts mid-turn, the
 transcript records a correction — the most direct feedback a session produces.
 The mining layer, `cc_transcript.mining`, turns those shapes into data.
-Each **detector** walks a parsed event stream and yields `MiningSignal`s: neutral
-facts carrying the correction text, a calibrated confidence verdict, and
-evidence, but no policy. Your app decides what clears the bar, maps survivors to
+Each **detector** recognizes one transcript shape and yields `MiningSignal`s:
+neutral facts carrying the correction text, a calibrated confidence verdict, and
+evidence, but no policy. The detectors run inside the
+[Rust engine](03-rust-engine.qmd), which parses and mines raw transcript bytes
+in one pass. Your app decides what clears the bar, maps survivors to
 `FeedbackCandidate`s, and persists them. This page mines one denial end to end:
 fixture, detector, confidence, candidate, filter, verdict.
 
@@ -37,7 +39,7 @@ def envelope(kind, uuid, secs, message):
 
 denial = f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}use uv, not pip\n{USER_SAID_TRAILER} will follow."
 
-events = parse_events_from_bytes(b"\n".join([
+raw = b"\n".join([
     line(envelope("assistant", "a1", 5, {
         "role": "assistant", "model": "claude-opus-4-7", "stop_reason": "tool_use",
         "content": [{"type": "tool_use", "id": "t1", "name": "Bash",
@@ -46,7 +48,9 @@ events = parse_events_from_bytes(b"\n".join([
         "role": "user",
         "content": [{"type": "tool_result", "tool_use_id": "t1",
                      "content": denial, "is_error": True}]})),
-]))
+])
+
+events = parse_events_from_bytes(raw)
 [type(e).__name__ for e in events]
 # -> ['AssistantEvent', 'UserEvent']
 ```
@@ -61,16 +65,16 @@ not text.
 Mining is spec-driven: a `MiningSpec` carries the whole policy as data — which
 detectors run, the confidence stages each folds (the defaults wire in
 `CALIBRATED_SPEC`, and `USER_MESSAGE_SPEC` for user turns), and the
-review-format policy. `mine` interprets the spec and dispatches every enabled
-detector. Here the denial detector fires: it pairs each denial result with the
-`tool_use` it rejects, pulls the embedded "user said" text, and yields one
-signal per denial:
+review-format policy. `mine_signals` hands the raw bytes and the serialized
+spec to the Rust engine, which parses and detects in one pass. Here the denial
+detector fires: it pairs each denial result with the `tool_use` it rejects,
+pulls the embedded "user said" text, and yields one signal per denial:
 
 ```{python}
-from cc_transcript.mining import MiningSpec, mine
+from cc_transcript.mining import MiningSpec, mine_signals
 
 spec = MiningSpec()
-[signal] = mine(events, spec)
+[signal] = mine_signals(raw, spec)
 (signal.kind, signal.detector, signal.text, signal.trigger_index, signal.evidence)
 # -> ('interrupt_rejection', 'denial', 'use uv, not pip', 0, {'tool': 'Bash', 'file_path': None})
 ```
@@ -79,20 +83,21 @@ spec = MiningSpec()
 here); `detector` names the exact shape that fired. `text` is the user's verbatim
 correction, `trigger_index` points at the assistant turn it answers, and
 `evidence` preserves detector-specific metadata (the denied tool, the file it
-targeted). The individual detectors live in `cc_transcript.mining.signals`, each
-taking the events plus the same spec and following the same contract:
+targeted). `detector` is one of seven ids, and `MiningSpec.detectors` — a
+frozenset of those ids — decides which run:
 
 ```python
-iter_tool_denial_signals(events, spec)        # a denied tool call, embedded reason when present
-iter_plan_rejection_signals(events, spec)     # an ExitPlanMode plan rejected with embedded text
-iter_plan_reentry_signals(events, spec)       # plan mode re-entered after an edit cycle
-iter_interrupt_marker_signals(events, spec)   # [Request interrupted by user] plus the correction after it
-iter_user_message_signals(events, spec)       # every substantive user turn, scored by length and proximity
-iter_review_comment_signals(events, spec)     # inline review comments, via the spec's review formats
+"denial"               # a denied tool call, embedded reason when present
+"exit_plan_rejection"  # an ExitPlanMode plan rejected with embedded text
+"plan_reentry"         # plan mode re-entered after an edit cycle
+"interrupt"            # [Request interrupted by user] plus the correction after it
+"transcript_message"   # every substantive user turn, scored by length and proximity
+"review_comment"       # inline review comments, via the spec's review formats
+"ask_user_question"    # an AskUserQuestion answer, an option pick or a freeform reply
 ```
 
-The default `MiningSpec` enables all six, so `mine(events, MiningSpec())` runs
-the standard bundle. Review comments stay silent until configured: what a review
+The default `MiningSpec` enables all seven, so `mine_signals(raw, MiningSpec())`
+runs the standard bundle. Review comments stay silent until configured: what a review
 message looks like is app policy, so you fill the spec's `ReviewSpec` with
 formats — a declarative `RegexReviewFormat`, or a `CallableReviewFormat` with a
 Python extractor — and the detector yields one signal per parsed comment.
@@ -118,13 +123,12 @@ from cc_transcript.mining import NOISE_FLOOR
 ```
 
 Contrast a denial with no embedded reason, where the only follow-up is a
-`<system-reminder>` injection — the denial detector, run on its own this time,
-still reports the fact, but scores it as noise:
+`<system-reminder>` injection — the denial detector still reports the fact,
+but scores it as noise. The transcript-message detector fires on the reminder
+line too, so pick the denial signal by its `detector` id:
 
 ```{python}
-from cc_transcript.mining.signals import iter_tool_denial_signals
-
-followup_events = parse_events_from_bytes(b"\n".join([
+followup_raw = b"\n".join([
     line(envelope("assistant", "a2", 20, {
         "role": "assistant", "model": "claude-opus-4-7", "stop_reason": "tool_use",
         "content": [{"type": "tool_use", "id": "t2", "name": "Bash",
@@ -135,9 +139,10 @@ followup_events = parse_events_from_bytes(b"\n".join([
                      "content": f"{DENIAL_PREFIX}.", "is_error": True}]})),
     line(envelope("user", "u3", 25, {
         "role": "user", "content": "<system-reminder>stop hook output</system-reminder>"})),
-]))
+])
 
-[structural] = iter_tool_denial_signals(followup_events, spec)
+followup_events = parse_events_from_bytes(followup_raw)
+[structural] = [s for s in mine_signals(followup_raw, spec) if s.detector == "denial"]
 (structural.signal, structural.signal.confidence >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.0, reasons=('structural_only',), durable=True), False)
 ```

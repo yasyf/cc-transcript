@@ -1,0 +1,148 @@
+---
+title: "The Rust engine"
+description: "Why cc-transcript executes on a single compiled engine, and how generated literals and golden fixtures pin its correctness without a second implementation."
+---
+
+Every hot path in `cc-transcript` executes in one place: `_parser_rs`, the
+pyo3 extension compiled into the wheel. It parses transcripts, runs the
+session-activity probe, extracts command prefixes, and interprets every
+declarative spec — `FilterSpec`, `ScoreSpec`, `MiningSpec`, and the sentiment
+lexicon. The extension is a hard requirement, not a fast path: every parsing
+and spec surface imports it directly, with no fallback implementation and no
+switch to route around it. The package root itself stays lazy — importing
+`cc_transcript.ids` or `cc_transcript.tools` pulls the standard library only —
+so the extension loads on first touch of a parsing or spec surface, not at
+import time.
+
+```{python}
+from cc_transcript.parser import TranscriptParser
+
+TranscriptParser.backend_name()  # -> 'rust'
+```
+
+The return type is `Literal["rust"]`. There is no other answer.
+
+## Why the second implementation is gone
+
+Earlier releases shipped four of these pieces twice: a Rust fast path plus a
+pure-Python reference behind a `Backend` protocol, held at verified parity,
+with portability gates (`is_portable`, the `CC_TRANSCRIPT_DISABLE_RUST`
+environment variable) deciding which interpreter ran a given spec. That design
+earned its keep when there was real divergence to guard against. The
+sentiment lexicon originally ran spaCy on the Python side and UDPipe in Rust —
+two NLP toolchains that could disagree token for token — and a
+parity-asserted reference was the only honest way to ship that.
+
+v12 removed the divergence at its source. The surface-only lexicon replaced
+both toolchains with a deterministic shared tokenizer over two vendored TSVs,
+leaving nothing that could disagree. What remained of the dual build was pure
+cost: every semantic change landed twice, every release re-pinned a parity
+suite, and the portability gates split the spec language into a portable
+subset and a Python-only remainder that users had to reason about. So the
+Python interpreters are deleted. One engine, one behavior, one source of
+truth.
+
+## How a spec crosses the boundary
+
+A `FilterSpec` is *filters as data* — an ordered tuple of `Clause` rules.
+`spec_to_json` serializes it to the JSON contract the engine compiles
+(`compile_spec` in `rust/src/filter.rs`) and evaluates per line during
+parsing, so events that fail the spec are dropped before a Python object is
+ever built. Pass a spec to `TranscriptParser.stream_transcripts` and the
+rejected events never cross the FFI boundary.
+
+```{python}
+from cc_transcript import build_spec, keep_only, drop_junk, drop_short
+from cc_transcript.filterspec import spec_to_json
+
+spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_short(2))
+print(spec_to_json(spec)[:120])
+```
+
+`ScoreSpec` and `MiningSpec` follow the same shape. `score_spec_to_json`
+feeds the `score_short_circuit` and `score_post_process` entry points that
+bracket model inference; `mining_spec_to_json` feeds `mine_signals`, which
+parses and detects in one pass over raw transcript bytes. The lexicon needs no
+spec at all: `rust/src/lexicon.rs` compiles the two packaged TSVs in at build
+time and tokenizes over a generated Unicode table pinned to CPython's, so
+`Lexicon.has_hit` is a straight FFI call.
+
+## Wheels without a toolchain
+
+The extension targets abi3-py313, so one wheel per platform covers CPython
+3.13 and everything after it. Prebuilt wheels ship for macOS (arm64 and
+x86_64) and Linux (x86_64 and aarch64); there are no Windows wheels. `uv add
+cc-transcript` pulls a binary wheel, and a Rust toolchain enters the picture
+only when you build from source, where maturin compiles the crate.
+
+## Where Python still runs
+
+Two Python execution points survive the pivot, and neither is a fallback.
+
+**Post-parse filtering.** `keep` and `apply_spec` (plus `annotate_spec` and
+`labels_for`) filter events you already hold — materialized
+`TranscriptEvent`s in a list. That is what `cc-transcript show` and `grep` do:
+parse once, then filter the same events repeatedly. The engine filters raw
+bytes at parse time; no Rust entry point accepts Python objects. Same spec,
+two moments — and the post-parse moment is a capability the engine cannot
+replace.
+
+**`CallableReviewFormat`.** Mining's plugin point: an arbitrary regex plus a
+Python extractor, for review-comment shapes no declarative format covers. The
+engine invokes both from inside its single pass through a pyo3 callback —
+single-threaded, under the held GIL — and propagates any Python exception.
+The declarative `RegexReviewFormat` executes entirely in Rust.
+
+Model inference stays Python-side too, by design: `FilteredEngine` runs every
+deterministic score stage in Rust and hands only the undecided buckets to
+your `InferenceEngine`.
+
+::: {.callout-warning}
+Rust's `regex` crate has no lookaround, and a `RegexReviewFormat` whose
+pattern uses it raises at mine time. Lookaround belongs in a
+`CallableReviewFormat`, whose pattern is ordinary Python `re`.
+:::
+
+## How correctness is pinned
+
+Cross-backend parity used to be the correctness mechanism: run both
+implementations, assert identical output. With one implementation, the suite
+pins behavior against generated sources and frozen fixtures instead. `uv run
+pytest` runs all of it.
+
+**Generated literals, one direction.** The Python constants — the CC-protocol
+markers, the mining ids, separators, and confidence floors, the command
+tables, the tokenizer's Unicode ranges — are the single source of truth.
+`scripts/build_rust_literals.py` renders them into the committed
+`rust/src/generated/` modules the crate compiles in; to change one, edit the
+Python constant, regenerate, and commit. Never hand-edit the generated Rust.
+`tests/test_literals_parity.py` is the drift gate: `embedded_literals()` must
+equal the generator's manifest as one whole dict, and the committed files
+must match a fresh render byte for byte.
+
+**Vendored TSVs.** The lexicon data lives once, as package data:
+`afinn-en-165.tsv` (provenance in its header) and `domain_overrides.tsv`
+under `cc_transcript/sentiment/data/`. The crate `include_str!`s the same
+files Python reads, so editing a TSV changes both sides at the next build.
+`tests/test_lexicon_parity.py` holds the files to their format and pins the
+tokenizer against a Unicode-edge-case fixture.
+
+**Toolchain pins.** The extension and the Python package embed independent
+tree-sitter-bash builds; `command.py` remains the typed `CommandLine` layer
+over the Python bindings. `tests/test_toolchain_parity.py` asserts the
+grammar pins in `Cargo.lock` and `uv.lock` agree, so the two builds parse
+bash identically.
+
+**Golden regression fixtures.** `tests/testdata/filter_golden.json`,
+`score_golden.json`, and `mining_golden.json` freeze the engine's output over
+hand-built batteries: presets and regex edge cases for the filter, the full
+four-stage spec for the score executor, one case per detector (plus
+near-misses, case folds, and unicode) for mining. The goldens were captured
+from the historical Python reference at the moment of the switch — proven
+equal then — and the suite asserts the engine still reproduces them, so a
+behavior change fails loudly with no second implementation to compare
+against.
+
+That is the trade. The reference implementation is gone, and in its place the
+correctness story is data — generated literals, vendored tables, and frozen
+output — which drifts louder and costs one implementation instead of two.

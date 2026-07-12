@@ -125,6 +125,7 @@ reference:
       - parse_print_result
       - parse_events_async
       - TranscriptParser
+      - ParsedTranscript
   - title: Cost
     desc: Token pricing and the cost helper over assistant usage.
     contents:
@@ -228,19 +229,12 @@ reference:
       - watch.WatchEvent
       - watch.TailState
       - watch.TailCursor
-  - title: Backends
-    desc: One Backend protocol; a Rust fast path and a Python reference at parity.
-    contents:
-      - Backend
-      - ParsedTranscript
-      - rust.RustBackend
-      - filterspec.is_portable
-      - filterspec.spec_to_json
   - title: Filtering
-    desc: Filters-as-data — declarative specs and composable builders.
+    desc: Filters-as-data — declarative specs and composable builders, executed in Rust at parse time or over materialized events.
     contents:
       - FilterSpec
       - filterspec.Clause
+      - filterspec.spec_to_json
       - apply_spec
       - annotate_spec
       - keep
@@ -350,10 +344,8 @@ reference:
       - mining.Confidence
       - mining.NOISE_FLOOR
       - mining.MiningSpec
-      - mining.mine
       - mining.mine_signals
       - mining.mining_spec_to_json
-      - mining.mining_spec_is_portable
       - mining.DENIAL_PREFIX
       - mining.DENIAL_KIND_USER_REJECTED
       - mining.DENIAL_KIND_PERMISSION_RULE
