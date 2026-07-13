@@ -1,0 +1,15 @@
+== .fixtures/corpus/-Users-dev-Code-scratch/43d3d5bc-ea2d-454c-44b8-06d88563cf6a.jsonl
+    3 asst  09:05:06 [claude-opus-4-7] "All done — the change is in and the tests are green."
+   13 asst  11:04:50 [claude-sonnet-4] "All done — the change is in and the tests are green."
+== .fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl
+    9 asst  09:10:13 [claude-opus-4-8] "All done — the change is in and the tests are green."
+== .fixtures/corpus/-Users-dev-Code-scratch/2b4bd0ef-2c53-46df-c185-4194c355b888.jsonl
+    3 asst  09:01:29 [claude-opus-4-8] "All done — the change is in and the tests are green."
+    9 asst  10:36:49 [claude-sonnet-4] "All done — the change is in and the tests are green."
+   14 asst  11:20:39 [claude-sonnet-4] "All done — the change is in and the tests are green."
+   20 asst  14:44:04 [claude-opus-4-8] "All done — the change is in and the tests are green."
+== .fixtures/corpus/-Users-dev-Code-scratch/f6f1fdd7-50d3-436b-c7b1-29a636c84d4b.jsonl
+    3 asst  09:04:13 [claude-sonnet-4] "All done — the change is in and the tests are green."
+   14 asst  10:09:17 [claude-sonnet-4] "All done — the change is in and the tests are green."
+   23 asst  11:44:52 [claude-opus-4-8] "All done — the change is in and the tests are green."
+4 files, 10 matches

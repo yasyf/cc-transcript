@@ -1,0 +1,5 @@
+    0 user  09:01:03 make the activity probe handle async tool launches
+    1 asst  09:02:14 [claude-opus-4-8] "Refactoring the helper to take the parent object directly." uv run python -m cc_transcript stats Edit cc_transcript/parser.py - return None + return result
+    2 user  09:03:26 <-Bash (8ch) 1 passed
+    3 user  09:04:07 <-Edit (2ch) ok
+    4 user  09:04:24 actually keep the old behavior for empty specs

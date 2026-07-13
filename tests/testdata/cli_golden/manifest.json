@@ -1,0 +1,113 @@
+{
+  "commands": {
+    "argv": [
+      "commands",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 12
+  },
+  "grep_match": {
+    "argv": [
+      "grep",
+      "tests are green",
+      "--root",
+      ".fixtures/corpus",
+      "--width",
+      "100",
+      "--max-matches",
+      "10"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 1328
+  },
+  "grep_nomatch": {
+    "argv": [
+      "grep",
+      "zzzz_no_such_pattern_xyzzy",
+      "--root",
+      ".fixtures/corpus"
+    ],
+    "exit_code": 1,
+    "stdout_bytes": 19
+  },
+  "list": {
+    "argv": [
+      "list",
+      "--root",
+      ".fixtures/corpus"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 2360
+  },
+  "list_json": {
+    "argv": [
+      "list",
+      "--root",
+      ".fixtures/corpus",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 2743
+  },
+  "show": {
+    "argv": [
+      "show",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--width",
+      "100"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 991
+  },
+  "show_head5": {
+    "argv": [
+      "show",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--head",
+      "5",
+      "--width",
+      "100"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 416
+  },
+  "show_json": {
+    "argv": [
+      "show",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 9791
+  },
+  "stats": {
+    "argv": [
+      "stats",
+      "--root",
+      ".fixtures/corpus",
+      "--all"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 463
+  },
+  "stats_json": {
+    "argv": [
+      "stats",
+      "--root",
+      ".fixtures/corpus",
+      "--all",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 500
+  },
+  "tools": {
+    "argv": [
+      "tools",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl"
+    ],
+    "exit_code": 0,
+    "stdout_bytes": 144
+  }
+}
