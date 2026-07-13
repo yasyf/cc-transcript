@@ -346,6 +346,8 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::toolcall::toolcall_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())

@@ -1,0 +1,1847 @@
+{
+  "calls": [
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "cc_transcript/activity.py",
+          "old_string": "return None",
+          "new_string": "return result"
+        },
+        "file_path": "cc_transcript/activity.py",
+        "old": "return None",
+        "new": "return result",
+        "replace_all": false
+      }
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "session_activity",
+        "output_mode": "content"
+      },
+      "expected": {
+        "cls": "GrepCall",
+        "name": "Grep",
+        "raw": {
+          "pattern": "session_activity",
+          "output_mode": "content"
+        },
+        "pattern": "session_activity",
+        "path": null,
+        "glob": null,
+        "file_type": null,
+        "output_mode": "content"
+      }
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/parser.py",
+        "limit": 320
+      },
+      "expected": {
+        "cls": "ReadCall",
+        "name": "Read",
+        "raw": {
+          "file_path": "cc_transcript/parser.py",
+          "limit": 320
+        },
+        "file_path": "cc_transcript/parser.py",
+        "offset": null,
+        "limit": 320
+      }
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "description": "explore",
+        "prompt": "explore how the filter spec is compiled on the rust side",
+        "subagent_type": "Explore"
+      },
+      "expected": {
+        "cls": "TaskCall",
+        "name": "Task",
+        "raw": {
+          "description": "explore",
+          "prompt": "explore how the filter spec is compiled on the rust side",
+          "subagent_type": "Explore"
+        },
+        "prompt": "explore how the filter spec is compiled on the rust side",
+        "agent_type": "Explore",
+        "model": null,
+        "agent_name": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cargo bench --no-run",
+        "description": "compile the benches"
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "cargo bench --no-run",
+          "description": "compile the benches"
+        },
+        "command": "cargo bench --no-run",
+        "timeout": null,
+        "description": "compile the benches",
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      },
+      "expected": {
+        "cls": "WriteCall",
+        "name": "Write",
+        "raw": {
+          "file_path": "cc_transcript/activity.py",
+          "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+        },
+        "file_path": "cc_transcript/activity.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      }
+    },
+    {
+      "tool": "Glob",
+      "input": {
+        "pattern": "**/*.py"
+      },
+      "expected": {
+        "cls": "GlobCall",
+        "name": "Glob",
+        "raw": {
+          "pattern": "**/*.py"
+        },
+        "pattern": "**/*.py",
+        "path": null
+      }
+    },
+    {
+      "tool": "Execute",
+      "input": {
+        "command": "ls -la",
+        "timeout": 30,
+        "run_in_background": true
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Execute",
+        "raw": {
+          "command": "ls -la",
+          "timeout": 30,
+          "run_in_background": true
+        },
+        "command": "ls -la",
+        "timeout": 30,
+        "description": null,
+        "run_in_background": true
+      }
+    },
+    {
+      "tool": "Create",
+      "input": {
+        "file_path": "/a.py",
+        "content": "x = 1\n"
+      },
+      "expected": {
+        "cls": "WriteCall",
+        "name": "Create",
+        "raw": {
+          "file_path": "/a.py",
+          "content": "x = 1\n"
+        },
+        "file_path": "/a.py",
+        "content": "x = 1\n"
+      }
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "prompt": "explore",
+        "subagent_type": "Explore",
+        "model": "opus"
+      },
+      "expected": {
+        "cls": "TaskCall",
+        "name": "Task",
+        "raw": {
+          "prompt": "explore",
+          "subagent_type": "Explore",
+          "model": "opus"
+        },
+        "prompt": "explore",
+        "agent_type": "Explore",
+        "model": "opus",
+        "agent_name": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Agent",
+      "input": {
+        "prompt": "explore",
+        "agent_type": "Explore"
+      },
+      "expected": {
+        "cls": "TaskCall",
+        "name": "Agent",
+        "raw": {
+          "prompt": "explore",
+          "agent_type": "Explore"
+        },
+        "prompt": "explore",
+        "agent_type": "Explore",
+        "model": null,
+        "agent_name": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "ExitSpecMode",
+      "input": {
+        "plan": "the plan"
+      },
+      "expected": {
+        "cls": "ExitPlanModeCall",
+        "name": "ExitSpecMode",
+        "raw": {
+          "plan": "the plan"
+        },
+        "plan": "the plan"
+      }
+    },
+    {
+      "tool": "ExitPlanMode",
+      "input": {
+        "plan": "another plan"
+      },
+      "expected": {
+        "cls": "ExitPlanModeCall",
+        "name": "ExitPlanMode",
+        "raw": {
+          "plan": "another plan"
+        },
+        "plan": "another plan"
+      }
+    },
+    {
+      "tool": "mcp__github__create_issue",
+      "input": {
+        "title": "bug",
+        "body": "boom"
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "mcp__github__create_issue",
+        "raw": {
+          "title": "bug",
+          "body": "boom"
+        }
+      }
+    },
+    {
+      "tool": "ccx_code_edit",
+      "input": {
+        "file": "/a",
+        "at": "1-2"
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "ccx_code_edit",
+        "raw": {
+          "file": "/a",
+          "at": "1-2"
+        }
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "echo hi",
+        "description": "greet",
+        "extra_key": "ignored"
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "echo hi",
+          "description": "greet",
+          "extra_key": "ignored"
+        },
+        "command": "echo hi",
+        "timeout": null,
+        "description": "greet",
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "timeout": 1.5,
+        "description": 5,
+        "run_in_background": "yes"
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "ls",
+          "timeout": 1.5,
+          "description": 5,
+          "run_in_background": "yes"
+        },
+        "command": "ls",
+        "timeout": 1.5,
+        "description": 5,
+        "run_in_background": "yes"
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "timeout": null
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "ls",
+          "timeout": null
+        },
+        "command": "ls",
+        "timeout": null,
+        "description": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "big",
+        "timeout": 18446744073709551617
+      },
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "big",
+          "timeout": 18446744073709551617
+        },
+        "command": "big",
+        "timeout": 18446744073709551617,
+        "description": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Agent",
+      "input": {
+        "prompt": "p",
+        "subagent_type": 5,
+        "agent_type": "Explore"
+      },
+      "expected": {
+        "cls": "TaskCall",
+        "name": "Agent",
+        "raw": {
+          "prompt": "p",
+          "subagent_type": 5,
+          "agent_type": "Explore"
+        },
+        "prompt": "p",
+        "agent_type": 5,
+        "model": null,
+        "agent_name": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "Workflow",
+      "input": {
+        "scriptPath": 5,
+        "script_path": "/s"
+      },
+      "expected": {
+        "cls": "WorkflowCall",
+        "name": "Workflow",
+        "raw": {
+          "scriptPath": 5,
+          "script_path": "/s"
+        },
+        "script": null,
+        "script_path": 5,
+        "workflow_name": null,
+        "args": null,
+        "resume_from_run_id": null
+      }
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      },
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/a",
+          "old_string": "x",
+          "new_string": "y",
+          "replace_all": true
+        },
+        "file_path": "/a",
+        "old": "x",
+        "new": "y",
+        "replace_all": true
+      }
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": 1
+      },
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/a",
+          "old_string": "x",
+          "new_string": "y",
+          "replace_all": 1
+        },
+        "file_path": "/a",
+        "old": "x",
+        "new": "y",
+        "replace_all": 1
+      }
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": null
+      },
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/a",
+          "old_string": "x",
+          "new_string": "y",
+          "replace_all": null
+        },
+        "file_path": "/a",
+        "old": "x",
+        "new": "y",
+        "replace_all": null
+      }
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "yes"
+      },
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/a",
+          "old_string": "x",
+          "new_string": "y",
+          "replace_all": "yes"
+        },
+        "file_path": "/a",
+        "old": "x",
+        "new": "y",
+        "replace_all": "yes"
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": [
+          {
+            "old_string": "x",
+            "new_string": "y"
+          },
+          {
+            "old_string": "p",
+            "new_string": "q",
+            "replace_all": true
+          },
+          {
+            "old_string": "m",
+            "new_string": "n",
+            "replace_all": 1
+          },
+          {
+            "old_string": "s",
+            "new_string": "t",
+            "replace_all": null
+          }
+        ]
+      },
+      "expected": {
+        "cls": "MultiEditCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": [
+            {
+              "old_string": "x",
+              "new_string": "y"
+            },
+            {
+              "old_string": "p",
+              "new_string": "q",
+              "replace_all": true
+            },
+            {
+              "old_string": "m",
+              "new_string": "n",
+              "replace_all": 1
+            },
+            {
+              "old_string": "s",
+              "new_string": "t",
+              "replace_all": null
+            }
+          ]
+        },
+        "file_path": "/a",
+        "edits": [
+          {
+            "cls": "EditSpan",
+            "old": "x",
+            "new": "y",
+            "replace_all": false
+          },
+          {
+            "cls": "EditSpan",
+            "old": "p",
+            "new": "q",
+            "replace_all": true
+          },
+          {
+            "cls": "EditSpan",
+            "old": "m",
+            "new": "n",
+            "replace_all": true
+          },
+          {
+            "cls": "EditSpan",
+            "old": "s",
+            "new": "t",
+            "replace_all": false
+          }
+        ]
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": ""
+      },
+      "expected": {
+        "cls": "MultiEditCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": ""
+        },
+        "file_path": "/a",
+        "edits": []
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": {}
+      },
+      "expected": {
+        "cls": "MultiEditCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": {}
+        },
+        "file_path": "/a",
+        "edits": []
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": []
+      },
+      "expected": {
+        "cls": "MultiEditCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": []
+        },
+        "file_path": "/a",
+        "edits": []
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": "ab"
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": "ab"
+        }
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": {
+          "k": "v"
+        }
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": {
+            "k": "v"
+          }
+        }
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": 5
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": 5
+        }
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": null
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": null
+        }
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a",
+        "edits": [
+          {
+            "old_string": "x"
+          }
+        ]
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/a",
+          "edits": [
+            {
+              "old_string": "x"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tool": "NotebookEdit",
+      "input": {
+        "notebook_path": "/n.ipynb",
+        "new_source": "code",
+        "cell_id": "c1",
+        "edit_mode": "replace"
+      },
+      "expected": {
+        "cls": "NotebookEditCall",
+        "name": "NotebookEdit",
+        "raw": {
+          "notebook_path": "/n.ipynb",
+          "new_source": "code",
+          "cell_id": "c1",
+          "edit_mode": "replace"
+        },
+        "notebook_path": "/n.ipynb",
+        "new_source": "code",
+        "cell_id": "c1",
+        "edit_mode": "replace"
+      }
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "foo",
+        "type": "py",
+        "output_mode": "content",
+        "glob": "*.rs",
+        "path": "/p",
+        "-i": true
+      },
+      "expected": {
+        "cls": "GrepCall",
+        "name": "Grep",
+        "raw": {
+          "pattern": "foo",
+          "type": "py",
+          "output_mode": "content",
+          "glob": "*.rs",
+          "path": "/p",
+          "-i": true
+        },
+        "pattern": "foo",
+        "path": "/p",
+        "glob": "*.rs",
+        "file_type": "py",
+        "output_mode": "content"
+      }
+    },
+    {
+      "tool": "Glob",
+      "input": {
+        "pattern": "**/*.py",
+        "path": "/x"
+      },
+      "expected": {
+        "cls": "GlobCall",
+        "name": "Glob",
+        "raw": {
+          "pattern": "**/*.py",
+          "path": "/x"
+        },
+        "pattern": "**/*.py",
+        "path": "/x"
+      }
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "/a.py",
+        "offset": 10,
+        "limit": 200
+      },
+      "expected": {
+        "cls": "ReadCall",
+        "name": "Read",
+        "raw": {
+          "file_path": "/a.py",
+          "offset": 10,
+          "limit": 200
+        },
+        "file_path": "/a.py",
+        "offset": 10,
+        "limit": 200
+      }
+    },
+    {
+      "tool": "Skill",
+      "input": {
+        "skill": "commit",
+        "args": "--all"
+      },
+      "expected": {
+        "cls": "SkillCall",
+        "name": "Skill",
+        "raw": {
+          "skill": "commit",
+          "args": "--all"
+        },
+        "skill": "commit",
+        "args": "--all"
+      }
+    },
+    {
+      "tool": "TaskCreate",
+      "input": {
+        "subject": "do the thing"
+      },
+      "expected": {
+        "cls": "TaskCreateCall",
+        "name": "TaskCreate",
+        "raw": {
+          "subject": "do the thing"
+        },
+        "subject": "do the thing",
+        "description": null
+      }
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "task_id": "7",
+        "status": "completed",
+        "subject": "s"
+      },
+      "expected": {
+        "cls": "TaskUpdateCall",
+        "name": "TaskUpdate",
+        "raw": {
+          "task_id": "7",
+          "status": "completed",
+          "subject": "s"
+        },
+        "task_id": "7",
+        "status": "completed",
+        "subject": "s",
+        "description": null
+      }
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "taskId": "8",
+        "description": "camelCase id key"
+      },
+      "expected": {
+        "cls": "TaskUpdateCall",
+        "name": "TaskUpdate",
+        "raw": {
+          "taskId": "8",
+          "description": "camelCase id key"
+        },
+        "task_id": "8",
+        "status": null,
+        "subject": null,
+        "description": "camelCase id key"
+      }
+    },
+    {
+      "tool": "Workflow",
+      "input": {
+        "script": "print(1)",
+        "args": {
+          "k": [
+            1,
+            2,
+            3
+          ],
+          "n": null
+        }
+      },
+      "expected": {
+        "cls": "WorkflowCall",
+        "name": "Workflow",
+        "raw": {
+          "script": "print(1)",
+          "args": {
+            "k": [
+              1,
+              2,
+              3
+            ],
+            "n": null
+          }
+        },
+        "script": "print(1)",
+        "script_path": null,
+        "workflow_name": null,
+        "args": {
+          "k": [
+            1,
+            2,
+            3
+          ],
+          "n": null
+        },
+        "resume_from_run_id": null
+      }
+    },
+    {
+      "tool": "Workflow",
+      "input": {
+        "scriptPath": "/wf.py",
+        "resumeFromRunId": "run-42",
+        "name": "nightly"
+      },
+      "expected": {
+        "cls": "WorkflowCall",
+        "name": "Workflow",
+        "raw": {
+          "scriptPath": "/wf.py",
+          "resumeFromRunId": "run-42",
+          "name": "nightly"
+        },
+        "script": null,
+        "script_path": "/wf.py",
+        "workflow_name": "nightly",
+        "args": null,
+        "resume_from_run_id": "run-42"
+      }
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "description": "no command field"
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "Bash",
+        "raw": {
+          "description": "no command field"
+        }
+      }
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a"
+      },
+      "expected": {
+        "cls": "OtherCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/a"
+        }
+      }
+    }
+  ],
+  "results": [
+    {
+      "tool": "Edit",
+      "payload": {
+        "filePath": "cc_transcript/activity.py",
+        "oldString": "return None",
+        "newString": "return result",
+        "replaceAll": false,
+        "userModified": false,
+        "structuredPatch": [
+          {
+            "oldStart": 12,
+            "oldLines": 1,
+            "newStart": 12,
+            "newLines": 1,
+            "lines": [
+              "-return None",
+              "+return result"
+            ]
+          }
+        ],
+        "originalFile": "return None\n"
+      },
+      "expected": {
+        "cls": "EditResult",
+        "name": "Edit",
+        "raw": {
+          "filePath": "cc_transcript/activity.py",
+          "oldString": "return None",
+          "newString": "return result",
+          "replaceAll": false,
+          "userModified": false,
+          "structuredPatch": [
+            {
+              "oldStart": 12,
+              "oldLines": 1,
+              "newStart": 12,
+              "newLines": 1,
+              "lines": [
+                "-return None",
+                "+return result"
+              ]
+            }
+          ],
+          "originalFile": "return None\n"
+        },
+        "file_path": "cc_transcript/activity.py",
+        "old_string": "return None",
+        "new_string": "return result",
+        "replace_all": false,
+        "user_modified": false,
+        "stale_recovered": false,
+        "structured_patch": [
+          {
+            "oldStart": 12,
+            "oldLines": 1,
+            "newStart": 12,
+            "newLines": 1,
+            "lines": [
+              "-return None",
+              "+return result"
+            ]
+          }
+        ],
+        "original_file": "return None\n"
+      }
+    },
+    {
+      "tool": "Grep",
+      "payload": null,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Grep",
+        "raw": null
+      }
+    },
+    {
+      "tool": "Read",
+      "payload": null,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Read",
+        "raw": null
+      }
+    },
+    {
+      "tool": "Task",
+      "payload": {
+        "agentId": "agent-488a",
+        "agentType": "Explore",
+        "status": "completed",
+        "totalDurationMs": 24432,
+        "totalTokens": 4772,
+        "totalToolUseCount": 7,
+        "toolStats": {
+          "Read": 7,
+          "Grep": 5
+        },
+        "usage": {
+          "input_tokens": 4271,
+          "output_tokens": 332
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Investigated and found the answer in the parse layer."
+          }
+        ],
+        "prompt": "explore how the filter spec is compiled on the rust side",
+        "resolvedModel": "claude-opus-4-8"
+      },
+      "expected": {
+        "cls": "TaskResult",
+        "name": "Task",
+        "raw": {
+          "agentId": "agent-488a",
+          "agentType": "Explore",
+          "status": "completed",
+          "totalDurationMs": 24432,
+          "totalTokens": 4772,
+          "totalToolUseCount": 7,
+          "toolStats": {
+            "Read": 7,
+            "Grep": 5
+          },
+          "usage": {
+            "input_tokens": 4271,
+            "output_tokens": 332
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Investigated and found the answer in the parse layer."
+            }
+          ],
+          "prompt": "explore how the filter spec is compiled on the rust side",
+          "resolvedModel": "claude-opus-4-8"
+        },
+        "agent_id": "agent-488a",
+        "agent_type": "Explore",
+        "status": "completed",
+        "total_duration_ms": 24432,
+        "total_tokens": 4772,
+        "total_tool_use_count": 7,
+        "tool_stats": {
+          "Read": 7,
+          "Grep": 5
+        },
+        "usage": {
+          "input_tokens": 4271,
+          "output_tokens": 332
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Investigated and found the answer in the parse layer."
+          }
+        ],
+        "prompt": "explore how the filter spec is compiled on the rust side",
+        "resolved_model": "claude-opus-4-8"
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": {
+        "stdout": "no changes",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "returnCodeInterpretation": "Command exited with code 0"
+      },
+      "expected": {
+        "cls": "BashResult",
+        "name": "Bash",
+        "raw": {
+          "stdout": "no changes",
+          "stderr": "",
+          "interrupted": false,
+          "isImage": false,
+          "returnCodeInterpretation": "Command exited with code 0"
+        },
+        "stdout": "no changes",
+        "stderr": "",
+        "interrupted": false,
+        "is_image": false,
+        "no_output_expected": false,
+        "background_task_id": null,
+        "return_code_interpretation": "Command exited with code 0"
+      }
+    },
+    {
+      "tool": "Grep",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Grep",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env"
+      }
+    },
+    {
+      "tool": "Write",
+      "payload": null,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Write",
+        "raw": null
+      }
+    },
+    {
+      "tool": "Glob",
+      "payload": null,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Glob",
+        "raw": null
+      }
+    },
+    {
+      "tool": "Glob",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. no, that's not right — use pathlib instead of os.path here",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Glob",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. no, that's not right — use pathlib instead of os.path here",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. no, that's not right — use pathlib instead of os.path here"
+      }
+    },
+    {
+      "tool": "Task",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Task",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please"
+      }
+    },
+    {
+      "tool": "Write",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. actually keep the old behavior for empty specs",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Write",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. actually keep the old behavior for empty specs",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. actually keep the old behavior for empty specs"
+      }
+    },
+    {
+      "tool": "Read",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-matching, anchor it to the head",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Read",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-matching, anchor it to the head",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-matching, anchor it to the head"
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Bash",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. stop reformatting unrelated lines, minimal diff please"
+      }
+    },
+    {
+      "tool": "Edit",
+      "payload": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Edit",
+        "raw": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env",
+        "text": "The user doesn't want to proceed with this tool use. The tool use was rejected. don't hardcode the fixture path, read it from the env"
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": "the user doesn't want to proceed with this tool use. The tool use was rejected.",
+      "expected": {
+        "cls": "TextResult",
+        "name": "Bash",
+        "raw": "the user doesn't want to proceed with this tool use. The tool use was rejected.",
+        "text": "the user doesn't want to proceed with this tool use. The tool use was rejected."
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": {
+        "stdout": "ok",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false
+      },
+      "expected": {
+        "cls": "BashResult",
+        "name": "Bash",
+        "raw": {
+          "stdout": "ok",
+          "stderr": "",
+          "interrupted": false,
+          "isImage": false
+        },
+        "stdout": "ok",
+        "stderr": "",
+        "interrupted": false,
+        "is_image": false,
+        "no_output_expected": false,
+        "background_task_id": null,
+        "return_code_interpretation": null
+      }
+    },
+    {
+      "tool": "Read",
+      "payload": {
+        "file": {
+          "filePath": "/a.py",
+          "content": "x\n",
+          "numLines": 1
+        },
+        "type": "text"
+      },
+      "expected": {
+        "cls": "ReadResult",
+        "name": "Read",
+        "raw": {
+          "file": {
+            "filePath": "/a.py",
+            "content": "x\n",
+            "numLines": 1
+          },
+          "type": "text"
+        },
+        "file": {
+          "filePath": "/a.py",
+          "content": "x\n",
+          "numLines": 1
+        },
+        "type": "text"
+      }
+    },
+    {
+      "tool": "Write",
+      "payload": {
+        "content": "x\n",
+        "filePath": "/a",
+        "originalFile": null,
+        "structuredPatch": [
+          {
+            "oldStart": 1,
+            "lines": [
+              "+x"
+            ]
+          }
+        ],
+        "userModified": false
+      },
+      "expected": {
+        "cls": "WriteResult",
+        "name": "Write",
+        "raw": {
+          "content": "x\n",
+          "filePath": "/a",
+          "originalFile": null,
+          "structuredPatch": [
+            {
+              "oldStart": 1,
+              "lines": [
+                "+x"
+              ]
+            }
+          ],
+          "userModified": false
+        },
+        "content": "x\n",
+        "file_path": "/a",
+        "original_file": null,
+        "structured_patch": [
+          {
+            "oldStart": 1,
+            "lines": [
+              "+x"
+            ]
+          }
+        ],
+        "user_modified": false
+      }
+    },
+    {
+      "tool": "Edit",
+      "payload": {
+        "filePath": "/a",
+        "oldString": "x",
+        "newString": "y",
+        "replaceAll": false,
+        "userModified": true,
+        "staleRecovered": true,
+        "structuredPatch": [
+          {
+            "lines": [
+              "-x",
+              "+y"
+            ]
+          }
+        ],
+        "originalFile": "x\n"
+      },
+      "expected": {
+        "cls": "EditResult",
+        "name": "Edit",
+        "raw": {
+          "filePath": "/a",
+          "oldString": "x",
+          "newString": "y",
+          "replaceAll": false,
+          "userModified": true,
+          "staleRecovered": true,
+          "structuredPatch": [
+            {
+              "lines": [
+                "-x",
+                "+y"
+              ]
+            }
+          ],
+          "originalFile": "x\n"
+        },
+        "file_path": "/a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false,
+        "user_modified": true,
+        "stale_recovered": true,
+        "structured_patch": [
+          {
+            "lines": [
+              "-x",
+              "+y"
+            ]
+          }
+        ],
+        "original_file": "x\n"
+      }
+    },
+    {
+      "tool": "Agent",
+      "payload": {
+        "agentId": "agent-1",
+        "outputFile": "/tmp/out.txt",
+        "isAsync": true,
+        "canReadOutputFile": true,
+        "description": "launch",
+        "prompt": "go",
+        "status": "running"
+      },
+      "expected": {
+        "cls": "TaskLaunchResult",
+        "name": "Agent",
+        "raw": {
+          "agentId": "agent-1",
+          "outputFile": "/tmp/out.txt",
+          "isAsync": true,
+          "canReadOutputFile": true,
+          "description": "launch",
+          "prompt": "go",
+          "status": "running"
+        },
+        "agent_id": "agent-1",
+        "output_file": "/tmp/out.txt",
+        "is_async": true,
+        "can_read_output_file": true,
+        "description": "launch",
+        "prompt": "go",
+        "status": "running",
+        "resolved_model": null
+      }
+    },
+    {
+      "tool": "Task",
+      "payload": {
+        "agentId": "agent-2",
+        "agentType": "Explore",
+        "status": "completed",
+        "totalDurationMs": 1200,
+        "totalTokens": 900,
+        "totalToolUseCount": 4,
+        "toolStats": {
+          "Read": 3
+        },
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "big": 18446744073709551617
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "prompt": "go",
+        "resolvedModel": "claude-opus-4-8"
+      },
+      "expected": {
+        "cls": "TaskResult",
+        "name": "Task",
+        "raw": {
+          "agentId": "agent-2",
+          "agentType": "Explore",
+          "status": "completed",
+          "totalDurationMs": 1200,
+          "totalTokens": 900,
+          "totalToolUseCount": 4,
+          "toolStats": {
+            "Read": 3
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "big": 18446744073709551617
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ],
+          "prompt": "go",
+          "resolvedModel": "claude-opus-4-8"
+        },
+        "agent_id": "agent-2",
+        "agent_type": "Explore",
+        "status": "completed",
+        "total_duration_ms": 1200,
+        "total_tokens": 900,
+        "total_tool_use_count": 4,
+        "tool_stats": {
+          "Read": 3
+        },
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "big": 18446744073709551617
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "prompt": "go",
+        "resolved_model": "claude-opus-4-8"
+      }
+    },
+    {
+      "tool": "Agent",
+      "payload": {
+        "totalDurationMs": null,
+        "usage": null
+      },
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Agent",
+        "raw": {
+          "totalDurationMs": null,
+          "usage": null
+        }
+      }
+    },
+    {
+      "tool": "Agent",
+      "payload": {
+        "totalDurationMs": null,
+        "outputFile": "/x"
+      },
+      "expected": {
+        "cls": "TaskLaunchResult",
+        "name": "Agent",
+        "raw": {
+          "totalDurationMs": null,
+          "outputFile": "/x"
+        },
+        "agent_id": null,
+        "output_file": "/x",
+        "is_async": false,
+        "can_read_output_file": false,
+        "description": null,
+        "prompt": null,
+        "status": null,
+        "resolved_model": null
+      }
+    },
+    {
+      "tool": "Skill",
+      "payload": {
+        "commandName": "/commit",
+        "success": true,
+        "allowedTools": [
+          "Bash",
+          "Edit"
+        ]
+      },
+      "expected": {
+        "cls": "SkillResult",
+        "name": "Skill",
+        "raw": {
+          "commandName": "/commit",
+          "success": true,
+          "allowedTools": [
+            "Bash",
+            "Edit"
+          ]
+        },
+        "command_name": "/commit",
+        "success": true,
+        "allowed_tools": [
+          "Bash",
+          "Edit"
+        ]
+      }
+    },
+    {
+      "tool": "AskUserQuestion",
+      "payload": {
+        "questions": [
+          {
+            "question": "Q1",
+            "header": "h",
+            "multiSelect": true,
+            "options": [
+              {
+                "label": "A"
+              },
+              {
+                "nolabel": 1
+              }
+            ]
+          },
+          {
+            "noquestion": "drop me"
+          },
+          {
+            "question": "Q2"
+          }
+        ],
+        "answers": {
+          "Q1": "A",
+          "Q2": 5
+        },
+        "annotations": {
+          "Q1": {
+            "preview": "p",
+            "notes": 7
+          },
+          "Q2": "not-a-mapping"
+        }
+      },
+      "expected": {
+        "cls": "AskUserQuestionResult",
+        "name": "AskUserQuestion",
+        "raw": {
+          "questions": [
+            {
+              "question": "Q1",
+              "header": "h",
+              "multiSelect": true,
+              "options": [
+                {
+                  "label": "A"
+                },
+                {
+                  "nolabel": 1
+                }
+              ]
+            },
+            {
+              "noquestion": "drop me"
+            },
+            {
+              "question": "Q2"
+            }
+          ],
+          "answers": {
+            "Q1": "A",
+            "Q2": 5
+          },
+          "annotations": {
+            "Q1": {
+              "preview": "p",
+              "notes": 7
+            },
+            "Q2": "not-a-mapping"
+          }
+        },
+        "answers": {
+          "Q1": "A"
+        },
+        "annotations": {
+          "Q1": {
+            "cls": "QuestionAnnotation",
+            "preview": "p",
+            "notes": null
+          }
+        },
+        "questions": [
+          {
+            "cls": "Question",
+            "question": "Q1",
+            "header": "h",
+            "multi_select": true,
+            "labels": [
+              "A"
+            ]
+          },
+          {
+            "cls": "Question",
+            "question": "Q2",
+            "header": null,
+            "multi_select": false,
+            "labels": []
+          }
+        ]
+      }
+    },
+    {
+      "tool": "TodoWrite",
+      "payload": {
+        "todos": []
+      },
+      "expected": {
+        "cls": "OtherResult",
+        "name": "TodoWrite",
+        "raw": {
+          "todos": []
+        }
+      }
+    },
+    {
+      "tool": "Agent",
+      "payload": {
+        "status": "neither terminal nor launch"
+      },
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Agent",
+        "raw": {
+          "status": "neither terminal nor launch"
+        }
+      }
+    },
+    {
+      "tool": "Read",
+      "payload": null,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Read",
+        "raw": null
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": 5,
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Bash",
+        "raw": 5
+      }
+    },
+    {
+      "tool": "Bash",
+      "payload": [
+        1,
+        2,
+        3
+      ],
+      "expected": {
+        "cls": "OtherResult",
+        "name": "Bash",
+        "raw": [
+          1,
+          2,
+          3
+        ]
+      }
+    }
+  ],
+  "raise_calls": [
+    {
+      "tool": "Bash",
+      "input": {},
+      "message": "Bash input missing or malformed: 'command'"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": 5
+      },
+      "message": "Bash input missing or malformed: command must be a str, got int"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": 1.5
+      },
+      "message": "Bash input missing or malformed: command must be a str, got float"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": true
+      },
+      "message": "Bash input missing or malformed: command must be a str, got bool"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": null
+      },
+      "message": "Bash input missing or malformed: 'command'"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "/a"
+      },
+      "message": "Edit input missing or malformed: 'old_string'"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "/a"
+      },
+      "message": "Write input missing or malformed: 'content'"
+    },
+    {
+      "tool": "MultiEdit",
+      "input": {
+        "file_path": "/a"
+      },
+      "message": "MultiEdit input missing or malformed: 'edits'"
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "status": "x"
+      },
+      "message": "TaskUpdate input missing or malformed: 'taskId'"
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "taskId": 5
+      },
+      "message": "TaskUpdate input missing or malformed: taskId must be a str, got int"
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "task_id": 5
+      },
+      "message": "TaskUpdate input missing or malformed: taskId must be a str, got int"
+    },
+    {
+      "tool": "Bash",
+      "input": "input is not a mapping",
+      "message": "Bash input must be a mapping, got str"
+    },
+    {
+      "tool": "Bash",
+      "input": 5,
+      "message": "Bash input must be a mapping, got int"
+    },
+    {
+      "tool": "Bash",
+      "input": null,
+      "message": "Bash input must be a mapping, got NoneType"
+    },
+    {
+      "tool": "Bash",
+      "input": [
+        1,
+        2
+      ],
+      "message": "Bash input must be a mapping, got list"
+    }
+  ]
+}

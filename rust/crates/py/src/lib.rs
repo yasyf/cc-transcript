@@ -6,3 +6,4 @@ mod model;
 mod nlp;
 mod python;
 mod score;
+mod toolcall;

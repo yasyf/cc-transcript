@@ -81,3 +81,18 @@ def session_activity_probe(
     The dict carries ``is_waiting: bool``, ``mid_tool: bool``, ``last_event_epoch: int | None``,
     and ``pending: list[dict]`` with ``tool_use_id``/``name``/``kind`` per contributing call.
     """
+
+def toolcall_parse(name: str, input_json: str, on_error: str | None = ..., /) -> dict[str, Any]:
+    """Parses a tool ``name`` and JSON-encoded input into the projected typed-call dict.
+
+    Mirrors ``cc_transcript.tools.parse_tool_call``: ``on_error`` is ``"raise"`` (default)
+    or ``"other"``. The dict carries ``cls`` (the Python dataclass name) plus each public
+    field; it is the parity projection, not a live ``ToolCall``.
+    """
+
+def toolresult_parse(name: str, payload_json: str, /) -> dict[str, Any]:
+    """Parses a tool ``name`` and JSON-encoded ``toolUseResult`` into the projected result dict.
+
+    Mirrors ``cc_transcript.tools.parse_tool_result``: a JSON string payload is a
+    ``TextResult``, an object dispatches by tool name, anything else is an ``OtherResult``.
+    """

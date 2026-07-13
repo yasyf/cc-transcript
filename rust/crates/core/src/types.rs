@@ -444,15 +444,15 @@ pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
 }
 
 /// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
-/// segment of an ``mcp__<server>__<tool>`` name split on the first two ``__``.
-/// Alias closure happens Python-side (tools.py expand_tool_names); spec JSON
-/// arrives pre-expanded and the alias table never crosses the language boundary.
+/// segment of an ``mcp__<server>__<tool>`` name (via toolcall::mcp_parts) — or that
+/// segment's MCP_TOOL_ALIASES builtin. The alias closure is load-bearing: the probe
+/// path (session_activity_probe waiting_tools) passes raw, un-expanded names, so
+/// ``mcp__…__ccx_code_edit`` must still match ``{"Edit"}``.
 pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
     names.contains(actual)
-        || actual
-            .strip_prefix("mcp__")
-            .and_then(|rest| rest.split_once("__"))
-            .is_some_and(|(_, tool)| names.contains(tool))
+        || crate::toolcall::mcp_parts(actual).is_some_and(|(_, tool)| {
+            names.contains(tool) || crate::toolcall::mcp_tool_alias(tool).is_some_and(|b| names.contains(b))
+        })
 }
 
 /// The space-joined text of the ``Text`` blocks — the ``text`` field of the

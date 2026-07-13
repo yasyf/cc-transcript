@@ -32,7 +32,7 @@ pub(crate) fn parse_err(err: ParseError) -> PyErr {
     }
 }
 
-fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     match value.get_type() {
         JsonType::Null => Ok(py.None().into_bound(py)),
         JsonType::Boolean => value.as_bool().unwrap().into_bound_py_any(py),
@@ -62,20 +62,19 @@ fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>
     }
 }
 
-// orjson (the PythonBackend decoder) semantics over the raw text: a frac/exp
-// marker means float (the f64 text parse keeps -0.0's sign); an integer
-// literal is int when it fits i64/u64 (`-0` -> 0) and a lossy float beyond.
+// orjson semantics over raw text: a frac/exp marker is float; else int via i64/u64,
+// or an exact big int via Python int() beyond u64.
 fn number_from_raw<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     let raw = value
         .as_raw_number()
         .expect("a parsed JSON number carries raw text under arbitrary_precision");
     let text = raw.as_str();
     if !text.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
-        match (text.parse::<i64>(), text.parse::<u64>()) {
-            (Ok(i), _) => return i.into_bound_py_any(py),
-            (_, Ok(u)) => return u.into_bound_py_any(py),
-            _ => {}
-        }
+        return match (text.parse::<i64>(), text.parse::<u64>()) {
+            (Ok(i), _) => i.into_bound_py_any(py),
+            (_, Ok(u)) => u.into_bound_py_any(py),
+            _ => py.import("builtins")?.getattr("int")?.call1((text,)),
+        };
     }
     text.parse::<f64>()
         .expect("JSON number text parses as f64")
