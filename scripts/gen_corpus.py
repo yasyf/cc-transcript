@@ -178,13 +178,28 @@ class Session:
     def user_text(self, text: str, **fields: object) -> dict[str, object]:
         return self.envelope("user") | {"message": {"role": "user", "content": text}} | fields
 
-    def assistant(self, blocks: list[dict[str, object]], *, stop_reason: str, usage: dict[str, object] | None = None) -> dict[str, object]:
-        message: dict[str, object] = {"role": "assistant", "model": self.model, "stop_reason": stop_reason, "content": blocks}
+    def assistant(
+        self, blocks: list[dict[str, object]], *, stop_reason: str, usage: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        message: dict[str, object] = {
+            "role": "assistant",
+            "model": self.model,
+            "stop_reason": stop_reason,
+            "content": blocks,
+        }
         if usage is not None:
             message["usage"] = usage
         return self.envelope("assistant") | {"message": message}
 
-    def tool_result(self, tool_use_id: str, content: str, *, is_error: bool = False, payload: object = None, denial: str | None = None) -> dict[str, object]:
+    def tool_result(
+        self,
+        tool_use_id: str,
+        content: str,
+        *,
+        is_error: bool = False,
+        payload: object = None,
+        denial: str | None = None,
+    ) -> dict[str, object]:
         env = self.envelope("user")
         if payload is not None:
             env["toolUseResult"] = payload
@@ -208,11 +223,24 @@ def tool_call(rng: Random, tool_use_id: str) -> tuple[dict[str, object], str, ob
                 "isImage": False,
                 "returnCodeInterpretation": "Command exited with code 0",
             }
-            return {"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": cmd, "description": desc}}, out, payload
+            return (
+                {"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": cmd, "description": desc}},
+                out,
+                payload,
+            )
         case "Read":
             path = rng.choice(FILE_PATHS)
             content = "\n".join(f"{n:>4}\tline {n} of {path}" for n in range(1, rng.randint(8, 40)))
-            return {"type": "tool_use", "id": tool_use_id, "name": "Read", "input": {"file_path": path, "limit": rng.randint(50, 400)}}, content, None
+            return (
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Read",
+                    "input": {"file_path": path, "limit": rng.randint(50, 400)},
+                },
+                content,
+                None,
+            )
         case "Edit":
             path = rng.choice(FILE_PATHS)
             old, new = "return None", "return result"
@@ -222,20 +250,48 @@ def tool_call(rng: Random, tool_use_id: str) -> tuple[dict[str, object], str, ob
                 "newString": new,
                 "replaceAll": False,
                 "userModified": False,
-                "structuredPatch": [{"oldStart": 12, "oldLines": 1, "newStart": 12, "newLines": 1, "lines": [f"-{old}", f"+{new}"]}],
+                "structuredPatch": [
+                    {"oldStart": 12, "oldLines": 1, "newStart": 12, "newLines": 1, "lines": [f"-{old}", f"+{new}"]}
+                ],
                 "originalFile": f"{old}\n",
             }
-            return {"type": "tool_use", "id": tool_use_id, "name": "Edit", "input": {"file_path": path, "old_string": old, "new_string": new}}, "ok", payload
+            return (
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Edit",
+                    "input": {"file_path": path, "old_string": old, "new_string": new},
+                },
+                "ok",
+                payload,
+            )
         case "Write":
             path = rng.choice(FILE_PATHS)
             body = "\n".join(f"# generated line {n}" for n in range(rng.randint(4, 20)))
-            return {"type": "tool_use", "id": tool_use_id, "name": "Write", "input": {"file_path": path, "content": body}}, f"wrote {path}", None
+            return (
+                {"type": "tool_use", "id": tool_use_id, "name": "Write", "input": {"file_path": path, "content": body}},
+                f"wrote {path}",
+                None,
+            )
         case "Grep":
             pat = rng.choice(GREP_PATTERNS)
             hits = "\n".join(f"{rng.choice(FILE_PATHS)}:{rng.randint(1, 300)}:{pat}" for _ in range(rng.randint(1, 6)))
-            return {"type": "tool_use", "id": tool_use_id, "name": "Grep", "input": {"pattern": pat, "output_mode": "content"}}, hits, None
+            return (
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Grep",
+                    "input": {"pattern": pat, "output_mode": "content"},
+                },
+                hits,
+                None,
+            )
         case "Glob":
-            return {"type": "tool_use", "id": tool_use_id, "name": "Glob", "input": {"pattern": "**/*.py"}}, "\n".join(FILE_PATHS), None
+            return (
+                {"type": "tool_use", "id": tool_use_id, "name": "Glob", "input": {"pattern": "**/*.py"}},
+                "\n".join(FILE_PATHS),
+                None,
+            )
         case _:
             prompt = rng.choice(SUBAGENT_PROMPTS)
             text = "Investigated and found the answer in the parse layer."
@@ -252,7 +308,16 @@ def tool_call(rng: Random, tool_use_id: str) -> tuple[dict[str, object], str, ob
                 "prompt": prompt,
                 "resolvedModel": "claude-opus-4-8",
             }
-            return {"type": "tool_use", "id": tool_use_id, "name": "Task", "input": {"description": "explore", "prompt": prompt, "subagent_type": "Explore"}}, text, payload
+            return (
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Task",
+                    "input": {"description": "explore", "prompt": prompt, "subagent_type": "Explore"},
+                },
+                text,
+                payload,
+            )
 
 
 def usage_block(rng: Random) -> dict[str, object]:
@@ -302,11 +367,22 @@ def session_events(session: Session, rng: Random) -> list[dict[str, object]]:
         )
     if rng.random() < 0.12:
         sc = session.envelope("assistant", sidechain=True)
-        sc["message"] = {"role": "assistant", "model": session.model, "stop_reason": "end_turn", "content": [{"type": "text", "text": "subagent progress note"}]}
+        sc["message"] = {
+            "role": "assistant",
+            "model": session.model,
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "subagent progress note"}],
+        }
         events.append(sc)
     if rng.random() < 0.15:
         events.append(session.user_text(rng.choice(ACKS)))
-    events.append(session.assistant([{"type": "text", "text": "All done — the change is in and the tests are green."}], stop_reason="end_turn", usage=usage_block(rng)))
+    events.append(
+        session.assistant(
+            [{"type": "text", "text": "All done — the change is in and the tests are green."}],
+            stop_reason="end_turn",
+            usage=usage_block(rng),
+        )
+    )
     return events
 
 

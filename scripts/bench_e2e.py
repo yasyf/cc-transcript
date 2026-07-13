@@ -15,9 +15,9 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
-from typing import Callable
 
 import anyio
 import orjson
@@ -111,7 +111,9 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=3, help="Timed runs per e2e bench (report min).")
     parser.add_argument("--cold-runs", type=int, default=10, help="Subprocess runs per CLI cold-start bench.")
     args = parser.parse_args()
-    sys.stdout.buffer.write(orjson.dumps(run_all(args.corpus, runs=args.runs, cold_runs=args.cold_runs), option=orjson.OPT_INDENT_2))
+    sys.stdout.buffer.write(
+        orjson.dumps(run_all(args.corpus, runs=args.runs, cold_runs=args.cold_runs), option=orjson.OPT_INDENT_2)
+    )
     sys.stdout.buffer.write(b"\n")
 
 

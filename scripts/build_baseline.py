@@ -162,7 +162,9 @@ def build(*, skip_bench: bool) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Assemble BASELINE.json.")
-    parser.add_argument("--skip-bench", action="store_true", help="Reuse existing criterion results (skip cargo bench).")
+    parser.add_argument(
+        "--skip-bench", action="store_true", help="Reuse existing criterion results (skip cargo bench)."
+    )
     args = parser.parse_args()
     baseline = build(skip_bench=args.skip_bench)
     (REPO_ROOT / "BASELINE.json").write_bytes(orjson.dumps(baseline, option=orjson.OPT_INDENT_2))

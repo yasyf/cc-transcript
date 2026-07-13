@@ -89,7 +89,9 @@ def record() -> None:
         stdout, code = run(argv)
         (GOLDEN_DIR / f"{name}.out").write_bytes(stdout)
         manifest[name] = {"argv": argv, "exit_code": code, "stdout_bytes": len(stdout)}
-    (GOLDEN_DIR / "manifest.json").write_bytes(orjson.dumps(manifest, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
+    (GOLDEN_DIR / "manifest.json").write_bytes(
+        orjson.dumps(manifest, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    )
     print(f"recorded {len(manifest)} golden commands to {GOLDEN_DIR.relative_to(REPO_ROOT)}")
 
 
