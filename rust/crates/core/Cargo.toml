@@ -18,6 +18,12 @@ regex = "1"
 # takes core with default-features off, so this stays out of the python-free path.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-bash = { version = "0.25", optional = true }
+# ids.rs computes the cross-language tool-content digest; default features only
+# (no `asm`), so the python-free core stays pure-Rust for the Swift consumer.
+sha2 = "0.10"
+# ECMAScript-exact Number::toString for canonical JSON: Rust std and plain ryu pick
+# a different last digit than Python/ES on shortest ties (e.g. 698957826421429.2).
+ryu-js = "1.0"
 
 [features]
 default = ["command"]

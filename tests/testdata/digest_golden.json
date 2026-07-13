@@ -1,0 +1,770 @@
+{
+  "corpus": [
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cargo bench --no-run",
+        "description": "compile the benches"
+      },
+      "canonical": "{\"command\":\"cargo bench --no-run\",\"description\":\"compile the benches\"}",
+      "digest": "465bcef0ad53127904f29edd698237d603d80037030710e276be892fb551c17b"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "cargo test --workspace",
+        "description": "run the rust suite"
+      },
+      "canonical": "{\"command\":\"cargo test --workspace\",\"description\":\"run the rust suite\"}",
+      "digest": "1b99cb04ef8e57b31bf71301e21ed9226bc67974cb76baaa96d47a9bfcf795c3"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git diff --stat",
+        "description": "review the pending change"
+      },
+      "canonical": "{\"command\":\"git diff --stat\",\"description\":\"review the pending change\"}",
+      "digest": "e9942fa6c4116bf03df8f73a4eae6c4e8caab294415826fbe42f7c61f17867ca"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "git status --short",
+        "description": "check the working tree"
+      },
+      "canonical": "{\"command\":\"git status --short\",\"description\":\"check the working tree\"}",
+      "digest": "56084b040c4a09d32c105ef991aeb5b45437f8137f799937f42b429e421f11a6"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "ls -la cc_transcript/mining",
+        "description": "list the mining module"
+      },
+      "canonical": "{\"command\":\"ls -la cc_transcript/mining\",\"description\":\"list the mining module\"}",
+      "digest": "9ef9b0d0470ec6d23f7212247c0c2bf343ae2c17ab3c5818c3d0cad39cb073a6"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "rg -n 'parse_bytes' rust/src",
+        "description": "find the parse entry"
+      },
+      "canonical": "{\"command\":\"rg -n 'parse_bytes' rust/src\",\"description\":\"find the parse entry\"}",
+      "digest": "f5a9b494b275a7ed7ea2f43b39dd0ae5a040bdd82b4f4ace816141bcb7314cde"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "uv build",
+        "description": "build the wheel"
+      },
+      "canonical": "{\"command\":\"uv build\",\"description\":\"build the wheel\"}",
+      "digest": "29034e1bdbaeb2be624fb2049c5fc1bcd6d0b3e9317690dec50b81b4df9e7f77"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "uv run pytest tests/test_parser.py -x",
+        "description": "run the parser tests"
+      },
+      "canonical": "{\"command\":\"uv run pytest tests/test_parser.py -x\",\"description\":\"run the parser tests\"}",
+      "digest": "33f49b70b956724cc08ca7db6c0c0567a7016d4f64844cc554d674651b01bcf5"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "uv run python -m cc_transcript stats",
+        "description": "summarize the transcripts"
+      },
+      "canonical": "{\"command\":\"uv run python -m cc_transcript stats\",\"description\":\"summarize the transcripts\"}",
+      "digest": "e9b26afcd6da2d4c0b66fb75aef61d9b4fc9bc8ddbeced2563224f579c7b3819"
+    },
+    {
+      "tool": "Bash",
+      "input": {
+        "command": "uv run ruff check cc_transcript",
+        "description": "lint the package"
+      },
+      "canonical": "{\"command\":\"uv run ruff check cc_transcript\",\"description\":\"lint the package\"}",
+      "digest": "33691fb44d5d489b7156ec1cf70fe010f3349eb5bd0267f56d60ed6540017461"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "2bc0ab596739e594f901e9200bb27a474e82c3baf53834cd701e8f349db8c945"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/cli.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/cli.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "ab4ed8b71cbf12b48ea12ea7008cbd5f0910f200eaae815a1cfc238e38a9a437"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/discovery.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/discovery.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "d698089bf5e07d6d4f30bba37a76837d63c764ef67c1d6150222be7b7c2b33f5"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/filterspec.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/filterspec.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "d5ca637237f934ddfb50174e76aa8283deff1b5a3fd14ae9b8dbb94ea3026404"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/mining/engine.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/mining/engine.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "47c6dc594f646516f017265ef9ed5853fa0117723a57f20a0ee54c4e461d6662"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "cc_transcript/parser.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/parser.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "11f2b931203546412172b4539ea8d15c32bc57e7e7918408d852cd134c43843e"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "rust/src/filter.rs",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"rust/src/filter.rs\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "dfc59fc7c41888a958b5f468d2d41c8cfca8c43f60842b351f775046d4df02ec"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "rust/src/parse.rs",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"rust/src/parse.rs\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "7f8e35e91099e4490fa37f608ac775a7b604a754c199b7c8a404f34592850a21"
+    },
+    {
+      "tool": "Edit",
+      "input": {
+        "file_path": "tests/test_parser.py",
+        "old_string": "return None",
+        "new_string": "return result"
+      },
+      "canonical": "{\"file_path\":\"tests/test_parser.py\",\"new_string\":\"return result\",\"old_string\":\"return None\"}",
+      "digest": "f2afdf24c4dc932117f9482f46ab26a8e5c99d65e42e4e92d69f7a1df118f2da"
+    },
+    {
+      "tool": "Glob",
+      "input": {
+        "pattern": "**/*.py"
+      },
+      "canonical": "{\"pattern\":\"**/*.py\"}",
+      "digest": "7cb8a805a4ab28f5f06f4fdd904f48bd4fed0afd63272bcf9677801ec28ff9f8"
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "MiningSpec",
+        "output_mode": "content"
+      },
+      "canonical": "{\"output_mode\":\"content\",\"pattern\":\"MiningSpec\"}",
+      "digest": "2f1a2a331fd7ee94f94d02f635ec5562d9c0c38587b2a15530920d30928d117d"
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "TranscriptParser",
+        "output_mode": "content"
+      },
+      "canonical": "{\"output_mode\":\"content\",\"pattern\":\"TranscriptParser\"}",
+      "digest": "2cd2fe7496cdbcadaa7d8d8585c5e6fd6974746ee5c0bd99348729daf611e960"
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "compile_spec",
+        "output_mode": "content"
+      },
+      "canonical": "{\"output_mode\":\"content\",\"pattern\":\"compile_spec\"}",
+      "digest": "f38a2459f37895c2c49426884551f3d547306466f836b4e0681eba18a15d782c"
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "parse_bytes",
+        "output_mode": "content"
+      },
+      "canonical": "{\"output_mode\":\"content\",\"pattern\":\"parse_bytes\"}",
+      "digest": "6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b"
+    },
+    {
+      "tool": "Grep",
+      "input": {
+        "pattern": "session_activity",
+        "output_mode": "content"
+      },
+      "canonical": "{\"output_mode\":\"content\",\"pattern\":\"session_activity\"}",
+      "digest": "6aea820733d081c3b8f3265b1362161ffee343074978603c611f031e8b16ce32"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 103
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":103}",
+      "digest": "9dc96418c0c7de989d05549810b3bdb99bef41488e4d74329b96185040aca3a6"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 105
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":105}",
+      "digest": "e1b918ffdaa8af5d0834508a6db04bf3616d120da7429728726f95ec8d8db7e4"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 106
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":106}",
+      "digest": "7a1ad180e26621ac1ca6385a8aac8816ef8b9b8fce7affc6f10311fbf65d5935"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 108
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":108}",
+      "digest": "6cb174d53512e92e9e15bd98b19277a3274cc10ab765bb84a193d592ccac8672"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 110
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":110}",
+      "digest": "c3f354f1f63f1157b0cf4c56bf49f47d68ef56b170809d320a18136ed9b6c214"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 111
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":111}",
+      "digest": "d275e518eb0f79ecfacb481721b8ca53f875e1c76181c505aa79b7f9e449556a"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 112
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":112}",
+      "digest": "b581a8f55c0e7b3d8c092d3b5d6c89b18c07e78c76435d940f55d30e526ce7fb"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 117
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":117}",
+      "digest": "2222d93b0ad3ab79743258e430445c1291498c8110bb57dcac138940ad487d43"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 118
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":118}",
+      "digest": "068e8d38f101f7480777b13184d53c8703324c8e25d973c175b1806072b35ffd"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 119
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":119}",
+      "digest": "0a9bd0267cee6a2f2107ec40871669863451d0abebb591fd632c0e0d90a852c7"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 121
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":121}",
+      "digest": "bd21760d940db44bb398415b623471584652b65d98c31eb98c244759d66eb4aa"
+    },
+    {
+      "tool": "Read",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "limit": 122
+      },
+      "canonical": "{\"file_path\":\"cc_transcript/activity.py\",\"limit\":122}",
+      "digest": "b6378dce221718e629ec134125a3e3239bb7564d176e15b41d118b454a07ecd7"
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "description": "explore",
+        "prompt": "explore how the filter spec is compiled on the rust side",
+        "subagent_type": "Explore"
+      },
+      "canonical": "{\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subagent_type\":\"Explore\"}",
+      "digest": "d0f1ef741d8f73763296ddb4ba803260026484fca1da8c4ac630b7bff91e6b17"
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "description": "explore",
+        "prompt": "find every call site of collect_stats",
+        "subagent_type": "Explore"
+      },
+      "canonical": "{\"description\":\"explore\",\"prompt\":\"find every call site of collect_stats\",\"subagent_type\":\"Explore\"}",
+      "digest": "6c6eb7000a9cd8aa54b59fa362961e1d26c1676d5287d0ee1d658e0e4c9d7bd4"
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "description": "explore",
+        "prompt": "map the mining detector pipeline end to end",
+        "subagent_type": "Explore"
+      },
+      "canonical": "{\"description\":\"explore\",\"prompt\":\"map the mining detector pipeline end to end\",\"subagent_type\":\"Explore\"}",
+      "digest": "faa9bacae2fbb39fe6456f0ff773d4dcd1f9f76008f38d9ce8be9af2d16e0fa1"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/activity.py\"}",
+      "digest": "f4744e30619684b8aec1a41d365615e3f0cb043074828480d5c0b9f3482ebfd7"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/cli.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/cli.py\"}",
+      "digest": "22b0600ac05ce43d4f5bc271864d675b76c90d2bd8391fa78c88091dfde428a3"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/discovery.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/discovery.py\"}",
+      "digest": "29e231cab1f25bc1124a3ee9b96ab98cc3f9bb8a283b303cf5134b1368eaaf3c"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/filterspec.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/filterspec.py\"}",
+      "digest": "f82980b2112d723ddda8156fcbd80a61315b4a78637155ff8ca27bffb6f3525c"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/mining/engine.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/mining/engine.py\"}",
+      "digest": "da95a9bb81638b0078713b47aa86c7d6f7ff7b979ff732be6dd0868e4db0c1ff"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/parser.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"cc_transcript/parser.py\"}",
+      "digest": "f4c5dbe037f2b90dbfe13ebe77b9ab4e62dc935dc7b4415844db41c55aa36767"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "rust/src/filter.rs",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"rust/src/filter.rs\"}",
+      "digest": "629e3eaddeb063e7c50c284b77c2a1c2e915b1484a452743f6322589d49dc7e9"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "rust/src/parse.rs",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"rust/src/parse.rs\"}",
+      "digest": "77112e9997e22ad9bcecec584b59a49ebc20a6484977ff96e9e9b600e70efcd8"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "tests/test_parser.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\",\"file_path\":\"tests/test_parser.py\"}",
+      "digest": "12bb87d4d2320a6cbe36d61c804a660fa6a271b65f46ad1de5ff180a3f9170b1"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/activity.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\\n# generated line 4\",\"file_path\":\"cc_transcript/activity.py\"}",
+      "digest": "778b548beed97a76ce5ad161e6adc4e9aef5f2b17a769c9bb356db9d57074797"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/cli.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\\n# generated line 4\",\"file_path\":\"cc_transcript/cli.py\"}",
+      "digest": "0cc3121aed2c31acb3d997854c233452e4f3f5f202d010d22759918611db8f86"
+    },
+    {
+      "tool": "Write",
+      "input": {
+        "file_path": "cc_transcript/discovery.py",
+        "content": "# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      },
+      "canonical": "{\"content\":\"# generated line 0\\n# generated line 1\\n# generated line 2\\n# generated line 3\\n# generated line 4\",\"file_path\":\"cc_transcript/discovery.py\"}",
+      "digest": "208f23784b70a8389b8e5f8e701f4cad6cc1f66c1468ca4d5f872e21272a7133"
+    }
+  ],
+  "tricky": [
+    {
+      "value": 0.0,
+      "canonical": "0"
+    },
+    {
+      "value": -0.0,
+      "canonical": "0"
+    },
+    {
+      "value": 1.0,
+      "canonical": "1"
+    },
+    {
+      "value": -1.5,
+      "canonical": "-1.5"
+    },
+    {
+      "value": 0.5,
+      "canonical": "0.5"
+    },
+    {
+      "value": 0.05,
+      "canonical": "0.05"
+    },
+    {
+      "value": 100.0,
+      "canonical": "100"
+    },
+    {
+      "value": 123.456,
+      "canonical": "123.456"
+    },
+    {
+      "value": 333333333.3333333,
+      "canonical": "333333333.3333333"
+    },
+    {
+      "value": 698957826421429.2,
+      "canonical": "698957826421429.2"
+    },
+    {
+      "value": 0.1,
+      "canonical": "0.1"
+    },
+    {
+      "value": 0.2,
+      "canonical": "0.2"
+    },
+    {
+      "value": 0.3,
+      "canonical": "0.3"
+    },
+    {
+      "value": 3.141592653589793,
+      "canonical": "3.141592653589793"
+    },
+    {
+      "value": 1.2345678901234567,
+      "canonical": "1.2345678901234567"
+    },
+    {
+      "value": 123456789.12345679,
+      "canonical": "123456789.12345679"
+    },
+    {
+      "value": 9007199254740992.0,
+      "canonical": "9007199254740992"
+    },
+    {
+      "value": 0.0001,
+      "canonical": "0.0001"
+    },
+    {
+      "value": 0.00001,
+      "canonical": "0.00001"
+    },
+    {
+      "value": 1e-6,
+      "canonical": "0.000001"
+    },
+    {
+      "value": 1e-7,
+      "canonical": "1e-7"
+    },
+    {
+      "value": 1.5e-7,
+      "canonical": "1.5e-7"
+    },
+    {
+      "value": 2.5e-8,
+      "canonical": "2.5e-8"
+    },
+    {
+      "value": 1000000000000000.0,
+      "canonical": "1000000000000000"
+    },
+    {
+      "value": 1e+16,
+      "canonical": "10000000000000000"
+    },
+    {
+      "value": 1e+17,
+      "canonical": "100000000000000000"
+    },
+    {
+      "value": 1e+20,
+      "canonical": "100000000000000000000"
+    },
+    {
+      "value": 1e+21,
+      "canonical": "1e+21"
+    },
+    {
+      "value": 1e+22,
+      "canonical": "1e+22"
+    },
+    {
+      "value": 9.999999999999997e+22,
+      "canonical": "9.999999999999997e+22"
+    },
+    {
+      "value": 5e-324,
+      "canonical": "5e-324"
+    },
+    {
+      "value": 2.2250738585072014e-308,
+      "canonical": "2.2250738585072014e-308"
+    },
+    {
+      "value": 1.7976931348623157e+308,
+      "canonical": "1.7976931348623157e+308"
+    },
+    {
+      "value": -3.14,
+      "canonical": "-3.14"
+    },
+    {
+      "value": -1e-10,
+      "canonical": "-1e-10"
+    },
+    {
+      "value": -2e+30,
+      "canonical": "-2e+30"
+    },
+    {
+      "value": 0,
+      "canonical": "0"
+    },
+    {
+      "value": 1,
+      "canonical": "1"
+    },
+    {
+      "value": -42,
+      "canonical": "-42"
+    },
+    {
+      "value": 9007199254740991,
+      "canonical": "9007199254740991"
+    },
+    {
+      "value": -9007199254740991,
+      "canonical": "-9007199254740991"
+    },
+    {
+      "value": null,
+      "canonical": "null"
+    },
+    {
+      "value": true,
+      "canonical": "true"
+    },
+    {
+      "value": false,
+      "canonical": "false"
+    },
+    {
+      "value": "a bare string with é and 漢字",
+      "canonical": "\"a bare string with é and 漢字\""
+    },
+    {
+      "value": {},
+      "canonical": "{}"
+    },
+    {
+      "value": [],
+      "canonical": "[]"
+    },
+    {
+      "value": {
+        "z": 1,
+        "a": 2,
+        "m": 3
+      },
+      "canonical": "{\"a\":2,\"m\":3,\"z\":1}"
+    },
+    {
+      "value": {
+        "nested": {
+          "b": [
+            1,
+            2,
+            {
+              "c": null
+            }
+          ],
+          "a": "x"
+        }
+      },
+      "canonical": "{\"nested\":{\"a\":\"x\",\"b\":[1,2,{\"c\":null}]}}"
+    },
+    {
+      "value": {
+        "😀": "emoji",
+        "€": "euro",
+        "￿": "ffff"
+      },
+      "canonical": "{\"€\":\"euro\",\"😀\":\"emoji\",\"￿\":\"ffff\"}"
+    },
+    {
+      "value": {
+        "controls": "\n\t\r\b\f\"\\"
+      },
+      "canonical": "{\"controls\":\"\\n\\t\\r\\b\\f\\\"\\\\\"}"
+    },
+    {
+      "value": {
+        "mixed": [
+          1,
+          1.5,
+          "s",
+          true,
+          null,
+          {},
+          []
+        ]
+      },
+      "canonical": "{\"mixed\":[1,1.5,\"s\",true,null,{},[]]}"
+    },
+    {
+      "value": [
+        0.1,
+        1e+21,
+        -0.0,
+        5e-324,
+        100.0
+      ],
+      "canonical": "[0.1,1e+21,0,5e-324,100]"
+    },
+    {
+      "value": {
+        "float_edge": 1e-6,
+        "int_edge": 9007199254740991
+      },
+      "canonical": "{\"float_edge\":0.000001,\"int_edge\":9007199254740991}"
+    }
+  ],
+  "raw": [
+    {
+      "json": "{\"a\":1,\"a\":2}",
+      "canonical": "{\"a\":2}"
+    },
+    {
+      "json": "{\"a\":1,\"\\u0061\":2}",
+      "canonical": "{\"a\":2}"
+    },
+    {
+      "json": "{\"b\":1,\"a\":2,\"b\":3}",
+      "canonical": "{\"a\":2,\"b\":3}"
+    },
+    {
+      "json": "{\"k\":1,\"\\u006b\":2,\"k\":3}",
+      "canonical": "{\"k\":3}"
+    }
+  ],
+  "errors": [
+    {
+      "json": "9007199254740993"
+    },
+    {
+      "json": "-9007199254740993"
+    },
+    {
+      "json": "100000000000000000000000000000"
+    }
+  ]
+}

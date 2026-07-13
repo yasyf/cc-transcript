@@ -67,6 +67,12 @@ def mine_events(
 ) -> list[dict[str, Any]]:
     """Mines signal dicts from parsed transcript events per the portable mining spec."""
 
+def ids_canonical_json(value_json: str, /) -> str:
+    """RFC 8785 canonical JSON of the value parsed from ``value_json`` (the Rust ids port)."""
+
+def ids_tool_digest(name: str, input_json: str, /) -> str:
+    """The cross-language tool-content digest for ``name`` over the input parsed from ``input_json``."""
+
 def session_activity_probe(
     path: str, waiting_tools: list[str] | None = ..., human_facing_tools: list[str] | None = ..., /
 ) -> dict[str, Any]:

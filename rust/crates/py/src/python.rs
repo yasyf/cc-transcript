@@ -14,6 +14,7 @@ use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{session_activity, ActivityOpts, SessionActivity};
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
+use cc_transcript_core::ids;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
 use cc_transcript_core::types::Entry;
 
@@ -314,6 +315,20 @@ fn mine_events<'py>(
     mining::mine_events(py, &events, &spec)
 }
 
+#[pyfunction]
+fn ids_canonical_json(value_json: &str) -> PyResult<String> {
+    let value: Value = sonic_rs::from_str(value_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    ids::canonical_json(&value).map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn ids_tool_digest(name: &str, input_json: &str) -> PyResult<String> {
+    let input: Value = sonic_rs::from_str(input_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    ids::tool_digest(name, &input).map_err(PyValueError::new_err)
+}
+
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -328,6 +343,8 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(command_parse, m)?)?;
     m.add_function(wrap_pyfunction!(mine_events, m)?)?;
+    m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
+    m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
