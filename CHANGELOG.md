@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [13.1.0] - 2026-07-13
+
+Dispatch observability: a heartbeat ledger that records an event reached dispatch at
+all, so a silent wiring gap stops reading as a quiet session.
+
+### Added
+- **`HeartbeatLog` — a per-`(session, event)` dispatch heartbeat.** The decision ledger
+  records only hooks that *fired*, so "this event never dispatched" and "it dispatched and
+  matched nothing" are indistinguishable there. A new `dispatch_heartbeats` table (its own
+  DDL, sharing `decisions.db`; the Go-byte-compared `decisions` schema is untouched) takes
+  an unconditional, upserting `(session, event)` beat — `beat` bumps a count and last-seen
+  timestamp, keeping one row per event — so a missing beat for an event a session should
+  emit is an unambiguous wiring gap.
+
 ## [13.0.0] - 2026-07-12
 
 One engine, and a real one. The Rust extension is now the only executor — the
