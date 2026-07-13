@@ -3,9 +3,10 @@
 """The correction/feedback mining mechanism.
 
 Neutral fact-detectors over Claude Code transcripts, driven by a declarative
-:class:`MiningSpec`: :func:`mine_signals` runs the Rust executor over raw transcript
-bytes and yields a :class:`MiningSignal` per recognized transcript shape — a neutral
-fact carrying a candidate trigger, confidence, and evidence, but no policy. Apps map
+:class:`MiningSpec`: :func:`mine` runs the Rust executor over already-parsed
+transcript events and yields a :class:`MiningSignal` per recognized transcript shape
+— a neutral fact carrying a candidate trigger, confidence, and evidence, but no
+policy. Apps map
 signals to their own candidate records with policy injected (their filter spec, their
 disqualification rules, their review formats), capture each candidate's durable
 :class:`~cc_transcript.context.ContextWindow` via
@@ -45,7 +46,7 @@ from cc_transcript.mining.confidence import (
     strong,
     weak,
 )
-from cc_transcript.mining.engine import mine_signals, rehydrate_signal
+from cc_transcript.mining.engine import mine, rehydrate_signal
 from cc_transcript.mining.filterspec import (
     CandidateClause,
     CandidateFilterSpec,

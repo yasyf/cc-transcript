@@ -61,8 +61,8 @@ print(spec_to_json(spec)[:120])
 
 `ScoreSpec` and `MiningSpec` follow the same shape. `score_spec_to_json`
 feeds the `score_short_circuit` and `score_post_process` entry points that
-bracket model inference; `mining_spec_to_json` feeds `mine_signals`, which
-parses and detects in one pass over raw transcript bytes.
+bracket model inference; `mining_spec_to_json` feeds `mine`, which runs the Rust
+detectors over a session's parsed events.
 
 The lexicon needs no spec at all: `rust/src/lexicon.rs` compiles the two
 packaged TSVs in at build time, and tokenization runs a real NLP pipeline —

@@ -1,9 +1,9 @@
 """The mining entry point over the Rust executor.
 
-:func:`mine_signals` takes RAW transcript bytes plus a
+:func:`mine` takes already-parsed transcript events plus a
 :class:`~cc_transcript.mining.spec.MiningSpec` and returns
-:class:`~cc_transcript.mining.signals.MiningSignal` objects. The Rust backend parses
-and detects in one pass — invoking any
+:class:`~cc_transcript.mining.signals.MiningSignal` objects. The Rust backend runs
+the detector pipeline over the events in one pass — invoking any
 :class:`~cc_transcript.mining.spec.CallableReviewFormat` through a pyo3 callback
 side-channel — and :func:`rehydrate_signal` rebuilds the returned dicts.
 """
@@ -15,27 +15,32 @@ from typing import TYPE_CHECKING, Any
 
 from cc_transcript import _parser_rs
 from cc_transcript.mining.confidence import CandidateSignal, Confidence
-from cc_transcript.mining.signals import MiningSignal
 from cc_transcript.mining.sourcekind import SourceKind
 from cc_transcript.mining.spec import mining_spec_to_json
 from cc_transcript.models import CcVersion, EventUuid, SessionId
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
+    from cc_transcript.mining.signals import MiningSignal
     from cc_transcript.mining.spec import MiningSpec
+    from cc_transcript.models import TranscriptEvent
 
 
-def mine_signals(raw: bytes, spec: MiningSpec) -> Iterator[MiningSignal]:
-    """Mines every :class:`MiningSignal` from raw transcript bytes via the Rust executor.
+def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
+    """Mines every :class:`MiningSignal` from already-parsed transcript events.
 
-    The Rust backend parses and detects over ``raw`` in one pass, invoking each
+    The Rust detector pipeline runs over materialized
+    :class:`~cc_transcript.models.TranscriptEvent` objects, so a consumer that already
+    parsed a transcript mines it without re-reading the file, and each mined signal's
+    ``event_index`` addresses straight back into the same ``events`` list. Each
     :class:`~cc_transcript.mining.spec.CallableReviewFormat`'s Python pattern and
-    extractor through a positional side-channel. The Rust call runs eagerly, so a
-    malformed spec pattern raises here rather than mid-stream.
+    extractor fire through a positional side-channel. The events are materialized
+    eagerly, since the Rust backend indexes them positionally, so a malformed spec
+    pattern raises here rather than mid-stream.
 
     Args:
-        raw: The raw bytes of a ``.jsonl`` transcript.
+        events: The parsed transcript events, in stream order.
         spec: The mining policy: which detectors run, with which scoring, provenance,
             and review-format policy.
 
@@ -43,16 +48,18 @@ def mine_signals(raw: bytes, spec: MiningSpec) -> Iterator[MiningSignal]:
         Neutral mined facts, one per recognized transcript shape, in detector order.
     """
     callable_formats = [(fmt.name, fmt.pattern, fmt.extract) for fmt in spec.review.callable_formats]
-    payloads = _parser_rs.mine_signals(raw, mining_spec_to_json(spec), callable_formats)
+    payloads = _parser_rs.mine_events(list(events), mining_spec_to_json(spec), callable_formats)
     return (rehydrate_signal(payload) for payload in payloads)
 
 
 def rehydrate_signal(payload: Mapping[str, Any]) -> MiningSignal:
-    """Rebuilds a :class:`MiningSignal` from a Rust ``mine_signals`` dict.
+    """Rebuilds a :class:`MiningSignal` from a Rust ``mine`` dict.
 
     ``occurred_at`` is parsed back from its RFC3339 string and the branded primitives
     are re-wrapped, producing an object byte-identical to the Python reference path.
     """
+    from cc_transcript.mining.signals import MiningSignal
+
     return MiningSignal(
         kind=SourceKind(payload["kind"]),
         detector=payload["detector"],

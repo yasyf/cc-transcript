@@ -65,16 +65,16 @@ not text.
 Mining is spec-driven: a `MiningSpec` carries the whole policy as data — which
 detectors run, the confidence stages each folds (the defaults wire in
 `CALIBRATED_SPEC`, and `USER_MESSAGE_SPEC` for user turns), and the
-review-format policy. `mine_signals` hands the raw bytes and the serialized
-spec to the Rust engine, which parses and detects in one pass. Here the denial
+review-format policy. `mine` hands the parsed events and the serialized spec to
+the Rust engine, which runs every detector over them in one pass. Here the denial
 detector fires: it pairs each denial result with the `tool_use` it rejects,
 pulls the embedded "user said" text, and yields one signal per denial:
 
 ```{python}
-from cc_transcript.mining import MiningSpec, mine_signals
+from cc_transcript.mining import MiningSpec, mine
 
 spec = MiningSpec()
-[signal] = mine_signals(raw, spec)
+[signal] = mine(events, spec)
 (signal.kind, signal.detector, signal.text, signal.trigger_index, signal.evidence)
 # -> ('interrupt_rejection', 'denial', 'use uv, not pip', 0, {'tool': 'Bash', 'file_path': None})
 ```
@@ -96,7 +96,7 @@ frozenset of those ids — decides which run:
 "ask_user_question"    # an AskUserQuestion answer, an option pick or a freeform reply
 ```
 
-The default `MiningSpec` enables all seven, so `mine_signals(raw, MiningSpec())`
+The default `MiningSpec` enables all seven, so `mine(events, MiningSpec())`
 runs the standard bundle. Review comments stay silent until configured: what a review
 message looks like is app policy, so you fill the spec's `ReviewSpec` with
 formats — a declarative `RegexReviewFormat`, or a `CallableReviewFormat` with a
@@ -142,7 +142,7 @@ followup_raw = b"\n".join([
 ])
 
 followup_events = parse_events_from_bytes(followup_raw)
-[structural] = [s for s in mine_signals(followup_raw, spec) if s.detector == "denial"]
+[structural] = [s for s in mine(followup_events, spec) if s.detector == "denial"]
 (structural.signal, structural.signal.confidence >= NOISE_FLOOR)
 # -> (CandidateSignal(confidence=0.0, reasons=('structural_only',), durable=True), False)
 ```

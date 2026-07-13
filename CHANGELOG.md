@@ -53,10 +53,36 @@ toolchain.
 ### Removed
 - The `str.isalpha` codepoint table (`rust/src/generated/unicode.rs`) and its
   generator, dissolving the tokenizer's Unicode-version drift question.
-- The Python spec interpreters (`apply_spec` execution internals,
-  `py_short_circuit`/`py_post_process`, the `mine()` detectors) and the
-  `rust_*_backend` fallback selectors. `filterspec.keep`/`apply_spec` remain as
-  the post-parse filter over already-materialized events (the CLI's `show`/`grep`).
+- The Python spec interpreters — `apply_spec`'s execution internals,
+  `py_short_circuit`/`py_post_process`, and the Python mining detectors — and the
+  `rust_*_backend` fallback selectors. The post-parse APIs over already-materialized
+  events stay: `filterspec.keep`/`apply_spec` (the CLI's `show`/`grep`) and
+  `mining.mine`, whose events-in signature is unchanged but which now runs the Rust
+  detector pipeline in place of the deleted Python detectors.
+
+## [12.1.1] - 2026-07-11
+
+Row-invariant hardening plus docs coverage for the 12.1.0 features.
+
+### Fixed
+- Optional-row guards are replaced by fail-fast asserts in `facts.py`,
+  `judge/similar.py`, `mining/store.py`, and `tools.py`; `replace_all` is coerced
+  to `bool` at the boundary.
+
+### Documentation
+- The docs site now covers the `watch` module and `mining.sample_windows`.
+
+## [12.1.0] - 2026-07-11
+
+Live transcript tailing and seeded context-window sampling.
+
+### Added
+- **`cc_transcript.watch`** — live transcript tailing. `watch`/`tick` poll a
+  transcript by byte offset and yield each appended event exactly once, over
+  `TailState`/`TailCursor`/`WatchEvent`; a `watch` CLI command and discovery
+  additions ship with it.
+- **`mining.sample_windows`** (with `fold_trigger` and `turn_anchor`) — seeded
+  context-window sampling that draws deterministic "did not steer here" negatives.
 
 ## [12.0.0] - 2026-07-11
 

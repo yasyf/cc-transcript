@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NewType
 
@@ -7,7 +8,6 @@ from cc_transcript.ids import EventUuid, SessionId, ToolDigest, ToolUseId, tool_
 from cc_transcript.tools import ToolCall, parse_tool_call
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from datetime import datetime
     from typing import Any
 
@@ -117,19 +117,24 @@ class ToolUseBlock:
         """The raw ``file_path`` input argument when it is a string, else None.
 
         Mirrors the Rust parse-layer lift in ``rust/src/parse.rs``: the value is
-        read verbatim from the input for every tool, and a non-string value reads
-        as None. Mining denial evidence consumes this uniform lift rather than the
-        type-dispatched :func:`~cc_transcript.tools.file_path_of`.
+        read verbatim from the input for every tool, and a non-object input or a
+        non-string value reads as None. Mining denial evidence consumes this uniform
+        lift rather than the type-dispatched :func:`~cc_transcript.tools.file_path_of`.
         """
-        return p if isinstance(p := self.input.get("file_path"), str) else None
+        return (
+            p
+            if isinstance(self.input, Mapping) and isinstance(p := self.input.get("file_path"), str)
+            else None
+        )
 
     @property
     def questions(self) -> tuple[Question, ...] | None:
         """The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
 
-        Delegates to :func:`parse_questions`, which mirrors the Rust parse layer.
+        Delegates to :func:`parse_questions`, which mirrors the Rust parse layer; a
+        non-object input reads as None.
         """
-        return parse_questions(self.input.get("questions"))
+        return parse_questions(self.input.get("questions")) if isinstance(self.input, Mapping) else None
 
 
 @dataclass(frozen=True, slots=True)

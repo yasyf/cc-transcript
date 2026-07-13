@@ -4,12 +4,25 @@
 module: cc_transcript
 display_name: cc-transcript
 parser: google
+# Dynamic griffe analysis is REQUIRED: cc_transcript's public API re-exports through
+# the __init__ façade, and static analysis drops ~21 of them as cyclic aliases
+# (TranscriptEvent, ContentBlock, ToolCall/ToolResult, PRICING, …). Keep it true.
 dynamic: true
 repo: https://github.com/yasyf/cc-transcript
 site_url: "https://yasyf.github.io/cc-transcript/"
 pypi: true
 github_style: widget
 jupyter: python3
+
+# Skip the per-page Markdown (.md) companion generation. great-docs' post-render
+# pipes every rendered HTML page through a separate `quarto pandoc -f html -t gfm`
+# subprocess (~0.25s each); at ~390 pages that is ~97s. Dropping it loses only the
+# per-page .md companions and the "copy as markdown" widget — llms.txt/llms-full.txt,
+# sitemap, and robots are generated separately and are unaffected; every HTML page
+# and symbol stays intact.
+# (inline_methods was measured and REJECTED: collapsing the ~98 method pages
+# concentrates rendering into much heavier class pages — a ~220s net regression.)
+markdown_pages: false
 
 # Rewrite generated reference titles to pre-parsed pandoc-native Spans so Quarto
 # doesn't re-parse the bracketed-span sidebar markup on every page — Pandoc
@@ -349,7 +362,7 @@ reference:
       - mining.Confidence
       - mining.NOISE_FLOOR
       - mining.MiningSpec
-      - mining.mine_signals
+      - mining.mine
       - mining.mining_spec_to_json
       - mining.DENIAL_PREFIX
       - mining.DENIAL_KIND_USER_REJECTED

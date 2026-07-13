@@ -1,21 +1,24 @@
-"""Golden regression + callback coverage for the Rust mining executor.
+"""Golden regression + callback + crash-safety coverage for the Rust mining executor.
 
-The Rust backend is the sole mining executor. This module freezes its correct output
-— captured from the historical Python reference, proven equal for portable specs and
-the sole correct reference for callable review formats — into
-``testdata/mining_golden.json`` and asserts the Rust executor still reproduces it: a
-hand-built battery with one case per detector (plus near-misses, case-folds, and
-unicode), the structured/banner AskUserQuestion rounds, and a captain-hook-shaped
-review spec that exercises the pyo3 callback side-channel (superset-inline lookahead
-and conductor-workstream multi-pass callables alongside a conductor-finding regex). A
-lookaround :class:`RegexReviewFormat`, which the Rust ``regex`` crate rejects, raises
-at mine time.
+The Rust backend is the sole mining executor, reached through the one ``mine``
+(events-in) entry: every case parses transcript bytes through the public parser and
+mines the resulting events. This module freezes the executor's correct output —
+captured from the historical Python reference and the sole correct reference for
+callable review formats — into ``testdata/mining_golden.json`` and asserts ``mine``
+still reproduces it: a hand-built battery with one case per detector (plus
+near-misses, case-folds, and unicode), the structured/banner AskUserQuestion rounds,
+and a captain-hook-shaped review spec that exercises the pyo3 callback side-channel
+(superset-inline lookahead and conductor-workstream multi-pass callables alongside a
+conductor-finding regex). A lookaround :class:`RegexReviewFormat`, which the Rust
+``regex`` crate rejects, raises at mine time; a closing set of regressions pins the
+parser-accepted inputs that once crashed the mine or discarded a transcript.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,8 +33,9 @@ from cc_transcript.filterspec import (
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
 )
+from cc_transcript.ids import ToolUseId
 from cc_transcript.mining.confidence import MEDIUM
-from cc_transcript.mining.engine import mine_signals
+from cc_transcript.mining.engine import mine
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
 from cc_transcript.mining.signals import ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, NO_OPTION_SELECTED
 from cc_transcript.mining.spec import (
@@ -45,6 +49,8 @@ from cc_transcript.mining.spec import (
     ReviewSpec,
     signal_to_dict,
 )
+from cc_transcript.models import ToolResultBlock, ToolUseBlock
+from cc_transcript.parser import TranscriptParser, parse_events_from_bytes
 from tests.support import (
     MATCHER_LABELS,
     MATCHER_QUESTION,
@@ -719,7 +725,7 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
 
 
 def rust_dicts(raw: bytes, spec: MiningSpec) -> list[dict[str, Any]]:
-    return [signal_to_dict(signal) for signal in mine_signals(raw, spec)]
+    return [signal_to_dict(signal) for signal in mine(parse_events_from_bytes(raw), spec)]
 
 
 def assert_signal_valid(signal: MiningSignal) -> None:
@@ -1012,9 +1018,9 @@ def test_non_object_lines_skipped_keep_event_index() -> None:
 
 
 @requires_rust
-def test_mine_signals_rehydrates_objects_matching_golden() -> None:
+def test_mine_rehydrates_objects_matching_golden() -> None:
     raw = fixture_bytes()
-    signals = list(mine_signals(raw, SPEC))
+    signals = list(mine(parse_events_from_bytes(raw), SPEC))
     for signal in signals:
         assert_signal_valid(signal)
     assert [signal_to_dict(signal) for signal in signals] == GOLDEN["fixture"]
@@ -1051,4 +1057,109 @@ def test_lookaround_regex_review_format_raises() -> None:
     mine time rather than silently mining nothing (D4: no fancy-regex fallback)."""
     entries = [assistant("a1", {"type": "text", "text": "ok"}), user_text("u1", "PREFIX matched")]
     with pytest.raises(ValueError):
-        list(mine_signals(to_bytes(entries), lookaround_review_spec()))
+        list(mine(parse_events_from_bytes(to_bytes(entries)), lookaround_review_spec()))
+
+
+# ── crash-safety regressions over inputs the parser accepts ───────────────────
+#
+# mine(events) is the one mining path, so every consumer runs through it. These pin
+# the three inputs the parser accepts but that once crashed the mine or discarded a
+# transcript: a non-object tool input, a non-finite toolUseResult number, and an
+# un-materializable event alongside good ones.
+
+
+@requires_rust
+def test_non_object_tool_input_reads_as_none_and_mines() -> None:
+    """A non-object tool input (which the parser accepts verbatim) makes ``.file_path``
+    and ``.questions`` read as None instead of raising ``AttributeError``, so
+    ``mine(events)`` survives a transcript that carries one (#1)."""
+    non_object: Any = "not-a-dict"
+    block = ToolUseBlock(id=ToolUseId("t1"), name="Bash", input=non_object)
+    assert block.file_path is None
+    assert block.questions is None
+    entries = [
+        assistant("a1", {"type": "tool_use", "id": "t1", "name": "Bash", "input": "not-a-dict"}),
+        user_text("u1", "this is completely wrong, please rewrite the parser module entirely"),
+    ]
+    assert [signal["detector"] for signal in rust_dicts(to_bytes(entries), SPEC)] == ["transcript_message"]
+
+
+@requires_rust
+def test_non_finite_tool_use_result_number_mines_without_crash(tmp_path: Path) -> None:
+    """A ``toolUseResult`` number the Rust parse path materializes to ``inf`` (a huge
+    literal like ``1e9999``) maps to null instead of crashing the JSON re-encode, and
+    the AskUserQuestion signal is still mined intact (#3)."""
+    entries = [
+        assistant(
+            "a1",
+            tool_use(
+                "t1",
+                "AskUserQuestion",
+                questions=[auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+            ),
+        ),
+        user_result(
+            "u1",
+            "t1",
+            answered('"Which adapter?"="Storage (Recommended)"'),
+            is_error=False,
+            toolUseResult={"answers": {"Which adapter?": "Storage (Recommended)"}, "weird": "__NONFINITE__"},
+        ),
+    ]
+    path = tmp_path / "nonfinite.jsonl"
+    path.write_bytes(to_bytes(entries).replace(b'"__NONFINITE__"', b"1e9999"))
+    events = TranscriptParser.parse_file(path)
+    signals = list(mine(events, SPEC))
+    assert [signal.detector for signal in signals] == ["ask_user_question"]
+    assert signals[0].text == "Storage (Recommended)"
+
+
+@requires_rust
+def test_oversized_int_tool_use_result_mines_without_crash() -> None:
+    """A constructed ``toolUseResult`` integer past ``f64`` range (a literal like
+    ``10**309``, which the parser never yields but a caller can build) maps to null
+    instead of overflowing ``py_to_value``, and the AskUserQuestion signal is still
+    mined intact (#3, integer arm)."""
+    entries = [
+        assistant(
+            "a1",
+            tool_use(
+                "t1",
+                "AskUserQuestion",
+                questions=[auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
+            ),
+        ),
+        user_result(
+            "u1",
+            "t1",
+            answered('"Which adapter?"="Storage (Recommended)"'),
+            is_error=False,
+            toolUseResult={"answers": {"Which adapter?": "Storage (Recommended)"}},
+        ),
+    ]
+    events = list(parse_events_from_bytes(to_bytes(entries)))
+    events[1] = replace(
+        events[1],
+        blocks=tuple(
+            replace(block, tool_use_result={**block.tool_use_result, "extra": 10**309})
+            if isinstance(block, ToolResultBlock)
+            else block
+            for block in events[1].blocks
+        ),
+    )
+    signals = list(mine(events, SPEC))
+    assert [signal.detector for signal in signals] == ["ask_user_question"]
+    assert signals[0].text == "Storage (Recommended)"
+
+
+@requires_rust
+def test_parse_file_skips_unmaterializable_event_keeps_rest(tmp_path: Path) -> None:
+    """A single event that cannot materialize to Python (a year-zero timestamp below
+    ``MINYEAR``) is dropped, and the rest of the transcript survives rather than the
+    whole file reading as empty (#4)."""
+    corrupt = orjson.dumps(user_text("z1", "hello", timestamp="0000-01-01T00:00:00Z"))
+    good = [assistant("a1", {"type": "text", "text": "hi"}), user_text("u1", "normal message")]
+    path = tmp_path / "corrupt.jsonl"
+    path.write_bytes(corrupt + b"\n" + to_bytes(good))
+    events = TranscriptParser.parse_file(path)
+    assert [type(event).__name__ for event in events] == ["AssistantEvent", "UserEvent"]

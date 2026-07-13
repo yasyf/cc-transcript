@@ -54,8 +54,10 @@ def score_post_process(spec_json: str, buckets: list[list[str]], raw: list[int],
 def command_prefixes(commands: list[str], /) -> list[list[str]]:
     """Permission-style prefixes per command line, parsed in parallel off the GIL."""
 
-def mine_signals(raw: bytes, spec_json: str, /) -> list[dict[str, Any]]:
-    """Parses raw transcript bytes and mines signal dicts per the portable mining spec."""
+def mine_events(
+    events: list[TranscriptEvent], spec_json: str, callable_formats: list[tuple[str, Any, Any]], /
+) -> list[dict[str, Any]]:
+    """Mines signal dicts from parsed transcript events per the portable mining spec."""
 
 def session_activity_probe(
     path: str, waiting_tools: list[str] | None = ..., human_facing_tools: list[str] | None = ..., /

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use chrono::{DateTime, FixedOffset};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use regex::Regex;
-use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
+use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Object, Value};
 
 use crate::filter::compile_group_array;
 use crate::generated::mining::{
@@ -14,14 +15,14 @@ use crate::generated::mining::{
     DETECTOR_REVIEW_COMMENT, DETECTOR_TRANSCRIPT_MESSAGE, INTERRUPT_REJECTION, LOW, NONE,
     NO_OPTION_SELECTED, PLAN_REVIEW, QUESTION_ANSWER, REVIEW_COMMENT, TRANSCRIPT_MESSAGE,
 };
-use crate::parse::{parse_bytes, parse_questions, ParseError};
+use crate::parse::parse_questions;
 use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
     ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
 use crate::types::{
-    matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock,
-    UserEntry,
+    matches_names, tool_use_index, AssistantEntry, ContentBlock, Entry, EntryMeta, ModeChannel,
+    ModeEntry, OtherEntry, Question, ToolResultBlock, ToolUseBlock, UserContent, UserEntry,
 };
 use crate::value::{field, field_bool, field_str};
 
@@ -472,11 +473,9 @@ struct Events {
 }
 
 impl Events {
-    /// Splits raw JSONL into typed entries, dropping undecodable lines and
-    /// non-object values (parser.py decode_line) so event indices agree with the
-    /// Python reference; a malformed entry fails the mine, as in the reference.
-    fn parse(raw: &[u8]) -> Result<Self, ParseError> {
-        let entries = parse_bytes(raw, |_| true)?;
+    /// The user text per event, lifted so event indices and mined text agree with
+    /// the parsed events by construction.
+    fn new(entries: Vec<Entry>) -> Self {
         let texts = entries
             .iter()
             .map(|entry| match entry {
@@ -484,7 +483,20 @@ impl Events {
                 _ => String::new(),
             })
             .collect();
-        Ok(Events { entries, texts })
+        Events { entries, texts }
+    }
+
+    /// Reconstructs the mined view from already-parsed Python transcript events
+    /// (models.py TranscriptEvent). Every event holds its index, and each entry
+    /// carries only the fields the detectors read; the rest default. Events the
+    /// detectors never inspect map to an index-preserving placeholder.
+    fn from_py<'py>(py: Python<'py>, events: &[Bound<'py, PyAny>]) -> PyResult<Self> {
+        let classes = ModelClasses::import(py)?;
+        events
+            .iter()
+            .map(|event| entry_from_py(event, &classes))
+            .collect::<PyResult<Vec<_>>>()
+            .map(Events::new)
     }
 
     fn len(&self) -> usize {
@@ -522,6 +534,226 @@ impl Events {
             })
             .map(|i| i as i64)
     }
+}
+
+/// The model classes needed to dispatch a Python transcript event and its blocks,
+/// imported once per events-in mine.
+struct ModelClasses<'py> {
+    user: Bound<'py, PyAny>,
+    assistant: Bound<'py, PyAny>,
+    mode: Bound<'py, PyAny>,
+    tool_use: Bound<'py, PyAny>,
+    tool_result: Bound<'py, PyAny>,
+}
+
+impl<'py> ModelClasses<'py> {
+    fn import(py: Python<'py>) -> PyResult<Self> {
+        let models = py.import("cc_transcript.models")?;
+        Ok(ModelClasses {
+            user: models.getattr("UserEvent")?,
+            assistant: models.getattr("AssistantEvent")?,
+            mode: models.getattr("ModeEvent")?,
+            tool_use: models.getattr("ToolUseBlock")?,
+            tool_result: models.getattr("ToolResultBlock")?,
+        })
+    }
+}
+
+fn entry_from_py<'py>(event: &Bound<'py, PyAny>, classes: &ModelClasses<'py>) -> PyResult<Entry> {
+    if event.is_instance(&classes.user)? {
+        Ok(Entry::User(user_entry_from_py(event, classes)?))
+    } else if event.is_instance(&classes.assistant)? {
+        Ok(Entry::Assistant(assistant_entry_from_py(event, classes)?))
+    } else if event.is_instance(&classes.mode)? {
+        Ok(Entry::Mode(mode_entry_from_py(event)?))
+    } else {
+        Ok(Entry::Other(OtherEntry {
+            ty: String::new(),
+            raw: Value::default(),
+        }))
+    }
+}
+
+/// The envelope metadata a conversational event carries (models.py EntryMeta),
+/// filling the fields the detectors read and defaulting the rest.
+fn meta_from_py(event: &Bound<'_, PyAny>) -> PyResult<EntryMeta> {
+    let meta = event.getattr("meta")?;
+    Ok(EntryMeta {
+        uuid: meta.getattr("uuid")?.extract()?,
+        parent_uuid: None,
+        session_id: meta.getattr("session_id")?.extract()?,
+        timestamp: meta.getattr("timestamp")?.extract()?,
+        cwd: None,
+        git_branch: None,
+        version: meta.getattr("cc_version")?.extract()?,
+        is_sidechain: meta.getattr("is_sidechain")?.extract()?,
+        is_meta: false,
+        entrypoint: None,
+        is_compact_summary: false,
+        is_visible_in_transcript_only: false,
+        user_type: None,
+        slug: None,
+    })
+}
+
+/// A single Text block reproduces ``UserContent::text()`` (models.py UserEvent.text
+/// is that same lift), and the tool-result blocks feed the denial, interrupt, and
+/// review scans.
+fn user_entry_from_py<'py>(
+    event: &Bound<'py, PyAny>,
+    classes: &ModelClasses<'py>,
+) -> PyResult<UserEntry> {
+    let mut blocks = vec![ContentBlock::Text(event.getattr("text")?.extract()?)];
+    for block in event.getattr("blocks")?.try_iter()? {
+        let block = block?;
+        if block.is_instance(&classes.tool_result)? {
+            blocks.push(ContentBlock::ToolResult(tool_result_from_py(&block)?));
+        }
+    }
+    Ok(UserEntry {
+        meta: meta_from_py(event)?,
+        content: UserContent::Blocks(blocks),
+        prompt_id: None,
+        prompt_source: None,
+        queue_priority: None,
+        image_paste_ids: None,
+        source_tool_use_id: None,
+        source_tool_assistant_uuid: None,
+        mcp_meta: None,
+        permission_mode: None,
+        interrupted_message_id: None,
+    })
+}
+
+fn tool_result_from_py(block: &Bound<'_, PyAny>) -> PyResult<ToolResultBlock> {
+    Ok(ToolResultBlock {
+        tool_use_id: block.getattr("tool_use_id")?.extract()?,
+        content: block.getattr("content")?.extract()?,
+        is_error: block.getattr("is_error")?.extract()?,
+        is_async: false,
+        tool_use_result: py_tool_use_result(&block.getattr("tool_use_result")?)?,
+        denial_kind: block.getattr("denial_kind")?.extract()?,
+    })
+}
+
+/// The ``toolUseResult`` payload walked directly into a sonic ``Value``, so the
+/// AskUserQuestion detector reads identical answers/annotations.
+fn py_tool_use_result(payload: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
+    if payload.is_none() {
+        return Ok(None);
+    }
+    py_to_value(payload).map(Some)
+}
+
+/// A ``json_to_py`` (event.rs) value walked back into a sonic ``Value``. Strings,
+/// bools, arrays, and objects convert byte-exactly; a number JSON cannot represent
+/// (non-finite float, or an integer that overflows ``f64``) maps to null, as no
+/// numeric field is read.
+fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if obj.is_none() {
+        return Ok(Value::new_null());
+    }
+    if let Ok(b) = obj.cast::<PyBool>() {
+        return Ok(Value::from(b.is_true()));
+    }
+    if let Ok(int) = obj.cast::<PyInt>() {
+        return Ok(match (int.extract::<i64>(), int.extract::<u64>()) {
+            (Ok(i), _) => Value::from(i),
+            (_, Ok(u)) => Value::from(u),
+            _ => int.extract::<f64>().ok().and_then(Value::new_f64).unwrap_or_else(Value::new_null),
+        });
+    }
+    if let Ok(float) = obj.cast::<PyFloat>() {
+        return Ok(Value::new_f64(float.value()).unwrap_or_else(Value::new_null));
+    }
+    if let Ok(s) = obj.cast::<PyString>() {
+        return Ok(Value::from(s.to_str()?));
+    }
+    if let Ok(list) = obj.cast::<PyList>() {
+        return Ok(Value::from(
+            list.iter()
+                .map(|item| py_to_value(&item))
+                .collect::<PyResult<Vec<Value>>>()?,
+        ));
+    }
+    if let Ok(dict) = obj.cast::<PyDict>() {
+        let mut object = Object::with_capacity(dict.len());
+        for (key, value) in dict.iter() {
+            object.insert(key.cast::<PyString>()?.to_str()?, py_to_value(&value)?);
+        }
+        return Ok(object.into_value());
+    }
+    Err(PyValueError::new_err(
+        "toolUseResult value is not a JSON type",
+    ))
+}
+
+/// Only the tool-use blocks are read (edit-lookback, tool-use join, plan/denial
+/// pairing); text and thinking blocks never reach a detector.
+fn assistant_entry_from_py<'py>(
+    event: &Bound<'py, PyAny>,
+    classes: &ModelClasses<'py>,
+) -> PyResult<AssistantEntry> {
+    let mut blocks = Vec::new();
+    for block in event.getattr("blocks")?.try_iter()? {
+        let block = block?;
+        if block.is_instance(&classes.tool_use)? {
+            blocks.push(ContentBlock::ToolUse(tool_use_from_py(&block)?));
+        }
+    }
+    Ok(AssistantEntry {
+        meta: meta_from_py(event)?,
+        model: String::new(),
+        blocks,
+        stop_reason: None,
+        usage: None,
+        request_id: None,
+        forked_from: None,
+        attribution: None,
+        api_error: None,
+    })
+}
+
+fn tool_use_from_py(block: &Bound<'_, PyAny>) -> PyResult<ToolUseBlock> {
+    Ok(ToolUseBlock {
+        id: block.getattr("id")?.extract()?,
+        name: block.getattr("name")?.extract()?,
+        run_in_background: None,
+        subagent_type: None,
+        file_path: block.getattr("file_path")?.extract()?,
+        questions: questions_from_py(&block.getattr("questions")?)?,
+        input: Value::default(),
+    })
+}
+
+fn questions_from_py(questions: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Question>>> {
+    if questions.is_none() {
+        return Ok(None);
+    }
+    questions
+        .try_iter()?
+        .map(|question| {
+            let question = question?;
+            Ok(Question {
+                question: question.getattr("question")?.extract()?,
+                header: question.getattr("header")?.extract()?,
+                multi_select: question.getattr("multi_select")?.extract()?,
+                labels: question.getattr("labels")?.extract()?,
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()
+        .map(Some)
+}
+
+fn mode_entry_from_py(event: &Bound<'_, PyAny>) -> PyResult<ModeEntry> {
+    Ok(ModeEntry {
+        session_id: event.getattr("session_id")?.extract()?,
+        channel: match event.getattr("channel")?.extract::<String>()?.as_str() {
+            "permission-mode" => ModeChannel::PermissionMode,
+            _ => ModeChannel::Mode,
+        },
+        value: event.getattr("value")?.extract()?,
+    })
 }
 
 /// marker_in (mining/signals.py marker_in): whether any tool-result block's
@@ -1442,35 +1674,44 @@ fn iter_ask_user_question<'py>(
     Ok(())
 }
 
-pub fn mine<'py>(
+/// Runs the detector pipeline over already-parsed Python transcript events
+/// (mining/engine.py mine).
+pub fn mine_events<'py>(
     py: Python<'py>,
-    raw: &[u8],
+    events: &[Bound<'py, PyAny>],
     spec: &CompiledMiningSpec,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let events = Events::parse(raw)?;
+    mine_events_impl(py, &Events::from_py(py, events)?, spec)
+}
+
+fn mine_events_impl<'py>(
+    py: Python<'py>,
+    events: &Events,
+    spec: &CompiledMiningSpec,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let uses = tool_use_index(&events.entries);
     let structural = structural_re(spec);
     let mut out: Vec<Bound<'py, PyDict>> = Vec::new();
     if spec.detectors.contains(DETECTOR_TRANSCRIPT_MESSAGE) {
-        iter_user_message(py, &events, spec, &mut out)?;
+        iter_user_message(py, events, spec, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_EXIT_PLAN_REJECTION) {
-        iter_plan_rejection(py, &events, spec, &uses, &mut out)?;
+        iter_plan_rejection(py, events, spec, &uses, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_PLAN_REENTRY) {
-        iter_plan_reentry(py, &events, spec, &mut out)?;
+        iter_plan_reentry(py, events, spec, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_DENIAL) {
-        iter_tool_denial(py, &events, spec, &uses, &structural, &mut out)?;
+        iter_tool_denial(py, events, spec, &uses, &structural, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_INTERRUPT) {
-        iter_interrupt(py, &events, &structural, &mut out)?;
+        iter_interrupt(py, events, &structural, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_REVIEW_COMMENT) {
-        iter_review_comment(py, &events, spec, &uses, &mut out)?;
+        iter_review_comment(py, events, spec, &uses, &mut out)?;
     }
     if spec.detectors.contains(DETECTOR_ASK_USER_QUESTION) {
-        iter_ask_user_question(py, &events, spec, &uses, &mut out)?;
+        iter_ask_user_question(py, events, spec, &uses, &mut out)?;
     }
     Ok(out)
 }

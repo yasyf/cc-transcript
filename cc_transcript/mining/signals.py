@@ -3,7 +3,7 @@
 A :class:`MiningSignal` is a neutral fact mined from a transcript: it names the shape
 a detector recognized, carries a candidate trigger, a confidence signal, and
 detector-specific evidence, but no policy. The Rust executor
-(:func:`~cc_transcript.mining.engine.mine_signals`) produces these; apps map each
+(:func:`~cc_transcript.mining.engine.mine`) produces these; apps map each
 signal to their own candidate record with policy injected, capturing its window via
 :func:`~cc_transcript.context.capture_window` over a lifted
 :class:`~cc_transcript.activity.SessionActivity`.
@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from cc_transcript.mining.engine import mine as mine
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

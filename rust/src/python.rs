@@ -53,12 +53,15 @@ fn parse_file_internal(
     })
 }
 
+// A typed entry that cannot materialize to a Python event (e.g. a year-zero
+// timestamp below Python's MINYEAR) is dropped; the rest of the file survives, so
+// one corrupt event never discards the whole transcript.
 fn parsed_file_to_py<'py>(py: Python<'py>, pf: ParsedFile) -> PyResult<Bound<'py, PyAny>> {
     let events = pf
         .lines
         .iter()
-        .map(|line| build_event(py, line))
-        .collect::<PyResult<Vec<_>>>()?;
+        .filter_map(|line| build_event(py, line).ok())
+        .collect::<Vec<_>>();
     PyTuple::new(
         py,
         [
@@ -77,45 +80,25 @@ pub struct ParseStream {
 
 #[pymethods]
 impl ParseStream {
-    // Malformed files are already skipped at parse time; a file whose typed
-    // entries still fail Python materialization is silently skipped too.
     fn recv<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        loop {
-            match py.detach(|| self.rx.recv().ok()) {
-                None => return Ok(None),
-                Some(pf) => {
-                    if let Ok(obj) = parsed_file_to_py(py, pf) {
-                        return Ok(Some(obj));
-                    }
-                }
-            }
+        match py.detach(|| self.rx.recv().ok()) {
+            None => Ok(None),
+            Some(pf) => parsed_file_to_py(py, pf).map(Some),
         }
     }
 
     fn recv_many<'py>(&self, py: Python<'py>, max: usize) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let mut out: Vec<Bound<'py, PyAny>> = Vec::new();
-        // Block for the first materialized file; return [] only when the channel
-        // is genuinely closed, so an all-skipped batch never reads as "done".
-        loop {
-            match py.detach(|| self.rx.recv().ok()) {
-                None => return Ok(out),
-                Some(pf) => {
-                    if let Ok(obj) = parsed_file_to_py(py, pf) {
-                        out.push(obj);
-                        break;
-                    }
-                }
-            }
+        // Block for the first file; return [] only when the channel is closed.
+        match py.detach(|| self.rx.recv().ok()) {
+            None => return Ok(out),
+            Some(pf) => out.push(parsed_file_to_py(py, pf)?),
         }
-        // Drain what is already buffered without blocking, skipping bad files.
+        // Drain what is already buffered without blocking.
         while out.len() < max {
             match py.detach(|| self.rx.try_recv().ok()) {
                 None => break,
-                Some(pf) => {
-                    if let Ok(obj) = parsed_file_to_py(py, pf) {
-                        out.push(obj);
-                    }
-                }
+                Some(pf) => out.push(parsed_file_to_py(py, pf)?),
             }
         }
         Ok(out)
@@ -310,16 +293,16 @@ fn session_activity_probe<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (raw, spec_json, callable_formats))]
-fn mine_signals<'py>(
+#[pyo3(signature = (events, spec_json, callable_formats))]
+fn mine_events<'py>(
     py: Python<'py>,
-    raw: &[u8],
+    events: Vec<Bound<'py, PyAny>>,
     spec_json: String,
     callable_formats: Vec<(String, Py<PyAny>, Py<PyAny>)>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let mut spec = mining::compile_spec(&spec_json).map_err(PyValueError::new_err)?;
     mining::attach_callable_formats(&mut spec, callable_formats);
-    mining::mine(py, raw, &spec)
+    mining::mine_events(py, &events, &spec)
 }
 
 #[pymodule]
@@ -334,7 +317,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
-    m.add_function(wrap_pyfunction!(mine_signals, m)?)?;
+    m.add_function(wrap_pyfunction!(mine_events, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
