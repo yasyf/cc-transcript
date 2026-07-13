@@ -12,6 +12,7 @@ use std::thread;
 use crate::event::{build_event, build_print_result, parse_err};
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{session_activity, ActivityOpts, SessionActivity};
+use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
 use cc_transcript_core::types::Entry;
@@ -256,6 +257,11 @@ fn command_prefixes(py: Python<'_>, commands: Vec<String>) -> Vec<Vec<String>> {
 }
 
 #[pyfunction]
+fn command_parse<'py>(py: Python<'py>, command: &str) -> PyResult<Bound<'py, PyDict>> {
+    command::line_to_py(py, &CommandLine::parse(command))
+}
+
+#[pyfunction]
 #[pyo3(signature = (path, waiting_tools=None, human_facing_tools=None))]
 fn session_activity_probe<'py>(
     py: Python<'py>,
@@ -320,6 +326,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
+    m.add_function(wrap_pyfunction!(command_parse, m)?)?;
     m.add_function(wrap_pyfunction!(mine_events, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;

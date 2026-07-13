@@ -1,0 +1,2277 @@
+[
+  {
+    "command": "VAR=1 sudo docker compose up -d",
+    "id": "pin-assignment-wrapper-multilevel",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "docker",
+              "compose",
+              "up",
+              "-d"
+            ],
+            "env": [
+              [
+                "VAR",
+                "1"
+              ]
+            ],
+            "executable": "sudo",
+            "prefix": "docker compose",
+            "program": "sudo",
+            "raw": "VAR=1 sudo docker compose up -d",
+            "redirects": [],
+            "unwrapped_argv": [
+              "docker",
+              "compose",
+              "up",
+              "-d"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "docker compose"
+      ],
+      "raw": "VAR=1 sudo docker compose up -d"
+    }
+  },
+  {
+    "command": "git add . && git commit -m 'x; y'",
+    "id": "pin-quoted-operator-not-split",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "add",
+              "."
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git add",
+            "program": "git",
+            "raw": "git add .",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "add",
+              "."
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [
+              "commit",
+              "-m",
+              "x; y"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git commit",
+            "program": "git",
+            "raw": "git commit -m 'x; y'",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "commit",
+              "-m",
+              "x; y"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git add",
+        "git commit"
+      ],
+      "raw": "git add . && git commit -m 'x; y'"
+    }
+  },
+  {
+    "command": "git --version",
+    "id": "pin-multilevel-only-flags",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "--version"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git",
+            "program": "git",
+            "raw": "git --version",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "--version"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git"
+      ],
+      "raw": "git --version"
+    }
+  },
+  {
+    "command": "cat a && grep b",
+    "id": "pin-two-plain-segments",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "a"
+            ],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat a",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat",
+              "a"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [
+              "b"
+            ],
+            "env": [],
+            "executable": "grep",
+            "prefix": "grep",
+            "program": "grep",
+            "raw": "grep b",
+            "redirects": [],
+            "unwrapped_argv": [
+              "grep",
+              "b"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat",
+        "grep"
+      ],
+      "raw": "cat a && grep b"
+    }
+  },
+  {
+    "command": "ls -la",
+    "id": "pin-single-plain-command",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-la"
+            ],
+            "env": [],
+            "executable": "ls",
+            "prefix": "ls",
+            "program": "ls",
+            "raw": "ls -la",
+            "redirects": [],
+            "unwrapped_argv": [
+              "ls",
+              "-la"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "ls"
+      ],
+      "raw": "ls -la"
+    }
+  },
+  {
+    "command": "echo \"unterminated",
+    "id": "pin-unterminated-quote-recovered",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo"
+      ],
+      "raw": "echo \"unterminated"
+    }
+  },
+  {
+    "command": "for f in *.py; do python $f; done",
+    "id": "pin-loop-do-unwraps-body",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "$f"
+            ],
+            "env": [],
+            "executable": "python",
+            "prefix": "python",
+            "program": "python",
+            "raw": "python $f",
+            "redirects": [],
+            "unwrapped_argv": [
+              "python",
+              "$f"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "python"
+      ],
+      "raw": "for f in *.py; do python $f; done"
+    }
+  },
+  {
+    "command": "while true; do sleep 1; done",
+    "id": "pin-while-condition-and-body",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "true",
+            "prefix": "true",
+            "program": "true",
+            "raw": "true",
+            "redirects": [],
+            "unwrapped_argv": [
+              "true"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "1"
+            ],
+            "env": [],
+            "executable": "sleep",
+            "prefix": "sleep",
+            "program": "sleep",
+            "raw": "sleep 1",
+            "redirects": [],
+            "unwrapped_argv": [
+              "sleep",
+              "1"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "true",
+        "sleep"
+      ],
+      "raw": "while true; do sleep 1; done"
+    }
+  },
+  {
+    "command": "if grep -q x f; then echo y; else echo z; fi",
+    "id": "pin-if-condition-then-else",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-q",
+              "x",
+              "f"
+            ],
+            "env": [],
+            "executable": "grep",
+            "prefix": "grep",
+            "program": "grep",
+            "raw": "grep -q x f",
+            "redirects": [],
+            "unwrapped_argv": [
+              "grep",
+              "-q",
+              "x",
+              "f"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "y"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo y",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "y"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "z"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo z",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "z"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "grep",
+        "echo",
+        "echo"
+      ],
+      "raw": "if grep -q x f; then echo y; else echo z; fi"
+    }
+  },
+  {
+    "command": "",
+    "id": "pin-empty",
+    "parsed": {
+      "parts": [],
+      "prefixes": [],
+      "raw": ""
+    }
+  },
+  {
+    "command": "timeout 30 git push",
+    "id": "pin-timeout-integer-arg-unwrapped",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "30",
+              "git",
+              "push"
+            ],
+            "env": [],
+            "executable": "timeout",
+            "prefix": "git push",
+            "program": "timeout",
+            "raw": "timeout 30 git push",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "push"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git push"
+      ],
+      "raw": "timeout 30 git push"
+    }
+  },
+  {
+    "command": "git commit -m x",
+    "id": "pin-single-git-subcommand",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "commit",
+              "-m",
+              "x"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git commit",
+            "program": "git",
+            "raw": "git commit -m x",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "commit",
+              "-m",
+              "x"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git commit"
+      ],
+      "raw": "git commit -m x"
+    }
+  },
+  {
+    "command": "docker compose up -d",
+    "id": "pin-single-docker-compose-subcommand",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "compose",
+              "up",
+              "-d"
+            ],
+            "env": [],
+            "executable": "docker",
+            "prefix": "docker compose",
+            "program": "docker",
+            "raw": "docker compose up -d",
+            "redirects": [],
+            "unwrapped_argv": [
+              "docker",
+              "compose",
+              "up",
+              "-d"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "docker compose"
+      ],
+      "raw": "docker compose up -d"
+    }
+  },
+  {
+    "command": "sudo docker compose up",
+    "id": "pin-sudo-wrapper-keeps-subcommand",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "docker",
+              "compose",
+              "up"
+            ],
+            "env": [],
+            "executable": "sudo",
+            "prefix": "docker compose",
+            "program": "sudo",
+            "raw": "sudo docker compose up",
+            "redirects": [],
+            "unwrapped_argv": [
+              "docker",
+              "compose",
+              "up"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "docker compose"
+      ],
+      "raw": "sudo docker compose up"
+    }
+  },
+  {
+    "command": "nice -n 10 cargo build",
+    "id": "pin-nice-wrapper-numeric-flag-stripped",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-n",
+              "10",
+              "cargo",
+              "build"
+            ],
+            "env": [],
+            "executable": "nice",
+            "prefix": "cargo build",
+            "program": "nice",
+            "raw": "nice -n 10 cargo build",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cargo",
+              "build"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cargo build"
+      ],
+      "raw": "nice -n 10 cargo build"
+    }
+  },
+  {
+    "command": "sudo",
+    "id": "pin-bare-wrapper-yields-nothing",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "sudo",
+            "prefix": null,
+            "program": "sudo",
+            "raw": "sudo",
+            "redirects": [],
+            "unwrapped_argv": []
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [],
+      "raw": "sudo"
+    }
+  },
+  {
+    "command": "env -i FOO=bar make test",
+    "id": "pin-env-wrapper-flags-and-assignment-stripped",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-i",
+              "FOO=bar",
+              "make",
+              "test"
+            ],
+            "env": [],
+            "executable": "env",
+            "prefix": "make",
+            "program": "env",
+            "raw": "env -i FOO=bar make test",
+            "redirects": [],
+            "unwrapped_argv": [
+              "make",
+              "test"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "make"
+      ],
+      "raw": "env -i FOO=bar make test"
+    }
+  },
+  {
+    "command": "sudo env FOO=1 timeout 5 ls -la",
+    "id": "pin-stacked-wrappers-unwrapped",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "env",
+              "FOO=1",
+              "timeout",
+              "5",
+              "ls",
+              "-la"
+            ],
+            "env": [],
+            "executable": "sudo",
+            "prefix": "ls",
+            "program": "sudo",
+            "raw": "sudo env FOO=1 timeout 5 ls -la",
+            "redirects": [],
+            "unwrapped_argv": [
+              "ls",
+              "-la"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "ls"
+      ],
+      "raw": "sudo env FOO=1 timeout 5 ls -la"
+    }
+  },
+  {
+    "command": "sudo git push -f && echo hi",
+    "id": "pin-sudo-wrapper-two-segments",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "git",
+              "push",
+              "-f"
+            ],
+            "env": [],
+            "executable": "sudo",
+            "prefix": "git push",
+            "program": "sudo",
+            "raw": "sudo git push -f",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "push",
+              "-f"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [
+              "hi"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo hi",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "hi"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git push",
+        "echo"
+      ],
+      "raw": "sudo git push -f && echo hi"
+    }
+  },
+  {
+    "command": "> out.txt",
+    "id": "pin-redirect-only-empty-executable",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "",
+            "prefix": null,
+            "program": "",
+            "raw": "> out.txt",
+            "redirects": [
+              {
+                "fd": null,
+                "op": ">",
+                "target": "out.txt"
+              }
+            ],
+            "unwrapped_argv": []
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [],
+      "raw": "> out.txt"
+    }
+  },
+  {
+    "command": "sudo ''",
+    "id": "pin-empty-token-stops-unwrap",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              ""
+            ],
+            "env": [],
+            "executable": "sudo",
+            "prefix": null,
+            "program": "sudo",
+            "raw": "sudo ''",
+            "redirects": [],
+            "unwrapped_argv": []
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [],
+      "raw": "sudo ''"
+    }
+  },
+  {
+    "command": "git '' status",
+    "id": "pin-empty-token-not-a-subcommand",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "",
+              "status"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git",
+            "program": "git",
+            "raw": "git '' status",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "",
+              "status"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git"
+      ],
+      "raw": "git '' status"
+    }
+  },
+  {
+    "command": "timeout ٣ git push",
+    "id": "pin-arabic-digit-not-skipped",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "٣",
+              "git",
+              "push"
+            ],
+            "env": [],
+            "executable": "timeout",
+            "prefix": "٣",
+            "program": "timeout",
+            "raw": "timeout ٣ git push",
+            "redirects": [],
+            "unwrapped_argv": [
+              "٣",
+              "git",
+              "push"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "٣"
+      ],
+      "raw": "timeout ٣ git push"
+    }
+  },
+  {
+    "command": "git \"'commit'\"",
+    "id": "pin-quoted-subcommand-keeps-inner-quotes",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "'commit'"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git 'commit'",
+            "program": "git",
+            "raw": "git \"'commit'\"",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "'commit'"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git 'commit'"
+      ],
+      "raw": "git \"'commit'\""
+    }
+  },
+  {
+    "command": "diff <(sort a.txt) <(sort b.txt)",
+    "id": "pin-process-substitution",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "diff",
+            "prefix": "diff",
+            "program": "diff",
+            "raw": "diff <(sort a.txt) <(sort b.txt)",
+            "redirects": [],
+            "unwrapped_argv": [
+              "diff"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "diff"
+      ],
+      "raw": "diff <(sort a.txt) <(sort b.txt)"
+    }
+  },
+  {
+    "command": "cat <(git log) | head -3",
+    "id": "pin-process-substitution-in-pipeline",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat <(git log)",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [
+              "-3"
+            ],
+            "env": [],
+            "executable": "head",
+            "prefix": "head",
+            "program": "head",
+            "raw": "head -3",
+            "redirects": [],
+            "unwrapped_argv": [
+              "head",
+              "-3"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat",
+        "head"
+      ],
+      "raw": "cat <(git log) | head -3"
+    }
+  },
+  {
+    "command": "echo $((1 + 2))",
+    "id": "pin-arithmetic-expansion",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo $((1 + 2))",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo"
+      ],
+      "raw": "echo $((1 + 2))"
+    }
+  },
+  {
+    "command": "x=$((COUNT + 1)) make build",
+    "id": "pin-arithmetic-assignment-prefix",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "build"
+            ],
+            "env": [
+              [
+                "x",
+                "$((COUNT + 1))"
+              ]
+            ],
+            "executable": "make",
+            "prefix": "make",
+            "program": "make",
+            "raw": "x=$((COUNT + 1)) make build",
+            "redirects": [],
+            "unwrapped_argv": [
+              "make",
+              "build"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "make"
+      ],
+      "raw": "x=$((COUNT + 1)) make build"
+    }
+  },
+  {
+    "command": "echo `git rev-parse HEAD`",
+    "id": "pin-backtick-substitution",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo `git rev-parse HEAD`",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo"
+      ],
+      "raw": "echo `git rev-parse HEAD`"
+    }
+  },
+  {
+    "command": "foo() { git status; }; foo",
+    "id": "pin-function-definition-body-and-call",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "status"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git status",
+            "program": "git",
+            "raw": "git status",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "status"
+            ]
+          },
+          "op": ";"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "foo",
+            "prefix": "foo",
+            "program": "foo",
+            "raw": "foo",
+            "redirects": [],
+            "unwrapped_argv": [
+              "foo"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git status",
+        "foo"
+      ],
+      "raw": "foo() { git status; }; foo"
+    }
+  },
+  {
+    "command": "git commit -m \"line1\nline2\"",
+    "id": "pin-multiline-quoted-string",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "commit",
+              "-m",
+              "line1\nline2"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git commit",
+            "program": "git",
+            "raw": "git commit -m \"line1\nline2\"",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "commit",
+              "-m",
+              "line1\nline2"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git commit"
+      ],
+      "raw": "git commit -m \"line1\nline2\""
+    }
+  },
+  {
+    "command": "git add .\ngit commit -m x",
+    "id": "pin-newline-separated-commands",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "add",
+              "."
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git add",
+            "program": "git",
+            "raw": "git add .",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "add",
+              "."
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "commit",
+              "-m",
+              "x"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git commit",
+            "program": "git",
+            "raw": "git commit -m x",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "commit",
+              "-m",
+              "x"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git add",
+        "git commit"
+      ],
+      "raw": "git add .\ngit commit -m x"
+    }
+  },
+  {
+    "command": "cargo bench --no-run",
+    "id": "corpus-000",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "bench",
+              "--no-run"
+            ],
+            "env": [],
+            "executable": "cargo",
+            "prefix": "cargo bench",
+            "program": "cargo",
+            "raw": "cargo bench --no-run",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cargo",
+              "bench",
+              "--no-run"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cargo bench"
+      ],
+      "raw": "cargo bench --no-run"
+    }
+  },
+  {
+    "command": "ls -la cc_transcript/mining",
+    "id": "corpus-001",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-la",
+              "cc_transcript/mining"
+            ],
+            "env": [],
+            "executable": "ls",
+            "prefix": "ls",
+            "program": "ls",
+            "raw": "ls -la cc_transcript/mining",
+            "redirects": [],
+            "unwrapped_argv": [
+              "ls",
+              "-la",
+              "cc_transcript/mining"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "ls"
+      ],
+      "raw": "ls -la cc_transcript/mining"
+    }
+  },
+  {
+    "command": "uv run ruff check cc_transcript",
+    "id": "corpus-002",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "run",
+              "ruff",
+              "check",
+              "cc_transcript"
+            ],
+            "env": [],
+            "executable": "uv",
+            "prefix": "uv run",
+            "program": "ruff",
+            "raw": "uv run ruff check cc_transcript",
+            "redirects": [],
+            "unwrapped_argv": [
+              "uv",
+              "run",
+              "ruff",
+              "check",
+              "cc_transcript"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "uv run"
+      ],
+      "raw": "uv run ruff check cc_transcript"
+    }
+  },
+  {
+    "command": "uv run pytest tests/test_parser.py -x",
+    "id": "corpus-003",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "run",
+              "pytest",
+              "tests/test_parser.py",
+              "-x"
+            ],
+            "env": [],
+            "executable": "uv",
+            "prefix": "uv run",
+            "program": "pytest",
+            "raw": "uv run pytest tests/test_parser.py -x",
+            "redirects": [],
+            "unwrapped_argv": [
+              "uv",
+              "run",
+              "pytest",
+              "tests/test_parser.py",
+              "-x"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "uv run"
+      ],
+      "raw": "uv run pytest tests/test_parser.py -x"
+    }
+  },
+  {
+    "command": "uv build",
+    "id": "corpus-004",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "build"
+            ],
+            "env": [],
+            "executable": "uv",
+            "prefix": "uv build",
+            "program": "uv",
+            "raw": "uv build",
+            "redirects": [],
+            "unwrapped_argv": [
+              "uv",
+              "build"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "uv build"
+      ],
+      "raw": "uv build"
+    }
+  },
+  {
+    "command": "git status --short",
+    "id": "corpus-005",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "status",
+              "--short"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git status",
+            "program": "git",
+            "raw": "git status --short",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "status",
+              "--short"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git status"
+      ],
+      "raw": "git status --short"
+    }
+  },
+  {
+    "command": "git diff --stat",
+    "id": "corpus-006",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "diff",
+              "--stat"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git diff",
+            "program": "git",
+            "raw": "git diff --stat",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "diff",
+              "--stat"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git diff"
+      ],
+      "raw": "git diff --stat"
+    }
+  },
+  {
+    "command": "cargo test --workspace",
+    "id": "corpus-007",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "test",
+              "--workspace"
+            ],
+            "env": [],
+            "executable": "cargo",
+            "prefix": "cargo test",
+            "program": "cargo",
+            "raw": "cargo test --workspace",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cargo",
+              "test",
+              "--workspace"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cargo test"
+      ],
+      "raw": "cargo test --workspace"
+    }
+  },
+  {
+    "command": "rg -n 'parse_bytes' rust/src",
+    "id": "corpus-008",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-n",
+              "parse_bytes",
+              "rust/src"
+            ],
+            "env": [],
+            "executable": "rg",
+            "prefix": "rg",
+            "program": "rg",
+            "raw": "rg -n 'parse_bytes' rust/src",
+            "redirects": [],
+            "unwrapped_argv": [
+              "rg",
+              "-n",
+              "parse_bytes",
+              "rust/src"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "rg"
+      ],
+      "raw": "rg -n 'parse_bytes' rust/src"
+    }
+  },
+  {
+    "command": "uv run python -m cc_transcript stats",
+    "id": "corpus-009",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "run",
+              "python",
+              "-m",
+              "cc_transcript",
+              "stats"
+            ],
+            "env": [],
+            "executable": "uv",
+            "prefix": "uv run",
+            "program": "python",
+            "raw": "uv run python -m cc_transcript stats",
+            "redirects": [],
+            "unwrapped_argv": [
+              "uv",
+              "run",
+              "python",
+              "-m",
+              "cc_transcript",
+              "stats"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "uv run"
+      ],
+      "raw": "uv run python -m cc_transcript stats"
+    }
+  },
+  {
+    "command": "(cd src && (make && make test)) || echo fail",
+    "id": "edge-nested-subshells",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "src"
+            ],
+            "env": [],
+            "executable": "cd",
+            "prefix": "cd",
+            "program": "cd",
+            "raw": "cd src",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cd",
+              "src"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "make",
+            "prefix": "make",
+            "program": "make",
+            "raw": "make",
+            "redirects": [],
+            "unwrapped_argv": [
+              "make"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [
+              "test"
+            ],
+            "env": [],
+            "executable": "make",
+            "prefix": "make",
+            "program": "make",
+            "raw": "make test",
+            "redirects": [],
+            "unwrapped_argv": [
+              "make",
+              "test"
+            ]
+          },
+          "op": "||"
+        },
+        {
+          "command": {
+            "args": [
+              "fail"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo fail",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "fail"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cd",
+        "make",
+        "make",
+        "echo"
+      ],
+      "raw": "(cd src && (make && make test)) || echo fail"
+    }
+  },
+  {
+    "command": "echo $(git log --format=%H | head -1)",
+    "id": "edge-command-substitution-nested",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo $(git log --format=%H | head -1)",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo"
+      ],
+      "raw": "echo $(git log --format=%H | head -1)"
+    }
+  },
+  {
+    "command": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF",
+    "id": "edge-heredoc-body-not-commands",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat"
+      ],
+      "raw": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF"
+    }
+  },
+  {
+    "command": "diff <(sort a) <(sort b) > out.txt",
+    "id": "edge-process-substitution-both",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "diff",
+            "prefix": "diff",
+            "program": "diff",
+            "raw": "diff <(sort a) <(sort b)",
+            "redirects": [
+              {
+                "fd": null,
+                "op": ">",
+                "target": "out.txt"
+              }
+            ],
+            "unwrapped_argv": [
+              "diff"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "diff"
+      ],
+      "raw": "diff <(sort a) <(sort b) > out.txt"
+    }
+  },
+  {
+    "command": "git commit -m 'héllo 🤖 漢字'",
+    "id": "edge-unicode-args",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "commit",
+              "-m",
+              "héllo 🤖 漢字"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git commit",
+            "program": "git",
+            "raw": "git commit -m 'héllo 🤖 漢字'",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "commit",
+              "-m",
+              "héllo 🤖 漢字"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "git commit"
+      ],
+      "raw": "git commit -m 'héllo 🤖 漢字'"
+    }
+  },
+  {
+    "command": "café --brew",
+    "id": "edge-unicode-executable",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "--brew"
+            ],
+            "env": [],
+            "executable": "café",
+            "prefix": "café",
+            "program": "café",
+            "raw": "café --brew",
+            "redirects": [],
+            "unwrapped_argv": [
+              "café",
+              "--brew"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "café"
+      ],
+      "raw": "café --brew"
+    }
+  },
+  {
+    "command": "ENV=prod uv run pytest -k test 2>&1 | tee log | grep -c PASS",
+    "id": "edge-pipe-and-redirect-mix",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "run",
+              "pytest",
+              "-k",
+              "test"
+            ],
+            "env": [
+              [
+                "ENV",
+                "prod"
+              ]
+            ],
+            "executable": "uv",
+            "prefix": "uv run",
+            "program": "pytest",
+            "raw": "ENV=prod uv run pytest -k test",
+            "redirects": [
+              {
+                "fd": 2,
+                "op": ">&",
+                "target": "1"
+              }
+            ],
+            "unwrapped_argv": [
+              "uv",
+              "run",
+              "pytest",
+              "-k",
+              "test"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [
+              "log"
+            ],
+            "env": [],
+            "executable": "tee",
+            "prefix": "tee",
+            "program": "tee",
+            "raw": "tee log",
+            "redirects": [],
+            "unwrapped_argv": [
+              "tee",
+              "log"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [
+              "-c",
+              "PASS"
+            ],
+            "env": [],
+            "executable": "grep",
+            "prefix": "grep",
+            "program": "grep",
+            "raw": "grep -c PASS",
+            "redirects": [],
+            "unwrapped_argv": [
+              "grep",
+              "-c",
+              "PASS"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "uv run",
+        "tee",
+        "grep"
+      ],
+      "raw": "ENV=prod uv run pytest -k test 2>&1 | tee log | grep -c PASS"
+    }
+  },
+  {
+    "command": "sleep 5 & echo started",
+    "id": "edge-background-job",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "5"
+            ],
+            "env": [],
+            "executable": "sleep",
+            "prefix": "sleep",
+            "program": "sleep",
+            "raw": "sleep 5",
+            "redirects": [],
+            "unwrapped_argv": [
+              "sleep",
+              "5"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "started"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo started",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "started"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "sleep",
+        "echo"
+      ],
+      "raw": "sleep 5 & echo started"
+    }
+  },
+  {
+    "command": "sudo env FOO=1 BAR=2 timeout 30 nice -n 5 cargo build --release",
+    "id": "edge-stacked-wrappers-env",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "env",
+              "FOO=1",
+              "BAR=2",
+              "timeout",
+              "30",
+              "nice",
+              "-n",
+              "5",
+              "cargo",
+              "build",
+              "--release"
+            ],
+            "env": [],
+            "executable": "sudo",
+            "prefix": "cargo build",
+            "program": "sudo",
+            "raw": "sudo env FOO=1 BAR=2 timeout 30 nice -n 5 cargo build --release",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cargo",
+              "build",
+              "--release"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cargo build"
+      ],
+      "raw": "sudo env FOO=1 BAR=2 timeout 30 nice -n 5 cargo build --release"
+    }
+  },
+  {
+    "command": "# nothing to run here",
+    "id": "edge-comment-only",
+    "parsed": {
+      "parts": [],
+      "prefixes": [],
+      "raw": "# nothing to run here"
+    }
+  },
+  {
+    "command": "2>&1 > out.txt",
+    "id": "edge-only-redirect",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "",
+            "prefix": null,
+            "program": "",
+            "raw": "2>&1 > out.txt",
+            "redirects": [
+              {
+                "fd": 2,
+                "op": ">&",
+                "target": "1"
+              },
+              {
+                "fd": null,
+                "op": ">",
+                "target": "out.txt"
+              }
+            ],
+            "unwrapped_argv": []
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [],
+      "raw": "2>&1 > out.txt"
+    }
+  },
+  {
+    "command": "a; b\nc && d || e",
+    "id": "edge-semicolons-and-newlines",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "a",
+            "prefix": "a",
+            "program": "a",
+            "raw": "a",
+            "redirects": [],
+            "unwrapped_argv": [
+              "a"
+            ]
+          },
+          "op": ";"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "b",
+            "prefix": "b",
+            "program": "b",
+            "raw": "b",
+            "redirects": [],
+            "unwrapped_argv": [
+              "b"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "c",
+            "prefix": "c",
+            "program": "c",
+            "raw": "c",
+            "redirects": [],
+            "unwrapped_argv": [
+              "c"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "d",
+            "prefix": "d",
+            "program": "d",
+            "raw": "d",
+            "redirects": [],
+            "unwrapped_argv": [
+              "d"
+            ]
+          },
+          "op": "||"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "e",
+            "prefix": "e",
+            "program": "e",
+            "raw": "e",
+            "redirects": [],
+            "unwrapped_argv": [
+              "e"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e"
+      ],
+      "raw": "a; b\nc && d || e"
+    }
+  },
+  {
+    "command": "FOO=bar BAZ=qux",
+    "id": "edge-assignment-only",
+    "parsed": {
+      "parts": [],
+      "prefixes": [],
+      "raw": "FOO=bar BAZ=qux"
+    }
+  },
+  {
+    "command": "ls -la {src,tests}/*.py",
+    "id": "edge-glob-and-braces",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-la",
+              "{src,tests}/*.py"
+            ],
+            "env": [],
+            "executable": "ls",
+            "prefix": "ls",
+            "program": "ls",
+            "raw": "ls -la {src,tests}/*.py",
+            "redirects": [],
+            "unwrapped_argv": [
+              "ls",
+              "-la",
+              "{src,tests}/*.py"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "ls"
+      ],
+      "raw": "ls -la {src,tests}/*.py"
+    }
+  },
+  {
+    "command": "grep pattern <<< \"$var\"",
+    "id": "edge-here-string",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "pattern"
+            ],
+            "env": [],
+            "executable": "grep",
+            "prefix": "grep",
+            "program": "grep",
+            "raw": "grep pattern <<< \"$var\"",
+            "redirects": [],
+            "unwrapped_argv": [
+              "grep",
+              "pattern"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "grep"
+      ],
+      "raw": "grep pattern <<< \"$var\""
+    }
+  },
+  {
+    "command": "(echo a; echo b) | sort | uniq -c",
+    "id": "edge-subshell-pipeline",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "a"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo a",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "a"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "b"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo b",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "b"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "sort",
+            "prefix": "sort",
+            "program": "sort",
+            "raw": "sort",
+            "redirects": [],
+            "unwrapped_argv": [
+              "sort"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [
+              "-c"
+            ],
+            "env": [],
+            "executable": "uniq",
+            "prefix": "uniq",
+            "program": "uniq",
+            "raw": "uniq -c",
+            "redirects": [],
+            "unwrapped_argv": [
+              "uniq",
+              "-c"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo",
+        "echo",
+        "sort",
+        "uniq"
+      ],
+      "raw": "(echo a; echo b) | sort | uniq -c"
+    }
+  },
+  {
+    "command": "greet() { echo hi; }; greet && greet",
+    "id": "edge-function-def-and-call",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "hi"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo hi",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "hi"
+            ]
+          },
+          "op": ";"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "greet",
+            "prefix": "greet",
+            "program": "greet",
+            "raw": "greet",
+            "redirects": [],
+            "unwrapped_argv": [
+              "greet"
+            ]
+          },
+          "op": "&&"
+        },
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "greet",
+            "prefix": "greet",
+            "program": "greet",
+            "raw": "greet",
+            "redirects": [],
+            "unwrapped_argv": [
+              "greet"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "echo",
+        "greet",
+        "greet"
+      ],
+      "raw": "greet() { echo hi; }; greet && greet"
+    }
+  },
+  {
+    "command": "EMPTY= make build",
+    "id": "edge-empty-assignment-value",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "build"
+            ],
+            "env": [
+              [
+                "EMPTY",
+                ""
+              ]
+            ],
+            "executable": "make",
+            "prefix": "make",
+            "program": "make",
+            "raw": "EMPTY= make build",
+            "redirects": [],
+            "unwrapped_argv": [
+              "make",
+              "build"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "make"
+      ],
+      "raw": "EMPTY= make build"
+    }
+  }
+]

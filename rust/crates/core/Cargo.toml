@@ -13,6 +13,15 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 memchr = "2.7"
 once_cell = "1"
 regex = "1"
+# Gated behind `command`; grammar-locked to the Python wheel (tree_sitter_bash 0.25.1
+# both sides, tree-sitter core 0.26 matching the wheel's 0.26.0). The Swift/CI build
+# takes core with default-features off, so this stays out of the python-free path.
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+
+[features]
+default = ["command"]
+command = ["dep:tree-sitter", "dep:tree-sitter-bash"]
 
 [dev-dependencies]
 # Criterion for the v14 P0 parse/filter/activity baseline (benches/parse.rs).

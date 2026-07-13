@@ -54,6 +54,14 @@ def score_post_process(spec_json: str, buckets: list[list[str]], raw: list[int],
 def command_prefixes(commands: list[str], /) -> list[list[str]]:
     """Permission-style prefixes per command line, parsed in parallel off the GIL."""
 
+def command_parse(command: str, /) -> dict[str, Any]:
+    """Parses one bash command line into a serializable ``CommandLine`` structure.
+
+    The dict carries ``raw``, ``prefixes: list[str]``, and ``parts: list[dict]`` where
+    each part has ``op: str | None`` and a ``command`` dict of ``raw``/``executable``/
+    ``args``/``env``/``redirects``/``program``/``unwrapped_argv``/``prefix``.
+    """
+
 def mine_events(
     events: list[TranscriptEvent], spec_json: str, callable_formats: list[tuple[str, Any, Any]], /
 ) -> list[dict[str, Any]]:
