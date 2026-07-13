@@ -46,3 +46,13 @@ udpipe-rs = { version = "0.2", optional = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"], optional = true }
+
+[dev-dependencies]
+# Criterion for the v14 P0 parse/filter/activity baseline (rust/benches/parse.rs).
+# default-features off: skip the plotters/HTML report machinery; estimates.json
+# (the medians BASELINE.json reads) is written by the core regardless.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "parse"
+harness = false

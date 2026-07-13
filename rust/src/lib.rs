@@ -11,7 +11,7 @@ mod command;
 #[cfg(feature = "python")]
 mod event;
 #[cfg(feature = "python")]
-mod filter;
+pub mod filter;
 #[cfg(feature = "python")]
 mod lexicon;
 #[cfg(feature = "python")]

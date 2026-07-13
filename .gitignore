@@ -49,3 +49,6 @@ wheelhouse/
 /.build/
 /swift/.build/
 /swift/Examples/probe/.build/
+
+# Bench corpus (regenerate: scripts/gen_corpus.py)
+.fixtures/
