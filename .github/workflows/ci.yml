@@ -61,7 +61,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format check (rustfmt)
-        working-directory: rust
         run: cargo fmt --check
 
       - name: Build bridge crate
