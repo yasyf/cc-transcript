@@ -93,10 +93,7 @@ fn compile_regex(predicate: &Value) -> Result<Regex, String> {
 
 /// Joins ``(name, pattern)`` group pairs into one alternation, matching the Python
 /// ``compile_groups`` (so the score executor's regex stages share its semantics).
-pub(crate) fn compile_group_array(
-    groups: &sonic_rs::Array,
-    ignore_case: bool,
-) -> Result<Regex, String> {
+pub fn compile_group_array(groups: &sonic_rs::Array, ignore_case: bool) -> Result<Regex, String> {
     let joined = groups
         .iter()
         .filter_map(|group| {
@@ -189,7 +186,7 @@ fn entry_text(entry: &Entry) -> String {
     }
 }
 
-pub(crate) fn normalize_bare(text: &str, strip_trailing: &str) -> String {
+pub fn normalize_bare(text: &str, strip_trailing: &str) -> String {
     text.trim()
         .trim_end_matches(|c: char| strip_trailing.contains(c))
         .trim()

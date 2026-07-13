@@ -2,7 +2,7 @@
 
 Rust can't import `cc_transcript.filterspec` at compile time, so it embeds a copy
 of the CC-protocol marker strings and the flattened interrupt/agent-injection
-alternations, rendered here into `rust/src/generated/`. `filterspec.py` stays the
+alternations, rendered here into `rust/crates/core/src/generated/`. `filterspec.py` stays the
 canonical source; this only mirrors it for the Rust build. `literals()` is the single
 manifest keyed `"domain.NAME"`: `render()` emits the Rust files purely from it, and
 `tests/test_literals_parity.py` derives both its byte-for-byte drift guard and its
@@ -168,8 +168,8 @@ def mod_rs() -> str:
 
 def render() -> dict[str, str]:
     manifest = literals()
-    return {"rust/src/generated/mod.rs": mod_rs()} | {
-        f"rust/src/generated/{domain}.rs": render_domain(domain, manifest)
+    return {"rust/crates/core/src/generated/mod.rs": mod_rs()} | {
+        f"rust/crates/core/src/generated/{domain}.rs": render_domain(domain, manifest)
         for domain in dict.fromkeys(name.partition(".")[0] for name in manifest)
     }
 

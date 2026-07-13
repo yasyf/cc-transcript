@@ -67,7 +67,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 module-name = "cc_transcript._parser_rs"
-manifest-path = "rust/Cargo.toml"
+manifest-path = "rust/crates/py/Cargo.toml"
 python-source = "."
 features = ["extension-module"]
 include = ["cc_transcript/sentiment/data/*.tsv", "cc_transcript/sentiment/data/en-ewt.udpipe"]

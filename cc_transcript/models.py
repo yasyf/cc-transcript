@@ -56,7 +56,7 @@ class Question:
 def parse_questions(rounds: object) -> tuple[Question, ...] | None:
     """Lift an AskUserQuestion ``questions`` array into typed rounds, or None.
 
-    Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/src/parse.rs``):
+    Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/crates/core/src/parse.rs``):
     a missing or non-list ``rounds`` reads as None; within the array each entry
     lacking a string ``question`` is dropped, ``header`` reads as None unless a
     string, ``multi_select`` is False unless ``multiSelect`` is a bool, and
@@ -116,7 +116,7 @@ class ToolUseBlock:
     def file_path(self) -> str | None:
         """The raw ``file_path`` input argument when it is a string, else None.
 
-        Mirrors the Rust parse-layer lift in ``rust/src/parse.rs``: the value is
+        Mirrors the Rust parse-layer lift in ``rust/crates/core/src/parse.rs``: the value is
         read verbatim from the input for every tool, and a non-object input or a
         non-string value reads as None. Mining denial evidence consumes this uniform
         lift rather than the type-dispatched :func:`~cc_transcript.tools.file_path_of`.

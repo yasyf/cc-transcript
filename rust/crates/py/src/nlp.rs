@@ -6,7 +6,7 @@ use udpipe_rs::{Model, Word};
 
 // Embedded at compile time — no runtime file read, download, or cache. A corrupt
 // embed is a build bug (panic). Model is Send + !Sync, so a Mutex serializes parses.
-const MODEL_BYTES: &[u8] = include_bytes!("../../cc_transcript/sentiment/data/en-ewt.udpipe");
+const MODEL_BYTES: &[u8] = include_bytes!("../../../../cc_transcript/sentiment/data/en-ewt.udpipe");
 
 static MODEL: Lazy<Mutex<Model>> = Lazy::new(|| {
     Mutex::new(Model::load_from_memory(MODEL_BYTES).expect("embedded en-ewt.udpipe loads"))
@@ -52,7 +52,8 @@ fn char_offsets(text: &str, words: &[Word]) -> Vec<(usize, usize)> {
     let mut cursor = 0usize;
     for word in words {
         let first = word.form.chars().next();
-        while cursor < chars.len() && chars[cursor].is_whitespace() && Some(chars[cursor]) != first {
+        while cursor < chars.len() && chars[cursor].is_whitespace() && Some(chars[cursor]) != first
+        {
             cursor += 1;
         }
         let end = cursor + word.form.chars().count();
@@ -130,7 +131,9 @@ pub fn nlp_analyze(py: Python<'_>, text: &str) -> PyResult<Vec<AnalyzedToken>> {
             .into_iter()
             .map(|t| {
                 let polarity = crate::lexicon::polarity(&t.lower);
-                (t.form, t.lower, t.lemma, t.upos, t.start, t.end, polarity, t.negated)
+                (
+                    t.form, t.lower, t.lemma, t.upos, t.start, t.end, polarity, t.negated,
+                )
             })
             .collect())
     })

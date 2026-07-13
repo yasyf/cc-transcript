@@ -182,7 +182,7 @@ fn parse_user_content(
     }
 }
 
-pub(crate) fn parse_questions(input: &Value) -> Option<Vec<Question>> {
+pub fn parse_questions(input: &Value) -> Option<Vec<Question>> {
     let questions = field(input, "questions")?.as_array()?;
     Some(
         questions

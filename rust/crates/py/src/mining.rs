@@ -8,23 +8,23 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Object, Value};
 
-use crate::filter::compile_group_array;
-use crate::generated::mining::{
+use cc_transcript_core::filter::compile_group_array;
+use cc_transcript_core::generated::mining::{
     ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, DETECTOR_ASK_USER_QUESTION, DETECTOR_DENIAL,
     DETECTOR_EXIT_PLAN_REJECTION, DETECTOR_INTERRUPT, DETECTOR_PLAN_REENTRY,
     DETECTOR_REVIEW_COMMENT, DETECTOR_TRANSCRIPT_MESSAGE, INTERRUPT_REJECTION, LOW, NONE,
     NO_OPTION_SELECTED, PLAN_REVIEW, QUESTION_ANSWER, REVIEW_COMMENT, TRANSCRIPT_MESSAGE,
 };
-use crate::parse::parse_questions;
-use crate::protocol::{
+use cc_transcript_core::parse::parse_questions;
+use cc_transcript_core::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
     ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
-use crate::types::{
+use cc_transcript_core::types::{
     matches_names, tool_use_index, AssistantEntry, ContentBlock, Entry, EntryMeta, ModeChannel,
     ModeEntry, OtherEntry, Question, ToolResultBlock, ToolUseBlock, UserContent, UserEntry,
 };
-use crate::value::{field, field_bool, field_str};
+use cc_transcript_core::value::{field, field_bool, field_str};
 
 // FINDING_KEYS prefix is folded into finding_keys by structured_format_to_dict, so the
 // compiled spec already carries the full alias list; no constant needed here.
@@ -660,7 +660,11 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(match (int.extract::<i64>(), int.extract::<u64>()) {
             (Ok(i), _) => Value::from(i),
             (_, Ok(u)) => Value::from(u),
-            _ => int.extract::<f64>().ok().and_then(Value::new_f64).unwrap_or_else(Value::new_null),
+            _ => int
+                .extract::<f64>()
+                .ok()
+                .and_then(Value::new_f64)
+                .unwrap_or_else(Value::new_null),
         });
     }
     if let Ok(float) = obj.cast::<PyFloat>() {
@@ -1340,7 +1344,12 @@ fn review_comments<'py>(
         })
         .collect();
     for fmt in &spec.review.callable_formats {
-        if fmt.pattern.bind(py).call_method1("search", (text,))?.is_none() {
+        if fmt
+            .pattern
+            .bind(py)
+            .call_method1("search", (text,))?
+            .is_none()
+        {
             continue;
         }
         for item in fmt.extract.bind(py).call1((text,))?.try_iter()? {

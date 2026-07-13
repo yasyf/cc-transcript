@@ -447,7 +447,7 @@ pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
 /// segment of an ``mcp__<server>__<tool>`` name split on the first two ``__``.
 /// Alias closure happens Python-side (tools.py expand_tool_names); spec JSON
 /// arrives pre-expanded and the alias table never crosses the language boundary.
-pub(crate) fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
+pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
     names.contains(actual)
         || actual
             .strip_prefix("mcp__")

@@ -9,12 +9,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
-use crate::activity::{session_activity, ActivityOpts, SessionActivity};
-use crate::event::{build_event, build_print_result};
-use crate::filter::{compile_spec, spec_keep, CompiledSpec};
-use crate::parse::{parse_bytes, parse_print_envelope};
-use crate::types::Entry;
+use crate::event::{build_event, build_print_result, parse_err};
 use crate::{command, lexicon, mining, score};
+use cc_transcript_core::activity::{session_activity, ActivityOpts, SessionActivity};
+use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
+use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
+use cc_transcript_core::types::Entry;
 
 static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
     let n = std::env::var("CC_TRANSCRIPT_PARSE_THREADS")
@@ -147,7 +147,7 @@ fn stream_parse(
 fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let value: Value = sonic_rs::from_slice(raw)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
-    let result = parse_print_envelope(&value)?;
+    let result = parse_print_envelope(&value).map_err(parse_err)?;
     build_print_result(py, &result)
 }
 
@@ -173,7 +173,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 
 #[pyfunction]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    use crate::generated::{command, mining, protocol};
+    use cc_transcript_core::generated::{command, mining, protocol};
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
@@ -271,7 +271,10 @@ fn session_activity_probe<'py>(
     };
     let activity = py.detach(|| -> PyResult<SessionActivity> {
         let bytes = std::fs::read(&path)?;
-        Ok(session_activity(&parse_bytes(&bytes, |_| true)?, &opts))
+        Ok(session_activity(
+            &parse_bytes(&bytes, |_| true).map_err(parse_err)?,
+            &opts,
+        ))
     })?;
     let dict = PyDict::new(py);
     dict.set_item("is_waiting", activity.is_waiting)?;

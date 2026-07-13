@@ -1,0 +1,25 @@
+[package]
+name = "cc-transcript-core"
+version = "0.9.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# arbitrary_precision keeps each number's raw text so json_to_py (the py crate's
+# event.rs) can mirror Python json semantics for numbers sonic-rs stores lossily
+# as f64.
+sonic-rs = { version = "0.5", features = ["arbitrary_precision"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+memchr = "2.7"
+once_cell = "1"
+regex = "1"
+
+[dev-dependencies]
+# Criterion for the v14 P0 parse/filter/activity baseline (benches/parse.rs).
+# default-features off: skip the plotters/HTML report machinery; estimates.json
+# (the medians BASELINE.json reads) is written by the core regardless.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "parse"
+harness = false

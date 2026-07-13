@@ -89,13 +89,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "cc_transcript_parser"
+name = "cc-transcript-cli"
+version = "0.9.0"
+
+[[package]]
+name = "cc-transcript-core"
 version = "0.9.0"
 dependencies = [
  "chrono",
  "criterion",
- "crossbeam-channel",
  "memchr",
+ "once_cell",
+ "regex",
+ "sonic-rs",
+]
+
+[[package]]
+name = "cc-transcript-py"
+version = "0.9.0"
+dependencies = [
+ "cc-transcript-core",
+ "chrono",
+ "crossbeam-channel",
  "num_cpus",
  "once_cell",
  "pyo3",
@@ -112,7 +127,7 @@ dependencies = [
 name = "cc_transcript_swift"
 version = "0.9.0"
 dependencies = [
- "cc_transcript_parser",
+ "cc-transcript-core",
  "swift-bridge",
  "swift-bridge-build",
 ]

@@ -1,7 +1,7 @@
 """Toolchain parity: the tree-sitter grammar pins agree across both lockfiles.
 
 The Rust extension and the Python wheel embed independent tree-sitter builds
-that must parse bash identically (rationale at ``rust/Cargo.toml``). This pins
+that must parse bash identically (rationale at ``rust/crates/py/Cargo.toml``). This pins
 their resolved versions: ``tree-sitter-bash`` exactly equal, ``tree-sitter``
 core sharing a ``(major, minor)`` so a ``0.27`` bump on one side alone fails.
 """

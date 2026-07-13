@@ -4,7 +4,7 @@
   manifest (the same manifest the Rust files render from). A constant added to the
   manifest but missing from `python.rs`'s accessor fails here automatically. Skips
   when the `_parser_rs` extension isn't built.
-- Freshness: the committed `rust/src/generated/*` files still match the generator's
+- Freshness: the committed `rust/crates/core/src/generated/*` files still match the generator's
   `render()` byte-for-byte, so a stale checkout fails loudly.
 """
 

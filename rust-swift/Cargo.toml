@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
-cc_transcript_parser = { path = "../rust", default-features = false }
+cc-transcript-core = { path = "../rust/crates/core", default-features = false }
 # swift-bridge is pre-1.0: keep all three swift-bridge crates (including the
 # CLI pinned in scripts/build-swift-package.sh) on the same exact version.
 swift-bridge = "=0.1.59"

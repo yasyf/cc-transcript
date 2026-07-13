@@ -5,7 +5,7 @@ wall clock and no entropy anywhere, so the same ``--seed`` and file plan reprodu
 the exact same bytes on every machine. File mtimes are pinned with :func:`os.utime`
 so newest-first discovery ordering is golden too. Event shapes are cribbed from the
 raw envelopes in ``tests/support.py`` (``fixture_entries``) and the field names the
-parser requires (``rust/src/parse.rs`` / ``cc_transcript/models.py``): a coherent mix
+parser requires (``rust/crates/core/src/parse.rs`` / ``cc_transcript/models.py``): a coherent mix
 of real user prompts, assistant text/thinking/tool-use turns, matching tool-result
 turns (Bash/Read/Edit/Write/Grep/Glob/Task), corrections and denials that feed the
 mining detectors, sidechains, meta fields, and system events.

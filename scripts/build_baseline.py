@@ -46,7 +46,7 @@ def cargo_env() -> dict[str, str]:
 
 def run_cargo_bench() -> None:
     subprocess.run(
-        ["cargo", "bench", "-p", "cc_transcript_parser"],
+        ["cargo", "bench", "-p", "cc-transcript-core"],
         cwd=REPO_ROOT,
         env=cargo_env(),
         check=True,

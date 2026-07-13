@@ -385,7 +385,7 @@ class TestEdgeCases:
 
 
 PIN_DELIM = "|"
-PINS_PATH = Path(__file__).resolve().parent.parent / "rust" / "data" / "command_prefix_pins.tsv"
+PINS_PATH = Path(__file__).resolve().parent.parent / "rust" / "crates" / "py" / "data" / "command_prefix_pins.tsv"
 
 
 def decode_pin(field: str) -> str:

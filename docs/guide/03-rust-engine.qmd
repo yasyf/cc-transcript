@@ -46,7 +46,7 @@ truth.
 
 A `FilterSpec` is *filters as data* — an ordered tuple of `Clause` rules.
 `spec_to_json` serializes it to the JSON contract the engine compiles
-(`compile_spec` in `rust/src/filter.rs`) and evaluates per line during
+(`compile_spec` in `rust/crates/core/src/filter.rs`) and evaluates per line during
 parsing, so events that fail the spec are dropped before a Python object is
 ever built. Pass a spec to `TranscriptParser.stream_transcripts` and the
 rejected events never cross the FFI boundary.
@@ -64,7 +64,7 @@ feeds the `score_short_circuit` and `score_post_process` entry points that
 bracket model inference; `mining_spec_to_json` feeds `mine`, which runs the Rust
 detectors over a session's parsed events.
 
-The lexicon needs no spec at all: `rust/src/lexicon.rs` compiles the two
+The lexicon needs no spec at all: `rust/crates/py/src/lexicon.rs` compiles the two
 packaged TSVs in at build time, and tokenization runs a real NLP pipeline —
 tokenizer, POS tagger, lemmatizer, and dependency parse — over the embedded
 UD-English-EWT model, via `udpipe-rs`. The model ships in the wheel
@@ -127,7 +127,7 @@ pytest` runs all of it.
 markers, the mining ids, separators, and confidence floors, the command
 tables — are the single source of truth.
 `scripts/build_rust_literals.py` renders them into the committed
-`rust/src/generated/` modules the crate compiles in; to change one, edit the
+`rust/crates/core/src/generated/` modules the crate compiles in; to change one, edit the
 Python constant, regenerate, and commit. Never hand-edit the generated Rust.
 `tests/test_literals_parity.py` is the drift gate: `embedded_literals()` must
 equal the generator's manifest as one whole dict, and the committed files

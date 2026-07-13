@@ -16,19 +16,19 @@ use crate::model::{
     THINKING_BLOCK_CLS, TOOL_RESULT_BLOCK_CLS, TOOL_USE_BLOCK_CLS, TURN_DURATION_CLS, USAGE_CLS,
     USER_EVENT_CLS,
 };
-use crate::parse::ParseError;
-use crate::protocol::{interrupt_marker, is_agent_injection};
-use crate::types::{
+use cc_transcript_core::parse::ParseError;
+use cc_transcript_core::protocol::{interrupt_marker, is_agent_injection};
+use cc_transcript_core::types::{
     joined_text, ApiError, AttachmentDetail, Attribution, ContentBlock, Entry, EntryMeta, InitInfo,
     ModelUsage, PrintBody, PrintMessage, PrintResult, SystemDetail, Usage, UserContent,
 };
 
-impl From<ParseError> for PyErr {
-    fn from(err: ParseError) -> Self {
-        match err {
-            ParseError::Key(key) => PyKeyError::new_err(format!("'{key}'")),
-            ParseError::Value(msg) => PyValueError::new_err(msg),
-        }
+// Orphan rule: ParseError (core) and PyErr (pyo3) are both foreign here, so the
+// conversion is a function rather than a From impl.
+pub(crate) fn parse_err(err: ParseError) -> PyErr {
+    match err {
+        ParseError::Key(key) => PyKeyError::new_err(format!("'{key}'")),
+        ParseError::Value(msg) => PyValueError::new_err(msg),
     }
 }
 

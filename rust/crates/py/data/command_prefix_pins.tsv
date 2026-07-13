@@ -1,5 +1,5 @@
 # command_prefix_pins.tsv
-# Single source for rust/src/command.rs pins() and tests/test_command.py TestCommandPrefixes.
+# Single source for rust/crates/py/src/command.rs pins() and tests/test_command.py TestCommandPrefixes.
 # Both consumers parse this file directly; there is no inline copy of these rows.
 # Columns (tab-separated): id<TAB>command<TAB>expected
 #   command  — the raw command line. Escape scheme: backslash -> \\, newline -> \n.

@@ -7,9 +7,9 @@ use crate::nlp;
 // The override + AFINN scoring data is the canonical vendored snapshot in
 // cc_transcript/sentiment/data/, embedded here at compile time; the Python Lexicon
 // reads the same two TSVs at runtime. A parity test guards against drift.
-const AFINN_DATA: &str = include_str!("../../cc_transcript/sentiment/data/afinn-en-165.tsv");
+const AFINN_DATA: &str = include_str!("../../../../cc_transcript/sentiment/data/afinn-en-165.tsv");
 const OVERRIDES_DATA: &str =
-    include_str!("../../cc_transcript/sentiment/data/domain_overrides.tsv");
+    include_str!("../../../../cc_transcript/sentiment/data/domain_overrides.tsv");
 const MIN_MAGNITUDE: i32 = 2;
 const FLOOR: i32 = 3;
 

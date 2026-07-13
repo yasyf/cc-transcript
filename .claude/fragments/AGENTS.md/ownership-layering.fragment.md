@@ -12,7 +12,7 @@
   in the same commit. Shared literals and tables (protocol markers, mining
   ids/separators/floors, command tables) are generated: change the Python constant, run
   `uv run python scripts/build_rust_literals.py`, and commit the regenerated
-  `rust/src/generated/*.rs` with the change — never hand-edit them.
+  `rust/crates/core/src/generated/*.rs` with the change — never hand-edit them.
   `tests/test_literals_parity.py` is the drift gate. Hand-written `// Parity:` comments
   now cover only algorithm-level ports; they cite symbol names
   (`scorespec.apply_post_process`), never line numbers.

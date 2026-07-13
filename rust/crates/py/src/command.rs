@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use tree_sitter::{Node, Parser};
 
-use crate::generated::command::{
+use cc_transcript_core::generated::command::{
     ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS,
 };
 

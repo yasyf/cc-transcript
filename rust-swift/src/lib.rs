@@ -10,8 +10,8 @@
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 
-use _parser_rs::activity::{self, ActivityOpts};
-use _parser_rs::parse::{self, ParseError};
+use cc_transcript_core::activity::{self, ActivityOpts};
+use cc_transcript_core::parse::{self, ParseError};
 
 #[swift_bridge::bridge]
 mod ffi {

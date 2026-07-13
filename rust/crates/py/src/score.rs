@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use regex::Regex;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::filter::{compile_group_array, normalize_bare};
 use crate::lexicon;
-use crate::value::{field, field_bool, field_str};
+use cc_transcript_core::filter::{compile_group_array, normalize_bare};
+use cc_transcript_core::value::{field, field_bool, field_str};
 
 // Compiles the JSON contract emitted by cc_transcript.sentiment.scorespec.score_spec_to_json
 // and evaluates it with the same semantics as the Python interpreter. The LLM stays
@@ -153,7 +153,8 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> Result<i64, St
                 return Ok(score);
             }
             for text in texts {
-                if text.split_whitespace().count() <= *max_words && !lexicon::has_hit(text, false)? {
+                if text.split_whitespace().count() <= *max_words && !lexicon::has_hit(text, false)?
+                {
                     return Ok(*to);
                 }
             }
@@ -169,7 +170,8 @@ fn apply_post(stage: &PostStage, texts: &[String], score: i64) -> Result<i64, St
                 return Ok(score);
             }
             for text in texts {
-                if trigger.is_match(text) && !(hostile.is_match(text) || lexicon::has_hit(text, true)?)
+                if trigger.is_match(text)
+                    && !(hostile.is_match(text) || lexicon::has_hit(text, true)?)
                 {
                     return Ok(*to);
                 }
