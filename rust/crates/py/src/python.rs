@@ -42,7 +42,7 @@ static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
 });
 
 struct ParsedFile {
-    path: String,
+    path: Option<String>,
     mtime: f64,
     lines: Vec<Entry>,
 }
@@ -60,7 +60,7 @@ fn parse_file_internal(
     })
     .ok()?;
     Some(ParsedFile {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         mtime,
         lines,
     })
@@ -150,12 +150,24 @@ fn stream_parse(
 
 #[pyfunction]
 #[pyo3(name = "parse_bytes")]
-fn parse_bytes_py<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
-    let lines = parse_bytes(raw, |_| true).map_err(parse_err)?;
+#[pyo3(signature = (raw, spec_json=None))]
+fn parse_bytes_py<'py>(
+    py: Python<'py>,
+    raw: &[u8],
+    spec_json: Option<String>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let filter = match spec_json {
+        Some(json) => Some(compile_spec(&json).map_err(PyValueError::new_err)?),
+        None => None,
+    };
+    let lines = parse_bytes(raw, |entry| {
+        filter.as_ref().is_none_or(|spec| spec_keep(spec, entry))
+    })
+    .map_err(parse_err)?;
     parsed_file_to_py(
         py,
         ParsedFile {
-            path: String::new(),
+            path: None,
             mtime: 0.0,
             lines,
         },

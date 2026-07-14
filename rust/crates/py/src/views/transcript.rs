@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
@@ -20,12 +21,12 @@ use crate::views::events::event_view;
 /// one-entry Arc per yielded event, so a held watch event pins only itself.
 ///
 /// Attributes:
-///     path: The transcript's path on disk.
+///     path: The transcript's path on disk; None for a bytes parse.
 ///     mtime: The transcript's modification time when parsed.
 ///     events: The parsed events, in file order.
 #[pyclass(name = "Transcript", module = "cc_transcript", frozen)]
 pub(crate) struct TranscriptView {
-    pub path: String,
+    pub path: Option<String>,
     pub mtime: f64,
     pub entries: Arc<Vec<Entry>>,
 }
@@ -33,8 +34,8 @@ pub(crate) struct TranscriptView {
 #[pymethods]
 impl TranscriptView {
     #[getter]
-    fn path(&self) -> &str {
-        &self.path
+    fn path(&self) -> Option<PathBuf> {
+        self.path.as_ref().map(PathBuf::from)
     }
 
     #[getter]

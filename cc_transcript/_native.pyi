@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from cc_transcript.models import PrintResult, TranscriptEvent
@@ -13,7 +14,7 @@ class EventList:
 class Transcript:
     """One parsed transcript file: its path, mtime, and lazily-materialized events."""
 
-    path: str
+    path: Path | None
     mtime: float
     events: EventList
 
@@ -33,8 +34,12 @@ def stream_parse(paths: list[tuple[str, float]], prefetch: int, spec_json: str |
     are dropped during parsing, before any Python object is built.
     """
 
-def parse_bytes(raw: bytes, /) -> Transcript:
-    """Parses raw JSONL transcript bytes into a :class:`Transcript` view."""
+def parse_bytes(raw: bytes, spec_json: str | None = None) -> Transcript:
+    """Parses raw JSONL transcript bytes into a :class:`Transcript` view.
+
+    When ``spec_json`` is the JSON of a portable filter spec, events failing it
+    are dropped during parsing, before any Python object is built.
+    """
 
 def parse_print_result(raw: bytes, /) -> PrintResult:
     """Parses a 'claude -p --output-format json' result from raw JSON bytes."""
@@ -224,7 +229,9 @@ def render_stats(raws: list[bytes], /) -> str:
     """Renders the aggregate statistics block over several transcripts' raw JSONL bytes.
 
     Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
-    """def discovery_find_transcripts(root: str, /) -> list[str]:
+    """
+
+def discovery_find_transcripts(root: str, /) -> list[str]:
     """Every ``*.jsonl`` transcript under ``root``, sorted by path (``._*`` forks included)."""
 
 def discovery_find_transcript(root: str, session_id: str, /) -> str | None:
