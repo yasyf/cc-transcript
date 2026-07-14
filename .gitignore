@@ -52,3 +52,6 @@ wheelhouse/
 
 # Bench corpus (regenerate: scripts/gen_corpus.py)
 .fixtures/
+
+# Per-worktree isolated cargo target dirs (parallel-lane builds)
+.cargo-target/
