@@ -96,3 +96,16 @@ def toolresult_parse(name: str, payload_json: str, /) -> dict[str, Any]:
     Mirrors ``cc_transcript.tools.parse_tool_result``: a JSON string payload is a
     ``TextResult``, an object dispatches by tool name, anything else is an ``OtherResult``.
     """
+
+def activity_lift(path: str, max_events: int, /) -> dict[str, Any]:
+    """Lifts the transcript at ``path`` into the ``SessionActivity.from_events`` projection.
+
+    Lifts over the first ``max_events`` parsed entries and returns ``turn_count`` plus
+    ``turns`` (each ``index``/``prompt``/``started_at_ms``/``ended_at_ms``/``event_count``
+    with ``tool_uses`` and ``edits``), a whole-window ``result_index``, and the same-file
+    ``hunk_overlaps`` — every timestamp an epoch-millisecond int. The lift-parity substrate.
+    """
+
+def activity_hunk_overlap(a_old: str, a_new: str, b_old: str, b_new: str, /) -> float:
+    """The activity.py ``hunk_overlap`` of two ``Hunk``s: the fraction of ``a_new``'s
+    non-empty normalized lines present in ``b_old``."""

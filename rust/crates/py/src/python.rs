@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, FixedOffset};
 use crossbeam_channel::{bounded, Receiver};
 use once_cell::sync::Lazy;
 use pyo3::exceptions::PyValueError;
@@ -11,7 +12,10 @@ use std::thread;
 
 use crate::event::{build_event, build_print_result, parse_err};
 use crate::{command, lexicon, mining, score};
-use cc_transcript_core::activity::{session_activity, ActivityOpts, SessionActivity};
+use cc_transcript_core::activity::{
+    hunk_overlap, lift_session, overlap_between, result_index, session_activity, ActivityOpts,
+    Hunk, SessionActivity,
+};
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
@@ -329,6 +333,132 @@ fn ids_tool_digest(name: &str, input_json: &str) -> PyResult<String> {
     ids::tool_digest(name, &input).map_err(PyValueError::new_err)
 }
 
+// activity.py `ms`: round(dt.timestamp() * 1000), the round-half-even float path Python
+// takes — not chrono's truncating timestamp_millis — so sub-ms stamps project identically.
+fn epoch_ms(dt: DateTime<FixedOffset>) -> i64 {
+    ((dt.timestamp_micros() as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
+}
+
+#[pyfunction]
+#[pyo3(signature = (path, max_events))]
+fn activity_lift<'py>(
+    py: Python<'py>,
+    path: String,
+    max_events: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entries: Vec<Entry> = py.detach(|| -> PyResult<Vec<Entry>> {
+        let bytes = std::fs::read(&path)?;
+        parse_bytes(&bytes, |_| true).map_err(parse_err)
+    })?;
+    // Mirror stream_parse's materialization drop: a year-0000 timestamp has no Python
+    // datetime (MINYEAR), so build_event drops it — P3 moves this guard to parse time.
+    let capped: Vec<Entry> = entries
+        .into_iter()
+        .filter(|entry| entry.meta().map_or(true, |m| m.timestamp.year() >= 1))
+        .take(max_events)
+        .collect();
+    let lift = lift_session("", &capped);
+    let out = PyDict::new(py);
+    out.set_item("turn_count", lift.turns.len())?;
+    let turns = lift
+        .turns
+        .iter()
+        .map(|turn| {
+            let td = PyDict::new(py);
+            td.set_item("index", turn.index)?;
+            td.set_item("prompt", &turn.prompt)?;
+            td.set_item("started_at_ms", turn.started_at.map(epoch_ms))?;
+            td.set_item("ended_at_ms", turn.ended_at.map(epoch_ms))?;
+            td.set_item("event_count", turn.events.len())?;
+            let tool_uses = turn
+                .tool_uses
+                .iter()
+                .map(|use_| {
+                    let ud = PyDict::new(py);
+                    ud.set_item("event_uuid", use_.event_uuid)?;
+                    ud.set_item("tool_use_id", use_.tool_use_id)?;
+                    ud.set_item("name", use_.name)?;
+                    ud.set_item("ts_ms", epoch_ms(use_.ts))?;
+                    ud.set_item("has_result", use_.result.is_some())?;
+                    ud.set_item("result_is_error", use_.result.map(|r| r.is_error))?;
+                    ud.set_item("result_ts_ms", use_.result_ts.map(epoch_ms))?;
+                    ud.set_item("duration_ms", use_.duration_ms())?;
+                    Ok(ud)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            td.set_item("tool_uses", PyList::new(py, tool_uses)?)?;
+            let edits = turn
+                .edits()
+                .iter()
+                .map(|edit| {
+                    let ed = PyDict::new(py);
+                    ed.set_item("file_path", &edit.file_path)?;
+                    ed.set_item("tool", edit.tool)?;
+                    let hunks = edit
+                        .hunks
+                        .iter()
+                        .map(|h| {
+                            let hd = PyDict::new(py);
+                            hd.set_item("old", &h.old)?;
+                            hd.set_item("new", &h.new)?;
+                            Ok(hd)
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    ed.set_item("hunks", PyList::new(py, hunks)?)?;
+                    ed.set_item("event_uuid", edit.event_uuid)?;
+                    ed.set_item("tool_use_id", edit.tool_use_id)?;
+                    ed.set_item("turn_index", edit.turn_index)?;
+                    ed.set_item("ts_ms", epoch_ms(edit.ts))?;
+                    Ok(ed)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            td.set_item("edits", PyList::new(py, edits)?)?;
+            Ok(td)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    out.set_item("turns", PyList::new(py, turns)?)?;
+    let index = result_index(&capped)
+        .iter()
+        .map(|r| {
+            let rd = PyDict::new(py);
+            rd.set_item("tool_use_id", r.tool_use_id)?;
+            rd.set_item("result_ts_ms", r.result_ts.map(epoch_ms))?;
+            rd.set_item("is_error", r.block.is_error)?;
+            Ok(rd)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    out.set_item("result_index", PyList::new(py, index)?)?;
+    let edits = lift.edits();
+    let mut overlaps: Vec<Bound<PyDict>> = Vec::new();
+    for i in 0..edits.len() {
+        for j in (i + 1)..edits.len() {
+            if edits[i].file_path == edits[j].file_path {
+                let od = PyDict::new(py);
+                od.set_item("a_tool_use_id", edits[i].tool_use_id)?;
+                od.set_item("b_tool_use_id", edits[j].tool_use_id)?;
+                od.set_item("overlap", overlap_between(&edits[i].hunks, &edits[j].hunks))?;
+                overlaps.push(od);
+            }
+        }
+    }
+    out.set_item("hunk_overlaps", PyList::new(py, overlaps)?)?;
+    Ok(out)
+}
+
+#[pyfunction]
+fn activity_hunk_overlap(a_old: &str, a_new: &str, b_old: &str, b_new: &str) -> f64 {
+    hunk_overlap(
+        &Hunk {
+            old: a_old.to_string(),
+            new: a_new.to_string(),
+        },
+        &Hunk {
+            old: b_old.to_string(),
+            new: b_new.to_string(),
+        },
+    )
+}
+
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -348,6 +478,8 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_function(wrap_pyfunction!(crate::toolcall::toolcall_parse, m)?)?;
     m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
     Ok(())

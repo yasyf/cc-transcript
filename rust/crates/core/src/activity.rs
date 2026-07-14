@@ -1,11 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, FixedOffset};
 use once_cell::sync::Lazy;
+use sonic_rs::JsonContainerTrait;
 
+use crate::pystr;
 use crate::types::{
-    matches_names, AttachmentDetail, Entry, ToolResultBlock, ToolUseBlock, UserEntry,
+    matches_names, AssistantEntry, AttachmentDetail, ContentBlock, Entry, ToolResultBlock,
+    ToolUseBlock, UserEntry,
 };
-use crate::value::field_str;
+use crate::value::{field_last, field_str, field_str_last};
 
 const NOTIFICATION_MARKER: &str = "<task-notification>";
 
@@ -85,7 +89,7 @@ fn opens_turn(user: &UserEntry) -> bool {
         || user.meta.is_compact_summary
         || user.interrupted()
         || user.is_agent_injected())
-        && !user.content.text().trim().is_empty()
+        && !pystr::strip(&user.content.text()).is_empty()
 }
 
 /// The index opening the current turn: the last turn-opening user entry, or 0
@@ -270,6 +274,337 @@ pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivi
             .map(|meta| meta.timestamp.timestamp())
             .max(),
     }
+}
+
+/// A before/after content pair lowered from an edit-shaped call (tools.py Hunk).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    pub old: String,
+    pub new: String,
+}
+
+/// One tool invocation lifted from a turn's assistant events (activity.py ToolUse);
+/// `edit` is the lowered `(file_path, hunks)` when edit-shaped, else None.
+#[derive(Debug)]
+pub struct ToolUse<'a> {
+    pub event_uuid: &'a str,
+    pub tool_use_id: &'a str,
+    pub name: &'a str,
+    pub ts: DateTime<FixedOffset>,
+    pub result: Option<&'a ToolResultBlock>,
+    pub result_ts: Option<DateTime<FixedOffset>>,
+    pub turn_index: usize,
+    pub edit: Option<(String, Vec<Hunk>)>,
+}
+
+impl ToolUse<'_> {
+    /// Milliseconds from the call to its result, or None without a result
+    /// timestamp (activity.py ToolUse.duration_ms).
+    pub fn duration_ms(&self) -> Option<i64> {
+        self.result_ts.map(|rt| {
+            let micros = (rt - self.ts)
+                .num_microseconds()
+                .expect("duration fits i64 microseconds");
+            ((micros as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
+        })
+    }
+}
+
+/// A file modification lowered from an edit-shaped tool call (activity.py Edit).
+#[derive(Debug)]
+pub struct Edit<'a> {
+    pub file_path: String,
+    pub hunks: Vec<Hunk>,
+    pub tool: &'a str,
+    pub event_uuid: &'a str,
+    pub tool_use_id: &'a str,
+    pub turn_index: usize,
+    pub ts: DateTime<FixedOffset>,
+}
+
+/// One prompt-to-prompt span of a session (activity.py Turn); `events` is the
+/// turn's contiguous slice of the parsed entries, edits derived on demand.
+#[derive(Debug)]
+pub struct Turn<'a> {
+    pub index: usize,
+    pub prompt: String,
+    pub started_at: Option<DateTime<FixedOffset>>,
+    pub ended_at: Option<DateTime<FixedOffset>>,
+    pub events: &'a [Entry],
+    pub tool_uses: Vec<ToolUse<'a>>,
+}
+
+impl<'a> Turn<'a> {
+    /// The turn's file modifications: tool uses that lowered to hunks and a path
+    /// (activity.py Turn.edits).
+    pub fn edits(&self) -> Vec<Edit<'a>> {
+        self.tool_uses
+            .iter()
+            .filter_map(|use_| {
+                use_.edit.as_ref().map(|(path, hunks)| Edit {
+                    file_path: path.clone(),
+                    hunks: hunks.clone(),
+                    tool: use_.name,
+                    event_uuid: use_.event_uuid,
+                    tool_use_id: use_.tool_use_id,
+                    turn_index: use_.turn_index,
+                    ts: use_.ts,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A session's transcript lifted into turns (activity.py SessionActivity).
+#[derive(Debug)]
+pub struct LiftedSession<'a> {
+    pub session_id: &'a str,
+    pub turns: Vec<Turn<'a>>,
+}
+
+impl<'a> LiftedSession<'a> {
+    /// Every edit in the session, in chronological order (activity.py SessionActivity.edits).
+    pub fn edits(&self) -> Vec<Edit<'a>> {
+        self.turns.iter().flat_map(|turn| turn.edits()).collect()
+    }
+}
+
+/// A tool result paired with the tool-use id it answers, in activity.py
+/// `result_index` order (last-write-wins, first-occurrence position: dict semantics).
+#[derive(Debug)]
+pub struct ResultRef<'a> {
+    pub tool_use_id: &'a str,
+    pub block: &'a ToolResultBlock,
+    pub result_ts: Option<DateTime<FixedOffset>>,
+}
+
+/// Indexes tool results by the tool-use id they answer (activity.py `result_index`):
+/// each user entry's tool-result blocks paired with that entry's timestamp.
+pub fn result_index(entries: &[Entry]) -> Vec<ResultRef<'_>> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut latest: HashMap<&str, (&ToolResultBlock, Option<DateTime<FixedOffset>>)> =
+        HashMap::new();
+    for entry in entries {
+        if let Entry::User(user) = entry {
+            for block in user.tool_results() {
+                let key = block.tool_use_id.as_str();
+                if latest
+                    .insert(key, (block, Some(user.meta.timestamp)))
+                    .is_none()
+                {
+                    order.push(key);
+                }
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|key| {
+            let (block, result_ts) = latest[key];
+            ResultRef {
+                tool_use_id: key,
+                block,
+                result_ts,
+            }
+        })
+        .collect()
+}
+
+const LINE_BREAKS: &[char] = &[
+    '\n', '\r', '\u{0b}', '\u{0c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}', '\u{2029}',
+];
+
+// str.splitlines() then " ".join(line.split()), dropping empties; the "\r\n"
+// empty slice drops, so it counts as one break.
+fn normalized_lines(text: &str) -> Vec<String> {
+    text.split(|c| LINE_BREAKS.contains(&c))
+        .filter_map(|line| {
+            let normalized = pystr::split_whitespace(line).collect::<Vec<_>>().join(" ");
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .collect()
+}
+
+/// The fraction of `a.new`'s non-empty normalized lines present in `b.old`
+/// (activity.py `hunk_overlap`); 0.0 when `a.new` has no non-empty lines.
+pub fn hunk_overlap(a: &Hunk, b: &Hunk) -> f64 {
+    let lines = normalized_lines(&a.new);
+    if lines.is_empty() {
+        return 0.0;
+    }
+    let olds: HashSet<String> = normalized_lines(&b.old).into_iter().collect();
+    lines.iter().filter(|line| olds.contains(*line)).count() as f64 / lines.len() as f64
+}
+
+/// The greatest `hunk_overlap` over the cartesian product of two edits' hunks
+/// (evidence.py `overlap_between`); 0.0 when either side is empty.
+pub fn overlap_between(incorrect: &[Hunk], correction: &[Hunk]) -> f64 {
+    incorrect
+        .iter()
+        .flat_map(|a| correction.iter().map(move |b| hunk_overlap(a, b)))
+        .fold(0.0_f64, f64::max)
+}
+
+// tools.py TOOL_ALIASES_REVERSE: an aliased edit spelling lowers like its builtin.
+fn dealias(name: &str) -> &str {
+    match name {
+        "Execute" => "Bash",
+        "Create" => "Write",
+        "Task" => "Agent",
+        "FetchUrl" => "WebFetch",
+        "ExitSpecMode" => "ExitPlanMode",
+        other => other,
+    }
+}
+
+// Shim (toolcall port): hunks_of ∘ parse_tool_call(on_error="other") and
+// file_path_of; a missing/non-string required field degrades to no edit.
+fn lower_edit(tool_use: &ToolUseBlock) -> Option<(String, Vec<Hunk>)> {
+    let input = &tool_use.input;
+    match dealias(&tool_use.name) {
+        "Edit" => Some((
+            field_str_last(input, "file_path")?.to_string(),
+            vec![Hunk {
+                old: field_str_last(input, "old_string")?.to_string(),
+                new: field_str_last(input, "new_string")?.to_string(),
+            }],
+        )),
+        "MultiEdit" => {
+            let file_path = field_str_last(input, "file_path")?.to_string();
+            let hunks = field_last(input, "edits")
+                .and_then(|edits| edits.as_array())?
+                .iter()
+                .map(|span| {
+                    Some(Hunk {
+                        old: field_str_last(span, "old_string")?.to_string(),
+                        new: field_str_last(span, "new_string")?.to_string(),
+                    })
+                })
+                .collect::<Option<Vec<Hunk>>>()?;
+            (!hunks.is_empty()).then_some((file_path, hunks))
+        }
+        "Write" => Some((
+            field_str_last(input, "file_path")?.to_string(),
+            vec![Hunk {
+                old: String::new(),
+                new: field_str_last(input, "content")?.to_string(),
+            }],
+        )),
+        "NotebookEdit" => Some((
+            field_str_last(input, "notebook_path")?.to_string(),
+            vec![Hunk {
+                old: String::new(),
+                new: field_str_last(input, "new_source")?.to_string(),
+            }],
+        )),
+        _ => None,
+    }
+}
+
+struct Segment {
+    prompt: String,
+    start: usize,
+    end: usize,
+}
+
+// activity.py from_events segmentation: a turn-opening user entry starts a
+// contiguous segment; everything else folds into the current one (or segment 0).
+fn segments(entries: &[Entry]) -> Vec<Segment> {
+    let mut segments: Vec<Segment> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        match entry {
+            Entry::User(user) if opens_turn(user) => segments.push(Segment {
+                prompt: user.content.text(),
+                start: index,
+                end: index + 1,
+            }),
+            _ => match segments.last_mut() {
+                Some(segment) => segment.end = index + 1,
+                None => segments.push(Segment {
+                    prompt: String::new(),
+                    start: index,
+                    end: index + 1,
+                }),
+            },
+        }
+    }
+    segments
+}
+
+// activity.py event_stamps: first and last timestamps among a turn's events;
+// Mode and Other entries carry no envelope and are skipped.
+fn event_stamps(
+    events: &[Entry],
+) -> (Option<DateTime<FixedOffset>>, Option<DateTime<FixedOffset>>) {
+    let stamps: Vec<DateTime<FixedOffset>> = events
+        .iter()
+        .filter_map(Entry::meta)
+        .map(|m| m.timestamp)
+        .collect();
+    (stamps.first().copied(), stamps.last().copied())
+}
+
+fn lift_turn<'a>(
+    index: usize,
+    segment: &Segment,
+    entries: &'a [Entry],
+    results: &HashMap<&'a str, (&'a ToolResultBlock, Option<DateTime<FixedOffset>>)>,
+) -> Turn<'a> {
+    let events = &entries[segment.start..segment.end];
+    let (started_at, ended_at) = event_stamps(events);
+    let tool_uses = events
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Assistant(assistant) => Some(assistant),
+            _ => None,
+        })
+        .flat_map(|assistant: &'a AssistantEntry| {
+            assistant
+                .blocks
+                .iter()
+                .filter_map(move |block| match block {
+                    ContentBlock::ToolUse(tool_use) => Some((assistant, tool_use)),
+                    _ => None,
+                })
+        })
+        .map(|(assistant, tool_use)| {
+            let pair = results.get(tool_use.id.as_str());
+            ToolUse {
+                event_uuid: &assistant.meta.uuid,
+                tool_use_id: &tool_use.id,
+                name: &tool_use.name,
+                ts: assistant.meta.timestamp,
+                result: pair.map(|(block, _)| *block),
+                result_ts: pair.and_then(|(_, ts)| *ts),
+                turn_index: index,
+                edit: lower_edit(tool_use),
+            }
+        })
+        .collect();
+    Turn {
+        index,
+        prompt: segment.prompt.clone(),
+        started_at,
+        ended_at,
+        events,
+        tool_uses,
+    }
+}
+
+/// Lifts parsed entries into turns (activity.py SessionActivity.from_events): a
+/// turn-opening user opens a turn, and each tool-use is paired via `result_index`.
+pub fn lift_session<'a>(session_id: &'a str, entries: &'a [Entry]) -> LiftedSession<'a> {
+    let results: HashMap<&str, (&ToolResultBlock, Option<DateTime<FixedOffset>>)> =
+        result_index(entries)
+            .into_iter()
+            .map(|r| (r.tool_use_id, (r.block, r.result_ts)))
+            .collect();
+    let turns = segments(entries)
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| lift_turn(index, segment, entries, &results))
+        .collect();
+    LiftedSession { session_id, turns }
 }
 
 #[cfg(test)]
@@ -836,5 +1171,207 @@ mod tests {
         assert!(!activity.mid_tool);
         assert!(activity.pending.is_empty());
         assert_eq!(activity.last_event_epoch, None);
+    }
+
+    fn edit_use(name: &str, id: &str, input: &str) -> Entry {
+        tool_use(name, id, input)
+    }
+
+    #[test]
+    fn lift_segments_prelude_and_prompts() {
+        let entries = vec![
+            result_entry("orphan", false, false),
+            user("do the thing"),
+            tool_use("Bash", "b1", r#"{"command":"ls"}"#),
+            tool_result("b1"),
+            user("now do more"),
+        ];
+        let lift = lift_session("s1", &entries);
+        assert_eq!(lift.turns.len(), 3);
+        assert_eq!(lift.turns[0].prompt, "");
+        assert_eq!(lift.turns[0].events.len(), 1);
+        assert_eq!(lift.turns[1].prompt, "do the thing");
+        assert_eq!(lift.turns[1].tool_uses.len(), 1);
+        assert_eq!(lift.turns[1].tool_uses[0].tool_use_id, "b1");
+        assert_eq!(lift.turns[2].prompt, "now do more");
+    }
+
+    #[test]
+    fn lift_pairs_result_and_duration() {
+        let entries = vec![
+            user("go"),
+            tool_use("Bash", "b1", r#"{"command":"make"}"#),
+            tool_result("b1"),
+        ];
+        let lift = lift_session("s1", &entries);
+        let paired = &lift.turns[0].tool_uses[0];
+        assert!(paired.result.is_some());
+        assert_eq!(paired.duration_ms(), Some(1000));
+    }
+
+    #[test]
+    fn lift_unpaired_tool_use_has_no_duration() {
+        let entries = vec![user("go"), tool_use("Bash", "b1", r#"{"command":"make"}"#)];
+        let lift = lift_session("s1", &entries);
+        let unpaired = &lift.turns[0].tool_uses[0];
+        assert!(unpaired.result.is_none());
+        assert_eq!(unpaired.duration_ms(), None);
+    }
+
+    #[test]
+    fn lift_lowers_edit_shaped_calls() {
+        let entries = vec![
+            user("edit files"),
+            edit_use(
+                "Edit",
+                "e1",
+                r#"{"file_path":"/a.py","old_string":"x","new_string":"y"}"#,
+            ),
+            edit_use("Write", "w1", r#"{"file_path":"/b.py","content":"hello"}"#),
+            edit_use(
+                "MultiEdit",
+                "m1",
+                r#"{"file_path":"/c.py","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}"#,
+            ),
+            edit_use(
+                "NotebookEdit",
+                "n1",
+                r#"{"notebook_path":"/d.ipynb","new_source":"cell"}"#,
+            ),
+            edit_use("Bash", "b1", r#"{"command":"ls"}"#),
+        ];
+        let lift = lift_session("s1", &entries);
+        let edits = lift.edits();
+        assert_eq!(edits.len(), 4);
+        assert_eq!(edits[0].tool, "Edit");
+        assert_eq!(edits[0].file_path, "/a.py");
+        assert_eq!(
+            edits[0].hunks,
+            vec![Hunk {
+                old: "x".into(),
+                new: "y".into()
+            }]
+        );
+        assert_eq!(
+            edits[1].hunks,
+            vec![Hunk {
+                old: String::new(),
+                new: "hello".into()
+            }]
+        );
+        assert_eq!(edits[2].hunks.len(), 2);
+        assert_eq!(edits[3].file_path, "/d.ipynb");
+    }
+
+    #[test]
+    fn lift_malformed_edit_degrades_to_no_edit() {
+        let entries = vec![
+            user("edit"),
+            edit_use("Edit", "e1", r#"{"file_path":"/a.py","new_string":"y"}"#),
+            edit_use("Write", "w1", r#"{"file_path":"/b.py","content":123}"#),
+            edit_use("Create", "c1", r#"{"file_path":"/c.py","content":"ok"}"#),
+        ];
+        let lift = lift_session("s1", &entries);
+        let edits = lift.edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].tool, "Create");
+        assert_eq!(edits[0].file_path, "/c.py");
+    }
+
+    #[test]
+    fn result_index_orders_by_first_occurrence() {
+        let entries = vec![
+            user("go"),
+            tool_use("Bash", "b1", r#"{"command":"a"}"#),
+            tool_use("Bash", "b2", r#"{"command":"b"}"#),
+            tool_result("b2"),
+            tool_result("b1"),
+        ];
+        assert_eq!(
+            result_index(&entries)
+                .iter()
+                .map(|r| r.tool_use_id)
+                .collect::<Vec<_>>(),
+            vec!["b2", "b1"]
+        );
+    }
+
+    #[test]
+    fn hunk_overlap_matches_reference() {
+        let hunk = |old: &str, new: &str| Hunk {
+            old: old.into(),
+            new: new.into(),
+        };
+        assert_eq!(
+            hunk_overlap(&hunk("", "x = 1\ny = 2"), &hunk("x = 1\ny = 2", "")),
+            1.0
+        );
+        assert_eq!(
+            hunk_overlap(&hunk("", "x = 1\nz = 3"), &hunk("x = 1\ny = 2", "")),
+            0.5
+        );
+        assert_eq!(
+            hunk_overlap(&hunk("", "  x  =  1  "), &hunk("x = 1", "")),
+            1.0
+        );
+        assert_eq!(hunk_overlap(&hunk("", ""), &hunk("x = 1", "")), 0.0);
+        assert_eq!(
+            overlap_between(
+                &[hunk("", "x = 1\ny = 2")],
+                &[hunk("q", "w"), hunk("x = 1\ny = 2", "")]
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn duration_ms_rounds_half_to_even() {
+        for (micros, expected) in [(600u32, 1i64), (1100, 1), (500, 0), (1500, 2)] {
+            let assistant = parse(
+                r#"{"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-01T00:00:00.000000Z","message":{"model":"m","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}}]}}"#,
+            );
+            let result = parse(&format!(
+                r#"{{"type":"user","uuid":"r","sessionId":"s","timestamp":"2026-01-01T00:00:00.{micros:06}Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"t","content":"ok","is_error":false}}]}}}}"#
+            ));
+            let entries = vec![user("go"), assistant, result];
+            assert_eq!(
+                lift_session("s", &entries).turns[0].tool_uses[0].duration_ms(),
+                Some(expected),
+                "micros={micros}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_whitespace_only_user_does_not_open_turn() {
+        let entries = vec![
+            user("real prompt"),
+            user("\u{1c}\u{1d}\u{1e}\u{1f}"),
+            user("another prompt"),
+        ];
+        let lift = lift_session("s", &entries);
+        assert_eq!(lift.turns.len(), 2);
+        assert_eq!(lift.turns[0].prompt, "real prompt");
+        assert_eq!(lift.turns[1].prompt, "another prompt");
+    }
+
+    #[test]
+    fn lower_edit_takes_last_duplicate_key() {
+        let entries = vec![
+            user("edit"),
+            parse(
+                r#"{"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{"model":"m","content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/first.py","file_path":"/last.py","old_string":"a","old_string":"b","new_string":"x","new_string":"y"}}]}}"#,
+            ),
+        ];
+        let edits = lift_session("s", &entries).edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].file_path, "/last.py");
+        assert_eq!(
+            edits[0].hunks[0],
+            Hunk {
+                old: "b".into(),
+                new: "y".into()
+            }
+        );
     }
 }

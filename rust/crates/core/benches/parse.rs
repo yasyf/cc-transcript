@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
-use cc_transcript_core::activity::{session_activity, ActivityOpts};
+use cc_transcript_core::activity::{lift_session, session_activity, ActivityOpts};
 use cc_transcript_core::filter::{compile_spec, spec_keep};
 use cc_transcript_core::parse::parse_bytes;
 
@@ -69,11 +69,19 @@ fn bench_activity(c: &mut Criterion) {
     let bytes = largest_corpus_file();
     let entries = parse_bytes(&bytes, |_| true).expect("corpus parses");
     let opts = ActivityOpts::default();
+    let session_id = entries
+        .first()
+        .and_then(|e| e.session_id())
+        .unwrap_or("")
+        .to_string();
     let mut group = c.benchmark_group("activity");
     group.sample_size(20);
     group.throughput(Throughput::Elements(entries.len() as u64));
     group.bench_function("session_activity", |b| {
         b.iter(|| session_activity(&entries, &opts))
+    });
+    group.bench_function("full_lift", |b| {
+        b.iter(|| lift_session(&session_id, &entries))
     });
     group.finish();
 }
