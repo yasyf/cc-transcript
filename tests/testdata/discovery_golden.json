@@ -1,0 +1,70 @@
+{
+  "is_subagent_path": [
+    {
+      "path": "a/b/agent-tool7.jsonl",
+      "result": true
+    },
+    {
+      "path": "a/b/agent-.jsonl",
+      "result": true
+    },
+    {
+      "path": "a/b/s.jsonl",
+      "result": false
+    },
+    {
+      "path": "a/b/agent-tool7.txt",
+      "result": false
+    },
+    {
+      "path": "agent-tool7",
+      "result": false
+    },
+    {
+      "path": "agent-tool7.jsonl",
+      "result": true
+    }
+  ],
+  "scenarios": {
+    "find_in_filtered": {
+      "found": [
+        [
+          "projA/alpha-two.jsonl",
+          1001.0
+        ],
+        [
+          "projA/nested/alpha-three.jsonl",
+          1003.0
+        ]
+      ]
+    },
+    "find_transcript_miss": {
+      "hit": null
+    },
+    "find_transcript_newest": {
+      "hit": "projC/sess-x.jsonl"
+    },
+    "find_transcripts": {
+      "transcripts": [
+        "projA/._fork.jsonl",
+        "projA/nested/s3.jsonl",
+        "projA/s1.jsonl",
+        "projA/s2.jsonl",
+        "projB/s5.jsonl",
+        "real/s5.jsonl"
+      ]
+    },
+    "subagents": {
+      "paths": [
+        "projA/sess/subagents/.hidden.jsonl",
+        "projA/sess/subagents/agent-t1.jsonl",
+        "projA/sess/subagents/agent-t2.jsonl"
+      ],
+      "transcripts": {
+        ".hidden": "projA/sess/subagents/.hidden.jsonl",
+        "t1": "projA/sess/subagents/agent-t1.jsonl",
+        "t2": "projA/sess/subagents/agent-t2.jsonl"
+      }
+    }
+  }
+}

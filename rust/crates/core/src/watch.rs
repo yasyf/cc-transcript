@@ -4,14 +4,14 @@
 //! step over a [`TailState`], directly drivable by tests and embedders.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File, Metadata};
+use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use chrono::Datelike;
 use sonic_rs::{JsonValueTrait, Value};
 
+use crate::discovery::{is_subagent_path, mtime_secs};
 use crate::parse::parse_entry;
 use crate::types::Entry;
 
@@ -232,17 +232,6 @@ fn session_of(cursor: &mut TailCursor, path: &Path, event: &Entry) -> String {
     session
 }
 
-/// Whether `path` names a subagent sidechain transcript: the
-/// `agent-<tool_use_id>.jsonl` naming convention `discovery.subagent_paths`
-/// discovers.
-pub fn is_subagent_path(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("agent-"))
-}
-
 fn path_session_id(path: &Path) -> String {
     match is_subagent_path(path) {
         true => path
@@ -257,21 +246,6 @@ fn path_session_id(path: &Path) -> String {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string(),
-    }
-}
-
-/// A file's modification time as CPython's `os.stat().st_mtime` computes it:
-/// `sec + 1e-9 * nsec`, so the float compares bit-identically to the Python side
-/// (`char::is_whitespace`-style ULP drift would break the size/mtime skip).
-pub(crate) fn mtime_secs(meta: &Metadata) -> f64 {
-    let modified = meta
-        .modified()
-        .expect("filesystem records a modification time");
-    match modified.duration_since(UNIX_EPOCH) {
-        Ok(delta) => delta.as_secs() as f64 + 1e-9 * delta.subsec_nanos() as f64,
-        Err(err) => {
-            -(err.duration().as_secs() as f64 + 1e-9 * err.duration().subsec_nanos() as f64)
-        }
     }
 }
 

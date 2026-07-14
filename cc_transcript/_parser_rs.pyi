@@ -137,6 +137,30 @@ def render_stats(raws: list[bytes], /) -> str:
     Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
     """
 
+def discovery_find_transcripts(root: str, /) -> list[str]:
+    """Every ``*.jsonl`` transcript under ``root``, sorted by path (``._*`` forks included)."""
+
+def discovery_find_transcript(root: str, session_id: str, /) -> str | None:
+    """``session_id``'s newest-mtime real transcript under ``root``, or None (symlink-deduped)."""
+
+def discovery_find_in(
+    directory: str,
+    name_contains: str | None = ...,
+    limit: int | None = ...,
+    known_mtimes: dict[str, float] | None = ...,
+    /,
+) -> list[tuple[str, float]]:
+    """``(path, mtime)`` pairs under ``directory`` filtered by name/freshness, sorted by path, capped at ``limit``."""
+
+def discovery_subagent_paths(path: str, /) -> list[str]:
+    """The sidechain ``*.jsonl`` files under ``<parent>/<stem>/subagents/``, sorted, skipping ``._*`` forks."""
+
+def discovery_subagent_transcripts(path: str, /) -> dict[str, str]:
+    """Sidechain transcripts keyed by the ``agent-<id>`` tool-use id that spawned each."""
+
+def discovery_is_subagent_path(path: str, /) -> bool:
+    """Whether ``path`` names an ``agent-<id>.jsonl`` subagent sidechain transcript."""
+
 class WatchTailer:
     """A stateful byte-offset tail over the transcript tree (the Rust ``watch.tick`` port).
 

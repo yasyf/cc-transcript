@@ -3,6 +3,7 @@ pub mod generated;
 pub mod activity;
 #[cfg(feature = "command")]
 pub mod command;
+pub mod discovery;
 pub mod filter;
 pub mod ids;
 pub mod parse;
