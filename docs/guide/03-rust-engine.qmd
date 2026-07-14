@@ -15,12 +15,12 @@ so the extension loads on first touch of a parsing or spec surface, not at
 import time.
 
 ```{python}
-from cc_transcript.parser import TranscriptParser
+from cc_transcript import parse
 
-TranscriptParser.backend_name()  # -> 'rust'
+type(parse(b""))
 ```
 
-The return type is `Literal["rust"]`. There is no other answer.
+Every parse returns a native `Transcript` view. There is no other parser.
 
 ## Why the second implementation is gone
 
@@ -48,7 +48,7 @@ A `FilterSpec` is *filters as data* — an ordered tuple of `Clause` rules.
 `spec_to_json` serializes it to the JSON contract the engine compiles
 (`compile_spec` in `rust/crates/core/src/filter.rs`) and evaluates per line during
 parsing, so events that fail the spec are dropped before a Python object is
-ever built. Pass a spec to `TranscriptParser.stream_transcripts` and the
+ever built. Pass a `drop` spec to `parse` or `stream` and the
 rejected events never cross the FFI boundary.
 
 ```{python}

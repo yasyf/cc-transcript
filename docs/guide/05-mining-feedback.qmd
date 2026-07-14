@@ -206,7 +206,7 @@ once the transcript is gone:
 ```{python}
 from cc_transcript import Budget
 
-hydrated = await window.hydrate()
+hydrated = window.hydrate()
 (hydrated, window.render_preview(budget=Budget()))
 # -> (None, 'pip install requests')
 ```
@@ -331,9 +331,9 @@ from pathlib import Path
 
 from cc_transcript.mining import FeedbackStore
 
-async with await FeedbackStore.open(Path("feedback.db")) as store:
-    inserted = await store.record_file_scan(str(path), mtime, [candidate])
-    print(await store.stats())  # Stats(total=1, files=1, by_source={'interrupt_rejection': 1})
+with FeedbackStore.open(Path("feedback.db")) as store:
+    inserted = store.record_file_scan(str(path), mtime, [candidate])
+    print(store.stats())  # Stats(total=1, files=1, by_source={'interrupt_rejection': 1})
 ```
 
 ## Next steps
