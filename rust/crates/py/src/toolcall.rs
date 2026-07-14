@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use sonic_rs::Value;
 
-use crate::event::json_to_py;
+use crate::views::convert::json_to_py;
 use cc_transcript_core::toolcall::{
     self, EditSpan, QuestionAnnotation, ToolCall, ToolInputError, ToolResult,
 };
@@ -260,7 +260,7 @@ fn result_to_dict<'py>(py: Python<'py>, result: &ToolResult) -> PyResult<Bound<'
 }
 
 // Raise cc_transcript.tools.ToolInputError with Python's exact message.
-fn tool_input_error(py: Python<'_>, name: &str, err: &ToolInputError) -> PyErr {
+pub(crate) fn tool_input_error(py: Python<'_>, name: &str, err: &ToolInputError) -> PyErr {
     let msg = match err {
         ToolInputError::NonMapping(t) => format!("{name} input must be a mapping, got {t}"),
         ToolInputError::MissingKey(k) => format!("{name} input missing or malformed: '{k}'"),

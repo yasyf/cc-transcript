@@ -586,7 +586,7 @@ fn ask_preview(tu: &ToolUseBlock, use_: &ToolUse) -> Preview {
         .map(|payload| parse_tool_result(&tu.name, payload))
     {
         Some(ToolResult::AskUserQuestion(result)) => (
-            result.answers,
+            result.answers.into_iter().collect(),
             result
                 .annotations
                 .into_iter()

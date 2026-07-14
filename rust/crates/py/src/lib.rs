@@ -11,4 +11,5 @@ mod python;
 mod render;
 mod score;
 mod toolcall;
+mod views;
 mod watch;

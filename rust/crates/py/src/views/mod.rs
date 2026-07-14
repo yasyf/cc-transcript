@@ -1,0 +1,63 @@
+pub(crate) mod attachment;
+pub(crate) mod blocks;
+pub(crate) mod convert;
+pub(crate) mod dunder;
+pub(crate) mod events;
+pub(crate) mod meta;
+pub(crate) mod print;
+pub(crate) mod store;
+pub(crate) mod system;
+pub(crate) mod toolcall;
+pub(crate) mod toolresult;
+pub(crate) mod transcript;
+
+use pyo3::prelude::*;
+
+pub(crate) fn add_view_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<meta::EntryMetaView>()?;
+    m.add_class::<meta::AttributionView>()?;
+    m.add_class::<meta::ApiErrorView>()?;
+    m.add_class::<meta::QuestionView>()?;
+    m.add_class::<meta::UsageView>()?;
+    m.add_class::<meta::CacheCreationView>()?;
+    m.add_class::<meta::ServerToolUseView>()?;
+    m.add_class::<blocks::TextBlockView>()?;
+    m.add_class::<blocks::ThinkingBlockView>()?;
+    m.add_class::<blocks::ToolUseBlockView>()?;
+    m.add_class::<blocks::ToolResultBlockView>()?;
+    m.add_class::<blocks::FallbackBlockView>()?;
+    m.add_class::<blocks::OtherBlockView>()?;
+    m.add_class::<events::UserEventView>()?;
+    m.add_class::<events::AssistantEventView>()?;
+    m.add_class::<events::SystemEventView>()?;
+    m.add_class::<events::ModeEventView>()?;
+    m.add_class::<events::OtherEventView>()?;
+    m.add_class::<events::AttachmentEventView>()?;
+    m.add_class::<system::StopHookSummaryView>()?;
+    m.add_class::<system::HookInfoView>()?;
+    m.add_class::<system::PreservedSegmentView>()?;
+    m.add_class::<system::PreservedMessagesView>()?;
+    m.add_class::<system::CompactBoundaryView>()?;
+    m.add_class::<system::TurnDurationView>()?;
+    m.add_class::<system::ModelRefusalFallbackView>()?;
+    m.add_class::<system::OtherSystemDetailView>()?;
+    m.add_class::<attachment::HookSuccessView>()?;
+    m.add_class::<attachment::HookBlockingErrorView>()?;
+    m.add_class::<attachment::HookNonBlockingErrorView>()?;
+    m.add_class::<attachment::HookCancelledView>()?;
+    m.add_class::<attachment::HookAdditionalContextView>()?;
+    m.add_class::<attachment::AsyncHookResponseView>()?;
+    m.add_class::<attachment::QueuedCommandView>()?;
+    m.add_class::<attachment::OtherAttachmentView>()?;
+    m.add_class::<print::PrintResultView>()?;
+    m.add_class::<print::PrintMessageView>()?;
+    m.add_class::<print::InitInfoView>()?;
+    m.add_class::<print::McpServerView>()?;
+    m.add_class::<print::PluginView>()?;
+    m.add_class::<print::ModelUsageView>()?;
+    toolcall::add_classes(m)?;
+    toolresult::add_classes(m)?;
+    m.add_class::<transcript::TranscriptView>()?;
+    m.add_class::<transcript::EventListView>()?;
+    Ok(())
+}

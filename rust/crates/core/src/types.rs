@@ -49,7 +49,7 @@ pub struct ApiError {
 /// One AskUserQuestion round, lifted from a tool-use input's ``questions``
 /// array. Questions without string text are dropped — ``answered_pairs``
 /// (mining/signals.py) never anchors them.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
     pub question: String,
     pub header: Option<String>,
@@ -437,9 +437,11 @@ impl Entry {
 /// The ``tool_use_id -> ToolUseBlock`` join over a parsed transcript
 /// (filterspec.py tool_uses), last-write-wins on duplicate ids to match the
 /// Python dict comprehension.
-pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
+pub fn tool_use_index<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+) -> HashMap<&'a str, &'a ToolUseBlock> {
     entries
-        .iter()
+        .into_iter()
         .flat_map(Entry::tool_uses)
         .map(|tu| (tu.id.as_str(), tu))
         .collect()

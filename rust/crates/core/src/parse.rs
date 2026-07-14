@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset, Timelike};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike};
 use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
@@ -588,6 +588,11 @@ fn parse_line<F: Fn(&Entry) -> bool>(
             return Ok(());
         }
         let entry = parse_entry(value)?;
+        // Parity: a timestamp below Python datetime.MINYEAR can never convert to
+        // a Python datetime — drop the line, keep the file.
+        if entry.meta().is_some_and(|m| m.timestamp.year() < 1) {
+            return Ok(());
+        }
         if keep(&entry) {
             lines.push(entry);
         }
@@ -995,6 +1000,24 @@ mod tests {
         let entries = parse_bytes(bytes.as_bytes(), |_| true).unwrap();
         assert_eq!(entries.len(), 2, "bare scalar and array lines are skipped");
         assert!(entries.iter().all(|e| matches!(e, Entry::User(_))));
+    }
+
+    #[test]
+    fn parse_bytes_drops_year_zero_timestamp_line_keeps_file() {
+        // A timestamp below Python datetime.MINYEAR drops the line, not the file.
+        let year_zero = r#"{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"s","timestamp":"0000-01-01T00:00:00Z","message":{"content":"dropped"}}"#;
+        let survivor = format!(r#"{{"type":"user",{META},"message":{{"content":"kept"}}}}"#);
+        let bytes = format!("{year_zero}\n{survivor}");
+        let entries = parse_bytes(bytes.as_bytes(), |_| true).unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "the year-zero line drops, the file survives"
+        );
+        let Entry::User(user) = &entries[0] else {
+            panic!("expected user entry")
+        };
+        assert_eq!(user.content.text(), "kept");
     }
 
     #[test]

@@ -14,7 +14,7 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 cc-transcript-core = { path = "../core" }
-pyo3 = { version = "0.28", features = ["abi3-py313", "chrono"] }
+pyo3 = { version = "0.28", features = ["abi3-py313", "chrono", "multiple-pymethods"] }
 # arbitrary_precision keeps each number's raw text so json_to_py (event.rs) can
 # mirror Python json semantics for numbers sonic-rs stores lossily as f64.
 sonic-rs = { version = "0.5", features = ["arbitrary_precision"] }

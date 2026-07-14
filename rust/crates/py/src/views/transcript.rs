@@ -1,0 +1,84 @@
+use std::sync::Arc;
+
+use pyo3::exceptions::{PyIndexError, PyTypeError};
+use pyo3::prelude::*;
+use pyo3::types::{PyList, PySlice};
+
+use cc_transcript_core::types::Entry;
+
+use crate::views::events::event_view;
+
+/// The parsed events of a single transcript file, backed by the native parse
+/// output; ``events`` materializes lazy views on access.
+///
+/// Attributes:
+///     path: The transcript's path on disk.
+///     mtime: The transcript's modification time when parsed.
+///     events: The parsed events, in file order.
+#[pyclass(name = "Transcript", module = "cc_transcript", frozen)]
+pub(crate) struct TranscriptView {
+    pub path: String,
+    pub mtime: f64,
+    pub entries: Arc<Vec<Entry>>,
+}
+
+#[pymethods]
+impl TranscriptView {
+    #[getter]
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[getter]
+    fn mtime(&self) -> f64 {
+        self.mtime
+    }
+
+    #[getter]
+    fn events(&self) -> EventListView {
+        EventListView {
+            entries: Arc::clone(&self.entries),
+        }
+    }
+}
+
+/// A lazily-materializing sequence of transcript events over one parse output.
+#[pyclass(name = "EventList", module = "cc_transcript", frozen)]
+pub(crate) struct EventListView {
+    pub entries: Arc<Vec<Entry>>,
+}
+
+#[pymethods]
+impl EventListView {
+    fn __len__(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        index: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if let Ok(i) = index.extract::<isize>() {
+            let n = self.entries.len() as isize;
+            let idx = if i < 0 { i + n } else { i };
+            if idx < 0 || idx >= n {
+                return Err(PyIndexError::new_err("EventList index out of range"));
+            }
+            return event_view(py, &self.entries, idx as usize);
+        }
+        if let Ok(slice) = index.cast::<PySlice>() {
+            let indices = slice.indices(self.entries.len() as isize)?;
+            let mut views = Vec::with_capacity(indices.slicelength);
+            let mut i = indices.start;
+            for _ in 0..indices.slicelength {
+                views.push(event_view(py, &self.entries, i as usize)?);
+                i += indices.step;
+            }
+            return Ok(PyList::new(py, views)?.into_any());
+        }
+        Err(PyTypeError::new_err(
+            "EventList indices must be integers or slices",
+        ))
+    }
+}

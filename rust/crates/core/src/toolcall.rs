@@ -7,8 +7,6 @@
 //! queries, and AskUserQuestionResult.questions all read it); it is `compare=False`
 //! Python-side, and the content digest lives in `ids`, not here.
 
-use std::collections::BTreeMap;
-
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::parse::parse_questions;
@@ -781,8 +779,8 @@ pub struct SkillResult {
 pub struct AskUserQuestionResult {
     pub name: String,
     pub raw: Value,
-    pub answers: BTreeMap<String, String>,
-    pub annotations: BTreeMap<String, QuestionAnnotation>,
+    pub answers: Vec<(String, String)>,
+    pub annotations: Vec<(String, QuestionAnnotation)>,
 }
 
 impl AskUserQuestionResult {
@@ -821,6 +819,22 @@ pub enum ToolResult {
 }
 
 impl ToolResult {
+    /// The tool name (tools.py ToolResultBase.name).
+    pub fn name(&self) -> &str {
+        match self {
+            ToolResult::Bash(r) => &r.name,
+            ToolResult::Edit(r) => &r.name,
+            ToolResult::Write(r) => &r.name,
+            ToolResult::Read(r) => &r.name,
+            ToolResult::Task(r) => &r.name,
+            ToolResult::TaskLaunch(r) => &r.name,
+            ToolResult::Skill(r) => &r.name,
+            ToolResult::AskUserQuestion(r) => &r.name,
+            ToolResult::Text(r) => &r.name,
+            ToolResult::Other(r) => &r.name,
+        }
+    }
+
     /// The Python dataclass name for this variant.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -1158,10 +1172,7 @@ mod tests {
         );
         match parse_tool_result("AskUserQuestion", &payload) {
             ToolResult::AskUserQuestion(r) => {
-                assert_eq!(
-                    r.answers,
-                    BTreeMap::from([("Q1".to_string(), "A".to_string())])
-                );
+                assert_eq!(r.answers, vec![("Q1".to_string(), "A".to_string())]);
                 let questions = r.questions();
                 assert_eq!(questions.len(), 1);
                 assert_eq!(questions[0].labels, vec!["A".to_string()]);
