@@ -35,6 +35,11 @@ jobs:
       - name: Prefetch embedder (potion-retrieval-32M)
         run: uv run python -c "from model2vec import StaticModel; StaticModel.from_pretrained('minishlab/potion-retrieval-32M')"
 
+      # The activity parity suite reads the gitignored bench corpus from disk;
+      # generation is deterministic (seeded), so CI regenerates it per run.
+      - name: Generate the bench corpus (.fixtures)
+        run: uv run python scripts/gen_corpus.py
+
       - name: Test (pytest)
         run: uv run pytest
 
