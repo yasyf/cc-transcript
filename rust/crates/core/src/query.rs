@@ -720,7 +720,10 @@ mod tests {
                 .count(),
             1
         );
-        assert!(session.has_command(&["git", "push"]));
-        assert!(!session.has_command(&["git", "commit"]));
+        #[cfg(feature = "command")]
+        {
+            assert!(session.has_command(&["git", "push"]));
+            assert!(!session.has_command(&["git", "commit"]));
+        }
     }
 }
