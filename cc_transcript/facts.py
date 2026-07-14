@@ -121,7 +121,7 @@ def tool_facts(transcripts: Iterable[Transcript | ParsedTranscript]) -> Iterator
 
     Each transcript is lifted into a :class:`~cc_transcript.activity.SessionActivity`
     keyed by the session of its first meta-bearing event; transcripts carrying no
-    such event are skipped. Bash commands are prefix-parsed in one
+    such event — or no path, as a bytes parse — are skipped. Bash commands are prefix-parsed in one
     :func:`~cc_transcript.command.bulk_command_prefixes` batch per transcript.
     Calls are yielded in turn order, then call order.
 
@@ -135,13 +135,13 @@ def tool_facts(transcripts: Iterable[Transcript | ParsedTranscript]) -> Iterator
 
     for parsed in transcripts:
         session_id = session_id_of(parsed.events)
-        if session_id is None:
+        if session_id is None or (path := parsed.path) is None:
             continue
         activity = SessionActivity.from_events(session_id, parsed.events)
         uses = [use for turn in activity.turns for use in turn.tool_uses]
         prefixes = iter(bulk_command_prefixes([use.call.command for use in uses if isinstance(use.call, BashCall)]))
         yield from (
-            fact_of(use, session_id, parsed.path, next(prefixes) if isinstance(use.call, BashCall) else ())
+            fact_of(use, session_id, path, next(prefixes) if isinstance(use.call, BashCall) else ())
             for use in uses
         )
 
