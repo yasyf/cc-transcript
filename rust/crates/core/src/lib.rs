@@ -4,6 +4,8 @@ pub mod activity;
 #[cfg(feature = "command")]
 pub mod command;
 pub mod context;
+#[cfg(feature = "sqlite")]
+pub mod corrections;
 pub mod discovery;
 #[cfg(feature = "command")]
 pub mod facts;

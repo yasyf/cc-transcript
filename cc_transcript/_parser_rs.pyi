@@ -224,3 +224,55 @@ class WatchTailer:
     def snapshot(self) -> dict[str, Any]:
         """The whole cursor state: ``{"primed": bool, "cursors": {path: {offset, size, mtime,
         session_id, seen}}}`` — the Python ``TailState`` projection."""
+
+class RustCorrectionLog:
+    """The correction-ledger engine over a bundled SQLite (the Rust ``CorrectionLog`` port).
+
+    Mirrors ``cc_transcript.corrections.CorrectionLog`` on the same on-disk format —
+    schema, WAL journal mode, ``INSERT OR IGNORE`` append, and ``json.dumps``-parity
+    ``detail_json`` — so both engines read and write one ledger file interchangeably.
+    Query methods project each row to a ``dataclasses.asdict``-shaped ``Correction`` dict.
+    """
+
+    def __init__(self, path: str) -> None:
+        """Opens (creating if needed) the ledger at ``path`` in WAL mode."""
+
+    def append(
+        self,
+        ts_ms: int,
+        session_id: str,
+        source: str,
+        anchor_uuid: str,
+        incorrect_digest: str | None,
+        incorrect_file: str,
+        incorrect_old: str,
+        incorrect_new: str,
+        correction_origin: str | None,
+        correction_file: str | None,
+        correction_old: str | None,
+        correction_new: str | None,
+        correction_commit: str | None,
+        correction_text: str | None,
+        overlap: float,
+        detail: Any,
+    ) -> None:
+        """Appends one correction (idempotent on the UNIQUE key). ``detail`` is normalized
+        with ``dict(detail)`` (raising on a non-mapping) and stored as ``json.dumps``."""
+
+    def for_session(self, session_id: str) -> list[dict[str, Any]]:
+        """All records for ``session_id``, ordered by timestamp."""
+
+    def for_repo(self, repo: str) -> list[dict[str, Any]]:
+        """All corrections whose ``detail.repo`` is ``repo``, ordered by timestamp."""
+
+    def since(self, ts_ms: int, source: str | None = ...) -> list[dict[str, Any]]:
+        """Corrections with ``ts_ms`` strictly greater than ``ts_ms``, oldest first."""
+
+    def for_anchor(self, session_id: str, anchor_uuid: str) -> list[dict[str, Any]]:
+        """The corrections harvested around one feedback ``anchor_uuid``."""
+
+    def by_digest(self, session_id: str, incorrect_digest: str) -> list[dict[str, Any]]:
+        """Corrections of the tool call with ``incorrect_digest`` in ``session_id``."""
+
+    def sql(self, statement: str) -> list[dict[str, Any]]:
+        """Runs a raw SQL ``statement`` — the escape hatch behind ``corrections sql``."""

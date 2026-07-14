@@ -1,5 +1,6 @@
 mod command;
 mod context;
+mod corrections;
 mod discovery;
 mod event;
 mod lexicon;

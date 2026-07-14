@@ -181,7 +181,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 
 #[pyfunction]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    use cc_transcript_core::generated::{command, mining, protocol};
+    use cc_transcript_core::generated::{command, corrections, mining, protocol};
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
@@ -241,6 +241,7 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("command.MULTI_LEVEL_TOOLS", command::MULTI_LEVEL_TOOLS)?;
     dict.set_item("command.COMPOUND_OPS", command::COMPOUND_OPS)?;
     dict.set_item("command.ASSIGNMENT_PATTERN", command::ASSIGNMENT_PATTERN)?;
+    dict.set_item("corrections.DDL", corrections::DDL)?;
     Ok(dict)
 }
 
@@ -724,5 +725,6 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_class::<ParseStream>()?;
     m.add_class::<crate::watch::WatchTailer>()?;
+    m.add_class::<crate::corrections::RustCorrectionLog>()?;
     Ok(())
 }

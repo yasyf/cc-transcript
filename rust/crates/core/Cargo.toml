@@ -24,10 +24,15 @@ sha2 = "0.10"
 # ECMAScript-exact Number::toString for canonical JSON: Rust std and plain ryu pick
 # a different last digit than Python/ES on shortest ties (e.g. 698957826421429.2).
 ryu-js = "1.0"
+# Gated behind `sqlite`: the correction-ledger engine over a bundled SQLite (no system
+# libsqlite dependency). The Swift/CI build takes core with default-features off, so
+# rusqlite never reaches the python-free path — verify with `cargo tree`.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [features]
-default = ["command"]
+default = ["command", "sqlite"]
 command = ["dep:tree-sitter", "dep:tree-sitter-bash"]
+sqlite = ["dep:rusqlite"]
 
 [dev-dependencies]
 # Criterion for the v14 P0 parse/filter/activity baseline (benches/parse.rs).

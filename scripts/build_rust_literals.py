@@ -18,6 +18,7 @@ import math
 from pathlib import Path
 
 from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
+from cc_transcript.corrections import CORRECTIONS_DDL
 from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     ANSWERED_PREFIX,
@@ -149,6 +150,7 @@ def literals() -> dict[str, str | float | tuple[str, ...]]:
         "command.MULTI_LEVEL_TOOLS": tuple(sorted(MULTI_LEVEL_TOOLS)),
         "command.COMPOUND_OPS": tuple(sorted(COMPOUND_OPS)),
         "command.ASSIGNMENT_PATTERN": ASSIGNMENT_RE.pattern,
+        "corrections.DDL": CORRECTIONS_DDL,
     }
 
 
@@ -162,7 +164,7 @@ def render_domain(domain: str, manifest: dict[str, str | float | tuple[str, ...]
 
 
 def mod_rs() -> str:
-    mods = ("pub mod command;", "pub mod mining;", "pub mod protocol;")
+    mods = ("pub mod command;", "pub mod corrections;", "pub mod mining;", "pub mod protocol;")
     return "\n".join((HEADER, "", *mods)) + "\n"
 
 
