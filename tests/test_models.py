@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from cc_transcript.ids import tool_digest
+from cc_transcript.ids import ToolUseId, tool_digest
 from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
@@ -12,6 +12,7 @@ from cc_transcript.models import (
     ModeEvent,
     OtherEvent,
     SystemEvent,
+    ToolResultBlock,
     TranscriptEvent,
     UserEvent,
     thinking_chars,
@@ -120,6 +121,31 @@ def test_tool_uses_keeps_only_tool_use_blocks_in_order() -> None:
 def test_tool_uses_empty_for_no_tool_blocks() -> None:
     event = support.user("u1", "", blocks=(testkit.text_block("hello"),))
     assert tool_uses(event) == ()
+
+
+def test_tool_uses_field_values_independent_oracle() -> None:
+    # Independent oracle: hand-written (id, name) pairs, not blocks re-read from the event.
+    event = support.assistant(
+        "a",
+        "",
+        blocks=(
+            testkit.tool_use("t1", "Read", {"file_path": "x"}),
+            testkit.text_block("mid"),
+            testkit.tool_use("t2", "Bash", {"command": "ls"}),
+        ),
+    )
+    assert [(block.id, block.name) for block in tool_uses(event)] == [("t1", "Read"), ("t2", "Bash")]
+
+
+def test_tool_result_block_field_values_independent_oracle() -> None:
+    # Independent oracle: hand-written field values, not an expected block from the parser.
+    event = support.user("u1", "", blocks=(testkit.tool_result("t1", "the output", is_error=True),))
+    block = event.blocks[0]
+    assert isinstance(block, ToolResultBlock)
+    assert block.tool_use_id == ToolUseId("t1")
+    assert block.content == "the output"
+    assert block.is_error is True
+    assert block.is_async is False
 
 
 def test_thinking_chars_sums_thinking_block_lengths() -> None:
