@@ -17,6 +17,7 @@ use cc_transcript_core::activity::{
     Hunk, SessionActivity,
 };
 use cc_transcript_core::command::CommandLine;
+use cc_transcript_core::facts;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
@@ -568,6 +569,107 @@ fn activity_hunk_overlap(a_old: &str, a_new: &str, b_old: &str, b_new: &str) -> 
     )
 }
 
+fn pairs_list<'py>(
+    py: Python<'py>,
+    pairs: &[(String, usize)],
+    key: &str,
+) -> PyResult<Bound<'py, PyList>> {
+    let items = pairs
+        .iter()
+        .map(|(name, count)| {
+            let d = PyDict::new(py);
+            d.set_item(key, name)?;
+            d.set_item("count", *count)?;
+            Ok(d)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    PyList::new(py, items)
+}
+
+fn fact_to_dict<'py>(py: Python<'py>, fact: &facts::ToolFact) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("session_id", &fact.session_id)?;
+    d.set_item("tool_use_id", &fact.tool_use_id)?;
+    d.set_item("tool", &fact.tool)?;
+    d.set_item("command_prefixes", &fact.command_prefixes)?;
+    d.set_item("command", &fact.command)?;
+    d.set_item("mcp_server", &fact.mcp_server)?;
+    d.set_item("mcp_tool", &fact.mcp_tool)?;
+    d.set_item("mcp_access", &fact.mcp_access)?;
+    d.set_item("file_path", &fact.file_path)?;
+    d.set_item("is_error", fact.is_error)?;
+    d.set_item("denied", fact.denied)?;
+    d.set_item("denial_kind", &fact.denial_kind)?;
+    d.set_item("user_said", &fact.user_said)?;
+    d.set_item("duration_ms", fact.duration_ms)?;
+    d.set_item("ts_ms", epoch_ms(fact.ts))?;
+    Ok(d)
+}
+
+fn project_facts<'py>(
+    py: Python<'py>,
+    tool_facts: &[facts::ToolFact],
+) -> PyResult<Bound<'py, PyDict>> {
+    let fact_dicts = tool_facts
+        .iter()
+        .map(|f| fact_to_dict(py, f))
+        .collect::<PyResult<Vec<_>>>()?;
+    let out = PyDict::new(py);
+    out.set_item("facts", PyList::new(py, fact_dicts)?)?;
+    out.set_item(
+        "command_prefix_counts",
+        pairs_list(py, &facts::command_prefix_counts(tool_facts), "prefix")?,
+    )?;
+    let mcp = facts::mcp_summary(tool_facts)
+        .into_iter()
+        .map(|(server, summary)| {
+            let d = PyDict::new(py);
+            d.set_item("server", server)?;
+            d.set_item("read", summary.read)?;
+            d.set_item("write", summary.write)?;
+            d.set_item("total", summary.total)?;
+            d.set_item("tools", pairs_list(py, &summary.tools, "tool")?)?;
+            Ok(d)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    out.set_item("mcp_summary", PyList::new(py, mcp)?)?;
+    Ok(out)
+}
+
+// The facts.py analytics per path, mirrored by gen_facts_golden.py's project_file.
+#[pyfunction]
+#[pyo3(signature = (paths, max_events))]
+fn tool_facts<'py>(
+    py: Python<'py>,
+    paths: Vec<String>,
+    max_events: usize,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    paths
+        .iter()
+        .map(|path| {
+            let facts = py.detach(|| -> PyResult<Vec<facts::ToolFact>> {
+                let bytes = std::fs::read(path)?;
+                let entries: Vec<Entry> = parse_bytes(&bytes, |_| true).map_err(parse_err)?;
+                let capped: Vec<Entry> = entries
+                    .into_iter()
+                    .filter(|entry| entry.meta().map_or(true, |m| m.timestamp.year() >= 1))
+                    .take(max_events)
+                    .collect();
+                Ok(
+                    match capped
+                        .iter()
+                        .find_map(|e| e.meta().map(|m| m.session_id.clone()))
+                    {
+                        Some(session_id) => facts::tool_facts(&session_id, path, &capped),
+                        None => Vec::new(),
+                    },
+                )
+            })?;
+            project_facts(py, &facts)
+        })
+        .collect()
+}
+
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -593,6 +695,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;
     m.add_function(wrap_pyfunction!(query_session, m)?)?;
+    m.add_function(wrap_pyfunction!(tool_facts, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_tool_call, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_compact_lines, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_haystacks, m)?)?;

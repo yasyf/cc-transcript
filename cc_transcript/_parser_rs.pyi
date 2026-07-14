@@ -151,6 +151,16 @@ def query_session(path: str, max_events: int, /) -> dict[str, Any]:
     event-lengths, and per-``FileRef`` ``is_test``/``suffix``. The query-parity substrate.
     """
 
+def tool_facts(paths: list[str], max_events: int, /) -> list[dict[str, Any]]:
+    """Projects the facts.py analytics over each transcript in ``paths``.
+
+    Per path (parse, then the same year-zero materialization drop and cap as
+    ``activity_lift``, then ``tool_facts``): a dict of ``facts`` (one flattened tool call
+    each — session, tool, command prefixes, MCP server/tool/access, file path, error and
+    denial state, duration, ``ts_ms``), plus ``command_prefix_counts`` and ``mcp_summary``
+    over that file's facts as ordered ``[{...}]`` lists. The facts-parity substrate.
+    """
+
 def render_tool_call(name: str, input_json: str, turn_chars: int, tool_chars: int, /) -> str:
     """Renders a tool ``name`` and JSON-encoded input under a budget.
 
@@ -206,7 +216,6 @@ class WatchTailer:
     Holds one cursor per discovered ``*.jsonl`` file between calls; the Python facade
     wraps it in the async poll-forever loop.
     """
-
     def __init__(self) -> None: ...
     def tick(self, roots: list[str], from_start: bool = ..., /) -> list[tuple[str, str, bool, TranscriptEvent]]:
         """Run one poll step over ``roots``, returning ``(path, session_id, is_sidechain, event)``
