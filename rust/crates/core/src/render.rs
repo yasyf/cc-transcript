@@ -148,7 +148,7 @@ fn object_entries(value: &Value) -> Vec<(&str, &Value)> {
     order.into_iter().map(|key| (key, last[key])).collect()
 }
 
-// orjson.dumps mirror: compact, insertion-ordered keys, raw UTF-8, source number text.
+// orjson.dumps mirror: compact, insertion-ordered keys, raw UTF-8, Python number format.
 fn write_orjson(value: &Value, out: &mut String) {
     match value.get_type() {
         JsonType::Null => out.push_str("null"),
@@ -157,7 +157,7 @@ fn write_orjson(value: &Value, out: &mut String) {
         } else {
             "false"
         }),
-        JsonType::Number => out.push_str(&number_text(value)),
+        JsonType::Number => out.push_str(&format_number(value, false)),
         JsonType::String => encode_string(value.as_str().unwrap(), out),
         JsonType::Array => {
             out.push('[');
@@ -190,11 +190,19 @@ fn orjson_dumps(value: &Value) -> String {
     out
 }
 
-// A parsed number's source text (arbitrary_precision) — orjson-exact for ints and
-// canonical float text, the only number shapes a transcript carries.
-fn number_text(value: &Value) -> String {
+// str()/repr() of a parsed JSON number: int -> canonical decimal (signed zero -> "0"),
+// float -> shortest Python-layout repr; pad_exp two-pads the exponent (1e-07 vs orjson 1e-7).
+fn format_number(value: &Value, pad_exp: bool) -> String {
     if let Some(raw) = value.as_raw_number() {
-        return raw.as_str().to_string();
+        let lexeme = raw.as_str();
+        return if lexeme.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
+            py_float_repr(
+                lexeme.parse::<f64>().expect("JSON float lexeme parses"),
+                pad_exp,
+            )
+        } else {
+            py_int(lexeme)
+        };
     }
     if let Some(int) = value.as_i64() {
         return int.to_string();
@@ -202,10 +210,82 @@ fn number_text(value: &Value) -> String {
     if let Some(uint) = value.as_u64() {
         return uint.to_string();
     }
-    format!(
-        "{}",
-        value.as_f64().expect("a Number Value is i64, u64, or f64")
+    py_float_repr(
+        value.as_f64().expect("a Number Value is i64, u64, or f64"),
+        pad_exp,
     )
+}
+
+// str(int) over a JSON integer lexeme: JSON forbids leading zeros and '+', so only a
+// signed zero ("-0") needs normalizing.
+fn py_int(lexeme: &str) -> String {
+    if lexeme.trim_start_matches('-').bytes().all(|b| b == b'0') {
+        "0".to_string()
+    } else {
+        lexeme.to_string()
+    }
+}
+
+// Python repr(float): shortest digits in Python's layout — scientific when the base-10
+// exponent E is <= -5 or >= 16, else fixed with a mandatory fractional part.
+fn py_float_repr(value: f64, pad_exp: bool) -> String {
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let (digits, exp) = shortest_digits(value.abs());
+    let n = digits.len() as i64;
+    if exp <= -5 || exp >= 16 {
+        let mant = if n > 1 {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits.clone()
+        };
+        let exp_str = if pad_exp {
+            format!("{exp:+03}")
+        } else {
+            format!("{exp:+}")
+        };
+        format!("{sign}{mant}e{exp_str}")
+    } else {
+        let decpt = exp + 1;
+        let body = if decpt <= 0 {
+            format!("0.{}{digits}", "0".repeat((-decpt) as usize))
+        } else if decpt >= n {
+            format!("{digits}{}.0", "0".repeat((decpt - n) as usize))
+        } else {
+            format!(
+                "{}.{}",
+                &digits[..decpt as usize],
+                &digits[decpt as usize..]
+            )
+        };
+        format!("{sign}{body}")
+    }
+}
+
+// Shortest round-trip digits of a non-negative finite f64 and its base-10 exponent E
+// (value = d.ddd x 10^E), from ryu-js — which breaks shortest ties like Python, unlike std.
+fn shortest_digits(value: f64) -> (String, i64) {
+    let es = ryu_js::Buffer::new().format_finite(value).to_string();
+    let (mantissa, exp) = match es.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.parse::<i64>().expect("exponent parses")),
+        None => (es.as_str(), 0),
+    };
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let raw = format!("{int_part}{frac_part}");
+    let point = int_part.len() as i64 + exp;
+    match raw.find(|c| c != '0') {
+        None => ("0".to_string(), 0),
+        Some(first) => {
+            let sig = raw[first..].trim_end_matches('0');
+            (
+                if sig.is_empty() {
+                    "0".to_string()
+                } else {
+                    sig.to_string()
+                },
+                point - 1 - first as i64,
+            )
+        }
+    }
 }
 
 // Python str() of a JSON value: a str verbatim, else its repr().
@@ -225,7 +305,7 @@ fn py_repr(value: &Value) -> String {
             "False"
         }
         .to_string(),
-        JsonType::Number => number_text(value),
+        JsonType::Number => format_number(value, true),
         JsonType::String => py_string_repr(value.as_str().unwrap()),
         JsonType::Array => {
             let inner = value
@@ -502,7 +582,9 @@ fn assistant_payload(a: &AssistantEntry, width: usize, thinking: bool) -> String
 
 fn block_payload(block: &ContentBlock, width: usize, thinking: bool) -> String {
     match block {
-        ContentBlock::Text(t) if !pystr::strip(t).is_empty() => format!("\"{}\"", truncate(t, width)),
+        ContentBlock::Text(t) if !pystr::strip(t).is_empty() => {
+            format!("\"{}\"", truncate(t, width))
+        }
         ContentBlock::Text(_) => String::new(),
         ContentBlock::Thinking(thought) if thinking => {
             format!("th({}ch) {}", char_len(thought), truncate(thought, width))
@@ -826,7 +908,9 @@ mod tests {
         assert_eq!(py_repr(&value), "{'b': 3, 'a': 2}");
         // primary_arg over a duplicated PRIMARY_KEY takes the last value.
         assert_eq!(
-            primary_arg(&sonic_rs::from_str(r#"{"file_path":"/first","file_path":"/last"}"#).unwrap()),
+            primary_arg(
+                &sonic_rs::from_str(r#"{"file_path":"/first","file_path":"/last"}"#).unwrap()
+            ),
             "/last"
         );
         // The fallback first-value is the first key's last value.
@@ -834,5 +918,35 @@ mod tests {
             primary_arg(&sonic_rs::from_str(r#"{"z":1,"y":2,"z":3}"#).unwrap()),
             "3"
         );
+    }
+
+    fn num(lexeme: &str) -> Value {
+        sonic_rs::from_str(lexeme).unwrap()
+    }
+
+    #[test]
+    fn numbers_format_like_python_str_not_raw_lexeme() {
+        // str()/repr() layout (padded exponent), the primary_arg path.
+        assert_eq!(format_number(&num("1e-7"), true), "1e-07");
+        assert_eq!(format_number(&num("1e16"), true), "1e+16");
+        assert_eq!(format_number(&num("1e15"), true), "1000000000000000.0");
+        assert_eq!(format_number(&num("-0.5"), true), "-0.5");
+        assert_eq!(format_number(&num("0.1"), true), "0.1");
+        assert_eq!(format_number(&num("1.5"), true), "1.5");
+        assert_eq!(format_number(&num("123.456"), true), "123.456");
+        // Signed zero and big ints via parsed-value semantics.
+        assert_eq!(format_number(&num("-0"), true), "0");
+        assert_eq!(
+            format_number(&num("99999999999999999999"), true),
+            "99999999999999999999"
+        );
+        // ryu-js breaks the shortest tie like Python (Rust std would give ...293).
+        assert_eq!(
+            format_number(&num("698957826421429.2"), true),
+            "698957826421429.2"
+        );
+        // orjson layout omits the exponent zero-pad.
+        assert_eq!(format_number(&num("1e-7"), false), "1e-7");
+        assert_eq!(format_number(&num("1e16"), false), "1e+16");
     }
 }

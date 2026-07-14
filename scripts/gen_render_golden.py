@@ -105,6 +105,19 @@ DUP_KEY_CALLS: tuple[tuple[str, str], ...] = (
     ("TodoWrite", '{"todos": [1], "todos": [2, 3]}'),
 )
 
+# Raw JSON with non-canonical NUMBER lexemes, passed to Rust verbatim so json.dumps
+# cannot launder them into Python's layout first (the parity-test masking codex flagged).
+RAW_JSON_CALLS: tuple[tuple[str, str], ...] = (
+    ("Mystery", '{"ratio": 1e-7}'),
+    ("Mystery", '{"ratio": -0}'),
+    ("Mystery", '{"ratio": 1e16}'),
+    ("Mystery", '{"ratio": 1e15}'),
+    ("Mystery", '{"ratio": 0.1}'),
+    ("Mystery", '{"ratio": -0.5}'),
+    ("Mystery", '{"tie": 698957826421429.2}'),
+    ("Mystery", '{"count": 99999999999999999999}'),
+)
+
 
 def classify(value: object) -> object:
     match value:
@@ -149,11 +162,12 @@ def tool_call_cases() -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     for name, tool_input in [*corpus_calls(), *EDGE_CALLS]:
         call = parse_tool_call(name, tool_input, on_error="other")
+        input_json = json.dumps(tool_input)
         for turn_chars, tool_chars in BUDGETS:
             cases.append(
                 {
                     "name": name,
-                    "input": tool_input,
+                    "input_json": input_json,
                     "budget": [turn_chars, tool_chars],
                     "expected": render_tool_call(call, budget=Budget(turn_chars=turn_chars, tool_chars=tool_chars)),
                 }
@@ -193,6 +207,38 @@ def dup_key_transcript() -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
+def raw_json_call_cases() -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for name, input_json in RAW_JSON_CALLS:
+        call = parse_tool_call(name, json.loads(input_json), on_error="other")
+        for turn_chars, tool_chars in BUDGETS[:2]:
+            cases.append(
+                {
+                    "name": name,
+                    "input_json": input_json,
+                    "budget": [turn_chars, tool_chars],
+                    "expected": render_tool_call(call, budget=Budget(turn_chars=turn_chars, tool_chars=tool_chars)),
+                }
+            )
+    return cases
+
+
+def numeric_transcript() -> bytes:
+    lines = [
+        '{"type":"user","uuid":"nu1","sessionId":"numsess","timestamp":"2026-01-02T03:04:05.000Z",'
+        '"message":{"role":"user","content":"numeric session"}}',
+        '{"type":"assistant","uuid":"na1","parentUuid":"nu1","sessionId":"numsess",'
+        '"timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","model":"claude-opus-4-8",'
+        '"stop_reason":"tool_use","content":[{"type":"text","text":"reading"},'
+        '{"type":"tool_use","id":"ntool","name":"Read",'
+        '"input":{"file_path":"/n.py","ratio":1e-7,"big":1e16,"neg":-0,"tie":698957826421429.2}}]}}',
+        '{"type":"user","uuid":"nu2","parentUuid":"na1","sessionId":"numsess",'
+        '"timestamp":"2026-01-02T03:04:07.000Z","message":{"role":"user",'
+        '"content":[{"type":"tool_result","tool_use_id":"ntool","content":"ok","is_error":false}]}}',
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
 def transcript_case(id_: str, raw: bytes) -> dict[str, Any]:
     events = parse_events_from_bytes(raw)
     names = tool_names(events)
@@ -228,6 +274,7 @@ def sample_transcripts() -> list[tuple[str, bytes]]:
     return [
         ("fixture", fixture_bytes()),
         ("dup-key", dup_key_transcript()),
+        ("numeric", numeric_transcript()),
         *((str(p.relative_to(REPO_ROOT)), p.read_bytes()) for p in smallest),
     ]
 
@@ -242,13 +289,14 @@ def main() -> None:
     golden = {
         "tool_calls": tool_call_cases(),
         "dup_key_calls": dup_key_call_cases(),
+        "raw_json_calls": raw_json_call_cases(),
         "transcripts": transcripts,
         "stats_all": render_stats(collect_stats(all_parsed)),
     }
     GOLDEN.write_text(json.dumps(golden, indent=2, ensure_ascii=False), encoding="utf-8")
     print(
-        f"wrote {len(golden['tool_calls'])} tool-call + {len(golden['dup_key_calls'])} dup-key cases "
-        f"+ {len(transcripts)} transcripts to {GOLDEN.name}"
+        f"wrote {len(golden['tool_calls'])} tool-call + {len(golden['dup_key_calls'])} dup-key + "
+        f"{len(golden['raw_json_calls'])} raw-json cases + {len(transcripts)} transcripts to {GOLDEN.name}"
     )
 
 

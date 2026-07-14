@@ -26,6 +26,7 @@ from tests.support import requires_rust
 GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "render_golden.json").read_text("utf-8"))
 TOOL_CALLS = GOLDEN["tool_calls"]
 DUP_KEY_CALLS = GOLDEN["dup_key_calls"]
+RAW_JSON_CALLS = GOLDEN["raw_json_calls"]
 TRANSCRIPTS = GOLDEN["transcripts"]
 
 
@@ -38,12 +39,12 @@ def parsed_of(raw: bytes, id_: str) -> ParsedTranscript:
     "case", TOOL_CALLS, ids=[f"{i}:{c['name']}:{c['budget'][1]}" for i, c in enumerate(TOOL_CALLS)]
 )
 def test_tool_call_parity(case: dict[str, object]) -> None:
-    name, tool_input = case["name"], case["input"]
+    name, input_json = case["name"], case["input_json"]
     turn, tool = case["budget"]
     expected = case["expected"]
-    call = parse_tool_call(name, tool_input, on_error="other")
+    call = parse_tool_call(name, json.loads(input_json), on_error="other")
     assert render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool)) == expected
-    assert _parser_rs.render_tool_call(name, json.dumps(tool_input), turn, tool) == expected
+    assert _parser_rs.render_tool_call(name, input_json, turn, tool) == expected
 
 
 @requires_rust
@@ -51,6 +52,19 @@ def test_tool_call_parity(case: dict[str, object]) -> None:
     "case", DUP_KEY_CALLS, ids=[f"{i}:{c['name']}:{c['budget'][1]}" for i, c in enumerate(DUP_KEY_CALLS)]
 )
 def test_dup_key_call_parity(case: dict[str, object]) -> None:
+    name, input_json = case["name"], case["input_json"]
+    turn, tool = case["budget"]
+    expected = case["expected"]
+    call = parse_tool_call(name, json.loads(input_json), on_error="other")
+    assert render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool)) == expected
+    assert _parser_rs.render_tool_call(name, input_json, turn, tool) == expected
+
+
+@requires_rust
+@pytest.mark.parametrize(
+    "case", RAW_JSON_CALLS, ids=[f"{i}:{c['name']}:{c['budget'][1]}" for i, c in enumerate(RAW_JSON_CALLS)]
+)
+def test_raw_json_call_parity(case: dict[str, object]) -> None:
     name, input_json = case["name"], case["input_json"]
     turn, tool = case["budget"]
     expected = case["expected"]
