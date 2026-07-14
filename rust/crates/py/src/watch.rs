@@ -4,7 +4,7 @@
 //! Python `TailState`.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyTuple};
 use pyo3::IntoPyObjectExt;
 use std::path::PathBuf;
 
@@ -44,7 +44,7 @@ impl WatchTailer {
             .into_iter()
             .map(|event| {
                 let path = event.path.to_string_lossy().into_owned();
-                Ok(PyList::new(
+                Ok(PyTuple::new(
                     py,
                     [
                         path.into_bound_py_any(py)?,
