@@ -13,7 +13,7 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::parse::parse_questions;
 use crate::types::Question;
-use crate::value::{field, field_str};
+use crate::value::{field, field_str, normalized_owned};
 
 // Parity: tools.py TOOL_ALIASES (name -> harness display alias).
 fn tool_alias(name: &str) -> Option<&'static str> {
@@ -987,8 +987,10 @@ fn ask_user_question_result(name: &str, raw: &Value) -> ToolResult {
     })
 }
 
-/// Parity: tools.py parse_tool_result. Total — a result lift never errors.
+/// Parity: tools.py parse_tool_result. Total — a result lift never errors. The one owner
+/// of last-wins key normalization for tool_use_result, which parse-boundary dedup skips.
 pub fn parse_tool_result(name: &str, payload: &Value) -> ToolResult {
+    let payload = &normalized_owned(payload);
     if let Some(text) = payload.as_str() {
         return ToolResult::Text(TextResult {
             name: name.to_string(),

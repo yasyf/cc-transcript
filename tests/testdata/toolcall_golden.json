@@ -1843,5 +1843,108 @@
       ],
       "message": "Bash input must be a mapping, got list"
     }
+  ],
+  "dup_key_calls": [
+    {
+      "tool": "Edit",
+      "input_json": "{\"file_path\":\"/first.py\",\"file_path\":\"/last.py\",\"old_string\":\"a\",\"old_string\":\"b\",\"new_string\":\"x\",\"new_string\":\"y\"}",
+      "expected": {
+        "cls": "EditCall",
+        "name": "Edit",
+        "raw": {
+          "file_path": "/last.py",
+          "old_string": "b",
+          "new_string": "y"
+        },
+        "file_path": "/last.py",
+        "old": "b",
+        "new": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "tool": "Bash",
+      "input_json": "{\"command\":\"ls\",\"command\":\"pwd -P\"}",
+      "expected": {
+        "cls": "BashCall",
+        "name": "Bash",
+        "raw": {
+          "command": "pwd -P"
+        },
+        "command": "pwd -P",
+        "timeout": null,
+        "description": null,
+        "run_in_background": null
+      }
+    },
+    {
+      "tool": "MultiEdit",
+      "input_json": "{\"file_path\":\"/a.py\",\"file_path\":\"/b.py\",\"edits\":[{\"old_string\":\"p\",\"new_string\":\"q\",\"old_string\":\"pp\",\"new_string\":\"qq\"}]}",
+      "expected": {
+        "cls": "MultiEditCall",
+        "name": "MultiEdit",
+        "raw": {
+          "file_path": "/b.py",
+          "edits": [
+            {
+              "old_string": "pp",
+              "new_string": "qq"
+            }
+          ]
+        },
+        "file_path": "/b.py",
+        "edits": [
+          {
+            "cls": "EditSpan",
+            "old": "pp",
+            "new": "qq",
+            "replace_all": false
+          }
+        ]
+      }
+    }
+  ],
+  "dup_key_results": [
+    {
+      "tool": "Bash",
+      "payload_json": "{\"stdout\":\"first\",\"stdout\":\"second\",\"stderr\":\"\",\"interrupted\":false}",
+      "expected": {
+        "cls": "BashResult",
+        "name": "Bash",
+        "raw": {
+          "stdout": "second",
+          "stderr": "",
+          "interrupted": false
+        },
+        "stdout": "second",
+        "stderr": "",
+        "interrupted": false,
+        "is_image": false,
+        "no_output_expected": false,
+        "background_task_id": null,
+        "return_code_interpretation": null
+      }
+    },
+    {
+      "tool": "Edit",
+      "payload_json": "{\"filePath\":\"/a.py\",\"filePath\":\"/b.py\",\"oldString\":\"x\",\"newString\":\"y\"}",
+      "expected": {
+        "cls": "EditResult",
+        "name": "Edit",
+        "raw": {
+          "filePath": "/b.py",
+          "oldString": "x",
+          "newString": "y"
+        },
+        "file_path": "/b.py",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false,
+        "user_modified": false,
+        "stale_recovered": false,
+        "structured_patch": null,
+        "original_file": null
+      }
+    }
   ]
 }

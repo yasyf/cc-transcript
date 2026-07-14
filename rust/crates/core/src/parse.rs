@@ -12,7 +12,7 @@ use crate::types::{
     Question, QueuedCommand, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
     ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
 };
-use crate::value::{block_type, field, field_bool, field_str};
+use crate::value::{block_type, field, field_bool, field_str, normalized_owned};
 
 const AVG_LINE_BYTES: usize = 1400;
 
@@ -214,16 +214,16 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
         Some("tool_use") => {
             let id = require_str(block, "id")?.to_string();
             let name = require_str(block, "name")?.to_string();
-            let input = require(block, "input")?;
+            let input = normalized_owned(require(block, "input")?);
             Ok(ContentBlock::ToolUse(ToolUseBlock {
                 id,
                 name,
-                run_in_background: field(input, "run_in_background")
+                run_in_background: field(&input, "run_in_background")
                     .and_then(JsonValueTrait::as_bool),
-                subagent_type: field_str(input, "subagent_type").map(str::to_string),
-                file_path: field_str(input, "file_path").map(str::to_string),
-                questions: parse_questions(input),
-                input: input.clone(),
+                subagent_type: field_str(&input, "subagent_type").map(str::to_string),
+                file_path: field_str(&input, "file_path").map(str::to_string),
+                questions: parse_questions(&input),
+                input,
             }))
         }
         Some("fallback") => Ok(ContentBlock::Fallback(FallbackBlock {
@@ -232,7 +232,7 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
         })),
         Some(other) => Ok(ContentBlock::Other {
             ty: other.to_string(),
-            raw: block.clone(),
+            raw: normalized_owned(block),
         }),
         None => Err(ParseError::Key("type".to_string())),
     }
@@ -399,7 +399,7 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             hook_name: opt_str(att, "hookName"),
             hook_event: opt_str(att, "hookEvent"),
             tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
-            blocking_error: field(att, "blockingError").cloned(),
+            blocking_error: field(att, "blockingError").map(normalized_owned),
         }),
         Some("hook_non_blocking_error") => {
             AttachmentDetail::HookNonBlockingError(HookNonBlockingError {
@@ -437,7 +437,7 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             stdout: opt_str(att, "stdout"),
             stderr: opt_str(att, "stderr"),
             exit_code: opt_i64(att, "exitCode"),
-            response: field(att, "response").cloned(),
+            response: field(att, "response").map(normalized_owned),
         }),
         Some("queued_command") => AttachmentDetail::QueuedCommand(QueuedCommand {
             prompt: opt_str(att, "prompt"),
@@ -470,7 +470,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 source_tool_use_id: truthy_str(&data, "sourceToolUseID").map(str::to_string),
                 source_tool_assistant_uuid: truthy_str(&data, "sourceToolAssistantUUID")
                     .map(str::to_string),
-                mcp_meta: field(&data, "mcpMeta").cloned(),
+                mcp_meta: field(&data, "mcpMeta").map(normalized_owned),
                 permission_mode: field_str(&data, "permissionMode").map(str::to_string),
                 interrupted_message_id: field_str(&data, "interruptedMessageId")
                     .map(str::to_string),
@@ -529,7 +529,8 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
         }
         _ => {}
     }
-    Ok(Entry::Other(OtherEntry { ty, raw: data }))
+    let raw = normalized_owned(&data);
+    Ok(Entry::Other(OtherEntry { ty, raw }))
 }
 
 // Non-JSON lines and valid-JSON lines that are not objects (bare scalars or
@@ -683,12 +684,12 @@ pub fn parse_print_envelope(envelope: &Value) -> Result<PrintResult, ParseError>
 
     let structured_output = field(result, "structured_output")
         .filter(|s| !s.is_null())
-        .cloned();
+        .map(normalized_owned);
     let permission_denials = require(result, "permission_denials")?
         .as_array()
         .ok_or_else(|| ParseError::Key("permission_denials".to_string()))?
         .iter()
-        .cloned()
+        .map(normalized_owned)
         .collect();
     let init = init.map(parse_init).transpose()?;
     let messages = elements
@@ -921,5 +922,24 @@ mod tests {
             parse_print_envelope(&parse(r#"[{"type":"system"}]"#)).unwrap_err(),
             ParseError::Value(msg) if msg == "envelope has no result element"
         ));
+    }
+
+    #[test]
+    fn parse_entry_normalizes_duplicate_keys_to_last_wins() {
+        // Pre-extracted fields and first-wins reads of the retained input both see last-wins.
+        let raw = format!(
+            r#"{{"type":"assistant",{META},"message":{{"model":"m1","content":[
+                {{"type":"tool_use","id":"t1","name":"Edit","input":{{"file_path":"/first.py","file_path":"/last.py","old_string":"a","old_string":"b"}}}}
+            ]}}}}"#
+        );
+        let entry = parse_entry(parse(&raw)).unwrap();
+        let use_ = entry.tool_uses().next().unwrap();
+        assert_eq!(use_.file_path.as_deref(), Some("/last.py"));
+        assert_eq!(field_str(&use_.input, "file_path"), Some("/last.py"));
+        assert_eq!(field_str(&use_.input, "old_string"), Some("b"));
+        assert_eq!(
+            use_.input,
+            parse(r#"{"file_path":"/last.py","old_string":"b"}"#)
+        );
     }
 }

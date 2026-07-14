@@ -11,6 +11,7 @@ use cc_transcript_core::toolcall::{
     self, EditSpan, QuestionAnnotation, ToolCall, ToolInputError, ToolResult,
 };
 use cc_transcript_core::types::Question;
+use cc_transcript_core::value::normalize_last_wins;
 
 fn tagged<'py>(py: Python<'py>, cls: &str) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
@@ -286,8 +287,11 @@ pub fn toolcall_parse<'py>(
     input_json: &str,
     on_error: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let input: Value = sonic_rs::from_str(input_json)
+    let mut input: Value = sonic_rs::from_str(input_json)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    // parse_tool_call stays pure over an already-deduped input (parse_entry normalizes the
+    // transcript path); this standalone gateway bypasses it, so normalize here.
+    normalize_last_wins(&mut input);
     let call = match on_error.unwrap_or("raise") {
         "raise" => toolcall::parse_tool_call_strict(name, &input)
             .map_err(|e| tool_input_error(py, name, &e))?,

@@ -26,6 +26,8 @@ GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "toolcall_go
 CALLS = GOLDEN["calls"]
 RESULTS = GOLDEN["results"]
 RAISE_CALLS = GOLDEN["raise_calls"]
+DUP_KEY_CALLS = GOLDEN["dup_key_calls"]
+DUP_KEY_RESULTS = GOLDEN["dup_key_results"]
 
 
 @requires_rust
@@ -54,6 +56,22 @@ def test_strict_raise_parity(case: dict[str, object]) -> None:
     with pytest.raises(ToolInputError) as rs_exc:
         _parser_rs.toolcall_parse(name, json.dumps(tool_input), "raise")
     assert str(rs_exc.value) == message
+
+
+@requires_rust
+@pytest.mark.parametrize("case", DUP_KEY_CALLS, ids=[f"{i}:{c['tool']}" for i, c in enumerate(DUP_KEY_CALLS)])
+def test_dup_key_call_parity(case: dict[str, object]) -> None:
+    name, input_json, expected = case["tool"], case["input_json"], case["expected"]
+    assert project(parse_tool_call(name, orjson.loads(input_json), on_error="other")) == expected
+    assert _parser_rs.toolcall_parse(name, input_json, "other") == expected
+
+
+@requires_rust
+@pytest.mark.parametrize("case", DUP_KEY_RESULTS, ids=[f"{i}:{c['tool']}" for i, c in enumerate(DUP_KEY_RESULTS)])
+def test_dup_key_result_parity(case: dict[str, object]) -> None:
+    name, payload_json, expected = case["tool"], case["payload_json"], case["expected"]
+    assert project(parse_tool_result(name, orjson.loads(payload_json), on_error="other")) == expected
+    assert _parser_rs.toolresult_parse(name, payload_json) == expected
 
 
 def write_transcript(path: Path, tool_name: str) -> None:

@@ -31,6 +31,26 @@ from tests.toolcall_cases import EDGE_CALLS, EDGE_RESULTS, STRICT_RAISERS, proje
 CORPUS = REPO_ROOT / ".fixtures" / "corpus"
 GOLDEN = REPO_ROOT / "tests" / "testdata" / "toolcall_golden.json"
 
+# Raw JSON with duplicate keys (a dict can't carry them); orjson keeps the last, pinning that
+# the Rust path yields last-wins end-to-end through toolcall_parse / parse_tool_result.
+DUP_KEY_CALLS: tuple[tuple[str, str], ...] = (
+    (
+        "Edit",
+        '{"file_path":"/first.py","file_path":"/last.py","old_string":"a","old_string":"b",'
+        '"new_string":"x","new_string":"y"}',
+    ),
+    ("Bash", '{"command":"ls","command":"pwd -P"}'),
+    (
+        "MultiEdit",
+        '{"file_path":"/a.py","file_path":"/b.py","edits":'
+        '[{"old_string":"p","new_string":"q","old_string":"pp","new_string":"qq"}]}',
+    ),
+)
+DUP_KEY_RESULTS: tuple[tuple[str, str], ...] = (
+    ("Bash", '{"stdout":"first","stdout":"second","stderr":"","interrupted":false}'),
+    ("Edit", '{"filePath":"/a.py","filePath":"/b.py","oldString":"x","newString":"y"}'),
+)
+
 
 def classify(value: object) -> object:
     match value:
@@ -101,12 +121,33 @@ def main() -> None:
         for name, payload in [*corpus_results, *EDGE_RESULTS]
     ]
     raise_calls = [raise_case(name, tool_input) for name, tool_input in STRICT_RAISERS]
+    dup_key_calls = [
+        {"tool": name, "input_json": raw, "expected": project(parse_tool_call(name, orjson.loads(raw), on_error="other"))}
+        for name, raw in DUP_KEY_CALLS
+    ]
+    dup_key_results = [
+        {"tool": name, "payload_json": raw, "expected": project(parse_tool_result(name, orjson.loads(raw), on_error="other"))}
+        for name, raw in DUP_KEY_RESULTS
+    ]
     # stdlib json, not orjson: the golden carries ints beyond orjson's 64-bit ceiling.
     GOLDEN.write_text(
-        json.dumps({"calls": calls, "results": results, "raise_calls": raise_calls}, indent=2, ensure_ascii=False),
+        json.dumps(
+            {
+                "calls": calls,
+                "results": results,
+                "raise_calls": raise_calls,
+                "dup_key_calls": dup_key_calls,
+                "dup_key_results": dup_key_results,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
-    print(f"wrote {len(calls)} calls + {len(results)} results + {len(raise_calls)} raisers to {GOLDEN.name}")
+    print(
+        f"wrote {len(calls)} calls + {len(results)} results + {len(raise_calls)} raisers "
+        f"+ {len(dup_key_calls)} dup calls + {len(dup_key_results)} dup results to {GOLDEN.name}"
+    )
 
 
 if __name__ == "__main__":
