@@ -2,26 +2,26 @@
 
 One SQLite table (``corrections``) records each incorrect edit a developer
 pushed back on paired with the correction that overwrote it — a later edit, a
-git commit, or a reviewer's natural-language note. cc-pushback and captain-hook
+git commit, or a reviewer's natural-language note. cc-steer and captain-hook
 write it from their harvest passes; cc-review writes human review corrections
 through the ``cc-transcript corrections`` CLI; all join it by ``incorrect_digest``,
 the same cross-language tool digest the decision ledger keys on.
 
-Import-light by contract, like :mod:`cc_transcript.ids` and
-:mod:`cc_transcript.decisions`: the standard library plus identity primitives
-only, so a hook reading corrections pays nothing for the parser. The harvest
-that produces mined rows lives in :func:`cc_transcript.evidence.record_harvest`,
-which is allowed the heavier activity imports.
+One write codepath, in Rust: :class:`CorrectionLog` is a facade over the native
+engine, which bundles its own SQLite. Two SQLite libraries in one process cannot
+coordinate POSIX advisory locks, so within one process exactly one engine may
+touch a given ledger file — this module never opens the ledger through
+:mod:`sqlite3`, and neither should any caller. Cross-process mixing (cc-review's
+Go reader, the Rust CLI, other Python processes) is safe.
 """
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Self
 
-from cc_transcript.ledger import SyncLedger
+from cc_transcript import _native
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -66,7 +66,7 @@ class Correction:
     Attributes:
         ts_ms: Integer-millisecond timestamp of the incorrect edit.
         session_id: The Claude session UUID the edit fired in.
-        source: The writing system, e.g. ``cc-pushback``, ``captain-hook``, ``cc-review``.
+        source: The writing system, e.g. ``cc-steer``, ``captain-hook``, ``cc-review``.
         anchor_uuid: The transcript uuid of the feedback the harvest anchored on,
             or ``review:<reviewID>:<commentID>`` for a human review correction.
         incorrect_digest: The cross-language content digest of the incorrect
@@ -106,12 +106,15 @@ class Correction:
     detail: Mapping[str, Any] = field(default_factory=dict)
 
 
-class CorrectionLog(SyncLedger[Correction]):
+class CorrectionLog:
     """The ``corrections`` ledger at ``~/.cc-transcript/corrections.db``.
 
-    Opened in WAL mode with a busy timeout because writers across the family
-    touch the same file concurrently. Durable by convention: rows are never
-    auto-dropped. Requires a local disk — WAL does not work over NFS.
+    A facade over the native engine, opened in WAL mode with a busy timeout
+    because writers across the family touch the same file concurrently.
+    Durable by convention: rows are never auto-dropped. Requires a local
+    disk — WAL does not work over NFS. The engine bundles its own SQLite, so
+    within this process no other SQLite library may open the same file (see
+    the module docstring).
 
     Example:
         >>> log = CorrectionLog.open()
@@ -119,47 +122,53 @@ class CorrectionLog(SyncLedger[Correction]):
         >>> log.by_digest(session_id, incorrect_digest=digest)
     """
 
-    DDL = CORRECTIONS_DDL
-    FILENAME = "corrections.db"
-    TABLE = "corrections"
-    COLUMNS = (
-        "ts_ms",
-        "session_id",
-        "source",
-        "anchor_uuid",
-        "incorrect_digest",
-        "incorrect_file",
-        "incorrect_old",
-        "incorrect_new",
-        "correction_origin",
-        "correction_file",
-        "correction_old",
-        "correction_new",
-        "correction_commit",
-        "correction_text",
-        "overlap",
-        "detail_json",
-    )
+    def __init__(self, engine: _native.RustCorrectionLog) -> None:
+        self._engine = engine
 
-    def row_to_record(self, row: sqlite3.Row) -> Correction:
-        return Correction(
-            ts_ms=row["ts_ms"],
-            session_id=row["session_id"],
-            source=row["source"],
-            anchor_uuid=row["anchor_uuid"],
-            incorrect_digest=row["incorrect_digest"],
-            incorrect_file=row["incorrect_file"],
-            incorrect_old=row["incorrect_old"],
-            incorrect_new=row["incorrect_new"],
-            correction_origin=row["correction_origin"],
-            correction_file=row["correction_file"],
-            correction_old=row["correction_old"],
-            correction_new=row["correction_new"],
-            correction_commit=row["correction_commit"],
-            correction_text=row["correction_text"],
-            overlap=row["overlap"],
-            detail=json.loads(row["detail_json"]),
+    @classmethod
+    def open(cls, path: Path | None = None) -> Self:
+        """Opens (creating if needed) the ledger at ``path``.
+
+        Args:
+            path: The database file path; its parents are created if absent.
+                Defaults to the ledger's file under ``~/.cc-transcript``.
+
+        Returns:
+            The opened log.
+        """
+        path = path or Path.home() / ".cc-transcript" / "corrections.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return cls(_native.RustCorrectionLog(str(path)))
+
+    def append(self, record: Correction) -> None:
+        """Appends ``record`` as a single ``INSERT OR IGNORE``.
+
+        Idempotent on the table's UNIQUE key, so re-running a writer writes one
+        row; SQLite treats NULL key columns as distinct, so rows whose key
+        carries a NULL rely on the writer not repeating the same values.
+        """
+        self._engine.append(
+            record.ts_ms,
+            record.session_id,
+            record.source,
+            record.anchor_uuid,
+            record.incorrect_digest,
+            record.incorrect_file,
+            record.incorrect_old,
+            record.incorrect_new,
+            record.correction_origin,
+            record.correction_file,
+            record.correction_old,
+            record.correction_new,
+            record.correction_commit,
+            record.correction_text,
+            record.overlap,
+            record.detail,
         )
+
+    def for_session(self, session_id: SessionId) -> tuple[Correction, ...]:
+        """All records for ``session_id``, ordered by timestamp."""
+        return tuple(Correction(**row) for row in self._engine.for_session(session_id))
 
     def for_repo(self, repo: str) -> tuple[Correction, ...]:
         """All corrections whose ``detail.repo`` is ``repo``, ordered by timestamp.
@@ -167,13 +176,7 @@ class CorrectionLog(SyncLedger[Correction]):
         The repo key producers stamp into ``detail`` so a per-repo consumer (the
         captain-hook reviewer) can pull every correction for its repo at once.
         """
-        return tuple(
-            self.row_to_record(row)
-            for row in self.conn.execute(
-                "SELECT * FROM corrections WHERE json_extract(detail_json, '$.repo') = ? ORDER BY ts_ms, id",
-                (repo,),
-            )
-        )
+        return tuple(Correction(**row) for row in self._engine.for_repo(repo))
 
     def since(self, ts_ms: int, *, source: str | None = None) -> tuple[Correction, ...]:
         """Corrections with ``ts_ms`` strictly greater than ``ts_ms``, oldest first.
@@ -181,23 +184,11 @@ class CorrectionLog(SyncLedger[Correction]):
         A cursor read for incremental consumers; pass ``source`` to scope to one
         producer.
         """
-        if source is None:
-            rows = self.conn.execute("SELECT * FROM corrections WHERE ts_ms > ? ORDER BY ts_ms, id", (ts_ms,))
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM corrections WHERE ts_ms > ? AND source = ? ORDER BY ts_ms, id", (ts_ms, source)
-            )
-        return tuple(self.row_to_record(row) for row in rows)
+        return tuple(Correction(**row) for row in self._engine.since(ts_ms, source))
 
     def for_anchor(self, session_id: SessionId, anchor_uuid: EventUuid) -> tuple[Correction, ...]:
         """The corrections harvested around one feedback ``anchor_uuid``."""
-        return tuple(
-            self.row_to_record(row)
-            for row in self.conn.execute(
-                "SELECT * FROM corrections WHERE session_id = ? AND anchor_uuid = ? ORDER BY ts_ms, id",
-                (session_id, anchor_uuid),
-            )
-        )
+        return tuple(Correction(**row) for row in self._engine.for_anchor(session_id, anchor_uuid))
 
     def by_digest(self, session_id: SessionId, *, incorrect_digest: ToolDigest) -> tuple[Correction, ...]:
         """Corrections of the tool call with ``incorrect_digest`` in ``session_id``.
@@ -206,10 +197,8 @@ class CorrectionLog(SyncLedger[Correction]):
         the ``decisions`` ledger to learn whether that exact edit was later
         corrected.
         """
-        return tuple(
-            self.row_to_record(row)
-            for row in self.conn.execute(
-                "SELECT * FROM corrections WHERE session_id = ? AND incorrect_digest = ? ORDER BY ts_ms, id",
-                (session_id, incorrect_digest),
-            )
-        )
+        return tuple(Correction(**row) for row in self._engine.by_digest(session_id, incorrect_digest))
+
+    def sql(self, statement: str) -> list[dict[str, Any]]:
+        """Runs one raw SQL ``statement`` — the escape hatch behind ``corrections sql``."""
+        return self._engine.sql(statement)

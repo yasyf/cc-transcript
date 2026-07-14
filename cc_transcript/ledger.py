@@ -1,9 +1,11 @@
-"""The append-only SQLite base shared by the correction and decision ledgers.
+"""The append-only SQLite base under the decision ledger.
 
-Both family ledgers are one durable, WAL-mode, ``INSERT OR IGNORE`` table behind
+A family ledger is one durable, WAL-mode, ``INSERT OR IGNORE`` table behind
 a fixed schema, so :class:`SyncLedger` owns the connection, the ``open`` plumbing,
-and the schema-driven append and read — each ledger supplies only its DDL,
-filename, table, columns, and row mapper.
+and the schema-driven append and read — a ledger supplies only its DDL,
+filename, table, columns, and row mapper. The corrections ledger left this base
+in v14: its one write codepath is the native engine behind
+:class:`~cc_transcript.corrections.CorrectionLog`.
 
 Import-light by contract, like :mod:`cc_transcript.ids`: the standard library
 plus identity primitives only, so a hook reading a ledger pays nothing for the

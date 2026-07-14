@@ -1,9 +1,11 @@
 """Rust↔Python parity for the correction ledger on the same on-disk file.
 
 The ledger format is a cross-language contract — cc-review's Go reads it directly — so
-the Rust ``RustCorrectionLog`` engine and the Python ``CorrectionLog`` reference must be
-byte-compatible. These tests write with one engine and read with the other over one
-database file, pinning: identical query results (record shape), identical ``sqlite_master``
+the Rust ``RustCorrectionLog`` engine and an independent ``sqlite3``-library reference
+must stay byte-compatible. The shipping ``CorrectionLog`` facade delegates to the native
+engine (one engine per process), so the reference leg lives here as ``PyReferenceLog``,
+the pre-v14 sqlite3 implementation. These tests write with one engine and read with the
+other over one database file, pinning: identical query results (record shape), identical ``sqlite_master``
 schema, WAL journal mode, ``PRAGMA busy_timeout``, raw row bytes (``detail_json`` included),
 ``INSERT OR IGNORE`` idempotency, the single-statement ``sql`` rule, ``dict``-normalized
 detail (NaN/Infinity/lone surrogates and non-mapping raises), storage-class reads, GIL
@@ -28,11 +30,91 @@ from dataclasses import asdict
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.corrections import Correction, CorrectionLog
+from cc_transcript.corrections import CORRECTIONS_DDL, Correction
 from cc_transcript.ids import EventUuid, SessionId
 from tests.support import ANCHOR, DIGEST_A, DIGEST_B, DIGEST_C, OTHER_SESSION, SESSION, correction, requires_rust
 
 OTHER_ANCHOR = EventUuid("anchor-2")
+
+COLUMNS = (
+    "ts_ms",
+    "session_id",
+    "source",
+    "anchor_uuid",
+    "incorrect_digest",
+    "incorrect_file",
+    "incorrect_old",
+    "incorrect_new",
+    "correction_origin",
+    "correction_file",
+    "correction_old",
+    "correction_new",
+    "correction_commit",
+    "correction_text",
+    "overlap",
+    "detail_json",
+)
+
+
+class PyReferenceLog:
+    """The sqlite3-library reference engine — the pre-v14 CorrectionLog, verbatim."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    @classmethod
+    def open(cls, path: pathlib.Path) -> PyReferenceLog:
+        conn = sqlite3.connect(path, autocommit=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 2000")
+        conn.executescript(CORRECTIONS_DDL)
+        return cls(conn)
+
+    def append(self, record: Correction) -> None:
+        self.conn.execute(
+            f"INSERT OR IGNORE INTO corrections ({', '.join(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})",
+            tuple(
+                json.dumps(dict(record.detail)) if column == "detail_json" else getattr(record, column)
+                for column in COLUMNS
+            ),
+        )
+
+    def row_to_record(self, row: sqlite3.Row) -> Correction:
+        return Correction(
+            **{column: row[column] for column in COLUMNS if column != "detail_json"},
+            detail=json.loads(row["detail_json"]),
+        )
+
+    def query(self, sql: str, params: tuple[object, ...]) -> tuple[Correction, ...]:
+        return tuple(self.row_to_record(row) for row in self.conn.execute(sql, params))
+
+    def for_session(self, session_id: str) -> tuple[Correction, ...]:
+        return self.query("SELECT * FROM corrections WHERE session_id = ? ORDER BY ts_ms, id", (session_id,))
+
+    def for_repo(self, repo: str) -> tuple[Correction, ...]:
+        return self.query(
+            "SELECT * FROM corrections WHERE json_extract(detail_json, '$.repo') = ? ORDER BY ts_ms, id", (repo,)
+        )
+
+    def since(self, ts_ms: int, *, source: str | None = None) -> tuple[Correction, ...]:
+        if source is None:
+            return self.query("SELECT * FROM corrections WHERE ts_ms > ? ORDER BY ts_ms, id", (ts_ms,))
+        return self.query(
+            "SELECT * FROM corrections WHERE ts_ms > ? AND source = ? ORDER BY ts_ms, id", (ts_ms, source)
+        )
+
+    def for_anchor(self, session_id: str, anchor_uuid: str) -> tuple[Correction, ...]:
+        return self.query(
+            "SELECT * FROM corrections WHERE session_id = ? AND anchor_uuid = ? ORDER BY ts_ms, id",
+            (session_id, anchor_uuid),
+        )
+
+    def by_digest(self, session_id: str, *, incorrect_digest: str) -> tuple[Correction, ...]:
+        return self.query(
+            "SELECT * FROM corrections WHERE session_id = ? AND incorrect_digest = ? ORDER BY ts_ms, id",
+            (session_id, incorrect_digest),
+        )
 
 
 def fixture_rows() -> list[Correction]:
@@ -125,7 +207,7 @@ def raw_rows(path: pathlib.Path) -> list[dict[str, object]]:
 @requires_rust
 def test_rust_reads_python_written_rows(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "corrections.db"
-    py_log = CorrectionLog.open(db)
+    py_log = PyReferenceLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
     rust = _native.RustCorrectionLog(str(db))
@@ -145,7 +227,7 @@ def test_on_disk_bytes_match_between_engines(tmp_path: pathlib.Path) -> None:
     rows = fixture_rows()
     db_py = tmp_path / "py.db"
     db_rust = tmp_path / "rust.db"
-    py_log = CorrectionLog.open(db_py)
+    py_log = PyReferenceLog.open(db_py)
     for row in rows:
         py_log.append(row)
     rust = _native.RustCorrectionLog(str(db_rust))
@@ -169,7 +251,7 @@ def test_python_reads_rust_written_rows(tmp_path: pathlib.Path) -> None:
     for row in rows:
         rust_append(rust, row)
 
-    py_log = CorrectionLog.open(db)
+    py_log = PyReferenceLog.open(db)
     assert py_log.for_session(SESSION) == tuple(row for row in rows if row.session_id == SESSION)
     assert py_log.for_session(OTHER_SESSION) == tuple(row for row in rows if row.session_id == OTHER_SESSION)
 
@@ -177,7 +259,7 @@ def test_python_reads_rust_written_rows(tmp_path: pathlib.Path) -> None:
 @requires_rust
 def test_sql_passthrough_and_busy_timeout_parity(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "corrections.db"
-    py_log = CorrectionLog.open(db)
+    py_log = PyReferenceLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
     rust = _native.RustCorrectionLog(str(db))
@@ -210,7 +292,7 @@ def test_sql_unique_violation_raises_integrity_error_with_extended_name(tmp_path
 @requires_rust
 def test_sql_enforces_the_single_statement_rule(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "corrections.db"
-    py_log = CorrectionLog.open(db)
+    py_log = PyReferenceLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
     rust = _native.RustCorrectionLog(str(db))
@@ -312,7 +394,7 @@ def test_nonfinite_and_lone_surrogate_detail(tmp_path: pathlib.Path) -> None:
     ]
     db_py = tmp_path / "py.db"
     db_rust = tmp_path / "rust.db"
-    py_log = CorrectionLog.open(db_py)
+    py_log = PyReferenceLog.open(db_py)
     for row in rows:
         py_log.append(row)
     rust = _native.RustCorrectionLog(str(db_rust))
@@ -343,7 +425,7 @@ def test_non_mapping_detail_raises_like_dict(tmp_path: pathlib.Path) -> None:
 @requires_rust
 def test_out_of_range_ts_ms_reads_back_by_storage_class(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "c.db"
-    py_log = CorrectionLog.open(db)
+    py_log = PyReferenceLog.open(db)
     rust = _native.RustCorrectionLog(str(db))
     # 2^63 overflows SQLite's signed-64-bit INTEGER, landing in ts_ms as REAL; Python's
     # row_to_record returns a float there, so the Rust projection must too (never an i64 error).
@@ -365,5 +447,5 @@ def test_insert_or_ignore_is_idempotent_across_engines(tmp_path: pathlib.Path) -
     rust_append(rust, row)
     assert len(rust.for_session(SESSION)) == 1
 
-    CorrectionLog.open(db).append(row)
+    PyReferenceLog.open(db).append(row)
     assert len(rust.for_session(SESSION)) == 1

@@ -116,6 +116,5 @@ def query(session: str | None, repo: str | None, digest: str | None, since: int 
 @click.argument("statement")
 def sql(statement: str) -> None:
     """Run a raw SQL statement against the ledger — the escape hatch."""
-    rows = CorrectionLog.open().conn.execute(statement).fetchall()
-    for row in rows:
-        click.echo(orjson.dumps(dict(row)))
+    for row in CorrectionLog.open().sql(statement):
+        click.echo(orjson.dumps(row))
