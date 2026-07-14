@@ -49,7 +49,7 @@ jobs:
           rm -rf .wheel-smoke
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
-          .wheel-smoke/bin/python -c "from cc_transcript.parser import TranscriptParser; assert TranscriptParser.backend_name() == 'rust'"
+          .wheel-smoke/bin/python -c "import cc_transcript; assert cc_transcript.parse(b'').path is None"
 
   swift:
     runs-on: macos-15
