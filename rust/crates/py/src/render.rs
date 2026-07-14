@@ -8,6 +8,7 @@ use cc_transcript_core::parse::parse_bytes;
 use cc_transcript_core::render::{self, Budget};
 use cc_transcript_core::toolcall::parse_tool_call;
 use cc_transcript_core::types::{tool_use_index, Entry};
+use cc_transcript_core::value::normalize_last_wins;
 
 use crate::event::parse_err;
 
@@ -26,8 +27,10 @@ pub(crate) fn render_tool_call(
     turn_chars: usize,
     tool_chars: usize,
 ) -> PyResult<String> {
-    let input: Value = sonic_rs::from_str(input_json)
+    let mut input: Value = sonic_rs::from_str(input_json)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    // This standalone gateway bypasses parse_entry's dedup, so normalize like toolcall_parse.
+    normalize_last_wins(&mut input);
     Ok(render::render_tool_call(
         &parse_tool_call(name, &input),
         &Budget {

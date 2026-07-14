@@ -158,6 +158,24 @@ def anchor_ref(sid: str, uuid: str, tool_use_id: str | None) -> EventRef:
     return EventRef(SessionId(sid), EventUuid(uuid), None if tool_use_id is None else ToolUseId(tool_use_id))
 
 
+def dup_key_transcript() -> bytes:
+    # A tool_use whose input has duplicate keys; the capture preview inherits the
+    # parse-boundary last-wins dedup (file_path resolves to /last.py) as a regression guard.
+    assistant = (
+        '{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"' + SID + '",'
+        '"timestamp":"2026-02-01T09:00:01.000Z","message":{"role":"assistant",'
+        '"model":"claude-opus-4-8","content":[{"type":"tool_use","id":"d1","name":"Edit",'
+        '"input":{"file_path":"/first.py","file_path":"/last.py","old_string":"a","new_string":"b"}}]}}'
+    )
+    lines = [
+        user_line("u0", 0, "edit it"),
+        assistant,
+        user_line("u1", 2, "done"),
+        assistant_line("a1", 3, [{"type": "text", "text": "ok"}]),
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
 def capture_cases(sid: str, activity: SessionActivity) -> list[dict]:
     cases: list[dict] = []
     for uuid, tool_use_id in anchors(activity):
@@ -239,6 +257,7 @@ def main() -> None:
         capture_section("basic", basic_transcript(), SID),
         capture_section("preamble", leading_preamble_transcript(), SID),
         capture_section("ask", ask_transcript(), SID),
+        capture_section("dup-key", dup_key_transcript(), SID),
         *corpus_sections(),
     ]
     golden = {"captures": captures, "windows": hand_built_windows(), "rejects": list(REJECTS)}

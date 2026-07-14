@@ -93,6 +93,8 @@ EDGE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("Mystery", {"x": None}),
     ("Read", {"file_path": None, "extra": "y"}),
     ("Mystery", {"items": ["it's", 'say "hi"', "both ' and \""]}),
+    # Non-printable code points inside a container: py_string_repr must \x/\u-escape like repr().
+    ("Mystery", {"chars": ["z\x01w", "a\x85b", "x y", "\xa0", "é 漢 😀"]}),
     ("Mystery", {}),
 )
 

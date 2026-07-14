@@ -1046,6 +1046,42 @@
     },
     {
       "name": "Mystery",
+      "input_json": "{\"chars\": [\"z\\u0001w\", \"a\\u0085b\", \"x\\u2028y\", \"\\u00a0\", \"\\u00e9 \\u6f22 \\ud83d\\ude00\"]}",
+      "budget": [
+        700,
+        1500
+      ],
+      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\u2028y', '\\xa0', 'é 漢 😀'])"
+    },
+    {
+      "name": "Mystery",
+      "input_json": "{\"chars\": [\"z\\u0001w\", \"a\\u0085b\", \"x\\u2028y\", \"\\u00a0\", \"\\u00e9 \\u6f22 \\ud83d\\ude00\"]}",
+      "budget": [
+        100,
+        100
+      ],
+      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\u2028y', '\\xa0', 'é 漢 😀'])"
+    },
+    {
+      "name": "Mystery",
+      "input_json": "{\"chars\": [\"z\\u0001w\", \"a\\u0085b\", \"x\\u2028y\", \"\\u00a0\", \"\\u00e9 \\u6f22 \\ud83d\\ude00\"]}",
+      "budget": [
+        24,
+        24
+      ],
+      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\…(+25ch))"
+    },
+    {
+      "name": "Mystery",
+      "input_json": "{\"chars\": [\"z\\u0001w\", \"a\\u0085b\", \"x\\u2028y\", \"\\u00a0\", \"\\u00e9 \\u6f22 \\ud83d\\ude00\"]}",
+      "budget": [
+        5,
+        5
+      ],
+      "expected": "Mystery(['z\\x…(+44ch))"
+    },
+    {
+      "name": "Mystery",
       "input_json": "{}",
       "budget": [
         700,

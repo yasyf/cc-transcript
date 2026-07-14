@@ -14,7 +14,7 @@ use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{
     AssistantEntry, AttachmentDetail, ContentBlock, Entry, ToolResultBlock, UserEntry,
 };
-use crate::value::field_last;
+use crate::value::field;
 
 pub const PRIMARY_KEYS: [&str; 8] = [
     "file_path",
@@ -136,19 +136,6 @@ fn human_size(n: u64) -> String {
     unreachable!("SIZE_UNITS ends open-ended")
 }
 
-// Python dict from a JSON object: first-seen key position, last value (last-wins dedup),
-// so the mirror matches a dict materialized by json.loads.
-fn object_entries(value: &Value) -> Vec<(&str, &Value)> {
-    let mut order: Vec<&str> = Vec::new();
-    let mut last: HashMap<&str, &Value> = HashMap::new();
-    for (key, item) in value.as_object().unwrap().iter() {
-        if last.insert(key, item).is_none() {
-            order.push(key);
-        }
-    }
-    order.into_iter().map(|key| (key, last[key])).collect()
-}
-
 // orjson.dumps mirror: compact, insertion-ordered keys, raw UTF-8, Python number format.
 fn write_orjson(value: &Value, out: &mut String) {
     match value.get_type() {
@@ -172,7 +159,7 @@ fn write_orjson(value: &Value, out: &mut String) {
         }
         JsonType::Object => {
             out.push('{');
-            for (i, (key, item)) in object_entries(value).into_iter().enumerate() {
+            for (i, (key, item)) in value.as_object().unwrap().iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
@@ -319,8 +306,10 @@ fn py_repr(value: &Value) -> String {
             format!("[{inner}]")
         }
         JsonType::Object => {
-            let inner = object_entries(value)
-                .into_iter()
+            let inner = value
+                .as_object()
+                .unwrap()
+                .iter()
                 .map(|(k, v)| format!("{}: {}", py_string_repr(k), py_repr(v)))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -329,8 +318,8 @@ fn py_repr(value: &Value) -> String {
     }
 }
 
-// Python repr() of a str over the printable-ASCII + basic-escape range (the primary-arg
-// shapes a transcript carries); non-ASCII non-printables are left verbatim.
+// Python repr() of a str: prefer single quotes (double only when the string has a single
+// quote and no double), escape the quote/backslash/\n\r\t, \x/\u/\U-escape non-printables.
 fn py_string_repr(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
@@ -349,14 +338,31 @@ fn py_string_repr(s: &str) -> String {
                 out.push('\\');
                 out.push(quote);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32))
-            }
-            c => out.push(c),
+            c if is_py_printable(c) => out.push(c),
+            c => match c as u32 {
+                cp if cp <= 0xff => out.push_str(&format!("\\x{cp:02x}")),
+                cp if cp <= 0xffff => out.push_str(&format!("\\u{cp:04x}")),
+                cp => out.push_str(&format!("\\U{cp:08x}")),
+            },
         }
     }
     out.push(quote);
     out
+}
+
+// Python str.isprintable(): false for the Unicode Other (C*) / Separator (Z*) code points,
+// except ASCII space. Covers Cc + the Z separators + the common Cf format chars.
+fn is_py_printable(c: char) -> bool {
+    if c == ' ' {
+        return true;
+    }
+    !matches!(c as u32,
+        0x00..=0x1f | 0x7f..=0x9f
+        | 0xa0 | 0xad | 0x1680
+        | 0x2000..=0x200f
+        | 0x2028 | 0x2029 | 0x202a..=0x202f
+        | 0x205f | 0x2060..=0x206f
+        | 0x3000 | 0xfeff)
 }
 
 fn line_budget(width: usize) -> Budget {
@@ -386,15 +392,15 @@ fn hunk_lines(old: &str, new: &str, budget: &Budget) -> Vec<String> {
 }
 
 fn primary_arg(raw: &Value) -> String {
-    if raw.as_object().is_none() {
+    let Some(obj) = raw.as_object() else {
         return String::new();
-    }
+    };
     for key in PRIMARY_KEYS {
-        if let Some(v) = field_last(raw, key) {
+        if let Some(v) = field(raw, key) {
             return py_str(v);
         }
     }
-    match object_entries(raw).first() {
+    match obj.iter().next() {
         Some((_, v)) => py_str(v),
         None => String::new(),
     }
@@ -926,29 +932,19 @@ mod tests {
     }
 
     #[test]
-    fn orjson_dumps_is_compact_and_ordered() {
-        let value = sonic_rs::from_str(r#"{"b":1,"a":"x","n":null,"f":1.5}"#).unwrap();
-        assert_eq!(orjson_dumps(&value), r#"{"b":1,"a":"x","n":null,"f":1.5}"#);
+    fn py_string_repr_escapes_non_printables() {
+        assert_eq!(py_string_repr("z\u{01}w"), "'z\\x01w'");
+        assert_eq!(py_string_repr("a\u{85}b"), "'a\\x85b'");
+        assert_eq!(py_string_repr("x\u{2028}y"), "'x\\u2028y'");
+        assert_eq!(py_string_repr("\u{a0}"), "'\\xa0'");
+        // Printable code points (ASCII, accented, astral emoji) stay verbatim.
+        assert_eq!(py_string_repr("é 漢 😀"), "'é 漢 😀'");
     }
 
     #[test]
-    fn duplicate_keys_resolve_last_wins_first_position() {
-        // Python dict from json.loads: the key keeps its first position, its last value.
-        let value = sonic_rs::from_str(r#"{"b":1,"a":2,"b":3}"#).unwrap();
-        assert_eq!(orjson_dumps(&value), r#"{"b":3,"a":2}"#);
-        assert_eq!(py_repr(&value), "{'b': 3, 'a': 2}");
-        // primary_arg over a duplicated PRIMARY_KEY takes the last value.
-        assert_eq!(
-            primary_arg(
-                &sonic_rs::from_str(r#"{"file_path":"/first","file_path":"/last"}"#).unwrap()
-            ),
-            "/last"
-        );
-        // The fallback first-value is the first key's last value.
-        assert_eq!(
-            primary_arg(&sonic_rs::from_str(r#"{"z":1,"y":2,"z":3}"#).unwrap()),
-            "3"
-        );
+    fn orjson_dumps_is_compact_and_ordered() {
+        let value = sonic_rs::from_str(r#"{"b":1,"a":"x","n":null,"f":1.5}"#).unwrap();
+        assert_eq!(orjson_dumps(&value), r#"{"b":1,"a":"x","n":null,"f":1.5}"#);
     }
 
     fn num(lexeme: &str) -> Value {
