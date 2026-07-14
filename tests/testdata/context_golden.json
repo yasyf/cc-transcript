@@ -1,0 +1,1734 @@
+{
+  "captures": [
+    {
+      "id": "basic",
+      "jsonl_b64": "eyJ0eXBlIjogInVzZXIiLCAidXVpZCI6ICJ1MCIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDAuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogInVzZXIiLCAiY29udGVudCI6ICJvbmUifX0KeyJ0eXBlIjogImFzc2lzdGFudCIsICJ1dWlkIjogImEwIiwgInBhcmVudFV1aWQiOiBudWxsLCAic2Vzc2lvbklkIjogIjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsICJ0aW1lc3RhbXAiOiAiMjAyNi0wMi0wMVQwOTowMDowMS4wMDBaIiwgIm1lc3NhZ2UiOiB7InJvbGUiOiAiYXNzaXN0YW50IiwgIm1vZGVsIjogImNsYXVkZS1vcHVzLTQtOCIsICJjb250ZW50IjogW3sidHlwZSI6ICJ0ZXh0IiwgInRleHQiOiAid29ya2luZyJ9LCB7InR5cGUiOiAidG9vbF91c2UiLCAiaWQiOiAidDEiLCAibmFtZSI6ICJFZGl0IiwgImlucHV0IjogeyJmaWxlX3BhdGgiOiAiL2EucHkiLCAib2xkX3N0cmluZyI6ICJ4ID0gMSIsICJuZXdfc3RyaW5nIjogInggPSAyIn19XX19CnsidHlwZSI6ICJ1c2VyIiwgInV1aWQiOiAidTEiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjAyLjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJ1c2VyIiwgImNvbnRlbnQiOiAidHdvIn19CnsidHlwZSI6ICJhc3Npc3RhbnQiLCAidXVpZCI6ICJhMSIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDMuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogImFzc2lzdGFudCIsICJtb2RlbCI6ICJjbGF1ZGUtb3B1cy00LTgiLCAiY29udGVudCI6IFt7InR5cGUiOiAidG9vbF91c2UiLCAiaWQiOiAidDIiLCAibmFtZSI6ICJCYXNoIiwgImlucHV0IjogeyJjb21tYW5kIjogInV2IHJ1biBweXRlc3QifX1dfX0KeyJ0eXBlIjogInVzZXIiLCAidXVpZCI6ICJ1MiIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDQuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogInVzZXIiLCAiY29udGVudCI6ICJ0aHJlZSJ9fQp7InR5cGUiOiAiYXNzaXN0YW50IiwgInV1aWQiOiAiYTIiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjA1LjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJhc3Npc3RhbnQiLCAibW9kZWwiOiAiY2xhdWRlLW9wdXMtNC04IiwgImNvbnRlbnQiOiBbeyJ0eXBlIjogInRvb2xfdXNlIiwgImlkIjogInQzIiwgIm5hbWUiOiAiRWRpdCIsICJpbnB1dCI6IHsiZmlsZV9wYXRoIjogIi9hLnB5IiwgIm9sZF9zdHJpbmciOiAib29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vIiwgIm5ld19zdHJpbmciOiAibm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5uIn19XX19CnsidHlwZSI6ICJ1c2VyIiwgInV1aWQiOiAidTMiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjA2LjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJ1c2VyIiwgImNvbnRlbnQiOiAiZm91ciJ9fQp7InR5cGUiOiAiYXNzaXN0YW50IiwgInV1aWQiOiAiYTMiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjA3LjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJhc3Npc3RhbnQiLCAibW9kZWwiOiAiY2xhdWRlLW9wdXMtNC04IiwgImNvbnRlbnQiOiBbeyJ0eXBlIjogInRleHQiLCAidGV4dCI6ICJkb25lIn1dfX0=",
+      "session_id": "22222222-2222-2222-2222-222222222222",
+      "cases": [
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]},{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: worki…(+2ch)\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: worki…(+2ch)\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv ru…(+8ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+36ch)\n\nuser: two\nuv ru…(+8ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+55ch)\n\nuser:…(+17ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "t1",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]},{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "t1",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "t1",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "t1",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: worki…(+2ch)\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: worki…(+2ch)\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv ru…(+8ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+36ch)\n\nuser: two\nuv ru…(+8ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+55ch)\n\nuser:…(+17ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "t1",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]},{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+139ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- ooooo…(+115ch)\\n+ nnnnn…(+115ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: worki…(+2ch)\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: worki…(+2ch)\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n- ooooo…(+115ch)\n+ nnnnn…(+115ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+36ch)\n\nuser: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n-…(+32ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+55ch)\n\nuser:…(+17ch)\n\nuser:…(+51ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "t2",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]},{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t2\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "t2",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t2\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+139ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "t2",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t2\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "t2",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: three\\nEdit /a.py\\n- ooooo…(+115ch)\\n+ nnnnn…(+115ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t2\"},\"before\":[{\"preview\":\"user: one\\nassistant: worki…(+2ch)\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: worki…(+2ch)\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n- ooooo…(+115ch)\n+ nnnnn…(+115ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+36ch)\n\nuser: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n-…(+32ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+55ch)\n\nuser:…(+17ch)\n\nuser:…(+51ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "t2",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t2\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: two\nuv run pytest"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+18ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+139ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooo…(+96ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooo…(+96ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+68ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+87ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- ooooo…(+115ch)\\n+ nnnnn…(+115ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n- ooooo…(+115ch)\n+ nnnnn…(+115ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n-…(+32ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+17ch)\n\nuser:…(+51ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: three\nEdit /a.py\n-…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a2",
+          "anchor_tool_use_id": "t3",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a2",
+          "anchor_tool_use_id": "t3",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+139ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a2",
+          "anchor_tool_use_id": "t3",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooo…(+96ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooo…(+96ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+68ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+87ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a2",
+          "anchor_tool_use_id": "t3",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"user: two\\nuv ru…(+8ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- ooooo…(+115ch)\\n+ nnnnn…(+115ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n- ooooo…(+115ch)\n+ nnnnn…(+115ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: two\nuv ru…(+8ch)\n\nuser: three\nEdit /a.py\n-…(+32ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+17ch)\n\nuser:…(+51ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a2",
+          "anchor_tool_use_id": "t3",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: three\nEdit /a.py\n-…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u3",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]},{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+68ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+244ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+263ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u3",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]},{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+18ch)\n\nuser:…(+139ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u3",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]},{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooo…(+96ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooo…(+96ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnn…(+96ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+68ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+87ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u3",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: three\\nEdit /a.py\\n- ooooo…(+115ch)\\n+ nnnnn…(+115ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: three\nEdit /a.py\n- ooooo…(+115ch)\n+ nnnnn…(+115ch)\n\nuser: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: three\nEdit /a.py\n-…(+32ch)\n\nuser: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+51ch)\n\nuser:…(+21ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u3",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: four\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: four\nassistant: do…(+2ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+21ch)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preamble",
+      "jsonl_b64": "eyJ0eXBlIjogImFzc2lzdGFudCIsICJ1dWlkIjogInAwIiwgInBhcmVudFV1aWQiOiBudWxsLCAic2Vzc2lvbklkIjogIjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsICJ0aW1lc3RhbXAiOiAiMjAyNi0wMi0wMVQwOTowMDowMC4wMDBaIiwgIm1lc3NhZ2UiOiB7InJvbGUiOiAiYXNzaXN0YW50IiwgIm1vZGVsIjogImNsYXVkZS1vcHVzLTQtOCIsICJjb250ZW50IjogW3sidHlwZSI6ICJ0ZXh0IiwgInRleHQiOiAicHJlYW1ibGUgYmVmb3JlIGFueSBwcm9tcHQifV19fQp7InR5cGUiOiAidXNlciIsICJ1dWlkIjogInUwIiwgInBhcmVudFV1aWQiOiBudWxsLCAic2Vzc2lvbklkIjogIjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsICJ0aW1lc3RhbXAiOiAiMjAyNi0wMi0wMVQwOTowMDowMS4wMDBaIiwgIm1lc3NhZ2UiOiB7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogImhcdTAwZTlsbG8gXHVkODNlXHVkZDE2IFx1NmYyMlx1NWI1NyBjYWZcdTAwZTlcdTAzMDEgXHUyMDE0IHRoZSBxdWljayBicm93biBmb3gganVtcHMgb3ZlciB0aGUgbGF6eSBkb2cgYWdhaW4gYW5kIGFnYWluIn19CnsidHlwZSI6ICJhc3Npc3RhbnQiLCAidXVpZCI6ICJhMCIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDIuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogImFzc2lzdGFudCIsICJtb2RlbCI6ICJjbGF1ZGUtb3B1cy00LTgiLCAiY29udGVudCI6IFt7InR5cGUiOiAidGhpbmtpbmciLCAidGhpbmtpbmciOiAiaGlkZGVuIn0sIHsidHlwZSI6ICJ0ZXh0IiwgInRleHQiOiAiaFx1MDBlOWxsbyBcdWQ4M2VcdWRkMTYgXHU2ZjIyXHU1YjU3IGNhZlx1MDBlOVx1MDMwMSBcdTIwMTQgdGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZyBhZ2FpbiBhbmQgYWdhaW4ifSwgeyJ0eXBlIjogInRvb2xfdXNlIiwgImlkIjogImcxIiwgIm5hbWUiOiAiR3JlcCIsICJpbnB1dCI6IHsicGF0dGVybiI6ICJwYXJzZV9ieXRlcyIsICJvdXRwdXRfbW9kZSI6ICJjb250ZW50In19XX19CnsidHlwZSI6ICJ1c2VyIiwgInV1aWQiOiAidTEiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjAzLjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJ1c2VyIiwgImNvbnRlbnQiOiAibmV4dCJ9fQp7InR5cGUiOiAiYXNzaXN0YW50IiwgInV1aWQiOiAiYTEiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjA0LjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJhc3Npc3RhbnQiLCAibW9kZWwiOiAiY2xhdWRlLW9wdXMtNC04IiwgImNvbnRlbnQiOiBbeyJ0eXBlIjogInRleHQiLCAidGV4dCI6ICIgICAifSwgeyJ0eXBlIjogInRvb2xfdXNlIiwgImlkIjogIncxIiwgIm5hbWUiOiAiV3JpdGUiLCAiaW5wdXQiOiB7ImZpbGVfcGF0aCI6ICIvdy5weSIsICJjb250ZW50IjogIiMgb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vb29vIn19XX19",
+      "session_id": "22222222-2222-2222-2222-222222222222",
+      "cases": [
+        {
+          "anchor_uuid": "p0",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]},{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+168ch)\n\nuser: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+187ch)\n\nuser:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "p0",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"anchor\":{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nGrep(parse_bytes)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+128ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+147ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "p0",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"assistant: preamble before any prom…(+2ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prom…(+2ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+18ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+37ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "p0",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: héllo…(+73ch)\\nassistant: héllo…(+73ch)\\nGrep(parse…(+6ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"anchor\":{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"assistant: pream…(+21ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassistant: héllo…(+73ch)\nGrep(parse…(+6ch))"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassi…(+39ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+19ch)\n\nuser:…(+58ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "p0",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+168ch)\n\nuser: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+187ch)\n\nuser:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+128ch)\n\nuser: next\nWrite /w.py\n#…(+57ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+147ch)\n\nuser:…(+76ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prom…(+2ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the q…(+54ch)\\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prom…(+2ch)\n\nuser: héllo 🤖 漢字 café́ — the q…(+54ch)\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\nGrep(parse_bytes)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+18ch)\n\nuser: héllo 🤖 漢字 café́ —…(+76ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+37ch)\n\nuser:…(+95ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# ooo…(+117ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: pream…(+21ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo…(+73ch)\\nassistant: héllo…(+73ch)\\nGrep(parse…(+6ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassistant: héllo…(+73ch)\nGrep(parse…(+6ch))\n\nuser: next\nWrite /w.py\n# ooo…(+117ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassi…(+39ch)\n\nuser: next\nWrite /w.py\n#…(+13ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+19ch)\n\nuser:…(+58ch)\n\nuser:…(+32ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: héllo 🤖 漢字 café́ —…(+168ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+187ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "g1",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"g1\"},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+168ch)\n\nuser: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+187ch)\n\nuser:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "g1",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"g1\"},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+128ch)\n\nuser: next\nWrite /w.py\n#…(+57ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+147ch)\n\nuser:…(+76ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "g1",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"g1\"},\"before\":[{\"preview\":\"assistant: preamble before any prom…(+2ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the q…(+54ch)\\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prom…(+2ch)\n\nuser: héllo 🤖 漢字 café́ — the q…(+54ch)\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\nGrep(parse_bytes)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+18ch)\n\nuser: héllo 🤖 漢字 café́ —…(+76ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+37ch)\n\nuser:…(+95ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "g1",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: next\\nWrite /w.py\\n# ooo…(+117ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"g1\"},\"before\":[{\"preview\":\"assistant: pream…(+21ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo…(+73ch)\\nassistant: héllo…(+73ch)\\nGrep(parse…(+6ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassistant: héllo…(+73ch)\nGrep(parse…(+6ch))\n\nuser: next\nWrite /w.py\n# ooo…(+117ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: pream…(+21ch)\n\nuser: héllo…(+73ch)\nassi…(+39ch)\n\nuser: next\nWrite /w.py\n#…(+13ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+19ch)\n\nuser:…(+58ch)\n\nuser:…(+32ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "g1",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"g1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: héllo 🤖 漢字 café́ —…(+168ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+187ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+168ch)\n\nuser: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+187ch)\n\nuser:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+128ch)\n\nuser: next\nWrite /w.py\n#…(+57ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+147ch)\n\nuser:…(+76ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"assistant: preamble before any prom…(+2ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the q…(+54ch)\\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooo…(+98ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prom…(+2ch)\n\nuser: héllo 🤖 漢字 café́ — the q…(+54ch)\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooo…(+98ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+18ch)\n\nuser: héllo 🤖 漢字 café́ —…(+76ch)\n\nuser: next\nWrite /w.py\n#…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+37ch)\n\nuser:…(+95ch)\n\nuser:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: héllo…(+73ch)\\nassistant: héllo…(+73ch)\\nGrep(parse…(+6ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# ooo…(+117ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: héllo…(+73ch)\nassistant: héllo…(+73ch)\nGrep(parse…(+6ch))\n\nuser: next\nWrite /w.py\n# ooo…(+117ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: héllo…(+73ch)\nassi…(+39ch)\n\nuser: next\nWrite /w.py\n#…(+13ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+58ch)\n\nuser:…(+32ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u1",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "w1",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"w1\"},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over the lazy dog again and again\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+168ch)\n\nuser: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+187ch)\n\nuser:…(+140ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "w1",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"w1\"},\"before\":[{\"preview\":\"assistant: preamble before any prompt\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prompt\n\nuser: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nassistant: héllo 🤖 漢字 café́ — the quick brown fox jumps over …(+28ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooo…(+72ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+13ch)\n\nuser: héllo 🤖 漢字 café́ —…(+128ch)\n\nuser: next\nWrite /w.py\n#…(+57ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+32ch)\n\nuser:…(+147ch)\n\nuser:…(+76ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "w1",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"w1\"},\"before\":[{\"preview\":\"assistant: preamble before any prom…(+2ch)\",\"refs\":[{\"event_uuid\":\"p0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"assistant\",\"tool_digests\":[]},{\"preview\":\"user: héllo 🤖 漢字 café́ — the q…(+54ch)\\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\\nGrep(parse_bytes)\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooo…(+98ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "assistant: preamble before any prom…(+2ch)\n\nuser: héllo 🤖 漢字 café́ — the q…(+54ch)\nassistant: héllo 🤖 漢字 café́ — the q…(+54ch)\nGrep(parse_bytes)\n\nuser: next\nWrite /w.py\n# oooooooooooooooooooooo…(+98ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "assistant: preamble befo…(+18ch)\n\nuser: héllo 🤖 漢字 café́ —…(+76ch)\n\nuser: next\nWrite /w.py\n#…(+31ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "assis…(+37ch)\n\nuser:…(+95ch)\n\nuser:…(+50ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "w1",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"w1\"},\"before\":[{\"preview\":\"user: héllo…(+73ch)\\nassistant: héllo…(+73ch)\\nGrep(parse…(+6ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"6d49e642db0304cc670f631d298cad19fb3f732e39a9922d272d25f5149bf55b\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# ooo…(+117ch)\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: héllo…(+73ch)\nassistant: héllo…(+73ch)\nGrep(parse…(+6ch))\n\nuser: next\nWrite /w.py\n# ooo…(+117ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: héllo…(+73ch)\nassi…(+39ch)\n\nuser: next\nWrite /w.py\n#…(+13ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+58ch)\n\nuser:…(+32ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a1",
+          "anchor_tool_use_id": "w1",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"w1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: next\\nWrite /w.py\\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"7dc1ec640afbdb703f70c5445c860658514eb8fcd2d898460a15b81079e7f6bf\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: next\nWrite /w.py\n# oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: next\nWrite /w.py\n#…(+121ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+140ch)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ask",
+      "jsonl_b64": "eyJ0eXBlIjogInVzZXIiLCAidXVpZCI6ICJ1MCIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDAuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogInVzZXIiLCAiY29udGVudCI6ICJzZXQgdXAgdGhlIGFkYXB0ZXIifX0KeyJ0eXBlIjogImFzc2lzdGFudCIsICJ1dWlkIjogImEwIiwgInBhcmVudFV1aWQiOiBudWxsLCAic2Vzc2lvbklkIjogIjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsICJ0aW1lc3RhbXAiOiAiMjAyNi0wMi0wMVQwOTowMDowMS4wMDBaIiwgIm1lc3NhZ2UiOiB7InJvbGUiOiAiYXNzaXN0YW50IiwgIm1vZGVsIjogImNsYXVkZS1vcHVzLTQtOCIsICJjb250ZW50IjogW3sidHlwZSI6ICJ0ZXh0IiwgInRleHQiOiAiYXNraW5nIn0sIHsidHlwZSI6ICJ0b29sX3VzZSIsICJpZCI6ICJxMSIsICJuYW1lIjogIkFza1VzZXJRdWVzdGlvbiIsICJpbnB1dCI6IHsicXVlc3Rpb25zIjogW3sicXVlc3Rpb24iOiAiV2hpY2ggYWRhcHRlcj8iLCAiaGVhZGVyIjogIkFkYXB0ZXIiLCAibXVsdGlTZWxlY3QiOiBmYWxzZSwgIm9wdGlvbnMiOiBbeyJsYWJlbCI6ICJTdG9yYWdlIChSZWNvbW1lbmRlZCkifSwgeyJsYWJlbCI6ICJNZW1vcnkifV19LCB7InF1ZXN0aW9uIjogIk5hbWUgdGhlIGNvbnRleHRzPyIsICJoZWFkZXIiOiAiTmFtZXMiLCAibXVsdGlTZWxlY3QiOiB0cnVlLCAib3B0aW9ucyI6IFt7ImxhYmVsIjogIkJlZm9yZUVkaXQifSwgeyJsYWJlbCI6ICJBZnRlckVkaXQifV19XX19XX19CnsidHlwZSI6ICJ1c2VyIiwgInV1aWQiOiAidTEiLCAicGFyZW50VXVpZCI6IG51bGwsICJzZXNzaW9uSWQiOiAiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwgInRpbWVzdGFtcCI6ICIyMDI2LTAyLTAxVDA5OjAwOjAyLjAwMFoiLCAibWVzc2FnZSI6IHsicm9sZSI6ICJ1c2VyIiwgImNvbnRlbnQiOiBbeyJ0eXBlIjogInRvb2xfcmVzdWx0IiwgInRvb2xfdXNlX2lkIjogInExIiwgImNvbnRlbnQiOiAiYW5zd2VyZWQiLCAiaXNfZXJyb3IiOiBmYWxzZX1dfSwgInRvb2xVc2VSZXN1bHQiOiB7InF1ZXN0aW9ucyI6IFt7InF1ZXN0aW9uIjogIldoaWNoIGFkYXB0ZXI/IiwgImhlYWRlciI6ICJBZGFwdGVyIiwgIm11bHRpU2VsZWN0IjogZmFsc2UsICJvcHRpb25zIjogW3sibGFiZWwiOiAiU3RvcmFnZSAoUmVjb21tZW5kZWQpIn0sIHsibGFiZWwiOiAiTWVtb3J5In1dfSwgeyJxdWVzdGlvbiI6ICJOYW1lIHRoZSBjb250ZXh0cz8iLCAiaGVhZGVyIjogIk5hbWVzIiwgIm11bHRpU2VsZWN0IjogdHJ1ZSwgIm9wdGlvbnMiOiBbeyJsYWJlbCI6ICJCZWZvcmVFZGl0In0sIHsibGFiZWwiOiAiQWZ0ZXJFZGl0In1dfV0sICJhbnN3ZXJzIjogeyJXaGljaCBhZGFwdGVyPyI6ICJTdG9yYWdlIChSZWNvbW1lbmRlZCkiLCAiTmFtZSB0aGUgY29udGV4dHM/IjogIkJlZm9yZUVkaXQsIEFmdGVyRWRpdCJ9LCAiYW5ub3RhdGlvbnMiOiB7IldoaWNoIGFkYXB0ZXI/IjogeyJwcmV2aWV3IjogIlN0b3JhZ2UgKFJlY29tbWVuZGVkKSIsICJub3RlcyI6ICJhbmQgbmV2ZXIgdXNlIHRoZSBtZW1vcnkgb25lIGFnYWluIn19fX0KeyJ0eXBlIjogInVzZXIiLCAidXVpZCI6ICJ1MiIsICJwYXJlbnRVdWlkIjogbnVsbCwgInNlc3Npb25JZCI6ICIyMjIyMjIyMi0yMjIyLTIyMjItMjIyMi0yMjIyMjIyMjIyMjIiLCAidGltZXN0YW1wIjogIjIwMjYtMDItMDFUMDk6MDA6MDMuMDAwWiIsICJtZXNzYWdlIjogeyJyb2xlIjogInVzZXIiLCAiY29udGVudCI6ICJ0aGFua3MifX0KeyJ0eXBlIjogImFzc2lzdGFudCIsICJ1dWlkIjogImEyIiwgInBhcmVudFV1aWQiOiBudWxsLCAic2Vzc2lvbklkIjogIjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiIsICJ0aW1lc3RhbXAiOiAiMjAyNi0wMi0wMVQwOTowMDowNC4wMDBaIiwgIm1lc3NhZ2UiOiB7InJvbGUiOiAiYXNzaXN0YW50IiwgIm1vZGVsIjogImNsYXVkZS1vcHVzLTQtOCIsICJjb250ZW50IjogW3sidHlwZSI6ICJ0ZXh0IiwgInRleHQiOiAiZG9uZSJ9XX19",
+      "session_id": "22222222-2222-2222-2222-222222222222",
+      "cases": [
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'}]}, {'question': 'Name the contexts?', 'header': 'Names', …(+83ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'…(+68ch)\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which ada…(+259ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which ada…(+259ch))"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+69ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+88ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion([{'qu…(+278ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion([{'qu…(+278ch))\n\nuser: thank…(+1ch)\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u0",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'}]}, {'question': 'Name the contexts?', 'header': 'Names', …(+83ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "q1",
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'}]}, {'question': 'Name the contexts?', 'header': 'Names', …(+83ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'…(+68ch)\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "q1",
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "q1",
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which ada…(+259ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which ada…(+259ch))"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+69ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+88ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "q1",
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion([{'qu…(+278ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion([{'qu…(+278ch))\n\nuser: thank…(+1ch)\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "a0",
+          "anchor_tool_use_id": "q1",
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'}]}, {'question': 'Name the contexts?', 'header': 'Names', …(+83ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'…(+68ch)"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+244ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 6,
+          "after": 2,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'}]}, {'question': 'Name the contexts?', 'header': 'Names', …(+83ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter', 'multiSelect': False, 'options': [{'label': 'Storage (Recommended)'}, {'label': 'Memory'…(+68ch)\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 2,
+          "after": 1,
+          "preview_chars": 50,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which adapter?', 'header': 'Adapter…(+233ch))\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 3,
+          "after": 0,
+          "preview_chars": 24,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion([{'question': 'Which ada…(+259ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion([{'question': 'Which ada…(+259ch))\n\nuser: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set up the adapter…(+69ch)\n\nuser: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+88ch)\n\nuser:…(+23ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 1,
+          "after": 1,
+          "preview_chars": 5,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion([{'qu…(+278ch))\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion([{'qu…(+278ch))\n\nuser: thank…(+1ch)\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+            }
+          ]
+        },
+        {
+          "anchor_uuid": "u2",
+          "anchor_tool_use_id": null,
+          "before": 0,
+          "after": 0,
+          "preview_chars": 200,
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "previews": [
+            {
+              "turn_chars": 200,
+              "expected": "user: thanks\nassistant: done"
+            },
+            {
+              "turn_chars": 24,
+              "expected": "user: thanks\nassistant: …(+4ch)"
+            },
+            {
+              "turn_chars": 5,
+              "expected": "user:…(+23ch)"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "windows": [
+    {
+      "to_json": "{\"after\":[{\"preview\":\"user: four\\nassistant: done\",\"refs\":[{\"event_uuid\":\"u3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a3\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"user: one\\nassistant: working\\nEdit /a.py\\n- x = 1\\n+ x = 2\",\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"395a09e656b1e3836050eef2d8b12a0a36ba60373c3082ac6acb35ce3e9050e1\"]},{\"preview\":\"user: two\\nuv run pytest\",\"refs\":[{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"1bc0c806921835df2880f0b30dbfa73de7aed3eb31f4a86f0ccda3e0fc9bae69\"]}],\"fidelity\":\"summary\",\"preview_chars\":50,\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: three\\nEdit /a.py\\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\",\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"d5c325aa11986b95b5e4dc450c174feaeb44d3bd0825d1b13010147b0413543d\"]}}",
+      "previews": [
+        {
+          "turn_chars": 200,
+          "expected": "[summary fidelity — transcript unavailable]\n\nuser: one\nassistant: working\nEdit /a.py\n- x = 1\n+ x = 2\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n- oooooooooooooooooooooooooooooooooooooooooooooooooo…(+70ch)\n+ nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn…(+70ch)\n\nuser: four\nassistant: done"
+        },
+        {
+          "turn_chars": 24,
+          "expected": "[summary fidelity — transcript unavailable]\n\nuser: one\nassistant: wor…(+31ch)\n\nuser: two\nuv run pytest\n\nuser: three\nEdit /a.py\n-…(+120ch)\n\nuser: four\nassistant: do…(+2ch)"
+        },
+        {
+          "turn_chars": 5,
+          "expected": "[summary fidelity — transcript unavailable]\n\nuser:…(+50ch)\n\nuser:…(+18ch)\n\nuser:…(+139ch)\n\nuser:…(+21ch)"
+        }
+      ]
+    },
+    {
+      "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"t3\"},\"before\":[{\"preview\":\"converted prose\",\"refs\":[],\"role\":\"user\",\"tool_digests\":[]}],\"fidelity\":\"summary\",\"preview_chars\":200,\"schema\":\"cc-transcript.context/2\",\"trigger\":null}",
+      "previews": [
+        {
+          "turn_chars": 200,
+          "expected": "[summary fidelity — transcript unavailable]\n\nconverted prose"
+        },
+        {
+          "turn_chars": 24,
+          "expected": "[summary fidelity — transcript unavailable]\n\nconverted prose"
+        },
+        {
+          "turn_chars": 5,
+          "expected": "[summary fidelity — transcript unavailable]\n\nconve…(+10ch)"
+        }
+      ]
+    },
+    {
+      "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"z\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":0,\"schema\":\"cc-transcript.context/2\",\"trigger\":null}",
+      "previews": [
+        {
+          "turn_chars": 200,
+          "expected": ""
+        },
+        {
+          "turn_chars": 24,
+          "expected": ""
+        },
+        {
+          "turn_chars": 5,
+          "expected": ""
+        }
+      ]
+    }
+  ],
+  "rejects": [
+    "[]",
+    "{\"schema\":\"cc-transcript.context/3\"}",
+    "{\"anchor\":null}",
+    "{}"
+  ]
+}

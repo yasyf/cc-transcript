@@ -110,6 +110,37 @@ def activity_hunk_overlap(a_old: str, a_new: str, b_old: str, b_new: str, /) -> 
     """The activity.py ``hunk_overlap`` of two ``Hunk``s: the fraction of ``a_new``'s
     non-empty normalized lines present in ``b_old``."""
 
+def context_capture_window(
+    raw: bytes,
+    session_id: str,
+    anchor_uuid: str,
+    anchor_tool_use_id: str | None,
+    before: int,
+    after: int,
+    preview_chars: int,
+    /,
+) -> str:
+    """Captures the context window around an anchor and returns its ``to_json`` string.
+
+    Mirrors ``cc_transcript.context.capture_window`` over the ``SessionActivity.from_events``
+    lift of the transcript's raw JSONL: the anchor is ``EventRef(session_id, anchor_uuid,
+    anchor_tool_use_id)``. Raises ``ValueError`` when the anchor does not resolve.
+    """
+
+def context_roundtrip(data: str, /) -> str:
+    """Deserializes a persisted window and re-serializes it, byte-stably.
+
+    Mirrors ``ContextWindow.from_json(data).to_json()``; raises ``ValueError`` for any
+    payload not carrying the ``cc-transcript.context/2`` schema.
+    """
+
+def context_render_preview(data: str, turn_chars: int, /) -> str:
+    """Renders a persisted window's previews under ``turn_chars``.
+
+    Mirrors ``ContextWindow.from_json(data).render_preview(budget=Budget(turn_chars=...))``;
+    summary-fidelity windows lead with the summary-fidelity label.
+    """
+
 def render_tool_call(name: str, input_json: str, turn_chars: int, tool_chars: int, /) -> str:
     """Renders a tool ``name`` and JSON-encoded input under a budget.
 
@@ -136,7 +167,6 @@ def render_stats(raws: list[bytes], /) -> str:
 
     Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
     """
-
 def discovery_find_transcripts(root: str, /) -> list[str]:
     """Every ``*.jsonl`` transcript under ``root``, sorted by path (``._*`` forks included)."""
 

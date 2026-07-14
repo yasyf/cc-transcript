@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
+use crate::activity::Turn;
 use crate::filter::{entry_text, event_kind};
 use crate::ids::encode_string;
 use crate::pystr;
@@ -114,7 +115,7 @@ fn truncate(text: &str, width: usize) -> String {
 }
 
 // render.py clip: cut to `limit` code points plus an `…(+Nch)` overflow marker.
-fn clip(text: &str, limit: usize) -> String {
+pub(crate) fn clip(text: &str, limit: usize) -> String {
     let n = char_len(text);
     if n <= limit {
         return text.to_string();
@@ -429,6 +430,36 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
             clip(&primary_arg(call.raw()), budget.tool_chars)
         ),
     }
+}
+
+/// Render one turn — the prompt, assistant prose, and every tool call, in order
+/// (render.py render_turn). Prose clips to `budget.turn_chars`; each tool call
+/// renders via [`render_tool_call`] under `budget.tool_chars`.
+pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !turn.prompt.is_empty() {
+        parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
+    }
+    for event in turn.events {
+        let Entry::Assistant(assistant) = event else {
+            continue;
+        };
+        for block in &assistant.blocks {
+            match block {
+                ContentBlock::Text(text) if !pystr::strip(text).is_empty() => {
+                    parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
+                }
+                ContentBlock::ToolUse(tool_use) => {
+                    parts.push(render_tool_call(
+                        &parse_tool_call(&tool_use.name, &tool_use.input),
+                        budget,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    parts.join("\n")
 }
 
 /// One compact `index tag time payload [uuid]` line (render.py compact_line).

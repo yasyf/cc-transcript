@@ -480,6 +480,9 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_tool_call, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_compact_lines, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_haystacks, m)?)?;

@@ -4,6 +4,7 @@ pub mod activity;
 #[cfg(feature = "command")]
 pub mod command;
 pub mod discovery;
+pub mod context;
 pub mod filter;
 pub mod ids;
 pub mod parse;
