@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset};
 use once_cell::sync::Lazy;
-use sonic_rs::JsonContainerTrait;
 
 use crate::pystr;
+use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{
     matches_names, AssistantEntry, AttachmentDetail, ContentBlock, Entry, ToolResultBlock,
     ToolUseBlock, UserEntry,
 };
-use crate::value::{field_last, field_str, field_str_last};
+use crate::value::field_str;
 
 const NOTIFICATION_MARKER: &str = "<task-notification>";
 
@@ -284,7 +284,8 @@ pub struct Hunk {
 }
 
 /// One tool invocation lifted from a turn's assistant events (activity.py ToolUse);
-/// `edit` is the lowered `(file_path, hunks)` when edit-shaped, else None.
+/// `call` is the typed tool call parsed once at lift time, `edit` its lowered
+/// `(file_path, hunks)` when edit-shaped, else None.
 #[derive(Debug)]
 pub struct ToolUse<'a> {
     pub event_uuid: &'a str,
@@ -294,6 +295,7 @@ pub struct ToolUse<'a> {
     pub result: Option<&'a ToolResultBlock>,
     pub result_ts: Option<DateTime<FixedOffset>>,
     pub turn_index: usize,
+    pub call: ToolCall,
     pub edit: Option<(String, Vec<Hunk>)>,
 }
 
@@ -445,57 +447,20 @@ pub fn overlap_between(incorrect: &[Hunk], correction: &[Hunk]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-// tools.py TOOL_ALIASES_REVERSE: an aliased edit spelling lowers like its builtin.
-fn dealias(name: &str) -> &str {
-    match name {
-        "Execute" => "Bash",
-        "Create" => "Write",
-        "Task" => "Agent",
-        "FetchUrl" => "WebFetch",
-        "ExitSpecMode" => "ExitPlanMode",
-        other => other,
-    }
-}
-
-// Shim (toolcall port): hunks_of ∘ parse_tool_call(on_error="other") and
-// file_path_of; a missing/non-string required field degrades to no edit.
-fn lower_edit(tool_use: &ToolUseBlock) -> Option<(String, Vec<Hunk>)> {
-    let input = &tool_use.input;
-    match dealias(&tool_use.name) {
-        "Edit" => Some((
-            field_str_last(input, "file_path")?.to_string(),
-            vec![Hunk {
-                old: field_str_last(input, "old_string")?.to_string(),
-                new: field_str_last(input, "new_string")?.to_string(),
-            }],
-        )),
-        "MultiEdit" => {
-            let file_path = field_str_last(input, "file_path")?.to_string();
-            let hunks = field_last(input, "edits")
-                .and_then(|edits| edits.as_array())?
-                .iter()
-                .map(|span| {
-                    Some(Hunk {
-                        old: field_str_last(span, "old_string")?.to_string(),
-                        new: field_str_last(span, "new_string")?.to_string(),
-                    })
+// activity.py Turn.edits: an edit-shaped call lowers to (file_path, hunks) when both
+// file_path_of and hunks_of are non-empty; parse_tool_call is the one typed source.
+fn lower_edit(call: &ToolCall) -> Option<(String, Vec<Hunk>)> {
+    let hunks = call.hunks();
+    match call.file_path() {
+        Some(path) if !hunks.is_empty() => Some((
+            path.to_string(),
+            hunks
+                .into_iter()
+                .map(|h| Hunk {
+                    old: h.old,
+                    new: h.new,
                 })
-                .collect::<Option<Vec<Hunk>>>()?;
-            (!hunks.is_empty()).then_some((file_path, hunks))
-        }
-        "Write" => Some((
-            field_str_last(input, "file_path")?.to_string(),
-            vec![Hunk {
-                old: String::new(),
-                new: field_str_last(input, "content")?.to_string(),
-            }],
-        )),
-        "NotebookEdit" => Some((
-            field_str_last(input, "notebook_path")?.to_string(),
-            vec![Hunk {
-                old: String::new(),
-                new: field_str_last(input, "new_source")?.to_string(),
-            }],
+                .collect(),
         )),
         _ => None,
     }
@@ -569,6 +534,7 @@ fn lift_turn<'a>(
         })
         .map(|(assistant, tool_use)| {
             let pair = results.get(tool_use.id.as_str());
+            let call = parse_tool_call(&tool_use.name, &tool_use.input);
             ToolUse {
                 event_uuid: &assistant.meta.uuid,
                 tool_use_id: &tool_use.id,
@@ -577,7 +543,8 @@ fn lift_turn<'a>(
                 result: pair.map(|(block, _)| *block),
                 result_ts: pair.and_then(|(_, ts)| *ts),
                 turn_index: index,
-                edit: lower_edit(tool_use),
+                edit: lower_edit(&call),
+                call,
             }
         })
         .collect();
