@@ -463,14 +463,6 @@ def parse_print_result(raw: bytes) -> PrintResult:
     return _parser_rs.parse_print_result(raw)
 
 
-def decode_line(line: bytes) -> TranscriptEvent | None:
-    try:
-        data = orjson.loads(line)
-    except orjson.JSONDecodeError:
-        return None
-    return parse_event(data) if isinstance(data, dict) else None
-
-
 async def parse_events_async(path: Path) -> list[TranscriptEvent]:
     return parse_events_from_bytes(await anyio.Path(path).read_bytes())
 
