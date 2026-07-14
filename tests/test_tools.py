@@ -646,3 +646,24 @@ def test_parse_tool_result_out_of_contract_payload() -> None:
     assert isinstance(result, FallbackResult)
     assert result.name == "Bash"
     assert result.raw is payload
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_parse_tool_call_json_serializable_but_unparseable_falls_back(value: float) -> None:
+    # json.dumps emits NaN/Infinity, which the native JSON parser rejects — on_error='other'
+    # must catch that leg, not only the serialization TypeError.
+    payload = {"v": value}
+    with pytest.raises(ValueError):
+        parse_tool_call("X", payload)
+    call = parse_tool_call("X", payload, on_error="other")
+    assert isinstance(call, FallbackCall)
+    assert call.raw is payload
+
+
+def test_parse_tool_result_json_serializable_but_unparseable_falls_back() -> None:
+    payload = {"v": float("nan")}
+    with pytest.raises(ValueError):
+        parse_tool_result("Bash", payload)
+    result = parse_tool_result("Bash", payload, on_error="other")
+    assert isinstance(result, FallbackResult)
+    assert result.raw is payload

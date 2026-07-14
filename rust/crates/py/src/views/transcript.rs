@@ -108,8 +108,18 @@ impl EventListView {
         Ok(PyList::new(py, views)?.into_any().try_iter()?.into_any())
     }
 
-    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
-        for i in 0..self.entries.len() {
+    #[pyo3(signature = (value, start=0, stop=None))]
+    fn index(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        start: isize,
+        stop: Option<isize>,
+    ) -> PyResult<usize> {
+        let n = self.entries.len() as isize;
+        let clamp = |i: isize| (if i < 0 { (i + n).max(0) } else { i.min(n) }) as usize;
+        let (lo, hi) = (clamp(start), clamp(stop.unwrap_or(n)));
+        for i in lo..hi {
             if event_view(py, &self.entries, i)?.eq(value)? {
                 return Ok(i);
             }

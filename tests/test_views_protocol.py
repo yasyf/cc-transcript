@@ -52,6 +52,19 @@ def test_eventlist_index_and_count() -> None:
     assert events.count("not an event") == 0
 
 
+def test_eventlist_index_honors_start_and_stop() -> None:
+    # Matches the former list.index(value, start, stop). Reuse one line so it parses to
+    # two equal events at indices 0 and 2.
+    line = testkit.user_line("u1", "same")
+    events = event_list(line, testkit.user_line("u2", "other"), line)
+    target = events[0]
+    assert events.index(target) == 0
+    assert events.index(target, 1) == 2
+    assert events.index(target, -1) == 2
+    with pytest.raises(ValueError):
+        events.index(target, 1, 2)
+
+
 def test_eventlist_copy_returns_a_plain_list() -> None:
     events = three_events()
     duplicate = events.copy()

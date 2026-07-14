@@ -249,13 +249,14 @@ def parse_tool_call(
         if on_error == "raise":
             raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
         return _parser_rs.toolcall_parse_view(name, "{}", "other")
+    # Spans serialization and the native parse: json.dumps emits text (NaN, Infinity,
+    # unpaired surrogates) the native JSON parser then rejects, so 'other' catches both.
     try:
-        serialized = json.dumps(input)
+        return _parser_rs.toolcall_parse_view(name, json.dumps(input), on_error)
     except (TypeError, ValueError):
         if on_error == "raise":
             raise
         return FallbackCall(name=name, raw=input)
-    return _parser_rs.toolcall_parse_view(name, serialized, on_error)
 
 
 def parse_tool_result(
@@ -276,9 +277,8 @@ def parse_tool_result(
         'hi'
     """
     try:
-        serialized = json.dumps(payload)
+        return _parser_rs.toolresult_parse_view(name, json.dumps(payload))
     except (TypeError, ValueError):
         if on_error == "raise":
             raise
         return FallbackResult(name=name, raw=payload)
-    return _parser_rs.toolresult_parse_view(name, serialized)

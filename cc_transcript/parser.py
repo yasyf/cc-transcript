@@ -399,7 +399,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     ``type`` yields an :class:`~cc_transcript.models.OtherEvent`; a line the
     tolerant parser drops (a below-``MINYEAR`` timestamp) reads as None.
     """
-    events = _parser_rs.parse_bytes(orjson.dumps(data)).events
+    events = _parser_rs.parse_bytes(orjson.dumps(data if isinstance(data, dict) else dict(data))).events
     return events[0] if events else None
 
 

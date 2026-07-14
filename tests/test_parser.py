@@ -174,6 +174,14 @@ def test_parse_event_lifts_user_fields() -> None:
     assert event.meta.uuid == EventUuid("uuid-1")
 
 
+def test_parse_event_accepts_a_non_dict_mapping() -> None:
+    from types import MappingProxyType
+
+    event = parse_event(MappingProxyType(testkit.user_line("m1", "hi")))
+    assert isinstance(event, UserEvent)
+    assert event.text == "hi"
+
+
 def test_parse_event_missing_type_raises() -> None:
     with pytest.raises(KeyError):
         parse_event({"foo": "bar"})
