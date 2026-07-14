@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import anyio
 import pytest
 
 from cc_transcript.context import SchemaError
@@ -132,19 +130,19 @@ def test_load_export_missing_field_fails_loud() -> None:
 
 
 def test_export_activity_absent_binary_returns_none() -> None:
-    assert anyio.run(partial(export_activity, SESSION, binary="cc-review-definitely-not-installed")) is None
+    assert export_activity(SESSION, binary="cc-review-definitely-not-installed") is None
 
 
 def test_export_activity_nonzero_exit_returns_none() -> None:
-    assert anyio.run(partial(export_activity, SESSION, binary="false")) is None
+    assert export_activity(SESSION, binary="false") is None
 
 
 def test_export_activity_parses_stdout(tmp_path: Path) -> None:
     binary = fake_binary(tmp_path, EXPORT_PAYLOAD)
-    assert anyio.run(partial(export_activity, SESSION, binary=binary)) == EXPECTED
+    assert export_activity(SESSION, binary=binary) == EXPECTED
 
 
 def test_export_activity_raises_on_unknown_schema(tmp_path: Path) -> None:
     binary = fake_binary(tmp_path, EXPORT_PAYLOAD | {"schema": "cc-review.activity/9"})
     with pytest.raises(SchemaError, match="cc-review.activity/1"):
-        anyio.run(partial(export_activity, SESSION, binary=binary))
+        export_activity(SESSION, binary=binary)

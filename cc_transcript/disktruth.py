@@ -10,10 +10,9 @@ are integer milliseconds, per the cross-process convention.
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-import anyio
 
 from cc_transcript.context import SchemaError
 from cc_transcript.ids import SessionId
@@ -96,7 +95,7 @@ class DiskTruth:
         attributions: Version-dimensioned per-file attribution ranges.
 
     Example:
-        >>> truth = await export_activity(session_id)
+        >>> truth = export_activity(session_id)
         >>> changed = [turn for turn in truth.turns if turn.tree_end != turn.tree_start] if truth else []
     """
 
@@ -125,7 +124,7 @@ def load_export(data: bytes) -> DiskTruth:
     )
 
 
-async def export_activity(session_id: SessionId, *, binary: str = "cc-review") -> DiskTruth | None:
+def export_activity(session_id: SessionId, *, binary: str = "cc-review") -> DiskTruth | None:
     """Export ``session_id``'s disk truth by shelling out to cc-review.
 
     Runs ``<binary> export activity --session <uuid>`` and parses its stdout
@@ -136,7 +135,7 @@ async def export_activity(session_id: SessionId, *, binary: str = "cc-review") -
         nonzero — consumers degrade to transcript-only activity.
     """
     try:
-        proc = await anyio.run_process([binary, "export", "activity", "--session", session_id], check=False)
+        proc = subprocess.run([binary, "export", "activity", "--session", session_id], capture_output=True)
     except OSError:
         return None
     return load_export(proc.stdout) if proc.returncode == 0 else None
