@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from scripts.gen_watch_golden import (
     SCENARIOS,
     apply_ops,
@@ -32,7 +32,7 @@ SCENARIO_NAMES = [pytest.param(name, id=name) for name in SCENARIOS]
 
 
 def run_rust_scenario(root: Path, scenario: dict[str, object]) -> list[dict[str, object]]:
-    tailer = _parser_rs.WatchTailer()
+    tailer = _native.WatchTailer()
     from_start = bool(scenario["from_start"])
     steps = scenario["steps"]
     assert isinstance(steps, list)

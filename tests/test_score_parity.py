@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.sentiment.scorespec import (
     build_score_spec,
     clamp_positive,
@@ -44,7 +44,7 @@ def test_rust_score_executor_golden() -> None:
     spec_json = score_spec_to_json(
         build_score_spec(flag_frustration(), clamp_positive(), demote_mild_irritation(), clamp_resume())
     )
-    assert _parser_rs.score_short_circuit(spec_json, BUCKETS) == GOLDEN["short_circuit"]
+    assert _native.score_short_circuit(spec_json, BUCKETS) == GOLDEN["short_circuit"]
     for raw_value in range(1, 6):
         raw = [raw_value] * len(BUCKETS)
-        assert _parser_rs.score_post_process(spec_json, BUCKETS, raw) == GOLDEN["post_process"][str(raw_value)], raw_value
+        assert _native.score_post_process(spec_json, BUCKETS, raw) == GOLDEN["post_process"][str(raw_value)], raw_value

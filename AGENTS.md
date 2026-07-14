@@ -14,7 +14,7 @@ cc-transcript/
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
 │   ├── backend.py      # Backend protocol + ParsedTranscript
 │   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
-│   ├── rust.py         # RustBackend — the fast path over cc_transcript._parser_rs
+│   ├── rust.py         # RustBackend — the fast path over cc_transcript._native
 │   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters, plus the CC-protocol text layer (denial/interrupt markers)
 │   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
 │   ├── tools.py        # The single typed tool-call hierarchy (stdlib-only by contract)
@@ -40,7 +40,7 @@ cc-transcript/
 │   ├── judge/          # LLM verdict passes over mined feedback
 │   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
 │   └── sentiment/      # Sentiment domain: event buckets + composable score spec
-├── rust/               # Rust extension (cc_transcript._parser_rs)
+├── rust/               # Rust extension (cc_transcript._native)
 ├── rust-swift/         # swift-bridge crate (cc_transcript_swift) over the Rust core
 ├── swift/              # Generated Swift package: bridge sources + the committed macos-arm64 xcframework
 ├── tests/              # Pytest suite

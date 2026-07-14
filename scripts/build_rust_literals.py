@@ -6,7 +6,7 @@ alternations, rendered here into `rust/crates/core/src/generated/`. `filterspec.
 canonical source; this only mirrors it for the Rust build. `literals()` is the single
 manifest keyed `"domain.NAME"`: `render()` emits the Rust files purely from it, and
 `tests/test_literals_parity.py` derives both its byte-for-byte drift guard and its
-`_parser_rs.embedded_literals()` parity expectation from it — so a constant added here
+`_native.embedded_literals()` parity expectation from it — so a constant added here
 but missing from `python.rs`'s accessor fails the parity test automatically.
 
 Run: ``uv run python scripts/build_rust_literals.py``

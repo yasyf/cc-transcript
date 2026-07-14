@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.models import UserEvent
 from cc_transcript.sentiment.buckets import ConversationBucket, SentimentScore
 from cc_transcript.sentiment.scorespec import ScoreSpec, score_spec_to_json
@@ -46,7 +46,7 @@ class FilteredEngine:
         spec_json = score_spec_to_json(self.spec)
 
         prefilled: list[SentimentScore | None] = [
-            None if s is None else SentimentScore(s) for s in _parser_rs.score_short_circuit(spec_json, texts)
+            None if s is None else SentimentScore(s) for s in _native.score_short_circuit(spec_json, texts)
         ]
         infer_idx = [i for i, p in enumerate(prefilled) if p is None]
 
@@ -57,7 +57,7 @@ class FilteredEngine:
         filled = dict(zip(infer_idx, inferred, strict=True))
         scored = [filled[i] if p is None else p for i, p in enumerate(prefilled)]
 
-        return [SentimentScore(s) for s in _parser_rs.score_post_process(spec_json, texts, [int(s) for s in scored])]
+        return [SentimentScore(s) for s in _native.score_post_process(spec_json, texts, [int(s) for s in scored])]
 
     def peak_memory_gb(self) -> float:
         return self.inner.peak_memory_gb()

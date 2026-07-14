@@ -3,7 +3,7 @@ title: "The Rust engine"
 description: "Why cc-transcript executes on a single compiled engine, and how generated literals and golden fixtures pin its correctness without a second implementation."
 ---
 
-Every hot path in `cc-transcript` executes in one place: `_parser_rs`, the
+Every hot path in `cc-transcript` executes in one place: `_native`, the
 pyo3 extension compiled into the wheel. It parses transcripts, runs the
 session-activity probe, extracts command prefixes, and interprets every
 declarative spec — `FilterSpec`, `ScoreSpec`, `MiningSpec`, and the sentiment

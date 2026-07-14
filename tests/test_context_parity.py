@@ -1,7 +1,7 @@
 """Rust ↔ Python parity for durable context windows over the frozen golden.
 
 Each case asserts twice: the Python ``cc_transcript.context`` reference still produces
-the frozen value (a drift guard), and the Rust ``_parser_rs`` port produces the
+the frozen value (a drift guard), and the Rust ``_native`` port produces the
 identical bytes. ``captures`` pins ``capture_window(...).to_json()`` and
 ``render_preview`` over synthesized transcripts; ``windows`` pins the ``from_json`` →
 ``to_json`` round-trip and ``render_preview`` over hand-built windows; ``rejects`` pins
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.activity import SessionActivity
 from cc_transcript.context import ContextWindow, SchemaError, capture_window
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId
@@ -58,17 +58,17 @@ def test_capture_parity(b64: str, sid: str, case: dict[str, object]) -> None:
     )
     assert window.to_json() == case["to_json"]
     assert (
-        _parser_rs.context_capture_window(
+        _native.context_capture_window(
             raw, sid, case["anchor_uuid"], case["anchor_tool_use_id"], case["before"], case["after"], case["preview_chars"]
         )
         == case["to_json"]
     )
     assert ContextWindow.from_json(case["to_json"]).to_json() == case["to_json"]
-    assert _parser_rs.context_roundtrip(case["to_json"]) == case["to_json"]
+    assert _native.context_roundtrip(case["to_json"]) == case["to_json"]
     for preview in case["previews"]:
         tc = preview["turn_chars"]
         assert window.render_preview(budget=Budget(turn_chars=tc, tool_chars=tc)) == preview["expected"]
-        assert _parser_rs.context_render_preview(case["to_json"], tc) == preview["expected"]
+        assert _native.context_render_preview(case["to_json"], tc) == preview["expected"]
 
 
 @requires_rust
@@ -76,12 +76,12 @@ def test_capture_parity(b64: str, sid: str, case: dict[str, object]) -> None:
 def test_window_round_trip_parity(window: dict[str, object]) -> None:
     data = window["to_json"]
     assert ContextWindow.from_json(data).to_json() == data
-    assert _parser_rs.context_roundtrip(data) == data
+    assert _native.context_roundtrip(data) == data
     restored = ContextWindow.from_json(data)
     for preview in window["previews"]:
         tc = preview["turn_chars"]
         assert restored.render_preview(budget=Budget(turn_chars=tc, tool_chars=tc)) == preview["expected"]
-        assert _parser_rs.context_render_preview(data, tc) == preview["expected"]
+        assert _native.context_render_preview(data, tc) == preview["expected"]
 
 
 @requires_rust
@@ -90,4 +90,4 @@ def test_schema_rejection_parity(data: str) -> None:
     with pytest.raises(SchemaError):
         ContextWindow.from_json(data)
     with pytest.raises(ValueError):
-        _parser_rs.context_roundtrip(data)
+        _native.context_roundtrip(data)

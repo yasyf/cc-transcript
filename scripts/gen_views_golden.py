@@ -28,7 +28,7 @@ import orjson
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.parser import TranscriptParser
 from tests import viewgolden
 from tests.support import fixture_bytes, raw_envelope
@@ -482,7 +482,7 @@ def build_golden() -> dict[str, Any]:
             {
                 "file": str(path.relative_to(REPO_ROOT)),
                 "sha256": hashlib.sha256(raw).hexdigest(),
-                "proj": viewgolden.project(_parser_rs.parse_print_result(raw), reprs=True),
+                "proj": viewgolden.project(_native.parse_print_result(raw), reprs=True),
             }
         )
     return {

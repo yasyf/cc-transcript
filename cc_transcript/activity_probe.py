@@ -87,9 +87,9 @@ def session_activity_probe(
     Returns:
         The session-activity verdict.
     """
-    from cc_transcript import _parser_rs
+    from cc_transcript import _native
 
-    payload = _parser_rs.session_activity_probe(str(path), sorted(waiting_tools), sorted(human_facing_tools))
+    payload = _native.session_activity_probe(str(path), sorted(waiting_tools), sorted(human_facing_tools))
     return SessionActivityProbe(
         is_waiting=payload["is_waiting"],
         mid_tool=payload["mid_tool"],

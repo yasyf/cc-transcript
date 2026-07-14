@@ -2,7 +2,7 @@
 
 Freezes the Python ``cc_transcript.render`` outputs so ``tests/test_render_parity.py``
 can replay them against both the Python reference (a drift guard) and the Rust
-``_parser_rs`` port. Three sections:
+``_native`` port. Three sections:
 
 * ``tool_calls`` — ``render_tool_call`` over every corpus tool-use input (deduped by
   ``(name, value-shape)`` like the toolcall golden), each of the 15 typed classes, and

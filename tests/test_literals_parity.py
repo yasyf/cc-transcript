@@ -1,9 +1,9 @@
 """Parity + drift guards for the generated Rust protocol literals.
 
-- Single source: `_parser_rs.embedded_literals()` equals the generator's `literals()`
+- Single source: `_native.embedded_literals()` equals the generator's `literals()`
   manifest (the same manifest the Rust files render from). A constant added to the
   manifest but missing from `python.rs`'s accessor fails here automatically. Skips
-  when the `_parser_rs` extension isn't built.
+  when the `_native` extension isn't built.
 - Freshness: the committed `rust/crates/core/src/generated/*` files still match the generator's
   `render()` byte-for-byte, so a stale checkout fails loudly.
 """
@@ -29,9 +29,9 @@ def load_generator() -> ModuleType:
 
 @requires_rust
 def test_embedded_literals_match_python_source() -> None:
-    from cc_transcript import _parser_rs
+    from cc_transcript import _native
 
-    assert _parser_rs.embedded_literals() == {
+    assert _native.embedded_literals() == {
         key: list(value) if isinstance(value, tuple) else value for key, value in load_generator().literals().items()
     }
 

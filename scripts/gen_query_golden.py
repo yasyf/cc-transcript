@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.activity import SessionActivity
 from cc_transcript.ids import SessionId
 from cc_transcript.query import Session
@@ -200,7 +200,7 @@ def project_session(session: Session) -> dict[str, object]:
 
 
 def events_of(path: Path) -> list[TranscriptEvent]:
-    parsed = _parser_rs.stream_parse([(str(path), 1.0)], 1).recv()
+    parsed = _native.stream_parse([(str(path), 1.0)], 1).recv()
     return [] if parsed is None else list(parsed.events)
 
 

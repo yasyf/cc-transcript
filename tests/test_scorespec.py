@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import anyio
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.models import AssistantEvent, SessionId, UserEvent
 from cc_transcript.sentiment import (
     ConversationBucket,
@@ -32,11 +32,11 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def short_circuit(spec: ScoreSpec, buckets: list[list[str]]) -> list[SentimentScore | None]:
-    return [None if s is None else SentimentScore(s) for s in _parser_rs.score_short_circuit(score_spec_to_json(spec), buckets)]
+    return [None if s is None else SentimentScore(s) for s in _native.score_short_circuit(score_spec_to_json(spec), buckets)]
 
 
 def post_process(spec: ScoreSpec, buckets: list[list[str]], raw: list[SentimentScore]) -> list[SentimentScore]:
-    scored = _parser_rs.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
+    scored = _native.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
     return [SentimentScore(s) for s in scored]
 
 FRUSTRATION_SPEC = build_score_spec(flag_frustration())

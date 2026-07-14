@@ -17,7 +17,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
@@ -73,24 +73,24 @@ class ToolResultError(ValueError):
     """A known tool's result payload did not match its expected shape."""
 
 
-Hunk = _parser_rs.Hunk
-EditSpan = _parser_rs.EditSpan
-ToolCallBase = _parser_rs.ToolCallBase
-BashCall = _parser_rs.BashCall
-EditCall = _parser_rs.EditCall
-MultiEditCall = _parser_rs.MultiEditCall
-WriteCall = _parser_rs.WriteCall
-ReadCall = _parser_rs.ReadCall
-NotebookEditCall = _parser_rs.NotebookEditCall
-GrepCall = _parser_rs.GrepCall
-GlobCall = _parser_rs.GlobCall
-TaskCall = _parser_rs.TaskCall
-WorkflowCall = _parser_rs.WorkflowCall
-SkillCall = _parser_rs.SkillCall
-TaskCreateCall = _parser_rs.TaskCreateCall
-TaskUpdateCall = _parser_rs.TaskUpdateCall
-ExitPlanModeCall = _parser_rs.ExitPlanModeCall
-OtherCall = _parser_rs.OtherCall
+Hunk = _native.Hunk
+EditSpan = _native.EditSpan
+ToolCallBase = _native.ToolCallBase
+BashCall = _native.BashCall
+EditCall = _native.EditCall
+MultiEditCall = _native.MultiEditCall
+WriteCall = _native.WriteCall
+ReadCall = _native.ReadCall
+NotebookEditCall = _native.NotebookEditCall
+GrepCall = _native.GrepCall
+GlobCall = _native.GlobCall
+TaskCall = _native.TaskCall
+WorkflowCall = _native.WorkflowCall
+SkillCall = _native.SkillCall
+TaskCreateCall = _native.TaskCreateCall
+TaskUpdateCall = _native.TaskUpdateCall
+ExitPlanModeCall = _native.ExitPlanModeCall
+OtherCall = _native.OtherCall
 
 ToolCall = (
     BashCall
@@ -127,19 +127,19 @@ TOOL_TYPES: dict[str, type] = {
     "ExitPlanMode": ExitPlanModeCall,
 }
 
-QuestionAnnotation = _parser_rs.QuestionAnnotation
-ToolResultBase = _parser_rs.ToolResultBase
-BashResult = _parser_rs.BashResult
-EditResult = _parser_rs.EditResult
-WriteResult = _parser_rs.WriteResult
-ReadResult = _parser_rs.ReadResult
-TaskResultBase = _parser_rs.TaskResultBase
-TaskResult = _parser_rs.TaskResult
-TaskLaunchResult = _parser_rs.TaskLaunchResult
-SkillResult = _parser_rs.SkillResult
-AskUserQuestionResult = _parser_rs.AskUserQuestionResult
-TextResult = _parser_rs.TextResult
-OtherResult = _parser_rs.OtherResult
+QuestionAnnotation = _native.QuestionAnnotation
+ToolResultBase = _native.ToolResultBase
+BashResult = _native.BashResult
+EditResult = _native.EditResult
+WriteResult = _native.WriteResult
+ReadResult = _native.ReadResult
+TaskResultBase = _native.TaskResultBase
+TaskResult = _native.TaskResult
+TaskLaunchResult = _native.TaskLaunchResult
+SkillResult = _native.SkillResult
+AskUserQuestionResult = _native.AskUserQuestionResult
+TextResult = _native.TextResult
+OtherResult = _native.OtherResult
 
 ToolResult = (
     BashResult
@@ -164,13 +164,13 @@ TOOL_RESULT_TYPES: dict[str, type] = {
     "AskUserQuestion": AskUserQuestionResult,
 }
 
-hunks_of = _parser_rs.hunks_of
-file_path_of = _parser_rs.file_path_of
-expand_tool_names = _parser_rs.expand_tool_names
-matches_names = _parser_rs.matches_names
-tool_name_matches = _parser_rs.tool_name_matches
-mcp_parts = _parser_rs.mcp_parts
-mcp_access = _parser_rs.mcp_access
+hunks_of = _native.hunks_of
+file_path_of = _native.file_path_of
+expand_tool_names = _native.expand_tool_names
+matches_names = _native.matches_names
+tool_name_matches = _native.tool_name_matches
+mcp_parts = _native.mcp_parts
+mcp_access = _native.mcp_access
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,11 +248,11 @@ def parse_tool_call(
     if not isinstance(input, dict):
         if on_error == "raise":
             raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
-        return _parser_rs.toolcall_parse_view(name, "{}", "other")
+        return _native.toolcall_parse_view(name, "{}", "other")
     # Spans serialization and the native parse: json.dumps emits text (NaN, Infinity,
     # unpaired surrogates) the native JSON parser then rejects, so 'other' catches both.
     try:
-        return _parser_rs.toolcall_parse_view(name, json.dumps(input), on_error)
+        return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     except (TypeError, ValueError):
         if on_error == "raise":
             raise
@@ -277,7 +277,7 @@ def parse_tool_result(
         'hi'
     """
     try:
-        return _parser_rs.toolresult_parse_view(name, json.dumps(payload))
+        return _native.toolresult_parse_view(name, json.dumps(payload))
     except (TypeError, ValueError):
         if on_error == "raise":
             raise

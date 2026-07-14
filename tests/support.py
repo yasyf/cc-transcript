@@ -10,7 +10,7 @@ from typing import Any
 import orjson
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.corrections import Correction
 from cc_transcript.decisions import Decision
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest
@@ -22,8 +22,8 @@ SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 OTHER_SESSION = SessionId("22222222-2222-2222-2222-222222222222")
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
-RUST_BACKEND = _parser_rs
-requires_rust = pytest.mark.skipif(False, reason="_parser_rs is a hard requirement")
+RUST_BACKEND = _native
+requires_rust = pytest.mark.skipif(False, reason="_native is a hard requirement")
 rust_not_disabled = pytest.mark.skipif(
     bool(os.environ.get("CC_TRANSCRIPT_DISABLE_RUST")), reason="Rust force-disabled via CC_TRANSCRIPT_DISABLE_RUST"
 )

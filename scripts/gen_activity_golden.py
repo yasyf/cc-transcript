@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.activity import SessionActivity, hunk_overlap, result_index
 from cc_transcript.ids import SessionId
 from cc_transcript.tools import Hunk
@@ -234,7 +234,7 @@ def overlaps_of(activity: SessionActivity) -> list[dict[str, object]]:
 
 
 def events_of(path: Path) -> list[TranscriptEvent]:
-    parsed = _parser_rs.stream_parse([(str(path), 1.0)], 1).recv()
+    parsed = _native.stream_parse([(str(path), 1.0)], 1).recv()
     return [] if parsed is None else list(parsed.events)
 
 

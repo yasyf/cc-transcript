@@ -6,7 +6,7 @@ from pathlib import Path
 import anyio
 import orjson
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.cli import watch_dict, watch_line
 from cc_transcript.ids import EventUuid, SessionId
 from cc_transcript.watch import WatchEvent, tick, watch
@@ -34,7 +34,7 @@ def write_transcript(root: Path, name: str, *lines: dict) -> None:
 
 
 async def drain_tick(root: Path) -> list[WatchEvent]:
-    return await tick(_parser_rs.WatchTailer(), [root], from_start=True)
+    return await tick(_native.WatchTailer(), [root], from_start=True)
 
 
 def test_tick_from_start_yields_every_valid_event(tmp_path: Path) -> None:

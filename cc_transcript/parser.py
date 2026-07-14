@@ -9,7 +9,7 @@ import anyio
 import anyio.to_thread
 import orjson
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import (
     DENIAL_KIND_USER_REJECTED,
@@ -399,12 +399,12 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
     ``type`` yields an :class:`~cc_transcript.models.OtherEvent`; a line the
     tolerant parser drops (a below-``MINYEAR`` timestamp) reads as None.
     """
-    events = _parser_rs.parse_bytes(orjson.dumps(data if isinstance(data, dict) else dict(data))).events
+    events = _native.parse_bytes(orjson.dumps(data if isinstance(data, dict) else dict(data))).events
     return events[0] if events else None
 
 
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
-    return list(_parser_rs.parse_bytes(raw).events)
+    return list(_native.parse_bytes(raw).events)
 
 
 def parse_model_usage(data: Mapping[str, Any]) -> ModelUsage:
@@ -460,7 +460,7 @@ def parse_print_result(raw: bytes) -> PrintResult:
         The parsed -p (print mode) result: billing, usage, structured output, init
         snapshot, and the conversational messages.
     """
-    return _parser_rs.parse_print_result(raw)
+    return _native.parse_print_result(raw)
 
 
 async def parse_events_async(path: Path) -> list[TranscriptEvent]:
@@ -470,7 +470,7 @@ async def parse_events_async(path: Path) -> list[TranscriptEvent]:
 class TranscriptParser:
     """The public facade over the Rust parsing backend.
 
-    Streams transcript files through the ``_parser_rs`` extension; a spec
+    Streams transcript files through the ``_native`` extension; a spec
     passed to :meth:`stream_transcripts` runs inside Rust with events dropped
     before materialization.
     """
@@ -486,7 +486,7 @@ class TranscriptParser:
     @classmethod
     def parse_file(cls, path: Path) -> list[TranscriptEvent]:
         """Parses the transcript at ``path`` into events, synchronously."""
-        result = _parser_rs.stream_parse([(str(path), 0.0)], 1).recv()
+        result = _native.stream_parse([(str(path), 0.0)], 1).recv()
         return list(result.events) if result is not None else []
 
     @classmethod
@@ -517,7 +517,7 @@ class TranscriptParser:
         if not paths:
             return
         rust_spec = spec_to_json(spec) if spec is not None else None
-        stream = _parser_rs.stream_parse(
+        stream = _native.stream_parse(
             [(str(path), mtime) for path, mtime in paths],
             prefetch if prefetch is not None else cls.PREFETCH,
             rust_spec,

@@ -629,6 +629,6 @@ def command_prefixes(command: str) -> tuple[str, ...]:
 
 def bulk_command_prefixes(commands: Sequence[str]) -> list[tuple[str, ...]]:
     """``command_prefixes`` over many commands at once, on the Rust fast path."""
-    from cc_transcript import _parser_rs
+    from cc_transcript import _native
 
-    return [tuple(prefixes) for prefixes in _parser_rs.command_prefixes(list(commands))]
+    return [tuple(prefixes) for prefixes in _native.command_prefixes(list(commands))]

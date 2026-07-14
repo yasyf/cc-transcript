@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.mining.confidence import CandidateSignal, Confidence
 from cc_transcript.mining.sourcekind import SourceKind
 from cc_transcript.mining.spec import mining_spec_to_json
@@ -48,7 +48,7 @@ def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[Mining
         Neutral mined facts, one per recognized transcript shape, in detector order.
     """
     callable_formats = [(fmt.name, fmt.pattern, fmt.extract) for fmt in spec.review.callable_formats]
-    payloads = _parser_rs.mine_events(list(events), mining_spec_to_json(spec), callable_formats)
+    payloads = _native.mine_events(list(events), mining_spec_to_json(spec), callable_formats)
     return (rehydrate_signal(payload) for payload in payloads)
 
 

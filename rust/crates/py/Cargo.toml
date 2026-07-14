@@ -6,7 +6,7 @@ edition = "2021"
 publish = false
 
 [lib]
-name = "_parser_rs"
+name = "_native"
 crate-type = ["cdylib", "rlib"]
 
 [features]

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import anyio
 import anyio.to_thread
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.discovery import CLAUDE_PROJECTS_DIR
 from cc_transcript.ids import SessionId
 
@@ -59,7 +59,7 @@ async def watch(
     skipped unless ``from_start``; everything appended afterwards is yielded
     exactly once, with sidechain transcripts flagged on the event.
     """
-    tailer = _parser_rs.WatchTailer()
+    tailer = _native.WatchTailer()
     while True:
         for event in await tick(tailer, roots, from_start=from_start):
             yield event
@@ -67,7 +67,7 @@ async def watch(
 
 
 async def tick(
-    tailer: _parser_rs.WatchTailer, roots: Sequence[Path], *, from_start: bool = False
+    tailer: _native.WatchTailer, roots: Sequence[Path], *, from_start: bool = False
 ) -> list[WatchEvent]:
     """Run one poll step over ``roots`` against ``tailer``, draining appended events.
 

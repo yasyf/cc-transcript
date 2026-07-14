@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib.resources import files
 from typing import ClassVar
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 
 
 def load_polarities(name: str) -> dict[str, int]:
@@ -32,7 +32,7 @@ def tokenize(text: str) -> list[str]:
         >>> tokenize("LOST losing")
         ['lost', 'losing']
     """
-    return _parser_rs.lexicon_tokenize(text)
+    return _native.lexicon_tokenize(text)
 
 
 class Lexicon:
@@ -58,7 +58,7 @@ class Lexicon:
         ``MIN_MAGNITUDE``. ``token`` is a tokenizer surface: already lowercased
         and alphabetic. Executes in Rust.
         """
-        return _parser_rs.lexicon_polarity(token)
+        return _native.lexicon_polarity(token)
 
     @classmethod
     def has_hit(cls, text: str, *, want_negative: bool) -> bool:
@@ -70,4 +70,4 @@ class Lexicon:
         negative floor, not the positive one. POS-based suppression is a highlighter
         concern, not a scoring one. Executes in Rust over the UDPipe substrate.
         """
-        return _parser_rs.lexicon_has_hit(text, want_negative)
+        return _native.lexicon_has_hit(text, want_negative)

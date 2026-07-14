@@ -27,7 +27,7 @@ from dataclasses import asdict
 
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.corrections import Correction, CorrectionLog
 from cc_transcript.ids import EventUuid, SessionId
 from tests.support import ANCHOR, DIGEST_A, DIGEST_B, DIGEST_C, OTHER_SESSION, SESSION, correction, requires_rust
@@ -80,7 +80,7 @@ def fixture_rows() -> list[Correction]:
     ]
 
 
-def rust_append(rust: _parser_rs.RustCorrectionLog, row: Correction) -> None:
+def rust_append(rust: _native.RustCorrectionLog, row: Correction) -> None:
     # Pass the detail object as-is; the engine mirrors CorrectionLog.append's
     # json.dumps(dict(record.detail)), so the stored detail_json matches byte-for-byte.
     rust.append(
@@ -128,7 +128,7 @@ def test_rust_reads_python_written_rows(tmp_path: pathlib.Path) -> None:
     py_log = CorrectionLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
 
     assert rust.for_session(SESSION) == [asdict(c) for c in py_log.for_session(SESSION)]
     assert rust.for_session(OTHER_SESSION) == [asdict(c) for c in py_log.for_session(OTHER_SESSION)]
@@ -148,7 +148,7 @@ def test_on_disk_bytes_match_between_engines(tmp_path: pathlib.Path) -> None:
     py_log = CorrectionLog.open(db_py)
     for row in rows:
         py_log.append(row)
-    rust = _parser_rs.RustCorrectionLog(str(db_rust))
+    rust = _native.RustCorrectionLog(str(db_rust))
     for row in rows:
         rust_append(rust, row)
 
@@ -165,7 +165,7 @@ def test_on_disk_bytes_match_between_engines(tmp_path: pathlib.Path) -> None:
 def test_python_reads_rust_written_rows(tmp_path: pathlib.Path) -> None:
     rows = fixture_rows()
     db = tmp_path / "rust.db"
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
     for row in rows:
         rust_append(rust, row)
 
@@ -180,7 +180,7 @@ def test_sql_passthrough_and_busy_timeout_parity(tmp_path: pathlib.Path) -> None
     py_log = CorrectionLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
 
     for statement in (
         "SELECT COUNT(*) AS n FROM corrections",
@@ -195,7 +195,7 @@ def test_sql_passthrough_and_busy_timeout_parity(tmp_path: pathlib.Path) -> None
 
 @requires_rust
 def test_sql_unique_violation_raises_integrity_error_with_extended_name(tmp_path: pathlib.Path) -> None:
-    rust = _parser_rs.RustCorrectionLog(str(tmp_path / "c.db"))
+    rust = _native.RustCorrectionLog(str(tmp_path / "c.db"))
     insert = (
         "INSERT INTO corrections (ts_ms, session_id, source, anchor_uuid, incorrect_file, "
         "incorrect_old, incorrect_new, incorrect_digest) VALUES (1, 's', 'x', 'a', '/f', '', '', 'd')"
@@ -213,7 +213,7 @@ def test_sql_enforces_the_single_statement_rule(tmp_path: pathlib.Path) -> None:
     py_log = CorrectionLog.open(db)
     for row in fixture_rows():
         py_log.append(row)
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
 
     # A trailing statement (even a bare ";") raises before the head executes.
     before = len(rust.for_session(SESSION))
@@ -231,7 +231,7 @@ def test_sql_enforces_the_single_statement_rule(tmp_path: pathlib.Path) -> None:
 def test_open_bad_and_empty_paths_raise_operational_error() -> None:
     for path in ("/", ""):
         with pytest.raises(sqlite3.OperationalError) as info:
-            _parser_rs.RustCorrectionLog(path)
+            _native.RustCorrectionLog(path)
         assert info.value.sqlite_errorcode == 14
         assert info.value.sqlite_errorname == "SQLITE_CANTOPEN"
 
@@ -241,14 +241,14 @@ def test_non_database_file_raises_database_error(tmp_path: pathlib.Path) -> None
     notdb = tmp_path / "notdb.db"
     notdb.write_bytes(b"this is not an sqlite database file, padding padding padding")
     with pytest.raises(sqlite3.DatabaseError) as info:
-        _parser_rs.RustCorrectionLog(str(notdb))
+        _native.RustCorrectionLog(str(notdb))
     assert info.value.sqlite_errorcode == 26
     assert info.value.sqlite_errorname == "SQLITE_NOTADB"
 
 
 @requires_rust
 def test_invalid_utf8_text_raises_operational_error(tmp_path: pathlib.Path) -> None:
-    rust = _parser_rs.RustCorrectionLog(str(tmp_path / "c.db"))
+    rust = _native.RustCorrectionLog(str(tmp_path / "c.db"))
     with pytest.raises(sqlite3.OperationalError) as info:
         rust.sql("SELECT CAST(X'80' AS TEXT)")
     assert "Could not decode to UTF-8" in str(info.value)
@@ -258,7 +258,7 @@ def test_invalid_utf8_text_raises_operational_error(tmp_path: pathlib.Path) -> N
 
 @requires_rust
 def test_null_byte_in_sql_raises_programming_error(tmp_path: pathlib.Path) -> None:
-    rust = _parser_rs.RustCorrectionLog(str(tmp_path / "c.db"))
+    rust = _native.RustCorrectionLog(str(tmp_path / "c.db"))
     with pytest.raises(sqlite3.ProgrammingError):
         rust.sql("SELECT 1\x00; DROP TABLE corrections")
 
@@ -269,7 +269,7 @@ def test_os_error_carries_errno_and_filename(tmp_path: pathlib.Path) -> None:
     a_file.write_text("x")
     target = a_file / "sub" / "c.db"  # a parent component is a file, so mkdir fails ENOTDIR
     with pytest.raises(NotADirectoryError) as info:
-        _parser_rs.RustCorrectionLog(str(target))
+        _native.RustCorrectionLog(str(target))
     assert info.value.errno == 20
     assert str(info.value) == f"[Errno 20] Not a directory: '{a_file / 'sub'}'"
 
@@ -277,12 +277,12 @@ def test_os_error_carries_errno_and_filename(tmp_path: pathlib.Path) -> None:
 @requires_rust
 def test_gil_released_so_a_blocked_writer_does_not_convoy(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "lock.db"
-    holder = _parser_rs.RustCorrectionLog(str(db))
+    holder = _native.RustCorrectionLog(str(db))
     holder.sql("BEGIN IMMEDIATE")  # hold the write lock for the whole test
     outcome: list[str] = []
 
     def writer() -> None:
-        engine = _parser_rs.RustCorrectionLog(str(db))  # created on this thread (unsendable)
+        engine = _native.RustCorrectionLog(str(db))  # created on this thread (unsendable)
         try:
             engine.append(1, "s", "x", "a", None, "/f", "", "", None, None, None, None, None, None, 0.0, {})
             outcome.append("wrote")
@@ -315,7 +315,7 @@ def test_nonfinite_and_lone_surrogate_detail(tmp_path: pathlib.Path) -> None:
     py_log = CorrectionLog.open(db_py)
     for row in rows:
         py_log.append(row)
-    rust = _parser_rs.RustCorrectionLog(str(db_rust))
+    rust = _native.RustCorrectionLog(str(db_rust))
     for row in rows:
         rust_append(rust, row)
 
@@ -331,7 +331,7 @@ def test_nonfinite_and_lone_surrogate_detail(tmp_path: pathlib.Path) -> None:
 
 @requires_rust
 def test_non_mapping_detail_raises_like_dict(tmp_path: pathlib.Path) -> None:
-    rust = _parser_rs.RustCorrectionLog(str(tmp_path / "c.db"))
+    rust = _native.RustCorrectionLog(str(tmp_path / "c.db"))
     args = (1_000, "s", "src", "a", None, "/f", "", "", None, None, None, None, None, None, 0.0)
     for bad in (None, [1, 2], "ab"):
         with pytest.raises((TypeError, ValueError)):
@@ -344,7 +344,7 @@ def test_non_mapping_detail_raises_like_dict(tmp_path: pathlib.Path) -> None:
 def test_out_of_range_ts_ms_reads_back_by_storage_class(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "c.db"
     py_log = CorrectionLog.open(db)
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
     # 2^63 overflows SQLite's signed-64-bit INTEGER, landing in ts_ms as REAL; Python's
     # row_to_record returns a float there, so the Rust projection must too (never an i64 error).
     rust.sql(
@@ -360,7 +360,7 @@ def test_out_of_range_ts_ms_reads_back_by_storage_class(tmp_path: pathlib.Path) 
 def test_insert_or_ignore_is_idempotent_across_engines(tmp_path: pathlib.Path) -> None:
     db = tmp_path / "corrections.db"
     row = correction(ts_ms=1_000, incorrect_digest=DIGEST_A, anchor_uuid=ANCHOR)
-    rust = _parser_rs.RustCorrectionLog(str(db))
+    rust = _native.RustCorrectionLog(str(db))
     rust_append(rust, row)
     rust_append(rust, row)
     assert len(rust.for_session(SESSION)) == 1

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import NewType
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest, ToolUseId
 from cc_transcript.ids import tool_digest as tool_digest
 from cc_transcript.tools import ToolCall as ToolCall
@@ -50,45 +50,45 @@ class ReadOnlyDict(dict):
     __ior__ = read_only
 
 
-TextBlock = _parser_rs.TextBlock
-ThinkingBlock = _parser_rs.ThinkingBlock
-Question = _parser_rs.Question
-ToolUseBlock = _parser_rs.ToolUseBlock
-ToolResultBlock = _parser_rs.ToolResultBlock
-FallbackBlock = _parser_rs.FallbackBlock
-OtherBlock = _parser_rs.OtherBlock
+TextBlock = _native.TextBlock
+ThinkingBlock = _native.ThinkingBlock
+Question = _native.Question
+ToolUseBlock = _native.ToolUseBlock
+ToolResultBlock = _native.ToolResultBlock
+FallbackBlock = _native.FallbackBlock
+OtherBlock = _native.OtherBlock
 
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | FallbackBlock | OtherBlock
 
-EntryMeta = _parser_rs.EntryMeta
-UserEvent = _parser_rs.UserEvent
-Attribution = _parser_rs.Attribution
-ApiError = _parser_rs.ApiError
-AssistantEvent = _parser_rs.AssistantEvent
+EntryMeta = _native.EntryMeta
+UserEvent = _native.UserEvent
+Attribution = _native.Attribution
+ApiError = _native.ApiError
+AssistantEvent = _native.AssistantEvent
 
-HookInfo = _parser_rs.HookInfo
-StopHookSummary = _parser_rs.StopHookSummary
-PreservedSegment = _parser_rs.PreservedSegment
-PreservedMessages = _parser_rs.PreservedMessages
-CompactBoundary = _parser_rs.CompactBoundary
-TurnDuration = _parser_rs.TurnDuration
-ModelRefusalFallback = _parser_rs.ModelRefusalFallback
-OtherSystemDetail = _parser_rs.OtherSystemDetail
+HookInfo = _native.HookInfo
+StopHookSummary = _native.StopHookSummary
+PreservedSegment = _native.PreservedSegment
+PreservedMessages = _native.PreservedMessages
+CompactBoundary = _native.CompactBoundary
+TurnDuration = _native.TurnDuration
+ModelRefusalFallback = _native.ModelRefusalFallback
+OtherSystemDetail = _native.OtherSystemDetail
 
 SystemDetail = StopHookSummary | CompactBoundary | TurnDuration | ModelRefusalFallback | OtherSystemDetail
 
-SystemEvent = _parser_rs.SystemEvent
-ModeEvent = _parser_rs.ModeEvent
-OtherEvent = _parser_rs.OtherEvent
+SystemEvent = _native.SystemEvent
+ModeEvent = _native.ModeEvent
+OtherEvent = _native.OtherEvent
 
-HookSuccess = _parser_rs.HookSuccess
-HookBlockingError = _parser_rs.HookBlockingError
-HookNonBlockingError = _parser_rs.HookNonBlockingError
-HookCancelled = _parser_rs.HookCancelled
-HookAdditionalContext = _parser_rs.HookAdditionalContext
-AsyncHookResponse = _parser_rs.AsyncHookResponse
-QueuedCommand = _parser_rs.QueuedCommand
-OtherAttachment = _parser_rs.OtherAttachment
+HookSuccess = _native.HookSuccess
+HookBlockingError = _native.HookBlockingError
+HookNonBlockingError = _native.HookNonBlockingError
+HookCancelled = _native.HookCancelled
+HookAdditionalContext = _native.HookAdditionalContext
+AsyncHookResponse = _native.AsyncHookResponse
+QueuedCommand = _native.QueuedCommand
+OtherAttachment = _native.OtherAttachment
 
 AttachmentDetail = (
     HookSuccess
@@ -101,17 +101,17 @@ AttachmentDetail = (
     | OtherAttachment
 )
 
-AttachmentEvent = _parser_rs.AttachmentEvent
+AttachmentEvent = _native.AttachmentEvent
 
-CacheCreation = _parser_rs.CacheCreation
-ServerToolUse = _parser_rs.ServerToolUse
-Usage = _parser_rs.Usage
-ModelUsage = _parser_rs.ModelUsage
-McpServer = _parser_rs.McpServer
-Plugin = _parser_rs.Plugin
-InitInfo = _parser_rs.InitInfo
-PrintMessage = _parser_rs.PrintMessage
-PrintResult = _parser_rs.PrintResult
+CacheCreation = _native.CacheCreation
+ServerToolUse = _native.ServerToolUse
+Usage = _native.Usage
+ModelUsage = _native.ModelUsage
+McpServer = _native.McpServer
+Plugin = _native.Plugin
+InitInfo = _native.InitInfo
+PrintMessage = _native.PrintMessage
+PrintResult = _native.PrintResult
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent | AttachmentEvent
 """The union of every typed event a parsed transcript can yield."""

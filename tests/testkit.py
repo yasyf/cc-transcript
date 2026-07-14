@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -30,7 +30,7 @@ Content = str | list[dict[str, Any]]
 def parse_events(*lines: Mapping[str, Any]) -> list[TranscriptEvent]:
     """Parses raw transcript-line dicts through the native backend into view events."""
     raw = b"\n".join(orjson.dumps(dict(line)) for line in lines)
-    return list(_parser_rs.parse_bytes(raw).events)
+    return list(_native.parse_bytes(raw).events)
 
 
 def parse_event(line: Mapping[str, Any]) -> TranscriptEvent:

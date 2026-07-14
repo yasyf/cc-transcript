@@ -2,7 +2,7 @@
 
 Freezes ``cc_transcript.context`` outputs so ``tests/test_context_parity.py`` can
 replay them against both the Python reference (a drift guard) and the Rust
-``_parser_rs`` port. Sections:
+``_native`` port. Sections:
 
 * ``captures`` — ``capture_window(...).to_json()`` over synthesized transcripts (and
   the smallest corpus files when present), each at several ``(before, after,

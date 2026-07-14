@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from scripts.gen_discovery_golden import (
     DISCOVERY_SCENARIOS,
     IS_SUBAGENT_CASES,
@@ -35,20 +35,20 @@ def run_rust(root: Path, scenario: dict[str, object]) -> dict[str, object]:
     assert isinstance(args, dict)
     match scenario["func"]:
         case "find_transcripts":
-            return {"transcripts": [rel(root, path) for path in _parser_rs.discovery_find_transcripts(str(root))]}
+            return {"transcripts": [rel(root, path) for path in _native.discovery_find_transcripts(str(root))]}
         case "find_in":
             directory = root / str(args["directory"])
             known = {str(root / key): value for key, value in (args.get("known_mtimes") or {}).items()} or None
-            result = _parser_rs.discovery_find_in(str(directory), args.get("name_contains"), args.get("limit"), known)
+            result = _native.discovery_find_in(str(directory), args.get("name_contains"), args.get("limit"), known)
             return {"found": [[rel(root, path), mtime] for path, mtime in result]}
         case "find_transcript":
-            hit = _parser_rs.discovery_find_transcript(str(root), str(args["session_id"]))
+            hit = _native.discovery_find_transcript(str(root), str(args["session_id"]))
             return {"hit": None if hit is None else rel(root.resolve(), hit)}
         case "subagents":
             path = root / str(args["path"])
             return {
-                "paths": [rel(root, p) for p in _parser_rs.discovery_subagent_paths(str(path))],
-                "transcripts": {tid: rel(root, p) for tid, p in _parser_rs.discovery_subagent_transcripts(str(path)).items()},
+                "paths": [rel(root, p) for p in _native.discovery_subagent_paths(str(path))],
+                "transcripts": {tid: rel(root, p) for tid, p in _native.discovery_subagent_transcripts(str(path)).items()},
             }
         case func:
             raise ValueError(f"unknown discovery func {func!r}")
@@ -69,7 +69,7 @@ def test_python_discovery_matches_golden(name: str, tmp_path: Path) -> None:
 @requires_rust
 @pytest.mark.parametrize("case", [pytest.param(case, id=case["path"]) for case in GOLDEN["is_subagent_path"]])
 def test_rust_is_subagent_path_matches_golden(case: dict) -> None:
-    assert _parser_rs.discovery_is_subagent_path(case["path"]) == case["result"]
+    assert _native.discovery_is_subagent_path(case["path"]) == case["result"]
 
 
 @pytest.mark.parametrize("path, expected", IS_SUBAGENT_CASES)

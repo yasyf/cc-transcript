@@ -762,7 +762,7 @@ fn tool_facts<'py>(
 }
 
 #[pymodule]
-fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_bytes_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;

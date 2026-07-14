@@ -112,9 +112,9 @@ def test_bug_lost_recovers_signal() -> None:
 
 @requires_rust
 def test_embedded_overrides_match_source() -> None:
-    from cc_transcript import _parser_rs
+    from cc_transcript import _native
 
-    assert dict(_parser_rs.lexicon_overrides()) == DOMAIN_OVERRIDES
+    assert dict(_native.lexicon_overrides()) == DOMAIN_OVERRIDES
 
 
 @requires_rust

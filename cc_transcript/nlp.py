@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,4 +55,4 @@ def analyze(text: str) -> list[Token]:
         >>> [(t.form, t.upos) for t in analyze("this isn't broken")]
         [('this', 'PRON'), ('is', 'AUX'), ("n't", 'PART'), ('broken', 'VERB')]
     """
-    return [Token(*row) for row in _parser_rs.nlp_analyze(text)]
+    return [Token(*row) for row in _native.nlp_analyze(text)]

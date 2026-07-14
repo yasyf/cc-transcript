@@ -18,7 +18,7 @@ from cc_transcript.sentiment import (
     extract_bucket_keys,
     flag_frustration,
 )
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.sentiment.scorespec import ScoreSpec, score_spec_to_json
 from tests import support, testkit
 
@@ -26,11 +26,11 @@ BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def short_circuit(spec: ScoreSpec, buckets: list[list[str]]) -> list[SentimentScore | None]:
-    return [None if s is None else SentimentScore(s) for s in _parser_rs.score_short_circuit(score_spec_to_json(spec), buckets)]
+    return [None if s is None else SentimentScore(s) for s in _native.score_short_circuit(score_spec_to_json(spec), buckets)]
 
 
 def post_process(spec: ScoreSpec, buckets: list[list[str]], raw: list[SentimentScore]) -> list[SentimentScore]:
-    scored = _parser_rs.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
+    scored = _native.score_post_process(score_spec_to_json(spec), buckets, [int(s) for s in raw])
     return [SentimentScore(s) for s in scored]
 
 

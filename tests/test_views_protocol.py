@@ -15,7 +15,7 @@ import pickle
 import orjson
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.ids import EventUuid
 from cc_transcript.models import ModeEvent
 from tests import testkit
@@ -23,7 +23,7 @@ from tests import testkit
 
 def event_list(*lines: dict) -> object:
     raw = b"\n".join(orjson.dumps(line) for line in lines)
-    return _parser_rs.parse_bytes(raw).events
+    return _native.parse_bytes(raw).events
 
 
 def three_events() -> object:
@@ -106,7 +106,7 @@ def test_frozen_view_copy_is_identity() -> None:
 
 
 def test_eventlist_and_transcript_copy_is_identity() -> None:
-    transcript = _parser_rs.parse_bytes(orjson.dumps(testkit.user_line("u1", "a")))
+    transcript = _native.parse_bytes(orjson.dumps(testkit.user_line("u1", "a")))
     assert copy.copy(transcript) is transcript
     assert copy.deepcopy(transcript) is transcript
     events = transcript.events

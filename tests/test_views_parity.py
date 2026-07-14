@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_transcript import _parser_rs
+from cc_transcript import _native
 from cc_transcript.parser import TranscriptParser
 from tests import viewgolden
 
@@ -43,7 +43,7 @@ def test_views_reproduce_golden(record: dict) -> None:
 def test_print_result_views_reproduce_golden(record: dict) -> None:
     raw = (REPO_ROOT / record["file"]).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == record["sha256"], f"{record['file']} drifted"
-    viewgolden.compare(record["proj"], _parser_rs.parse_print_result(raw))
+    viewgolden.compare(record["proj"], _native.parse_print_result(raw))
 
 
 def test_split_invariance() -> None:
