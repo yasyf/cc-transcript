@@ -23,6 +23,7 @@ use crate::views::store::EventRef;
 ///     stderr: The hook's captured stderr, or None.
 ///     exit_code: The hook's exit status, or None.
 ///     duration_ms: The hook's wall-clock duration in milliseconds, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "HookSuccess", module = "cc_transcript.models", frozen)]
 pub(crate) struct HookSuccessView {
     pub r: EventRef,
@@ -37,6 +38,7 @@ impl HookSuccessView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookSuccessView {
     #[getter]
@@ -50,6 +52,7 @@ impl HookSuccessView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.hook_success().tool_use_id.clone())
     }
@@ -108,6 +111,7 @@ view_dunders!(
 ///     hook_event: The lifecycle event that triggered it, or None.
 ///     tool_use_id: The tool-use the hook ran against, or None.
 ///     blocking_error: The verbatim ``blockingError`` payload, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "HookBlockingError", module = "cc_transcript.models", frozen)]
 pub(crate) struct HookBlockingErrorView {
     pub r: EventRef,
@@ -122,6 +126,7 @@ impl HookBlockingErrorView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookBlockingErrorView {
     #[getter]
@@ -135,11 +140,13 @@ impl HookBlockingErrorView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.hook_blocking_error().tool_use_id.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn blocking_error<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.hook_blocking_error().blocking_error.as_ref())
     }
@@ -162,6 +169,7 @@ view_dunders!(
 ///     stderr: The hook's captured stderr, or None.
 ///     exit_code: The hook's exit status, or None.
 ///     duration_ms: The hook's wall-clock duration in milliseconds, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "HookNonBlockingError", module = "cc_transcript.models", frozen)]
 pub(crate) struct HookNonBlockingErrorView {
     pub r: EventRef,
@@ -178,6 +186,7 @@ impl HookNonBlockingErrorView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookNonBlockingErrorView {
     #[getter]
@@ -191,6 +200,7 @@ impl HookNonBlockingErrorView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.hook_non_blocking_error().tool_use_id.clone())
     }
@@ -246,6 +256,7 @@ view_dunders!(
 ///     duration_ms: How long it ran before cancellation, or None.
 ///     timed_out: Whether the cancellation was a timeout, or None.
 ///     timeout_ms: The configured timeout in milliseconds, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "HookCancelled", module = "cc_transcript.models", frozen)]
 pub(crate) struct HookCancelledView {
     pub r: EventRef,
@@ -260,6 +271,7 @@ impl HookCancelledView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookCancelledView {
     #[getter]
@@ -273,6 +285,7 @@ impl HookCancelledView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.hook_cancelled().tool_use_id.clone())
     }
@@ -319,6 +332,7 @@ view_dunders!(
 ///     hook_event: The lifecycle event that triggered it, or None.
 ///     tool_use_id: The tool-use the hook ran against, or None.
 ///     content: The injected context lines, in order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(
     name = "HookAdditionalContext",
     module = "cc_transcript.models",
@@ -339,6 +353,7 @@ impl HookAdditionalContextView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookAdditionalContextView {
     #[getter]
@@ -352,11 +367,13 @@ impl HookAdditionalContextView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.hook_additional_context().tool_use_id.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.hook_additional_context().content)
     }
@@ -378,6 +395,7 @@ view_dunders!(
 ///     stderr: The hook's captured stderr, or None.
 ///     exit_code: The hook's exit status, or None.
 ///     response: The verbatim ``response`` payload, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "AsyncHookResponse", module = "cc_transcript.models", frozen)]
 pub(crate) struct AsyncHookResponseView {
     pub r: EventRef,
@@ -392,6 +410,7 @@ impl AsyncHookResponseView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl AsyncHookResponseView {
     #[getter]
@@ -425,6 +444,7 @@ impl AsyncHookResponseView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn response<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.async_hook_response().response.as_ref())
     }
@@ -443,6 +463,7 @@ view_dunders!(
 ///         plain-string prompt (e.g. an image-paste payload).
 ///     command_mode: How the command was queued, e.g. ``prompt`` or
 ///         ``task-notification``, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "QueuedCommand", module = "cc_transcript.models", frozen)]
 pub(crate) struct QueuedCommandView {
     pub r: EventRef,
@@ -457,6 +478,7 @@ impl QueuedCommandView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl QueuedCommandView {
     #[getter]
@@ -484,6 +506,7 @@ view_dunders!(
 ///
 /// Attributes:
 ///     raw: The attachment entry's full decoded payload.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherAttachment", module = "cc_transcript.models", frozen)]
 pub(crate) struct OtherAttachmentView {
     pub r: EventRef,
@@ -498,9 +521,11 @@ impl OtherAttachmentView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherAttachmentView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any]", imports = ("collections.abc", "typing")))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.other())
     }

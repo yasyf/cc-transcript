@@ -18,6 +18,7 @@ use crate::views::meta::QuestionView;
 ///     raw: The verbatim ``toolUseResult`` payload — a mapping for structured
 ///         results, a plain string for denials, or None when the record carried
 ///         none. Excluded from equality and repr.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(
     name = "ToolResultBase",
     module = "cc_transcript.tools",
@@ -28,6 +29,7 @@ pub(crate) struct ToolResultBaseView {
     pub result: Arc<ToolResult>,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ToolResultBaseView {
     #[getter]
@@ -36,6 +38,7 @@ impl ToolResultBaseView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | str | None", imports = ("collections.abc", "typing")))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.result.raw())
     }
@@ -62,6 +65,7 @@ macro_rules! result_variant {
 }
 
 /// A Bash/Execute execution result.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "BashResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct BashResultView {
     pub result: Arc<ToolResult>,
@@ -69,6 +73,7 @@ pub(crate) struct BashResultView {
 
 result_variant!(BashResultView, Bash, BashResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl BashResultView {
     #[getter]
@@ -77,36 +82,43 @@ impl BashResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn stdout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().stdout.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn stderr<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().stderr.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn interrupted<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().interrupted)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn is_image<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().is_image)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn no_output_expected<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().no_output_expected)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn background_task_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().background_task_id.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn return_code_interpretation<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().return_code_interpretation.as_ref())
     }
@@ -132,6 +144,7 @@ view_dunders!(
 ///
 /// ``structured_patch`` and ``original_file`` are kept verbatim — the patch as
 /// the raw hunk list Claude Code emits, the original file as its full text.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EditResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct EditResultView {
     pub result: Arc<ToolResult>,
@@ -139,6 +152,7 @@ pub(crate) struct EditResultView {
 
 result_variant!(EditResultView, Edit, EditResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl EditResultView {
     #[getter]
@@ -147,41 +161,49 @@ impl EditResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn file_path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().file_path.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn old_string<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().old_string.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn new_string<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().new_string.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn replace_all<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().replace_all)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn user_modified<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().user_modified)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn stale_recovered<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().stale_recovered)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "list[typing.Any] | None", imports = ("typing",)))]
     fn structured_patch<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().structured_patch.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn original_file<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().original_file.as_ref())
     }
@@ -205,6 +227,7 @@ view_dunders!(
 );
 
 /// A Write/Create result: the written content and its structured patch.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "WriteResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct WriteResultView {
     pub result: Arc<ToolResult>,
@@ -212,6 +235,7 @@ pub(crate) struct WriteResultView {
 
 result_variant!(WriteResultView, Write, WriteResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl WriteResultView {
     #[getter]
@@ -220,26 +244,31 @@ impl WriteResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().content.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn file_path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().file_path.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn original_file<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().original_file.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "list[typing.Any] | None", imports = ("typing",)))]
     fn structured_patch<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().structured_patch.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn user_modified<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().user_modified)
     }
@@ -263,6 +292,7 @@ view_dunders!(
 ///
 /// ``file`` is kept verbatim — the raw mapping (``filePath``, ``content``,
 /// ``numLines``, …) Claude Code emits for the read window.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ReadResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct ReadResultView {
     pub result: Arc<ToolResult>,
@@ -270,6 +300,7 @@ pub(crate) struct ReadResultView {
 
 result_variant!(ReadResultView, Read, ReadResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ReadResultView {
     #[getter]
@@ -278,11 +309,13 @@ impl ReadResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn file<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().file.as_ref())
     }
 
     #[getter(r#type)]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn file_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().file_type.as_ref())
     }
@@ -343,6 +376,7 @@ frozen_copy!(ReadResultView);
 /// :class:`TaskResult`; an in-flight launch (``outputFile`` present) becomes a
 /// :class:`TaskLaunchResult`; a payload matching neither shape degrades to
 /// :class:`OtherResult` rather than an all-None variant.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(
     name = "TaskResultBase",
     module = "cc_transcript.tools",
@@ -357,6 +391,7 @@ pub(crate) struct TaskResultBaseView;
 /// ``tool_stats``, ``usage``, and ``content`` are kept verbatim — the raw
 /// per-tool stats, usage mapping, and final content-block list the subagent
 /// returned.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TaskResult", module = "cc_transcript.tools", extends = TaskResultBaseView, frozen)]
 pub(crate) struct TaskResultView {
     pub result: Arc<ToolResult>,
@@ -364,6 +399,7 @@ pub(crate) struct TaskResultView {
 
 result_variant!(TaskResultView, Task, TaskResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TaskResultView {
     #[getter]
@@ -372,56 +408,67 @@ impl TaskResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn agent_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().agent_id.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn agent_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().agent_type.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().status.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None"))]
     fn total_duration_ms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().total_duration_ms.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None"))]
     fn total_tokens<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().total_tokens.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None"))]
     fn total_tool_use_count<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().total_tool_use_count.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn tool_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().tool_stats.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn usage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().usage.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "list[typing.Any] | None", imports = ("typing",)))]
     fn content<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().content.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn prompt<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().prompt.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn resolved_model<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().resolved_model.as_ref())
     }
@@ -448,6 +495,7 @@ view_dunders!(
 );
 
 /// An in-flight Agent/Task launch (async or backgrounded subagent).
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TaskLaunchResult", module = "cc_transcript.tools", extends = TaskResultBaseView, frozen)]
 pub(crate) struct TaskLaunchResultView {
     pub result: Arc<ToolResult>,
@@ -455,6 +503,7 @@ pub(crate) struct TaskLaunchResultView {
 
 result_variant!(TaskLaunchResultView, TaskLaunch, TaskLaunchResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TaskLaunchResultView {
     #[getter]
@@ -463,41 +512,49 @@ impl TaskLaunchResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn agent_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().agent_id.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn output_file<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().output_file.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn is_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().is_async)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn can_read_output_file<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().can_read_output_file)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn description<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().description.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn prompt<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().prompt.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().status.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn resolved_model<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().resolved_model.as_ref())
     }
@@ -521,6 +578,7 @@ view_dunders!(
 );
 
 /// A Skill invocation result.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "SkillResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct SkillResultView {
     pub result: Arc<ToolResult>,
@@ -528,6 +586,7 @@ pub(crate) struct SkillResultView {
 
 result_variant!(SkillResultView, Skill, SkillResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl SkillResultView {
     #[getter]
@@ -536,16 +595,19 @@ impl SkillResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn command_name<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().command_name.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool"))]
     fn success<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().success)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...] | None"))]
     fn allowed_tools<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match self.c().allowed_tools.as_ref().and_then(|v| v.as_array()) {
             Some(items) => Ok(PyTuple::new(
@@ -573,11 +635,13 @@ view_dunders!(
 /// Attributes:
 ///     preview: The short preview the picker rendered under the answer, if any.
 ///     notes: The free-text note the reviewer attached, if any.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "QuestionAnnotation", module = "cc_transcript.tools", frozen)]
 pub(crate) struct QuestionAnnotationView {
     pub a: QuestionAnnotation,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl QuestionAnnotationView {
     #[new]
@@ -615,6 +679,7 @@ view_dunders!(
 ///     annotations: A mapping from question text to the reviewer's
 ///         :class:`QuestionAnnotation`, present only for annotated rounds.
 ///         Non-string preview/notes leaves read as None, mirroring the Rust lift.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "AskUserQuestionResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct AskUserQuestionResultView {
     pub result: Arc<ToolResult>,
@@ -626,6 +691,7 @@ result_variant!(
     AskUserQuestionResult
 );
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl AskUserQuestionResultView {
     #[getter]
@@ -634,6 +700,7 @@ impl AskUserQuestionResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, str]", imports = ("collections.abc",)))]
     fn answers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let answers = PyDict::new(py);
         for (question, answer) in &self.c().answers {
@@ -643,6 +710,7 @@ impl AskUserQuestionResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, cc_transcript.tools.QuestionAnnotation]", imports = ("collections.abc", "cc_transcript.tools")))]
     fn annotations<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let annotations = PyDict::new(py);
         for (question, annotation) in &self.c().annotations {
@@ -661,6 +729,7 @@ impl AskUserQuestionResultView {
 
     /// The AskUserQuestion rounds echoed in the result payload.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.Question, ...]", imports = ("cc_transcript.models",)))]
     fn questions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(
             py,
@@ -681,6 +750,7 @@ view_dunders!(
 );
 
 /// A plain-string tool result — denials and other unstructured payloads.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TextResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct TextResultView {
     pub result: Arc<ToolResult>,
@@ -688,6 +758,7 @@ pub(crate) struct TextResultView {
 
 result_variant!(TextResultView, Text, TextResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TextResultView {
     #[getter]
@@ -710,6 +781,7 @@ view_dunders!(
 
 /// A tool result the platform does not type: unknown tools, untyped tools
 /// (such as TodoWrite), and known tools whose payload shape did not match.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherResult", module = "cc_transcript.tools", extends = ToolResultBaseView, frozen)]
 pub(crate) struct OtherResultView {
     pub result: Arc<ToolResult>,
@@ -717,6 +789,7 @@ pub(crate) struct OtherResultView {
 
 result_variant!(OtherResultView, Other, OtherResult);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherResultView {
     #[getter]
@@ -783,7 +856,9 @@ pub(crate) fn result_view<'py>(
 /// Parse a tool's name and ``toolUseResult`` payload (as a JSON document) into
 /// the typed view hierarchy; the ``cc_transcript.tools`` facade owns the public
 /// signature.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "cc_transcript.tools.ToolResult", imports = ("cc_transcript.tools",)))]
 pub(crate) fn toolresult_parse_view<'py>(
     py: Python<'py>,
     name: &str,

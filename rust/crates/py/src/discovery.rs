@@ -12,6 +12,7 @@ fn to_str(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub fn discovery_find_transcripts(root: &str) -> Vec<String> {
     discovery::find_transcripts(Path::new(root))
@@ -20,18 +21,22 @@ pub fn discovery_find_transcripts(root: &str) -> Vec<String> {
         .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub fn discovery_find_transcript(root: &str, session_id: &str) -> Option<String> {
     discovery::find_transcript(Path::new(root), session_id).map(|p| to_str(&p))
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (directory, name_contains=None, limit=None, known_mtimes=None))]
 pub fn discovery_find_in(
     directory: &str,
     name_contains: Option<String>,
     limit: Option<usize>,
-    known_mtimes: Option<HashMap<String, f64>>,
+    #[gen_stub(override_type(type_repr = "dict[str, float] | None"))] known_mtimes: Option<
+        HashMap<String, f64>,
+    >,
 ) -> Vec<(String, f64)> {
     discovery::find_in(
         Path::new(directory),
@@ -44,6 +49,7 @@ pub fn discovery_find_in(
     .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub fn discovery_subagent_paths(path: &str) -> Vec<String> {
     discovery::subagent_paths(Path::new(path))
@@ -52,7 +58,9 @@ pub fn discovery_subagent_paths(path: &str) -> Vec<String> {
         .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, str]"))]
 pub fn discovery_subagent_transcripts<'py>(
     py: Python<'py>,
     path: &str,
@@ -64,6 +72,7 @@ pub fn discovery_subagent_transcripts<'py>(
     Ok(out)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub fn discovery_is_subagent_path(path: &str) -> bool {
     discovery::is_subagent_path(Path::new(path))

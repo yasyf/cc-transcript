@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import orjson
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.facts import ToolFact
     from cc_transcript.models import AttachmentDetail, ContentBlock, SessionId, ToolUseId, Transcript, TranscriptEvent
-    from cc_transcript.tools import ToolCall
+    from cc_transcript.tools import FallbackCall, ToolCall
 
 PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
 SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
@@ -53,6 +53,11 @@ TAGS = {"user": "user", "assistant": "asst", "system": "sys", "mode": "mode", "o
 BLANK_TIME = " " * 8
 WHERE_ALL = frozenset({"text", "thinking", "tools"})
 UNCLIPPED = sys.maxsize
+
+
+@runtime_checkable
+class ViewLike(Protocol):
+    __match_args__: ClassVar[tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +85,7 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}…(+{len(text) - limit}ch)"
 
 
-def render_tool_call(call: ToolCall, *, budget: Budget) -> str:
+def render_tool_call(call: ToolCall | FallbackCall, *, budget: Budget) -> str:
     """Render a typed tool call, clipping each content piece to the tool budget.
 
     The single tool-input renderer: Edit renders the path plus ``- old`` /
@@ -275,7 +280,7 @@ def event_dict(index: int, event: TranscriptEvent) -> dict[str, Any]:
     return {"i": index, "kind": event_kind(event)} | view_asdict(event)
 
 
-def view_asdict(view: object) -> dict[str, Any]:
+def view_asdict(view: ViewLike) -> dict[str, Any]:
     return {name: view_field(getattr(view, name)) for name in type(view).__match_args__}
 
 
@@ -285,7 +290,7 @@ def view_field(value: object) -> Any:
             return tuple(view_field(item) for item in value)
         case dict():
             return value
-        case _ if type(value).__module__ == "cc_transcript.models":
+        case ViewLike() if type(value).__module__ == "cc_transcript.models":
             return view_asdict(value)
         case _:
             return value

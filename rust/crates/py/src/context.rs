@@ -10,11 +10,12 @@ use cc_transcript_core::types::Entry;
 
 use crate::views::convert::parse_err;
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (raw, session_id, anchor_uuid, anchor_tool_use_id, before, after, preview_chars))]
 pub(crate) fn context_capture_window(
     py: Python<'_>,
-    raw: &[u8],
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
     session_id: &str,
     anchor_uuid: &str,
     anchor_tool_use_id: Option<&str>,
@@ -42,6 +43,7 @@ pub(crate) fn context_capture_window(
     })
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn context_roundtrip(data: &str) -> PyResult<String> {
     ContextWindow::from_json(data)
@@ -49,6 +51,7 @@ pub(crate) fn context_roundtrip(data: &str) -> PyResult<String> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn context_render_preview(data: &str, turn_chars: usize) -> PyResult<String> {
     ContextWindow::from_json(data)

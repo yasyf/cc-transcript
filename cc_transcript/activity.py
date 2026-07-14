@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from cc_transcript.ids import SessionId, ToolUseId
     from cc_transcript.models import TranscriptEvent
-    from cc_transcript.tools import Hunk, ToolCall, ToolResult
+    from cc_transcript.tools import FallbackCall, FallbackResult, Hunk, ToolCall, ToolResult
 
 UserClassifier = Callable[["UserEvent"], bool]
 """Decides which :class:`~cc_transcript.models.UserEvent` objects open a turn."""
@@ -67,7 +67,7 @@ class ToolUse:
     """
 
     ref: EventRef
-    call: ToolCall
+    call: ToolCall | FallbackCall
     result: ToolResultBlock | None
     result_ts: datetime | None
     turn_index: int
@@ -79,7 +79,7 @@ class ToolUse:
         return None if self.result_ts is None else round((self.result_ts - self.ts).total_seconds() * 1000)
 
     @property
-    def typed_result(self) -> ToolResult | None:
+    def typed_result(self) -> ToolResult | FallbackResult | None:
         """The result parsed into the typed result hierarchy, or None without a result.
 
         The join point for :func:`~cc_transcript.tools.parse_tool_result`: pairs

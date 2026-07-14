@@ -75,6 +75,7 @@ macro_rules! view_dunders {
             }
         }
 
+        #[pyo3_stub_gen::derive::gen_stub_pymethods]
         #[pyo3::pymethods]
         impl $cls {
             #[classattr]
@@ -83,10 +84,12 @@ macro_rules! view_dunders {
                 Ok(pyo3::types::PyTuple::new(py, names)?.unbind())
             }
 
+            #[gen_stub(skip)]
             fn __repr__(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<String> {
                 crate::views::dunder::repr_pairs($name, &self.dunder_fields(py)?)
             }
 
+            #[gen_stub(skip)]
             fn __eq__(
                 &self,
                 py: pyo3::Python<'_>,
@@ -99,10 +102,12 @@ macro_rules! view_dunders {
             }
 
             // A frozen view is immutable, so copy and deep-copy are identity.
+            #[gen_stub(skip)]
             fn __copy__(slf: pyo3::PyRef<'_, Self>) -> pyo3::PyRef<'_, Self> {
                 slf
             }
 
+            #[gen_stub(skip)]
             fn __deepcopy__<'py>(
                 slf: pyo3::PyRef<'py, Self>,
                 _memo: &pyo3::Bound<'py, pyo3::PyAny>,

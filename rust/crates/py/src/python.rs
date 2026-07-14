@@ -78,13 +78,16 @@ fn parsed_file_to_py<'py>(py: Python<'py>, pf: ParsedFile) -> PyResult<Bound<'py
     .into_any())
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass]
 pub struct ParseStream {
     rx: Receiver<ParsedFile>,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ParseStream {
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.models.Transcript | None", imports = ("cc_transcript.models",)))]
     fn recv<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         match py.detach(|| self.rx.recv().ok()) {
             None => Ok(None),
@@ -92,6 +95,7 @@ impl ParseStream {
         }
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[cc_transcript.models.Transcript]", imports = ("cc_transcript.models",)))]
     fn recv_many<'py>(&self, py: Python<'py>, max: usize) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let mut out: Vec<Bound<'py, PyAny>> = Vec::new();
         // Block for the first file; return [] only when the channel is closed.
@@ -110,6 +114,7 @@ impl ParseStream {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (paths, prefetch, spec_json=None))]
 fn stream_parse(
@@ -148,12 +153,14 @@ fn stream_parse(
     Ok(ParseStream { rx })
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(name = "parse_bytes")]
 #[pyo3(signature = (raw, spec_json=None))]
+#[gen_stub(override_return_type(type_repr = "cc_transcript.models.Transcript", imports = ("cc_transcript.models",)))]
 fn parse_bytes_py<'py>(
     py: Python<'py>,
-    raw: &[u8],
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
     spec_json: Option<String>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let filter = match spec_json {
@@ -174,8 +181,13 @@ fn parse_bytes_py<'py>(
     )
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+#[gen_stub(override_return_type(type_repr = "cc_transcript.models.PrintResult", imports = ("cc_transcript.models",)))]
+fn parse_print_result<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
+) -> PyResult<Bound<'py, PyAny>> {
     let value: Value = sonic_rs::from_slice(raw)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
     let result = parse_print_envelope(&value).map_err(parse_err)?;
@@ -195,7 +207,9 @@ fn cost_err(err: CostError) -> PyErr {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, float]", imports = ()))]
 fn cost_of_json<'py>(
     py: Python<'py>,
     usage_json: &str,
@@ -214,8 +228,13 @@ fn cost_of_json<'py>(
     Ok(dict)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-fn bucket_events<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Vec<Bound<'py, PyDict>>> {
+#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
+fn bucket_events<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
     buckets::bucket_events(&entries)
         .iter()
@@ -240,8 +259,13 @@ fn bucket_events<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Vec<Bound<'py, Py
         .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-fn notifications_replay<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+#[gen_stub(override_return_type(type_repr = "dict[str, list[str]]", imports = ()))]
+fn notifications_replay<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
+) -> PyResult<Bound<'py, PyDict>> {
     let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
     let notifications = Notifications::from_entries(&entries);
     let dict = PyDict::new(py);
@@ -251,27 +275,33 @@ fn notifications_replay<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py,
     Ok(dict)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn lexicon_tokenize(text: &str) -> PyResult<Vec<String>> {
     lexicon::tokenize(text).map_err(PyValueError::new_err)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn lexicon_polarity(token: &str) -> i32 {
     lexicon::polarity(token)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn lexicon_has_hit(text: &str, want_negative: bool) -> PyResult<bool> {
     lexicon::has_hit(text, want_negative).map_err(PyValueError::new_err)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn lexicon_overrides() -> Vec<(String, i32)> {
     lexicon::overrides_entries()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, str | float | list[str]]", imports = ()))]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     use cc_transcript_core::generated::{command, corrections, mining, protocol};
 
@@ -347,11 +377,13 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(dict)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn score_short_circuit(spec_json: String, buckets: Vec<Vec<String>>) -> PyResult<Vec<Option<i64>>> {
     score::score_short_circuit(&spec_json, &buckets).map_err(PyValueError::new_err)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn score_post_process(
     spec_json: String,
@@ -361,23 +393,30 @@ fn score_post_process(
     score::score_post_process(&spec_json, &buckets, &raw).map_err(PyValueError::new_err)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn command_prefixes(py: Python<'_>, commands: Vec<String>) -> Vec<Vec<String>> {
     py.detach(|| commands.par_iter().map(|c| command::prefixes(c)).collect())
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 fn command_parse<'py>(py: Python<'py>, command: &str) -> PyResult<Bound<'py, PyDict>> {
     command::line_to_py(py, &CommandLine::parse(command))
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (path, waiting_tools=None, human_facing_tools=None))]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 fn session_activity_probe<'py>(
     py: Python<'py>,
     path: String,
-    waiting_tools: Option<Vec<String>>,
-    human_facing_tools: Option<Vec<String>>,
+    #[gen_stub(override_type(type_repr = "list[str] | None"))] waiting_tools: Option<Vec<String>>,
+    #[gen_stub(override_type(type_repr = "list[str] | None"))] human_facing_tools: Option<
+        Vec<String>,
+    >,
 ) -> PyResult<Bound<'py, PyDict>> {
     let defaults = ActivityOpts::default();
     let opts = ActivityOpts {
@@ -411,10 +450,13 @@ fn session_activity_probe<'py>(
     Ok(dict)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (events, spec_json, callable_formats))]
+#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
 fn mine_events<'py>(
     py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
     events: Vec<Bound<'py, PyAny>>,
     spec_json: String,
     callable_formats: Vec<(String, Py<PyAny>, Py<PyAny>)>,
@@ -424,6 +466,7 @@ fn mine_events<'py>(
     mining::mine_events(py, &events, &spec)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn ids_canonical_json(value_json: &str) -> PyResult<String> {
     let value: Value = sonic_rs::from_str(value_json)
@@ -431,6 +474,7 @@ fn ids_canonical_json(value_json: &str) -> PyResult<String> {
     ids::canonical_json(&value).map_err(PyValueError::new_err)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn ids_tool_digest(name: &str, input_json: &str) -> PyResult<String> {
     let input: Value = sonic_rs::from_str(input_json)
@@ -444,8 +488,10 @@ fn epoch_ms(dt: DateTime<FixedOffset>) -> i64 {
     ((dt.timestamp_micros() as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (path, max_events))]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 fn activity_lift<'py>(
     py: Python<'py>,
     path: String,
@@ -551,8 +597,10 @@ fn activity_lift<'py>(
 }
 
 // A deterministic query.py battery, mirrored by gen_query_golden.py's project_session.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (path, max_events))]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 fn query_session<'py>(
     py: Python<'py>,
     path: String,
@@ -658,6 +706,7 @@ fn query_session<'py>(
     Ok(out)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn activity_hunk_overlap(a_old: &str, a_new: &str, b_old: &str, b_new: &str) -> f64 {
     hunk_overlap(
@@ -740,8 +789,10 @@ fn project_facts<'py>(
 }
 
 // The facts.py analytics per path, mirrored by gen_facts_golden.py's project_file.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (paths, max_events))]
+#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
 fn tool_facts<'py>(
     py: Python<'py>,
     paths: Vec<String>,

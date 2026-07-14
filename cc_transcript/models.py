@@ -37,17 +37,29 @@ class ReadOnlyDict(dict):
 
     __slots__ = ()
 
-    def read_only(self, *args: object, **kwargs: object) -> None:
+    def __setitem__(self, *args: object, **kwargs: object) -> None:
         raise TypeError("ReadOnlyDict is read-only")
 
-    __setitem__ = read_only
-    __delitem__ = read_only
-    clear = read_only
-    pop = read_only
-    popitem = read_only
-    setdefault = read_only
-    update = read_only
-    __ior__ = read_only
+    def __delitem__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def __ior__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def clear(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def pop(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def popitem(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def setdefault(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
 
 
 TextBlock = _native.TextBlock
@@ -140,14 +152,20 @@ def parse_questions(rounds: object) -> tuple[Question, ...] | None:
             question=text,
             header=h if isinstance(h := q.get("header"), str) else None,
             multi_select=isinstance(m := q.get("multiSelect"), bool) and m,
-            labels=[
-                label
-                for option in (q.get("options") if isinstance(q.get("options"), list) else ())
-                if isinstance(option, dict) and isinstance(label := option.get("label"), str)
-            ],
+            labels=question_labels(q.get("options")),
         )
         for q in rounds
         if isinstance(q, dict) and isinstance(text := q.get("question"), str)
+    )
+
+
+def question_labels(options: object) -> tuple[str, ...]:
+    if not isinstance(options, list):
+        return ()
+    return tuple(
+        label
+        for option in options
+        if isinstance(option, dict) and isinstance(label := option.get("label"), str)
     )
 
 

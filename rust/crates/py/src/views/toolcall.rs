@@ -19,6 +19,7 @@ use crate::views::dunder::view_dunders;
 ///     name: The tool name exactly as invoked (aliases are not normalized —
 ///         the digest must match what the hook saw).
 ///     raw: The verbatim input mapping; the only digest substrate.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(
     name = "ToolCallBase",
     module = "cc_transcript.tools",
@@ -29,6 +30,7 @@ pub(crate) struct ToolCallBaseView {
     pub call: Arc<ToolCall>,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ToolCallBaseView {
     #[getter]
@@ -37,12 +39,14 @@ impl ToolCallBaseView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any]", imports = ("collections.abc", "typing")))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.call.raw())
     }
 
     /// The cross-language content digest of this call.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolDigest", imports = ("cc_transcript.ids",)))]
     fn digest(&self, _py: Python<'_>) -> PyResult<String> {
         ids::tool_digest(self.call.name(), self.call.raw()).map_err(PyValueError::new_err)
     }
@@ -69,6 +73,7 @@ macro_rules! call_variant {
 }
 
 /// A Bash/Execute shell invocation.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "BashCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct BashCallView {
     pub call: Arc<ToolCall>,
@@ -76,6 +81,7 @@ pub(crate) struct BashCallView {
 
 call_variant!(BashCallView, Bash, BashCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl BashCallView {
     #[getter]
@@ -89,22 +95,26 @@ impl BashCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None", imports = ()))]
     fn timeout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().timeout.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn description<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().description.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool | None", imports = ()))]
     fn run_in_background<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().run_in_background.as_ref())
     }
 
     /// The command parsed into a :class:`~cc_transcript.command.CommandLine`.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.command.CommandLine", imports = ("cc_transcript.command",)))]
     fn command_line<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         py.import("cc_transcript.command")?
             .getattr("parse_command_line")?
@@ -120,6 +130,7 @@ view_dunders!(
 );
 
 /// An Edit replacement of ``old`` with ``new`` in one file.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EditCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct EditCallView {
     pub call: Arc<ToolCall>,
@@ -127,6 +138,7 @@ pub(crate) struct EditCallView {
 
 call_variant!(EditCallView, Edit, EditCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl EditCallView {
     #[getter]
@@ -150,6 +162,7 @@ impl EditCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool", imports = ()))]
     fn replace_all<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.c().replace_all)
     }
@@ -163,11 +176,13 @@ view_dunders!(
 );
 
 /// One replacement within a MultiEdit call, in application order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EditSpan", module = "cc_transcript.tools", frozen)]
 pub(crate) struct EditSpanView {
     pub span: EditSpan,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl EditSpanView {
     #[new]
@@ -201,6 +216,7 @@ impl EditSpanView {
 view_dunders!(EditSpanView, "EditSpan", fields = [old, new, replace_all]);
 
 /// A MultiEdit applying ``edits`` to one file, in order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "MultiEditCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct MultiEditCallView {
     pub call: Arc<ToolCall>,
@@ -208,6 +224,7 @@ pub(crate) struct MultiEditCallView {
 
 call_variant!(MultiEditCallView, MultiEdit, MultiEditCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl MultiEditCallView {
     #[getter]
@@ -221,6 +238,7 @@ impl MultiEditCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.tools.EditSpan, ...]", imports = ("cc_transcript.tools",)))]
     fn edits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(
             py,
@@ -241,6 +259,7 @@ view_dunders!(
 );
 
 /// A Write/Create of a whole file.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "WriteCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct WriteCallView {
     pub call: Arc<ToolCall>,
@@ -248,6 +267,7 @@ pub(crate) struct WriteCallView {
 
 call_variant!(WriteCallView, Write, WriteCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl WriteCallView {
     #[getter]
@@ -274,6 +294,7 @@ view_dunders!(
 );
 
 /// A Read of a file, optionally windowed.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ReadCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct ReadCallView {
     pub call: Arc<ToolCall>,
@@ -281,6 +302,7 @@ pub(crate) struct ReadCallView {
 
 call_variant!(ReadCallView, Read, ReadCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ReadCallView {
     #[getter]
@@ -294,11 +316,13 @@ impl ReadCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None", imports = ()))]
     fn offset<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().offset.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "int | None", imports = ()))]
     fn limit<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().limit.as_ref())
     }
@@ -312,6 +336,7 @@ view_dunders!(
 );
 
 /// A NotebookEdit replacing a cell's source.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "NotebookEditCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct NotebookEditCallView {
     pub call: Arc<ToolCall>,
@@ -319,6 +344,7 @@ pub(crate) struct NotebookEditCallView {
 
 call_variant!(NotebookEditCallView, NotebookEdit, NotebookEditCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl NotebookEditCallView {
     #[getter]
@@ -337,11 +363,13 @@ impl NotebookEditCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn cell_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().cell_id.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn edit_mode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().edit_mode.as_ref())
     }
@@ -355,6 +383,7 @@ view_dunders!(
 );
 
 /// A Grep content search.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "GrepCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct GrepCallView {
     pub call: Arc<ToolCall>,
@@ -362,6 +391,7 @@ pub(crate) struct GrepCallView {
 
 call_variant!(GrepCallView, Grep, GrepCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl GrepCallView {
     #[getter]
@@ -375,21 +405,25 @@ impl GrepCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None"))]
     fn path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().path.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn glob<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().glob.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn file_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().file_type.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn output_mode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().output_mode.as_ref())
     }
@@ -403,6 +437,7 @@ view_dunders!(
 );
 
 /// A Glob file-pattern search.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "GlobCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct GlobCallView {
     pub call: Arc<ToolCall>,
@@ -410,6 +445,7 @@ pub(crate) struct GlobCallView {
 
 call_variant!(GlobCallView, Glob, GlobCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl GlobCallView {
     #[getter]
@@ -423,6 +459,7 @@ impl GlobCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().path.as_ref())
     }
@@ -436,6 +473,7 @@ view_dunders!(
 );
 
 /// An Agent/Task subagent dispatch.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TaskCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct TaskCallView {
     pub call: Arc<ToolCall>,
@@ -443,6 +481,7 @@ pub(crate) struct TaskCallView {
 
 call_variant!(TaskCallView, Task, TaskCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TaskCallView {
     #[getter]
@@ -456,21 +495,25 @@ impl TaskCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn agent_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().agent_type.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn model<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().model.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn agent_name<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().agent_name.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "bool | None", imports = ()))]
     fn run_in_background<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().run_in_background.as_ref())
     }
@@ -500,6 +543,7 @@ view_dunders!(
 ///         from :attr:`ToolCallBase.name`, the tool name).
 ///     args: The value exposed to the script as its ``args`` global.
 ///     resume_from_run_id: A prior run to resume from.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "WorkflowCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct WorkflowCallView {
     pub call: Arc<ToolCall>,
@@ -507,6 +551,7 @@ pub(crate) struct WorkflowCallView {
 
 call_variant!(WorkflowCallView, Workflow, WorkflowCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl WorkflowCallView {
     #[getter]
@@ -515,26 +560,31 @@ impl WorkflowCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn script<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().script.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn script_path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().script_path.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn workflow_name<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().workflow_name.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str", imports = ()))]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().args.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn resume_from_run_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().resume_from_run_id.as_ref())
     }
@@ -555,6 +605,7 @@ view_dunders!(
 );
 
 /// A Skill invocation.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "SkillCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct SkillCallView {
     pub call: Arc<ToolCall>,
@@ -562,6 +613,7 @@ pub(crate) struct SkillCallView {
 
 call_variant!(SkillCallView, Skill, SkillCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl SkillCallView {
     #[getter]
@@ -575,6 +627,7 @@ impl SkillCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().args.as_ref())
     }
@@ -588,6 +641,7 @@ view_dunders!(
 );
 
 /// A TaskCreate tracker entry.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TaskCreateCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct TaskCreateCallView {
     pub call: Arc<ToolCall>,
@@ -595,6 +649,7 @@ pub(crate) struct TaskCreateCallView {
 
 call_variant!(TaskCreateCallView, TaskCreate, TaskCreateCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TaskCreateCallView {
     #[getter]
@@ -608,6 +663,7 @@ impl TaskCreateCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn description<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().description.as_ref())
     }
@@ -621,6 +677,7 @@ view_dunders!(
 );
 
 /// A TaskUpdate tracker change.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TaskUpdateCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct TaskUpdateCallView {
     pub call: Arc<ToolCall>,
@@ -628,6 +685,7 @@ pub(crate) struct TaskUpdateCallView {
 
 call_variant!(TaskUpdateCallView, TaskUpdate, TaskUpdateCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TaskUpdateCallView {
     #[getter]
@@ -641,16 +699,19 @@ impl TaskUpdateCallView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().status.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn subject<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().subject.as_ref())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "str | None", imports = ()))]
     fn description<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().description.as_ref())
     }
@@ -664,6 +725,7 @@ view_dunders!(
 );
 
 /// An ExitPlanMode/ExitSpecMode plan submission.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ExitPlanModeCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct ExitPlanModeCallView {
     pub call: Arc<ToolCall>,
@@ -671,6 +733,7 @@ pub(crate) struct ExitPlanModeCallView {
 
 call_variant!(ExitPlanModeCallView, ExitPlanMode, ExitPlanModeCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ExitPlanModeCallView {
     #[getter]
@@ -693,6 +756,7 @@ view_dunders!(
 
 /// A tool the platform does not type: unknown names, MCP tools, and — under
 /// ``on_error='other'`` — known tools whose input failed to parse.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
 pub(crate) struct OtherCallView {
     pub call: Arc<ToolCall>,
@@ -700,6 +764,7 @@ pub(crate) struct OtherCallView {
 
 call_variant!(OtherCallView, Other, OtherCall);
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherCallView {
     #[getter]
@@ -715,12 +780,14 @@ view_dunders!(OtherCallView, "OtherCall", fields = [name], match_args = []);
 /// Attributes:
 ///     old: The content replaced; empty for pure additions such as Write.
 ///     new: The content written.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Hunk", module = "cc_transcript.tools", frozen)]
 pub(crate) struct HunkView {
     pub old: String,
     pub new: String,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HunkView {
     #[new]
@@ -804,8 +871,10 @@ pub(crate) fn parse_call_view(py: Python<'_>, name: &str, input: &Value) -> PyRe
 
 /// Parse a tool's name and raw input (as a JSON document) into the typed view
 /// hierarchy; the ``cc_transcript.tools`` facade owns the public signature.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (name, input_json, on_error=None))]
+#[gen_stub(override_return_type(type_repr = "cc_transcript.tools.ToolCall", imports = ("cc_transcript.tools",)))]
 pub(crate) fn toolcall_parse_view<'py>(
     py: Python<'py>,
     name: &str,
@@ -828,9 +897,12 @@ pub(crate) fn toolcall_parse_view<'py>(
 ///
 /// MultiEdit yields one hunk per span in application order — never just the
 /// first. Write and NotebookEdit are pure additions with an empty old side.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.tools.Hunk, ...]", imports = ("cc_transcript.tools",)))]
 pub(crate) fn hunks_of<'py>(
     py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "cc_transcript.tools.ToolCall | cc_transcript.tools.FallbackCall", imports = ("cc_transcript.tools",)))]
     call: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let base = call.cast::<ToolCallBaseView>()?.get();
@@ -853,8 +925,12 @@ pub(crate) fn hunks_of<'py>(
 }
 
 /// The file a call targets, when it targets one.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-pub(crate) fn file_path_of(call: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+pub(crate) fn file_path_of(
+    #[gen_stub(override_type(type_repr = "cc_transcript.tools.ToolCall | cc_transcript.tools.FallbackCall", imports = ("cc_transcript.tools",)))]
+    call: &Bound<'_, PyAny>,
+) -> PyResult<Option<String>> {
     Ok(call
         .cast::<ToolCallBaseView>()?
         .get()
@@ -864,7 +940,9 @@ pub(crate) fn file_path_of(call: &Bound<'_, PyAny>) -> PyResult<Option<String>> 
 }
 
 /// Expand a pipe-separated tool spec to include alias and MCP bare spellings.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "frozenset[str]", imports = ()))]
 pub(crate) fn expand_tool_names<'py>(
     py: Python<'py>,
     spec: &str,
@@ -889,8 +967,13 @@ pub(crate) fn expand_tool_names<'py>(
 ///     True
 ///     >>> matches_names("Execute", {"Bash"})
 ///     False
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-pub(crate) fn matches_names(actual: &str, names: &Bound<'_, PyAny>) -> PyResult<bool> {
+pub(crate) fn matches_names(
+    actual: &str,
+    #[gen_stub(override_type(type_repr = "collections.abc.Container[str]", imports = ("collections.abc",)))]
+    names: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
     if names.contains(actual)? {
         return Ok(true);
     }
@@ -911,6 +994,7 @@ pub(crate) fn matches_names(actual: &str, names: &Bound<'_, PyAny>) -> PyResult<
 ///     True
 ///     >>> tool_name_matches("mcp__github__Grep", "Grep")
 ///     True
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn tool_name_matches(actual: &str, spec: &str) -> PyResult<bool> {
     Ok(toolcall::tool_name_matches(actual, spec))
@@ -923,7 +1007,9 @@ pub(crate) fn tool_name_matches(actual: &str, spec: &str) -> PyResult<bool> {
 ///     ('semble', 'search')
 ///     >>> mcp_parts("Bash") is None
 ///     True
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "tuple[str, str] | None"))]
 pub(crate) fn mcp_parts(name: &str) -> PyResult<Option<(String, String)>> {
     Ok(toolcall::mcp_parts(name).map(|(server, tool)| (server.to_string(), tool.to_string())))
 }
@@ -941,7 +1027,9 @@ pub(crate) fn mcp_parts(name: &str) -> PyResult<Option<(String, String)>> {
 ///     'read'
 ///     >>> mcp_access("deploy")
 ///     'write'
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "typing.Literal[\"read\", \"write\"]", imports = ("typing",)))]
 pub(crate) fn mcp_access(tool: &str) -> PyResult<&'static str> {
     Ok(toolcall::mcp_access(tool))
 }

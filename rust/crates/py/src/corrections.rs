@@ -20,6 +20,7 @@ use cc_transcript_core::corrections::{
     Correction, CorrectionLog, LedgerError, SqlCell, SqlRow, SqliteErrorClass,
 };
 
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(unsendable)]
 pub struct RustCorrectionLog {
     log: CorrectionLog,
@@ -143,6 +144,7 @@ fn corrections_project<'py>(
         .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl RustCorrectionLog {
     #[new]
@@ -207,6 +209,7 @@ impl RustCorrectionLog {
         detached(py, &self.log, |log| log.append(&record)).map_err(|e| ledger_err(py, e))
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn for_session<'py>(
         &self,
         py: Python<'py>,
@@ -217,6 +220,7 @@ impl RustCorrectionLog {
         corrections_project(py, rows)
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn for_repo<'py>(&self, py: Python<'py>, repo: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let rows =
             detached(py, &self.log, |log| log.for_repo(repo)).map_err(|e| ledger_err(py, e))?;
@@ -224,6 +228,7 @@ impl RustCorrectionLog {
     }
 
     #[pyo3(signature = (ts_ms, source=None))]
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn since<'py>(
         &self,
         py: Python<'py>,
@@ -235,6 +240,7 @@ impl RustCorrectionLog {
         corrections_project(py, rows)
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn for_anchor<'py>(
         &self,
         py: Python<'py>,
@@ -246,6 +252,7 @@ impl RustCorrectionLog {
         corrections_project(py, rows)
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn by_digest<'py>(
         &self,
         py: Python<'py>,
@@ -259,6 +266,7 @@ impl RustCorrectionLog {
         corrections_project(py, rows)
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
     fn sql<'py>(&self, py: Python<'py>, statement: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let rows =
             detached(py, &self.log, |log| log.sql(statement)).map_err(|e| ledger_err(py, e))?;

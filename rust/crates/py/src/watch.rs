@@ -15,11 +15,13 @@ use std::sync::Arc;
 /// A stateful tail over the transcript tree: one `tick` per poll, holding the
 /// per-file cursors between calls. The Python facade wraps it in the async
 /// poll-forever loop.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass]
 pub struct WatchTailer {
     state: TailState,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl WatchTailer {
     #[new]
@@ -32,6 +34,7 @@ impl WatchTailer {
     /// Run one poll step over `roots`, returning `(path, session_id,
     /// is_sidechain, event)` tuples for each freshly appended entry.
     #[pyo3(signature = (roots, from_start=false))]
+    #[gen_stub(override_return_type(type_repr = "list[tuple[str, str, bool, cc_transcript.models.TranscriptEvent]]", imports = ("cc_transcript.models",)))]
     fn tick<'py>(
         &mut self,
         py: Python<'py>,
@@ -60,6 +63,7 @@ impl WatchTailer {
 
     /// The whole cursor state: `{"primed": bool, "cursors": {path: {offset,
     /// size, mtime, session_id, seen}}}`, the Python `TailState` projection.
+    #[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let cursors = PyDict::new(py);
         for (path, cursor) in &self.state.cursors {

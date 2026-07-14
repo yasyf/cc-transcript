@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
 
 class LedgerRecord(Protocol):
-    detail: Mapping[str, Any]
+    @property
+    def detail(self) -> Mapping[str, Any]: ...
 
 
 class SyncLedger[R: LedgerRecord](ABC):

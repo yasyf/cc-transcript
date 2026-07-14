@@ -19,6 +19,7 @@ use crate::views::store::EventRef;
 ///     stop_reason: The reason the turn stopped, when recorded.
 ///     has_output: Whether the hooks produced output.
 ///     tool_use_id: The tool-use id the summary is tied to, when present.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "StopHookSummary", module = "cc_transcript.models", frozen)]
 pub(crate) struct StopHookSummaryView {
     pub r: EventRef,
@@ -33,6 +34,7 @@ impl StopHookSummaryView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl StopHookSummaryView {
     #[getter]
@@ -41,6 +43,7 @@ impl StopHookSummaryView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.HookInfo, ...]", imports = ("cc_transcript.models",)))]
     fn hook_infos<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(
             py,
@@ -59,11 +62,13 @@ impl StopHookSummaryView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn hook_errors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.summary().hook_errors)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn hook_additional_context<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.summary().hook_additional_context)
     }
@@ -84,6 +89,7 @@ impl StopHookSummaryView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.summary().tool_use_id.clone())
     }
@@ -109,6 +115,7 @@ view_dunders!(
 /// Attributes:
 ///     command: The hook command that ran.
 ///     duration_ms: The hook's wall-clock duration in milliseconds, when recorded.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "HookInfo", module = "cc_transcript.models", frozen)]
 pub(crate) struct HookInfoView {
     pub r: EventRef,
@@ -124,6 +131,7 @@ impl HookInfoView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl HookInfoView {
     #[getter]
@@ -145,6 +153,7 @@ view_dunders!(HookInfoView, "HookInfo", fields = [command, duration_ms]);
 ///     head_uuid: The first preserved event's uuid.
 ///     anchor_uuid: The anchor event's uuid.
 ///     tail_uuid: The last preserved event's uuid.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "PreservedSegment", module = "cc_transcript.models", frozen)]
 pub(crate) struct PreservedSegmentView {
     pub r: EventRef,
@@ -162,19 +171,23 @@ impl PreservedSegmentView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PreservedSegmentView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn head_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.preserved_segment().head_uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn anchor_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.preserved_segment().anchor_uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn tail_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.preserved_segment().tail_uuid.clone())
     }
@@ -193,6 +206,7 @@ view_dunders!(
 ///     uuids: The uuids of the preserved messages, in order.
 ///     all_uuids: The uuids of every message considered for preservation,
 ///         in order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "PreservedMessages", module = "cc_transcript.models", frozen)]
 pub(crate) struct PreservedMessagesView {
     pub r: EventRef,
@@ -210,19 +224,23 @@ impl PreservedMessagesView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PreservedMessagesView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn anchor_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.preserved_messages().anchor_uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.ids.EventUuid, ...]", imports = ("cc_transcript.ids",)))]
     fn uuids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.preserved_messages().uuids)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.ids.EventUuid, ...]", imports = ("cc_transcript.ids",)))]
     fn all_uuids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.preserved_messages().all_uuids)
     }
@@ -249,6 +267,7 @@ view_dunders!(
 ///     logical_parent_uuid: The uuid the post-compaction thread logically
 ///         continues from.
 ///     precomputed: Whether the compaction was precomputed, when recorded.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "CompactBoundary", module = "cc_transcript.models", frozen)]
 pub(crate) struct CompactBoundaryView {
     pub r: EventRef,
@@ -263,6 +282,7 @@ impl CompactBoundaryView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl CompactBoundaryView {
     #[getter]
@@ -291,6 +311,7 @@ impl CompactBoundaryView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn pre_compact_discovered_tools<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.boundary().pre_compact_discovered_tools)
     }
@@ -314,6 +335,7 @@ impl CompactBoundaryView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn logical_parent_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.boundary().logical_parent_uuid.clone())
     }
@@ -349,6 +371,7 @@ view_dunders!(
 ///     pending_workflow_count: The workflows still pending, when recorded.
 ///     pending_background_agent_count: The background agents still pending, when
 ///         recorded.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TurnDuration", module = "cc_transcript.models", frozen)]
 pub(crate) struct TurnDurationView {
     pub r: EventRef,
@@ -363,6 +386,7 @@ impl TurnDurationView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TurnDurationView {
     #[getter]
@@ -409,6 +433,7 @@ view_dunders!(
 ///     retracted_message_uuids: The uuids of messages retracted by the fallback.
 ///     refused_user_message_uuid: The user message uuid that drew the refusal,
 ///         when present.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ModelRefusalFallback", module = "cc_transcript.models", frozen)]
 pub(crate) struct ModelRefusalFallbackView {
     pub r: EventRef,
@@ -425,6 +450,7 @@ impl ModelRefusalFallbackView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ModelRefusalFallbackView {
     #[getter]
@@ -458,11 +484,13 @@ impl ModelRefusalFallbackView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.ids.EventUuid, ...]", imports = ("cc_transcript.ids",)))]
     fn retracted_message_uuids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.fallback().retracted_message_uuids)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn refused_user_message_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.fallback().refused_user_message_uuid.clone())
     }
@@ -490,6 +518,7 @@ view_dunders!(
 ///
 /// Attributes:
 ///     raw: The entry's full decoded payload.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherSystemDetail", module = "cc_transcript.models", frozen)]
 pub(crate) struct OtherSystemDetailView {
     pub r: EventRef,
@@ -504,9 +533,11 @@ impl OtherSystemDetailView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherSystemDetailView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any]", imports = ("collections.abc", "typing")))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.value())
     }

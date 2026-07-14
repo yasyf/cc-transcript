@@ -59,12 +59,12 @@ from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
 from cc_transcript.watch import Watcher
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from typing import Any
 
     from cc_transcript.facts import ToolFact
     from cc_transcript.filterspec import FilterSpec
-    from cc_transcript.models import EntryMeta, ToolUseId, Transcript, TranscriptEvent
+    from cc_transcript.models import EntryMeta, EventList, ToolUseId, Transcript, TranscriptEvent
     from cc_transcript.watch import WatchEvent
 
     type Row = tuple[int, TranscriptEvent]
@@ -80,7 +80,7 @@ SIGNAL_SPEC = build_spec(
     drop_empty(only_from=USERS),
     drop_empty(only_from=ASSISTANTS),
 )
-DISCOVERY_OPTIONS = (
+DISCOVERY_OPTIONS: tuple[Callable[[Any], Any], ...] = (
     click.option(
         "--root",
         type=click.Path(file_okay=False, path_type=Path),
@@ -118,7 +118,7 @@ def parse_transcripts(targets: Sequence[tuple[Path, float]]) -> list[Transcript]
     return [by_path[path] for path, _ in targets if path in by_path]
 
 
-def parse_single(path: Path) -> tuple[TranscriptEvent, ...]:
+def parse_single(path: Path) -> EventList:
     parsed = parse_transcripts([(path, path.stat().st_mtime)])
     if not parsed:
         raise click.ClickException(f"failed to parse {display_path(path)}")
@@ -483,7 +483,7 @@ def grep(
                 for i in range(lo, hi)
             )
             continue
-        out.append(transcript_header(parsed.path))
+        out.append(transcript_header(parsed.path))  # pyright: ignore[reportArgumentType] — streamed parses always carry a path
         for n, (lo, hi) in enumerate(merge_windows(hits, context=context, size=len(parsed.events))):
             if context and n:
                 out.append("--")
@@ -527,7 +527,7 @@ def stats(
                 (
                     block
                     for parsed in transcripts
-                    for block in (transcript_header(parsed.path), render_stats(collect_stats([parsed])), "")
+                    for block in (transcript_header(parsed.path), render_stats(collect_stats([parsed])), "")  # pyright: ignore[reportArgumentType] — streamed parses always carry a path
                 ),
                 (note,) if (note := scope_note(targets)) else (),
             )

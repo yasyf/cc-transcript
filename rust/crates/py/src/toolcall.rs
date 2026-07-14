@@ -279,8 +279,10 @@ pub(crate) fn tool_input_error(py: Python<'_>, name: &str, err: &ToolInputError)
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (name, input_json, on_error=None))]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 pub fn toolcall_parse<'py>(
     py: Python<'py>,
     name: &str,
@@ -300,7 +302,9 @@ pub fn toolcall_parse<'py>(
     call_to_dict(py, &call)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
 pub fn toolresult_parse<'py>(
     py: Python<'py>,
     name: &str,

@@ -24,6 +24,7 @@ use crate::views::events::event_view;
 ///     path: The transcript's path on disk; None for a bytes parse.
 ///     mtime: The transcript's modification time when parsed.
 ///     events: The parsed events, in file order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Transcript", module = "cc_transcript", frozen)]
 pub(crate) struct TranscriptView {
     pub path: Option<String>,
@@ -31,6 +32,7 @@ pub(crate) struct TranscriptView {
     pub entries: Arc<Vec<Entry>>,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TranscriptView {
     #[getter]
@@ -62,11 +64,13 @@ impl TranscriptView {
 /// (``events[0] is events[0]`` is False). ``copy.copy`` and ``copy.deepcopy``
 /// return the immutable list itself; pickle is unsupported. Like the
 /// :class:`Transcript` it comes from, retaining any event pins the whole parse.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EventList", module = "cc_transcript", frozen)]
 pub(crate) struct EventListView {
     pub entries: Arc<Vec<Entry>>,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl EventListView {
     fn __len__(&self) -> usize {
@@ -101,6 +105,7 @@ impl EventListView {
         ))
     }
 
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Iterator[cc_transcript.models.TranscriptEvent]", imports = ("collections.abc", "cc_transcript.models")))]
     fn __reversed__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let views = (0..self.entries.len())
             .rev()
@@ -113,6 +118,7 @@ impl EventListView {
     fn index(
         &self,
         py: Python<'_>,
+        #[gen_stub(override_type(type_repr = "cc_transcript.models.TranscriptEvent", imports = ("cc_transcript.models",)))]
         value: &Bound<'_, PyAny>,
         start: isize,
         stop: Option<isize>,
@@ -128,7 +134,12 @@ impl EventListView {
         Err(PyValueError::new_err("value is not in EventList"))
     }
 
-    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    fn count(
+        &self,
+        py: Python<'_>,
+        #[gen_stub(override_type(type_repr = "cc_transcript.models.TranscriptEvent", imports = ("cc_transcript.models",)))]
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<usize> {
         let mut hits = 0;
         for i in 0..self.entries.len() {
             if event_view(py, &self.entries, i)?.eq(value)? {
@@ -138,6 +149,7 @@ impl EventListView {
         Ok(hits)
     }
 
+    #[gen_stub(override_return_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
     fn copy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let views = (0..self.entries.len())
             .map(|i| event_view(py, &self.entries, i))

@@ -30,6 +30,7 @@ fn init_of(p: &PrintRef) -> &InitInfo {
 ///     cost_usd: The cost in USD attributed to the model.
 ///     context_window: The model's context window size in tokens.
 ///     max_output_tokens: The model's maximum output token budget.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ModelUsage", module = "cc_transcript.models", frozen)]
 pub(crate) struct ModelUsageView {
     pub p: PrintRef,
@@ -42,6 +43,7 @@ impl ModelUsageView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ModelUsageView {
     #[getter]
@@ -105,6 +107,7 @@ view_dunders!(
 /// Attributes:
 ///     name: The configured name of the MCP server.
 ///     status: The connection status reported for the server.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "McpServer", module = "cc_transcript.models", frozen)]
 pub(crate) struct McpServerView {
     pub p: PrintRef,
@@ -117,6 +120,7 @@ impl McpServerView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl McpServerView {
     #[getter]
@@ -138,6 +142,7 @@ view_dunders!(McpServerView, "McpServer", fields = [name, status]);
 ///     name: The plugin's name.
 ///     path: The filesystem path the plugin was loaded from.
 ///     source: The source the plugin was installed from.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Plugin", module = "cc_transcript.models", frozen)]
 pub(crate) struct PluginView {
     pub p: PrintRef,
@@ -150,6 +155,7 @@ impl PluginView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PluginView {
     #[getter]
@@ -177,6 +183,7 @@ view_dunders!(PluginView, "Plugin", fields = [name, path, source]);
 ///     plugins: The plugins loaded for the session.
 ///     tools: The tool names available to the session.
 ///     skills: The skill names available to the session.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "InitInfo", module = "cc_transcript.models", frozen)]
 pub(crate) struct InitInfoView {
     pub p: PrintRef,
@@ -188,9 +195,11 @@ impl InitInfoView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl InitInfoView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.McpServer, ...]", imports = ("cc_transcript.models",)))]
     fn mcp_servers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let views = (0..self.init().mcp_servers.len())
             .map(|idx| {
@@ -207,6 +216,7 @@ impl InitInfoView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.Plugin, ...]", imports = ("cc_transcript.models",)))]
     fn plugins<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let views = (0..self.init().plugins.len())
             .map(|idx| {
@@ -223,11 +233,13 @@ impl InitInfoView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn tools<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.init().tools)
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn skills<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.init().skills)
     }
@@ -252,6 +264,7 @@ view_dunders!(
 ///     blocks: The structured content blocks of the message.
 ///     uuid: The message's event uuid, when present.
 ///     session_id: The session the message belongs to.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "PrintMessage", module = "cc_transcript.models", frozen)]
 pub(crate) struct PrintMessageView {
     pub p: PrintRef,
@@ -264,9 +277,11 @@ impl PrintMessageView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PrintMessageView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Literal[\"user\", \"assistant\"]", imports = ("typing",)))]
     fn role(&self, _py: Python<'_>) -> PyResult<&'static str> {
         Ok(match &self.message().body {
             PrintBody::Assistant { .. } => "assistant",
@@ -291,6 +306,7 @@ impl PrintMessageView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.ContentBlock, ...]", imports = ("cc_transcript.models",)))]
     fn blocks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let host = BlockHost::Print(Arc::clone(&self.p.0), self.msg);
         match &self.message().body {
@@ -300,11 +316,13 @@ impl PrintMessageView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.message().uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.SessionId", imports = ("cc_transcript.ids",)))]
     fn session_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.message().session_id.clone())
     }
@@ -335,11 +353,13 @@ view_dunders!(
 ///     permission_denials: The permission denials recorded during the run.
 ///     init: The session init snapshot, when present.
 ///     messages: The conversational messages of the run.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "PrintResult", module = "cc_transcript.models", frozen)]
 pub(crate) struct PrintResultView {
     pub p: PrintRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PrintResultView {
     #[getter]
@@ -348,6 +368,7 @@ impl PrintResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, cc_transcript.models.ModelUsage]", imports = ("collections.abc", "cc_transcript.models")))]
     fn model_usage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         for (idx, (model, _)) in self.p.0.model_usage.iter().enumerate() {
@@ -370,6 +391,7 @@ impl PrintResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | None", imports = ("collections.abc", "typing")))]
     fn structured_output<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.p.0.structured_output.as_ref())
     }
@@ -390,6 +412,7 @@ impl PrintResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.SessionId", imports = ("cc_transcript.ids",)))]
     fn session_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.p.0.session_id.clone())
     }
@@ -405,6 +428,7 @@ impl PrintResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[collections.abc.Mapping[str, typing.Any], ...]", imports = ("collections.abc", "typing")))]
     fn permission_denials<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let denials = self
             .p
@@ -427,6 +451,7 @@ impl PrintResultView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.models.PrintMessage, ...]", imports = ("cc_transcript.models",)))]
     fn messages<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let views = (0..self.p.0.messages.len())
             .map(|msg| {

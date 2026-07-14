@@ -24,24 +24,29 @@ use crate::views::store::{EventRef, UsageHost};
 ///     is_visible_in_transcript_only: Whether the entry is transcript-only.
 ///     user_type: The ``userType`` recorded for the entry, e.g. ``external``, or None when absent.
 ///     slug: The session slug recorded for the entry, or None when absent.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EntryMeta", module = "cc_transcript.models", frozen)]
 pub(crate) struct EntryMetaView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl EntryMetaView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid", imports = ("cc_transcript.ids",)))]
     fn uuid(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.r.meta().uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn parent_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.r.meta().parent_uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.SessionId", imports = ("cc_transcript.ids",)))]
     fn session_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.r.meta().session_id.clone())
     }
@@ -62,6 +67,7 @@ impl EntryMetaView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.models.CcVersion | None", imports = ("cc_transcript.models",)))]
     fn cc_version(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.r.meta().version.clone())
     }
@@ -133,6 +139,7 @@ view_dunders!(
 ///     skill: The skill the turn is attributed to, or None.
 ///     mcp_server: The MCP server the turn is attributed to, or None.
 ///     mcp_tool: The MCP tool the turn is attributed to, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Attribution", module = "cc_transcript.models", frozen)]
 pub(crate) struct AttributionView {
     pub r: EventRef,
@@ -148,6 +155,7 @@ impl AttributionView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl AttributionView {
     #[getter]
@@ -186,6 +194,7 @@ view_dunders!(
 ///     error: The error kind the API reported, e.g. ``rate_limit``, or None.
 ///     status: The HTTP status of the failed request, e.g. ``429``, or None.
 ///     details: The free-text error detail, or None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ApiError", module = "cc_transcript.models", frozen)]
 pub(crate) struct ApiErrorView {
     pub r: EventRef,
@@ -201,6 +210,7 @@ impl ApiErrorView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ApiErrorView {
     #[getter]
@@ -228,11 +238,13 @@ view_dunders!(ApiErrorView, "ApiError", fields = [error, status, details]);
 ///     header: The round's short header, or None when the input omits one.
 ///     multi_select: Whether the round accepted more than one selection.
 ///     labels: The option labels offered, in presentation order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Question", module = "cc_transcript.models", frozen)]
 pub(crate) struct QuestionView {
     pub q: Question,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl QuestionView {
     #[new]
@@ -269,6 +281,7 @@ impl QuestionView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
     fn labels<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.q.labels)
     }
@@ -285,6 +298,7 @@ view_dunders!(
 /// Attributes:
 ///     ephemeral_5m_input_tokens: Cache-creation tokens written to the 5-minute TTL bucket.
 ///     ephemeral_1h_input_tokens: Cache-creation tokens written to the 1-hour TTL bucket.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "CacheCreation", module = "cc_transcript.models", frozen)]
 pub(crate) struct CacheCreationView {
     pub host: UsageHost,
@@ -300,6 +314,7 @@ impl CacheCreationView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl CacheCreationView {
     #[getter]
@@ -324,6 +339,7 @@ view_dunders!(
 /// Attributes:
 ///     web_search_requests: The number of server-side web-search requests.
 ///     web_fetch_requests: The number of server-side web-fetch requests.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ServerToolUse", module = "cc_transcript.models", frozen)]
 pub(crate) struct ServerToolUseView {
     pub host: UsageHost,
@@ -339,6 +355,7 @@ impl ServerToolUseView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ServerToolUseView {
     #[getter]
@@ -372,11 +389,13 @@ view_dunders!(
 ///     service_tier: The service tier that billed the turn, when present.
 ///     inference_geo: The inference geography that served the turn, when present.
 ///     server_tool_use: Server-side tool invocation counts, when present.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Usage", module = "cc_transcript.models", frozen)]
 pub(crate) struct UsageView {
     pub host: UsageHost,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl UsageView {
     #[getter]

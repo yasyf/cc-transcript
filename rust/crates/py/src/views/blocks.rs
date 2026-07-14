@@ -16,11 +16,13 @@ use crate::views::store::{BlockHost, BlockRef};
 ///
 /// Attributes:
 ///     text: The block's literal text.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "TextBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct TextBlockView {
     pub r: BlockRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl TextBlockView {
     #[getter]
@@ -38,11 +40,13 @@ view_dunders!(TextBlockView, "TextBlock", fields = [text]);
 ///
 /// Attributes:
 ///     thinking: The model's thinking text.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ThinkingBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct ThinkingBlockView {
     pub r: BlockRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ThinkingBlockView {
     #[getter]
@@ -64,6 +68,7 @@ view_dunders!(ThinkingBlockView, "ThinkingBlock", fields = [thinking]);
 /// Attributes:
 ///     from_model: The model the turn started on.
 ///     to_model: The model the turn fell back to.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "FallbackBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct FallbackBlockView {
     pub r: BlockRef,
@@ -78,6 +83,7 @@ impl FallbackBlockView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl FallbackBlockView {
     #[getter]
@@ -105,6 +111,7 @@ view_dunders!(
 /// Attributes:
 ///     type: The block's ``type`` field.
 ///     raw: The block's full decoded payload.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct OtherBlockView {
     pub r: BlockRef,
@@ -119,6 +126,7 @@ impl OtherBlockView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherBlockView {
     #[getter(r#type)]
@@ -127,6 +135,10 @@ impl OtherBlockView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "collections.abc.Mapping[str, typing.Any]",
+        imports = ("collections.abc", "typing")
+    ))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.parts().1)
     }
@@ -181,6 +193,7 @@ frozen_copy!(OtherBlockView);
 ///         the input cannot be mutated out of step with :attr:`call`/:attr:`digest`.
 ///         It stays a ``dict`` (serializes and canonicalizes like one); only the top
 ///         level is frozen, so nested containers keep their plain-JSON types.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ToolUseBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct ToolUseBlockView {
     pub r: BlockRef,
@@ -198,9 +211,11 @@ impl ToolUseBlockView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ToolUseBlockView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId", imports = ("cc_transcript.ids",)))]
     fn id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.tool_use().id.clone())
     }
@@ -212,6 +227,10 @@ impl ToolUseBlockView {
 
     /// The tool's input arguments, as a read-only mapping (v14: immutable view).
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "collections.abc.Mapping[str, typing.Any]",
+        imports = ("collections.abc", "typing")
+    ))]
     fn input(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.input_cache.get_or_try_init(py, || {
             read_only(py, json_to_py(py, &self.tool_use().input)?).map(Bound::unbind)
@@ -224,6 +243,10 @@ impl ToolUseBlockView {
     /// Strict: a known tool whose input is malformed raises
     /// :class:`~cc_transcript.tools.ToolInputError`.
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "cc_transcript.tools.ToolCall",
+        imports = ("cc_transcript.tools",)
+    ))]
     fn call(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.call_cache.get_or_try_init(py, || {
             let tool_use = self.tool_use();
@@ -234,6 +257,7 @@ impl ToolUseBlockView {
 
     /// The cross-language content digest of this call.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolDigest", imports = ("cc_transcript.ids",)))]
     fn digest(&self, _py: Python<'_>) -> PyResult<String> {
         let tool_use = self.tool_use();
         ids::tool_digest(&tool_use.name, &tool_use.input).map_err(PyValueError::new_err)
@@ -255,6 +279,10 @@ impl ToolUseBlockView {
     /// Delegates to :func:`parse_questions`, which mirrors the Rust parse layer; a
     /// non-object input reads as None.
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "tuple[cc_transcript.models.Question, ...] | None",
+        imports = ("cc_transcript.models",)
+    ))]
     fn questions(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached =
             self.questions_cache
@@ -305,6 +333,7 @@ view_dunders!(
 ///         rejection, ``permission-rule`` for a hook/guard block) when present,
 ///         else ``user-rejected`` when this error block carries the legacy denial
 ///         banner, else None.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ToolResultBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct ToolResultBlockView {
     pub r: BlockRef,
@@ -320,9 +349,11 @@ impl ToolResultBlockView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ToolResultBlockView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId", imports = ("cc_transcript.ids",)))]
     fn tool_use_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.tool_result().tool_use_id.clone())
     }
@@ -343,6 +374,10 @@ impl ToolResultBlockView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "collections.abc.Mapping[str, typing.Any] | str | None",
+        imports = ("collections.abc", "typing")
+    ))]
     fn tool_use_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.result_cache.get_or_try_init(py, || {
             read_only(

@@ -123,6 +123,7 @@ type AnalyzedToken = (String, String, String, String, usize, usize, i32, bool);
 /// Analyze `text` with the embedded UDPipe model. Returns, per token,
 /// `(form, lower, lemma, upos, char_start, char_end, polarity, negated)` where
 /// polarity is the surface-keyed lexicon score and offsets are codepoint indices.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub fn nlp_analyze(py: Python<'_>, text: &str) -> PyResult<Vec<AnalyzedToken>> {
     py.detach(|| {

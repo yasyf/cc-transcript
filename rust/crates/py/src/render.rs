@@ -20,6 +20,7 @@ fn tool_names(entries: &[Entry]) -> HashMap<&str, &str> {
         .collect()
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn render_tool_call(
     name: &str,
@@ -40,10 +41,11 @@ pub(crate) fn render_tool_call(
     ))
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn render_compact_lines(
     py: Python<'_>,
-    raw: &[u8],
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
     width: usize,
     thinking: bool,
     uuids: bool,
@@ -59,10 +61,11 @@ pub(crate) fn render_compact_lines(
     })
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn render_haystacks(
     py: Python<'_>,
-    raw: &[u8],
+    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
     wheres: Vec<String>,
 ) -> PyResult<Vec<String>> {
     py.detach(|| {
@@ -80,8 +83,12 @@ pub(crate) fn render_haystacks(
     })
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-pub(crate) fn render_stats(py: Python<'_>, raws: Vec<Vec<u8>>) -> PyResult<String> {
+pub(crate) fn render_stats(
+    py: Python<'_>,
+    #[gen_stub(override_type(type_repr = "list[bytes]"))] raws: Vec<Vec<u8>>,
+) -> PyResult<String> {
     py.detach(|| {
         let transcripts: Vec<Vec<Entry>> = raws
             .iter()

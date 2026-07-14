@@ -45,11 +45,13 @@ fn envelope_hash(py: Python<'_>, r: &EventRef) -> PyResult<isize> {
 ///         turn this interruption cut short, or None. Set from the raw
 ///         ``interruptedMessageId`` field; it names the interrupted assistant's
 ///         API message, not a transcript event uuid.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "UserEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct UserEventView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl UserEventView {
     #[getter]
@@ -63,6 +65,10 @@ impl UserEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "tuple[cc_transcript.models.ContentBlock, ...]",
+        imports = ("cc_transcript.models",)
+    ))]
     fn blocks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         user_block_views(py, &BlockHost::Entry(self.r.clone()))
     }
@@ -93,6 +99,10 @@ impl UserEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "tuple[int, ...] | None",
+        imports = ()
+    ))]
     fn image_paste_ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match &self.r.user().image_paste_ids {
             Some(ids) => Ok(PyTuple::new(py, ids.iter().copied())?.into_any()),
@@ -101,16 +111,22 @@ impl UserEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.ToolUseId | None", imports = ("cc_transcript.ids",)))]
     fn source_tool_use_id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.r.user().source_tool_use_id.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.EventUuid | None", imports = ("cc_transcript.ids",)))]
     fn source_tool_assistant_uuid(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.r.user().source_tool_assistant_uuid.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "collections.abc.Mapping[str, typing.Any] | None",
+        imports = ("collections.abc", "typing")
+    ))]
     fn mcp_meta<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.r.user().mcp_meta.as_ref())
     }
@@ -168,11 +184,13 @@ view_dunders!(
 ///         entry carries no attribution field.
 ///     api_error: The upstream API error the turn failed with, or None when the
 ///         entry is not an API-error message.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "AssistantEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct AssistantEventView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl AssistantEventView {
     #[getter]
@@ -191,6 +209,10 @@ impl AssistantEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "tuple[cc_transcript.models.ContentBlock, ...]",
+        imports = ("cc_transcript.models",)
+    ))]
     fn blocks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         assistant_block_views(py, &BlockHost::Entry(self.r.clone()))
     }
@@ -271,11 +293,13 @@ view_dunders!(
 ///         :class:`CompactBoundary`, :class:`TurnDuration`, or
 ///         :class:`ModelRefusalFallback` when recognized, else an
 ///         :class:`OtherSystemDetail` carrying the full payload. Always set.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "SystemEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct SystemEventView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl SystemEventView {
     #[getter]
@@ -299,6 +323,10 @@ impl SystemEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "cc_transcript.models.SystemDetail",
+        imports = ("cc_transcript.models",)
+    ))]
     fn detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         system_detail_view(py, &self.r)
     }
@@ -325,19 +353,23 @@ view_dunders!(
 ///     session_id: The session whose mode changed.
 ///     channel: Which mode channel changed.
 ///     value: The new mode value.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "ModeEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct ModeEventView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ModeEventView {
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.ids.SessionId", imports = ("cc_transcript.ids",)))]
     fn session_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.r.mode().session_id.clone())
     }
 
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Literal[\"mode\", \"permission-mode\"]", imports = ("typing",)))]
     fn channel(&self, _py: Python<'_>) -> PyResult<&'static str> {
         Ok(self.r.mode().channel.as_str())
     }
@@ -364,6 +396,7 @@ view_dunders!(
 /// Attributes:
 ///     type: The entry's ``type`` field.
 ///     raw: The entry's full decoded payload.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "OtherEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct OtherEventView {
     pub r: EventRef,
@@ -376,6 +409,7 @@ impl OtherEventView {
     }
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl OtherEventView {
     #[getter(r#type)]
@@ -384,6 +418,10 @@ impl OtherEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "collections.abc.Mapping[str, typing.Any]",
+        imports = ("collections.abc", "typing")
+    ))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.parts().1)
     }
@@ -439,11 +477,13 @@ frozen_copy!(OtherEventView);
 ///     meta: The entry envelope metadata.
 ///     attachment_type: The raw ``attachment.type`` string, e.g. ``hook_success``.
 ///     detail: The typed attachment payload.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "AttachmentEvent", module = "cc_transcript.models", frozen)]
 pub(crate) struct AttachmentEventView {
     pub r: EventRef,
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl AttachmentEventView {
     #[getter]
@@ -457,6 +497,10 @@ impl AttachmentEventView {
     }
 
     #[getter]
+    #[gen_stub(override_return_type(
+        type_repr = "cc_transcript.models.AttachmentDetail",
+        imports = ("cc_transcript.models",)
+    ))]
     fn detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         attachment_detail_view(py, &self.r)
     }
