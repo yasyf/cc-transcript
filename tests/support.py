@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,8 @@ from cc_transcript.corrections import Correction
 from cc_transcript.decisions import Decision
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest
 from cc_transcript.mining import ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_PREFIX
-from cc_transcript.models import AssistantEvent, CcVersion, ContentBlock, EntryMeta, TranscriptEvent, UserEvent
+from cc_transcript.models import AssistantEvent, EntryMeta, TranscriptEvent, UserEvent
+from tests import testkit
 
 SESSION = SessionId("11111111-1111-1111-1111-111111111111")
 OTHER_SESSION = SessionId("22222222-2222-2222-2222-222222222222")
@@ -37,20 +39,15 @@ def meta(
     is_sidechain: bool = False,
     is_compact_summary: bool = False,
 ) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=session,
-        timestamp=base + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=is_sidechain,
+    return user(
+        uuid,
+        session=session,
+        base=base,
+        secs=secs,
         is_meta=is_meta,
-        entrypoint="cli",
+        is_sidechain=is_sidechain,
         is_compact_summary=is_compact_summary,
-        is_visible_in_transcript_only=False,
-    )
+    ).meta
 
 
 def user(
@@ -59,29 +56,33 @@ def user(
     *,
     session: SessionId = SESSION,
     base: datetime = BASE,
-    blocks: tuple[ContentBlock, ...] = (),
+    blocks: Sequence[dict[str, Any]] = (),
     secs: int = 0,
     interrupted: bool = False,
     is_meta: bool = False,
     is_sidechain: bool = False,
     is_compact_summary: bool = False,
-    is_agent_injected: bool = False,
+    tool_use_result: Mapping[str, Any] | str | None = None,
+    tool_denial_kind: str | None = None,
 ) -> UserEvent:
-    return UserEvent(
-        meta=meta(
+    event = testkit.parse_event(
+        testkit.user_line(
             uuid,
-            session=session,
-            base=base,
+            text,
+            blocks=blocks,
+            session_id=str(session),
+            timestamp=base,
             secs=secs,
+            interrupted=interrupted,
             is_meta=is_meta,
             is_sidechain=is_sidechain,
             is_compact_summary=is_compact_summary,
-        ),
-        text=text,
-        blocks=blocks,
-        interrupted=interrupted,
-        is_agent_injected=is_agent_injected,
+            tool_use_result=tool_use_result,
+            tool_denial_kind=tool_denial_kind,
+        )
     )
+    assert isinstance(event, UserEvent)
+    return event
 
 
 def assistant(
@@ -91,17 +92,26 @@ def assistant(
     session: SessionId = SESSION,
     base: datetime = BASE,
     model: str = "claude-opus-4-7",
-    blocks: tuple[ContentBlock, ...] = (),
+    blocks: Sequence[dict[str, Any]] = (),
     secs: int = 0,
+    stop_reason: str | None = None,
+    usage: Mapping[str, Any] | None = None,
 ) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, session=session, base=base, secs=secs),
-        model=model,
-        text=text,
-        blocks=blocks,
-        stop_reason=None,
-        usage=None,
+    event = testkit.parse_event(
+        testkit.assistant_line(
+            uuid,
+            text,
+            model=model,
+            blocks=blocks,
+            session_id=str(session),
+            timestamp=base,
+            secs=secs,
+            stop_reason=stop_reason,
+            usage=usage,
+        )
     )
+    assert isinstance(event, AssistantEvent)
+    return event
 
 
 def raw_envelope(**overrides: Any) -> dict[str, Any]:

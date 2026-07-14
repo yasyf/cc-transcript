@@ -11,13 +11,9 @@ import pytest
 from cc_transcript.activity import Edit, SessionActivity, ToolUse, Turn, hunk_overlap, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import EventRef, EventUuid, ToolUseId
-from cc_transcript.models import (
-    ModeEvent,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserEvent,
-)
+from cc_transcript.models import ToolResultBlock, UserEvent
 from cc_transcript.tools import AskUserQuestionResult, BashCall, BashResult, EditCall, Hunk, OtherCall
+from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
@@ -26,20 +22,24 @@ if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 
-def bash(id: str, command: str) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name="Bash", input={"command": command})
+def bash(id: str, command: str) -> dict[str, Any]:
+    return testkit.tool_use(id, "Bash", {"command": command})
 
 
-def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name="Edit", input={"file_path": path, "old_string": old, "new_string": new})
+def edit(id: str, path: str, old: str, new: str) -> dict[str, Any]:
+    return testkit.tool_use(id, "Edit", {"file_path": path, "old_string": old, "new_string": new})
 
 
-def write(id: str, path: str, content: str) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name="Write", input={"file_path": path, "content": content})
+def write(id: str, path: str, content: str) -> dict[str, Any]:
+    return testkit.tool_use(id, "Write", {"file_path": path, "content": content})
 
 
-def result(id: str, content: str = "ok") -> ToolResultBlock:
-    return ToolResultBlock(tool_use_id=ToolUseId(id), content=content, is_error=False)
+def result(id: str, content: str = "ok") -> dict[str, Any]:
+    return testkit.tool_result(id, content)
+
+
+def result_block(id: str, content: str = "ok") -> ToolResultBlock:
+    return testkit.parse_event(testkit.user_line("_r", "", blocks=(result(id, content),))).blocks[0]
 
 
 def ref(uuid: str, tool_use_id: str | None = None) -> EventRef:
@@ -59,7 +59,7 @@ def activity(*events: TranscriptEvent) -> SessionActivity:
         pytest.param(user("u0", "[Request interrupted by user]", interrupted=True), False, id="interruption"),
         pytest.param(user("u0", "she quoted [Request interrupted by user] mid-text"), True, id="mid_text_marker"),
         pytest.param(
-            user("u0", "<teammate-message>please rebase</teammate-message>", is_agent_injected=True),
+            user("u0", "<teammate-message>please rebase</teammate-message>"),
             False,
             id="agent_injected_banner",
         ),
@@ -107,7 +107,7 @@ def test_agent_injected_banner_mid_turn_does_not_split_turn() -> None:
     act = activity(
         user("u0", "fix the bug"),
         assistant("a0", "on it", secs=1),
-        user("u1", "<teammate-message>ping</teammate-message>", is_agent_injected=True, secs=2),
+        user("u1", "<teammate-message>ping</teammate-message>", secs=2),
         assistant("a1", "still on it", secs=3),
         user("u2", "second ask", secs=4),
     )
@@ -117,7 +117,7 @@ def test_agent_injected_banner_mid_turn_does_not_split_turn() -> None:
 
 def test_turn_timestamps_span_meta_bearing_events() -> None:
     act = activity(
-        ModeEvent(session_id=SESSION, channel="mode", value="plan"),
+        testkit.parse_event(testkit.mode_line("plan", session_id=str(SESSION))),
         user("u0", "ask", secs=10),
         assistant("a0", "done", secs=25),
     )
@@ -139,7 +139,7 @@ def test_tool_uses_lift_every_block_with_matched_results() -> None:
     assert first.ref == ref("a0", "t1")
     assert isinstance(first.call, BashCall)
     assert first.call.command == "uv run pytest"
-    assert first.result == result("t1", "1 passed")
+    assert first.result == result_block("t1", "1 passed")
     assert first.turn_index == 0
     assert first.ts == BASE + timedelta(seconds=3)
     assert first.result_ts == BASE + timedelta(seconds=4)
@@ -152,7 +152,7 @@ def test_tool_uses_lift_every_block_with_matched_results() -> None:
 
 
 def test_malformed_tool_input_lifts_to_other_call() -> None:
-    bad = ToolUseBlock(id=ToolUseId("t1"), name="Grep", input={"query": "^from", "path": "pkg"})
+    bad = testkit.tool_use("t1", "Grep", {"query": "^from", "path": "pkg"})
     act = activity(
         user("u0", "search"),
         assistant("a0", "", blocks=(bad, bash("t2", "ls")), secs=3),
@@ -174,7 +174,7 @@ def test_turn_edits_derive_only_from_hunked_calls_with_a_file_path() -> None:
                 edit("t1", "/a.py", "x = 1", "x = 2"),
                 write("t2", "/b.py", "print(1)"),
                 bash("t3", "ls"),
-                ToolUseBlock(id=ToolUseId("t4"), name="Read", input={"file_path": "/a.py"}),
+                testkit.tool_use("t4", "Read", {"file_path": "/a.py"}),
             ),
             secs=1,
         ),
@@ -189,10 +189,10 @@ def test_turn_edits_derive_only_from_hunked_calls_with_a_file_path() -> None:
 
 
 def test_multiedit_lowers_to_one_edit_with_ordered_hunks() -> None:
-    block = ToolUseBlock(
-        id=ToolUseId("t1"),
-        name="MultiEdit",
-        input={
+    block = testkit.tool_use(
+        "t1",
+        "MultiEdit",
+        {
             "file_path": "/a.py",
             "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c", "new_string": "d"}],
         },
@@ -381,28 +381,14 @@ def test_typed_result_dispatches_on_the_use_tool_name() -> None:
         "a1",
         blocks=(
             bash("t_bash", "ls"),
-            ToolUseBlock(id=ToolUseId("t_ask"), name="AskUserQuestion", input=ask_input),
+            testkit.tool_use("t_ask", "AskUserQuestion", ask_input),
         ),
     )
-    u = user(
-        "u1",
-        "next",
-        blocks=(
-            ToolResultBlock(
-                tool_use_id=ToolUseId("t_bash"),
-                content="out",
-                is_error=False,
-                tool_use_result={"stdout": "out", "stderr": ""},
-            ),
-            ToolResultBlock(
-                tool_use_id=ToolUseId("t_ask"),
-                content="A",
-                is_error=False,
-                tool_use_result={"answers": {"Q?": "A"}, "annotations": {}},
-            ),
-        ),
+    u_bash = user("u1", "next", blocks=(result("t_bash", "out"),), tool_use_result={"stdout": "out", "stderr": ""}, secs=1)
+    u_ask = user(
+        "u2", "", blocks=(result("t_ask", "A"),), tool_use_result={"answers": {"Q?": "A"}, "annotations": {}}, secs=2
     )
-    uses = {use.call.name: use for turn in activity(a, u).turns for use in turn.tool_uses}
+    uses = {use.call.name: use for turn in activity(a, u_bash, u_ask).turns for use in turn.tool_uses}
     assert isinstance(uses["Bash"].typed_result, BashResult)
     assert uses["Bash"].typed_result.stdout == "out"
     assert isinstance(uses["AskUserQuestion"].typed_result, AskUserQuestionResult)

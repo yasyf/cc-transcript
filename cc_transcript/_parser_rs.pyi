@@ -4,13 +4,26 @@ from typing import Any
 
 from cc_transcript.models import PrintResult, TranscriptEvent
 
+class EventList:
+    """A lazily-materializing sequence of transcript events over one parse output."""
+
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int | slice, /) -> TranscriptEvent | list[TranscriptEvent]: ...
+
+class Transcript:
+    """One parsed transcript file: its path, mtime, and lazily-materialized events."""
+
+    path: str
+    mtime: float
+    events: EventList
+
 class ParseStream:
     """A streaming handle over a rayon-parsed batch of transcript files."""
 
-    def recv(self) -> tuple[str, float, list[TranscriptEvent]] | None:
+    def recv(self) -> Transcript | None:
         """Blocks for the next parsed file, or returns None when drained."""
 
-    def recv_many(self, max: int, /) -> list[tuple[str, float, list[TranscriptEvent]]]:
+    def recv_many(self, max: int, /) -> list[Transcript]:
         """Blocks for at least one parsed file, then drains up to ``max``."""
 
 def stream_parse(paths: list[tuple[str, float]], prefetch: int, spec_json: str | None = ..., /) -> ParseStream:
@@ -19,6 +32,9 @@ def stream_parse(paths: list[tuple[str, float]], prefetch: int, spec_json: str |
     When ``spec_json`` is the JSON of a portable filter spec, events failing it
     are dropped during parsing, before any Python object is built.
     """
+
+def parse_bytes(raw: bytes, /) -> Transcript:
+    """Parses raw JSONL transcript bytes into a :class:`Transcript` view."""
 
 def parse_print_result(raw: bytes, /) -> PrintResult:
     """Parses a 'claude -p --output-format json' result from raw JSON bytes."""

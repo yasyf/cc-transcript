@@ -149,6 +149,20 @@ fn stream_parse(
 }
 
 #[pyfunction]
+#[pyo3(name = "parse_bytes")]
+fn parse_bytes_py<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+    let lines = parse_bytes(raw, |_| true).map_err(parse_err)?;
+    parsed_file_to_py(
+        py,
+        ParsedFile {
+            path: String::new(),
+            mtime: 0.0,
+            lines,
+        },
+    )
+}
+
+#[pyfunction]
 fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let value: Value = sonic_rs::from_slice(raw)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
@@ -750,6 +764,7 @@ fn tool_facts<'py>(
 #[pymodule]
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_bytes_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
