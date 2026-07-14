@@ -213,6 +213,21 @@ def test_multiedit_validates_spans_shallowly(edits: object) -> None:
     assert degraded.raw == raw
 
 
+@pytest.mark.parametrize("edits", [[], "", {}], ids=["empty-list", "empty-str", "empty-dict"])
+def test_multiedit_empty_iterable_yields_empty_span_list(edits: object) -> None:
+    call = parse_tool_call("MultiEdit", {"file_path": "a.py", "edits": edits})
+    assert isinstance(call, MultiEditCall)
+    assert call.edits == ()
+
+
+@pytest.mark.parametrize("edits", ["ab", 5, {"k": "v"}], ids=["nonempty-str", "scalar", "nonempty-dict"])
+def test_multiedit_nonempty_non_span_edits_degrade_to_other(edits: object) -> None:
+    raw = {"file_path": "a.py", "edits": edits}
+    with pytest.raises(ToolInputError, match="MultiEdit input missing or malformed"):
+        parse_tool_call("MultiEdit", raw)
+    assert isinstance(parse_tool_call("MultiEdit", raw, on_error="other"), OtherCall)
+
+
 @pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
 def test_non_mapping_input_raises_under_strict(name: str) -> None:
     with pytest.raises(ToolInputError, match="must be a mapping"):
