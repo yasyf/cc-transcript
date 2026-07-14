@@ -9,6 +9,7 @@ pub mod corrections;
 pub mod discovery;
 #[cfg(feature = "command")]
 pub mod facts;
+pub mod cost;
 pub mod filter;
 pub mod ids;
 pub mod parse;

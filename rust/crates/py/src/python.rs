@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, FixedOffset};
 use crossbeam_channel::{bounded, Receiver};
 use once_cell::sync::Lazy;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
 use rayon::prelude::*;
@@ -18,9 +18,10 @@ use cc_transcript_core::activity::{
 };
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::facts;
+use cc_transcript_core::cost::cost_of;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
-use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
+use cc_transcript_core::parse::{parse_bytes, parse_print_envelope, parse_usage_value};
 use cc_transcript_core::query::{FileRef, Session};
 use cc_transcript_core::types::Entry;
 
@@ -157,6 +158,26 @@ fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, P
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
     let result = parse_print_envelope(&value).map_err(parse_err)?;
     build_print_result(py, &result)
+}
+
+#[pyfunction]
+fn cost_of_json<'py>(
+    py: Python<'py>,
+    usage_json: &str,
+    model: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let value: Value = sonic_rs::from_str(usage_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    let usage = parse_usage_value(&value).map_err(parse_err)?;
+    let breakdown = cost_of(&usage, model)
+        .ok_or_else(|| PyKeyError::new_err(format!("no pricing for model: {model}")))?;
+    let dict = PyDict::new(py);
+    dict.set_item("input_cost", breakdown.input_cost)?;
+    dict.set_item("output_cost", breakdown.output_cost)?;
+    dict.set_item("cache_read_cost", breakdown.cache_read_cost)?;
+    dict.set_item("cache_write_cost", breakdown.cache_write_cost)?;
+    dict.set_item("total", breakdown.total)?;
+    Ok(dict)
 }
 
 #[pyfunction]
@@ -675,6 +696,7 @@ fn tool_facts<'py>(
 fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
+    m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;

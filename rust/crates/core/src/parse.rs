@@ -252,7 +252,7 @@ fn parse_usage(message: &Value) -> Result<Option<Usage>, ParseError> {
     }
 }
 
-fn parse_usage_value(usage: &Value) -> Result<Usage, ParseError> {
+pub fn parse_usage_value(usage: &Value) -> Result<Usage, ParseError> {
     let cache_creation = match field(usage, "cache_creation").filter(|cc| cc.is_object()) {
         Some(cc) => Some(CacheCreation {
             ephemeral_5m_input_tokens: require_i64(cc, "ephemeral_5m_input_tokens")?,

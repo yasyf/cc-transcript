@@ -1,0 +1,1955 @@
+[
+  {
+    "breakdown": {
+      "cache_read_cost": 0.009366,
+      "cache_write_cost": 0.15969375,
+      "input_cost": 0.02588,
+      "output_cost": 0.00845,
+      "total": 0.20338974999999998
+    },
+    "id": "corpus-000",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 25551,
+      "cache_read_input_tokens": 18732,
+      "input_tokens": 5176,
+      "output_tokens": 338,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.00541,
+      "cache_write_cost": 0.0197,
+      "input_cost": 0.014685,
+      "output_cost": 0.001775,
+      "total": 0.041569999999999996
+    },
+    "id": "corpus-001",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 3152,
+      "cache_read_input_tokens": 10820,
+      "input_tokens": 2937,
+      "output_tokens": 71,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0125745,
+      "cache_write_cost": 0.08850625,
+      "input_cost": 0.01832,
+      "output_cost": 0.027750000000000004,
+      "total": 0.14715075
+    },
+    "id": "corpus-002",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 14161,
+      "cache_read_input_tokens": 25149,
+      "input_tokens": 3664,
+      "output_tokens": 1110,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0265115,
+      "cache_write_cost": 0.01196875,
+      "input_cost": 0.0014449999999999999,
+      "output_cost": 0.0073,
+      "total": 0.047225249999999996
+    },
+    "id": "corpus-003",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 1915,
+      "cache_read_input_tokens": 53023,
+      "input_tokens": 289,
+      "output_tokens": 292,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.009453,
+      "cache_write_cost": 0.14532499999999998,
+      "input_cost": 0.01752,
+      "output_cost": 0.00695,
+      "total": 0.17924799999999996
+    },
+    "id": "corpus-004",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 23252,
+      "cache_read_input_tokens": 18906,
+      "input_tokens": 3504,
+      "output_tokens": 278,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0034101,
+      "cache_write_cost": 0.029430000000000005,
+      "input_cost": 0.005235,
+      "output_cost": 0.004064999999999999,
+      "total": 0.0421401
+    },
+    "id": "corpus-005",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 7848,
+      "cache_read_input_tokens": 11367,
+      "input_tokens": 1745,
+      "output_tokens": 271,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0083502,
+      "cache_write_cost": 0.0873825,
+      "input_cost": 0.001206,
+      "output_cost": 0.0012000000000000001,
+      "total": 0.0981387
+    },
+    "id": "corpus-006",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 23302,
+      "cache_read_input_tokens": 27834,
+      "input_tokens": 402,
+      "output_tokens": 80,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0013565,
+      "cache_write_cost": 0.10625625,
+      "input_cost": 0.00178,
+      "output_cost": 0.029175000000000003,
+      "total": 0.13856775
+    },
+    "id": "corpus-007",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 17001,
+      "cache_read_input_tokens": 2713,
+      "input_tokens": 356,
+      "output_tokens": 1167,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0194755,
+      "cache_write_cost": 0.04731875,
+      "input_cost": 0.026595,
+      "output_cost": 0.01315,
+      "total": 0.10653925
+    },
+    "id": "corpus-008",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 7571,
+      "cache_read_input_tokens": 38951,
+      "input_tokens": 5319,
+      "output_tokens": 526,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0144125,
+      "cache_write_cost": 0.186625,
+      "input_cost": 0.0017699999999999999,
+      "output_cost": 0.0021,
+      "total": 0.20490750000000002
+    },
+    "id": "corpus-009",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 29860,
+      "cache_read_input_tokens": 28825,
+      "input_tokens": 354,
+      "output_tokens": 84,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0109569,
+      "cache_write_cost": 0.03501,
+      "input_cost": 0.008745,
+      "output_cost": 0.015825,
+      "total": 0.0705369
+    },
+    "id": "corpus-010",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 9336,
+      "cache_read_input_tokens": 36523,
+      "input_tokens": 2915,
+      "output_tokens": 1055,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 7.23e-05,
+      "cache_write_cost": 0.05217375,
+      "input_cost": 0.010236,
+      "output_cost": 0.008804999999999999,
+      "total": 0.07128704999999999
+    },
+    "id": "corpus-011",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 13913,
+      "cache_read_input_tokens": 241,
+      "input_tokens": 3412,
+      "output_tokens": 587,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0204795,
+      "cache_write_cost": 0.043625,
+      "input_cost": 0.03424,
+      "output_cost": 0.001875,
+      "total": 0.1002195
+    },
+    "id": "corpus-012",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 6980,
+      "cache_read_input_tokens": 40959,
+      "input_tokens": 6848,
+      "output_tokens": 75,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0130135,
+      "cache_write_cost": 0.048,
+      "input_cost": 0.037375,
+      "output_cost": 0.0166,
+      "total": 0.1149885
+    },
+    "id": "corpus-013",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 7680,
+      "cache_read_input_tokens": 26027,
+      "input_tokens": 7475,
+      "output_tokens": 664,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.022782,
+      "cache_write_cost": 0.029275,
+      "input_cost": 0.00887,
+      "output_cost": 0.019825,
+      "total": 0.08075199999999999
+    },
+    "id": "corpus-014",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 4684,
+      "cache_read_input_tokens": 45564,
+      "input_tokens": 1774,
+      "output_tokens": 793,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.004564,
+      "cache_write_cost": 0.14475,
+      "input_cost": 0.023875,
+      "output_cost": 0.021,
+      "total": 0.194189
+    },
+    "id": "corpus-015",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 23160,
+      "cache_read_input_tokens": 9128,
+      "input_tokens": 4775,
+      "output_tokens": 840,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.007781,
+      "cache_write_cost": 0.13614375,
+      "input_cost": 0.00887,
+      "output_cost": 0.0034999999999999996,
+      "total": 0.15629475
+    },
+    "id": "corpus-016",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 21783,
+      "cache_read_input_tokens": 15562,
+      "input_tokens": 1774,
+      "output_tokens": 140,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0210985,
+      "cache_write_cost": 0.13879375,
+      "input_cost": 0.01879,
+      "output_cost": 0.019200000000000002,
+      "total": 0.19788224999999998
+    },
+    "id": "corpus-017",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 22207,
+      "cache_read_input_tokens": 42197,
+      "input_tokens": 3758,
+      "output_tokens": 768,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0052805,
+      "cache_write_cost": 0.13011875,
+      "input_cost": 0.02708,
+      "output_cost": 0.02565,
+      "total": 0.18812925
+    },
+    "id": "corpus-018",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 20819,
+      "cache_read_input_tokens": 10561,
+      "input_tokens": 5416,
+      "output_tokens": 1026,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0058746,
+      "cache_write_cost": 0.09015375,
+      "input_cost": 0.016128,
+      "output_cost": 0.00318,
+      "total": 0.11533635
+    },
+    "id": "corpus-019",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 24041,
+      "cache_read_input_tokens": 19582,
+      "input_tokens": 5376,
+      "output_tokens": 212,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0007809,
+      "cache_write_cost": 0.008422500000000001,
+      "input_cost": 0.006153,
+      "output_cost": 0.00375,
+      "total": 0.0191064
+    },
+    "id": "corpus-020",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 2246,
+      "cache_read_input_tokens": 2603,
+      "input_tokens": 2051,
+      "output_tokens": 250,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.029253,
+      "cache_write_cost": 0.0537375,
+      "input_cost": 0.027499999999999997,
+      "output_cost": 0.02275,
+      "total": 0.13324049999999998
+    },
+    "id": "corpus-021",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 8598,
+      "cache_read_input_tokens": 58506,
+      "input_tokens": 5500,
+      "output_tokens": 910,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.00349,
+      "cache_write_cost": 0.1766625,
+      "input_cost": 0.022000000000000002,
+      "output_cost": 0.021975,
+      "total": 0.2241275
+    },
+    "id": "corpus-022",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 28266,
+      "cache_read_input_tokens": 6980,
+      "input_tokens": 4400,
+      "output_tokens": 879,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0107799,
+      "cache_write_cost": 0.006847499999999999,
+      "input_cost": 0.013905,
+      "output_cost": 0.011295,
+      "total": 0.0428274
+    },
+    "id": "corpus-023",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 1826,
+      "cache_read_input_tokens": 35933,
+      "input_tokens": 4635,
+      "output_tokens": 753,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0299175,
+      "cache_write_cost": 0.10309375,
+      "input_cost": 0.00982,
+      "output_cost": 0.0034999999999999996,
+      "total": 0.14633125
+    },
+    "id": "corpus-024",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 16495,
+      "cache_read_input_tokens": 59835,
+      "input_tokens": 1964,
+      "output_tokens": 140,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0020532,
+      "cache_write_cost": 0.10596375000000001,
+      "input_cost": 0.022365,
+      "output_cost": 0.010035,
+      "total": 0.14041695
+    },
+    "id": "corpus-025",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 28257,
+      "cache_read_input_tokens": 6844,
+      "input_tokens": 7455,
+      "output_tokens": 669,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0074695,
+      "cache_write_cost": 0.18720625,
+      "input_cost": 0.01544,
+      "output_cost": 0.025175000000000003,
+      "total": 0.23529075
+    },
+    "id": "corpus-026",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 29953,
+      "cache_read_input_tokens": 14939,
+      "input_tokens": 3088,
+      "output_tokens": 1007,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.007702,
+      "cache_write_cost": 0.08128125,
+      "input_cost": 0.019225,
+      "output_cost": 0.0045000000000000005,
+      "total": 0.11270825
+    },
+    "id": "corpus-027",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 13005,
+      "cache_read_input_tokens": 15404,
+      "input_tokens": 3845,
+      "output_tokens": 180,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.014866,
+      "cache_write_cost": 0.1489125,
+      "input_cost": 0.03309,
+      "output_cost": 0.011775,
+      "total": 0.2086435
+    },
+    "id": "corpus-028",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 23826,
+      "cache_read_input_tokens": 29732,
+      "input_tokens": 6618,
+      "output_tokens": 471,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0209,
+      "cache_write_cost": 0.061356249999999994,
+      "input_cost": 0.027065000000000002,
+      "output_cost": 0.013300000000000001,
+      "total": 0.12262124999999999
+    },
+    "id": "corpus-029",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 9817,
+      "cache_read_input_tokens": 41800,
+      "input_tokens": 5413,
+      "output_tokens": 532,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.002202,
+      "cache_write_cost": 0.07951875,
+      "input_cost": 0.011335,
+      "output_cost": 0.013375,
+      "total": 0.10643074999999999
+    },
+    "id": "corpus-030",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 12723,
+      "cache_read_input_tokens": 4404,
+      "input_tokens": 2267,
+      "output_tokens": 535,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0027033,
+      "cache_write_cost": 0.05894625,
+      "input_cost": 0.012695999999999999,
+      "output_cost": 0.015420000000000001,
+      "total": 0.08976555
+    },
+    "id": "corpus-031",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 15719,
+      "cache_read_input_tokens": 9011,
+      "input_tokens": 4232,
+      "output_tokens": 1028,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0083015,
+      "cache_write_cost": 0.10021875000000001,
+      "input_cost": 0.01502,
+      "output_cost": 0.0105,
+      "total": 0.13404025000000003
+    },
+    "id": "corpus-032",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 16035,
+      "cache_read_input_tokens": 16603,
+      "input_tokens": 3004,
+      "output_tokens": 420,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0089575,
+      "cache_write_cost": 0.05910625,
+      "input_cost": 0.03308,
+      "output_cost": 0.002375,
+      "total": 0.10351874999999999
+    },
+    "id": "corpus-033",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 9457,
+      "cache_read_input_tokens": 17915,
+      "input_tokens": 6616,
+      "output_tokens": 95,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.02696,
+      "cache_write_cost": 0.1549375,
+      "input_cost": 0.027200000000000002,
+      "output_cost": 0.029375000000000002,
+      "total": 0.2384725
+    },
+    "id": "corpus-034",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 24790,
+      "cache_read_input_tokens": 53920,
+      "input_tokens": 5440,
+      "output_tokens": 1175,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0270695,
+      "cache_write_cost": 0.0765125,
+      "input_cost": 0.00469,
+      "output_cost": 0.02455,
+      "total": 0.132822
+    },
+    "id": "corpus-035",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 12242,
+      "cache_read_input_tokens": 54139,
+      "input_tokens": 938,
+      "output_tokens": 982,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0287815,
+      "cache_write_cost": 0.12136250000000001,
+      "input_cost": 0.01333,
+      "output_cost": 0.00435,
+      "total": 0.16782400000000003
+    },
+    "id": "corpus-036",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 19418,
+      "cache_read_input_tokens": 57563,
+      "input_tokens": 2666,
+      "output_tokens": 174,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0018563999999999998,
+      "cache_write_cost": 0.03924375,
+      "input_cost": 0.0042179999999999995,
+      "output_cost": 0.00117,
+      "total": 0.04648815
+    },
+    "id": "corpus-037",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 10465,
+      "cache_read_input_tokens": 6188,
+      "input_tokens": 1406,
+      "output_tokens": 78,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0023415,
+      "cache_write_cost": 0.045524999999999996,
+      "input_cost": 0.00429,
+      "output_cost": 0.028749999999999998,
+      "total": 0.08090649999999999
+    },
+    "id": "corpus-038",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 7284,
+      "cache_read_input_tokens": 4683,
+      "input_tokens": 858,
+      "output_tokens": 1150,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0044675,
+      "cache_write_cost": 0.02539375,
+      "input_cost": 0.006395,
+      "output_cost": 0.018475,
+      "total": 0.054731249999999995
+    },
+    "id": "corpus-039",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 4063,
+      "cache_read_input_tokens": 8935,
+      "input_tokens": 1279,
+      "output_tokens": 739,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0060756,
+      "cache_write_cost": 0.06521625,
+      "input_cost": 0.012225,
+      "output_cost": 0.00837,
+      "total": 0.09188685
+    },
+    "id": "corpus-040",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 17391,
+      "cache_read_input_tokens": 20252,
+      "input_tokens": 4075,
+      "output_tokens": 558,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0102063,
+      "cache_write_cost": 0.0658725,
+      "input_cost": 0.017204999999999998,
+      "output_cost": 0.004125,
+      "total": 0.09740879999999999
+    },
+    "id": "corpus-041",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 17566,
+      "cache_read_input_tokens": 34021,
+      "input_tokens": 5735,
+      "output_tokens": 275,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.021616,
+      "cache_write_cost": 0.13387500000000002,
+      "input_cost": 0.004045,
+      "output_cost": 0.021,
+      "total": 0.18053600000000003
+    },
+    "id": "corpus-042",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 21420,
+      "cache_read_input_tokens": 43232,
+      "input_tokens": 809,
+      "output_tokens": 840,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0067085,
+      "cache_write_cost": 0.031356249999999995,
+      "input_cost": 0.02113,
+      "output_cost": 0.026650000000000004,
+      "total": 0.08584475
+    },
+    "id": "corpus-043",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 5017,
+      "cache_read_input_tokens": 13417,
+      "input_tokens": 4226,
+      "output_tokens": 1066,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0045597,
+      "cache_write_cost": 0.00217125,
+      "input_cost": 0.003432,
+      "output_cost": 0.00831,
+      "total": 0.01847295
+    },
+    "id": "corpus-044",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 579,
+      "cache_read_input_tokens": 15199,
+      "input_tokens": 1144,
+      "output_tokens": 554,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0043245,
+      "cache_write_cost": 0.07203125,
+      "input_cost": 0.010759999999999999,
+      "output_cost": 0.008375,
+      "total": 0.09549075000000001
+    },
+    "id": "corpus-045",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 11525,
+      "cache_read_input_tokens": 8649,
+      "input_tokens": 2152,
+      "output_tokens": 335,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0115075,
+      "cache_write_cost": 0.0463,
+      "input_cost": 0.02169,
+      "output_cost": 0.0066749999999999995,
+      "total": 0.08617250000000001
+    },
+    "id": "corpus-046",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 7408,
+      "cache_read_input_tokens": 23015,
+      "input_tokens": 4338,
+      "output_tokens": 267,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0116575,
+      "cache_write_cost": 0.15664999999999998,
+      "input_cost": 0.025335000000000003,
+      "output_cost": 0.00205,
+      "total": 0.1956925
+    },
+    "id": "corpus-047",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 25064,
+      "cache_read_input_tokens": 23315,
+      "input_tokens": 5067,
+      "output_tokens": 82,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.008726099999999999,
+      "cache_write_cost": 0.0886575,
+      "input_cost": 0.015231,
+      "output_cost": 0.004695,
+      "total": 0.1173096
+    },
+    "id": "corpus-048",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 23642,
+      "cache_read_input_tokens": 29087,
+      "input_tokens": 5077,
+      "output_tokens": 313,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.016914,
+      "cache_write_cost": 0.0398025,
+      "input_cost": 0.0007949999999999999,
+      "output_cost": 0.006195,
+      "total": 0.0637065
+    },
+    "id": "corpus-049",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 10614,
+      "cache_read_input_tokens": 56380,
+      "input_tokens": 265,
+      "output_tokens": 413,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0124035,
+      "cache_write_cost": 0.06921875,
+      "input_cost": 0.03412,
+      "output_cost": 0.015125,
+      "total": 0.13086725
+    },
+    "id": "corpus-050",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 11075,
+      "cache_read_input_tokens": 24807,
+      "input_tokens": 6824,
+      "output_tokens": 605,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 7.55e-05,
+      "cache_write_cost": 0.1614875,
+      "input_cost": 0.02257,
+      "output_cost": 0.011025,
+      "total": 0.195158
+    },
+    "id": "corpus-051",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 25838,
+      "cache_read_input_tokens": 151,
+      "input_tokens": 4514,
+      "output_tokens": 441,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.024953,
+      "cache_write_cost": 0.0034937500000000003,
+      "input_cost": 0.016995,
+      "output_cost": 0.02545,
+      "total": 0.07089175
+    },
+    "id": "corpus-052",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 559,
+      "cache_read_input_tokens": 49906,
+      "input_tokens": 3399,
+      "output_tokens": 1018,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.009846599999999999,
+      "cache_write_cost": 0.01725,
+      "input_cost": 0.0066029999999999995,
+      "output_cost": 0.010275,
+      "total": 0.043974599999999996
+    },
+    "id": "corpus-053",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 4600,
+      "cache_read_input_tokens": 32822,
+      "input_tokens": 2201,
+      "output_tokens": 685,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0094467,
+      "cache_write_cost": 0.06220125000000001,
+      "input_cost": 0.002919,
+      "output_cost": 0.009510000000000001,
+      "total": 0.08407695000000001
+    },
+    "id": "corpus-054",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 16587,
+      "cache_read_input_tokens": 31489,
+      "input_tokens": 973,
+      "output_tokens": 634,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0081249,
+      "cache_write_cost": 0.0316275,
+      "input_cost": 0.01821,
+      "output_cost": 0.0013650000000000001,
+      "total": 0.0593274
+    },
+    "id": "corpus-055",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 8434,
+      "cache_read_input_tokens": 27083,
+      "input_tokens": 6070,
+      "output_tokens": 91,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.009524099999999999,
+      "cache_write_cost": 0.01699875,
+      "input_cost": 0.020196,
+      "output_cost": 0.0013349999999999998,
+      "total": 0.048053849999999995
+    },
+    "id": "corpus-056",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 4533,
+      "cache_read_input_tokens": 31747,
+      "input_tokens": 6732,
+      "output_tokens": 89,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.026092,
+      "cache_write_cost": 0.09265625,
+      "input_cost": 0.00771,
+      "output_cost": 0.0015500000000000002,
+      "total": 0.12800825
+    },
+    "id": "corpus-057",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 14825,
+      "cache_read_input_tokens": 52184,
+      "input_tokens": 1542,
+      "output_tokens": 62,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.006143099999999999,
+      "cache_write_cost": 0.04422,
+      "input_cost": 0.016992,
+      "output_cost": 0.0054,
+      "total": 0.0727551
+    },
+    "id": "corpus-058",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 11792,
+      "cache_read_input_tokens": 20477,
+      "input_tokens": 5664,
+      "output_tokens": 360,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0093945,
+      "cache_write_cost": 0.1412875,
+      "input_cost": 0.007169999999999999,
+      "output_cost": 0.0114,
+      "total": 0.169252
+    },
+    "id": "corpus-059",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 22606,
+      "cache_read_input_tokens": 18789,
+      "input_tokens": 1434,
+      "output_tokens": 456,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.014638499999999999,
+      "cache_write_cost": 0.06520125,
+      "input_cost": 0.002664,
+      "output_cost": 0.01137,
+      "total": 0.09387375
+    },
+    "id": "corpus-060",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 17387,
+      "cache_read_input_tokens": 48795,
+      "input_tokens": 888,
+      "output_tokens": 758,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0036573,
+      "cache_write_cost": 0.04833,
+      "input_cost": 0.02352,
+      "output_cost": 0.00573,
+      "total": 0.0812373
+    },
+    "id": "corpus-061",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 12888,
+      "cache_read_input_tokens": 12191,
+      "input_tokens": 7840,
+      "output_tokens": 382,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.013106,
+      "cache_write_cost": 0.08465625,
+      "input_cost": 0.004485,
+      "output_cost": 0.010925,
+      "total": 0.11317225
+    },
+    "id": "corpus-062",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 13545,
+      "cache_read_input_tokens": 26212,
+      "input_tokens": 897,
+      "output_tokens": 437,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.006259799999999999,
+      "cache_write_cost": 0.09608625,
+      "input_cost": 0.005438999999999999,
+      "output_cost": 0.010005,
+      "total": 0.11779005
+    },
+    "id": "corpus-063",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 25623,
+      "cache_read_input_tokens": 20866,
+      "input_tokens": 1813,
+      "output_tokens": 667,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0203375,
+      "cache_write_cost": 0.10116249999999999,
+      "input_cost": 0.03486,
+      "output_cost": 0.016075,
+      "total": 0.172435
+    },
+    "id": "corpus-064",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 16186,
+      "cache_read_input_tokens": 40675,
+      "input_tokens": 6972,
+      "output_tokens": 643,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.003612,
+      "cache_write_cost": 0.08778749999999999,
+      "input_cost": 0.0038699999999999997,
+      "output_cost": 0.019475,
+      "total": 0.11474449999999999
+    },
+    "id": "corpus-065",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 14046,
+      "cache_read_input_tokens": 7224,
+      "input_tokens": 774,
+      "output_tokens": 779,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0093834,
+      "cache_write_cost": 0.08196375,
+      "input_cost": 0.011964,
+      "output_cost": 0.016335,
+      "total": 0.11964615
+    },
+    "id": "corpus-066",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 21857,
+      "cache_read_input_tokens": 31278,
+      "input_tokens": 3988,
+      "output_tokens": 1089,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0086868,
+      "cache_write_cost": 0.017265,
+      "input_cost": 0.012111,
+      "output_cost": 0.00639,
+      "total": 0.0444528
+    },
+    "id": "corpus-067",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 4604,
+      "cache_read_input_tokens": 28956,
+      "input_tokens": 4037,
+      "output_tokens": 426,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0292065,
+      "cache_write_cost": 0.1431375,
+      "input_cost": 0.00971,
+      "output_cost": 0.020875,
+      "total": 0.202929
+    },
+    "id": "corpus-068",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 22902,
+      "cache_read_input_tokens": 58413,
+      "input_tokens": 1942,
+      "output_tokens": 835,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0068442,
+      "cache_write_cost": 0.0292425,
+      "input_cost": 0.021380999999999997,
+      "output_cost": 0.0051600000000000005,
+      "total": 0.0626277
+    },
+    "id": "corpus-069",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 7798,
+      "cache_read_input_tokens": 22814,
+      "input_tokens": 7127,
+      "output_tokens": 344,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.009470099999999999,
+      "cache_write_cost": 0.090615,
+      "input_cost": 0.003156,
+      "output_cost": 0.007515000000000001,
+      "total": 0.1107561
+    },
+    "id": "corpus-070",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 24164,
+      "cache_read_input_tokens": 31567,
+      "input_tokens": 1052,
+      "output_tokens": 501,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.008527,
+      "cache_write_cost": 0.063525,
+      "input_cost": 0.037000000000000005,
+      "output_cost": 0.0208,
+      "total": 0.129852
+    },
+    "id": "corpus-071",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 10164,
+      "cache_read_input_tokens": 17054,
+      "input_tokens": 7400,
+      "output_tokens": 832,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.002653,
+      "cache_write_cost": 0.0040875,
+      "input_cost": 0.022325,
+      "output_cost": 0.01585,
+      "total": 0.044915500000000004
+    },
+    "id": "corpus-072",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 654,
+      "cache_read_input_tokens": 5306,
+      "input_tokens": 4465,
+      "output_tokens": 634,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0026165,
+      "cache_write_cost": 0.0790375,
+      "input_cost": 0.00409,
+      "output_cost": 0.02435,
+      "total": 0.110094
+    },
+    "id": "corpus-073",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 12646,
+      "cache_read_input_tokens": 5233,
+      "input_tokens": 818,
+      "output_tokens": 974,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.013254,
+      "cache_write_cost": 0.13618125,
+      "input_cost": 0.014995,
+      "output_cost": 0.002025,
+      "total": 0.16645525
+    },
+    "id": "corpus-074",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 21789,
+      "cache_read_input_tokens": 26508,
+      "input_tokens": 2999,
+      "output_tokens": 81,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.015119399999999998,
+      "cache_write_cost": 0.0409275,
+      "input_cost": 0.015029999999999998,
+      "output_cost": 0.00282,
+      "total": 0.07389689999999999
+    },
+    "id": "corpus-075",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 10914,
+      "cache_read_input_tokens": 50398,
+      "input_tokens": 5010,
+      "output_tokens": 188,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0211735,
+      "cache_write_cost": 0.008087500000000001,
+      "input_cost": 0.026359999999999998,
+      "output_cost": 0.005125,
+      "total": 0.060745999999999994
+    },
+    "id": "corpus-076",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 1294,
+      "cache_read_input_tokens": 42347,
+      "input_tokens": 5272,
+      "output_tokens": 205,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0085458,
+      "cache_write_cost": 0.044579999999999995,
+      "input_cost": 0.008433,
+      "output_cost": 0.008879999999999999,
+      "total": 0.0704388
+    },
+    "id": "corpus-077",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 11888,
+      "cache_read_input_tokens": 28486,
+      "input_tokens": 2811,
+      "output_tokens": 592,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.010756799999999999,
+      "cache_write_cost": 0.0720975,
+      "input_cost": 0.012164999999999999,
+      "output_cost": 0.017730000000000003,
+      "total": 0.1127493
+    },
+    "id": "corpus-078",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 19226,
+      "cache_read_input_tokens": 35856,
+      "input_tokens": 4055,
+      "output_tokens": 1182,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0090957,
+      "cache_write_cost": 0.0508425,
+      "input_cost": 0.009288,
+      "output_cost": 0.0028350000000000003,
+      "total": 0.07206119999999999
+    },
+    "id": "corpus-079",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 13558,
+      "cache_read_input_tokens": 30319,
+      "input_tokens": 3096,
+      "output_tokens": 189,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0190515,
+      "cache_write_cost": 0.14589375,
+      "input_cost": 0.016725,
+      "output_cost": 0.025375,
+      "total": 0.20704525
+    },
+    "id": "corpus-080",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 23343,
+      "cache_read_input_tokens": 38103,
+      "input_tokens": 3345,
+      "output_tokens": 1015,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.005522,
+      "cache_write_cost": 0.17258125,
+      "input_cost": 0.03189,
+      "output_cost": 0.024775,
+      "total": 0.23476824999999998
+    },
+    "id": "corpus-081",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 27613,
+      "cache_read_input_tokens": 11044,
+      "input_tokens": 6378,
+      "output_tokens": 991,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0246495,
+      "cache_write_cost": 0.013181250000000002,
+      "input_cost": 0.018805,
+      "output_cost": 0.0106,
+      "total": 0.06723575000000001
+    },
+    "id": "corpus-082",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 2109,
+      "cache_read_input_tokens": 49299,
+      "input_tokens": 3761,
+      "output_tokens": 424,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.003796,
+      "cache_write_cost": 0.09646249999999999,
+      "input_cost": 0.00894,
+      "output_cost": 0.008624999999999999,
+      "total": 0.1178235
+    },
+    "id": "corpus-083",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 15434,
+      "cache_read_input_tokens": 7592,
+      "input_tokens": 1788,
+      "output_tokens": 345,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0049395,
+      "cache_write_cost": 0.010306250000000001,
+      "input_cost": 0.026840000000000003,
+      "output_cost": 0.01525,
+      "total": 0.057335750000000005
+    },
+    "id": "corpus-084",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 1649,
+      "cache_read_input_tokens": 9879,
+      "input_tokens": 5368,
+      "output_tokens": 610,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0189645,
+      "cache_write_cost": 0.00351875,
+      "input_cost": 0.038509999999999996,
+      "output_cost": 0.003075,
+      "total": 0.06406825
+    },
+    "id": "corpus-085",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 563,
+      "cache_read_input_tokens": 37929,
+      "input_tokens": 7702,
+      "output_tokens": 123,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.004095,
+      "cache_write_cost": 0.00779375,
+      "input_cost": 0.02722,
+      "output_cost": 0.0174,
+      "total": 0.05650875
+    },
+    "id": "corpus-086",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 1247,
+      "cache_read_input_tokens": 8190,
+      "input_tokens": 5444,
+      "output_tokens": 696,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0042435,
+      "cache_write_cost": 0.10423749999999998,
+      "input_cost": 0.03417,
+      "output_cost": 0.023175,
+      "total": 0.16582599999999997
+    },
+    "id": "corpus-087",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 16678,
+      "cache_read_input_tokens": 8487,
+      "input_tokens": 6834,
+      "output_tokens": 927,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.022278,
+      "cache_write_cost": 0.0848875,
+      "input_cost": 0.00472,
+      "output_cost": 0.018725,
+      "total": 0.13061050000000002
+    },
+    "id": "corpus-088",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 13582,
+      "cache_read_input_tokens": 44556,
+      "input_tokens": 944,
+      "output_tokens": 749,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0194755,
+      "cache_write_cost": 0.089625,
+      "input_cost": 0.01617,
+      "output_cost": 0.012625,
+      "total": 0.1378955
+    },
+    "id": "corpus-089",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 14340,
+      "cache_read_input_tokens": 38951,
+      "input_tokens": 3234,
+      "output_tokens": 505,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0013025,
+      "cache_write_cost": 0.00283125,
+      "input_cost": 0.03689,
+      "output_cost": 0.0171,
+      "total": 0.058123749999999995
+    },
+    "id": "corpus-090",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 453,
+      "cache_read_input_tokens": 2605,
+      "input_tokens": 7378,
+      "output_tokens": 684,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 7.319999999999999e-05,
+      "cache_write_cost": 0.013492500000000001,
+      "input_cost": 0.0039030000000000002,
+      "output_cost": 0.011835,
+      "total": 0.029303700000000002
+    },
+    "id": "corpus-091",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 3598,
+      "cache_read_input_tokens": 244,
+      "input_tokens": 1301,
+      "output_tokens": 789,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0273805,
+      "cache_write_cost": 0.0948375,
+      "input_cost": 0.03523,
+      "output_cost": 0.0249,
+      "total": 0.182348
+    },
+    "id": "corpus-092",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 15174,
+      "cache_read_input_tokens": 54761,
+      "input_tokens": 7046,
+      "output_tokens": 996,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0095373,
+      "cache_write_cost": 0.024896249999999998,
+      "input_cost": 0.013718999999999999,
+      "output_cost": 0.015329999999999998,
+      "total": 0.06348255
+    },
+    "id": "corpus-093",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 6639,
+      "cache_read_input_tokens": 31791,
+      "input_tokens": 4573,
+      "output_tokens": 1022,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.015326,
+      "cache_write_cost": 0.07761875,
+      "input_cost": 0.0049050000000000005,
+      "output_cost": 0.0092,
+      "total": 0.10704975
+    },
+    "id": "corpus-094",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 12419,
+      "cache_read_input_tokens": 30652,
+      "input_tokens": 981,
+      "output_tokens": 368,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.029224,
+      "cache_write_cost": 0.0911,
+      "input_cost": 0.029485,
+      "output_cost": 0.02175,
+      "total": 0.17155900000000002
+    },
+    "id": "corpus-095",
+    "model": "claude-opus-4-7",
+    "usage": {
+      "cache_creation_input_tokens": 14576,
+      "cache_read_input_tokens": 58448,
+      "input_tokens": 5897,
+      "output_tokens": 870,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0057434999999999995,
+      "cache_write_cost": 0.08089874999999999,
+      "input_cost": 0.001374,
+      "output_cost": 0.010905,
+      "total": 0.09892124999999999
+    },
+    "id": "corpus-096",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 21573,
+      "cache_read_input_tokens": 19145,
+      "input_tokens": 458,
+      "output_tokens": 727,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0148206,
+      "cache_write_cost": 0.0867075,
+      "input_cost": 0.002283,
+      "output_cost": 0.001065,
+      "total": 0.1048761
+    },
+    "id": "corpus-097",
+    "model": "claude-sonnet-4",
+    "usage": {
+      "cache_creation_input_tokens": 23122,
+      "cache_read_input_tokens": 49402,
+      "input_tokens": 761,
+      "output_tokens": 71,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.023404,
+      "cache_write_cost": 0.1609,
+      "input_cost": 0.029445,
+      "output_cost": 0.029924999999999997,
+      "total": 0.24367399999999997
+    },
+    "id": "corpus-098",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 25744,
+      "cache_read_input_tokens": 46808,
+      "input_tokens": 5889,
+      "output_tokens": 1197,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.014903,
+      "cache_write_cost": 0.00924375,
+      "input_cost": 0.014085,
+      "output_cost": 0.008,
+      "total": 0.04623175
+    },
+    "id": "corpus-099",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 1479,
+      "cache_read_input_tokens": 29806,
+      "input_tokens": 2817,
+      "output_tokens": 320,
+      "service_tier": "standard"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 7.0,
+      "cache_write_cost": 397.5,
+      "input_cost": 10.0,
+      "output_cost": 150.0,
+      "total": 564.5
+    },
+    "id": "edge-fable-per-ttl",
+    "model": "claude-fable-5",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 13000000,
+        "ephemeral_5m_input_tokens": 11000000
+      },
+      "cache_creation_input_tokens": 99,
+      "cache_read_input_tokens": 7000000,
+      "input_tokens": 1000000,
+      "output_tokens": 3000000
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 3.0,
+      "cache_write_cost": 100.0,
+      "input_cost": 10.0,
+      "output_cost": 100.0,
+      "total": 213.0
+    },
+    "id": "edge-opus-per-ttl",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 5000000,
+        "ephemeral_5m_input_tokens": 8000000
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 6000000,
+      "input_tokens": 2000000,
+      "output_tokens": 4000000
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 2.6999999999999997,
+      "cache_write_cost": 87.0,
+      "input_cost": 9.0,
+      "output_cost": 75.0,
+      "total": 173.7
+    },
+    "id": "edge-sonnet-per-ttl",
+    "model": "claude-sonnet-4-5",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 7000000,
+        "ephemeral_5m_input_tokens": 12000000
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 9000000,
+      "input_tokens": 3000000,
+      "output_tokens": 5000000
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 1.0,
+      "cache_write_cost": 35.5,
+      "input_cost": 4.0,
+      "output_cost": 30.0,
+      "total": 70.5
+    },
+    "id": "edge-haiku-per-ttl",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 9000000,
+        "ephemeral_5m_input_tokens": 14000000
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 10000000,
+      "input_tokens": 4000000,
+      "output_tokens": 6000000
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.5,
+      "cache_write_cost": 50.0,
+      "input_cost": 2.5,
+      "output_cost": 6.25,
+      "total": 59.25
+    },
+    "id": "edge-flat-cache-fallback",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 8000000,
+      "cache_read_input_tokens": 1000000,
+      "input_tokens": 500000,
+      "output_tokens": 250000
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 0.0
+    },
+    "id": "edge-zero-usage",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0010367999999999998,
+      "cache_write_cost": 0.0295875,
+      "input_cost": 3.7037009999999997,
+      "output_cost": 1.3351799999999998,
+      "total": 5.069505299999999
+    },
+    "id": "edge-service-tier-ignored",
+    "model": "claude-sonnet-4-5",
+    "usage": {
+      "cache_creation_input_tokens": 7890,
+      "cache_read_input_tokens": 3456,
+      "input_tokens": 1234567,
+      "output_tokens": 89012,
+      "service_tier": "batch"
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 1.0,
+      "output_cost": 5.0,
+      "total": 6.0
+    },
+    "id": "edge-haiku-substring",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 1000000,
+      "output_tokens": 1000000
+    }
+  }
+]

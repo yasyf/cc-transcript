@@ -23,6 +23,13 @@ def stream_parse(paths: list[tuple[str, float]], prefetch: int, spec_json: str |
 def parse_print_result(raw: bytes, /) -> PrintResult:
     """Parses a 'claude -p --output-format json' result from raw JSON bytes."""
 
+def cost_of_json(usage_json: str, model: str, /) -> dict[str, float]:
+    """Costs a turn's usage JSON under ``model``'s rates (the cost.py cost_of port).
+
+    Returns the ``input_cost``/``output_cost``/``cache_read_cost``/``cache_write_cost``/
+    ``total`` breakdown. Raises ``KeyError`` when no pricing family matches ``model``.
+    """
+
 def lexicon_tokenize(text: str, /) -> list[str]:
     """Split ``text`` into lowercased maximal runs of alphabetic characters (the shared tokenizer)."""
 
