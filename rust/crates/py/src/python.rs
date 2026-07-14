@@ -20,6 +20,7 @@ use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
+use cc_transcript_core::query::{FileRef, Session};
 use cc_transcript_core::types::Entry;
 
 static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
@@ -445,6 +446,114 @@ fn activity_lift<'py>(
     Ok(out)
 }
 
+// A deterministic query.py battery, mirrored by gen_query_golden.py's project_session.
+#[pyfunction]
+#[pyo3(signature = (path, max_events))]
+fn query_session<'py>(
+    py: Python<'py>,
+    path: String,
+    max_events: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entries: Vec<Entry> = py.detach(|| -> PyResult<Vec<Entry>> {
+        let bytes = std::fs::read(&path)?;
+        parse_bytes(&bytes, |_| true).map_err(parse_err)
+    })?;
+    let capped: Vec<Entry> = entries
+        .into_iter()
+        .filter(|entry| entry.meta().map_or(true, |m| m.timestamp.year() >= 1))
+        .take(max_events)
+        .collect();
+    let lift = lift_session("", &capped);
+    let session = Session::from_lift(&lift);
+
+    let paths = |files: Vec<FileRef>| files.into_iter().map(|f| f.path).collect::<Vec<_>>();
+
+    let out = PyDict::new(py);
+    out.set_item("tool_calls", session.tool_calls().count())?;
+    out.set_item(
+        "tool_calls_with_errors",
+        session.tool_calls().with_errors().count(),
+    )?;
+    out.set_item("files_touched", paths(session.files_touched()))?;
+    out.set_item("edited_files", paths(session.edited_files()))?;
+    out.set_item("count_failures", session.count_failures())?;
+    out.set_item("commands", session.commands())?;
+    out.set_item("first_prompt", session.first_prompt())?;
+    out.set_item("user_text", session.user_text())?;
+    out.set_item("len", session.len())?;
+    out.set_item("bool", session.non_empty())?;
+
+    let has_tool = PyDict::new(py);
+    for name in ["Bash", "Edit|Write", "Read", "Task", "Skill"] {
+        has_tool.set_item(name, session.has_tool(name))?;
+    }
+    out.set_item("has_tool", has_tool)?;
+    out.set_item(
+        "has_command",
+        vec![
+            session.has_command(&["git", "push"]),
+            session.has_command(&["ls"]),
+        ],
+    )?;
+    out.set_item("has_edit_to", session.has_edit_to(&["*.py"]))?;
+    out.set_item("has_read", session.has_read("test"))?;
+    out.set_item("has_skill", session.has_skill(&["commit", "codex"]))?;
+    out.set_item("user_said", session.user_said(&["fix", "error"]))?;
+    out.set_item("assistant_text", session.assistant_text(3, 80))?;
+    out.set_item(
+        "has_override",
+        session.has_override("OVERRIDE", &["Edit", "Write"]),
+    )?;
+
+    let windows = PyDict::new(py);
+    windows.set_item("after_write", session.after("Write", None).len())?;
+    windows.set_item("before_bash", session.before("Bash").len())?;
+    windows.set_item("prior", session.prior().len())?;
+    windows.set_item("recent5", session.recent(5).len())?;
+    windows.set_item("current_turn", session.current_turn().len())?;
+    out.set_item("windows", windows)?;
+
+    let detail = PyDict::new(py);
+    detail.set_item("named_bash", session.tool_calls().named("Bash").count())?;
+    detail.set_item(
+        "touching_py",
+        session.tool_calls().touching(&["*.py"]).count(),
+    )?;
+    detail.set_item(
+        "under_src",
+        session
+            .tool_calls()
+            .under(&["src", "cc_transcript"])
+            .count(),
+    )?;
+    detail.set_item("in_turn0", session.tool_calls().in_turns(&[0]).count())?;
+    detail.set_item(
+        "first_name",
+        session.tool_calls().first().map(|use_| use_.call.name()),
+    )?;
+    detail.set_item(
+        "last_name",
+        session.tool_calls().last().map(|use_| use_.call.name()),
+    )?;
+    detail.set_item("files", paths(session.tool_calls().files()))?;
+    out.set_item("tool_calls_detail", detail)?;
+
+    let file_refs = session
+        .files_touched()
+        .into_iter()
+        .map(|f| {
+            let fd = PyDict::new(py);
+            fd.set_item("path", &f.path)?;
+            fd.set_item("is_test", f.is_test())?;
+            fd.set_item("suffix", f.suffix())?;
+            Ok(fd)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    out.set_item("file_refs", PyList::new(py, file_refs)?)?;
+
+    Ok(out)
+}
+
 #[pyfunction]
 fn activity_hunk_overlap(a_old: &str, a_new: &str, b_old: &str, b_new: &str) -> f64 {
     hunk_overlap(
@@ -483,6 +592,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;
+    m.add_function(wrap_pyfunction!(query_session, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_tool_call, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_compact_lines, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_haystacks, m)?)?;

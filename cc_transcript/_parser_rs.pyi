@@ -141,6 +141,16 @@ def context_render_preview(data: str, turn_chars: int, /) -> str:
     summary-fidelity windows lead with the summary-fidelity label.
     """
 
+def query_session(path: str, max_events: int, /) -> dict[str, Any]:
+    """Projects the query.py ``Session`` battery over the transcript at ``path``.
+
+    Lifts the first ``max_events`` parsed entries into a ``Session`` (parse, then the
+    same year-zero materialization drop and cap as ``activity_lift``) and returns the
+    deterministic battery ``scripts/gen_query_golden.py`` freezes: tool-call counts,
+    touched/edited files, failures, commands, prompts, ``has_*`` predicates, window
+    event-lengths, and per-``FileRef`` ``is_test``/``suffix``. The query-parity substrate.
+    """
+
 def render_tool_call(name: str, input_json: str, turn_chars: int, tool_chars: int, /) -> str:
     """Renders a tool ``name`` and JSON-encoded input under a budget.
 
@@ -166,8 +176,7 @@ def render_stats(raws: list[bytes], /) -> str:
     """Renders the aggregate statistics block over several transcripts' raw JSONL bytes.
 
     Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
-    """
-def discovery_find_transcripts(root: str, /) -> list[str]:
+    """def discovery_find_transcripts(root: str, /) -> list[str]:
     """Every ``*.jsonl`` transcript under ``root``, sorted by path (``._*`` forks included)."""
 
 def discovery_find_transcript(root: str, session_id: str, /) -> str | None:

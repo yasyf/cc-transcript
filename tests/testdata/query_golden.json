@@ -1,0 +1,4419 @@
+{
+  "max_events": 150,
+  "queries": {
+    "-Users-dev-Code-data-pipeline/1c60b304-0ce8-488b-6ebe-651d2c34754f.jsonl": {
+      "assistant_text": "I'll add a focused test that reproduces the failure first.\n---\nAll done — the change is in and the tests are green.\n---\nFound the issue — the predicate was applied to the wrong kind.",
+      "bool": true,
+      "commands": [
+        "cargo bench --no-run",
+        "cargo bench --no-run",
+        "ls -la cc_transcript/mining",
+        "uv run ruff check cc_transcript"
+      ],
+      "count_failures": 7,
+      "edited_files": [
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py"
+      ],
+      "first_prompt": "add a --json flag to the stats command",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 36,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/discovery.py",
+          "rust/src/parse.rs",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/cli.py",
+          "rust/src/filter.rs",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/cli.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 1,
+        "last_name": "Read",
+        "named_bash": 4,
+        "touching_py": 12,
+        "under_src": 14
+      },
+      "tool_calls_with_errors": 43,
+      "user_said": true,
+      "user_text": "why does the mining detector miss short corrections?",
+      "windows": {
+        "after_write": 53,
+        "before_bash": 139,
+        "current_turn": 2,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-data-pipeline/74c9871e-62e1-4541-a69c-20707da5801f.jsonl": {
+      "assistant_text": "Running the tests to confirm the change is green.\n---\nAll done — the change is in and the tests are green.\n---\nThe root cause is a stale mtime cache; here is the fix.",
+      "bool": true,
+      "commands": [
+        "uv build",
+        "uv run python -m cc_transcript stats",
+        "uv build",
+        "ls -la cc_transcript/mining",
+        "ls -la cc_transcript/mining",
+        "uv build",
+        "uv build"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py"
+      ],
+      "first_prompt": "the CLI grep is slow over large transcripts, speed it up",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 44,
+      "tool_calls_detail": {
+        "files": [
+          "tests/test_parser.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "rust/src/filter.rs",
+          "rust/src/filter.rs",
+          "rust/src/filter.rs",
+          "rust/src/parse.rs",
+          "cc_transcript/activity.py",
+          "cc_transcript/cli.py"
+        ],
+        "first_name": "Glob",
+        "in_turn0": 2,
+        "last_name": "Read",
+        "named_bash": 7,
+        "touching_py": 12,
+        "under_src": 15
+      },
+      "tool_calls_with_errors": 47,
+      "user_said": true,
+      "user_text": "the build is broken on main, can you look into it",
+      "windows": {
+        "after_write": 78,
+        "before_bash": 103,
+        "current_turn": 3,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-data-pipeline/77d715b8-7d5f-478e-e2e4-9c919065f0b8.jsonl": {
+      "assistant_text": "Running the tests to confirm the change is green.\n---\nAll done — the change is in and the tests are green.\n---\nRunning the tests to confirm the change is green.",
+      "bool": true,
+      "commands": [
+        "uv run pytest tests/test_parser.py -x",
+        "uv build",
+        "cargo test --workspace",
+        "uv run python -m cc_transcript stats",
+        "git diff --stat",
+        "uv run pytest tests/test_parser.py -x"
+      ],
+      "count_failures": 4,
+      "edited_files": [
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/activity.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/activity.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "our CI is timing out, profile the docs build",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 44,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/cli.py",
+          "tests/test_parser.py",
+          "rust/src/parse.rs",
+          "rust/src/filter.rs",
+          "rust/src/filter.rs",
+          "cc_transcript/cli.py",
+          "tests/test_parser.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/activity.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 2,
+        "last_name": "Read",
+        "named_bash": 6,
+        "touching_py": 13,
+        "under_src": 14
+      },
+      "tool_calls_with_errors": 48,
+      "user_said": true,
+      "user_text": "fix the flaky parser test in tests/test_parser.py",
+      "windows": {
+        "after_write": 32,
+        "before_bash": 123,
+        "current_turn": 4,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-docs/1f14c615-dfb5-4b19-de64-c88b2e15c1db.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nFound the issue — the predicate was applied to the wrong kind.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "uv build",
+        "cargo bench --no-run",
+        "uv run ruff check cc_transcript"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/cli.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/parser.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "rust/src/parse.rs",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/cli.py"
+      ],
+      "first_prompt": "the build is broken on main, can you look into it",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 45,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/cli.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/parser.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "rust/src/filter.rs",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "cc_transcript/filterspec.py",
+          "rust/src/parse.rs",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py",
+          "tests/test_parser.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py",
+          "cc_transcript/filterspec.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/cli.py"
+        ],
+        "first_name": "Read",
+        "in_turn0": 2,
+        "last_name": "Grep",
+        "named_bash": 3,
+        "touching_py": 16,
+        "under_src": 18
+      },
+      "tool_calls_with_errors": 48,
+      "user_said": true,
+      "user_text": "wire up the corrections ledger to the gate writer",
+      "windows": {
+        "after_write": 55,
+        "before_bash": 104,
+        "current_turn": 5,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-docs/f4256973-d47c-4257-5e94-c5873630b7a6.jsonl": {
+      "assistant_text": "I'll fix that now.\n---\nRunning the tests to confirm the change is green.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "rg -n 'parse_bytes' rust/src",
+        "cargo bench --no-run",
+        "cargo test --workspace",
+        "git status --short",
+        "uv run python -m cc_transcript stats",
+        "git status --short",
+        "ls -la cc_transcript/mining"
+      ],
+      "count_failures": 7,
+      "edited_files": [
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "rust/src/filter.rs",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py"
+      ],
+      "first_prompt": "wire up the corrections ledger to the gate writer",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 38,
+      "tool_calls_detail": {
+        "files": [
+          "tests/test_parser.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/activity.py",
+          "rust/src/filter.rs",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/activity.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 1,
+        "last_name": "Edit",
+        "named_bash": 7,
+        "touching_py": 17,
+        "under_src": 18
+      },
+      "tool_calls_with_errors": 45,
+      "user_said": true,
+      "user_text": "fix the flaky parser test in tests/test_parser.py",
+      "windows": {
+        "after_write": 36,
+        "before_bash": 138,
+        "current_turn": 1,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-infra/4a11cf7b-41c1-4492-932c-913f3c468438.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nThat path never re-parses raw events; it consumes the lifted layer.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "uv run python -m cc_transcript stats",
+        "cargo test --workspace",
+        "git diff --stat",
+        "rg -n 'parse_bytes' rust/src",
+        "git status --short",
+        "cargo test --workspace",
+        "ls -la cc_transcript/mining"
+      ],
+      "count_failures": 4,
+      "edited_files": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "why does the mining detector miss short corrections?",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 48,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/discovery.py",
+          "cc_transcript/parser.py",
+          "rust/src/filter.rs",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/cli.py",
+          "rust/src/parse.rs",
+          "cc_transcript/filterspec.py",
+          "rust/src/filter.rs",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "cc_transcript/discovery.py",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "rust/src/filter.rs",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Write",
+        "in_turn0": 2,
+        "last_name": "Task",
+        "named_bash": 7,
+        "touching_py": 18,
+        "under_src": 22
+      },
+      "tool_calls_with_errors": 52,
+      "user_said": true,
+      "user_text": "the CLI grep is slow over large transcripts, speed it up",
+      "windows": {
+        "after_write": 54,
+        "before_bash": 140,
+        "current_turn": 5,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-infra/bcbd3a93-0d24-47df-958f-fec72a073e0a.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nThat path never re-parses raw events; it consumes the lifted layer.\n---\nThat path never re-parses raw events; it consumes the lifted layer.",
+      "bool": true,
+      "commands": [
+        "cargo bench --no-run",
+        "uv run python -m cc_transcript stats",
+        "uv build",
+        "git status --short",
+        "uv run pytest tests/test_parser.py -x",
+        "git status --short",
+        "uv run ruff check cc_transcript",
+        "uv run python -m cc_transcript stats",
+        "rg -n 'parse_bytes' rust/src"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs"
+      ],
+      "first_prompt": "why does the mining detector miss short corrections?",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 44,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/discovery.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/activity.py",
+          "rust/src/filter.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/cli.py",
+          "tests/test_parser.py",
+          "rust/src/parse.rs",
+          "rust/src/filter.rs"
+        ],
+        "first_name": "Glob",
+        "in_turn0": 0,
+        "last_name": "Read",
+        "named_bash": 9,
+        "touching_py": 16,
+        "under_src": 17
+      },
+      "tool_calls_with_errors": 47,
+      "user_said": true,
+      "user_text": "this still leaks the interpreter path, close the handle",
+      "windows": {
+        "after_write": 107,
+        "before_bash": 143,
+        "current_turn": 4,
+        "prior": 148,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-infra/c02f554b-7d06-4bab-f2db-f2a2d1d03a15.jsonl": {
+      "assistant_text": "Let me read the relevant files to understand the current behavior.\n---\nAll done — the change is in and the tests are green.\n---\nThe root cause is a stale mtime cache; here is the fix.",
+      "bool": true,
+      "commands": [
+        "rg -n 'parse_bytes' rust/src",
+        "uv run python -m cc_transcript stats",
+        "uv run ruff check cc_transcript",
+        "uv run python -m cc_transcript stats",
+        "uv run python -m cc_transcript stats",
+        "uv run python -m cc_transcript stats"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py"
+      ],
+      "first_prompt": "refactor the discovery module to cache mtimes",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 46,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/parser.py",
+          "rust/src/parse.rs",
+          "rust/src/filter.rs",
+          "cc_transcript/activity.py",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py"
+        ],
+        "first_name": "Bash",
+        "in_turn0": 2,
+        "last_name": "Grep",
+        "named_bash": 6,
+        "touching_py": 19,
+        "under_src": 20
+      },
+      "tool_calls_with_errors": 49,
+      "user_said": true,
+      "user_text": "make the activity probe handle async tool launches",
+      "windows": {
+        "after_write": 21,
+        "before_bash": 143,
+        "current_turn": 3,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-rust-core/782771fa-d16c-49ba-fc98-49205d0ec8d3.jsonl": {
+      "assistant_text": "subagent progress note\n---\nAll done — the change is in and the tests are green.\n---\nI'll fix that now.",
+      "bool": true,
+      "commands": [
+        "cargo test --workspace",
+        "rg -n 'parse_bytes' rust/src",
+        "cargo bench --no-run",
+        "uv run python -m cc_transcript stats",
+        "rg -n 'parse_bytes' rust/src"
+      ],
+      "count_failures": 2,
+      "edited_files": [
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "cc_transcript/discovery.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py"
+      ],
+      "first_prompt": "add golden tests for the show command output",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 43,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py",
+          "rust/src/filter.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "rust/src/filter.rs",
+          "cc_transcript/parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/cli.py",
+          "rust/src/parse.rs",
+          "cc_transcript/cli.py",
+          "cc_transcript/activity.py",
+          "rust/src/parse.rs",
+          "cc_transcript/discovery.py",
+          "cc_transcript/discovery.py"
+        ],
+        "first_name": "Grep",
+        "in_turn0": 2,
+        "last_name": "Write",
+        "named_bash": 5,
+        "touching_py": 16,
+        "under_src": 21
+      },
+      "tool_calls_with_errors": 45,
+      "user_said": true,
+      "user_text": "the build is broken on main, can you look into it",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 141,
+        "current_turn": 2,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-rust-core/acc39e79-a51f-449f-4533-fb54ba99d199.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nI'll add a focused test that reproduces the failure first.\n---\nThat path never re-parses raw events; it consumes the lifted layer.",
+      "bool": true,
+      "commands": [
+        "uv run python -m cc_transcript stats",
+        "uv run python -m cc_transcript stats",
+        "uv run python -m cc_transcript stats",
+        "git status --short",
+        "git status --short",
+        "git status --short"
+      ],
+      "count_failures": 4,
+      "edited_files": [
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/parse.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py"
+      ],
+      "first_prompt": "the build is broken on main, can you look into it",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 47,
+      "tool_calls_detail": {
+        "files": [
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "rust/src/parse.rs",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py",
+          "tests/test_parser.py",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 0,
+        "last_name": "Read",
+        "named_bash": 6,
+        "touching_py": 21,
+        "under_src": 14
+      },
+      "tool_calls_with_errors": 51,
+      "user_said": true,
+      "user_text": "don't hardcode the fixture path, read it from the env",
+      "windows": {
+        "after_write": 1,
+        "before_bash": 132,
+        "current_turn": 3,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-rust-core/d001cd7e-fa90-4a01-41fa-3f41d2f90af4.jsonl": {
+      "assistant_text": "Running the tests to confirm the change is green.\n---\nAll done — the change is in and the tests are green.\n---\nLet me read the relevant files to understand the current behavior.",
+      "bool": true,
+      "commands": [
+        "git diff --stat",
+        "git diff --stat",
+        "rg -n 'parse_bytes' rust/src",
+        "git status --short",
+        "cargo bench --no-run",
+        "ls -la cc_transcript/mining",
+        "git status --short"
+      ],
+      "count_failures": 4,
+      "edited_files": [
+        "rust/src/parse.rs",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/parser.py",
+        "rust/src/parse.rs",
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/cli.py",
+        "tests/test_parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "implement the context window re-hydration path",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 44,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/parser.py",
+          "rust/src/parse.rs",
+          "rust/src/parse.rs",
+          "cc_transcript/activity.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/activity.py",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/cli.py",
+          "tests/test_parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Grep",
+        "in_turn0": 2,
+        "last_name": "Bash",
+        "named_bash": 7,
+        "touching_py": 19,
+        "under_src": 16
+      },
+      "tool_calls_with_errors": 48,
+      "user_said": false,
+      "user_text": "add a --json flag to the stats command",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 149,
+        "current_turn": 2,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/2b4bd0ef-2c53-46df-c185-4194c355b888.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nLet me read the relevant files to understand the current behavior.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [],
+      "count_failures": 1,
+      "edited_files": [
+        "rust/src/parse.rs",
+        "tests/test_parser.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "investigate the token blowup in the compaction path",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 21,
+      "tool_calls": 5,
+      "tool_calls_detail": {
+        "files": [
+          "tests/test_parser.py",
+          "cc_transcript/filterspec.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Read",
+        "in_turn0": 1,
+        "last_name": "Write",
+        "named_bash": 0,
+        "touching_py": 3,
+        "under_src": 2
+      },
+      "tool_calls_with_errors": 6,
+      "user_said": false,
+      "user_text": "add a --json flag to the stats command",
+      "windows": {
+        "after_write": 4,
+        "before_bash": 21,
+        "current_turn": 6,
+        "prior": 20,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/43d3d5bc-ea2d-454c-44b8-06d88563cf6a.jsonl": {
+      "assistant_text": "I'll fix that now.\n---\nsubagent progress note\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [
+        "cc_transcript/activity.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py"
+      ],
+      "first_prompt": "write a benchmark for the rust filter fast path",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": true,
+        "Read": false,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 14,
+      "tool_calls": 4,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py"
+        ],
+        "first_name": "Glob",
+        "in_turn0": 1,
+        "last_name": "Edit",
+        "named_bash": 0,
+        "touching_py": 1,
+        "under_src": 1
+      },
+      "tool_calls_with_errors": 4,
+      "user_said": false,
+      "user_text": "the regex is over-matching, anchor it to the head",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 14,
+        "current_turn": 7,
+        "prior": 13,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/4a87cc70-3961-44a0-e9bb-31a5877a2fa9.jsonl": {
+      "assistant_text": "I'll fix that now.\n---\nFound the issue — the predicate was applied to the wrong kind.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "uv run ruff check cc_transcript",
+        "rg -n 'parse_bytes' rust/src",
+        "cargo bench --no-run"
+      ],
+      "count_failures": 1,
+      "edited_files": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/cli.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "refactor the discovery module to cache mtimes",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 107,
+      "tool_calls": 33,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/discovery.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/activity.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/cli.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Write",
+        "in_turn0": 1,
+        "last_name": "Grep",
+        "named_bash": 3,
+        "touching_py": 11,
+        "under_src": 10
+      },
+      "tool_calls_with_errors": 34,
+      "user_said": true,
+      "user_text": "don't hardcode the fixture path, read it from the env",
+      "windows": {
+        "after_write": 26,
+        "before_bash": 95,
+        "current_turn": 4,
+        "prior": 106,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/54bca23b-59bc-4e04-59a1-3bf15206ed74.jsonl": {
+      "assistant_text": "I'll add a focused test that reproduces the failure first.\n---\nI'll add a focused test that reproduces the failure first.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "uv build",
+        "uv build",
+        "cargo test --workspace",
+        "rg -n 'parse_bytes' rust/src",
+        "uv build",
+        "cargo bench --no-run",
+        "git diff --stat",
+        "uv build"
+      ],
+      "count_failures": 5,
+      "edited_files": [
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "cc_transcript/mining/engine.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/activity.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "rust/src/parse.rs",
+        "cc_transcript/mining/engine.py"
+      ],
+      "first_prompt": "wire up the corrections ledger to the gate writer",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 41,
+      "tool_calls_detail": {
+        "files": [
+          "rust/src/parse.rs",
+          "cc_transcript/activity.py",
+          "cc_transcript/parser.py",
+          "rust/src/filter.rs",
+          "cc_transcript/activity.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "rust/src/parse.rs",
+          "cc_transcript/mining/engine.py"
+        ],
+        "first_name": "Task",
+        "in_turn0": 2,
+        "last_name": "Glob",
+        "named_bash": 8,
+        "touching_py": 12,
+        "under_src": 14
+      },
+      "tool_calls_with_errors": 46,
+      "user_said": true,
+      "user_text": "investigate the token blowup in the compaction path",
+      "windows": {
+        "after_write": 11,
+        "before_bash": 117,
+        "current_turn": 1,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/8260ebcf-fc73-4ab3-dd8f-b924296a60a1.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nRunning the tests to confirm the change is green.\n---\nI'll fix that now.",
+      "bool": true,
+      "commands": [
+        "git diff --stat",
+        "cargo test --workspace",
+        "ls -la cc_transcript/mining",
+        "rg -n 'parse_bytes' rust/src",
+        "uv build"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "cc_transcript/cli.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "rust/src/parse.rs",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "cc_transcript/parser.py",
+        "cc_transcript/parser.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/cli.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/parser.py",
+        "rust/src/parse.rs",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "rust/src/parse.rs",
+        "cc_transcript/parser.py"
+      ],
+      "first_prompt": "write a benchmark for the rust filter fast path",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 46,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/cli.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/parser.py",
+          "rust/src/parse.rs",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/discovery.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "rust/src/parse.rs",
+          "cc_transcript/parser.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 2,
+        "last_name": "Glob",
+        "named_bash": 5,
+        "touching_py": 15,
+        "under_src": 15
+      },
+      "tool_calls_with_errors": 49,
+      "user_said": true,
+      "user_text": "this still leaks the interpreter path, close the handle",
+      "windows": {
+        "after_write": 52,
+        "before_bash": 129,
+        "current_turn": 2,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/dab07930-02e4-4130-cec1-a91eacdcf122.jsonl": {
+      "assistant_text": "I'll fix that now.\n---\nAll done — the change is in and the tests are green.\n---\nRefactoring the helper to take the parent object directly.",
+      "bool": true,
+      "commands": [
+        "git diff --stat",
+        "git diff --stat",
+        "git diff --stat",
+        "cargo test --workspace",
+        "uv run ruff check cc_transcript",
+        "uv run pytest tests/test_parser.py -x",
+        "git diff --stat",
+        "git diff --stat",
+        "uv run pytest tests/test_parser.py -x"
+      ],
+      "count_failures": 6,
+      "edited_files": [
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/discovery.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "cc_transcript/cli.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/filterspec.py",
+        "rust/src/parse.rs",
+        "cc_transcript/discovery.py"
+      ],
+      "first_prompt": "add a --json flag to the stats command",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 42,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "rust/src/parse.rs",
+          "cc_transcript/cli.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/filterspec.py",
+          "rust/src/parse.rs",
+          "cc_transcript/discovery.py"
+        ],
+        "first_name": "Grep",
+        "in_turn0": 2,
+        "last_name": "Bash",
+        "named_bash": 9,
+        "touching_py": 10,
+        "under_src": 12
+      },
+      "tool_calls_with_errors": 48,
+      "user_said": true,
+      "user_text": "refactor the discovery module to cache mtimes",
+      "windows": {
+        "after_write": 2,
+        "before_bash": 147,
+        "current_turn": 4,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl": {
+      "assistant_text": "Found the issue — the predicate was applied to the wrong kind.\n---\nsubagent progress note\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [
+        "uv run python -m cc_transcript stats"
+      ],
+      "count_failures": 0,
+      "edited_files": [
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/filterspec.py"
+      ],
+      "first_prompt": "make the activity probe handle async tool launches",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 10,
+      "tool_calls": 4,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/parser.py",
+          "tests/test_parser.py",
+          "cc_transcript/filterspec.py"
+        ],
+        "first_name": "Bash",
+        "in_turn0": 2,
+        "last_name": "Write",
+        "named_bash": 1,
+        "touching_py": 3,
+        "under_src": 2
+      },
+      "tool_calls_with_errors": 4,
+      "user_said": false,
+      "user_text": "actually keep the old behavior for empty specs",
+      "windows": {
+        "after_write": 4,
+        "before_bash": 1,
+        "current_turn": 6,
+        "prior": 9,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-scratch/f6f1fdd7-50d3-436b-c7b1-29a636c84d4b.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nFound the issue — the predicate was applied to the wrong kind.\n---\nAll done — the change is in and the tests are green.",
+      "bool": true,
+      "commands": [],
+      "count_failures": 2,
+      "edited_files": [
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        }
+      ],
+      "files_touched": [
+        "rust/src/filter.rs",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "rust/src/parse.rs"
+      ],
+      "first_prompt": "our CI is timing out, profile the docs build",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 48,
+      "tool_calls": 14,
+      "tool_calls_detail": {
+        "files": [
+          "rust/src/filter.rs",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "rust/src/parse.rs"
+        ],
+        "first_name": "Write",
+        "in_turn0": 1,
+        "last_name": "Glob",
+        "named_bash": 0,
+        "touching_py": 2,
+        "under_src": 4
+      },
+      "tool_calls_with_errors": 16,
+      "user_said": false,
+      "user_text": "investigate the token blowup in the compaction path",
+      "windows": {
+        "after_write": 31,
+        "before_bash": 48,
+        "current_turn": 5,
+        "prior": 47,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-web-app/57f73859-0945-4949-df4c-8e2f2b94eeaf.jsonl": {
+      "assistant_text": "All done — the change is in and the tests are green.\n---\nThat path never re-parses raw events; it consumes the lifted layer.\n---\nI'll fix that now.",
+      "bool": true,
+      "commands": [
+        "uv run python -m cc_transcript stats",
+        "cargo test --workspace",
+        "ls -la cc_transcript/mining",
+        "git status --short",
+        "cargo test --workspace"
+      ],
+      "count_failures": 5,
+      "edited_files": [
+        "cc_transcript/parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/parse.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/parser.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/parse.rs",
+        "cc_transcript/activity.py",
+        "rust/src/parse.rs",
+        "rust/src/filter.rs",
+        "rust/src/filter.rs",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py"
+      ],
+      "first_prompt": "the CLI grep is slow over large transcripts, speed it up",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 42,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/parser.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/parse.rs",
+          "cc_transcript/activity.py",
+          "rust/src/parse.rs",
+          "rust/src/filter.rs",
+          "rust/src/filter.rs",
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/activity.py",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py"
+        ],
+        "first_name": "Write",
+        "in_turn0": 1,
+        "last_name": "Grep",
+        "named_bash": 5,
+        "touching_py": 14,
+        "under_src": 15
+      },
+      "tool_calls_with_errors": 47,
+      "user_said": true,
+      "user_text": "ok",
+      "windows": {
+        "after_write": 62,
+        "before_bash": 136,
+        "current_turn": 1,
+        "prior": 149,
+        "recent5": 5
+      }
+    },
+    "-Users-dev-Code-web-app/e2358d0e-b61b-4a10-e9b9-4f6950234fda.jsonl": {
+      "assistant_text": "subagent progress note\n---\nAll done — the change is in and the tests are green.\n---\nLet me read the relevant files to understand the current behavior.",
+      "bool": true,
+      "commands": [
+        "rg -n 'parse_bytes' rust/src",
+        "cargo bench --no-run",
+        "git status --short",
+        "ls -la cc_transcript/mining",
+        "cargo test --workspace",
+        "cargo bench --no-run",
+        "cargo bench --no-run"
+      ],
+      "count_failures": 3,
+      "edited_files": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "rust/src/filter.rs"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/filterspec.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/activity.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/cli.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/mining/engine.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "tests/test_parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/discovery.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "cc_transcript/parser.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "rust/src/filter.rs",
+          "suffix": ".rs"
+        }
+      ],
+      "files_touched": [
+        "cc_transcript/discovery.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/filterspec.py",
+        "tests/test_parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/filterspec.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/mining/engine.py",
+        "cc_transcript/parser.py",
+        "cc_transcript/activity.py",
+        "cc_transcript/cli.py",
+        "cc_transcript/mining/engine.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/mining/engine.py",
+        "rust/src/filter.rs",
+        "tests/test_parser.py",
+        "rust/src/filter.rs",
+        "cc_transcript/discovery.py",
+        "tests/test_parser.py",
+        "cc_transcript/discovery.py",
+        "cc_transcript/parser.py",
+        "rust/src/filter.rs"
+      ],
+      "first_prompt": "add a --json flag to the stats command",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": true
+      },
+      "len": 150,
+      "tool_calls": 48,
+      "tool_calls_detail": {
+        "files": [
+          "cc_transcript/discovery.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/filterspec.py",
+          "tests/test_parser.py",
+          "rust/src/filter.rs",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/filterspec.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/mining/engine.py",
+          "cc_transcript/parser.py",
+          "cc_transcript/activity.py",
+          "cc_transcript/cli.py",
+          "cc_transcript/mining/engine.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/mining/engine.py",
+          "rust/src/filter.rs",
+          "tests/test_parser.py",
+          "rust/src/filter.rs",
+          "cc_transcript/discovery.py",
+          "tests/test_parser.py",
+          "cc_transcript/discovery.py",
+          "cc_transcript/parser.py",
+          "rust/src/filter.rs"
+        ],
+        "first_name": "Glob",
+        "in_turn0": 2,
+        "last_name": "Grep",
+        "named_bash": 7,
+        "touching_py": 22,
+        "under_src": 22
+      },
+      "tool_calls_with_errors": 51,
+      "user_said": true,
+      "user_text": "implement the context window re-hydration path",
+      "windows": {
+        "after_write": 6,
+        "before_bash": 117,
+        "current_turn": 3,
+        "prior": 149,
+        "recent5": 5
+      }
+    }
+  },
+  "synthetic": {
+    "assistant_trunc": {
+      "assistant_text": "αααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααααα\n---\nshort answer",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "hi",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 4,
+      "tool_calls": 0,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": null,
+        "in_turn0": 0,
+        "last_name": null,
+        "named_bash": 0,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 0,
+      "user_said": false,
+      "user_text": "hi",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 4,
+        "current_turn": 4,
+        "prior": 3,
+        "recent5": 4
+      }
+    },
+    "dup_key_input": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [
+        "echo b"
+      ],
+      "count_failures": 0,
+      "edited_files": [
+        "/last.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "/last.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "/last.py"
+      ],
+      "first_prompt": "edit and run",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 2,
+      "tool_calls_detail": {
+        "files": [
+          "/last.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 2,
+        "last_name": "Bash",
+        "named_bash": 1,
+        "touching_py": 1,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 2,
+      "user_said": false,
+      "user_text": "edit and run",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 1,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "empty": {
+      "assistant_text": "",
+      "bool": false,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": null,
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 0,
+      "tool_calls": 0,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": null,
+        "in_turn0": 0,
+        "last_name": null,
+        "named_bash": 0,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 0,
+      "user_said": false,
+      "user_text": "",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 0,
+        "current_turn": 0,
+        "prior": 0,
+        "recent5": 0
+      }
+    },
+    "failed_calls": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [
+        "ok cmd"
+      ],
+      "count_failures": 2,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "run",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 7,
+      "tool_calls": 1,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": "Bash",
+        "in_turn0": 1,
+        "last_name": "Bash",
+        "named_bash": 1,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 3,
+      "user_said": false,
+      "user_text": "run",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 3,
+        "current_turn": 7,
+        "prior": 6,
+        "recent5": 5
+      }
+    },
+    "fileref_variety": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [
+        {
+          "is_test": true,
+          "path": "/repo/tests/test_app.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "/repo/conftest.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "/repo/src/main.rs",
+          "suffix": ".rs"
+        },
+        {
+          "is_test": false,
+          "path": "/repo/.bashrc",
+          "suffix": ""
+        },
+        {
+          "is_test": false,
+          "path": "/repo/a.tar.gz",
+          "suffix": ".gz"
+        },
+        {
+          "is_test": false,
+          "path": "/repo/data/α.β",
+          "suffix": ".β"
+        },
+        {
+          "is_test": true,
+          "path": "/repo/tests/helpers/util.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "/repo/tests/test_app.py",
+        "/repo/conftest.py",
+        "/repo/src/main.rs",
+        "/repo/.bashrc",
+        "/repo/a.tar.gz",
+        "/repo/data/α.β",
+        "/repo/tests/helpers/util.py"
+      ],
+      "first_prompt": "touch files",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": false,
+        "Read": true,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 7,
+      "tool_calls_detail": {
+        "files": [
+          "/repo/tests/test_app.py",
+          "/repo/conftest.py",
+          "/repo/src/main.rs",
+          "/repo/.bashrc",
+          "/repo/a.tar.gz",
+          "/repo/data/α.β",
+          "/repo/tests/helpers/util.py"
+        ],
+        "first_name": "Read",
+        "in_turn0": 7,
+        "last_name": "Read",
+        "named_bash": 0,
+        "touching_py": 3,
+        "under_src": 1
+      },
+      "tool_calls_with_errors": 7,
+      "user_said": false,
+      "user_text": "touch files",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 2,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "mcp_edit": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "use the mcp editor",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": true,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 1,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": "mcp__server__ccx_code_edit",
+        "in_turn0": 1,
+        "last_name": "mcp__server__ccx_code_edit",
+        "named_bash": 0,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 1,
+      "user_said": false,
+      "user_text": "use the mcp editor",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 2,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "override_active": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [
+        "ls"
+      ],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "OVERRIDE the setting",
+      "has_command": [
+        false,
+        true
+      ],
+      "has_edit_to": false,
+      "has_override": true,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 1,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": "Bash",
+        "in_turn0": 1,
+        "last_name": "Bash",
+        "named_bash": 1,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 1,
+      "user_said": false,
+      "user_text": "OVERRIDE the setting",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 1,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "override_invalidated": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [
+        "/a.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "/a.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "/a.py"
+      ],
+      "first_prompt": "OVERRIDE the setting",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": true,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 1,
+      "tool_calls_detail": {
+        "files": [
+          "/a.py"
+        ],
+        "first_name": "Edit",
+        "in_turn0": 1,
+        "last_name": "Edit",
+        "named_bash": 0,
+        "touching_py": 1,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 1,
+      "user_said": false,
+      "user_text": "OVERRIDE the setting",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 2,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "task_skill": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "delegate the work",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": true,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": true,
+        "Task": true
+      },
+      "len": 2,
+      "tool_calls": 3,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": "Task",
+        "in_turn0": 3,
+        "last_name": "Skill",
+        "named_bash": 0,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 3,
+      "user_said": false,
+      "user_text": "delegate the work",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 2,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "user_said_case": {
+      "assistant_text": "on it",
+      "bool": true,
+      "commands": [],
+      "count_failures": 0,
+      "edited_files": [],
+      "file_refs": [],
+      "files_touched": [],
+      "first_prompt": "Please FIX the Error now",
+      "has_command": [
+        false,
+        false
+      ],
+      "has_edit_to": false,
+      "has_override": false,
+      "has_read": false,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": false,
+        "Edit|Write": false,
+        "Read": false,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 2,
+      "tool_calls": 0,
+      "tool_calls_detail": {
+        "files": [],
+        "first_name": null,
+        "in_turn0": 0,
+        "last_name": null,
+        "named_bash": 0,
+        "touching_py": 0,
+        "under_src": 0
+      },
+      "tool_calls_with_errors": 0,
+      "user_said": true,
+      "user_text": "Please FIX the Error now",
+      "windows": {
+        "after_write": 0,
+        "before_bash": 2,
+        "current_turn": 2,
+        "prior": 1,
+        "recent5": 2
+      }
+    },
+    "windows_demo": {
+      "assistant_text": "",
+      "bool": true,
+      "commands": [
+        "ls",
+        "git push -f"
+      ],
+      "count_failures": 0,
+      "edited_files": [
+        "/out.py",
+        "/out.py"
+      ],
+      "file_refs": [
+        {
+          "is_test": false,
+          "path": "/src/app.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "/out.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": false,
+          "path": "/out.py",
+          "suffix": ".py"
+        },
+        {
+          "is_test": true,
+          "path": "/repo/tests/test_out.py",
+          "suffix": ".py"
+        }
+      ],
+      "files_touched": [
+        "/src/app.py",
+        "/out.py",
+        "/out.py",
+        "/repo/tests/test_out.py"
+      ],
+      "first_prompt": "do the thing",
+      "has_command": [
+        true,
+        true
+      ],
+      "has_edit_to": true,
+      "has_override": false,
+      "has_read": true,
+      "has_skill": false,
+      "has_tool": {
+        "Bash": true,
+        "Edit|Write": true,
+        "Read": true,
+        "Skill": false,
+        "Task": false
+      },
+      "len": 12,
+      "tool_calls": 6,
+      "tool_calls_detail": {
+        "files": [
+          "/src/app.py",
+          "/out.py",
+          "/out.py",
+          "/repo/tests/test_out.py"
+        ],
+        "first_name": "Read",
+        "in_turn0": 2,
+        "last_name": "Read",
+        "named_bash": 2,
+        "touching_py": 4,
+        "under_src": 1
+      },
+      "tool_calls_with_errors": 6,
+      "user_said": false,
+      "user_text": "and edit",
+      "windows": {
+        "after_write": 6,
+        "before_bash": 7,
+        "current_turn": 3,
+        "prior": 11,
+        "recent5": 5
+      }
+    }
+  }
+}

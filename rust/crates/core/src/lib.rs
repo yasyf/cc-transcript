@@ -10,6 +10,7 @@ pub mod ids;
 pub mod parse;
 pub mod protocol;
 pub mod pystr;
+pub mod query;
 pub mod render;
 pub mod toolcall;
 pub mod types;
