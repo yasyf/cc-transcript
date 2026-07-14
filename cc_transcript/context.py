@@ -17,19 +17,72 @@ from cc_transcript.activity import SessionActivity
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolDigest, ToolUseId
-from cc_transcript.render import Budget, clip, render_turn
+from cc_transcript.models import AssistantEvent, Question, TextBlock, ToolUseBlock
+from cc_transcript.render import Budget, clip, render_tool_call, render_turn
+from cc_transcript.tools import AskUserQuestionResult
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
     from typing import Any
 
-    from cc_transcript.activity import Turn
+    from cc_transcript.activity import ToolUse, Turn
+    from cc_transcript.models import ContentBlock
 
 SCHEMA = "cc-transcript.context/2"
+PREVIEW_SCHEMA = "cc-transcript.preview/1"
 SUMMARY_LABEL = "[summary fidelity — transcript unavailable]"
+ASK_USER_QUESTION = "AskUserQuestion"
 
 type Fidelity = Literal["full", "summary"]
 type Role = Literal["user", "assistant"]
+
+
+@dataclass(frozen=True, slots=True)
+class TextPreview:
+    """A prose part of a turn's preview: a user prompt or assistant text, clipped.
+
+    Attributes:
+        text: The prose, clipped to the capture-time turn budget.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallPreview:
+    """A tool call reduced to its name, content digest, and rendered summary.
+
+    Attributes:
+        name: The tool name exactly as invoked.
+        digest: The cross-language content digest of the call.
+        summary: The call rendered at the capture-time tool budget.
+    """
+
+    name: str
+    digest: ToolDigest
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class AskUserQuestionPreview:
+    """An AskUserQuestion turn: the rounds asked, the answers picked, and any notes.
+
+    The structured replacement for scraping the clipped tool-call repr: every field
+    a consumer needs — question text, header, options, and which option was
+    recommended (the label ending in ``" (Recommended)"``) — is carried verbatim.
+
+    Attributes:
+        questions: The rounds lifted from the tool input, in presentation order.
+        selections: Each round's question text mapped to the chosen answer.
+        notes: Each annotated round's question text mapped to the reviewer's note.
+    """
+
+    questions: tuple[Question, ...]
+    selections: Mapping[str, str]
+    notes: Mapping[str, str]
+
+
+type Preview = TextPreview | ToolCallPreview | AskUserQuestionPreview
 
 
 class SchemaError(ValueError):
@@ -46,12 +99,15 @@ class TurnRef:
         refs: References to the turn's events.
         preview: The turn rendered at capture time, at the preview budget.
         tool_digests: Content digests of the turn's tool calls, in order.
+        previews: The turn's typed previews (``cc-transcript.preview/1``), or None
+            for a legacy window persisted before typed previews existed.
     """
 
     role: Role
     refs: tuple[EventRef, ...]
     preview: str
     tool_digests: tuple[ToolDigest, ...]
+    previews: tuple[Preview, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +123,8 @@ class ContextWindow:
         fidelity: ``'full'`` while the transcript backs the window;
             ``'summary'`` once only the previews remain.
         preview_chars: The preview budget the window was captured at.
+        preview_schema: The typed-preview version (``cc-transcript.preview/1``)
+            when the turn refs carry typed previews, or None for a legacy window.
 
     Example:
         >>> window = capture_window(activity, anchor)
@@ -80,6 +138,7 @@ class ContextWindow:
     after: tuple[TurnRef, ...]
     fidelity: Fidelity
     preview_chars: int
+    preview_schema: str | None = None
 
     def render_preview(self, *, budget: Budget) -> str:
         """Render the persisted previews, never touching the transcript.
@@ -115,7 +174,12 @@ class ContextWindow:
         return HydratedWindow(window=self, turns=tuple(turns))
 
     def to_json(self) -> str:
-        """Serialize to the ``cc-transcript.context/2`` wire schema, byte-stably."""
+        """Serialize to the ``cc-transcript.context/2`` wire schema, byte-stably.
+
+        Typed previews (``cc-transcript.preview/1``) ride alongside the rendered
+        string previews when present; a legacy window omits both, so it stays
+        readable by every reader.
+        """
         return json.dumps(
             {
                 "schema": SCHEMA,
@@ -125,7 +189,8 @@ class ContextWindow:
                 "after": [turn_ref_payload(ref) for ref in self.after],
                 "fidelity": self.fidelity,
                 "preview_chars": self.preview_chars,
-            },
+            }
+            | ({} if self.preview_schema is None else {"preview_schema": self.preview_schema}),
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -142,6 +207,8 @@ class ContextWindow:
         payload = json.loads(data)
         if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
             raise SchemaError(f"expected schema {SCHEMA!r}, got: {data[:120]}")
+        if (preview_schema := payload.get("preview_schema")) is not None and preview_schema != PREVIEW_SCHEMA:
+            raise SchemaError(f"expected preview schema {PREVIEW_SCHEMA!r}, got: {preview_schema!r}")
         return cls(
             anchor=ref_from(payload["anchor"]),
             before=tuple(turn_ref_from(item) for item in payload["before"]),
@@ -149,6 +216,7 @@ class ContextWindow:
             after=tuple(turn_ref_from(item) for item in payload["after"]),
             fidelity=payload["fidelity"],
             preview_chars=payload["preview_chars"],
+            preview_schema=preview_schema,
         )
 
 
@@ -205,6 +273,7 @@ def capture_window(
         after=tuple(turn_ref(turn, budget) for turn in activity.turns[trigger.index + 1 : trigger.index + 1 + after]),
         fidelity="full",
         preview_chars=preview_chars,
+        preview_schema=PREVIEW_SCHEMA,
     )
 
 
@@ -216,7 +285,48 @@ def turn_ref(turn: Turn, budget: Budget) -> TurnRef:
         ),
         preview=render_turn(turn, budget=budget),
         tool_digests=tuple(use.call.digest for use in turn.tool_uses),
+        previews=build_previews(turn, budget),
     )
+
+
+def build_previews(turn: Turn, budget: Budget) -> tuple[Preview, ...]:
+    calls = iter(turn.tool_uses)
+    return (
+        *((TextPreview(text=clip(turn.prompt, budget.turn_chars)),) if turn.prompt else ()),
+        *(
+            preview
+            for event in turn.events
+            if isinstance(event, AssistantEvent)
+            for block in event.blocks
+            for preview in preview_block_parts(block, calls, budget=budget)
+        ),
+    )
+
+
+def preview_block_parts(block: ContentBlock, calls: Iterator[ToolUse], *, budget: Budget) -> tuple[Preview, ...]:
+    match block:
+        case TextBlock(text=text) if text.strip():
+            return (TextPreview(text=clip(text, budget.turn_chars)),)
+        case ToolUseBlock():
+            return (preview_of_call(block, next(calls), budget),)
+        case _:
+            return ()
+
+
+def preview_of_call(block: ToolUseBlock, use: ToolUse, budget: Budget) -> Preview:
+    if block.name == ASK_USER_QUESTION:
+        return ask_preview(block, use)
+    return ToolCallPreview(name=block.name, digest=block.digest, summary=render_tool_call(use.call, budget=budget))
+
+
+def ask_preview(block: ToolUseBlock, use: ToolUse) -> AskUserQuestionPreview:
+    result = use.typed_result
+    if isinstance(result, AskUserQuestionResult):
+        selections = dict(result.answers)
+        notes = {question: note for question, ann in result.annotations.items() if (note := ann.notes) is not None}
+    else:
+        selections, notes = {}, {}
+    return AskUserQuestionPreview(questions=block.questions or (), selections=selections, notes=notes)
 
 
 def window_refs(window: ContextWindow) -> tuple[TurnRef, ...]:
@@ -241,7 +351,7 @@ def turn_ref_payload(ref: TurnRef) -> dict[str, Any]:
         "refs": [ref_payload(item) for item in ref.refs],
         "preview": ref.preview,
         "tool_digests": list(ref.tool_digests),
-    }
+    } | ({} if ref.previews is None else {"previews": [preview_payload(preview) for preview in ref.previews]})
 
 
 def turn_ref_from(payload: Mapping[str, Any]) -> TurnRef:
@@ -250,4 +360,54 @@ def turn_ref_from(payload: Mapping[str, Any]) -> TurnRef:
         refs=tuple(ref_from(item) for item in payload["refs"]),
         preview=payload["preview"],
         tool_digests=tuple(ToolDigest(digest) for digest in payload["tool_digests"]),
+        previews=None if "previews" not in payload else tuple(preview_from(item) for item in payload["previews"]),
+    )
+
+
+def preview_payload(preview: Preview) -> dict[str, Any]:
+    match preview:
+        case TextPreview(text=text):
+            return {"kind": "text", "text": text}
+        case ToolCallPreview(name=name, digest=digest, summary=summary):
+            return {"kind": "tool_call", "name": name, "digest": digest, "summary": summary}
+        case AskUserQuestionPreview(questions=questions, selections=selections, notes=notes):
+            return {
+                "kind": "ask_user_question",
+                "questions": [question_payload(question) for question in questions],
+                "selections": dict(selections),
+                "notes": dict(notes),
+            }
+
+
+def preview_from(payload: Mapping[str, Any]) -> Preview:
+    match payload["kind"]:
+        case "text":
+            return TextPreview(text=payload["text"])
+        case "tool_call":
+            return ToolCallPreview(name=payload["name"], digest=ToolDigest(payload["digest"]), summary=payload["summary"])
+        case "ask_user_question":
+            return AskUserQuestionPreview(
+                questions=tuple(question_from(question) for question in payload["questions"]),
+                selections=payload["selections"],
+                notes=payload["notes"],
+            )
+        case kind:
+            raise SchemaError(f"unknown preview kind: {kind!r}")
+
+
+def question_payload(question: Question) -> dict[str, Any]:
+    return {
+        "question": question.question,
+        "header": question.header,
+        "multi_select": question.multi_select,
+        "labels": list(question.labels),
+    }
+
+
+def question_from(payload: Mapping[str, Any]) -> Question:
+    return Question(
+        question=payload["question"],
+        header=payload["header"],
+        multi_select=payload["multi_select"],
+        labels=tuple(payload["labels"]),
     )

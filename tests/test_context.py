@@ -11,9 +11,13 @@ import pytest
 
 from cc_transcript.activity import SessionActivity
 from cc_transcript.context import (
+    PREVIEW_SCHEMA,
     SUMMARY_LABEL,
+    AskUserQuestionPreview,
     ContextWindow,
     SchemaError,
+    TextPreview,
+    ToolCallPreview,
     TurnRef,
     capture_window,
 )
@@ -22,6 +26,7 @@ from cc_transcript.models import (
     TextBlock,
     ToolUseBlock,
 )
+from cc_transcript.parser import parse_events_from_bytes
 from cc_transcript.render import Budget
 from tests.support import assistant as _assistant
 from tests.support import user as _user
@@ -216,9 +221,75 @@ def test_round_trip_preserves_null_trigger_and_empty_refs() -> None:
         preview_chars=200,
     )
     data = window.to_json()
+    assert "preview_schema" not in data
+    assert '"previews"' not in data
     restored = ContextWindow.from_json(data)
     assert restored == window
     assert restored.to_json() == data
+
+
+def ask_transcript_bytes() -> bytes:
+    questions = [
+        {
+            "question": "Which adapter?",
+            "header": "Adapter",
+            "multiSelect": True,
+            "options": [{"label": "Storage (Recommended)"}, {"label": "Memory"}],
+        }
+    ]
+    result = {
+        "questions": questions,
+        "answers": {"Which adapter?": "Storage (Recommended), Memory"},
+        "annotations": {"Which adapter?": {"preview": "Storage (Recommended)", "notes": "and never the memory one"}},
+    }
+    lines = [
+        user_line("u0", 0, "set up the adapter"),
+        assistant_line("a0", 1, [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": {"questions": questions}}]),
+        transcript_line(
+            "u1",
+            2,
+            type="user",
+            message={"role": "user", "content": [{"type": "tool_result", "tool_use_id": "q1", "content": "ok", "is_error": False}]},
+            toolUseResult=result,
+        ),
+        user_line("u2", 3, "thanks"),
+    ]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_capture_attaches_typed_previews() -> None:
+    window = in_memory_window()
+    assert window.preview_schema == PREVIEW_SCHEMA
+    assert window.trigger is not None
+    previews = window.trigger.previews
+    assert previews is not None
+    assert previews[0] == TextPreview(text="three")
+    assert isinstance(previews[1], ToolCallPreview)
+    assert previews[1].name == "Edit"
+    assert previews[1].digest == tool_digest("Edit", EDIT_INPUT)
+    assert previews[1].summary.startswith("Edit /a.py")
+    # The rendered string preview still rides alongside for legacy readers.
+    assert window.trigger.preview.startswith("user: three")
+
+
+def test_ask_user_question_preview_covers_cc_steer_fields() -> None:
+    activity = SessionActivity.from_events(SESSION, parse_events_from_bytes(ask_transcript_bytes()))
+    window = capture_window(activity, ref("a0", "q1"), before=0, after=0, preview_chars=200)
+    assert window.trigger is not None
+    ask = next(p for p in window.trigger.previews or () if isinstance(p, AskUserQuestionPreview))
+    round_ = ask.questions[0]
+    assert (round_.question, round_.header, round_.multi_select) == ("Which adapter?", "Adapter", True)
+    assert round_.labels == ("Storage (Recommended)", "Memory")
+    # cc-steer derives "recommended" from the label suffix; it survives verbatim.
+    assert [label for label in round_.labels if label.endswith(" (Recommended)")] == ["Storage (Recommended)"]
+    assert ask.selections == {"Which adapter?": "Storage (Recommended), Memory"}
+    assert ask.notes == {"Which adapter?": "and never the memory one"}
+
+
+def test_from_json_rejects_unknown_preview_schema() -> None:
+    tampered = in_memory_window().to_json().replace(PREVIEW_SCHEMA, "cc-transcript.preview/2")
+    with pytest.raises(SchemaError):
+        ContextWindow.from_json(tampered)
 
 
 @pytest.mark.parametrize(
