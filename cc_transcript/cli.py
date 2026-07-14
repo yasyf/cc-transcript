@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import re
+import stat
 import sys
+import tempfile
 import time
 from datetime import datetime
 from functools import reduce
@@ -72,6 +75,10 @@ if TYPE_CHECKING:
 KINDS = get_args(EventKind)
 SHOW_CAP = 200
 SLICE_SCHEMA = "cc-transcript.slice/1"
+SESSION_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 SIGNAL_SPEC = build_spec(
     keep_only("user", "assistant"),
     drop_junk("structural", "agent_injection", "command_echo"),
@@ -281,6 +288,36 @@ def slice_line(meta: EntryMeta, block: ToolUseBlock) -> dict[str, Any]:
         "summary": render_tool_call(call, budget=Budget()),
     }
 
+
+def scratchpad_slug(cwd: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+
+def resolve_scratchpad(roots: Sequence[Path], *, uid: int, cwd: Path, session: str) -> Path | None:
+    if not session or session in {".", ".."}:
+        return None
+    if os.sep in session or (os.altsep is not None and os.altsep in session):
+        return None
+    unique_roots = tuple(dict.fromkeys(roots))
+    matches: list[tuple[int, Path]] = []
+    for root in unique_roots:
+        for path in root.glob(f"claude-{uid}/*/{glob.escape(session)}/scratchpad"):
+            try:
+                path_stat = path.stat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(path_stat.st_mode):
+                matches.append((path_stat.st_mtime_ns, path))
+    if matches:
+        return max(matches, key=lambda match: match[0])[1]
+    return next(
+        (
+            path
+            for root in unique_roots
+            if (path := root / f"claude-{uid}" / scratchpad_slug(cwd) / session / "scratchpad").is_dir()
+        ),
+        None,
+    )
 
 
 def watch_dict(item: WatchEvent) -> dict[str, Any]:
@@ -661,6 +698,20 @@ def slice_(session: str, since: str, until: str, root: Path) -> None:
         for block in event.blocks
         if isinstance(block, ToolUseBlock)
     )
+
+
+@cli.command()
+@click.option("--session", envvar="CLAUDE_CODE_SESSION_ID", required=True, help="Claude session UUID.")
+def scratchpad(session: str) -> None:
+    """Print the scratchpad directory for a Claude Code session."""
+    if SESSION_UUID_PATTERN.fullmatch(session) is None:
+        raise click.UsageError(f"invalid --session {session!r}; expected a UUID")
+    roots = tuple(dict.fromkeys(Path(os.path.realpath(root)) for root in (tempfile.gettempdir(), "/tmp")))
+    if path := resolve_scratchpad(roots, uid=os.getuid(), cwd=Path.cwd(), session=session):
+        click.echo(path)
+        return
+    click.echo(f"scratchpad not found for session {session}", err=True)
+    raise SystemExit(1)
 
 
 @cli.command()

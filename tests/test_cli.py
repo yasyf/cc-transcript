@@ -9,7 +9,7 @@ import orjson
 import pytest
 from click.testing import CliRunner
 
-from cc_transcript.cli import cli, parse_transcripts
+from cc_transcript.cli import cli, parse_transcripts, resolve_scratchpad, scratchpad_slug
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 from cc_transcript.ids import tool_digest
 from cc_transcript.render import human_size
@@ -18,6 +18,9 @@ from tests import testkit
 BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 MODEL = "claude-opus-4-7"
 WINDOW = ("--since", "2026-01-02T03:04:00Z", "--until", "2026-01-02T03:05:00Z")
+SCRATCHPAD_SESSION = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+OTHER_SCRATCHPAD_SESSION = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+MISSING_SCRATCHPAD_SESSION = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 READ_SLICE = {
     "schema": "cc-transcript.slice/1",
@@ -269,6 +272,7 @@ def test_help_lists_all_commands(runner: CliRunner) -> None:
         "grep",
         "stats",
         "slice",
+        "scratchpad",
         "digest",
         "corrections",
         "tools",
@@ -739,6 +743,160 @@ def test_slice_unparseable_transcript_exits_two_with_empty_stdout(
     result = runner.invoke(cli, ["slice", "--session", "sess-9", *WINDOW, "--root", str(root)])
     assert result.exit_code == 2
     assert result.stdout == ""
+
+
+def test_scratchpad_glob_hit_precedes_formula_fallback(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cwd = tmp_path / "working-copy"
+    formula = tmp_path / f"claude-{os.getuid()}" / scratchpad_slug(cwd) / SCRATCHPAD_SESSION / "scratchpad"
+    glob_match = tmp_path / f"claude-{os.getuid()}" / "other-slug" / SCRATCHPAD_SESSION / "scratchpad"
+    cwd.mkdir()
+    formula.mkdir(parents=True)
+    glob_match.mkdir(parents=True)
+    os.utime(formula, (1_000_000.0, 1_000_000.0))
+    os.utime(glob_match, (2_000_000.0, 2_000_000.0))
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("cc_transcript.cli.tempfile.gettempdir", lambda: str(tmp_path))
+
+    result = runner.invoke(cli, ["scratchpad", "--session", SCRATCHPAD_SESSION])
+
+    assert result.exit_code == 0
+    assert result.output == f"{glob_match}\n"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_session"),
+    [
+        pytest.param(["--session", SCRATCHPAD_SESSION], SCRATCHPAD_SESSION, id="flag_wins"),
+        pytest.param([], OTHER_SCRATCHPAD_SESSION, id="env_default"),
+    ],
+)
+def test_scratchpad_session_flag_and_env(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expected_session: str,
+) -> None:
+    base = tmp_path / f"claude-{os.getuid()}" / "cwd-slug"
+    expected = base / expected_session / "scratchpad"
+    (base / SCRATCHPAD_SESSION / "scratchpad").mkdir(parents=True)
+    (base / OTHER_SCRATCHPAD_SESSION / "scratchpad").mkdir(parents=True)
+    monkeypatch.setattr("cc_transcript.cli.tempfile.gettempdir", lambda: str(tmp_path))
+
+    result = runner.invoke(
+        cli,
+        ["scratchpad", *args],
+        env={"CLAUDE_CODE_SESSION_ID": OTHER_SCRATCHPAD_SESSION},
+    )
+
+    assert result.exit_code == 0
+    assert result.output == f"{expected}\n"
+
+
+def test_scratchpad_missing_exits_one_with_empty_stdout(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cc_transcript.cli.tempfile.gettempdir", lambda: str(tmp_path))
+
+    result = runner.invoke(cli, ["scratchpad", "--session", MISSING_SCRATCHPAD_SESSION])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "scratchpad not found" in result.stderr
+
+
+def test_scratchpad_requires_session(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["scratchpad"], env={"CLAUDE_CODE_SESSION_ID": ""})
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "Missing option '--session'" in result.stderr
+
+
+@pytest.mark.parametrize("session", ["*", "../x"])
+def test_scratchpad_rejects_malformed_session(runner: CliRunner, session: str) -> None:
+    result = runner.invoke(cli, ["scratchpad", "--session", session])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
+def test_resolve_scratchpad_formula_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cwd = Path("/Users/yasyf/Code/cc-skills")
+    expected = tmp_path / "claude-501" / "-Users-yasyf-Code-cc-skills" / "fallback-session" / "scratchpad"
+    expected.mkdir(parents=True)
+    monkeypatch.setattr(Path, "glob", lambda self, pattern: iter(()))
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=cwd, session="fallback-session") == expected
+
+
+@pytest.mark.parametrize(
+    ("session", "decoy"),
+    [
+        pytest.param("*", "literal", id="star"),
+        pytest.param("?", "q", id="question_mark"),
+        pytest.param("[ab]", "a", id="character_class"),
+    ],
+)
+def test_resolve_scratchpad_escapes_glob_metacharacters(tmp_path: Path, session: str, decoy: str) -> None:
+    (tmp_path / "claude-501" / "slug" / decoy / "scratchpad").mkdir(parents=True)
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=session) is None
+
+
+def test_resolve_scratchpad_rejects_traversal_sessions(tmp_path: Path) -> None:
+    absolute = tmp_path / "absolute-session"
+    (absolute / "scratchpad").mkdir(parents=True)
+    (tmp_path / "claude-501" / "x" / "scratchpad").mkdir(parents=True)
+    (tmp_path / "claude-501" / "scratchpad").mkdir(parents=True)  # `..` escape target
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session="../x") is None
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=str(absolute)) is None
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session="..") is None
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=".") is None
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session="") is None
+
+
+def test_resolve_scratchpad_uses_nanosecond_mtime(tmp_path: Path) -> None:
+    old = tmp_path / "claude-501" / "old-slug" / SCRATCHPAD_SESSION / "scratchpad"
+    new = tmp_path / "claude-501" / "new-slug" / SCRATCHPAD_SESSION / "scratchpad"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    mtime_ns = 1_700_000_000_000_000_000
+    os.utime(old, ns=(mtime_ns, mtime_ns))
+    os.utime(new, ns=(mtime_ns + 1, mtime_ns + 1))
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=SCRATCHPAD_SESSION) == new
+
+
+def test_resolve_scratchpad_respects_uid(tmp_path: Path) -> None:
+    (tmp_path / "claude-502" / "slug" / SCRATCHPAD_SESSION / "scratchpad").mkdir(parents=True)
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=SCRATCHPAD_SESSION) is None
+
+
+def test_resolve_scratchpad_skips_vanished_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vanished = tmp_path / "claude-501" / "a-slug" / SCRATCHPAD_SESSION / "scratchpad"
+    surviving = tmp_path / "claude-501" / "b-slug" / SCRATCHPAD_SESSION / "scratchpad"
+    vanished.mkdir(parents=True)
+    surviving.mkdir(parents=True)
+    path_stat = Path.stat
+
+    def stat_with_vanishing(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == vanished:
+            raise FileNotFoundError(self)
+        return path_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", stat_with_vanishing)
+
+    assert resolve_scratchpad((tmp_path,), uid=501, cwd=Path("/cwd"), session=SCRATCHPAD_SESSION) == surviving
+
+
+def test_scratchpad_slug_matches_observed_pair() -> None:
+    assert scratchpad_slug(Path("/Users/yasyf/Code/cc-skills")) == "-Users-yasyf-Code-cc-skills"
+    assert scratchpad_slug(Path("a__é")) == "a---"
 
 
 def test_digest_generates_fixture_rows(runner: CliRunner) -> None:
