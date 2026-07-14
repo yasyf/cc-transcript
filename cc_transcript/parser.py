@@ -564,7 +564,7 @@ class TranscriptParser:
     def parse_file(cls, path: Path) -> list[TranscriptEvent]:
         """Parses the transcript at ``path`` into events, synchronously."""
         result = _parser_rs.stream_parse([(str(path), 0.0)], 1).recv()
-        return list(result[2]) if result is not None else []
+        return list(result.events) if result is not None else []
 
     @classmethod
     async def parse_file_async(cls, path: Path) -> list[TranscriptEvent]:
@@ -600,5 +600,7 @@ class TranscriptParser:
             rust_spec,
         )
         while batch := await anyio.to_thread.run_sync(stream.recv_many, cls.RECV_BATCH):
-            for path, mtime, events in batch:
-                yield ParsedTranscript(path=Path(path), mtime=mtime, events=tuple(events))
+            for transcript in batch:
+                yield ParsedTranscript(
+                    path=Path(transcript.path), mtime=transcript.mtime, events=tuple(transcript.events)
+                )

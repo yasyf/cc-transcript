@@ -3,14 +3,16 @@ use crossbeam_channel::{bounded, Receiver};
 use once_cell::sync::Lazy;
 use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
+use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use sonic_rs::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
-use crate::event::{build_event, build_print_result, parse_err};
+use crate::views::convert::parse_err;
+use crate::views::print::print_result_view;
+use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
     hunk_overlap, lift_session, overlap_between, result_index, session_activity, ActivityOpts,
@@ -64,24 +66,16 @@ fn parse_file_internal(
     })
 }
 
-// A typed entry that cannot materialize to a Python event (e.g. a year-zero
-// timestamp below Python's MINYEAR) is dropped; the rest of the file survives, so
-// one corrupt event never discards the whole transcript.
 fn parsed_file_to_py<'py>(py: Python<'py>, pf: ParsedFile) -> PyResult<Bound<'py, PyAny>> {
-    let events = pf
-        .lines
-        .iter()
-        .filter_map(|line| build_event(py, line).ok())
-        .collect::<Vec<_>>();
-    PyTuple::new(
+    Ok(Bound::new(
         py,
-        [
-            PyString::new(py, &pf.path).into_any(),
-            PyFloat::new(py, pf.mtime).into_any(),
-            PyList::new(py, events)?.into_any(),
-        ],
-    )
-    .map(Bound::into_any)
+        TranscriptView {
+            path: pf.path,
+            mtime: pf.mtime,
+            entries: Arc::new(pf.lines),
+        },
+    )?
+    .into_any())
 }
 
 #[pyclass]
@@ -159,7 +153,7 @@ fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, P
     let value: Value = sonic_rs::from_slice(raw)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
     let result = parse_print_envelope(&value).map_err(parse_err)?;
-    build_print_result(py, &result)
+    print_result_view(py, result)
 }
 
 fn cost_err(err: CostError) -> PyErr {
@@ -808,6 +802,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::discovery::discovery_is_subagent_path,
         m
     )?)?;
+    crate::views::add_view_classes(m)?;
     m.add_class::<ParseStream>()?;
     m.add_class::<crate::watch::WatchTailer>()?;
     m.add_class::<crate::corrections::RustCorrectionLog>()?;

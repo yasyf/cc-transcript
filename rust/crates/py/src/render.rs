@@ -10,7 +10,7 @@ use cc_transcript_core::toolcall::parse_tool_call;
 use cc_transcript_core::types::{tool_use_index, Entry};
 use cc_transcript_core::value::normalize_last_wins;
 
-use crate::event::parse_err;
+use crate::views::convert::parse_err;
 
 // The tool_use_id -> tool name join the renderer keys on (filterspec.tool_names).
 fn tool_names(entries: &[Entry]) -> HashMap<&str, &str> {

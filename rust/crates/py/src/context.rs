@@ -8,7 +8,7 @@ use cc_transcript_core::ids::EventRef;
 use cc_transcript_core::parse::parse_bytes;
 use cc_transcript_core::types::Entry;
 
-use crate::event::parse_err;
+use crate::views::convert::parse_err;
 
 #[pyfunction]
 #[pyo3(signature = (raw, session_id, anchor_uuid, anchor_tool_use_id, before, after, preview_chars))]

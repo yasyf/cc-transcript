@@ -8,8 +8,9 @@ use pyo3::types::{PyDict, PyList};
 use pyo3::IntoPyObjectExt;
 use std::path::PathBuf;
 
-use crate::event::build_event;
+use crate::views::events::event_view;
 use cc_transcript_core::watch::{tick, TailState};
+use std::sync::Arc;
 
 /// A stateful tail over the transcript tree: one `tick` per poll, holding the
 /// per-file cursors between calls. The Python facade wraps it in the async
@@ -40,16 +41,16 @@ impl WatchTailer {
         let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
         let events = py.detach(|| tick(&mut self.state, &roots, from_start));
         events
-            .iter()
+            .into_iter()
             .map(|event| {
-                let path = event.path.to_string_lossy();
+                let path = event.path.to_string_lossy().into_owned();
                 Ok(PyList::new(
                     py,
                     [
-                        path.as_ref().into_bound_py_any(py)?,
+                        path.into_bound_py_any(py)?,
                         event.session_id.as_str().into_bound_py_any(py)?,
                         event.is_sidechain.into_bound_py_any(py)?,
-                        build_event(py, &event.event)?,
+                        event_view(py, &Arc::new(vec![event.event]), 0)?,
                     ],
                 )?
                 .into_any())
