@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from functools import partial, reduce
 from itertools import chain, islice
@@ -56,7 +57,7 @@ from cc_transcript.render import (
     truncate,
 )
 from cc_transcript.tools import file_path_of, parse_tool_call, tool_name_matches
-from cc_transcript.watch import watch
+from cc_transcript.watch import Watcher
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -714,13 +715,12 @@ def digest(check: Path | None) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit one NDJSON object per event.")
 def watch_(roots: tuple[Path, ...], poll: float, from_start: bool, as_json: bool) -> None:
     """Tail transcripts live, one line per newly appended event, until interrupted."""
-
-    async def run() -> None:
-        async for item in watch(roots or (CLAUDE_PROJECTS_DIR,), poll=poll, from_start=from_start):
-            click.echo(orjson.dumps(watch_dict(item)) if as_json else watch_line(item))
-
+    watcher = Watcher(roots or (CLAUDE_PROJECTS_DIR,), from_start=from_start)
     try:
-        anyio.run(run)
+        while True:
+            for item in watcher.tick():
+                click.echo(orjson.dumps(watch_dict(item)) if as_json else watch_line(item))
+            time.sleep(poll)
     except KeyboardInterrupt:
         return
     except BrokenPipeError:
