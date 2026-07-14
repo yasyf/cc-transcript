@@ -12,6 +12,7 @@ pub mod facts;
 pub mod cost;
 pub mod filter;
 pub mod ids;
+pub mod notifications;
 pub mod parse;
 pub mod protocol;
 pub mod pystr;

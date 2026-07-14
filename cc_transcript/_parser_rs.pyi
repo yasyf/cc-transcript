@@ -30,6 +30,13 @@ def cost_of_json(usage_json: str, model: str, /) -> dict[str, float]:
     ``total`` breakdown. Raises ``KeyError`` when no pricing family matches ``model``.
     """
 
+def notifications_replay(raw: bytes, /) -> dict[str, list[str]]:
+    """Replays the harness notification queue over a transcript's raw JSONL bytes.
+
+    Returns the ``queued``/``delivered``/``enqueued`` string lists of the modeled
+    :class:`~cc_transcript.notifications.Notifications` state (the notifications.py port).
+    """
+
 def lexicon_tokenize(text: str, /) -> list[str]:
     """Split ``text`` into lowercased maximal runs of alphabetic characters (the shared tokenizer)."""
 

@@ -95,6 +95,10 @@ USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
 USER_SAID_TRAILER = "Note: The user's next message"
 ANSWERED_PREFIX = "Your questions have been answered: "
 ANSWERED_TRAILER = ". You can now continue with these answers in mind."
+# Harness notification-delivery markers: the task-notification wrapper and the tool-use-id tag it carries.
+TASK_NOTIFICATION_MARKER = "<task-notification>"
+TOOL_USE_ID_PREFIX = "<tool-use-id>"
+TOOL_USE_ID_SUFFIX = "</tool-use-id>"
 
 # Approve-and-advance directives advance the prior assistant turn rather than correct it — the opposite of
 # pushback — so pushback consumers drop them; start-anchoring keeps a mid-correction "commit"/"push" from matching.

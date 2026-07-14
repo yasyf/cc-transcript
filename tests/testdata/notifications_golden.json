@@ -1,0 +1,455 @@
+[
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "enqueue-only",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": []
+    },
+    "id": "dequeue-then-user-delivery",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "dequeue",
+        "type": "queue-operation"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "attachment-delivery",
+    "records": [
+      {
+        "attachment": {
+          "commandMode": "prompt",
+          "prompt": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "type": "queued_command"
+        },
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "attachment",
+        "uuid": "att",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "enqueue-and-attachment",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "attachment": {
+          "commandMode": "prompt",
+          "prompt": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "type": "queued_command"
+        },
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "attachment",
+        "uuid": "att",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": []
+    },
+    "id": "remove",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "remove",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "please run the full test suite"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "popall-spares-notif",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "please run the full test suite",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "please run the full test suite",
+        "operation": "popAll",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>"
+      ],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>",
+        "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "two-notifs-first-delivered",
+    "records": [
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "dequeue",
+        "type": "queue-operation"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "plain-user-delivery-no-queue",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "no-delivery",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "just working, no notification here",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "",
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "empty-enqueue-slot",
+    "records": [
+      {
+        "content": "",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "dequeue",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        ""
+      ],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "attachment-empty-prompt",
+    "records": [
+      {
+        "attachment": {
+          "commandMode": "prompt",
+          "prompt": "",
+          "type": "queued_command"
+        },
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "attachment",
+        "uuid": "att",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "queued": []
+    },
+    "id": "conversation-with-delivery",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "do the work",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "on it",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "assistant",
+        "uuid": "a",
+        "version": "2.1.7"
+      },
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "dequeue",
+        "type": "queue-operation"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "no-queue-ops-plain-conversation",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "done",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "assistant",
+        "uuid": "a",
+        "version": "2.1.7"
+      }
+    ]
+  }
+]

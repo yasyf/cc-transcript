@@ -8,7 +8,8 @@ import pytest
 from cc_transcript.activity import SessionActivity, native_user_classifier
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AttachmentEvent, OtherAttachment, OtherEvent, QueuedCommand, UserEvent
-from cc_transcript.notifications import NOTIFICATION_MARKER, Notifications, tool_use_marker
+from cc_transcript.filterspec import TASK_NOTIFICATION_MARKER
+from cc_transcript.notifications import Notifications, tool_use_marker
 from cc_transcript.query import Session
 from tests.support import assistant as _assistant
 from tests.support import meta as _meta
@@ -58,7 +59,7 @@ def attachment(prompt: str) -> AttachmentEvent:
 
 
 def notif(tool_use_id: str, *, body: str = "background task finished") -> str:
-    return f"{NOTIFICATION_MARKER}{body} {tool_use_marker(tool_use_id)}</task-notification>"
+    return f"{TASK_NOTIFICATION_MARKER}{body} {tool_use_marker(tool_use_id)}</task-notification>"
 
 
 def session(*events: TranscriptEvent, user_classifier: UserClassifier = native_user_classifier) -> Session:
@@ -216,20 +217,20 @@ def test_delivery_is_scanned_off_events_not_turn_prompt() -> None:
     events = (user("u0", "do the work"), assistant("a0", "on it"), user("u1", notif(TID)))
 
     native = session(*events)
-    assert any(NOTIFICATION_MARKER in turn.prompt for turn in native.turns)
+    assert any(TASK_NOTIFICATION_MARKER in turn.prompt for turn in native.turns)
     assert native.notifications.completed(TID) is True
 
     def folds_notification_deliveries(event: UserEvent) -> bool:
-        return native_user_classifier(event) and NOTIFICATION_MARKER not in event.text
+        return native_user_classifier(event) and TASK_NOTIFICATION_MARKER not in event.text
 
     folded = session(*events, user_classifier=folds_notification_deliveries)
-    assert all(NOTIFICATION_MARKER not in turn.prompt for turn in folded.turns)
+    assert all(TASK_NOTIFICATION_MARKER not in turn.prompt for turn in folded.turns)
     assert folded.notifications.delivered == (notif(TID),)
     assert folded.notifications.completed(TID) is True
 
 
 def test_has_pending_counts_task_id_only_notification() -> None:
-    text = f"{NOTIFICATION_MARKER}a background task <task-id>bg-7</task-id></task-notification>"
+    text = f"{TASK_NOTIFICATION_MARKER}a background task <task-id>bg-7</task-id></task-notification>"
     notifications = session(enqueue(text)).notifications
     assert notifications.has_pending is True
     assert notifications.pending("bg-7") is False

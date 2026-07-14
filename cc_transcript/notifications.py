@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from cc_transcript.filterspec import TASK_NOTIFICATION_MARKER, TOOL_USE_ID_PREFIX, TOOL_USE_ID_SUFFIX
 from cc_transcript.models import AttachmentEvent, OtherEvent, QueuedCommand, UserEvent
 
 if TYPE_CHECKING:
@@ -21,16 +22,14 @@ if TYPE_CHECKING:
 
     from cc_transcript.models import TranscriptEvent
 
-NOTIFICATION_MARKER = "<task-notification>"
-
 
 def tool_use_marker(tool_use_id: str) -> str:
-    return f"<tool-use-id>{tool_use_id}</tool-use-id>"
+    return f"{TOOL_USE_ID_PREFIX}{tool_use_id}{TOOL_USE_ID_SUFFIX}"
 
 
 def delivered_text(event: TranscriptEvent) -> str | None:
     match event:
-        case UserEvent(text=text) if NOTIFICATION_MARKER in text:
+        case UserEvent(text=text) if TASK_NOTIFICATION_MARKER in text:
             return text
         case AttachmentEvent(attachment_type="queued_command", detail=QueuedCommand(prompt=prompt)):
             return prompt or ""
@@ -110,4 +109,4 @@ class Notifications:
     @property
     def has_pending(self) -> bool:
         """Whether any queued item is an undelivered task notification."""
-        return any(NOTIFICATION_MARKER in text for text in self.queued)
+        return any(TASK_NOTIFICATION_MARKER in text for text in self.queued)

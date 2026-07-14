@@ -21,6 +21,7 @@ use cc_transcript_core::facts;
 use cc_transcript_core::cost::cost_of;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
+use cc_transcript_core::notifications::Notifications;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope, parse_usage_value};
 use cc_transcript_core::query::{FileRef, Session};
 use cc_transcript_core::types::Entry;
@@ -181,6 +182,17 @@ fn cost_of_json<'py>(
 }
 
 #[pyfunction]
+fn notifications_replay<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+    let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
+    let notifications = Notifications::from_entries(&entries);
+    let dict = PyDict::new(py);
+    dict.set_item("queued", notifications.queued)?;
+    dict.set_item("delivered", notifications.delivered)?;
+    dict.set_item("enqueued", notifications.enqueued)?;
+    Ok(dict)
+}
+
+#[pyfunction]
 fn lexicon_tokenize(text: &str) -> PyResult<Vec<String>> {
     lexicon::tokenize(text).map_err(PyValueError::new_err)
 }
@@ -226,6 +238,12 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         "protocol.AGENT_INJECTION_PATTERN",
         protocol::AGENT_INJECTION_PATTERN,
     )?;
+    dict.set_item(
+        "protocol.TASK_NOTIFICATION_MARKER",
+        protocol::TASK_NOTIFICATION_MARKER,
+    )?;
+    dict.set_item("protocol.TOOL_USE_ID_PREFIX", protocol::TOOL_USE_ID_PREFIX)?;
+    dict.set_item("protocol.TOOL_USE_ID_SUFFIX", protocol::TOOL_USE_ID_SUFFIX)?;
     dict.set_item("mining.TRANSCRIPT_MESSAGE", mining::TRANSCRIPT_MESSAGE)?;
     dict.set_item("mining.PLAN_REVIEW", mining::PLAN_REVIEW)?;
     dict.set_item("mining.INTERRUPT_REJECTION", mining::INTERRUPT_REJECTION)?;
@@ -697,6 +715,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
+    m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;
