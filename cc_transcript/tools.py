@@ -14,6 +14,7 @@ hook hot path.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _parser_rs
@@ -172,7 +173,51 @@ mcp_parts = _parser_rs.mcp_parts
 mcp_access = _parser_rs.mcp_access
 
 
-def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise") -> ToolCall:
+@dataclass(frozen=True, slots=True)
+class FallbackCall:
+    """The ``on_error='other'`` fallback for tool input outside the JSON contract.
+
+    v14 routes input through the native parser as a JSON document, so a mapping
+    carrying values JSON cannot express — a ``datetime``, ``bytes``, a reference
+    cycle — has no native view. This Python-side stand-in mirrors the
+    :class:`OtherCall` surface and holds the original mapping verbatim, so a
+    wild-data boundary degrades instead of crashing. :attr:`digest` still derives
+    from that mapping, and so raises only when the mapping is itself undigestable.
+
+    Attributes:
+        name: The tool name exactly as invoked.
+        raw: The original input mapping, verbatim.
+    """
+
+    name: str
+    raw: Mapping[str, Any]
+
+    @property
+    def digest(self) -> ToolDigest:
+        """The cross-language content digest of this call's raw mapping."""
+        return tool_digest(self.name, self.raw)
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackResult:
+    """The ``on_error='other'`` fallback for a tool result payload outside the JSON contract.
+
+    Mirrors :class:`OtherResult` and holds the original ``toolUseResult`` payload
+    verbatim when it carries values JSON cannot express, so the result lift stays
+    total at a wild-data boundary.
+
+    Attributes:
+        name: The tool name exactly as invoked.
+        raw: The original ``toolUseResult`` payload, verbatim.
+    """
+
+    name: str
+    raw: Mapping[str, Any] | str | None
+
+
+def parse_tool_call(
+    name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise"
+) -> ToolCall | FallbackCall:
     """Parse a tool's name and raw input into the typed hierarchy.
 
     Strict by default: a known tool whose input is malformed raises
@@ -188,6 +233,13 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
     it degrades to an :class:`OtherCall` over an empty mapping, whose digest is
     the empty-input digest.
 
+    v14 contract: ``input`` is decoded-JSON values. It is serialized to a JSON
+    document for the native parser, so tuples normalize to lists and non-string
+    keys to strings (JSON semantics). Values JSON cannot express — a
+    ``datetime``, ``bytes``, a reference cycle — are out of contract: strict mode
+    raises, and ``on_error='other'`` degrades to a :class:`FallbackCall` holding
+    the original mapping verbatim rather than crashing.
+
     Example:
         >>> call = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})
         >>> call.new
@@ -197,22 +249,36 @@ def parse_tool_call(name: str, input: Mapping[str, Any], *, on_error: Literal["r
         if on_error == "raise":
             raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
         return _parser_rs.toolcall_parse_view(name, "{}", "other")
-    return _parser_rs.toolcall_parse_view(name, json.dumps(input), on_error)
+    try:
+        serialized = json.dumps(input)
+    except (TypeError, ValueError):
+        if on_error == "raise":
+            raise
+        return FallbackCall(name=name, raw=input)
+    return _parser_rs.toolcall_parse_view(name, serialized, on_error)
 
 
 def parse_tool_result(
     name: str, payload: Mapping[str, Any] | str | None, *, on_error: Literal["raise", "other"] = "raise"
-) -> ToolResult:
+) -> ToolResult | FallbackResult:
     """Parse a tool's name and record-level ``toolUseResult`` into the typed hierarchy.
 
     The payload is the verbatim ``toolUseResult`` — dict, string, or absent.
     A plain-string payload (a denial) is a :class:`TextResult`; a payload for a
     tool the platform does not type is an :class:`OtherResult`, as is an absent
-    (None) payload. The result lift is total, so ``on_error`` never fires; it
-    stays in the signature for the wild-data boundaries that pass it.
+    (None) payload. The native result lift is total, so ``on_error`` fires only
+    when the payload carries values JSON cannot express: strict mode raises,
+    ``on_error='other'`` degrades to a :class:`FallbackResult` holding the
+    original payload verbatim.
 
     Example:
         >>> parse_tool_result("Bash", {"stdout": "hi", "stderr": ""}).stdout
         'hi'
     """
-    return _parser_rs.toolresult_parse_view(name, json.dumps(payload))
+    try:
+        serialized = json.dumps(payload)
+    except (TypeError, ValueError):
+        if on_error == "raise":
+            raise
+        return FallbackResult(name=name, raw=payload)
+    return _parser_rs.toolresult_parse_view(name, serialized)

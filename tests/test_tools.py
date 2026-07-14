@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from cc_transcript.command import CommandLine
@@ -12,6 +14,8 @@ from cc_transcript.tools import (
     EditCall,
     EditResult,
     EditSpan,
+    FallbackCall,
+    FallbackResult,
     GrepCall,
     Hunk,
     MultiEditCall,
@@ -591,3 +595,54 @@ def test_missing_keys_fall_back_to_defaults() -> None:
     assert isinstance(result, BashResult)
     assert result.stdout is None and result.interrupted is False and result.is_image is False
     assert result.background_task_id is None and result.return_code_interpretation is None
+
+
+# v14 accepted divergence: input routes through JSON, so JSON-expressible-but-non-JSON
+# Python values normalize per JSON semantics rather than round-tripping identically.
+@pytest.mark.parametrize(
+    ("input", "expected_raw"),
+    [
+        pytest.param({"x": (1, 2)}, {"x": [1, 2]}, id="tuple-to-list"),
+        pytest.param({1: "x"}, {"1": "x"}, id="int-key-to-str"),
+    ],
+)
+def test_parse_tool_call_normalizes_json_expressible_values(input: dict, expected_raw: dict) -> None:
+    assert parse_tool_call("Unknown", input).raw == expected_raw
+
+
+@pytest.mark.parametrize(
+    "input",
+    [
+        pytest.param({"t": datetime(2026, 1, 1, tzinfo=UTC)}, id="datetime"),
+        pytest.param({"b": b"raw"}, id="bytes"),
+    ],
+)
+def test_parse_tool_call_out_of_contract_input(input: dict) -> None:
+    # strict mode surfaces the serialization failure; on_error='other' never raises
+    # and preserves the original mapping verbatim (identity), mirroring the old fallback.
+    with pytest.raises(TypeError):
+        parse_tool_call("X", input)
+    call = parse_tool_call("X", input, on_error="other")
+    assert isinstance(call, FallbackCall)
+    assert call.name == "X"
+    assert call.raw is input
+
+
+def test_parse_tool_call_reference_cycle_falls_back() -> None:
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ValueError):
+        parse_tool_call("X", cyclic)
+    call = parse_tool_call("X", cyclic, on_error="other")
+    assert isinstance(call, FallbackCall)
+    assert call.raw is cyclic
+
+
+def test_parse_tool_result_out_of_contract_payload() -> None:
+    payload = {"when": datetime(2026, 1, 1, tzinfo=UTC)}
+    with pytest.raises(TypeError):
+        parse_tool_result("Bash", payload)
+    result = parse_tool_result("Bash", payload, on_error="other")
+    assert isinstance(result, FallbackResult)
+    assert result.name == "Bash"
+    assert result.raw is payload
