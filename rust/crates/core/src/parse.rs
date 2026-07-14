@@ -817,6 +817,18 @@ mod tests {
     }
 
     #[test]
+    fn user_interrupted_message_id_detected() {
+        // No text marker, but a present interruptedMessageId still counts as interrupted.
+        let raw = format!(
+            r#"{{"type":"user",{META},"interruptedMessageId":"m1","message":{{"content":"plain text"}}}}"#
+        );
+        let Entry::User(user) = parse_entry(parse(&raw)).unwrap() else {
+            panic!("expected user entry")
+        };
+        assert!(user.interrupted());
+    }
+
+    #[test]
     fn assistant_tool_use_carries_typed_reads_and_verbatim_input() {
         let raw = format!(
             r#"{{"type":"assistant",{META},"message":{{"model":"m1","content":[

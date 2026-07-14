@@ -151,7 +151,7 @@ impl UserEntry {
     }
 
     pub fn interrupted(&self) -> bool {
-        interrupt_marker(&self.content.text()).is_some()
+        interrupt_marker(&self.content.text()).is_some() || self.interrupted_message_id.is_some()
     }
 
     pub fn is_agent_injected(&self) -> bool {

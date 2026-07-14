@@ -126,6 +126,11 @@ SYNTHETIC_CASES: dict[str, str] = {
         usr("uw", whole(1), "\x1c\x1d\x1e\x1f"),
         usr("u1", whole(2), "next"),
     ),
+    "interrupted_message_id": jsonl(
+        usr("u0", whole(0), "real prompt"),
+        usr("ui", whole(1), "silent stop", interruptedMessageId="m1"),
+        usr("u1", whole(2), "next prompt"),
+    ),
     "dup_result_index": jsonl(
         usr("u0", whole(0), "go"),
         asst("a0", whole(1), use("t1", "Bash", command="ls")),

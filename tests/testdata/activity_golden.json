@@ -23807,6 +23807,31 @@
         }
       ]
     },
+    "interrupted_message_id": {
+      "hunk_overlaps": [],
+      "result_index": [],
+      "turn_count": 2,
+      "turns": [
+        {
+          "edits": [],
+          "ended_at_ms": 1767225601000,
+          "event_count": 2,
+          "index": 0,
+          "prompt": "real prompt",
+          "started_at_ms": 1767225600000,
+          "tool_uses": []
+        },
+        {
+          "edits": [],
+          "ended_at_ms": 1767225602000,
+          "event_count": 1,
+          "index": 1,
+          "prompt": "next prompt",
+          "started_at_ms": 1767225602000,
+          "tool_uses": []
+        }
+      ]
+    },
     "prelude_only": {
       "hunk_overlaps": [],
       "result_index": [
