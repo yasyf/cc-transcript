@@ -42,3 +42,7 @@ harness = false
 [[bench]]
 name = "toolcall"
 harness = false
+
+[[bench]]
+name = "render"
+harness = false

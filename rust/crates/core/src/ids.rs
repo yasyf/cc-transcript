@@ -144,7 +144,7 @@ fn es_number(value: f64) -> Result<String, String> {
 
 // Parity: canonical_parts str arm — json.dumps(s, ensure_ascii=False): escape " \
 // and C0 controls (short escapes else lowercase \u00xx), raw UTF-8 otherwise.
-fn encode_string(text: &str, out: &mut String) {
+pub(crate) fn encode_string(text: &str, out: &mut String) {
     out.push('"');
     for ch in text.chars() {
         match ch {

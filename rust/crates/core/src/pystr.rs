@@ -12,6 +12,11 @@ pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)
 }
 
+/// Python ``str.rstrip()``: the input without trailing Python whitespace.
+pub fn rstrip(s: &str) -> &str {
+    s.trim_end_matches(is_space)
+}
+
 /// Python ``str.split()`` with no separator: maximal non-whitespace runs, no empties.
 pub fn split_whitespace(s: &str) -> impl Iterator<Item = &str> {
     s.split(is_space).filter(|piece| !piece.is_empty())

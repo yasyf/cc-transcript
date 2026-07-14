@@ -5,5 +5,6 @@ mod mining;
 mod model;
 mod nlp;
 mod python;
+mod render;
 mod score;
 mod toolcall;

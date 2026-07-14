@@ -109,3 +109,30 @@ def activity_lift(path: str, max_events: int, /) -> dict[str, Any]:
 def activity_hunk_overlap(a_old: str, a_new: str, b_old: str, b_new: str, /) -> float:
     """The activity.py ``hunk_overlap`` of two ``Hunk``s: the fraction of ``a_new``'s
     non-empty normalized lines present in ``b_old``."""
+
+def render_tool_call(name: str, input_json: str, turn_chars: int, tool_chars: int, /) -> str:
+    """Renders a tool ``name`` and JSON-encoded input under a budget.
+
+    Mirrors ``cc_transcript.render.render_tool_call`` over ``parse_tool_call(..., on_error="other")``
+    with a ``Budget(turn_chars, tool_chars)``.
+    """
+
+def render_compact_lines(raw: bytes, width: int, thinking: bool, uuids: bool, /) -> list[str]:
+    """Renders one compact line per event of a transcript's raw JSONL bytes.
+
+    Mirrors ``cc_transcript.render.compact_line`` over every parsed event in order, keyed by the
+    transcript's own ``tool_names`` join.
+    """
+
+def render_haystacks(raw: bytes, wheres: list[str], /) -> list[str]:
+    """Renders the search haystack of each event of a transcript's raw JSONL bytes.
+
+    Mirrors ``cc_transcript.render.haystack``; ``wheres`` selects the ``text``/``thinking``/``tools``
+    areas (an empty list searches none).
+    """
+
+def render_stats(raws: list[bytes], /) -> str:
+    """Renders the aggregate statistics block over several transcripts' raw JSONL bytes.
+
+    Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
+    """

@@ -178,11 +178,23 @@ fn entry_kind(entry: &Entry) -> Kind {
     }
 }
 
-fn entry_text(entry: &Entry) -> String {
+pub(crate) fn entry_text(entry: &Entry) -> String {
     match entry {
         Entry::User(user) => user.content.text(),
         Entry::Assistant(assistant) => joined_text(&assistant.blocks),
         _ => String::new(),
+    }
+}
+
+/// Parity: filterspec.event_kind — the string kind tag the renderer and stats key on.
+pub(crate) fn event_kind(entry: &Entry) -> &'static str {
+    match entry {
+        Entry::User(_) => "user",
+        Entry::Assistant(_) => "assistant",
+        Entry::System(_) => "system",
+        Entry::Mode(_) => "mode",
+        Entry::Other(_) => "other",
+        Entry::Attachment(_) => "attachment",
     }
 }
 

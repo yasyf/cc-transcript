@@ -415,6 +415,27 @@ impl ToolCall {
         }
     }
 
+    /// The tool name (tools.py ToolCallBase.name).
+    pub fn name(&self) -> &str {
+        match self {
+            ToolCall::Bash(c) => &c.name,
+            ToolCall::Edit(c) => &c.name,
+            ToolCall::MultiEdit(c) => &c.name,
+            ToolCall::Write(c) => &c.name,
+            ToolCall::Read(c) => &c.name,
+            ToolCall::NotebookEdit(c) => &c.name,
+            ToolCall::Grep(c) => &c.name,
+            ToolCall::Glob(c) => &c.name,
+            ToolCall::Task(c) => &c.name,
+            ToolCall::Workflow(c) => &c.name,
+            ToolCall::Skill(c) => &c.name,
+            ToolCall::TaskCreate(c) => &c.name,
+            ToolCall::TaskUpdate(c) => &c.name,
+            ToolCall::ExitPlanMode(c) => &c.name,
+            ToolCall::Other(c) => &c.name,
+        }
+    }
+
     /// The raw input mapping (tools.py ToolCallBase.raw).
     pub fn raw(&self) -> &Value {
         match self {
