@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyIndexError, PyTypeError};
+use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PySlice};
+use pyo3::types::{PyList, PySlice, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use cc_transcript_core::types::Entry;
 
+use crate::views::dunder::frozen_copy;
 use crate::views::events::event_view;
 
 /// The parsed events of a single transcript file, backed by the native parse
@@ -43,6 +45,15 @@ impl TranscriptView {
 }
 
 /// A lazily-materializing sequence of transcript events over one parse output.
+///
+/// Implements the immutable ``collections.abc.Sequence`` interface — indexing,
+/// slicing, iteration, ``len``, ``in``, :func:`reversed`, ``index``, and
+/// ``count`` — and is registered as a virtual ``Sequence``. ``copy()`` returns a
+/// plain ``list``, and ``==`` is elementwise against any list, tuple, or
+/// ``EventList`` (``list(events) == events``). Views materialize fresh on each
+/// access, so identity across accesses is not guaranteed by design
+/// (``events[0] is events[0]`` is False). ``copy.copy`` and ``copy.deepcopy``
+/// return the immutable list itself; pickle is unsupported.
 #[pyclass(name = "EventList", module = "cc_transcript", frozen)]
 pub(crate) struct EventListView {
     pub entries: Arc<Vec<Entry>>,
@@ -81,4 +92,59 @@ impl EventListView {
             "EventList indices must be integers or slices",
         ))
     }
+
+    fn __reversed__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let views = (0..self.entries.len())
+            .rev()
+            .map(|i| event_view(py, &self.entries, i))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PyList::new(py, views)?.into_any().try_iter()?.into_any())
+    }
+
+    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        for i in 0..self.entries.len() {
+            if event_view(py, &self.entries, i)?.eq(value)? {
+                return Ok(i);
+            }
+        }
+        Err(PyValueError::new_err("value is not in EventList"))
+    }
+
+    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        let mut hits = 0;
+        for i in 0..self.entries.len() {
+            if event_view(py, &self.entries, i)?.eq(value)? {
+                hits += 1;
+            }
+        }
+        Ok(hits)
+    }
+
+    fn copy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let views = (0..self.entries.len())
+            .map(|i| event_view(py, &self.entries, i))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, views)
+    }
+
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let is_sequence = other.is_instance_of::<PyList>()
+            || other.is_instance_of::<PyTuple>()
+            || other.is_instance_of::<EventListView>();
+        if !is_sequence {
+            return Ok(py.NotImplemented());
+        }
+        if other.len()? != self.entries.len() {
+            return false.into_py_any(py);
+        }
+        for i in 0..self.entries.len() {
+            if !event_view(py, &self.entries, i)?.eq(&other.get_item(i)?)? {
+                return false.into_py_any(py);
+            }
+        }
+        true.into_py_any(py)
+    }
 }
+
+frozen_copy!(EventListView);
+frozen_copy!(TranscriptView);

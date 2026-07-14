@@ -8,7 +8,7 @@ use cc_transcript_core::ids;
 use cc_transcript_core::types::{ContentBlock, ToolResultBlock, ToolUseBlock};
 
 use crate::views::convert::{json_to_py, opt_json};
-use crate::views::dunder::view_dunders;
+use crate::views::dunder::{frozen_copy, view_dunders};
 use crate::views::meta::QuestionView;
 use crate::views::store::{BlockHost, BlockRef};
 
@@ -168,6 +168,8 @@ impl OtherBlockView {
         self.block_type(py)?.into_pyobject(py)?.into_any().hash()
     }
 }
+
+frozen_copy!(OtherBlockView);
 
 /// An assistant request to invoke a tool.
 ///

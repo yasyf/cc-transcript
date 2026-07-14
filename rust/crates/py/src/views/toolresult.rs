@@ -8,7 +8,7 @@ use sonic_rs::{JsonContainerTrait, Value};
 use cc_transcript_core::toolcall::{self, QuestionAnnotation, ToolResult};
 
 use crate::views::convert::{json_to_py, opt_json};
-use crate::views::dunder::view_dunders;
+use crate::views::dunder::{frozen_copy, view_dunders};
 use crate::views::meta::QuestionView;
 
 /// Common shape of every typed tool result.
@@ -334,6 +334,8 @@ impl ReadResultView {
         )
     }
 }
+
+frozen_copy!(ReadResultView);
 
 /// The Agent/Task result family head; :meth:`from_raw` picks the variant.
 ///

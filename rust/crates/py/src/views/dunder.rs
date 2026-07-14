@@ -97,6 +97,18 @@ macro_rules! view_dunders {
                 };
                 crate::views::dunder::eq_pairs(py, &self.dunder_fields(py)?, &other.get().dunder_fields(py)?)
             }
+
+            // A frozen view is immutable, so copy and deep-copy are identity.
+            fn __copy__(slf: pyo3::PyRef<'_, Self>) -> pyo3::PyRef<'_, Self> {
+                slf
+            }
+
+            fn __deepcopy__<'py>(
+                slf: pyo3::PyRef<'py, Self>,
+                _memo: &pyo3::Bound<'py, pyo3::PyAny>,
+            ) -> pyo3::PyRef<'py, Self> {
+                slf
+            }
         }
     };
     (@hash $cls:ident) => {
@@ -110,3 +122,25 @@ macro_rules! view_dunders {
 }
 
 pub(crate) use view_dunders;
+
+/// `__copy__`/`__deepcopy__` returning identity for a frozen view that does not
+/// use `view_dunders!` (its dunders are hand-written). Immutable ⇒ copy is self.
+macro_rules! frozen_copy {
+    ($cls:ident) => {
+        #[pyo3::pymethods]
+        impl $cls {
+            fn __copy__(slf: pyo3::PyRef<'_, Self>) -> pyo3::PyRef<'_, Self> {
+                slf
+            }
+
+            fn __deepcopy__<'py>(
+                slf: pyo3::PyRef<'py, Self>,
+                _memo: &pyo3::Bound<'py, pyo3::PyAny>,
+            ) -> pyo3::PyRef<'py, Self> {
+                slf
+            }
+        }
+    };
+}
+
+pub(crate) use frozen_copy;

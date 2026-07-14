@@ -9,7 +9,7 @@ use cc_transcript_core::types::{joined_text, Entry};
 use crate::views::attachment::attachment_detail_view;
 use crate::views::blocks::{assistant_block_views, user_block_views};
 use crate::views::convert::{json_to_py, opt_json};
-use crate::views::dunder::view_dunders;
+use crate::views::dunder::{frozen_copy, view_dunders};
 use crate::views::meta::{ApiErrorView, AttributionView, EntryMetaView, UsageView};
 use crate::views::store::{BlockHost, EventRef, UsageHost};
 use crate::views::system::system_detail_view;
@@ -425,6 +425,8 @@ impl OtherEventView {
         self.event_type(py)?.into_pyobject(py)?.into_any().hash()
     }
 }
+
+frozen_copy!(OtherEventView);
 
 /// A harness attachment record — a hook firing, a queued command, or an
 /// informational injection — carrying the full envelope it was written with.

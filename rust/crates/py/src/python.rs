@@ -818,6 +818,10 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     crate::views::add_view_classes(m)?;
+    m.py()
+        .import("collections.abc")?
+        .getattr("Sequence")?
+        .call_method1("register", (m.getattr("EventList")?,))?;
     m.add_class::<ParseStream>()?;
     m.add_class::<crate::watch::WatchTailer>()?;
     m.add_class::<crate::corrections::RustCorrectionLog>()?;
