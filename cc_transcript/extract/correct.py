@@ -16,12 +16,10 @@ reads :mod:`cc_transcript.corrections` pays nothing.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
-from functools import partial
 from typing import TYPE_CHECKING
 
-import anyio
-import anyio.to_thread
 from pydantic import BaseModel
 
 from cc_transcript.evidence import GitFix, harvest_pairs, lower_pair
@@ -167,7 +165,7 @@ async def extract_correction(
     """
     if log.for_anchor(anchor.session_id, anchor.event_uuid):
         return None
-    pairs = await anyio.to_thread.run_sync(partial(harvest_pairs, activity, anchor, repo=repo))
+    pairs = await asyncio.to_thread(harvest_pairs, activity, anchor, repo=repo)
     if not pairs or (turn := activity.turn_of(anchor)) is None:
         return None
     pick = await choose_pair(pairs, feedback=feedback, anchor_turn=turn.index, tier=tier, backend=backend)

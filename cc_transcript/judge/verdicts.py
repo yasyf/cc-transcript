@@ -1,14 +1,15 @@
 """Generic LLM verdict passes over mined feedback: storage, fan-out, sampling, eval math.
 
 The mechanism proven in cc-pushback's triage pipeline, lifted app-free: a verdict
-table layered on :class:`FeedbackStore`'s event ledger, the anyio fan-out that runs
-a judge over rows, the seeded stratified audit sampler, and the mechanical eval
+table layered on :class:`FeedbackStore`'s event ledger, the asyncio fan-out that
+runs a judge over rows, the seeded stratified audit sampler, and the mechanical eval
 math (golden gate, exact Clopper-Pearson bounds, flip tracking). Apps own the
 prompts, the verdict model, and any SQL views over the verdict table.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from math import comb
@@ -16,14 +17,11 @@ from random import Random
 from typing import TYPE_CHECKING, ClassVar, Protocol
 from weakref import WeakKeyDictionary
 
-import anyio
-
 from cc_transcript.mining.store import now
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Awaitable, Callable, Mapping, Sequence
-
-    import aiosqlite
 
     from cc_transcript.context import Fidelity
     from cc_transcript.mining.candidates import DedupKey
@@ -62,7 +60,7 @@ with the hyphen requirement — can never match a 64-character hex digest, so a
 slug and a content digest never collide.
 """
 
-VALIDATED_VERDICT_TABLES: WeakKeyDictionary[aiosqlite.Connection, set[str]] = WeakKeyDictionary()
+VALIDATED_VERDICT_TABLES: WeakKeyDictionary[sqlite3.Connection, set[str]] = WeakKeyDictionary()
 """Per-connection sets of verdict table names that passed :meth:`VerdictStoreMixin.ensure_verdict_schema`.
 
 A table's schema is fixed for a connection's lifetime, so the v8/v9 check runs
@@ -165,7 +163,7 @@ class VerdictStoreMixin:
             table=cls.VERDICT_TABLE, accepted=cls.ACCEPTED_COLUMN, summary=cls.SUMMARY_COLUMN
         )
 
-    async def ensure_verdict_schema(self) -> None:
+    def ensure_verdict_schema(self) -> None:
         """Validates the verdict table matches the v9 schema, once per table per connection.
 
         ``CREATE TABLE IF NOT EXISTS`` leaves an existing v8 table (no
@@ -181,12 +179,10 @@ class VerdictStoreMixin:
         """
         if self.VERDICT_TABLE in VALIDATED_VERDICT_TABLES.setdefault(self.store.conn, set()):
             return
-        columns = {
-            row["name"] async for row in await self.store.conn.execute(f"PRAGMA table_info({self.VERDICT_TABLE})")
-        }
-        indexes = [dict(row) async for row in await self.store.conn.execute(f"PRAGMA index_list({self.VERDICT_TABLE})")]
+        columns = {row["name"] for row in self.store.conn.execute(f"PRAGMA table_info({self.VERDICT_TABLE})")}
+        indexes = [dict(row) for row in self.store.conn.execute(f"PRAGMA index_list({self.VERDICT_TABLE})")]
         unique_columns = [
-            tuple([col["name"] async for col in await self.store.conn.execute(f"PRAGMA index_info({index['name']})")])
+            tuple(col["name"] for col in self.store.conn.execute(f"PRAGMA index_info({index['name']})"))
             for index in indexes
             if index["unique"]
         ]
@@ -230,7 +226,7 @@ class VerdictStoreMixin:
             record_evidence,
         )
 
-        await self.ensure_verdict_schema()
+        self.ensure_verdict_schema()
         evidence = (
             await embed_evidence(
                 self.store, dedup_key=key, canonical_key=verdict.canonical_key, summary=verdict.summary
@@ -238,9 +234,9 @@ class VerdictStoreMixin:
             if verdict.canonical_key is not None
             else None
         )
-        removable = evidence is None and await prepare_evidence_removal(self.store)
-        async with self.store.transaction() as conn:
-            cursor = await conn.execute(
+        removable = evidence is None and prepare_evidence_removal(self.store)
+        with self.store.transaction() as conn:
+            cursor = conn.execute(
                 f"INSERT INTO {self.VERDICT_TABLE} ("
                 f"dedup_key, role, prompt_version, model, category, {self.ACCEPTED_COLUMN}, "
                 f"{self.SUMMARY_COLUMN}, confidence, rationale, canonical_key, fidelity, judged_at"
@@ -269,11 +265,9 @@ class VerdictStoreMixin:
             )
             if cursor.rowcount > 0:
                 if evidence is not None:
-                    await record_evidence(
-                        conn, dedup_key=key, role=role, prompt_version=prompt_version, evidence=evidence
-                    )
+                    record_evidence(conn, dedup_key=key, role=role, prompt_version=prompt_version, evidence=evidence)
                 elif removable:
-                    await clear_evidence(conn, dedup_key=key, role=role, prompt_version=prompt_version)
+                    clear_evidence(conn, dedup_key=key, role=role, prompt_version=prompt_version)
 
     async def unjudged(
         self,
@@ -312,7 +306,7 @@ class VerdictStoreMixin:
         Returns:
             One dict per event with the columns needed to build its prompt.
         """
-        await self.ensure_verdict_schema()
+        self.ensure_verdict_schema()
         if not refresh_summary:
             sql = (
                 f"SELECT {EVENT_COLUMNS} FROM feedback_events e "
@@ -324,26 +318,27 @@ class VerdictStoreMixin:
             if limit is not None:
                 sql += " LIMIT ?"
                 params = (*params, limit)
-            async with self.store.conn.execute(sql, params) as cur:
-                return [dict(row) async for row in cur]
+            return [dict(row) for row in self.store.conn.execute(sql, params)]
+        candidates = [
+            dict(raw)
+            for raw in self.store.conn.execute(
+                f"SELECT {EVENT_COLUMNS}, t.id AS verdict_id FROM feedback_events e "
+                f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
+                "AND t.role = ? AND t.prompt_version = ? "
+                "WHERE (t.id IS NULL OR t.fidelity = 'summary') ORDER BY (t.id IS NOT NULL), e.id",
+                (role, prompt_version),
+            )
+        ]
         kept: list[dict[str, object]] = []
-        async with self.store.conn.execute(
-            f"SELECT {EVENT_COLUMNS}, t.id AS verdict_id FROM feedback_events e "
-            f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
-            "AND t.role = ? AND t.prompt_version = ? "
-            "WHERE (t.id IS NULL OR t.fidelity = 'summary') ORDER BY (t.id IS NOT NULL), e.id",
-            (role, prompt_version),
-        ) as cur:
-            async for raw in cur:
-                row = dict(raw)
-                fresh = row.pop("verdict_id") is None
-                if not probe_hydration or fresh or await hydratable(str(row["context_json"])):
-                    kept.append(row)
-                    if limit is not None and len(kept) >= limit:
-                        break
+        for row in candidates:
+            fresh = row.pop("verdict_id") is None
+            if not probe_hydration or fresh or await hydratable(str(row["context_json"])):
+                kept.append(row)
+                if limit is not None and len(kept) >= limit:
+                    break
         return kept
 
-    async def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
+    def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
         """Returns events joined with their ``(role, prompt_version)`` verdicts, oldest first.
 
         The physical accepted/summary columns are aliased to the generic
@@ -358,20 +353,19 @@ class VerdictStoreMixin:
             verdict's ``category``, ``accepted``, ``confidence``, ``summary``,
             ``rationale``, and ``model``.
         """
-        await self.ensure_verdict_schema()
-        cur = await self.store.conn.execute(
+        self.ensure_verdict_schema()
+        cur = self.store.conn.execute(
             f"SELECT {EVENT_COLUMNS}, t.category, t.{self.ACCEPTED_COLUMN} AS accepted, t.confidence, "
             f"t.{self.SUMMARY_COLUMN} AS summary, t.rationale, t.model "
             f"FROM feedback_events e JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
             "WHERE t.role = ? AND t.prompt_version = ? ORDER BY e.id",
             (role, prompt_version),
         )
-        return [dict(row) async for row in cur]
+        return [dict(row) for row in cur]
 
-    async def dedup_keys(self) -> set[str]:
+    def dedup_keys(self) -> set[str]:
         """Returns every stored event's dedup key."""
-        cur = await self.store.conn.execute("SELECT dedup_key FROM feedback_events")
-        return {str(row["dedup_key"]) async for row in cur}
+        return {str(row["dedup_key"]) for row in self.store.conn.execute("SELECT dedup_key FROM feedback_events")}
 
 
 @dataclass(frozen=True, slots=True)
@@ -625,7 +619,7 @@ async def run_verdicts[V](
         The pass's ``(judged, failed)`` counts.
     """
     counts = {"judged": 0, "failed": 0}
-    limiter = anyio.CapacityLimiter(concurrency)
+    limiter = asyncio.Semaphore(concurrency)
 
     async def worker(row: Mapping[str, object]) -> None:
         async with limiter:
@@ -637,9 +631,9 @@ async def run_verdicts[V](
         await persist(row, verdict)
         counts["judged"] += 1
 
-    async with anyio.create_task_group() as tg:
+    async with asyncio.TaskGroup() as tg:
         for row in rows:
-            tg.start_soon(worker, row)
+            tg.create_task(worker(row))
     return counts["judged"], counts["failed"]
 
 

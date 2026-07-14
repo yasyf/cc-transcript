@@ -16,17 +16,16 @@ fails loud with an :class:`ImportError` naming it.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from functools import cache
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, NamedTuple
 from weakref import WeakSet
 
-import anyio.to_thread
-
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import aiosqlite
     import numpy as np
 
     from cc_transcript.mining.candidates import DedupKey
@@ -55,7 +54,7 @@ CREATE TABLE IF NOT EXISTS verdict_evidence (
 
 type Embedder = Callable[[str], np.ndarray]
 
-PREPARED_CONNECTIONS: WeakSet[aiosqlite.Connection] = WeakSet()
+PREPARED_CONNECTIONS: WeakSet[sqlite3.Connection] = WeakSet()
 
 
 class Suggestion(NamedTuple):
@@ -132,25 +131,24 @@ def default_embedder() -> Embedder:
     return embed
 
 
-async def prepare_connection(store: FileStateStore) -> None:
+def prepare_connection(store: FileStateStore) -> None:
     """Loads the sqlite-vec extension and creates the companion tables, once per connection.
 
-    Holds ``store.lock`` around the check-and-prepare so the schema-creating
-    ``executescript`` — which implicitly commits the connection — can never fire
-    while another task holds an open :meth:`~cc_transcript.store.FileStateStore.transaction`,
-    and so the "already prepared" test-and-set stays atomic under concurrent
-    :meth:`~cc_transcript.judge.verdicts.VerdictStoreMixin.record_verdict` fan-out.
+    Synchronous, so the schema-creating ``executescript`` — which implicitly
+    commits the connection — runs atomically and can never fire while an open
+    :meth:`~cc_transcript.store.FileStateStore.transaction` is held: the judge
+    fan-out is single-threaded ``asyncio`` tasks, and this function yields at no
+    ``await``, so the "already prepared" test-and-set is never interleaved.
     """
     import sqlite_vec
 
-    async with store.lock:
-        if store.conn in PREPARED_CONNECTIONS:
-            return
-        await store.conn.enable_load_extension(True)
-        await store.conn.load_extension(sqlite_vec.loadable_path())
-        await store.conn.enable_load_extension(False)
-        await store.conn.executescript(VECTOR_SCHEMA)
-        PREPARED_CONNECTIONS.add(store.conn)
+    if store.conn in PREPARED_CONNECTIONS:
+        return
+    store.conn.enable_load_extension(True)
+    store.conn.load_extension(sqlite_vec.loadable_path())
+    store.conn.enable_load_extension(False)
+    store.conn.executescript(VECTOR_SCHEMA)
+    PREPARED_CONNECTIONS.add(store.conn)
 
 
 def serialize_vector(vector: np.ndarray) -> bytes:
@@ -163,13 +161,13 @@ async def embed_evidence(store: FileStateStore, *, dedup_key: DedupKey, canonica
     """Prepares the vector store and embeds a judged event's feedback for upsert.
 
     Fetches the event's feedback text from ``feedback_events`` and embeds it
-    together with ``summary``, off the event loop. Runs the schema-creating
-    :func:`prepare_connection` and the feedback read under ``store.lock``, both
-    outside the caller's transaction: ``prepare_connection``'s ``executescript``
-    implicitly commits an open transaction, so the caller calls this before
-    ``BEGIN`` and then upserts the returned :class:`Evidence` atomically via
-    :func:`record_evidence`. Called from
-    :meth:`~cc_transcript.judge.verdicts.VerdictStoreMixin.record_verdict`
+    together with ``summary``, offloading the embedder to a thread via
+    :func:`asyncio.to_thread`. The schema-creating :func:`prepare_connection`
+    and the feedback read run before the caller's transaction:
+    ``prepare_connection``'s ``executescript`` implicitly commits an open
+    transaction, so the caller calls this before ``BEGIN`` and then upserts the
+    returned :class:`Evidence` atomically via :func:`record_evidence`. Called
+    from :meth:`~cc_transcript.judge.verdicts.VerdictStoreMixin.record_verdict`
     whenever a verdict assigns a ``canonical_key``.
 
     Args:
@@ -185,14 +183,12 @@ async def embed_evidence(store: FileStateStore, *, dedup_key: DedupKey, canonica
         ImportError: When the ``cc-transcript[judge]`` extra is not installed.
     """
     require_judge_extra()
-    await prepare_connection(store)
-    async with store.lock:
-        cursor = await store.conn.execute("SELECT text FROM feedback_events WHERE dedup_key = ?", (dedup_key,))
-        row = await cursor.fetchone()
+    prepare_connection(store)
+    row = store.conn.execute("SELECT text FROM feedback_events WHERE dedup_key = ?", (dedup_key,)).fetchone()
     assert row is not None, "verdict dedup keys always resolve to a stored feedback event"
     text = row["text"]
-    embedder = await anyio.to_thread.run_sync(default_embedder)
-    vector = await anyio.to_thread.run_sync(embedder, f"{text}\n{summary}")
+    embedder = await asyncio.to_thread(default_embedder)
+    vector = await asyncio.to_thread(embedder, f"{text}\n{summary}")
     return Evidence(serialize_vector(vector), text, canonical_key)
 
 
@@ -200,7 +196,7 @@ def evidence_vector_id(dedup_key: DedupKey, role: str, prompt_version: int) -> s
     return f"{dedup_key}::{role}::{prompt_version}"
 
 
-async def clear_evidence(conn: aiosqlite.Connection, *, dedup_key: DedupKey, role: str, prompt_version: int) -> None:
+def clear_evidence(conn: sqlite3.Connection, *, dedup_key: DedupKey, role: str, prompt_version: int) -> None:
     """Deletes any evidence vector for one verdict identity, on the caller's transaction.
 
     Both the delete pair :func:`record_evidence` runs before it re-inserts, and
@@ -216,12 +212,12 @@ async def clear_evidence(conn: aiosqlite.Connection, *, dedup_key: DedupKey, rol
         prompt_version: The prompt version that produced the verdict.
     """
     vector_id = evidence_vector_id(dedup_key, role, prompt_version)
-    await conn.execute("DELETE FROM verdict_vectors WHERE vector_id = ?", (vector_id,))
-    await conn.execute("DELETE FROM verdict_evidence WHERE vector_id = ?", (vector_id,))
+    conn.execute("DELETE FROM verdict_vectors WHERE vector_id = ?", (vector_id,))
+    conn.execute("DELETE FROM verdict_evidence WHERE vector_id = ?", (vector_id,))
 
 
-async def record_evidence(
-    conn: aiosqlite.Connection, *, dedup_key: DedupKey, role: str, prompt_version: int, evidence: Evidence
+def record_evidence(
+    conn: sqlite3.Connection, *, dedup_key: DedupKey, role: str, prompt_version: int, evidence: Evidence
 ) -> None:
     """Upserts a judged event's evidence vector inside the caller's open transaction.
 
@@ -239,17 +235,17 @@ async def record_evidence(
         prompt_version: The prompt version that produced the verdict.
         evidence: The embedded feedback from :func:`embed_evidence`.
     """
-    await clear_evidence(conn, dedup_key=dedup_key, role=role, prompt_version=prompt_version)
+    clear_evidence(conn, dedup_key=dedup_key, role=role, prompt_version=prompt_version)
     vector_id = evidence_vector_id(dedup_key, role, prompt_version)
-    await conn.execute("INSERT INTO verdict_vectors(vector_id, embedding) VALUES (?, ?)", (vector_id, evidence.vector))
-    await conn.execute(
+    conn.execute("INSERT INTO verdict_vectors(vector_id, embedding) VALUES (?, ?)", (vector_id, evidence.vector))
+    conn.execute(
         "INSERT INTO verdict_evidence(vector_id, dedup_key, role, prompt_version, canonical_key, evidence_text) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (vector_id, dedup_key, role, prompt_version, evidence.canonical_key, evidence.text),
     )
 
 
-async def prepare_evidence_removal(store: FileStateStore) -> bool:
+def prepare_evidence_removal(store: FileStateStore) -> bool:
     """Readies the vec companion so an in-transaction :func:`clear_evidence` can reach it.
 
     Returns False — skip the removal — whenever no evidence could exist: ``sqlite_vec``
@@ -271,13 +267,11 @@ async def prepare_evidence_removal(store: FileStateStore) -> bool:
         return True
     if find_spec("sqlite_vec") is None:
         return False
-    async with store.lock:
-        cursor = await store.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'verdict_evidence'"
-        )
-        if await cursor.fetchone() is None:
-            return False
-    await prepare_connection(store)
+    if store.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'verdict_evidence'"
+    ).fetchone() is None:
+        return False
+    prepare_connection(store)
     return True
 
 
@@ -305,17 +299,17 @@ async def suggest_canonical_keys(
     """
     require_judge_extra()
     conn = store.store.conn
-    await prepare_connection(store.store)
-    embedder = await anyio.to_thread.run_sync(default_embedder)
-    query = serialize_vector(await anyio.to_thread.run_sync(embedder, text))
-    cur = await conn.execute(
+    prepare_connection(store.store)
+    embedder = await asyncio.to_thread(default_embedder)
+    query = serialize_vector(await asyncio.to_thread(embedder, text))
+    cur = conn.execute(
         "SELECT e.canonical_key AS ck, e.evidence_text AS ev, vec_distance_cosine(v.embedding, ?) AS dist "
         "FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id "
         "WHERE e.prompt_version = ? ORDER BY dist",
         (query, prompt_version),
     )
     ranked: dict[str, list[tuple[float, str]]] = {}
-    async for row in cur:
+    for row in cur:
         ranked.setdefault(row["ck"], []).append((1.0 - row["dist"], row["ev"]))
     return sorted(
         (Suggestion(ck, hits[0][0], tuple(ev for _, ev in hits[:3])) for ck, hits in ranked.items()),
@@ -324,7 +318,7 @@ async def suggest_canonical_keys(
     )[:k]
 
 
-async def near_duplicate_keys(store: FeedbackStore, *, prompt_version: int, threshold: float) -> list[KeyOverlap]:
+def near_duplicate_keys(store: FeedbackStore, *, prompt_version: int, threshold: float) -> list[KeyOverlap]:
     """Finds distinct canonical keys whose evidence centroids nearly coincide.
 
     Groups the evidence vectors recorded at ``prompt_version`` by canonical key,
@@ -349,15 +343,15 @@ async def near_duplicate_keys(store: FeedbackStore, *, prompt_version: int, thre
     import numpy as np
 
     conn = store.store.conn
-    await prepare_connection(store.store)
-    cur = await conn.execute(
+    prepare_connection(store.store)
+    cur = conn.execute(
         "SELECT e.canonical_key AS ck, v.embedding AS emb "
         "FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id "
         "WHERE e.prompt_version = ?",
         (prompt_version,),
     )
     groups: dict[str, list[np.ndarray]] = {}
-    async for row in cur:
+    for row in cur:
         groups.setdefault(row["ck"], []).append(np.frombuffer(row["emb"], dtype=np.float32))
     centroids = {ck: (mean := np.mean(vectors, axis=0)) / np.linalg.norm(mean) for ck, vectors in groups.items()}
     keys = sorted(centroids)

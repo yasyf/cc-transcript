@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import anyio
 import pytest
 
 pytest.importorskip("spawnllm")
@@ -52,7 +52,7 @@ def test_deterministic_picks_best_overlap(tmp_path: Path) -> None:
             log, ladder(), anchor(), source="captain-hook", feedback="wrong", repo=Path("/repo"), backend=None
         )
 
-    row = anyio.run(go)
+    row = asyncio.run(go())
     assert row is not None
     assert (row.incorrect_file, row.incorrect_new, row.overlap) == ("/a.py", "alpha = 1", 1.0)
     assert (row.correction_origin, row.correction_new) == ("session", "alpha = 2")
@@ -68,7 +68,7 @@ def test_idempotent_per_anchor(tmp_path: Path) -> None:
         second = await extract_correction(log, ladder(), anchor(), source="captain-hook", feedback="x", backend=None)
         return first, second
 
-    first, second = anyio.run(go)
+    first, second = asyncio.run(go())
     assert first is not None and second is None
     assert len(log.for_session(SESSION)) == 1
 
@@ -85,7 +85,7 @@ def test_llm_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.Mo
     async def go() -> object:
         return await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
 
-    row = anyio.run(go)
+    row = asyncio.run(go())
     assert row is not None and row.incorrect_file == "/b.py"
 
 
@@ -101,7 +101,7 @@ def test_llm_no_pick_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     async def go() -> object:
         return await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
 
-    assert anyio.run(go) is None
+    assert asyncio.run(go()) is None
     assert log.for_session(SESSION) == ()
 
 
@@ -123,7 +123,7 @@ def test_faked_codex_backend_picks_candidate(tmp_path: Path, monkeypatch: pytest
             log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=CodexCliBackend()
         )
 
-    row = anyio.run(go)
+    row = asyncio.run(go())
     assert row is not None and row.incorrect_file == "/b.py"
 
 
@@ -146,7 +146,7 @@ def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.
         )
 
     with pytest.raises(spawnllm.BackendCallError):
-        anyio.run(go)
+        asyncio.run(go())
 
 
 def test_usable_backend_none_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
