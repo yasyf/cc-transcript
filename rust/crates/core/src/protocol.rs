@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::generated::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
+use crate::pystr;
 
 pub use crate::generated::protocol::{
     ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX, USER_SAID_MARKER,
@@ -23,9 +24,10 @@ pub static AGENT_INJECTION_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// is_agent_injection (filterspec.py is_agent_injection): whether ``text`` is an
-/// agent-injected relay banner rather than an authored prompt.
+/// agent-injected relay banner rather than an authored prompt. Python-lstripped first so
+/// leading C0 separators (Python ``\s``, not Rust regex ``\s``) still anchor the banner.
 pub fn is_agent_injection(text: &str) -> bool {
-    AGENT_INJECTION_RE.is_match(text)
+    AGENT_INJECTION_RE.is_match(pystr::lstrip(text))
 }
 
 /// embedded_user_text (filterspec.py embedded_user_text): the verbatim instruction
@@ -33,21 +35,14 @@ pub fn is_agent_injection(text: &str) -> bool {
 pub fn embedded_user_text(content: &str) -> Option<String> {
     let start = content.find(USER_SAID_MARKER)?;
     let after = &content[start + USER_SAID_MARKER.len()..];
-    Some(
-        after
-            .split(USER_SAID_TRAILER)
-            .next()
-            .unwrap_or(after)
-            .trim()
-            .to_string(),
-    )
+    Some(pystr::strip(after.split(USER_SAID_TRAILER).next().unwrap_or(after)).to_string())
 }
 
 /// interrupt_marker (filterspec.py interrupt_marker): the bracketed interrupt prefix
 /// at the head of ``text`` (after lstrip; case-insensitive), through the closing
 /// ``]`` when present, else the matched marker prefix.
 pub fn interrupt_marker(text: &str) -> Option<&str> {
-    let stripped = text.trim_start();
+    let stripped = pystr::lstrip(text);
     let matched = INTERRUPT_MARKER_RE.find(stripped)?;
     match stripped.find(']') {
         Some(end) => Some(&stripped[..=end]),
@@ -60,7 +55,10 @@ pub fn interrupt_marker(text: &str) -> Option<&str> {
 pub fn is_bare_interrupt_marker(text: &str) -> bool {
     match interrupt_marker(text) {
         None => false,
-        Some(marker) => text.trim()[marker.trim().len()..].trim().is_empty(),
+        Some(marker) => {
+            let stripped = pystr::strip(text);
+            pystr::strip(&stripped[pystr::strip(marker).len()..]).is_empty()
+        }
     }
 }
 
@@ -116,6 +114,33 @@ mod tests {
             interrupt_marker("[Request \u{0130}nterrupted by user]"),
             None
         );
+    }
+
+    #[test]
+    fn interrupt_marker_tolerates_python_whitespace_c0_separators() {
+        // Python content.lstrip() strips the C0 separators U+1C–U+1F that Rust trim_start
+        // leaves, so a marker prefixed by one still anchors.
+        assert_eq!(
+            interrupt_marker("\u{1c}[Request interrupted by user]"),
+            Some("[Request interrupted by user]")
+        );
+        assert_eq!(
+            interrupt_marker("\u{1f}[Request interrupted by user for tool use]rest"),
+            Some("[Request interrupted by user for tool use]")
+        );
+        assert_eq!(interrupt_marker("\u{1d}plain text"), None);
+    }
+
+    #[test]
+    fn agent_injection_tolerates_leading_c0_separators() {
+        // Python re \s (in \A\s*) consumes U+1C–U+1F; Rust regex \s does not, so lstrip first.
+        assert!(is_agent_injection(
+            "\u{1c}<teammate-message from='r'>x</teammate-message>"
+        ));
+        assert!(is_agent_injection(
+            "\u{1f}[Role Reminder: You are a Coordinator."
+        ));
+        assert!(!is_agent_injection("\u{1c}authored prose, not a banner"));
     }
 
     #[test]

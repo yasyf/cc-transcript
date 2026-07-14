@@ -1,6 +1,6 @@
 use chrono::{DateTime, FixedOffset, Timelike};
 use memchr::memchr_iter;
-use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
+use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
 use crate::types::{
@@ -12,7 +12,9 @@ use crate::types::{
     Question, QueuedCommand, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
     ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
 };
-use crate::value::{block_type, field, field_bool, field_str, normalized_owned};
+use crate::value::{
+    block_type, field, field_bool, field_str, field_truthy, is_py_truthy, normalized_owned,
+};
 
 const AVG_LINE_BYTES: usize = 1400;
 
@@ -57,14 +59,20 @@ fn require_bool(data: &Value, key: &str) -> Result<bool, ParseError> {
 }
 
 pub(crate) fn parse_timestamp(raw: &str) -> Result<DateTime<FixedOffset>, ParseError> {
+    let dt = DateTime::parse_from_rfc3339(raw)
+        .map_err(|e| ParseError::Value(format!("invalid timestamp {raw:?}: {e}")))?;
+    // Parity: Python datetime.fromisoformat rejects a :60 leap second (ValueError); chrono
+    // accepts it, carrying the extra second as nanosecond >= 1e9. Reject to match.
+    if dt.nanosecond() >= 1_000_000_000 {
+        return Err(ParseError::Value(format!(
+            "invalid timestamp {raw:?}: leap second"
+        )));
+    }
     // Parity: Python datetime is µs-precision — truncate sub-µs so near-tie events keep
     // Python's stable sort order (chrono otherwise retains nanoseconds).
-    DateTime::parse_from_rfc3339(raw)
-        .map(|dt| {
-            dt.with_nanosecond(dt.nanosecond() / 1000 * 1000)
-                .expect("µs-truncated nanos are valid")
-        })
-        .map_err(|e| ParseError::Value(format!("invalid timestamp {raw:?}: {e}")))
+    Ok(dt
+        .with_nanosecond(dt.nanosecond() / 1000 * 1000)
+        .expect("µs-truncated nanos are valid"))
 }
 
 fn require_array(content: &Value) -> Result<&[Value], ParseError> {
@@ -73,16 +81,35 @@ fn require_array(content: &Value) -> Result<&[Value], ParseError> {
     })
 }
 
-fn flatten_result_content(content: &Value) -> String {
-    match content.as_str() {
-        Some(s) => s.to_string(),
-        None => content
-            .as_array()
-            .into_iter()
-            .flatten()
+// Python type name (`type(x).__name__`) of a JSON value, for parity error messages.
+fn py_type_name(value: &Value) -> &'static str {
+    match value.get_type() {
+        JsonType::Null => "NoneType",
+        JsonType::Boolean => "bool",
+        JsonType::Number if value.as_i64().is_some() || value.as_u64().is_some() => "int",
+        JsonType::Number => "float",
+        JsonType::String => "str",
+        JsonType::Array => "list",
+        JsonType::Object => "dict",
+    }
+}
+
+fn flatten_result_content(content: &Value) -> Result<String, ParseError> {
+    if let Some(s) = content.as_str() {
+        return Ok(s.to_string());
+    }
+    // Parity: Python flatten_result_content raises ValueError on any non-str/non-list shape;
+    // mirror it so a malformed tool-result content fails the whole file, not an empty string.
+    match content.as_array() {
+        Some(blocks) => Ok(blocks
+            .iter()
             .filter(|b| block_type(b) == Some("text"))
             .filter_map(|b| field_str(b, "text"))
-            .collect(),
+            .collect()),
+        None => Err(ParseError::Value(format!(
+            "unexpected result content shape: {}",
+            py_type_name(content)
+        ))),
     }
 }
 
@@ -95,11 +122,11 @@ fn parse_meta(data: &Value) -> Result<EntryMeta, ParseError> {
         cwd: field_str(data, "cwd").map(str::to_string),
         git_branch: field_str(data, "gitBranch").map(str::to_string),
         version: truthy_str(data, "version").map(str::to_string),
-        is_sidechain: field_bool(data, "isSidechain"),
-        is_meta: field_bool(data, "isMeta"),
+        is_sidechain: field_truthy(data, "isSidechain"),
+        is_meta: field_truthy(data, "isMeta"),
         entrypoint: field_str(data, "entrypoint").map(str::to_string),
-        is_compact_summary: field_bool(data, "isCompactSummary"),
-        is_visible_in_transcript_only: field_bool(data, "isVisibleInTranscriptOnly"),
+        is_compact_summary: field_truthy(data, "isCompactSummary"),
+        is_visible_in_transcript_only: field_truthy(data, "isVisibleInTranscriptOnly"),
         user_type: field_str(data, "userType").map(str::to_string),
         slug: field_str(data, "slug").map(str::to_string),
     })
@@ -132,7 +159,7 @@ fn parse_attribution(data: &Value) -> Option<Attribution> {
 }
 
 fn parse_api_error(data: &Value) -> Option<ApiError> {
-    if !field_bool(data, "isApiErrorMessage") {
+    if !field_truthy(data, "isApiErrorMessage") {
         return None;
     }
     Some(ApiError {
@@ -147,8 +174,8 @@ fn parse_tool_result(
     tool_use_result: Option<&Value>,
     tool_denial_kind: Option<&str>,
 ) -> Result<ContentBlock, ParseError> {
-    let content = flatten_result_content(require(block, "content")?);
-    let is_error = field_bool(block, "is_error");
+    let content = flatten_result_content(require(block, "content")?)?;
+    let is_error = field_truthy(block, "is_error");
     let denial_kind = tool_denial_kind.map(str::to_string).or_else(|| {
         (is_error && content.starts_with(DENIAL_PREFIX))
             .then(|| DENIAL_KIND_USER_REJECTED.to_string())
@@ -252,7 +279,9 @@ fn parse_assistant_blocks(content: &Value) -> Result<Vec<ContentBlock>, ParseErr
 }
 
 fn parse_usage(message: &Value) -> Result<Option<Usage>, ParseError> {
-    match field(message, "usage").filter(|u| u.is_object()) {
+    // Parity: Python drops a falsy `usage` (`... if (usage := msg.get("usage")) else None`),
+    // so an empty `{}` yields None rather than erroring on the missing token fields.
+    match field(message, "usage").filter(|&u| is_py_truthy(u)) {
         Some(usage) => Ok(Some(parse_usage_value(usage)?)),
         None => Ok(None),
     }
@@ -342,9 +371,9 @@ fn parse_system_detail(data: &Value) -> SystemDetail {
             hook_infos: parse_hook_infos(data),
             hook_errors: str_array(data, "hookErrors"),
             hook_additional_context: str_array(data, "hookAdditionalContext"),
-            prevented_continuation: field_bool(data, "preventedContinuation"),
+            prevented_continuation: field_truthy(data, "preventedContinuation"),
             stop_reason: opt_str(data, "stopReason"),
-            has_output: field_bool(data, "hasOutput"),
+            has_output: field_truthy(data, "hasOutput"),
             tool_use_id: truthy_str(data, "toolUseID").map(str::to_string),
         }),
         Some("compact_boundary") => {
@@ -462,7 +491,8 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
     match ty.as_str() {
         "user" => {
             let tool_use_result = field(&data, "toolUseResult");
-            let tool_denial_kind = field_str(&data, "toolDenialKind");
+            // Parity: Python `tool_denial_kind or (...)` treats an empty string as absent.
+            let tool_denial_kind = truthy_str(&data, "toolDenialKind");
             let content = parse_user_content(
                 require(require(&data, "message")?, "content")?,
                 tool_use_result,
@@ -744,10 +774,20 @@ mod tests {
 
     #[test]
     fn flatten_result_content_joins_only_text_blocks() {
-        assert_eq!(flatten_result_content(&parse("\"hi\"")), "hi");
+        assert_eq!(flatten_result_content(&parse("\"hi\"")).unwrap(), "hi");
         let blocks =
             parse(r#"[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]"#);
-        assert_eq!(flatten_result_content(&blocks), "ab");
+        assert_eq!(flatten_result_content(&blocks).unwrap(), "ab");
+        // Parity: a non-str/non-list content shape raises (Python flatten_result_content).
+        for bad in ["{\"x\":1}", "42", "null", "true"] {
+            assert!(
+                matches!(
+                    flatten_result_content(&parse(bad)),
+                    Err(ParseError::Value(_))
+                ),
+                "should reject {bad}"
+            );
+        }
     }
 
     #[test]
@@ -986,5 +1026,76 @@ mod tests {
             use_.input,
             parse(r#"{"file_path":"/last.py","old_string":"b"}"#)
         );
+    }
+
+    #[test]
+    fn empty_usage_object_drops_to_none_like_python() {
+        // Python `usage if (usage := msg.get("usage")) else None`: an empty {} is falsy, so
+        // usage is None rather than an error on the absent token fields.
+        let raw = format!(
+            r#"{{"type":"assistant",{META},"message":{{"model":"m1","content":[],"usage":{{}}}}}}"#
+        );
+        let Entry::Assistant(a) = parse_entry(parse(&raw)).unwrap() else {
+            panic!("expected assistant entry")
+        };
+        assert!(a.usage.is_none());
+    }
+
+    #[test]
+    fn meta_bool_fields_coerce_by_python_truthiness() {
+        // Python bool(data.get(...)): a non-bool truthy value is True (isSidechain:1), a
+        // zero/empty value is False — not a strict as_bool type-filter that drops to False.
+        let raw = format!(
+            r#"{{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","isSidechain":1,"isMeta":"yes","isCompactSummary":0,"message":{{"content":"hi"}}}}"#
+        );
+        let entry = parse_entry(parse(&raw)).unwrap();
+        let meta = entry.meta().unwrap();
+        assert!(meta.is_sidechain, "isSidechain:1 -> bool(1) is True");
+        assert!(meta.is_meta, "isMeta:\"yes\" -> bool(\"yes\") is True");
+        assert!(
+            !meta.is_compact_summary,
+            "isCompactSummary:0 -> bool(0) is False"
+        );
+    }
+
+    #[test]
+    fn tool_result_error_truthiness_and_empty_denial_kind() {
+        // is_error coerces via Python bool() (1 -> True); an empty toolDenialKind is treated
+        // as absent (Python `x or ...`), so a non-denial error keeps denial_kind None.
+        let raw = format!(
+            r#"{{"type":"user",{META},"toolDenialKind":"","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":1}}
+            ]}}}}"#
+        );
+        let entry = parse_entry(parse(&raw)).unwrap();
+        let result = entry.tool_results().next().unwrap();
+        assert!(result.is_error, "is_error:1 -> bool(1) is True");
+        assert_eq!(
+            result.denial_kind, None,
+            "empty toolDenialKind falls through"
+        );
+    }
+
+    #[test]
+    fn tool_result_non_str_non_list_content_errors_like_python() {
+        // Python flatten_result_content raises ValueError on a non-str/non-list content
+        // shape; the Rust parse must fail the whole file rather than yield empty content.
+        let raw = format!(
+            r#"{{"type":"user",{META},"message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"t1","content":{{"foo":"bar"}}}}
+            ]}}}}"#
+        );
+        assert!(matches!(
+            parse_entry(parse(&raw)).unwrap_err(),
+            ParseError::Value(_)
+        ));
+    }
+
+    #[test]
+    fn parse_timestamp_rejects_leap_second_like_python() {
+        // Python datetime.fromisoformat raises on a :60 leap second; chrono clamps it, so
+        // reject to keep whole-file parity.
+        assert!(parse_timestamp("2026-06-30T23:59:60Z").is_err());
+        assert!(parse_timestamp("2026-06-30T23:59:59Z").is_ok());
     }
 }

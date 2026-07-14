@@ -6,9 +6,9 @@
 //! and a null/`{}` per-TTL split falls back to the flat field (cc-notes 62cd44cd §7/§10).
 //! The caller passes a last-wins-normalized usage value, so field reads are plain.
 
-use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::value::field;
+use crate::value::{field, is_py_truthy};
 
 const MTOK: f64 = 1_000_000.0;
 
@@ -138,18 +138,6 @@ fn int_over_mtok(text: &str) -> f64 {
     {
         result if result == 0.0 => 0.0,
         result => result,
-    }
-}
-
-/// Python truthiness of a JSON value: null/false/0/""/[]/{}  are falsy, everything else truthy.
-fn is_py_truthy(value: &Value) -> bool {
-    match value.get_type() {
-        JsonType::Null => false,
-        JsonType::Boolean => value.as_bool().unwrap(),
-        JsonType::Number => value.as_f64().is_none_or(|f| f != 0.0),
-        JsonType::String => !value.as_str().unwrap().is_empty(),
-        JsonType::Array => !value.as_array().unwrap().is_empty(),
-        JsonType::Object => !value.as_object().unwrap().is_empty(),
     }
 }
 

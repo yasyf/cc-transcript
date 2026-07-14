@@ -12,6 +12,11 @@ pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)
 }
 
+/// Python ``str.lstrip()``: the input without leading Python whitespace.
+pub fn lstrip(s: &str) -> &str {
+    s.trim_start_matches(is_space)
+}
+
 /// Python ``str.rstrip()``: the input without trailing Python whitespace.
 pub fn rstrip(s: &str) -> &str {
     s.trim_end_matches(is_space)
@@ -40,6 +45,12 @@ mod tests {
         assert_eq!(strip("\u{1c}\u{1d}\u{1e}\u{1f}"), "");
         assert_eq!(strip("  hi \u{1f}"), "hi");
         assert_eq!(strip("keep"), "keep");
+    }
+
+    #[test]
+    fn lstrip_removes_leading_c0_separators() {
+        assert_eq!(lstrip("\u{1c}\u{1f} hi \u{1f}"), "hi \u{1f}");
+        assert_eq!(lstrip("keep\u{1c}"), "keep\u{1c}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
+use sonic_rs::{Index, JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 pub fn field<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
     key.value_index_into(data)
@@ -102,6 +102,24 @@ pub fn field_bool(data: &Value, key: &str) -> bool {
     field(data, key)
         .and_then(JsonValueTrait::as_bool)
         .unwrap_or(false)
+}
+
+/// Python `bool(x)` truthiness: null/false/0/""/[]/{} are falsy, everything else truthy.
+pub(crate) fn is_py_truthy(value: &Value) -> bool {
+    match value.get_type() {
+        JsonType::Null => false,
+        JsonType::Boolean => value.as_bool().unwrap(),
+        JsonType::Number => value.as_f64().is_none_or(|f| f != 0.0),
+        JsonType::String => !value.as_str().unwrap().is_empty(),
+        JsonType::Array => !value.as_array().unwrap().is_empty(),
+        JsonType::Object => !value.as_object().unwrap().is_empty(),
+    }
+}
+
+/// Field access with Python `bool(data.get(key))` semantics: coerce by truthiness (so
+/// `1`/`"x"` are true), unlike `field_bool`'s strict `as_bool` for `is True` sites.
+pub fn field_truthy(data: &Value, key: &str) -> bool {
+    field(data, key).is_some_and(is_py_truthy)
 }
 
 pub(crate) fn block_type(block: &Value) -> Option<&str> {
