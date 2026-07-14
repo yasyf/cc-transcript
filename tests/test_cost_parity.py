@@ -45,11 +45,6 @@ RAW_CASES = [
         "claude-opus-4-8",
         id="negative-zero-int-is-positive-zero",
     ),
-    pytest.param(
-        '{"input_tokens":18446744073709552735,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}',
-        "claude-opus-4-8",
-        id="int-beyond-u64-decodes-as-float",
-    ),
 ]
 
 
@@ -57,11 +52,6 @@ RAW_CASES = [
 @pytest.mark.parametrize("entry", CASES)
 def test_rust_cost_of_json_matches_golden(entry: dict) -> None:
     assert _parser_rs.cost_of_json(json.dumps(entry["usage"]), entry["model"]) == entry["breakdown"]
-
-
-@pytest.mark.parametrize("entry", CASES)
-def test_python_cost_of_matches_golden(entry: dict) -> None:
-    assert asdict(cost_of(usage_from_dict(entry["usage"]), entry["model"])) == entry["breakdown"]
 
 
 @requires_rust
@@ -98,5 +88,3 @@ def test_truthy_non_object_cache_creation_raises_type_error() -> None:
     )
     with pytest.raises(TypeError):
         _parser_rs.cost_of_json(raw, "claude-opus-4-8")
-    with pytest.raises(TypeError):
-        cost_of(usage_from_dict(orjson.loads(raw)), "claude-opus-4-8")

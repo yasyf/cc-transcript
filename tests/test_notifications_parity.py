@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from cc_transcript import _parser_rs
-from cc_transcript.models import OtherEvent, UserEvent
 from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse_events_from_bytes
 from scripts.gen_notifications_golden import to_bytes
@@ -55,27 +54,3 @@ def test_dup_keys_replay_last_wins(raw: str) -> None:
     n = Notifications.from_events(parse_events_from_bytes(raw.encode()))
     expected = {"queued": list(n.queued), "delivered": list(n.delivered), "enqueued": list(n.enqueued)}
     assert _parser_rs.notifications_replay(raw.encode()) == expected
-
-
-# The Python reference dispatches a duplicate top-level "type" to the LAST occurrence (orjson
-# dedups before parsing); the Rust fast path diverges to first-wins (accepted, e0ab2411 item 9).
-DUP_TYPE_DISPATCH = [
-    pytest.param(
-        b'{"type":"queue-operation","operation":"enqueue","type":"user","uuid":"u","sessionId":"s",'
-        b'"timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"hi"}}',
-        UserEvent,
-        id="queue-op-then-user",
-    ),
-    pytest.param(
-        b'{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z",'
-        b'"message":{"role":"user","content":"hi"},"type":"queue-operation","operation":"enqueue"}',
-        OtherEvent,
-        id="user-then-queue-op",
-    ),
-]
-
-
-@pytest.mark.parametrize(("raw", "expected"), DUP_TYPE_DISPATCH)
-def test_python_parser_dispatches_dup_type_last_wins(raw: bytes, expected: type) -> None:
-    (event,) = parse_events_from_bytes(raw)
-    assert isinstance(event, expected)

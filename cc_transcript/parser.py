@@ -456,7 +456,7 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
 
 
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
-    return [event for line in raw.split(b"\n") if line.strip() if (event := decode_line(line)) is not None]
+    return list(_parser_rs.parse_bytes(raw).events)
 
 
 def parse_model_usage(data: Mapping[str, Any]) -> ModelUsage:
@@ -512,24 +512,7 @@ def parse_print_result(raw: bytes) -> PrintResult:
         The parsed -p (print mode) result: billing, usage, structured output, init
         snapshot, and the conversational messages.
     """
-    elements = orjson.loads(raw)
-    result = next(element for element in elements if element.get("type") == "result")
-    init = next((e for e in elements if e.get("type") == "system" and e.get("subtype") == "init"), None)
-    return PrintResult(
-        total_cost_usd=result["total_cost_usd"],
-        model_usage={model: parse_model_usage(usage) for model, usage in result["modelUsage"].items()},
-        usage=parse_usage(result["usage"]),
-        structured_output=result.get("structured_output"),
-        num_turns=result["num_turns"],
-        is_error=result["is_error"],
-        result=result.get("result"),
-        session_id=SessionId(result["session_id"]),
-        fast_mode_state=result.get("fast_mode_state"),
-        stop_reason=result.get("stop_reason"),
-        permission_denials=tuple(result["permission_denials"]),
-        init=parse_init(init) if init else None,
-        messages=tuple(parse_print_message(e) for e in elements if e.get("type") in ("user", "assistant")),
-    )
+    return _parser_rs.parse_print_result(raw)
 
 
 def decode_line(line: bytes) -> TranscriptEvent | None:

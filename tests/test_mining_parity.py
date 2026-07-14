@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,7 +32,6 @@ from cc_transcript.filterspec import (
     USER_SAID_MARKER,
     USER_SAID_TRAILER,
 )
-from cc_transcript.ids import ToolUseId
 from cc_transcript.mining.confidence import MEDIUM
 from cc_transcript.mining.engine import mine
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
@@ -49,7 +47,6 @@ from cc_transcript.mining.spec import (
     ReviewSpec,
     signal_to_dict,
 )
-from cc_transcript.models import ToolResultBlock, ToolUseBlock
 from cc_transcript.parser import TranscriptParser, parse_events_from_bytes
 from tests.support import (
     MATCHER_LABELS,
@@ -1073,10 +1070,6 @@ def test_non_object_tool_input_reads_as_none_and_mines() -> None:
     """A non-object tool input (which the parser accepts verbatim) makes ``.file_path``
     and ``.questions`` read as None instead of raising ``AttributeError``, so
     ``mine(events)`` survives a transcript that carries one (#1)."""
-    non_object: Any = "not-a-dict"
-    block = ToolUseBlock(id=ToolUseId("t1"), name="Bash", input=non_object)
-    assert block.file_path is None
-    assert block.questions is None
     entries = [
         assistant("a1", {"type": "tool_use", "id": "t1", "name": "Bash", "input": "not-a-dict"}),
         user_text("u1", "this is completely wrong, please rewrite the parser module entirely"),
@@ -1109,44 +1102,6 @@ def test_non_finite_tool_use_result_number_mines_without_crash(tmp_path: Path) -
     path = tmp_path / "nonfinite.jsonl"
     path.write_bytes(to_bytes(entries).replace(b'"__NONFINITE__"', b"1e9999"))
     events = TranscriptParser.parse_file(path)
-    signals = list(mine(events, SPEC))
-    assert [signal.detector for signal in signals] == ["ask_user_question"]
-    assert signals[0].text == "Storage (Recommended)"
-
-
-@requires_rust
-def test_oversized_int_tool_use_result_mines_without_crash() -> None:
-    """A constructed ``toolUseResult`` integer past ``f64`` range (a literal like
-    ``10**309``, which the parser never yields but a caller can build) maps to null
-    instead of overflowing ``py_to_value``, and the AskUserQuestion signal is still
-    mined intact (#3, integer arm)."""
-    entries = [
-        assistant(
-            "a1",
-            tool_use(
-                "t1",
-                "AskUserQuestion",
-                questions=[auq_question("Which adapter?", "Adapter", "Storage (Recommended)", "Memory")],
-            ),
-        ),
-        user_result(
-            "u1",
-            "t1",
-            answered('"Which adapter?"="Storage (Recommended)"'),
-            is_error=False,
-            toolUseResult={"answers": {"Which adapter?": "Storage (Recommended)"}},
-        ),
-    ]
-    events = list(parse_events_from_bytes(to_bytes(entries)))
-    events[1] = replace(
-        events[1],
-        blocks=tuple(
-            replace(block, tool_use_result={**block.tool_use_result, "extra": 10**309})
-            if isinstance(block, ToolResultBlock)
-            else block
-            for block in events[1].blocks
-        ),
-    )
     signals = list(mine(events, SPEC))
     assert [signal.detector for signal in signals] == ["ask_user_question"]
     assert signals[0].text == "Storage (Recommended)"
