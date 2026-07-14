@@ -8,8 +8,9 @@
 use crate::generated::protocol::{
     TASK_NOTIFICATION_MARKER, TOOL_USE_ID_PREFIX, TOOL_USE_ID_SUFFIX,
 };
+use crate::render::py_str;
 use crate::types::{AttachmentDetail, Entry};
-use crate::value::field_str;
+use crate::value::{field, field_str};
 
 /// tool_use_marker (notifications.py): the `<tool-use-id>…</tool-use-id>` wrapper a
 /// notification carries for the tool call it reports.
@@ -46,7 +47,7 @@ pub fn replay_queue(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
         if other.ty != "queue-operation" {
             continue;
         }
-        let content = || field_str(&other.raw, "content").unwrap_or("").to_string();
+        let content = || field(&other.raw, "content").map_or(String::new(), py_str);
         match field_str(&other.raw, "operation") {
             Some("enqueue") => {
                 let item = content();
@@ -186,5 +187,38 @@ mod tests {
         ]));
         assert!(n.completed("toolu_bg"));
         assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn non_string_content_coerces_via_python_str() {
+        let n = Notifications::from_entries(&parse(&[
+            r#"{"type":"queue-operation","operation":"enqueue","content":7}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","content":true}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","content":null}"#,
+            r#"{"type":"queue-operation","operation":"enqueue"}"#,
+        ]));
+        assert_eq!(n.enqueued, vec!["7", "True", "None", ""]);
+    }
+
+    #[test]
+    fn unknown_missing_and_empty_queue_verbs_are_noops() {
+        let n = Notifications::from_entries(&parse(&[
+            r#"{"type":"queue-operation","operation":"frobnicate","content":"x"}"#,
+            r#"{"type":"queue-operation","content":"y"}"#,
+            &queue_op("dequeue", ""),
+            &queue_op("remove", ""),
+            &queue_op("popAll", "z"),
+        ]));
+        assert_eq!(n.queued, Vec::<String>::new());
+        assert_eq!(n.enqueued, Vec::<String>::new());
+    }
+
+    #[test]
+    fn operation_and_content_resolve_last_wins() {
+        let n = Notifications::from_entries(&parse(&[
+            r#"{"type":"queue-operation","operation":"dequeue","operation":"enqueue","content":"a","content":"b"}"#,
+        ]));
+        assert_eq!(n.enqueued, vec!["b"]);
+        assert_eq!(n.queued, vec!["b"]);
     }
 }

@@ -276,7 +276,8 @@ fn shortest_digits(value: f64) -> (String, i64) {
     }
 }
 
-// Python str() of a JSON value: a str verbatim, else its repr().
+/// Python ``str()`` of a JSON value: a str verbatim, else its ``repr()``. The single
+/// owner of JSON→Python-string coercion (notifications queue content reuses it).
 pub(crate) fn py_str(value: &Value) -> String {
     match value.as_str() {
         Some(s) => s.to_string(),

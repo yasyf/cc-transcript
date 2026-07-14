@@ -1,10 +1,14 @@
 //! Token-usage → USD cost model, ported from `cc_transcript/cost.py`.
 //!
-//! Feature-free: the pricing table is core data and the arithmetic mirrors the
-//! Python reference operation-for-operation so both backends yield bit-identical
-//! f64 costs.
+//! Feature-free. Costs the raw usage JSON object directly (not the i64 `Usage`) so it
+//! mirrors Python's arbitrary-precision int / true-division and lenient `.get()` access
+//! exactly: big-int token counts divide through the raw decimal text, floats are priced,
+//! and a null/`{}` per-TTL split falls back to the flat field (cc-notes 62cd44cd §7/§10).
+//! The caller passes a last-wins-normalized usage value, so field reads are plain.
 
-use crate::types::Usage;
+use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
+
+use crate::value::field;
 
 const MTOK: f64 = 1_000_000.0;
 
@@ -27,6 +31,18 @@ pub struct CostBreakdown {
     pub cache_read_cost: f64,
     pub cache_write_cost: f64,
     pub total: f64,
+}
+
+/// Why a cost could not be computed, mapped to the matching Python exception at the pyo3
+/// boundary: `NoPricing`/`MissingKey` → `KeyError` (unknown model / absent required field);
+/// `CacheCreationNotObject` → `TypeError` (Python subscripts a non-dict cache_creation);
+/// `NumberOverflow` → `ValueError` (a token that overflows f64, which orjson fails to load).
+#[derive(Debug, PartialEq)]
+pub enum CostError {
+    NoPricing(String),
+    MissingKey(&'static str),
+    CacheCreationNotObject,
+    NumberOverflow,
 }
 
 /// The family-keyed pricing table (cc_transcript/cost.py PRICING), in resolution
@@ -84,24 +100,91 @@ pub fn resolve_pricing(model: &str) -> Option<&'static ModelPricing> {
         .map(|(_, row)| row)
 }
 
-/// cost_of (cc_transcript/cost.py): the per-component and total USD cost of a turn's
-/// token usage under a model's rates, or None when no pricing family matches `model`.
-///
-/// The cache-creation split prefers the per-TTL `usage.cache_creation` when present,
-/// falling back to the flat `cache_creation_input_tokens` as 5-minute writes with no
-/// 1-hour share.
-pub fn cost_of(usage: &Usage, model: &str) -> Option<CostBreakdown> {
-    let row = resolve_pricing(model)?;
-    let (write_5m, write_1h) = match &usage.cache_creation {
-        Some(cc) => (cc.ephemeral_5m_input_tokens, cc.ephemeral_1h_input_tokens),
-        None => (usage.cache_creation_input_tokens, 0),
+/// Python `<number> / MTOK`, mirroring orjson's JSON load: an integer within
+/// [i64::MIN, u64::MAX] stays exact (Python int, decimal-shift division); a larger integer
+/// decodes to f64 with float rounding; a value that overflows f64 raises (orjson's
+/// JSONDecodeError / Python's OverflowError). A JSON float literal always divides as f64.
+fn number_over_mtok(value: &Value) -> Result<f64, CostError> {
+    let raw = value
+        .as_raw_number()
+        .expect("a JSON number carries raw text under arbitrary_precision");
+    let text = raw.as_str();
+    if !text.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'))
+        && (text.parse::<i64>().is_ok() || text.parse::<u64>().is_ok())
+    {
+        return Ok(int_over_mtok(text));
+    }
+    let value = text
+        .parse::<f64>()
+        .expect("JSON number text parses as f64 (maybe infinite)");
+    if value.is_infinite() {
+        return Err(CostError::NumberOverflow);
+    }
+    Ok(value / MTOK)
+}
+
+/// `<int text> / 1_000_000` as the correctly-rounded f64, via a decimal-point shift so the
+/// division is exact even beyond 2^53. orjson decodes `-0` to int 0, so a zero result is +0.
+fn int_over_mtok(text: &str) -> f64 {
+    let (sign, mag) = text.strip_prefix('-').map_or(("", text), |m| ("-", m));
+    let shifted = if mag.len() > 6 {
+        format!("{}.{}", &mag[..mag.len() - 6], &mag[mag.len() - 6..])
+    } else {
+        format!("0.{}{mag}", "0".repeat(6 - mag.len()))
     };
-    let input_cost = usage.input_tokens as f64 / MTOK * row.input;
-    let output_cost = usage.output_tokens as f64 / MTOK * row.output;
-    let cache_read_cost = usage.cache_read_input_tokens as f64 / MTOK * row.cache_read;
-    let cache_write_cost =
-        write_5m as f64 / MTOK * row.cache_write_5m + write_1h as f64 / MTOK * row.cache_write_1h;
-    Some(CostBreakdown {
+    match format!("{sign}{shifted}")
+        .parse::<f64>()
+        .expect("shifted decimal text parses")
+    {
+        result if result == 0.0 => 0.0,
+        result => result,
+    }
+}
+
+/// Python truthiness of a JSON value: null/false/0/""/[]/{}  are falsy, everything else truthy.
+fn is_py_truthy(value: &Value) -> bool {
+    match value.get_type() {
+        JsonType::Null => false,
+        JsonType::Boolean => value.as_bool().unwrap(),
+        JsonType::Number => value.as_f64().is_none_or(|f| f != 0.0),
+        JsonType::String => !value.as_str().unwrap().is_empty(),
+        JsonType::Array => !value.as_array().unwrap().is_empty(),
+        JsonType::Object => !value.as_object().unwrap().is_empty(),
+    }
+}
+
+fn required<'a>(usage: &'a Value, key: &'static str) -> Result<&'a Value, CostError> {
+    field(usage, key).ok_or(CostError::MissingKey(key))
+}
+
+/// cost_of (cc_transcript/cost.py): the per-component and total USD cost of the raw
+/// `usage` JSON object under a model's rates.
+///
+/// Mirrors Python's `if (cc := usage.get("cache_creation"))`: a falsy value (null, `{}`,
+/// `[]`, `0`, …) falls back to the flat `cache_creation_input_tokens` as 5-minute writes
+/// with no 1-hour share; a truthy object supplies the split; a truthy non-object errors
+/// (Python subscripts it and raises TypeError).
+pub fn cost_of(usage: &Value, model: &str) -> Result<CostBreakdown, CostError> {
+    let row = resolve_pricing(model).ok_or_else(|| CostError::NoPricing(model.to_string()))?;
+    let (write_5m, write_1h) = match field(usage, "cache_creation") {
+        Some(cc) if is_py_truthy(cc) => match cc.as_object() {
+            Some(_) => (
+                number_over_mtok(required(cc, "ephemeral_5m_input_tokens")?)?,
+                number_over_mtok(required(cc, "ephemeral_1h_input_tokens")?)?,
+            ),
+            None => return Err(CostError::CacheCreationNotObject),
+        },
+        _ => (
+            number_over_mtok(required(usage, "cache_creation_input_tokens")?)?,
+            0.0,
+        ),
+    };
+    let input_cost = number_over_mtok(required(usage, "input_tokens")?)? * row.input;
+    let output_cost = number_over_mtok(required(usage, "output_tokens")?)? * row.output;
+    let cache_read_cost =
+        number_over_mtok(required(usage, "cache_read_input_tokens")?)? * row.cache_read;
+    let cache_write_cost = write_5m * row.cache_write_5m + write_1h * row.cache_write_1h;
+    Ok(CostBreakdown {
         input_cost,
         output_cost,
         cache_read_cost,
@@ -113,19 +196,11 @@ pub fn cost_of(usage: &Usage, model: &str) -> Option<CostBreakdown> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::CacheCreation;
 
-    fn usage(cache_creation: Option<CacheCreation>) -> Usage {
-        Usage {
-            input_tokens: 1_000_000,
-            output_tokens: 2_000_000,
-            cache_read_input_tokens: 4_000_000,
-            cache_creation_input_tokens: 8_000_000,
-            cache_creation,
-            service_tier: None,
-            inference_geo: None,
-            server_tool_use: None,
-        }
+    fn usage(json: &str) -> Value {
+        let mut value: Value = sonic_rs::from_str(json).unwrap();
+        crate::value::normalize_last_wins(&mut value);
+        value
     }
 
     #[test]
@@ -142,8 +217,13 @@ mod tests {
 
     #[test]
     fn flat_cache_creation_bills_as_5m_writes() {
-        let cost = cost_of(&usage(None), "claude-opus-4-8").unwrap();
-        // input 1M*5, output 2M*25, cache_read 4M*0.5, cache_write 8M*6.25 (flat → 5m).
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":1000000,"output_tokens":2000000,"cache_read_input_tokens":4000000,"cache_creation_input_tokens":8000000}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
         assert_eq!(cost.input_cost, 5.0);
         assert_eq!(cost.output_cost, 50.0);
         assert_eq!(cost.cache_read_cost, 2.0);
@@ -152,18 +232,132 @@ mod tests {
     }
 
     #[test]
-    fn per_ttl_split_overrides_flat_total() {
-        let split = CacheCreation {
-            ephemeral_5m_input_tokens: 1_000_000,
-            ephemeral_1h_input_tokens: 2_000_000,
-        };
-        let cost = cost_of(&usage(Some(split)), "claude-opus-4-8").unwrap();
-        // cache_write 1M*6.25 + 2M*10 = 26.25; flat 8M is ignored.
+    fn empty_cache_creation_object_falls_back_to_flat() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":8000000,"cache_creation":{}}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.cache_write_cost, 50.0);
+    }
+
+    #[test]
+    fn null_flat_ignored_when_per_ttl_split_present() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":null,"cache_creation":{"ephemeral_5m_input_tokens":1000000,"ephemeral_1h_input_tokens":2000000}}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
         assert_eq!(cost.cache_write_cost, 26.25);
     }
 
     #[test]
-    fn unknown_model_is_none() {
-        assert!(cost_of(&usage(None), "gpt-5").is_none());
+    fn big_int_token_beyond_f64_mantissa_divides_exactly() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":9007199254740993,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.input_cost, 45035996273.70497);
+    }
+
+    #[test]
+    fn dup_keys_resolve_last_wins() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":1,"input_tokens":5000000,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.input_cost, 25.0);
+    }
+
+    #[test]
+    fn float_token_is_priced() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":1500000.0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.input_cost, 7.5);
+    }
+
+    #[test]
+    fn unknown_model_and_missing_field_error() {
+        let full = r#"{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#;
+        assert_eq!(
+            cost_of(&usage(full), "gpt-5"),
+            Err(CostError::NoPricing("gpt-5".to_string()))
+        );
+        assert_eq!(
+            cost_of(
+                &usage(
+                    r#"{"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#
+                ),
+                "claude-opus-4-8"
+            ),
+            Err(CostError::MissingKey("input_tokens"))
+        );
+    }
+
+    #[test]
+    fn int_beyond_u64_decodes_as_float() {
+        // > u64::MAX: orjson loads it as a rounded float, so cost divides the f64, not the
+        // exact int — the same double Rust's f64 parse yields.
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":18446744073709552735,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.input_cost, 18446744073709552735.0 / MTOK * 5.0);
+    }
+
+    #[test]
+    fn negative_zero_int_is_positive_zero() {
+        let cost = cost_of(
+            &usage(
+                r#"{"input_tokens":-0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#,
+            ),
+            "claude-opus-4-8",
+        )
+        .unwrap();
+        assert_eq!(cost.input_cost, 0.0);
+        assert!(cost.input_cost.is_sign_positive());
+    }
+
+    #[test]
+    fn f64_overflow_int_raises() {
+        let json = format!(
+            r#"{{"input_tokens":1{},"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}"#,
+            "0".repeat(400)
+        );
+        assert_eq!(
+            cost_of(&usage(&json), "claude-opus-4-8"),
+            Err(CostError::NumberOverflow)
+        );
+    }
+
+    #[test]
+    fn truthy_non_object_cache_creation_raises() {
+        assert_eq!(
+            cost_of(
+                &usage(
+                    r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":[1]}"#,
+                ),
+                "claude-opus-4-8"
+            ),
+            Err(CostError::CacheCreationNotObject)
+        );
     }
 }

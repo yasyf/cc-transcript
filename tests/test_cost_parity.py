@@ -14,6 +14,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import orjson
 import pytest
 
 from cc_transcript import _parser_rs
@@ -23,6 +24,33 @@ from tests.support import requires_rust
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "cost_golden.json").read_text(encoding="utf-8"))
 CASES = [pytest.param(entry, id=entry["id"]) for entry in GOLDEN]
+
+# Shapes a Python dict can't carry (duplicate keys resolved last-wins by orjson, a signed
+# zero orjson folds to int 0), so these carry raw JSON — the Rust reader must match orjson.
+RAW_CASES = [
+    pytest.param(
+        '{"input_tokens":1,"input_tokens":5000000,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}',
+        "claude-opus-4-8",
+        id="input-tokens-last-wins",
+    ),
+    pytest.param(
+        '{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,'
+        '"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},'
+        '"cache_creation":{"ephemeral_5m_input_tokens":1000000,"ephemeral_1h_input_tokens":2000000}}',
+        "claude-opus-4-8",
+        id="cache-creation-last-wins",
+    ),
+    pytest.param(
+        '{"input_tokens":-0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}',
+        "claude-opus-4-8",
+        id="negative-zero-int-is-positive-zero",
+    ),
+    pytest.param(
+        '{"input_tokens":18446744073709552735,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}',
+        "claude-opus-4-8",
+        id="int-beyond-u64-decodes-as-float",
+    ),
+]
 
 
 @requires_rust
@@ -37,9 +65,38 @@ def test_python_cost_of_matches_golden(entry: dict) -> None:
 
 
 @requires_rust
+@pytest.mark.parametrize(("raw", "model"), RAW_CASES)
+def test_rust_cost_of_json_raw_matches_python(raw: str, model: str) -> None:
+    expected = asdict(cost_of(usage_from_dict(orjson.loads(raw)), model))
+    assert _parser_rs.cost_of_json(raw, model) == expected
+
+
+@requires_rust
 def test_unresolvable_model_raises_key_error() -> None:
     usage = {"input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     with pytest.raises(KeyError):
         _parser_rs.cost_of_json(json.dumps(usage), "gpt-5")
     with pytest.raises(KeyError):
         cost_of(usage_from_dict(usage), "gpt-5")
+
+
+@requires_rust
+def test_f64_overflow_token_raises_on_both_backends() -> None:
+    # A token that overflows f64: orjson refuses to load it, and the Rust reader raises.
+    raw = f'{{"input_tokens":1{"0" * 400},"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+    with pytest.raises(ValueError):
+        _parser_rs.cost_of_json(raw, "claude-opus-4-8")
+    with pytest.raises(orjson.JSONDecodeError):
+        orjson.loads(raw)
+
+
+@requires_rust
+def test_truthy_non_object_cache_creation_raises_type_error() -> None:
+    raw = (
+        '{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,'
+        '"cache_creation_input_tokens":0,"cache_creation":[1]}'
+    )
+    with pytest.raises(TypeError):
+        _parser_rs.cost_of_json(raw, "claude-opus-4-8")
+    with pytest.raises(TypeError):
+        cost_of(usage_from_dict(orjson.loads(raw)), "claude-opus-4-8")

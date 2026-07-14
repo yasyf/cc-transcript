@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, FixedOffset};
 use crossbeam_channel::{bounded, Receiver};
 use once_cell::sync::Lazy;
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
 use rayon::prelude::*;
@@ -18,12 +18,12 @@ use cc_transcript_core::activity::{
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
+use cc_transcript_core::cost::{cost_of, CostError};
 use cc_transcript_core::facts;
-use cc_transcript_core::cost::cost_of;
 use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
 use cc_transcript_core::ids;
 use cc_transcript_core::notifications::Notifications;
-use cc_transcript_core::parse::{parse_bytes, parse_print_envelope, parse_usage_value};
+use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
 use cc_transcript_core::query::{FileRef, Session};
 use cc_transcript_core::types::Entry;
 
@@ -162,17 +162,29 @@ fn parse_print_result<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, P
     build_print_result(py, &result)
 }
 
+fn cost_err(err: CostError) -> PyErr {
+    match err {
+        CostError::NoPricing(model) => {
+            PyKeyError::new_err(format!("no pricing for model: {model}"))
+        }
+        CostError::MissingKey(key) => PyKeyError::new_err(key),
+        CostError::CacheCreationNotObject => {
+            PyTypeError::new_err("cache_creation is not a mapping")
+        }
+        CostError::NumberOverflow => PyValueError::new_err("token count overflows f64"),
+    }
+}
+
 #[pyfunction]
 fn cost_of_json<'py>(
     py: Python<'py>,
     usage_json: &str,
     model: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let value: Value = sonic_rs::from_str(usage_json)
+    let mut value: Value = sonic_rs::from_str(usage_json)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
-    let usage = parse_usage_value(&value).map_err(parse_err)?;
-    let breakdown = cost_of(&usage, model)
-        .ok_or_else(|| PyKeyError::new_err(format!("no pricing for model: {model}")))?;
+    cc_transcript_core::value::normalize_last_wins(&mut value);
+    let breakdown = cost_of(&value, model).map_err(cost_err)?;
     let dict = PyDict::new(py);
     dict.set_item("input_cost", breakdown.input_cost)?;
     dict.set_item("output_cost", breakdown.output_cost)?;

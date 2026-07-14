@@ -1951,5 +1951,162 @@
       "input_tokens": 1000000,
       "output_tokens": 1000000
     }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 25.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 25.0
+    },
+    "id": "edge-fable-5m-only",
+    "model": "claude-fable-5",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 2000000
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 60.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 60.0
+    },
+    "id": "edge-fable-1h-only",
+    "model": "claude-fable-5",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 3000000,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 5.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 5.0
+    },
+    "id": "edge-haiku-5m-only",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 4000000
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 10.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 10.0
+    },
+    "id": "edge-haiku-1h-only",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 5000000,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 45035996273.70497,
+      "output_cost": 0.0,
+      "total": 45035996273.70497
+    },
+    "id": "edge-big-int-beyond-mantissa",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 9007199254740993,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 7.5,
+      "output_cost": 0.0,
+      "total": 7.5
+    },
+    "id": "edge-float-token-priced",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 1500000.0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 26.25,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 26.25
+    },
+    "id": "edge-null-flat-with-per-ttl",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 2000000,
+        "ephemeral_5m_input_tokens": 1000000
+      },
+      "cache_creation_input_tokens": null,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  {
+    "breakdown": {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 50.0,
+      "input_cost": 0.0,
+      "output_cost": 0.0,
+      "total": 50.0
+    },
+    "id": "edge-empty-cache-object-falls-back-to-flat",
+    "model": "claude-opus-4-8",
+    "usage": {
+      "cache_creation": {},
+      "cache_creation_input_tokens": 8000000,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
   }
 ]

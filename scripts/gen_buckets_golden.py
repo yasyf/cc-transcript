@@ -3,12 +3,13 @@
 Serializes the ``ConversationBucketer.bucket_events`` output for a curated battery of
 synthetic transcripts — the bench corpus transcripts are multi-megabyte, so curated
 cases embed their own events — covering the substantive-user/assistant window rule,
-junk-user dropping (interrupt/structural/stop-hook/bash-echo), the sub-``MIN_USER_TURNS``
-and short-ack drops, time-gap index splits, multi-session first-appearance ordering,
-and codepoint-counted user length. Each bucket is projected to its ``session_id``,
-``bucket_index``, ``bucket_start_ms``, and member ``uuids``;
-``tests/test_buckets_parity.py`` asserts the Rust ``bucket_events`` port reproduces it
-and that the Python reference still does.
+junk-user dropping (interrupt/structural/stop-hook/bash-echo and the remaining
+alternatives), the sub-``MIN_USER_TURNS`` and short-ack drops, time-gap and exact
+3-minute index splits, sub-µs tie ordering, C0-whitespace strip, multi-session
+first-appearance ordering, codepoint-counted length, and list-shaped text. Each bucket
+is projected to its ``session_id``, ``bucket_index``, ``bucket_start_ms``, and member
+``uuids``; ``tests/test_buckets_parity.py`` asserts the Rust ``bucket_events`` port
+reproduces it and that the Python reference still does.
 
 Run: ``uv run --no-sync python scripts/gen_buckets_golden.py``
 """
@@ -25,10 +26,14 @@ from scripts.gen_corpus import REPO_ROOT
 
 GOLDEN = REPO_ROOT / "tests" / "testdata" / "buckets_golden.json"
 
+# C0 information separator (U+001C): Python str.strip() removes it, Rust trim() keeps it.
+# Built via chr() so no raw control byte lands in this source file.
+C0 = chr(0x1C)
 
-def user(session: str, ts: str, text: str, uuid: str) -> dict[str, Any]:
+
+def envelope(kind: str, session: str, ts: str, uuid: str) -> dict[str, Any]:
     return {
-        "type": "user",
+        "type": kind,
         "uuid": uuid,
         "parentUuid": None,
         "sessionId": session,
@@ -37,22 +42,20 @@ def user(session: str, ts: str, text: str, uuid: str) -> dict[str, Any]:
         "gitBranch": "main",
         "version": "2.1.7",
         "entrypoint": "cli",
-        "message": {"role": "user", "content": text},
     }
 
 
+def user(session: str, ts: str, text: str, uuid: str) -> dict[str, Any]:
+    return envelope("user", session, ts, uuid) | {"message": {"role": "user", "content": text}}
+
+
+def user_blocks(session: str, ts: str, blocks: list[dict[str, Any]], uuid: str) -> dict[str, Any]:
+    return envelope("user", session, ts, uuid) | {"message": {"role": "user", "content": blocks}}
+
+
 def assistant(session: str, ts: str, uuid: str) -> dict[str, Any]:
-    return {
-        "type": "assistant",
-        "uuid": uuid,
-        "parentUuid": None,
-        "sessionId": session,
-        "timestamp": ts,
-        "cwd": "/repo",
-        "gitBranch": "main",
-        "version": "2.1.7",
-        "entrypoint": "cli",
-        "message": {"role": "assistant", "model": "m", "content": [{"type": "text", "text": "working"}]},
+    return envelope("assistant", session, ts, uuid) | {
+        "message": {"role": "assistant", "model": "m", "content": [{"type": "text", "text": "working"}]}
     }
 
 
@@ -147,6 +150,66 @@ CASES: tuple[Case, ...] = (
             user("s", "2026-01-06T09:00:00.000Z", "héllo", "u1"),
             assistant("s", "2026-01-06T09:00:10.000Z", "a1"),
             user("s", "2026-01-06T09:00:20.000Z", "漢字テスト", "u2"),
+        ),
+    ),
+    Case(
+        "exact-three-minute-boundary",
+        (
+            user("s", "2026-01-06T09:00:00.000Z", "first substantive prompt", "u1"),
+            assistant("s", "2026-01-06T09:02:59.999Z", "a1"),
+            user("s", "2026-01-06T09:03:00.000Z", "second substantive prompt", "u2"),
+            assistant("s", "2026-01-06T09:03:00.001Z", "a2"),
+        ),
+    ),
+    Case(
+        "sub-microsecond-ties-stable-order",
+        (
+            user("s", "2026-01-06T09:00:00.000000900Z", "first substantive prompt", "u1"),
+            assistant("s", "2026-01-06T09:00:00.000000100Z", "a1"),
+            user("s", "2026-01-06T09:00:01.000000000Z", "second substantive prompt", "u2"),
+        ),
+    ),
+    Case(
+        # "\x1cok\x1c" / "\x85hi\x85" are <5 chars under Python str.strip() but >=5 under Rust
+        # trim() (which keeps \x1c/\x85), so the window only drops when py_strip is used.
+        "c0-whitespace-padded-users-not-substantive",
+        (
+            user("s", "2026-01-06T09:00:00.000Z", C0 + C0 + "ok" + C0 + C0, "u1"),
+            user("s", "2026-01-06T09:00:10.000Z", chr(0x85) + "hi" + chr(0x85), "u2"),
+            assistant("s", "2026-01-06T09:00:20.000Z", "a1"),
+        ),
+    ),
+    Case(
+        "junk-alternatives-dropped",
+        (
+            user("s", "2026-01-06T09:00:00.000Z", "<<angle-token>>", "j1"),
+            user(
+                "s",
+                "2026-01-06T09:00:02.000Z",
+                "Caveat: The messages below were generated by the user while running local commands.",
+                "j2",
+            ),
+            user("s", "2026-01-06T09:00:04.000Z", "REMAINING_TASKS_ACKNOWLEDGED", "j3"),
+            user("s", "2026-01-06T09:00:06.000Z", "Base directory for this skill: /x", "j4"),
+            user("s", "2026-01-06T09:00:08.000Z", "the real substantive prompt", "u1"),
+            assistant("s", "2026-01-06T09:00:10.000Z", "a1"),
+            user("s", "2026-01-06T09:00:12.000Z", "another real prompt here", "u2"),
+        ),
+    ),
+    Case(
+        "all-junk-session-dropped",
+        (
+            user("s", "2026-01-06T09:00:00.000Z", "[Request interrupted by user]", "j1"),
+            user("s", "2026-01-06T09:00:10.000Z", "<system-reminder>injected</system-reminder>", "j2"),
+            assistant("s", "2026-01-06T09:00:20.000Z", "a1"),
+        ),
+    ),
+    Case(
+        "list-shaped-user-text",
+        (
+            user_blocks("s", "2026-01-06T09:00:00.000Z", [{"type": "text", "text": "substantive block content"}], "u1"),
+            assistant("s", "2026-01-06T09:00:10.000Z", "a1"),
+            user("s", "2026-01-06T09:00:20.000Z", "second real prompt", "u2"),
         ),
     ),
 )

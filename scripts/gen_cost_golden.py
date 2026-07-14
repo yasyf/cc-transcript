@@ -124,6 +124,92 @@ EDGE_CASES: tuple[tuple[str, dict[str, object], str], ...] = (
         },
         "claude-haiku-4-5-20251001",
     ),
+    (
+        "fable-5m-only",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 2_000_000, "ephemeral_1h_input_tokens": 0},
+        },
+        "claude-fable-5",
+    ),
+    (
+        "fable-1h-only",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 3_000_000},
+        },
+        "claude-fable-5",
+    ),
+    (
+        "haiku-5m-only",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 4_000_000, "ephemeral_1h_input_tokens": 0},
+        },
+        "claude-haiku-4-5-20251001",
+    ),
+    (
+        "haiku-1h-only",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 5_000_000},
+        },
+        "claude-haiku-4-5-20251001",
+    ),
+    (
+        "big-int-beyond-mantissa",
+        {
+            "input_tokens": 9_007_199_254_740_993,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+        "claude-opus-4-8",
+    ),
+    (
+        "float-token-priced",
+        {
+            "input_tokens": 1_500_000.0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+        "claude-opus-4-8",
+    ),
+    (
+        "null-flat-with-per-ttl",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": None,
+            "cache_creation": {"ephemeral_5m_input_tokens": 1_000_000, "ephemeral_1h_input_tokens": 2_000_000},
+        },
+        "claude-opus-4-8",
+    ),
+    (
+        "empty-cache-object-falls-back-to-flat",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 8_000_000,
+            "cache_creation": {},
+        },
+        "claude-opus-4-8",
+    ),
 )
 
 

@@ -759,5 +759,485 @@
         "version": "2.1.7"
       }
     ]
+  },
+  {
+    "buckets": [
+      {
+        "bucket_index": 0,
+        "bucket_start_ms": 1767690000000,
+        "session_id": "s",
+        "uuids": [
+          "u1",
+          "a1"
+        ]
+      },
+      {
+        "bucket_index": 1,
+        "bucket_start_ms": 1767690180000,
+        "session_id": "s",
+        "uuids": [
+          "u2",
+          "a2"
+        ]
+      }
+    ],
+    "id": "exact-three-minute-boundary",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "first substantive prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:02:59.999Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "second substantive prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:03:00.000Z",
+        "type": "user",
+        "uuid": "u2",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:03:00.001Z",
+        "type": "assistant",
+        "uuid": "a2",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "buckets": [
+      {
+        "bucket_index": 0,
+        "bucket_start_ms": 1767690000000,
+        "session_id": "s",
+        "uuids": [
+          "u1",
+          "a1",
+          "u2"
+        ]
+      }
+    ],
+    "id": "sub-microsecond-ties-stable-order",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "first substantive prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000000900Z",
+        "type": "user",
+        "uuid": "u1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000000100Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "second substantive prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:01.000000000Z",
+        "type": "user",
+        "uuid": "u2",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "buckets": [],
+    "id": "c0-whitespace-padded-users-not-substantive",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "\u001c\u001cok\u001c\u001c",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "hi",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:10.000Z",
+        "type": "user",
+        "uuid": "u2",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:20.000Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "buckets": [
+      {
+        "bucket_index": 0,
+        "bucket_start_ms": 1767690000000,
+        "session_id": "s",
+        "uuids": [
+          "u1",
+          "a1",
+          "u2"
+        ]
+      }
+    ],
+    "id": "junk-alternatives-dropped",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<<angle-token>>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "j1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "Caveat: The messages below were generated by the user while running local commands.",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:02.000Z",
+        "type": "user",
+        "uuid": "j2",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "REMAINING_TASKS_ACKNOWLEDGED",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:04.000Z",
+        "type": "user",
+        "uuid": "j3",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "Base directory for this skill: /x",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:06.000Z",
+        "type": "user",
+        "uuid": "j4",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "the real substantive prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:08.000Z",
+        "type": "user",
+        "uuid": "u1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:10.000Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "another real prompt here",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:12.000Z",
+        "type": "user",
+        "uuid": "u2",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "buckets": [],
+    "id": "all-junk-session-dropped",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "[Request interrupted by user]",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "j1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<system-reminder>injected</system-reminder>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:10.000Z",
+        "type": "user",
+        "uuid": "j2",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:20.000Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "buckets": [
+      {
+        "bucket_index": 0,
+        "bucket_start_ms": 1767690000000,
+        "session_id": "s",
+        "uuids": [
+          "u1",
+          "a1",
+          "u2"
+        ]
+      }
+    ],
+    "id": "list-shaped-user-text",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "substantive block content",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "u1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": [
+            {
+              "text": "working",
+              "type": "text"
+            }
+          ],
+          "model": "m",
+          "role": "assistant"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:10.000Z",
+        "type": "assistant",
+        "uuid": "a1",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "second real prompt",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "s",
+        "timestamp": "2026-01-06T09:00:20.000Z",
+        "type": "user",
+        "uuid": "u2",
+        "version": "2.1.7"
+      }
+    ]
   }
 ]

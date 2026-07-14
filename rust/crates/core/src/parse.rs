@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Timelike};
 use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
@@ -57,7 +57,13 @@ fn require_bool(data: &Value, key: &str) -> Result<bool, ParseError> {
 }
 
 pub(crate) fn parse_timestamp(raw: &str) -> Result<DateTime<FixedOffset>, ParseError> {
+    // Parity: Python datetime is µs-precision — truncate sub-µs so near-tie events keep
+    // Python's stable sort order (chrono otherwise retains nanoseconds).
     DateTime::parse_from_rfc3339(raw)
+        .map(|dt| {
+            dt.with_nanosecond(dt.nanosecond() / 1000 * 1000)
+                .expect("µs-truncated nanos are valid")
+        })
         .map_err(|e| ParseError::Value(format!("invalid timestamp {raw:?}: {e}")))
 }
 
@@ -252,7 +258,7 @@ fn parse_usage(message: &Value) -> Result<Option<Usage>, ParseError> {
     }
 }
 
-pub fn parse_usage_value(usage: &Value) -> Result<Usage, ParseError> {
+fn parse_usage_value(usage: &Value) -> Result<Usage, ParseError> {
     let cache_creation = match field(usage, "cache_creation").filter(|cc| cc.is_object()) {
         Some(cc) => Some(CacheCreation {
             ephemeral_5m_input_tokens: require_i64(cc, "ephemeral_5m_input_tokens")?,
@@ -450,6 +456,8 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
 /// Parse one JSONL transcript line into the typed model. Consumes the value so
 /// unrecognized entry kinds keep their payload verbatim without a copy.
 pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
+    // Root-level dup keys read first-wins in Rust (Python/orjson: last-wins) — accepted
+    // divergence; details on task e0ab2411 item 9.
     let ty = require_str(&data, "type")?.to_string();
     match ty.as_str() {
         "user" => {
@@ -740,6 +748,31 @@ mod tests {
         let blocks =
             parse(r#"[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]"#);
         assert_eq!(flatten_result_content(&blocks), "ab");
+    }
+
+    #[test]
+    fn duplicate_identity_keys_stay_first_wins_accepted_divergence() {
+        // Accepted divergence (e0ab2411 item 9): every root-level dup key reads first-wins in
+        // Rust (Python/orjson: last-wins) — type dispatch (both orders) and identity value.
+        let queue_then_user = parse_entry(parse(
+            r#"{"type":"queue-operation","operation":"enqueue","type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"hi"}}"#,
+        ))
+        .unwrap();
+        assert!(matches!(queue_then_user, Entry::Other(o) if o.ty == "queue-operation"));
+
+        let user_then_queue = parse_entry(parse(
+            r#"{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"hi"},"type":"queue-operation","operation":"enqueue"}"#,
+        ))
+        .unwrap();
+        assert!(matches!(user_then_queue, Entry::User(_)));
+
+        let entry = parse_entry(parse(
+            r#"{"type":"user","uuid":"first","uuid":"second","sessionId":"s1","sessionId":"s2","timestamp":"2026-01-02T03:04:05Z","message":{"role":"user","content":"hi"}}"#,
+        ))
+        .unwrap();
+        let meta = entry.meta().unwrap();
+        assert_eq!(meta.uuid, "first");
+        assert_eq!(meta.session_id, "s1");
     }
 
     #[test]

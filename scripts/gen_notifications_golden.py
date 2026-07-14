@@ -47,12 +47,16 @@ def notif(tool_use_id: str, *, body: str = "background task finished") -> str:
     return f"{TASK_NOTIFICATION_MARKER}{body} {tool_use_marker(tool_use_id)}</task-notification>"
 
 
-def queue_op(operation: str, content: str = "") -> dict[str, Any]:
+def queue_op(operation: str, content: Any = "") -> dict[str, Any]:
     return {"type": "queue-operation", "operation": operation, "content": content}
 
 
-def user(text: str, uuid: str = "u") -> dict[str, Any]:
-    return {"type": "user", **meta(uuid), "message": {"role": "user", "content": text}}
+def user(text: str, uuid: str = "u", session: str = "22222222-2222-2222-2222-222222222222") -> dict[str, Any]:
+    return {"type": "user", **(meta(uuid) | {"sessionId": session}), "message": {"role": "user", "content": text}}
+
+
+def hook_attachment(uuid: str = "hook") -> dict[str, Any]:
+    return {"type": "attachment", **meta(uuid), "attachment": {"type": "hook_success", "hookName": "x"}}
 
 
 def assistant(text: str, uuid: str = "a") -> dict[str, Any]:
@@ -89,6 +93,37 @@ CASES: tuple[Case, ...] = (
         (user("do the work"), assistant("on it"), queue_op("enqueue", notif(TID)), queue_op("dequeue"), user(notif(TID))),
     ),
     Case("no-queue-ops-plain-conversation", (user("fix the bug"), assistant("done"))),
+    Case("empty-queue-verbs-are-noops", (queue_op("dequeue"), queue_op("remove"), queue_op("popAll", "x"))),
+    Case("unknown-operation-is-noop", ({"type": "queue-operation", "operation": "frobnicate", "content": "x"},)),
+    Case("missing-operation-is-noop", ({"type": "queue-operation", "content": "y"},)),
+    Case(
+        "non-string-content-coerces-via-str",
+        (
+            queue_op("enqueue", 7),
+            queue_op("enqueue", True),
+            queue_op("enqueue", None),
+            {"type": "queue-operation", "operation": "enqueue"},
+        ),
+    ),
+    Case("wrong-attachment-kind-not-delivered", (hook_attachment(), attachment(notif(TID)))),
+    Case(
+        "interleaved-sessions",
+        (
+            user(notif(T1), "s1u", session="11111111-1111-1111-1111-111111111111"),
+            user("plain work in another session", "s2u", session="99999999-9999-9999-9999-999999999999"),
+            queue_op("enqueue", notif(T2)),
+        ),
+    ),
+    Case(
+        # str() of a container is Python repr (single quotes); str() of a float is float-repr —
+        # popAll's substring match runs over the same coercion.
+        "container-and-float-content-coerce-via-str",
+        (
+            queue_op("enqueue", {"a": 1}),
+            queue_op("enqueue", [1, 2]),
+            queue_op("enqueue", 100.0),
+        ),
+    ),
 )
 
 

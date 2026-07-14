@@ -9,6 +9,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::generated::protocol::SENTIMENT_JUNK_PATTERN;
+use crate::pystr::strip;
 use crate::types::Entry;
 
 const BUCKET_MINUTES: u32 = 3;
@@ -17,7 +18,10 @@ const MIN_USER_CHARS: usize = 5;
 
 /// JUNK_USER_MESSAGE_RE (filterspec.py): the protocol-noise alternation dropped from
 /// user turns before bucketing, compiled case-insensitively to match Python's
-/// `compile_groups(SENTIMENT_JUNK_GROUPS, True)`.
+/// `compile_groups(SENTIMENT_JUNK_GROUPS, True)`. The pattern's `\s`/`\b`/`\w` classes
+/// carry the accepted, theoretical-only engine divergences documented in cc-notes
+/// d458ca8 — never triggered by real transcripts, and the same pattern already runs
+/// the Rust filter path. The golden pins the realistic junk alternatives.
 static SENTIMENT_JUNK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!("(?i){SENTIMENT_JUNK_PATTERN}")).expect("sentiment junk regex")
 });
@@ -60,7 +64,7 @@ fn timestamp(entry: &Entry) -> DateTime<FixedOffset> {
 }
 
 fn is_substantive_user(entry: &Entry) -> bool {
-    matches!(entry, Entry::User(user) if user.content.text().trim().chars().count() >= MIN_USER_CHARS)
+    matches!(entry, Entry::User(user) if strip(&user.content.text()).chars().count() >= MIN_USER_CHARS)
 }
 
 /// bucket_events (buckets.py ConversationBucketer.bucket_events): lifts the
@@ -236,5 +240,55 @@ mod tests {
         assert_eq!(buckets.len(), 2);
         assert_eq!(buckets[0].session_id, "b");
         assert_eq!(buckets[1].session_id, "a");
+    }
+
+    #[test]
+    fn sub_microsecond_ties_keep_input_order() {
+        // Same µs, differing sub-µs digits: µs-truncation (parse.rs) makes them tie, and the
+        // stable sort keeps input order — without truncation the 100ns assistant sorts first.
+        let entries = parse(&[
+            user(
+                "s",
+                "2026-01-06T09:00:00.000000900Z",
+                "substantive prompt one",
+            ),
+            assistant("s", "2026-01-06T09:00:00.000000100Z"),
+            user(
+                "s",
+                "2026-01-06T09:00:01.000000000Z",
+                "substantive prompt two",
+            ),
+        ]);
+        let buckets = bucket_events(&entries);
+        assert_eq!(buckets.len(), 1);
+        let uuids: Vec<&str> = buckets[0]
+            .events
+            .iter()
+            .map(|e| e.meta().unwrap().uuid.as_str())
+            .collect();
+        assert_eq!(
+            uuids,
+            vec![
+                "2026-01-06T09:00:00.000000900Z",
+                "a-2026-01-06T09:00:00.000000100Z",
+                "2026-01-06T09:00:01.000000000Z",
+            ]
+        );
+    }
+
+    #[test]
+    fn exact_three_minute_boundary_starts_new_index() {
+        // 09:00:00 aligns to idx 0; exactly +180s crosses to idx 1, one tick short stays at 0.
+        let entries = parse(&[
+            user("s", "2026-01-06T09:00:00.000Z", "first substantive prompt"),
+            assistant("s", "2026-01-06T09:02:59.999Z"),
+            user("s", "2026-01-06T09:03:00.000Z", "second substantive prompt"),
+            assistant("s", "2026-01-06T09:03:00.001Z"),
+        ]);
+        let buckets = bucket_events(&entries);
+        assert_eq!(
+            buckets.iter().map(|b| b.bucket_index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 }

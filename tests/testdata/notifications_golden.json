@@ -451,5 +451,230 @@
         "version": "2.1.7"
       }
     ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "empty-queue-verbs-are-noops",
+    "records": [
+      {
+        "content": "",
+        "operation": "dequeue",
+        "type": "queue-operation"
+      },
+      {
+        "content": "",
+        "operation": "remove",
+        "type": "queue-operation"
+      },
+      {
+        "content": "x",
+        "operation": "popAll",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "unknown-operation-is-noop",
+    "records": [
+      {
+        "content": "x",
+        "operation": "frobnicate",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "missing-operation-is-noop",
+    "records": [
+      {
+        "content": "y",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "7",
+        "True",
+        "None",
+        ""
+      ],
+      "queued": [
+        "7",
+        "True",
+        "None",
+        ""
+      ]
+    },
+    "id": "non-string-content-coerces-via-str",
+    "records": [
+      {
+        "content": 7,
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": true,
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": null,
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "operation": "enqueue",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>"
+      ],
+      "enqueued": [],
+      "queued": []
+    },
+    "id": "wrong-attachment-kind-not-delivered",
+    "records": [
+      {
+        "attachment": {
+          "hookName": "x",
+          "type": "hook_success"
+        },
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "attachment",
+        "uuid": "hook",
+        "version": "2.1.7"
+      },
+      {
+        "attachment": {
+          "commandMode": "prompt",
+          "prompt": "<task-notification>background task finished <tool-use-id>toolu_bg01</tool-use-id></task-notification>",
+          "type": "queued_command"
+        },
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "parentUuid": null,
+        "sessionId": "22222222-2222-2222-2222-222222222222",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "attachment",
+        "uuid": "att",
+        "version": "2.1.7"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [
+        "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>"
+      ],
+      "enqueued": [
+        "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>"
+      ],
+      "queued": [
+        "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>"
+      ]
+    },
+    "id": "interleaved-sessions",
+    "records": [
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "<task-notification>background task finished <tool-use-id>toolu_first</tool-use-id></task-notification>",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "s1u",
+        "version": "2.1.7"
+      },
+      {
+        "cwd": "/repo",
+        "entrypoint": "cli",
+        "gitBranch": "main",
+        "message": {
+          "content": "plain work in another session",
+          "role": "user"
+        },
+        "parentUuid": null,
+        "sessionId": "99999999-9999-9999-9999-999999999999",
+        "timestamp": "2026-01-06T09:00:00.000Z",
+        "type": "user",
+        "uuid": "s2u",
+        "version": "2.1.7"
+      },
+      {
+        "content": "<task-notification>background task finished <tool-use-id>toolu_second</tool-use-id></task-notification>",
+        "operation": "enqueue",
+        "type": "queue-operation"
+      }
+    ]
+  },
+  {
+    "expected": {
+      "delivered": [],
+      "enqueued": [
+        "{'a': 1}",
+        "[1, 2]",
+        "100.0"
+      ],
+      "queued": [
+        "{'a': 1}",
+        "[1, 2]",
+        "100.0"
+      ]
+    },
+    "id": "container-and-float-content-coerce-via-str",
+    "records": [
+      {
+        "content": {
+          "a": 1
+        },
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": [
+          1,
+          2
+        ],
+        "operation": "enqueue",
+        "type": "queue-operation"
+      },
+      {
+        "content": 100.0,
+        "operation": "enqueue",
+        "type": "queue-operation"
+      }
+    ]
   }
 ]
