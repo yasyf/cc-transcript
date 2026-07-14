@@ -28,6 +28,11 @@ class ReadOnlyDict(dict):
     digest canonicalization, ``isinstance``) keeps working and it reprs as
     ``{...}`` — while raising ``TypeError`` on any mutation, which also makes a
     reference cycle back through the untracked view unconstructible.
+
+    Only the top level is frozen, and only against ordinary mutation. Reaching
+    past the instance (``dict.__setitem__(x, ...)``, ``dict.__init__``) or
+    mutating a nested container is deliberate misuse and out of contract: it can
+    resurrect the split-brain and the uncollectable cycle this type prevents.
     """
 
     __slots__ = ()
