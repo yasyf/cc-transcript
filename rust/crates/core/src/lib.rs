@@ -1,6 +1,7 @@
 pub mod generated;
 
 pub mod activity;
+pub mod buckets;
 #[cfg(feature = "command")]
 pub mod command;
 pub mod context;

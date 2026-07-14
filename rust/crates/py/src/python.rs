@@ -16,6 +16,7 @@ use cc_transcript_core::activity::{
     hunk_overlap, lift_session, overlap_between, result_index, session_activity, ActivityOpts,
     Hunk, SessionActivity,
 };
+use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::facts;
 use cc_transcript_core::cost::cost_of;
@@ -182,6 +183,32 @@ fn cost_of_json<'py>(
 }
 
 #[pyfunction]
+fn bucket_events<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
+    buckets::bucket_events(&entries)
+        .iter()
+        .map(|bucket| {
+            let dict = PyDict::new(py);
+            dict.set_item("session_id", bucket.session_id)?;
+            dict.set_item("bucket_index", bucket.bucket_index)?;
+            dict.set_item("bucket_start_ms", bucket.bucket_start.timestamp_millis())?;
+            let uuids: Vec<&str> = bucket
+                .events
+                .iter()
+                .map(|e| {
+                    e.meta()
+                        .expect("user/assistant entries carry meta")
+                        .uuid
+                        .as_str()
+                })
+                .collect();
+            dict.set_item("uuids", uuids)?;
+            Ok(dict)
+        })
+        .collect()
+}
+
+#[pyfunction]
 fn notifications_replay<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Bound<'py, PyDict>> {
     let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
     let notifications = Notifications::from_entries(&entries);
@@ -244,6 +271,10 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     )?;
     dict.set_item("protocol.TOOL_USE_ID_PREFIX", protocol::TOOL_USE_ID_PREFIX)?;
     dict.set_item("protocol.TOOL_USE_ID_SUFFIX", protocol::TOOL_USE_ID_SUFFIX)?;
+    dict.set_item(
+        "protocol.SENTIMENT_JUNK_PATTERN",
+        protocol::SENTIMENT_JUNK_PATTERN,
+    )?;
     dict.set_item("mining.TRANSCRIPT_MESSAGE", mining::TRANSCRIPT_MESSAGE)?;
     dict.set_item("mining.PLAN_REVIEW", mining::PLAN_REVIEW)?;
     dict.set_item("mining.INTERRUPT_REJECTION", mining::INTERRUPT_REJECTION)?;
@@ -716,6 +747,7 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
+    m.add_function(wrap_pyfunction!(bucket_events, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;

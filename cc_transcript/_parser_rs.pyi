@@ -37,6 +37,14 @@ def notifications_replay(raw: bytes, /) -> dict[str, list[str]]:
     :class:`~cc_transcript.notifications.Notifications` state (the notifications.py port).
     """
 
+def bucket_events(raw: bytes, /) -> list[dict[str, Any]]:
+    """Groups a transcript's raw JSONL bytes into scorable sentiment buckets.
+
+    Each dict carries ``session_id``, ``bucket_index``, ``bucket_start_ms`` (epoch
+    milliseconds), and ``uuids`` (the member events, in window order) — the
+    ConversationBucketer.bucket_events port (cc_transcript.sentiment.buckets).
+    """
+
 def lexicon_tokenize(text: str, /) -> list[str]:
     """Split ``text`` into lowercased maximal runs of alphabetic characters (the shared tokenizer)."""
 
