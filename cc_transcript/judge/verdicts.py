@@ -269,7 +269,7 @@ class VerdictStoreMixin:
                 elif removable:
                     clear_evidence(conn, dedup_key=key, role=role, prompt_version=prompt_version)
 
-    async def unjudged(
+    def unjudged(
         self,
         *,
         role: str,
@@ -332,7 +332,7 @@ class VerdictStoreMixin:
         kept: list[dict[str, object]] = []
         for row in candidates:
             fresh = row.pop("verdict_id") is None
-            if not probe_hydration or fresh or await hydratable(str(row["context_json"])):
+            if not probe_hydration or fresh or hydratable(str(row["context_json"])):
                 kept.append(row)
                 if limit is not None and len(kept) >= limit:
                     break
@@ -584,10 +584,10 @@ def canonical_slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
 
 
-async def hydratable(context_json: str) -> bool:
+def hydratable(context_json: str) -> bool:
     from cc_transcript.context import ContextWindow
 
-    return await ContextWindow.from_json(context_json).hydrate() is not None
+    return ContextWindow.from_json(context_json).hydrate() is not None
 
 
 async def run_verdicts[V](

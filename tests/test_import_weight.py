@@ -43,7 +43,7 @@ import cc_transcript
 before = "cc_transcript.parser" in sys.modules
 ref = cc_transcript.EventRef
 after_ids = "cc_transcript.parser" in sys.modules
-parser = cc_transcript.TranscriptParser
+parse = cc_transcript.parse
 after_parser = "cc_transcript.parser" in sys.modules
 print(json.dumps([before, after_ids, after_parser]))
 """

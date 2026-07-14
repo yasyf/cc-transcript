@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from cc_transcript.activity import SessionActivity, ToolUse, Turn
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.facts import ToolFact
-    from cc_transcript.models import AttachmentDetail, ContentBlock, SessionId, ToolUseId, TranscriptEvent
+    from cc_transcript.models import AttachmentDetail, ContentBlock, SessionId, ToolUseId, Transcript, TranscriptEvent
     from cc_transcript.tools import ToolCall
 
 PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
@@ -346,7 +346,7 @@ class Stats:
     sidechain: int
 
 
-def collect_stats(transcripts: Iterable[ParsedTranscript]) -> Stats:
+def collect_stats(transcripts: Iterable[Transcript | ParsedTranscript]) -> Stats:
     kinds: Counter[str] = Counter()
     models: Counter[str] = Counter()
     tools: Counter[str] = Counter()

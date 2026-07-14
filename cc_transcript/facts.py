@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from cc_transcript.activity import ToolUse
     from cc_transcript.backend import ParsedTranscript
     from cc_transcript.ids import SessionId, ToolUseId
-    from cc_transcript.models import ToolResultBlock
+    from cc_transcript.models import ToolResultBlock, Transcript
 
 
 def is_denial(block: ToolResultBlock) -> bool:
@@ -116,7 +116,7 @@ def fact_of(use: ToolUse, session_id: SessionId, path: Path, prefixes: tuple[str
     )
 
 
-def tool_facts(transcripts: Iterable[ParsedTranscript]) -> Iterator[ToolFact]:
+def tool_facts(transcripts: Iterable[Transcript | ParsedTranscript]) -> Iterator[ToolFact]:
     """Yields one :class:`ToolFact` per tool call across every transcript.
 
     Each transcript is lifted into a :class:`~cc_transcript.activity.SessionActivity`

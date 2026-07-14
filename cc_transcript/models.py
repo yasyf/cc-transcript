@@ -116,6 +116,9 @@ PrintResult = _native.PrintResult
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent | AttachmentEvent
 """The union of every typed event a parsed transcript can yield."""
 
+EventList = _native.EventList
+Transcript = _native.Transcript
+
 
 def parse_questions(rounds: object) -> tuple[Question, ...] | None:
     """Lift an AskUserQuestion ``questions`` array into typed rounds, or None.

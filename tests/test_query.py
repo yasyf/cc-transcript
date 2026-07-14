@@ -4,10 +4,8 @@ import json
 import os
 import re
 from datetime import timedelta
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import anyio
 import pytest
 
 from cc_transcript.activity import SessionActivity, ToolUse
@@ -631,12 +629,12 @@ def test_from_path_lifts_turns_and_sets_path(tmp_path: Path) -> None:
 
 def test_from_id_discovers_the_transcript(tmp_path: Path) -> None:
     main = write_main_transcript(tmp_path)
-    sess = anyio.run(partial(Session.from_id, SESSION, root=tmp_path))
+    sess = Session.from_id(SESSION, root=tmp_path)
     assert sess.path == main
     assert sess.first_prompt == "run the tests"
 
 
 def test_from_id_raises_expired_when_transcript_gone(tmp_path: Path) -> None:
     with pytest.raises(TranscriptExpiredError) as excinfo:
-        anyio.run(partial(Session.from_id, SESSION, root=tmp_path))
+        Session.from_id(SESSION, root=tmp_path)
     assert excinfo.value.session_id == SESSION

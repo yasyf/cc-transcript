@@ -1,16 +1,22 @@
+"""The thin plumbing under :func:`parse` and :func:`stream`.
+
+Both entry points run the native parser: :func:`parse` turns one source — a
+transcript path or raw JSONL bytes — into a :class:`~cc_transcript.models.Transcript`
+view, and :func:`stream` fans a batch of paths across the native parse pool. A
+``drop`` spec is applied inside the parser, so dropped events never materialize
+as Python objects.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any
 
-import anyio
-import anyio.to_thread
 import orjson
 
 from cc_transcript import _native
-from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import (
     DENIAL_KIND_USER_REJECTED,
     DENIAL_PREFIX,
@@ -70,9 +76,12 @@ from cc_transcript.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Iterable, Iterator
 
     from cc_transcript.filterspec import FilterSpec
+    from cc_transcript.models import Transcript
+
+STREAM_RECV_BATCH = 32
 
 
 def parse_meta(data: Mapping[str, Any]) -> EntryMeta:
@@ -463,67 +472,60 @@ def parse_print_result(raw: bytes) -> PrintResult:
     return _native.parse_print_result(raw)
 
 
-async def parse_events_async(path: Path) -> list[TranscriptEvent]:
-    return parse_events_from_bytes(await anyio.Path(path).read_bytes())
+def parse(source: Path | bytes, *, drop: FilterSpec | None = None) -> Transcript:
+    """Parses one transcript into a :class:`~cc_transcript.models.Transcript` view.
 
+    Args:
+        source: A transcript file path, or raw JSONL bytes. A path parse
+            carries the file's path and mtime on the view; a bytes parse
+            has ``path=None``.
+        drop: Optional :class:`~cc_transcript.FilterSpec` applied during
+            parsing; events it drops never materialize as Python objects.
 
-class TranscriptParser:
-    """The public facade over the Rust parsing backend.
+    Returns:
+        The parsed transcript view.
 
-    Streams transcript files through the ``_native`` extension; a spec
-    passed to :meth:`stream_transcripts` runs inside Rust with events dropped
-    before materialization.
+    Raises:
+        OSError: When a path source cannot be read.
+
+    Example:
+        >>> transcript = parse(path, drop=NOISE_SPEC)
+        >>> [event.meta.uuid for event in transcript.events]
     """
+    spec_json = spec_to_json(drop) if drop is not None else None
+    match source:
+        case bytes():
+            return _native.parse_bytes(source, spec_json)
+        case Path():
+            native = _native.stream_parse([(str(source), source.stat().st_mtime)], 1, spec_json)
+            if (result := native.recv()) is None:
+                raise OSError(f"unreadable transcript: {source}")
+            return result
 
-    PREFETCH: ClassVar[int] = 8
-    RECV_BATCH: ClassVar[int] = 32
 
-    @classmethod
-    def backend_name(cls) -> Literal["rust"]:
-        """Returns the active parsing backend's name."""
-        return "rust"
+def stream(
+    paths: Iterable[Path], *, drop: FilterSpec | None = None, prefetch: int = 4
+) -> Iterator[Transcript]:
+    """Streams parsed transcripts for ``paths`` off the native parse pool.
 
-    @classmethod
-    def parse_file(cls, path: Path) -> list[TranscriptEvent]:
-        """Parses the transcript at ``path`` into events, synchronously."""
-        result = _native.stream_parse([(str(path), 0.0)], 1).recv()
-        return list(result.events) if result is not None else []
+    Files parse in parallel with ``prefetch`` results buffered ahead of the
+    consumer; an unreadable file is skipped. Order follows parse completion,
+    not the input order.
 
-    @classmethod
-    async def parse_file_async(cls, path: Path) -> list[TranscriptEvent]:
-        """Parses the transcript at ``path`` into events, off the event loop."""
-        return await anyio.to_thread.run_sync(cls.parse_file, path)
+    Args:
+        paths: The transcript files to parse.
+        drop: Optional :class:`~cc_transcript.FilterSpec` applied during
+            parsing; events it drops never materialize as Python objects.
+        prefetch: Parsed files to hold ready ahead of the consumer.
 
-    @classmethod
-    async def stream_transcripts(
-        cls,
-        paths: Sequence[tuple[Path, float]],
-        *,
-        prefetch: int | None = None,
-        spec: FilterSpec | None = None,
-    ) -> AsyncIterator[ParsedTranscript]:
-        """Streams parsed transcripts for ``paths`` through the Rust backend.
+    Yields:
+        One :class:`~cc_transcript.models.Transcript` per readable input path.
 
-        Args:
-            paths: Pairs of ``(path, mtime)`` to parse.
-            prefetch: Files to keep in flight; defaults to :attr:`PREFETCH`.
-            spec: Optional :class:`~cc_transcript.FilterSpec` applied during
-                parsing; events failing it are dropped inside Rust before they
-                ever materialize as Python objects.
-
-        Yields:
-            One :class:`ParsedTranscript` per input path.
-        """
-        if not paths:
-            return
-        rust_spec = spec_to_json(spec) if spec is not None else None
-        stream = _native.stream_parse(
-            [(str(path), mtime) for path, mtime in paths],
-            prefetch if prefetch is not None else cls.PREFETCH,
-            rust_spec,
-        )
-        while batch := await anyio.to_thread.run_sync(stream.recv_many, cls.RECV_BATCH):
-            for transcript in batch:
-                yield ParsedTranscript(
-                    path=Path(transcript.path), mtime=transcript.mtime, events=tuple(transcript.events)
-                )
+    Example:
+        >>> for transcript in stream(discover(), drop=NOISE_SPEC):
+        ...     print(transcript.path, len(transcript.events))
+    """
+    spec_json = spec_to_json(drop) if drop is not None else None
+    native = _native.stream_parse([(str(path), path.stat().st_mtime) for path in paths], prefetch, spec_json)
+    while batch := native.recv_many(STREAM_RECV_BATCH):
+        yield from batch

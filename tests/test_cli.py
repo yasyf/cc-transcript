@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from cc_transcript.cli import cli
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 from cc_transcript.ids import tool_digest
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from cc_transcript.render import human_size
 
 BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)

@@ -134,11 +134,11 @@ EXPORTS: dict[str, str] = {
             "tool_uses",
         ),
         "cc_transcript.parser": (
-            "TranscriptParser",
+            "parse",
             "parse_event",
-            "parse_events_async",
             "parse_events_from_bytes",
             "parse_print_result",
+            "stream",
         ),
         "cc_transcript.cost": (
             "PRICING",
@@ -148,13 +148,12 @@ EXPORTS: dict[str, str] = {
             "cost_of_assistant",
             "resolve_pricing",
         ),
-        "cc_transcript.backend": ("ParsedTranscript",),
         "cc_transcript.discovery": (
             "CLAUDE_PROJECTS_DIR",
-            "TranscriptDiscovery",
             "TranscriptExpiredError",
-            "find_transcript",
-            "find_transcript_sync",
+            "discover",
+            "find_in",
+            "resolve",
             "subagent_paths",
         ),
         "cc_transcript.activity": (
@@ -276,7 +275,6 @@ if TYPE_CHECKING:
     from cc_transcript.activity import (
         result_index as result_index,
     )
-    from cc_transcript.backend import ParsedTranscript as ParsedTranscript
     from cc_transcript.builders import (
         NOISE_SPEC as NOISE_SPEC,
     )
@@ -395,16 +393,16 @@ if TYPE_CHECKING:
         CLAUDE_PROJECTS_DIR as CLAUDE_PROJECTS_DIR,
     )
     from cc_transcript.discovery import (
-        TranscriptDiscovery as TranscriptDiscovery,
+        discover as discover,
     )
     from cc_transcript.discovery import (
         TranscriptExpiredError as TranscriptExpiredError,
     )
     from cc_transcript.discovery import (
-        find_transcript as find_transcript,
+        find_in as find_in,
     )
     from cc_transcript.discovery import (
-        find_transcript_sync as find_transcript_sync,
+        resolve as resolve,
     )
     from cc_transcript.discovery import (
         subagent_paths as subagent_paths,
@@ -660,19 +658,19 @@ if TYPE_CHECKING:
     )
     from cc_transcript.notifications import Notifications as Notifications
     from cc_transcript.parser import (
-        TranscriptParser as TranscriptParser,
+        parse as parse,
     )
     from cc_transcript.parser import (
         parse_event as parse_event,
-    )
-    from cc_transcript.parser import (
-        parse_events_async as parse_events_async,
     )
     from cc_transcript.parser import (
         parse_events_from_bytes as parse_events_from_bytes,
     )
     from cc_transcript.parser import (
         parse_print_result as parse_print_result,
+    )
+    from cc_transcript.parser import (
+        stream as stream,
     )
     from cc_transcript.query import (
         FileRef as FileRef,

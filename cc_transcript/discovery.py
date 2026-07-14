@@ -1,12 +1,16 @@
+"""Locating transcript files under ``~/.claude/projects``.
+
+A sync facade over the native discovery functions. The projects-root default
+and the positive-hit memo are facade concerns: the native side scans exactly
+the root it is handed.
+"""
+
 from __future__ import annotations
 
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anyio
-import anyio.to_thread
-
+from cc_transcript import _native
 from cc_transcript.ids import ToolUseId
 
 if TYPE_CHECKING:
@@ -15,7 +19,7 @@ if TYPE_CHECKING:
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 TRANSCRIPT_MEMO: dict[tuple[SessionId, Path], Path] = {}
-"""Positive-hit memo for :func:`find_transcript_sync`, keyed by ``(session_id, resolved root)``.
+"""Positive-hit memo for :func:`resolve`, keyed by ``(session_id, resolved root)``.
 
 Only successful lookups are cached: a miss may become a hit once Claude Code
 writes the file, so ``None`` is never stored. A cached hit is revalidated with
@@ -43,82 +47,59 @@ class TranscriptExpiredError(RuntimeError):
         self.session_id = session_id
 
 
-class TranscriptDiscovery:
-    """Locates Claude Code transcript files on disk.
+def discover(root: Path | None = None) -> list[Path]:
+    """Every transcript under ``root``, sorted by path.
 
-    Transcripts live as ``*.jsonl`` files under
-    :data:`CLAUDE_PROJECTS_DIR` (``~/.claude/projects``), one directory per
-    project plus ``subagents/`` sidechain files.
+    Transcripts live as ``*.jsonl`` files under ``root`` (defaulting to
+    :data:`CLAUDE_PROJECTS_DIR`), one directory per project plus
+    ``subagents/`` sidechain files.
+
+    Returns:
+        The transcript paths; ``[]`` when the root does not exist.
+
+    Example:
+        >>> for transcript in stream(discover()):
+        ...     print(transcript.path)
     """
-
-    @staticmethod
-    async def find_transcripts() -> list[Path]:
-        """Returns every transcript under the projects directory, sorted."""
-        root = anyio.Path(CLAUDE_PROJECTS_DIR)
-        if not await root.exists():
-            return []
-        return sorted([Path(p) async for p in root.rglob("*.jsonl")])
-
-    @staticmethod
-    async def stat_mtime(path: Path) -> float | None:
-        try:
-            return (await anyio.Path(path).stat()).st_mtime
-        except OSError:
-            return None
-
-    @staticmethod
-    async def transcript_mtime(path: Path) -> float:
-        """Returns ``path``'s modification time, raising if it cannot be read."""
-        return (await anyio.Path(path).stat()).st_mtime
-
-    @staticmethod
-    async def find_in(
-        directory: Path,
-        *,
-        name_contains: str | None = None,
-        limit: int | None = None,
-        known_mtimes: dict[str, float] | None = None,
-    ) -> list[tuple[Path, float]]:
-        """Finds transcripts under ``directory`` newer than known mtimes.
-
-        Args:
-            directory: The directory to search recursively.
-            name_contains: When set, keep only files whose name contains it.
-            limit: When set, return at most this many paths.
-            known_mtimes: Map of path string to last-seen mtime; a file is
-                kept only when absent from the map or modified since.
-
-        Returns:
-            Pairs of ``(path, mtime)`` sorted by path.
-        """
-        root = anyio.Path(directory)
-        if not await root.exists():
-            return []
-        found: list[tuple[Path, float]] = []
-        async for entry in root.rglob("*.jsonl"):
-            if name_contains and name_contains not in entry.name:
-                continue
-            path = Path(entry)
-            if (mtime := await TranscriptDiscovery.stat_mtime(path)) is None:
-                continue
-            if known_mtimes is not None and (prev := known_mtimes.get(str(path))) is not None and prev >= mtime:
-                continue
-            found.append((path, mtime))
-        found.sort(key=lambda e: e[0])
-        return found[:limit] if limit is not None else found
+    return [Path(p) for p in _native.discovery_find_transcripts(str(root or CLAUDE_PROJECTS_DIR))]
 
 
-def find_transcript_sync(session_id: SessionId, *, root: Path | None = None) -> Path | None:
-    """Locates ``session_id``'s transcript on disk, synchronously.
+def find_in(
+    directory: Path,
+    *,
+    name_contains: str | None = None,
+    limit: int | None = None,
+    known_mtimes: dict[str, float] | None = None,
+) -> list[tuple[Path, float]]:
+    """Finds transcripts under ``directory`` newer than known mtimes.
 
-    Globs ``<root>/**/<session_id>.jsonl`` under ``root`` (defaulting to
-    :data:`CLAUDE_PROJECTS_DIR`), resolving symlinks — cc-pool gives one
-    transcript several path spellings — and deduping by resolved real path.
+    Args:
+        directory: The directory to search recursively.
+        name_contains: When set, keep only files whose name contains it.
+        limit: When set, return at most this many paths.
+        known_mtimes: Map of path string to last-seen mtime; a file is
+            kept only when absent from the map or modified since.
+
+    Returns:
+        Pairs of ``(path, mtime)`` sorted by path.
+    """
+    return [
+        (Path(p), mtime)
+        for p, mtime in _native.discovery_find_in(str(directory), name_contains, limit, known_mtimes)
+    ]
+
+
+def resolve(session_id: SessionId, *, root: Path | None = None) -> Path | None:
+    """Locates ``session_id``'s transcript on disk.
+
+    Scans ``root`` (defaulting to :data:`CLAUDE_PROJECTS_DIR`) for
+    ``<session_id>.jsonl``, resolving symlinks — cc-pool gives one transcript
+    several path spellings — and deduping by resolved real path.
 
     A successful lookup is memoized in ``TRANSCRIPT_MEMO`` under
     ``(session_id, resolved root)`` and revalidated on the next hit, so a
-    repeated probe skips the recursive glob while a pruned transcript still
-    forces a fresh scan.
+    repeated probe skips the recursive scan while a pruned transcript still
+    forces a fresh one.
 
     Returns:
         The newest-mtime real path, or None when no transcript exists.
@@ -127,28 +108,10 @@ def find_transcript_sync(session_id: SessionId, *, root: Path | None = None) -> 
     key = (session_id, base.resolve())
     if (cached := TRANSCRIPT_MEMO.get(key)) is not None and cached.exists():
         return cached
-    if not base.exists():
+    if (hit := _native.discovery_find_transcript(str(base), session_id)) is None:
         return None
-    candidates: dict[Path, float] = {}
-    for entry in base.rglob(f"{session_id}.jsonl"):
-        if (real := entry.resolve()) in candidates:
-            continue
-        try:
-            candidates[real] = real.stat().st_mtime
-        except OSError:
-            continue
-    if (hit := max(candidates, key=candidates.__getitem__, default=None)) is not None:
-        TRANSCRIPT_MEMO[key] = hit
-    return hit
-
-
-async def find_transcript(session_id: SessionId, *, root: Path | None = None) -> Path | None:
-    """Locates ``session_id``'s transcript on disk.
-
-    The async counterpart of :func:`find_transcript_sync`, scanning off the
-    event loop in a worker thread.
-    """
-    return await anyio.to_thread.run_sync(partial(find_transcript_sync, session_id, root=root))
+    TRANSCRIPT_MEMO[key] = (path := Path(hit))
+    return path
 
 
 def is_subagent_path(path: Path) -> bool:
@@ -157,7 +120,7 @@ def is_subagent_path(path: Path) -> bool:
     Matches the ``agent-<tool_use_id>.jsonl`` naming convention that
     :func:`subagent_paths` discovers.
     """
-    return path.suffix == ".jsonl" and path.name.startswith("agent-")
+    return _native.discovery_is_subagent_path(str(path))
 
 
 def subagent_paths(path: Path) -> tuple[Path, ...]:
@@ -170,9 +133,7 @@ def subagent_paths(path: Path) -> tuple[Path, ...]:
     Returns:
         The sidechain files sorted by path; ``()`` when none exist.
     """
-    if not (directory := path.parent / path.stem / "subagents").is_dir():
-        return ()
-    return tuple(sorted(entry for entry in directory.glob("*.jsonl") if not entry.name.startswith("._")))
+    return tuple(Path(p) for p in _native.discovery_subagent_paths(str(path)))
 
 
 def subagent_transcripts(path: Path) -> dict[ToolUseId, Path]:
@@ -185,4 +146,7 @@ def subagent_transcripts(path: Path) -> dict[ToolUseId, Path]:
     Returns:
         A mapping from tool-use id to sidechain file; ``{}`` when none exist.
     """
-    return {ToolUseId(entry.stem.removeprefix("agent-")): entry for entry in subagent_paths(path)}
+    return {
+        ToolUseId(tool_use_id): Path(p)
+        for tool_use_id, p in _native.discovery_subagent_transcripts(str(path)).items()
+    }

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import anyio
 import pytest
 
 from cc_transcript.activity import Edit, SessionActivity, ToolUse, Turn, hunk_overlap, native_user_classifier
@@ -358,7 +356,7 @@ def write_transcript(root: Path) -> Path:
 
 def test_from_session_discovers_parses_and_lifts(tmp_path: Path) -> None:
     write_transcript(tmp_path)
-    act = anyio.run(partial(SessionActivity.from_session, SESSION, root=tmp_path))
+    act = SessionActivity.from_session(SESSION, root=tmp_path)
     assert act.session_id == SESSION
     assert [turn.prompt for turn in act.turns] == ["fix the bug"]
     (use,) = act.turns[0].tool_uses
@@ -371,7 +369,7 @@ def test_from_session_discovers_parses_and_lifts(tmp_path: Path) -> None:
 
 def test_from_session_raises_expired_when_transcript_gone(tmp_path: Path) -> None:
     with pytest.raises(TranscriptExpiredError) as excinfo:
-        anyio.run(partial(SessionActivity.from_session, SESSION, root=tmp_path))
+        SessionActivity.from_session(SESSION, root=tmp_path)
     assert excinfo.value.session_id == SESSION
 
 

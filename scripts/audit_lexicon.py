@@ -16,10 +16,9 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 
-import anyio
 
 from cc_transcript import parse_events_from_bytes
-from cc_transcript.discovery import TranscriptDiscovery
+from cc_transcript.discovery import discover
 from cc_transcript.models import UserEvent
 from cc_transcript.sentiment import bucket_events
 from cc_transcript.sentiment.lexicon import Lexicon
@@ -51,8 +50,8 @@ def bucket_texts(events: list) -> list[str]:  # noqa: ANN001
     return [e.text for e in events if isinstance(e, UserEvent) and e.text and len(e.text) >= 5]
 
 
-async def collect(max_transcripts: int, max_buckets: int) -> list[list[str]]:
-    paths = await TranscriptDiscovery.find_transcripts()
+def collect(max_transcripts: int, max_buckets: int) -> list[list[str]]:
+    paths = discover()
     random.Random(SEED).shuffle(paths)
     out: list[list[str]] = []
     for path in paths[:max_transcripts]:
@@ -104,7 +103,7 @@ def audit(buckets: list[list[str]]) -> None:
 def main() -> None:
     max_transcripts = int(sys.argv[1]) if len(sys.argv) > 1 else 300
     max_buckets = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
-    audit(anyio.run(collect, max_transcripts, max_buckets))
+    audit(collect(max_transcripts, max_buckets))
 
 
 if __name__ == "__main__":

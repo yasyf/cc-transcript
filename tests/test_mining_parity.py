@@ -47,7 +47,7 @@ from cc_transcript.mining.spec import (
     ReviewSpec,
     signal_to_dict,
 )
-from cc_transcript.parser import TranscriptParser, parse_events_from_bytes
+from cc_transcript.parser import parse, parse_events_from_bytes
 from tests.support import (
     MATCHER_LABELS,
     MATCHER_QUESTION,
@@ -1101,7 +1101,7 @@ def test_non_finite_tool_use_result_number_mines_without_crash(tmp_path: Path) -
     ]
     path = tmp_path / "nonfinite.jsonl"
     path.write_bytes(to_bytes(entries).replace(b'"__NONFINITE__"', b"1e9999"))
-    events = TranscriptParser.parse_file(path)
+    events = list(parse(path).events)
     signals = list(mine(events, SPEC))
     assert [signal.detector for signal in signals] == ["ask_user_question"]
     assert signals[0].text == "Storage (Recommended)"
@@ -1116,5 +1116,5 @@ def test_parse_file_skips_unmaterializable_event_keeps_rest(tmp_path: Path) -> N
     good = [assistant("a1", {"type": "text", "text": "hi"}), user_text("u1", "normal message")]
     path = tmp_path / "corrupt.jsonl"
     path.write_bytes(corrupt + b"\n" + to_bytes(good))
-    events = TranscriptParser.parse_file(path)
+    events = list(parse(path).events)
     assert [type(event).__name__ for event in events] == ["AssistantEvent", "UserEvent"]

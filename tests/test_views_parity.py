@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from tests import viewgolden
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +36,7 @@ def test_golden_version() -> None:
 def test_views_reproduce_golden(record: dict) -> None:
     path = ensure_fixture(REPO_ROOT / record["file"])
     assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"], f"{record['file']} drifted"
-    viewgolden.replay_file(record, TranscriptParser.parse_file(path))
+    viewgolden.replay_file(record, list(parse(path).events))
 
 
 @pytest.mark.parametrize("record", GOLDEN["print_results"], ids=[r["file"] for r in GOLDEN["print_results"]])
@@ -50,7 +50,7 @@ def test_split_invariance() -> None:
     # captain-hook's transcache contract: parse(prefix) + parse(suffix) == parse(prefix + suffix).
     raw = (REPO_ROOT / "tests" / "testdata" / "views_edge" / "edge_core.jsonl").read_bytes()
     lines = raw.splitlines(keepends=True)
-    whole = TranscriptParser.parse_file(REPO_ROOT / "tests" / "testdata" / "views_edge" / "edge_core.jsonl")
+    whole = list(parse(REPO_ROOT / "tests" / "testdata" / "views_edge" / "edge_core.jsonl").events)
     for cut_line in (1, len(lines) // 2, len(lines) - 1):
         prefix = b"".join(lines[:cut_line])
         suffix = b"".join(lines[cut_line:])
@@ -68,6 +68,6 @@ def parse_bytes_via_stream(raw: bytes) -> list:
         f.write(raw)
         path = Path(f.name)
     try:
-        return TranscriptParser.parse_file(path)
+        return list(parse(path).events)
     finally:
         path.unlink()

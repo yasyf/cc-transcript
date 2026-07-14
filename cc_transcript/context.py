@@ -128,7 +128,7 @@ class ContextWindow:
 
     Example:
         >>> window = capture_window(activity, anchor)
-        >>> hydrated = await window.hydrate()
+        >>> hydrated = window.hydrate()
         >>> text = hydrated.render(budget=Budget()) if hydrated else window.render_preview(budget=Budget())
     """
 
@@ -153,7 +153,7 @@ class ContextWindow:
             )
         )
 
-    async def hydrate(self) -> HydratedWindow | None:
+    def hydrate(self) -> HydratedWindow | None:
         """Resolve every ref back to real turns for full-fidelity rendering.
 
         Returns:
@@ -162,7 +162,7 @@ class ContextWindow:
             hydrate-or-fail.
         """
         try:
-            activity = await SessionActivity.from_session(self.anchor.session_id)
+            activity = SessionActivity.from_session(self.anchor.session_id)
         except TranscriptExpiredError:
             return None
         turns: list[Turn] = []

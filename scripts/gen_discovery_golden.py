@@ -4,7 +4,7 @@ Builds synthesized project-dir trees in throwaway tmp dirs — nested projects, 
 resource fork, a hidden sidechain, a symlinked file (a cc-pool second spelling) and a
 symlinked directory, with ``os.utime``-pinned integer mtimes — and freezes what each
 discovery function returns: ``find_transcripts`` (every ``*.jsonl`` sorted, forks
-included), ``find_in`` (name/freshness/limit filtering), ``find_transcript_sync``
+included), ``find_in`` (name/freshness/limit filtering), ``resolve``
 (newest-mtime real path after symlink dedup), and ``subagent_paths`` /
 ``subagent_transcripts``. Paths are frozen relative to the tree root, so nothing depends
 on the tmp location.
@@ -20,11 +20,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anyio
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -119,26 +117,21 @@ def rel(base: Path, path: str) -> str:
 def python_find_transcripts(root: Path) -> list[Path]:
     import cc_transcript.discovery as disc
 
-    original = disc.CLAUDE_PROJECTS_DIR
-    disc.CLAUDE_PROJECTS_DIR = root
-    try:
-        return anyio.run(disc.TranscriptDiscovery.find_transcripts)
-    finally:
-        disc.CLAUDE_PROJECTS_DIR = original
+    return disc.discover(root)
 
 
 def python_find_in(directory: Path, name_contains: str | None, limit: int | None, known: dict[str, float] | None) -> list[tuple[Path, float]]:
-    from cc_transcript.discovery import TranscriptDiscovery
+    from cc_transcript.discovery import find_in
 
-    return anyio.run(partial(TranscriptDiscovery.find_in, directory, name_contains=name_contains, limit=limit, known_mtimes=known))
+    return find_in(directory, name_contains=name_contains, limit=limit, known_mtimes=known)
 
 
 def python_find_transcript(root: Path, session_id: str) -> Path | None:
-    from cc_transcript.discovery import TRANSCRIPT_MEMO, find_transcript_sync
+    from cc_transcript.discovery import TRANSCRIPT_MEMO, resolve
     from cc_transcript.ids import SessionId
 
     TRANSCRIPT_MEMO.clear()
-    return find_transcript_sync(SessionId(session_id), root=root)
+    return resolve(SessionId(session_id), root=root)
 
 
 def run_python(root: Path, scenario: dict[str, object]) -> dict[str, object]:

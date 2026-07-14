@@ -16,11 +16,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cc_transcript.discovery import TranscriptDiscovery, TranscriptExpiredError, find_transcript
+from cc_transcript.discovery import TranscriptExpiredError, resolve
 from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call, parse_tool_result
 
 if TYPE_CHECKING:
@@ -155,7 +155,7 @@ class SessionActivity:
         turns: The session's turns, indexed by position.
 
     Example:
-        >>> activity = await SessionActivity.from_session(session_id)
+        >>> activity = SessionActivity.from_session(session_id)
         >>> activity.edits_before(anchor, lookback_turns=40)
     """
 
@@ -195,7 +195,7 @@ class SessionActivity:
         )
 
     @classmethod
-    async def from_session(
+    def from_session(
         cls,
         session_id: SessionId,
         *,
@@ -215,13 +215,13 @@ class SessionActivity:
                 exists on disk — Claude Code prunes them after roughly thirty
                 days.
         """
-        if (path := await find_transcript(session_id, root=root)) is None or (
-            mtime := await TranscriptDiscovery.stat_mtime(path)
-        ) is None:
+        if (path := resolve(session_id, root=root)) is None:
             raise TranscriptExpiredError(session_id)
-        async for parsed in TranscriptParser.stream_transcripts([(path, mtime)]):
-            return cls.from_events(session_id, parsed.events, user_classifier=user_classifier)
-        raise TranscriptExpiredError(session_id)
+        try:
+            transcript = parse(path)
+        except OSError:
+            raise TranscriptExpiredError(session_id) from None
+        return cls.from_events(session_id, transcript.events, user_classifier=user_classifier)
 
     @property
     def edits(self) -> tuple[Edit, ...]:

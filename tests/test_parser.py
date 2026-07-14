@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import anyio
 import orjson
 import pytest
 
@@ -24,7 +23,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.parser import parse_event, parse_events_async, parse_events_from_bytes, parse_print_result
+from cc_transcript.parser import parse, parse_event, parse_events_from_bytes, parse_print_result
 from tests import testkit
 from tests.support import raw_envelope as envelope
 
@@ -71,11 +70,24 @@ def test_parse_events_from_bytes_skips_non_dict_json() -> None:
     assert [type(e).__name__ for e in events] == ["UserEvent"]
 
 
-def test_parse_events_async_reads_file(tmp_path: Path) -> None:
+def test_parse_reads_file_and_carries_path(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_bytes(b"\n".join([orjson.dumps(user_str()), orjson.dumps(mode_entry())]))
-    events = anyio.run(parse_events_async, path)
-    assert [type(e).__name__ for e in events] == ["UserEvent", "ModeEvent"]
+    transcript = parse(path)
+    assert [type(e).__name__ for e in transcript.events] == ["UserEvent", "ModeEvent"]
+    assert transcript.path == path
+    assert transcript.mtime == path.stat().st_mtime
+
+
+def test_parse_bytes_source_has_no_path() -> None:
+    transcript = parse(orjson.dumps(user_str()))
+    assert transcript.path is None
+    assert [type(e).__name__ for e in transcript.events] == ["UserEvent"]
+
+
+def test_parse_missing_path_raises() -> None:
+    with pytest.raises(OSError):
+        parse(Path("/nonexistent/never/t.jsonl"))
 
 
 def test_parse_print_result_haiku_envelope() -> None:

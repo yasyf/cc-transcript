@@ -18,12 +18,12 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
 from cc_transcript.activity import SessionActivity, Turn, event_stamps, native_user_classifier
-from cc_transcript.discovery import TranscriptExpiredError, find_transcript, subagent_paths, subagent_transcripts
+from cc_transcript.discovery import TranscriptExpiredError, resolve, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.notifications import Notifications
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from cc_transcript.tools import (
     BashCall,
     SkillCall,
@@ -260,15 +260,15 @@ class Session:
 
     @classmethod
     def from_path(cls, path: Path, *, user_classifier: UserClassifier = native_user_classifier) -> Session:
-        """Parses and lifts the transcript at ``path``, synchronously."""
-        events = TranscriptParser.parse_file(path)
+        """Parses and lifts the transcript at ``path``."""
+        events = parse(path).events
         session_id = session_id_of(events) or SessionId(path.stem)
         return cls.from_activity(
             SessionActivity.from_events(session_id, events, user_classifier=user_classifier), path=path
         )
 
     @classmethod
-    async def from_id(
+    def from_id(
         cls,
         session_id: SessionId,
         *,
@@ -281,12 +281,10 @@ class Session:
             TranscriptExpiredError: When no transcript for ``session_id``
                 exists on disk.
         """
-        if (path := await find_transcript(session_id, root=root)) is None:
+        if (path := resolve(session_id, root=root)) is None:
             raise TranscriptExpiredError(session_id)
         return cls.from_activity(
-            SessionActivity.from_events(
-                session_id, await TranscriptParser.parse_file_async(path), user_classifier=user_classifier
-            ),
+            SessionActivity.from_events(session_id, parse(path).events, user_classifier=user_classifier),
             path=path,
         )
 

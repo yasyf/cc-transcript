@@ -19,13 +19,12 @@ from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
 
-import anyio
 import orjson
 
 from cc_transcript.activity_probe import session_activity_probe
 from cc_transcript.filterspec import apply_spec
 from cc_transcript.mining import MiningSpec, mine
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse, stream
 from cc_transcript.render import collect_stats
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,24 +47,19 @@ def timed(fn: Callable[[], object], runs: int) -> dict[str, object]:
     return {"min_s": min(runs_s), "runs_s": runs_s}
 
 
-def stream_stats(pairs: list[tuple[Path, float]]) -> int:
-    async def collect() -> int:
-        transcripts = [parsed async for parsed in TranscriptParser.stream_transcripts(pairs)]
-        return collect_stats(transcripts).events
-
-    return anyio.run(collect)
+def stream_stats(files: list[Path]) -> int:
+    return collect_stats(list(stream(files, prefetch=8))).events
 
 
 def bench_e2e(corpus: Path, runs: int) -> dict[str, object]:
     from cc_transcript.builders import build_spec, drop_junk, drop_synthetic, keep_only
 
     files = corpus_files(corpus)
-    pairs = [(path, path.stat().st_mtime) for path in files]
-    parsed = [TranscriptParser.parse_file(path) for path in files]
+    parsed = [parse(path).events for path in files]
     spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_synthetic())
     mining_spec = MiningSpec()
     return {
-        "stream_stats": timed(lambda: stream_stats(pairs), runs),
+        "stream_stats": timed(lambda: stream_stats(files), runs),
         "probe_sweep": timed(lambda: [session_activity_probe(path) for path in files], runs),
         "mine": timed(lambda: [len(list(mine(events, mining_spec))) for events in parsed], runs),
         "post_filter": timed(lambda: [len(list(apply_spec(events, spec))) for events in parsed], runs),

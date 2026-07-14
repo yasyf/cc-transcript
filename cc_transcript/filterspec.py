@@ -4,7 +4,7 @@ A :class:`FilterSpec` is an ordered list of :class:`Clause` rules — *filters a
 data*. Parse-time filtering runs in Rust: :func:`spec_to_json` serializes the spec to
 the JSON contract the Rust backend executes, dropping events during parsing before
 they ever materialize (pass a spec to
-:meth:`~cc_transcript.TranscriptParser.stream_transcripts`). Already-materialized
+:func:`~cc_transcript.stream`). Already-materialized
 events — a list the caller already holds — are filtered with :func:`apply_spec` or
 :func:`keep`.
 

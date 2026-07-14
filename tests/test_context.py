@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import anyio
 import pytest
 
 from cc_transcript.activity import SessionActivity
@@ -292,11 +291,11 @@ def test_from_json_rejects_unknown_schema(data: str) -> None:
 
 def test_hydrate_resolves_full_turns_beyond_preview_budget(projects_root: Path) -> None:
     write_transcript(projects_root)
-    activity = anyio.run(partial(SessionActivity.from_session, SESSION))
+    activity = SessionActivity.from_session(SESSION)
     window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
     assert window.trigger is not None
     assert LONG_OLD not in window.trigger.preview
-    hydrated = anyio.run(window.hydrate)
+    hydrated = window.hydrate()
     assert hydrated is not None
     assert hydrated.window == window
     assert [turn.prompt for turn in hydrated.turns] == ["one", "two", "three", "four"]
@@ -308,10 +307,10 @@ def test_hydrate_resolves_full_turns_beyond_preview_budget(projects_root: Path) 
 
 def test_hydrate_none_once_transcript_deleted_and_previews_survive(projects_root: Path) -> None:
     path = write_transcript(projects_root)
-    activity = anyio.run(partial(SessionActivity.from_session, SESSION))
+    activity = SessionActivity.from_session(SESSION)
     window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
     path.unlink()
-    assert anyio.run(window.hydrate) is None
+    assert window.hydrate() is None
     preview = replace(window, fidelity="summary").render_preview(budget=Budget())
     assert preview.splitlines()[0] == SUMMARY_LABEL
     assert "user: three" in preview
@@ -329,6 +328,6 @@ def test_hydrate_none_once_transcript_deleted_and_previews_survive(projects_root
 )
 def test_hydrate_none_when_any_ref_unresolvable(projects_root: Path, tampered: TurnRef) -> None:
     write_transcript(projects_root)
-    activity = anyio.run(partial(SessionActivity.from_session, SESSION))
+    activity = SessionActivity.from_session(SESSION)
     window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
-    assert anyio.run(replace(window, before=(*window.before, tampered)).hydrate) is None
+    assert replace(window, before=(*window.before, tampered)).hydrate() is None

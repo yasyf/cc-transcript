@@ -126,7 +126,7 @@ class LiveActivity:
 
 @pytest.fixture
 def live_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def alive(session_id: SessionId, **_: object) -> LiveActivity:
+    def alive(session_id: SessionId, **_: object) -> LiveActivity:
         return LiveActivity()
 
     monkeypatch.setattr(SessionActivity, "from_session", staticmethod(alive))
@@ -134,7 +134,7 @@ def live_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def dead_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def expired(session_id: SessionId, **_: object) -> LiveActivity:
+    def expired(session_id: SessionId, **_: object) -> LiveActivity:
         raise TranscriptExpiredError(session_id)
 
     monkeypatch.setattr(SessionActivity, "from_session", staticmethod(expired))
@@ -237,7 +237,7 @@ def test_verdict_store_roundtrip(
                 store.store.conn.execute(
                     INSERT_EVENT, (key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", f"text {key}")
                 )
-            before = await store.unjudged(role="judge", prompt_version=1)
+            before = store.unjudged(role="judge", prompt_version=1)
             for _ in range(2):
                 await store.record_verdict(
                     DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity="full"
@@ -251,7 +251,7 @@ def test_verdict_store_roundtrip(
                 "before": [row["dedup_key"] for row in before],
                 "rows": [row["n"] for row in count_cur][0],
                 "physical": [(row["a"], row["s"], row["ck"], row["fidelity"]) for row in physical_cur],
-                "after": [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)],
+                "after": [row["dedup_key"] for row in store.unjudged(role="judge", prompt_version=1)],
                 "judged": store.judged(role="judge", prompt_version=1),
                 "keys": store.dedup_keys(),
             }
@@ -405,7 +405,7 @@ def test_unmigrated_v8_verdict_table_fails_loud_on_every_path(tmp_path: Path) ->
             with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
                 store.judged(role="judge", prompt_version=1)
             with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
-                await store.unjudged(role="judge", prompt_version=1)
+                store.unjudged(role="judge", prompt_version=1)
             with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
                 await store.record_verdict(
                     DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full"
@@ -418,7 +418,7 @@ def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
     async def go() -> dict[str, object]:
         with open_generic(tmp_path) as store:
             store.store.conn.execute(INSERT_EVENT, ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"))
-            unjudged = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
+            unjudged = [row["dedup_key"] for row in store.unjudged(role="judge", prompt_version=1)]
             await store.record_verdict(
                 DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full"
             )
@@ -463,7 +463,7 @@ def test_unjudged_orders_truly_unjudged_before_summary_refresh(tmp_path: Path, l
             await store.record_verdict(
                 DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
             )
-            rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            rows = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             return [str(row["dedup_key"]) for row in rows]
 
     assert asyncio.run(go()) == ["k2", "k3", "k1"]
@@ -478,7 +478,7 @@ def test_unjudged_keeps_a_summary_row_while_its_transcript_lives(tmp_path: Path,
             await store.record_verdict(
                 DedupKey("live"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
             )
-            rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            rows = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             return [str(row["dedup_key"]) for row in rows]
 
     assert asyncio.run(go()) == ["live"]
@@ -498,9 +498,9 @@ def test_unjudged_drops_a_summary_row_whose_transcript_expired(tmp_path: Path, d
             return {
                 "refresh": [
                     str(row["dedup_key"])
-                    for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+                    for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
                 ],
-                "plain": [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1)],
+                "plain": [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1)],
             }
 
     result = asyncio.run(go())
@@ -516,11 +516,11 @@ def test_unjudged_keeps_an_unjudged_event_then_drops_it_once_its_dead_transcript
             store.store.conn.execute(
                 INSERT_EVENT_CONTEXT, ("dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json())
             )
-            before = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            before = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             await store.record_verdict(
                 DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
             )
-            after = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            after = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             return {
                 "before": [str(row["dedup_key"]) for row in before],
                 "after": [str(row["dedup_key"]) for row in after],
@@ -537,7 +537,7 @@ def test_unjudged_probe_hydration_false_skips_the_transcript_scan(
     def boom(*_: object, **__: object) -> None:
         raise AssertionError("probe_hydration=False must not scan for transcripts")
 
-    monkeypatch.setattr("cc_transcript.activity.find_transcript", boom)
+    monkeypatch.setattr("cc_transcript.activity.resolve", boom)
 
     async def go() -> dict[str, object]:
         with open_generic(tmp_path) as store:
@@ -549,7 +549,7 @@ def test_unjudged_probe_hydration_false_skips_the_transcript_scan(
             await store.record_verdict(
                 DedupKey("summ"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
             )
-            rows = await store.unjudged(
+            rows = store.unjudged(
                 role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False
             )
             return {
@@ -576,11 +576,11 @@ def test_unjudged_probe_hydration_false_keeps_a_dead_transcript_row(
             return {
                 "probed": [
                     str(row["dedup_key"])
-                    for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+                    for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
                 ],
                 "unprobed": [
                     str(row["dedup_key"])
-                    for row in await store.unjudged(
+                    for row in store.unjudged(
                         role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False
                     )
                 ],
@@ -846,10 +846,10 @@ def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
                 ("k1", "transcript_message", "2026-01-01T00:00:00+00:00", "text k1", window_json()),
             )
             await record(store, summary_verdict, "summary")
-            plain = await store.unjudged(role="judge", prompt_version=1)
-            refresh = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            plain = store.unjudged(role="judge", prompt_version=1)
+            refresh = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             await record(store, full_verdict, "full")
-            after_full = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+            after_full = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
             await record(store, summary_verdict, "summary")
             return {
                 "plain": plain,

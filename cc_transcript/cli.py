@@ -7,12 +7,11 @@ import re
 import sys
 import time
 from datetime import datetime
-from functools import partial, reduce
+from functools import reduce
 from itertools import chain, islice
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, get_args
 
-import anyio
 import click
 import orjson
 
@@ -26,12 +25,12 @@ from cc_transcript.builders import (
     keep_only,
 )
 from cc_transcript.corrections_cli import corrections
-from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, TranscriptDiscovery, find_transcript_sync
+from cc_transcript.discovery import CLAUDE_PROJECTS_DIR, find_in, resolve
 from cc_transcript.facts import command_prefix_counts, mcp_summary, tool_facts
 from cc_transcript.filterspec import ASSISTANTS, USERS, EventKind, event_kind, event_meta, keep, tool_names
 from cc_transcript.ids import SessionId, tool_digest
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import stream
 from cc_transcript.render import (
     BLANK_TIME,
     TAGS,
@@ -63,10 +62,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from typing import Any
 
-    from cc_transcript.backend import ParsedTranscript
     from cc_transcript.facts import ToolFact
     from cc_transcript.filterspec import FilterSpec
-    from cc_transcript.models import EntryMeta, ToolUseId, TranscriptEvent
+    from cc_transcript.models import EntryMeta, ToolUseId, Transcript, TranscriptEvent
     from cc_transcript.watch import WatchEvent
 
     type Row = tuple[int, TranscriptEvent]
@@ -109,11 +107,8 @@ def emit(lines: Iterable[str | bytes]) -> None:
         raise SystemExit(0) from None
 
 
-def parse_transcripts(targets: Sequence[tuple[Path, float]]) -> list[ParsedTranscript]:
-    async def collect() -> list[ParsedTranscript]:
-        return [parsed async for parsed in TranscriptParser.stream_transcripts(targets)]
-
-    by_path = {parsed.path: parsed for parsed in anyio.run(collect)}
+def parse_transcripts(targets: Sequence[tuple[Path, float]]) -> list[Transcript]:
+    by_path = {parsed.path: parsed for parsed in stream([path for path, _ in targets])}
     if missing := [path for path, _ in targets if path not in by_path]:
         click.echo(
             f"warning: skipped {len(missing)} unparseable transcript(s): "
@@ -131,7 +126,7 @@ def parse_single(path: Path) -> tuple[TranscriptEvent, ...]:
 
 
 def discover(root: Path, *, project: str | None, contains: str | None) -> list[tuple[Path, float]]:
-    found = anyio.run(partial(TranscriptDiscovery.find_in, root, name_contains=contains))
+    found = find_in(root, name_contains=contains)
     return sorted(
         (pair for pair in found if project_matches(pair[0], root, project)),
         key=lambda pair: pair[1],
@@ -655,7 +650,7 @@ def mcp(
 def slice_(session: str, since: str, until: str, root: Path) -> None:
     """Emit a session window's tool calls, one cc-transcript.slice/1 JSON line each."""
     start, end = parse_rfc3339("--since", since), parse_rfc3339("--until", until)
-    if (path := find_transcript_sync(SessionId(session), root=root)) is None:
+    if (path := resolve(SessionId(session), root=root)) is None:
         raise SystemExit(1)
     if not (parsed := parse_transcripts([(path, path.stat().st_mtime)])):
         raise SystemExit(2)

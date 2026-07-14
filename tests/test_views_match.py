@@ -22,7 +22,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from cc_transcript.tools import (
     BashCall,
     EditCall,
@@ -43,9 +43,9 @@ EDGE = REPO_ROOT / "tests" / "testdata" / "views_edge"
 
 @pytest.fixture(scope="module")
 def events() -> list:
-    return TranscriptParser.parse_file(EDGE / "edge_core.jsonl") + TranscriptParser.parse_file(
+    return list(parse(EDGE / "edge_core.jsonl").events) + list(parse(
         EDGE / "edge_tools.jsonl"
-    )
+    ).events)
 
 
 def test_keyword_match_dispatches_every_event_class(events: list) -> None:
