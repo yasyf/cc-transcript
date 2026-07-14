@@ -390,69 +390,17 @@ def parse_attachment_detail(data: Mapping[str, Any]) -> AttachmentDetail:
 
 
 def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
-    match data["type"]:
-        case "user":
-            text, blocks = parse_user_blocks(
-                data["message"]["content"],
-                tool_use_result=data.get("toolUseResult"),
-                tool_denial_kind=data.get("toolDenialKind"),
-            )
-            interrupted_message_id = data.get("interruptedMessageId")
-            return UserEvent(
-                meta=parse_meta(data),
-                text=text,
-                blocks=blocks,
-                interrupted=interrupt_marker(text) is not None or interrupted_message_id is not None,
-                is_agent_injected=is_agent_injection(text),
-                prompt_id=data.get("promptId"),
-                prompt_source=data.get("promptSource"),
-                queue_priority=data.get("queuePriority"),
-                image_paste_ids=tuple(ids) if (ids := data.get("imagePasteIds")) is not None else None,
-                source_tool_use_id=ToolUseId(tuid) if (tuid := data.get("sourceToolUseID")) else None,
-                source_tool_assistant_uuid=EventUuid(auid) if (auid := data.get("sourceToolAssistantUUID")) else None,
-                mcp_meta=data.get("mcpMeta"),
-                permission_mode=data.get("permissionMode"),
-                interrupted_message_id=interrupted_message_id,
-            )
-        case "assistant":
-            text, blocks = parse_assistant_blocks(data["message"]["content"])
-            return AssistantEvent(
-                meta=parse_meta(data),
-                model=data["message"]["model"],
-                text=text,
-                blocks=blocks,
-                stop_reason=data["message"].get("stop_reason"),
-                usage=parse_usage(usage) if (usage := data["message"].get("usage")) else None,
-                request_id=data.get("requestId"),
-                forked_from=data.get("forkedFrom"),
-                attribution=parse_attribution(data),
-                api_error=parse_api_error(data),
-            )
-        case "system":
-            return SystemEvent(
-                meta=parse_meta(data),
-                subtype=data["subtype"],
-                content=data.get("content"),
-                level=data.get("level"),
-                detail=parse_system_detail(data),
-            )
-        case "attachment":
-            attachment = data.get("attachment")
-            return AttachmentEvent(
-                meta=parse_meta(data),
-                attachment_type=(opt_str(attachment, "type") or "") if isinstance(attachment, dict) else "",
-                detail=parse_attachment_detail(data),
-            )
-        case "mode":
-            return ModeEvent(session_id=SessionId(data["sessionId"]), channel="mode", value=data["mode"])
-        case "permission-mode":
-            return ModeEvent(
-                session_id=SessionId(data["sessionId"]),
-                channel="permission-mode",
-                value=data["permissionMode"],
-            )
-        case _:
-            return OtherEvent(type=data["type"], raw=data)
+    """Parse one decoded transcript-line mapping into its typed event view.
+
+    Serializes ``data`` and parses it through the native backend — the same path
+    :func:`parse_events_from_bytes` uses — so the result is a lazy view over a
+    single-entry parse. A structurally malformed line raises ``KeyError`` /
+    ``ValueError`` (a missing ``type``, a missing required field); an unmodeled
+    ``type`` yields an :class:`~cc_transcript.models.OtherEvent`; a line the
+    tolerant parser drops (a below-``MINYEAR`` timestamp) reads as None.
+    """
+    events = _parser_rs.parse_bytes(orjson.dumps(data)).events
+    return events[0] if events else None
 
 
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:

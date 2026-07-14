@@ -5,18 +5,27 @@ from typing import Any
 
 import anyio
 import orjson
+import pytest
 
+from cc_transcript.ids import EventUuid
 from cc_transcript.models import (
+    AssistantEvent,
+    AttachmentEvent,
     CacheCreation,
     McpServer,
+    ModeEvent,
     ModelUsage,
+    OtherEvent,
     ServerToolUse,
     SessionId,
+    SystemEvent,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    UserEvent,
 )
-from cc_transcript.parser import parse_events_async, parse_events_from_bytes, parse_print_result
+from cc_transcript.parser import parse_event, parse_events_async, parse_events_from_bytes, parse_print_result
+from tests import testkit
 from tests.support import raw_envelope as envelope
 
 TESTDATA = Path(__file__).parent / "testdata"
@@ -133,3 +142,50 @@ def test_parse_print_result_haiku_envelope() -> None:
         for message in env.messages
     )
     assert any(message.model == "claude-haiku-4-5-20251001" for message in env.messages)
+
+
+@pytest.mark.parametrize(
+    ("line", "cls"),
+    [
+        pytest.param(testkit.user_line("u1", "hi"), UserEvent, id="user"),
+        pytest.param(testkit.assistant_line("a1", "hi", stop_reason="end_turn"), AssistantEvent, id="assistant"),
+        pytest.param(testkit.system_line("stop_hook_summary"), SystemEvent, id="system"),
+        pytest.param(testkit.mode_line("normal", session_id="s1"), ModeEvent, id="mode"),
+        pytest.param(
+            testkit.mode_line("plan", session_id="s1", channel="permission-mode"), ModeEvent, id="permission-mode"
+        ),
+        pytest.param(
+            {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "go"}} | testkit.meta_fields("att"),
+            AttachmentEvent,
+            id="attachment",
+        ),
+        pytest.param(testkit.other_line("summary"), OtherEvent, id="other"),
+    ],
+)
+def test_parse_event_returns_view_per_type(line: dict[str, Any], cls: type) -> None:
+    assert isinstance(parse_event(line), cls)
+
+
+def test_parse_event_lifts_user_fields() -> None:
+    # Independent oracle: hand-written expected values, not derived from the parser.
+    event = parse_event(testkit.user_line("uuid-1", "fix the bug"))
+    assert isinstance(event, UserEvent)
+    assert event.text == "fix the bug"
+    assert event.meta.uuid == EventUuid("uuid-1")
+
+
+def test_parse_event_missing_type_raises() -> None:
+    with pytest.raises(KeyError):
+        parse_event({"foo": "bar"})
+
+
+def test_parse_event_malformed_user_raises() -> None:
+    with pytest.raises((KeyError, ValueError)):
+        parse_event({"type": "user"} | testkit.meta_fields("u1"))
+
+
+def test_parse_event_drops_below_minyear_timestamp_as_none() -> None:
+    # The tolerant native parser drops a below-Python-MINYEAR timestamp; parse_event
+    # surfaces that as None (v14 divergence: the old Python parser raised ValueError).
+    line = testkit.user_line("u1", "hi") | {"timestamp": "0000-01-01T00:00:00+00:00"}
+    assert parse_event(line) is None
