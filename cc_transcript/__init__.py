@@ -6,9 +6,14 @@ and edits — and every higher capability (context windows, evidence harvest,
 queries, the decision ledger, LLM judging) is a pure function or thin store
 over that spine.
 
-The package root is lazy (PEP 562): importing ``cc_transcript.ids`` or
-``cc_transcript.tools`` pulls the standard library only, so the hook hot path
-pays nothing for the parser or any heavy dependency.
+Parsing is native: :func:`parse` turns one source into a
+:class:`~cc_transcript.models.Transcript` view and :func:`stream` fans a batch
+of paths across the native parse pool, with ``drop`` specs applied before any
+Python object materializes.
+
+The package root is lazy (PEP 562): importing ``cc_transcript.ids`` pulls the
+standard library only, so a hook's digest-only hot path pays nothing for the
+parser extension or any heavy dependency.
 """
 
 from __future__ import annotations
@@ -95,6 +100,7 @@ EXPORTS: dict[str, str] = {
             "CompactBoundary",
             "ContentBlock",
             "EntryMeta",
+            "EventList",
             "FallbackBlock",
             "HookAdditionalContext",
             "HookBlockingError",
@@ -126,6 +132,7 @@ EXPORTS: dict[str, str] = {
             "ThinkingBlock",
             "ToolResultBlock",
             "ToolUseBlock",
+            "Transcript",
             "TranscriptEvent",
             "TurnDuration",
             "Usage",
@@ -235,6 +242,7 @@ EXPORTS: dict[str, str] = {
             "keep_only",
         ),
         "cc_transcript.store": ("FileStateStore",),
+        "cc_transcript.watch": ("WatchEvent", "Watcher"),
     }.items()
     for name in names
 }
@@ -546,6 +554,9 @@ if TYPE_CHECKING:
         EntryMeta as EntryMeta,
     )
     from cc_transcript.models import (
+        EventList as EventList,
+    )
+    from cc_transcript.models import (
         FallbackBlock as FallbackBlock,
     )
     from cc_transcript.models import (
@@ -637,6 +648,9 @@ if TYPE_CHECKING:
     )
     from cc_transcript.models import (
         ToolUseBlock as ToolUseBlock,
+    )
+    from cc_transcript.models import (
+        Transcript as Transcript,
     )
     from cc_transcript.models import (
         TranscriptEvent as TranscriptEvent,
@@ -831,4 +845,10 @@ if TYPE_CHECKING:
     )
     from cc_transcript.tools import (
         tool_name_matches as tool_name_matches,
+    )
+    from cc_transcript.watch import (
+        WatchEvent as WatchEvent,
+    )
+    from cc_transcript.watch import (
+        Watcher as Watcher,
     )
