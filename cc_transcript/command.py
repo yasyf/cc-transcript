@@ -10,7 +10,7 @@ prefix (``"git commit"``, ``"docker compose"``).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property, lru_cache
 from itertools import dropwhile
 from typing import TYPE_CHECKING
@@ -19,7 +19,7 @@ import tree_sitter_bash as tsbash
 from tree_sitter import Language, Node, Parser
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
 BASH_PARSER = Parser(Language(tsbash.language()))
 
@@ -52,6 +52,10 @@ WRAPPER_COMMANDS = frozenset({"sudo", "env", "time", "timeout", "nice", "nohup",
 
 ASSIGNMENT_RE = re.compile(r"^\w+=")
 
+PIPE_GAP_RE = re.compile(r"\s*\|&?\s*")
+
+REDIRECT_OP_TYPES = frozenset({"file_descriptor", ">", ">>", "<", "<<", ">&", "<&", ">|"})
+
 
 @dataclass(frozen=True)
 class Redirect:
@@ -74,6 +78,7 @@ class Command:
     args: tuple[str, ...]
     env: tuple[tuple[str, str], ...] = ()
     redirects: tuple[Redirect, ...] = ()
+    span: tuple[int, int] | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def parse(cls, raw: str) -> Command | None:
@@ -131,6 +136,7 @@ class Command:
             args=argv[1:],
             env=self.env,
             redirects=self.redirects,
+            span=self.span,
         )
 
     @property
@@ -252,6 +258,56 @@ class CommandLine:
     def q(self) -> CommandLineQuery:
         return CommandLineQuery(self)
 
+    @cached_property
+    def occurrences(self) -> tuple[Occurrence, ...]:
+        """One ``Occurrence`` per part, in line order."""
+        return tuple(Occurrence(self, index) for index in range(len(self.parts)))
+
+    def splice(self, replacements: Mapping[int, str]) -> str:
+        """Swap each indexed command's byte span for its replacement, preserving every other byte.
+
+        Args:
+            replacements: Command index → replacement text. Operates on
+                ``raw.encode()``; untouched bytes (operators, redirects,
+                heredoc bodies, comments) pass through verbatim.
+
+        Returns:
+            The rewritten line, decoded once at the end.
+
+        Raises:
+            ValueError: If an indexed command has no ``span``, or the spans are
+                out of order or overlap.
+        """
+        source = self.raw.encode()
+        out = bytearray()
+        cursor = 0
+        for index in sorted(replacements):
+            span = self.parts[index][0].span
+            if span is None:
+                raise ValueError(f"command at index {index} has no span")
+            start, end = span
+            if start < cursor:
+                raise ValueError(f"span {span} at index {index} overlaps or precedes cursor {cursor}")
+            out += source[cursor:start]
+            out += replacements[index].encode()
+            cursor = end
+        out += source[cursor:]
+        return out.decode()
+
+    def rewrite_occurrences(self, to: Callable[[Occurrence], str | None]) -> str | None:
+        """Map ``to`` over each occurrence and splice in its non-``None`` results.
+
+        Args:
+            to: Maps an ``Occurrence`` to replacement text, or ``None`` to leave
+                that command untouched.
+
+        Returns:
+            The spliced line, or ``None`` when ``to`` returned ``None`` for every
+            occurrence.
+        """
+        replacements = {occ.index: text for occ in self.occurrences if (text := to(occ)) is not None}
+        return self.splice(replacements) if replacements else None
+
     @staticmethod
     def node_text(node: Node) -> str:
         return node.text.decode() if node.text else ""
@@ -330,12 +386,16 @@ class CommandLine:
                 case _:
                     pass
 
+        content = [c for c in node.children if c.type != "file_redirect"]
+        span = (content[0].start_byte, content[-1].end_byte) if content else (node.start_byte, node.end_byte)
+
         return Command(
             raw=CommandLine.node_text(node),
             executable=executable,
             args=tuple(args),
             env=tuple(env),
             redirects=tuple(redirects),
+            span=span,
         )
 
     @staticmethod
@@ -353,12 +413,25 @@ class CommandLine:
         return parts
 
     @staticmethod
+    def redirect_absorbed_word(node: Node) -> bool:
+        """Whether a ``file_redirect`` swallowed a command word past its target.
+
+        Tree-sitter-bash folds a word that trails a redirect (the ``b`` in
+        ``echo a >out b``) into the ``file_redirect`` node beside the target, so
+        a redirect carrying more than one target word split the command's
+        arguments — leaving it no contiguous byte span to splice.
+        """
+        return sum(c.type not in REDIRECT_OP_TYPES for c in node.children) > 1
+
+    @staticmethod
     def walk_redirected(node: Node) -> list[tuple[Command, str | None]]:
         redirects: list[Redirect] = []
         inner_parts: list[tuple[Command, str | None]] = []
+        broken = False
         for child in node.children:
             if child.type == "file_redirect":
                 redirects.append(CommandLine.extract_redirect(child))
+                broken = broken or CommandLine.redirect_absorbed_word(child)
             else:
                 inner_parts.extend(CommandLine.walk_node(child))
         if redirects and inner_parts:
@@ -370,6 +443,7 @@ class CommandLine:
                         args=cmd.args,
                         env=cmd.env,
                         redirects=(*cmd.redirects, *redirects),
+                        span=None if broken else cmd.span,
                     ),
                     op,
                 )
@@ -382,6 +456,7 @@ class CommandLine:
                     executable="",
                     args=(),
                     redirects=tuple(redirects),
+                    span=(node.start_byte, node.end_byte),
                 ),
                 None,
             )
@@ -405,6 +480,63 @@ class CommandLine:
                 for child in node.children:
                     parts.extend(CommandLine.walk_node(child))
                 return parts
+
+
+@dataclass(frozen=True)
+class Occurrence:
+    """One command of a ``CommandLine`` with its position and joining context.
+
+    Pairs the ``line`` with this command's ``index`` into ``line.parts``,
+    exposing the command, the operators on either side, and whether it sits in a
+    pipeline. Hook packs map over ``CommandLine.occurrences`` and return
+    replacement text per occurrence to rewrite individual commands in place.
+    """
+
+    line: CommandLine
+    index: int
+
+    @property
+    def command(self) -> Command:
+        """The command at this occurrence's index."""
+        return self.line.parts[self.index][0]
+
+    @property
+    def prev_op(self) -> str | None:
+        """The operator joining the previous command to this one; ``None`` at index 0."""
+        return self.line.parts[self.index - 1][1] if self.index > 0 else None
+
+    @property
+    def next_op(self) -> str | None:
+        """The operator joining this command to the next; ``None`` for the final command."""
+        return self.line.parts[self.index][1]
+
+    @cached_property
+    def piped(self) -> bool:
+        """Whether this command sits on either side of a pipe.
+
+        ``True`` when a neighboring operator is ``|``. Tree-sitter records no
+        operator token for ``|&``, and newline-separated statements also carry a
+        ``None`` operator, so a ``None`` neighbor falls back to inspecting the
+        decoded source gap toward that neighbor: it counts as piped only when the
+        gap is exactly one pipe operator token (``|`` or ``|&``) surrounded by
+        whitespace. Anything else in the gap — a comment, a redirect target, a
+        heredoc body, ``||``, an intervening statement — is not a pipe.
+        """
+        if self.prev_op == "|" or self.next_op == "|":
+            return True
+        span = self.command.span
+        if span is None:
+            return False
+        source = self.line.raw.encode()
+        if self.next_op is None and self.index + 1 < len(self.line.parts):
+            nxt = self.line.parts[self.index + 1][0].span
+            if nxt is not None and PIPE_GAP_RE.fullmatch(source[span[1] : nxt[0]].decode()):
+                return True
+        if self.prev_op is None and self.index > 0:
+            prev = self.line.parts[self.index - 1][0].span
+            if prev is not None and PIPE_GAP_RE.fullmatch(source[prev[1] : span[0]].decode()):
+                return True
+        return False
 
 
 @dataclass(frozen=True)
