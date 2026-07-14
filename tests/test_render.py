@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,21 +14,10 @@ from cc_transcript.filterspec import tool_names
 from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
-    CcVersion,
-    EntryMeta,
-    EventUuid,
-    FallbackBlock,
-    HookSuccess,
     ModeEvent,
-    OtherBlock,
     OtherEvent,
-    OtherSystemDetail,
     SessionId,
     SystemEvent,
-    TextBlock,
-    ThinkingBlock,
-    ToolResultBlock,
-    ToolUseBlock,
     ToolUseId,
     TranscriptEvent,
     UserEvent,
@@ -48,40 +38,83 @@ from cc_transcript.render import (
     truncate,
 )
 from cc_transcript.tools import parse_tool_call
+from tests import testkit
 
 NAMES = {ToolUseId("toolu_1"): "Bash"}
 
+TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
-def meta(**overrides: Any) -> EntryMeta:
-    return EntryMeta(
-        **{
-            "uuid": EventUuid("uuid-1"),
-            "parent_uuid": None,
-            "session_id": SessionId("sess-1"),
-            "timestamp": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
-            "cwd": "/repo",
-            "git_branch": "main",
-            "cc_version": CcVersion("1.2.3"),
-            "is_sidechain": False,
-            "is_meta": False,
-            "entrypoint": "cli",
-            "is_compact_summary": False,
-            "is_visible_in_transcript_only": False,
-        }
-        | overrides
+
+def _mkw(
+    *,
+    timestamp: datetime = TS,
+    session_id: str = "sess-1",
+    is_sidechain: bool = False,
+    is_meta: bool = False,
+    is_compact_summary: bool = False,
+) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "timestamp": timestamp,
+        "is_sidechain": is_sidechain,
+        "is_meta": is_meta,
+        "is_compact_summary": is_compact_summary,
+    }
+
+
+def user(text: str = "", *, blocks: Sequence[dict[str, Any]] = (), interrupted: bool = False, **mk: Any) -> UserEvent:
+    event = testkit.parse_event(testkit.user_line("uuid-1", text, blocks=blocks, interrupted=interrupted, **_mkw(**mk)))
+    assert isinstance(event, UserEvent)
+    return event
+
+
+def assistant(
+    text: str = "",
+    *,
+    model: str = "claude-opus-4-7",
+    blocks: Sequence[dict[str, Any]] = (),
+    stop_reason: str | None = None,
+    **mk: Any,
+) -> AssistantEvent:
+    event = testkit.parse_event(
+        testkit.assistant_line("uuid-1", text, model=model, blocks=blocks, stop_reason=stop_reason, **_mkw(**mk))
     )
+    assert isinstance(event, AssistantEvent)
+    return event
 
 
-ASSISTANT_THINKING = AssistantEvent(
-    meta=meta(),
-    model="claude-opus-4-7",
-    text="",
-    blocks=(
-        ThinkingBlock("let me think"),
-        ToolUseBlock(id=ToolUseId("t9"), name="Read", input={"file_path": "/x"}),
-    ),
+def system(subtype: str, *, content: str | None = None, **mk: Any) -> SystemEvent:
+    line: dict[str, Any] = {"type": "system", "subtype": subtype} | testkit.meta_fields("uuid-1", **_mkw(**mk))
+    if content is not None:
+        line["content"] = content
+    event = testkit.parse_event(line)
+    assert isinstance(event, SystemEvent)
+    return event
+
+
+def attachment(payload: dict[str, Any], **mk: Any) -> AttachmentEvent:
+    event = testkit.parse_event(
+        {"type": "attachment", "attachment": payload} | testkit.meta_fields("uuid-1", **_mkw(**mk))
+    )
+    assert isinstance(event, AttachmentEvent)
+    return event
+
+
+def mode(value: str = "plan", *, session_id: str = "sess-1") -> ModeEvent:
+    event = testkit.parse_event(testkit.mode_line(value, session_id=session_id))
+    assert isinstance(event, ModeEvent)
+    return event
+
+
+def other(type: str) -> OtherEvent:
+    event = testkit.parse_event(testkit.other_line(type))
+    assert isinstance(event, OtherEvent)
+    return event
+
+
+ASSISTANT_THINKING = assistant(
+    blocks=(testkit.thinking_block("let me think"), testkit.tool_use("t9", "Read", {"file_path": "/x"})),
     stop_reason="tool_use",
-    usage=None,
 )
 
 
@@ -220,22 +253,16 @@ def test_render_turn_orders_prompt_prose_and_tool_calls() -> None:
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
-            UserEvent(meta=meta(), text="fix the bug", blocks=(), interrupted=False),
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="editing",
+            user("fix the bug"),
+            assistant(
+                "editing",
                 blocks=(
-                    TextBlock("editing"),
-                    ToolUseBlock(
-                        id=ToolUseId("t1"),
-                        name="Edit",
-                        input={"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
+                    testkit.tool_use(
+                        "t1", "Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}
                     ),
-                    TextBlock("done"),
+                    testkit.text_block("done"),
                 ),
                 stop_reason="tool_use",
-                usage=None,
             ),
         ),
     )
@@ -245,10 +272,7 @@ def test_render_turn_orders_prompt_prose_and_tool_calls() -> None:
 
 
 def test_render_turn_clips_prose_to_turn_budget() -> None:
-    act = SessionActivity.from_events(
-        SessionId("sess-1"),
-        (UserEvent(meta=meta(), text="a" * 30, blocks=(), interrupted=False),),
-    )
+    act = SessionActivity.from_events(SessionId("sess-1"), (user("a" * 30),))
     assert render_turn(act.turns[0], budget=Budget(turn_chars=10)) == f"user: {'a' * 10}…(+20ch)"
 
 
@@ -256,17 +280,10 @@ def test_render_session_joins_turns_skipping_empty() -> None:
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
-            ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan"),
-            UserEvent(meta=meta(), text="one", blocks=(), interrupted=False),
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="ack",
-                blocks=(TextBlock("ack"),),
-                stop_reason="end_turn",
-                usage=None,
-            ),
-            UserEvent(meta=meta(), text="two", blocks=(), interrupted=False),
+            mode("plan", session_id="sess-1"),
+            user("one"),
+            assistant("ack", stop_reason="end_turn"),
+            user("two"),
         ),
     )
     assert render_session(act, budget=Budget()) == "user: one\nassistant: ack\n\nuser: two"
@@ -277,50 +294,35 @@ def test_render_session_joins_turns_skipping_empty() -> None:
     [
         pytest.param(
             1,
-            UserEvent(meta=meta(), text="fix the bug", blocks=(), interrupted=False),
+            user("fix the bug"),
             False,
             "    1 user  03:04:05 fix the bug",
             id="user-plain",
         ),
         pytest.param(
             2,
-            UserEvent(meta=meta(), text="[Request interrupted by user]", blocks=(), interrupted=True),
+            user("[Request interrupted by user]", interrupted=True),
             False,
             "    2 user  03:04:05 [int] [Request interrupted by user]",
             id="user-interrupted",
         ),
         pytest.param(
             3,
-            UserEvent(
-                meta=meta(),
-                text="",
-                blocks=(ToolResultBlock(tool_use_id=ToolUseId("toolu_1"), content="ok output", is_error=False),),
-                interrupted=False,
-            ),
+            user(blocks=(testkit.tool_result("toolu_1", "ok output"),)),
             False,
             "    3 user  03:04:05 <-Bash (9ch) ok output",
             id="user-tool-result-correlated-name",
         ),
         pytest.param(
             4,
-            UserEvent(
-                meta=meta(),
-                text="",
-                blocks=(ToolResultBlock(tool_use_id=ToolUseId("toolu_1"), content="boom", is_error=True),),
-                interrupted=False,
-            ),
+            user(blocks=(testkit.tool_result("toolu_1", "boom", is_error=True),)),
             False,
             "    4 user  03:04:05 <-Bash[err] (4ch) boom",
             id="user-tool-result-error",
         ),
         pytest.param(
             5,
-            UserEvent(
-                meta=meta(),
-                text="",
-                blocks=(ToolResultBlock(tool_use_id=ToolUseId("missing"), content="boom", is_error=False),),
-                interrupted=False,
-            ),
+            user(blocks=(testkit.tool_result("missing", "boom"),)),
             False,
             "    5 user  03:04:05 <-? (4ch) boom",
             id="user-tool-result-unknown-id",
@@ -341,65 +343,55 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
         pytest.param(
             7,
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="hi there",
-                blocks=(TextBlock("hi there"),),
-                stop_reason="end_turn",
-                usage=None,
-            ),
+            assistant("hi there", stop_reason="end_turn"),
             False,
             '    7 asst  03:04:05 [claude-opus-4-7] "hi there"',
             id="assistant-text",
         ),
         pytest.param(
             8,
-            SystemEvent(
-                meta=meta(),
-                subtype="stop_hook_summary",
-                content="hook ran",
-                level=None,
-                detail=OtherSystemDetail(raw={}),
-            ),
+            system("stop_hook_summary", content="hook ran"),
             False,
             "    8 sys   03:04:05 stop_hook_summary: hook ran",
             id="system-with-content",
         ),
         pytest.param(
             9,
-            SystemEvent(meta=meta(), subtype="init", content=None, level=None, detail=OtherSystemDetail(raw={})),
+            system("init"),
             False,
             "    9 sys   03:04:05 init",
             id="system-no-content",
         ),
         pytest.param(
             10,
-            UserEvent(meta=meta(is_sidechain=True), text="subagent prompt", blocks=(), interrupted=False),
+            user("subagent prompt", is_sidechain=True),
             False,
             "   10 user* 03:04:05 subagent prompt",
             id="sidechain-star-tag",
         ),
         pytest.param(
             11,
-            ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan"),
+            mode("plan", session_id="sess-1"),
             False,
             "   11 mode           mode=plan",
             id="mode-no-meta-blank-time",
         ),
         pytest.param(
             12,
-            OtherEvent(type="summary", raw={"type": "summary"}),
+            other("summary"),
             False,
             "   12 other          summary",
             id="other-no-meta-blank-time",
         ),
         pytest.param(
             18,
-            AttachmentEvent(
-                meta=meta(),
-                attachment_type="hook_success",
-                detail=HookSuccess(hook_name="PostToolUse:Bash", hook_event="PostToolUse", content="hook ran ok"),
+            attachment(
+                {
+                    "type": "hook_success",
+                    "hookName": "PostToolUse:Bash",
+                    "hookEvent": "PostToolUse",
+                    "content": "hook ran ok",
+                }
             ),
             False,
             "   18 att   03:04:05 hook_success hook ran ok",
@@ -407,33 +399,20 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
         pytest.param(
             13,
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="",
-                blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "ls -la"}),),
-                stop_reason="tool_use",
-                usage=None,
-            ),
+            assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "ls -la"}),), stop_reason="tool_use"),
             False,
             "   13 asst  03:04:05 [claude-opus-4-7] ls -la",
             id="bash-renders-bare-command",
         ),
         pytest.param(
             14,
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="",
+            assistant(
                 blocks=(
-                    ToolUseBlock(
-                        id=ToolUseId("t1"),
-                        name="Edit",
-                        input={"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
+                    testkit.tool_use(
+                        "t1", "Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}
                     ),
                 ),
                 stop_reason="tool_use",
-                usage=None,
             ),
             False,
             "   14 asst  03:04:05 [claude-opus-4-7] Edit /a.py - x = 1 + x = 2",
@@ -441,27 +420,17 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
         pytest.param(
             15,
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-7",
-                text="",
-                blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Edit", input={"file_path": "/a.py"}),),
-                stop_reason="tool_use",
-                usage=None,
-            ),
+            assistant(blocks=(testkit.tool_use("t1", "Edit", {"file_path": "/a.py"}),), stop_reason="tool_use"),
             False,
             "   15 asst  03:04:05 [claude-opus-4-7] Edit(/a.py)",
             id="malformed-known-tool-degrades-to-compact",
         ),
         pytest.param(
             16,
-            AssistantEvent(
-                meta=meta(),
+            assistant(
                 model="claude-opus-4-8",
-                text="",
-                blocks=(FallbackBlock(from_model="claude-fable-5", to_model="claude-opus-4-8"),),
+                blocks=({"type": "fallback", "from": {"model": "claude-fable-5"}, "to": {"model": "claude-opus-4-8"}},),
                 stop_reason="tool_use",
-                usage=None,
             ),
             False,
             "   16 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8",
@@ -469,14 +438,7 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
         pytest.param(
             17,
-            AssistantEvent(
-                meta=meta(),
-                model="claude-opus-4-8",
-                text="",
-                blocks=(OtherBlock(type="future_block", raw={"type": "future_block"}),),
-                stop_reason=None,
-                usage=None,
-            ),
+            assistant(model="claude-opus-4-8", blocks=({"type": "future_block"},)),
             False,
             "   17 asst  03:04:05 [claude-opus-4-8] future_block",
             id="other-block-renders-bare-type",
@@ -488,14 +450,7 @@ def test_compact_line(index: int, event: TranscriptEvent, thinking: bool, expect
 
 
 def test_compact_line_tool_input_clips_with_omitted_count() -> None:
-    event = AssistantEvent(
-        meta=meta(),
-        model="claude-opus-4-7",
-        text="",
-        blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "abcdefghij"}),),
-        stop_reason="tool_use",
-        usage=None,
-    )
+    event = assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "abcdefghij"}),), stop_reason="tool_use")
     assert (
         compact_line(1, event, names={}, width=8, thinking=False, uuids=False)
         == "    1 asst  03:04:05 [claude-opus-4-7] abcdefgh…(+2ch)"
@@ -503,50 +458,37 @@ def test_compact_line_tool_input_clips_with_omitted_count() -> None:
 
 
 def test_compact_line_width_zero_never_clips_tool_input() -> None:
-    event = AssistantEvent(
-        meta=meta(),
-        model="claude-opus-4-7",
-        text="",
-        blocks=(ToolUseBlock(id=ToolUseId("t1"), name="Bash", input={"command": "x" * 500}),),
-        stop_reason="tool_use",
-        usage=None,
-    )
+    event = assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "x" * 500}),), stop_reason="tool_use")
     assert compact_line(1, event, names={}, width=0, thinking=False, uuids=False).endswith("x" * 500)
 
 
 def test_compact_line_appends_uuid_with_meta() -> None:
-    event = UserEvent(meta=meta(), text="hi", blocks=(), interrupted=False)
-    assert (
-        compact_line(1, event, names={}, width=100, thinking=False, uuids=True) == "    1 user  03:04:05 hi uuid-1"
-    )
+    event = user("hi")
+    assert compact_line(1, event, names={}, width=100, thinking=False, uuids=True) == "    1 user  03:04:05 hi uuid-1"
 
 
 def test_compact_line_uuids_flag_skips_metaless_events() -> None:
-    event = ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan")
+    event = mode("plan", session_id="sess-1")
     assert compact_line(2, event, names={}, width=100, thinking=False, uuids=True) == "    2 mode           mode=plan"
 
 
 def test_tool_names_correlates_ids_across_events() -> None:
     events = (
-        UserEvent(meta=meta(), text="q", blocks=(), interrupted=False),
-        AssistantEvent(
-            meta=meta(),
-            model="claude-opus-4-7",
-            text="",
+        user("q"),
+        assistant(
             blocks=(
-                ToolUseBlock(id=ToolUseId("t1"), name="Read", input={"file_path": "/x"}),
-                ToolUseBlock(id=ToolUseId("t2"), name="Bash", input={"command": "ls"}),
+                testkit.tool_use("t1", "Read", {"file_path": "/x"}),
+                testkit.tool_use("t2", "Bash", {"command": "ls"}),
             ),
             stop_reason="tool_use",
-            usage=None,
         ),
-        OtherEvent(type="summary", raw={"type": "summary"}),
+        other("summary"),
     )
     assert tool_names(events) == {ToolUseId("t1"): "Read", ToolUseId("t2"): "Bash"}
 
 
 def test_event_dict_user_round_trips_through_orjson() -> None:
-    event = UserEvent(meta=meta(), text="hi", blocks=(TextBlock("hi"),), interrupted=False)
+    event = user(blocks=(testkit.text_block("hi"),))
     assert orjson.loads(orjson.dumps(event_dict(7, event))) == {
         "i": 7,
         "kind": "user",
@@ -583,7 +525,7 @@ def test_event_dict_user_round_trips_through_orjson() -> None:
 
 
 def test_event_dict_mode_event_has_no_meta() -> None:
-    event = ModeEvent(session_id=SessionId("sess-1"), channel="mode", value="plan")
+    event = mode("plan", session_id="sess-1")
     assert orjson.loads(orjson.dumps(event_dict(3, event))) == {
         "i": 3,
         "kind": "mode",
@@ -598,44 +540,29 @@ STATS_TRANSCRIPTS = (
         path=Path("/a.jsonl"),
         mtime=0.0,
         events=(
-            UserEvent(meta=meta(), text="hello", blocks=(), interrupted=False),
-            AssistantEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC)),
-                model="claude-opus-4-7",
-                text="hi",
-                blocks=(
-                    TextBlock("hi"),
-                    ThinkingBlock("hmm"),
-                    ToolUseBlock(id=ToolUseId("t1"), name="Read", input={"file_path": "/x"}),
-                ),
+            user("hello"),
+            assistant(
+                "hi",
+                blocks=(testkit.thinking_block("hmm"), testkit.tool_use("t1", "Read", {"file_path": "/x"})),
                 stop_reason="tool_use",
-                usage=None,
+                timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC),
             ),
-            UserEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 7, tzinfo=UTC)),
-                text="",
-                blocks=(ToolResultBlock(tool_use_id=ToolUseId("t1"), content="out", is_error=True),),
-                interrupted=False,
+            user(
+                blocks=(testkit.tool_result("t1", "out", is_error=True),),
+                timestamp=datetime(2026, 1, 2, 3, 4, 7, tzinfo=UTC),
             ),
-            UserEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 8, tzinfo=UTC), is_sidechain=True),
-                text="[int]",
-                blocks=(),
+            user(
+                "[int]",
                 interrupted=True,
+                is_sidechain=True,
+                timestamp=datetime(2026, 1, 2, 3, 4, 8, tzinfo=UTC),
             ),
-            SystemEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 9, tzinfo=UTC)),
-                subtype="stop_hook_summary",
-                content="ran",
-                level=None,
-                detail=OtherSystemDetail(raw={}),
-            ),
-            ModeEvent(session_id=SessionId("sess-2"), channel="mode", value="plan"),
-            OtherEvent(type="summary", raw={"type": "summary"}),
-            AttachmentEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC)),
-                attachment_type="hook_success",
-                detail=HookSuccess(hook_name="Stop", hook_event="Stop", content="ok"),
+            system("stop_hook_summary", content="ran", timestamp=datetime(2026, 1, 2, 3, 4, 9, tzinfo=UTC)),
+            mode("plan", session_id="sess-2"),
+            other("summary"),
+            attachment(
+                {"type": "hook_success", "hookName": "Stop", "hookEvent": "Stop", "content": "ok"},
+                timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC),
             ),
         ),
     ),
@@ -643,13 +570,12 @@ STATS_TRANSCRIPTS = (
         path=Path("/b.jsonl"),
         mtime=0.0,
         events=(
-            AssistantEvent(
-                meta=meta(timestamp=datetime(2026, 1, 2, 3, 5, 0, tzinfo=UTC), session_id=SessionId("sess-3")),
+            assistant(
+                "yo",
                 model="claude-haiku",
-                text="yo",
-                blocks=(TextBlock("yo"),),
                 stop_reason="end_turn",
-                usage=None,
+                timestamp=datetime(2026, 1, 2, 3, 5, 0, tzinfo=UTC),
+                session_id="sess-3",
             ),
         ),
     ),

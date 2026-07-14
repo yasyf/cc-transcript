@@ -12,7 +12,7 @@ import anyio
 import pytest
 
 from cc_transcript import _parser_rs
-from cc_transcript.models import AssistantEvent, EntryMeta, EventUuid, SessionId, UserEvent
+from cc_transcript.models import AssistantEvent, SessionId, UserEvent
 from cc_transcript.sentiment import (
     ConversationBucket,
     FilteredEngine,
@@ -26,6 +26,7 @@ from cc_transcript.sentiment import (
 )
 from cc_transcript.sentiment.buckets import BucketIndex
 from cc_transcript.sentiment.scorespec import score_spec_to_json
+from tests import testkit
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -129,25 +130,16 @@ NON_RESUME = [
 ]
 
 
-def meta(uuid: str) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SessionId("s"),
-        timestamp=BASE,
-        cwd="/repo",
-        git_branch="main",
-        cc_version=None,
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
 def user(text: str, *, minutes: float = 0.0) -> UserEvent:
-    return UserEvent(meta=meta(f"u{minutes}"), text=text, blocks=(), interrupted=False)
+    event = testkit.parse_event(testkit.user_line(f"u{minutes}", text, session_id="s", timestamp=BASE))
+    assert isinstance(event, UserEvent)
+    return event
+
+
+def assistant(text: str, *, model: str = "m") -> AssistantEvent:
+    event = testkit.parse_event(testkit.assistant_line("a", text, model=model, session_id="s", timestamp=BASE))
+    assert isinstance(event, AssistantEvent)
+    return event
 
 
 def bucket(*texts: str) -> ConversationBucket:
@@ -258,7 +250,7 @@ def test_engine_ignores_assistant_frustration() -> None:
         bucket_index=BucketIndex(0),
         bucket_start=BASE,
         events=(
-            AssistantEvent(meta=meta("a"), model="m", text="wtf fuck you", blocks=(), stop_reason=None, usage=None),
+            assistant("wtf fuck you"),
             user("please continue with the task"),
         ),
     )

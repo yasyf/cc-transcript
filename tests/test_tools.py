@@ -44,10 +44,9 @@ from cc_transcript.tools import (
 
 def test_edit_parses_typed_fields() -> None:
     call = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})
-    assert call == EditCall(
-        name="Edit", raw={}, file_path="a.py", old="x", new="y", replace_all=False
-    )  # raw excluded from equality
-    assert isinstance(call, EditCall) and call.raw["old_string"] == "x"
+    assert isinstance(call, EditCall)
+    assert (call.name, call.file_path, call.old, call.new, call.replace_all) == ("Edit", "a.py", "x", "y", False)
+    assert call.raw["old_string"] == "x"  # raw excluded from equality
 
 
 def test_multiedit_keeps_every_span_in_order() -> None:
@@ -388,18 +387,18 @@ def test_bash_result_parses_typed_fields() -> None:
             "returnCodeInterpretation": "exit 0",
         },
     )
-    assert result == BashResult(
-        name="Bash",
-        raw={},  # raw excluded from equality
-        stdout="hi",
-        stderr="err",
-        interrupted=False,
-        is_image=False,
-        no_output_expected=True,
-        background_task_id="bg1",
-        return_code_interpretation="exit 0",
-    )
-    assert isinstance(result, BashResult) and result.raw["stdout"] == "hi"
+    assert isinstance(result, BashResult)
+    assert (
+        result.name,
+        result.stdout,
+        result.stderr,
+        result.interrupted,
+        result.is_image,
+        result.no_output_expected,
+        result.background_task_id,
+        result.return_code_interpretation,
+    ) == ("Bash", "hi", "err", False, False, True, "bg1", "exit 0")
+    assert result.raw["stdout"] == "hi"  # raw excluded from equality
 
 
 def test_execute_alias_parses_to_bash_result() -> None:
@@ -421,18 +420,18 @@ def test_edit_result_keeps_structured_patch_and_original_file_raw() -> None:
             "originalFile": "x\n",
         },
     )
-    assert result == EditResult(
-        name="Edit",
-        raw={},
-        file_path="/a.py",
-        old_string="x",
-        new_string="y",
-        replace_all=True,
-        user_modified=True,
-        stale_recovered=False,
-        structured_patch=[{"lines": ["-x", "+y"]}],
-        original_file="x\n",
-    )
+    assert isinstance(result, EditResult)
+    assert (
+        result.name,
+        result.file_path,
+        result.old_string,
+        result.new_string,
+        result.replace_all,
+        result.user_modified,
+        result.stale_recovered,
+        result.structured_patch,
+        result.original_file,
+    ) == ("Edit", "/a.py", "x", "y", True, True, False, [{"lines": ["-x", "+y"]}], "x\n")
 
 
 def test_write_result_fields() -> None:
@@ -446,7 +445,8 @@ def test_write_result_fields() -> None:
 
 def test_read_result_keeps_file_mapping_raw() -> None:
     result = parse_tool_result("Read", {"type": "text", "file": {"filePath": "/r.py", "numLines": 3}})
-    assert result == ReadResult(name="Read", raw={}, file={"filePath": "/r.py", "numLines": 3}, type="text")
+    assert isinstance(result, ReadResult)
+    assert (result.name, result.file, result.type) == ("Read", {"filePath": "/r.py", "numLines": 3}, "text")
 
 
 def test_task_result_terminal_shape() -> None:
@@ -507,8 +507,12 @@ def test_task_payload_matching_neither_shape_degrades_to_other_result() -> None:
 
 def test_skill_result_extracts_allowed_tools() -> None:
     result = parse_tool_result("Skill", {"commandName": "codex", "success": True, "allowedTools": ["Bash", "Read"]})
-    assert result == SkillResult(
-        name="Skill", raw={}, command_name="codex", success=True, allowed_tools=("Bash", "Read")
+    assert isinstance(result, SkillResult)
+    assert (result.name, result.command_name, result.success, result.allowed_tools) == (
+        "Skill",
+        "codex",
+        True,
+        ("Bash", "Read"),
     )
 
 
@@ -553,7 +557,8 @@ def test_ask_user_question_result_non_string_annotation_leaves_read_as_none() ->
 
 def test_string_payload_becomes_text_result() -> None:
     result = parse_tool_result("Bash", "The user doesn't want to proceed with this tool use.")
-    assert result == TextResult(name="Bash", raw="", text="The user doesn't want to proceed with this tool use.")
+    assert isinstance(result, TextResult)
+    assert (result.name, result.text) == ("Bash", "The user doesn't want to proceed with this tool use.")
 
 
 def test_absent_payload_becomes_other_result() -> None:

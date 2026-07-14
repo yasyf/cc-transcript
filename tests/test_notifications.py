@@ -7,12 +7,12 @@ import pytest
 
 from cc_transcript.activity import SessionActivity, native_user_classifier
 from cc_transcript.ids import SessionId
-from cc_transcript.models import AttachmentEvent, OtherAttachment, OtherEvent, QueuedCommand, UserEvent
+from cc_transcript.models import AttachmentEvent, OtherEvent, UserEvent
 from cc_transcript.filterspec import TASK_NOTIFICATION_MARKER
 from cc_transcript.notifications import Notifications, tool_use_marker
 from cc_transcript.query import Session
+from tests import testkit
 from tests.support import assistant as _assistant
-from tests.support import meta as _meta
 from tests.support import user as _user
 
 if TYPE_CHECKING:
@@ -33,7 +33,9 @@ assistant = partial(_assistant, session=SESSION)
 
 
 def queue_op(operation: str, content: str = "") -> OtherEvent:
-    return OtherEvent(type="queue-operation", raw={"operation": operation, "content": content})
+    event = testkit.parse_event(testkit.other_line("queue-operation", operation=operation, content=content))
+    assert isinstance(event, OtherEvent)
+    return event
 
 
 def enqueue(content: str) -> OtherEvent:
@@ -53,9 +55,12 @@ def pop_all(content: str) -> OtherEvent:
 
 
 def attachment(prompt: str) -> AttachmentEvent:
-    return AttachmentEvent(
-        meta=_meta("att", session=SESSION), attachment_type="queued_command", detail=QueuedCommand(prompt=prompt)
+    event = testkit.parse_event(
+        {"type": "attachment", "attachment": {"type": "queued_command", "prompt": prompt}}
+        | testkit.meta_fields("att", session_id=str(SESSION))
     )
+    assert isinstance(event, AttachmentEvent)
+    return event
 
 
 def notif(tool_use_id: str, *, body: str = "background task finished") -> str:
@@ -103,10 +108,8 @@ def session(*events: TranscriptEvent, user_classifier: UserClassifier = native_u
         ),
         pytest.param(
             (
-                AttachmentEvent(
-                    meta=_meta("att", session=SESSION),
-                    attachment_type="",
-                    detail=OtherAttachment(raw={"type": "attachment", "attachment": None}),
+                testkit.parse_event(
+                    {"type": "attachment", "attachment": None} | testkit.meta_fields("att", session_id=str(SESSION))
                 ),
                 enqueue(notif(TID)),
             ),

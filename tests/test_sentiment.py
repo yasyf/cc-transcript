@@ -6,12 +6,7 @@ import anyio
 
 from cc_transcript.models import (
     AssistantEvent,
-    EntryMeta,
-    EventUuid,
-    ModeEvent,
-    OtherSystemDetail,
     SessionId,
-    SystemEvent,
     UserEvent,
 )
 from cc_transcript.sentiment import (
@@ -25,6 +20,7 @@ from cc_transcript.sentiment import (
 )
 from cc_transcript import _parser_rs
 from cc_transcript.sentiment.scorespec import ScoreSpec, score_spec_to_json
+from tests import support, testkit
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -38,38 +34,12 @@ def post_process(spec: ScoreSpec, buckets: list[list[str]], raw: list[SentimentS
     return [SentimentScore(s) for s in scored]
 
 
-def meta(uuid: str, *, minutes: float = 0.0, session: str = "s") -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SessionId(session),
-        timestamp=BASE + timedelta(minutes=minutes),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=None,
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
 def user(text: str, *, minutes: float = 0.0, session: str = "s") -> UserEvent:
-    return UserEvent(
-        meta=meta(f"u{minutes}", minutes=minutes, session=session), text=text, blocks=(), interrupted=False
-    )
+    return support.user(f"u{minutes}", text, session=SessionId(session), base=BASE, secs=int(minutes * 60))
 
 
 def assistant(text: str, *, minutes: float = 0.0, session: str = "s") -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(f"a{minutes}", minutes=minutes, session=session),
-        model="claude-opus-4-7",
-        text=text,
-        blocks=(),
-        stop_reason=None,
-        usage=None,
-    )
+    return support.assistant(f"a{minutes}", text, session=SessionId(session), base=BASE, secs=int(minutes * 60))
 
 
 class StubEngine:
@@ -127,9 +97,9 @@ def test_bucketer_ignores_whitespace_only_user_turns() -> None:
 def test_bucketer_ignores_non_conversational_events() -> None:
     events = [
         user("please fix the login bug", minutes=0),
-        SystemEvent(meta=meta("sys0"), subtype="hook", content="noise", level=None, detail=OtherSystemDetail(raw={})),
+        testkit.parse_event(testkit.system_line("hook", content="noise", uuid="sys0")),
         assistant("on it", minutes=0.5),
-        ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
+        testkit.parse_event(testkit.mode_line("normal", session_id="s")),
         user("now add validation too", minutes=1),
     ]
     (only,) = bucket_events(events)

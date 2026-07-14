@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from cc_transcript.filterspec import (
@@ -30,58 +28,51 @@ from cc_transcript.filterspec import (
 from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
-    EntryMeta,
-    EventUuid,
     ModeEvent,
-    QueuedCommand,
-    SessionId,
-    ToolUseBlock,
-    ToolUseId,
     TranscriptEvent,
     UserEvent,
 )
-
-
-def meta(**overrides: object) -> EntryMeta:
-    base: dict[str, object] = {
-        "uuid": EventUuid("u"),
-        "parent_uuid": None,
-        "session_id": SessionId("s"),
-        "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
-        "cwd": "/repo",
-        "git_branch": "main",
-        "cc_version": None,
-        "is_sidechain": False,
-        "is_meta": False,
-        "entrypoint": "cli",
-        "is_compact_summary": False,
-        "is_visible_in_transcript_only": False,
-    }
-    return EntryMeta(**(base | overrides))  # type: ignore[arg-type]
+from tests import testkit
 
 
 def user(text: str, **kw: object) -> UserEvent:
-    return UserEvent(meta=meta(**kw), text=text, blocks=(), interrupted=False)
+    event = testkit.parse_event(testkit.user_line("u", text, session_id="s", **kw))
+    assert isinstance(event, UserEvent)
+    return event
 
 
 def assistant(model: str = "claude-opus-4-7", text: str = "hi", *, tool: bool = False) -> AssistantEvent:
-    blocks = (ToolUseBlock(id=ToolUseId("t"), name="Bash", input={}),) if tool else ()
-    return AssistantEvent(meta=meta(), model=model, text=text, blocks=blocks, stop_reason=None, usage=None)
+    blocks = (testkit.tool_use("t", "Bash", {}),) if tool else ()
+    event = testkit.parse_event(testkit.assistant_line("a", text, model=model, blocks=blocks, session_id="s"))
+    assert isinstance(event, AssistantEvent)
+    return event
 
 
 def spec(*clauses: Clause) -> FilterSpec:
     return FilterSpec(clauses=clauses)
 
 
+def mode(value: str = "normal") -> ModeEvent:
+    event = testkit.parse_event(testkit.mode_line(value, session_id="s"))
+    assert isinstance(event, ModeEvent)
+    return event
+
+
 def attachment() -> AttachmentEvent:
-    return AttachmentEvent(meta=meta(), attachment_type="queued_command", detail=QueuedCommand(prompt="go"))
+    line = testkit.meta_fields("att", session_id="s") | {
+        "type": "attachment",
+        "attachment": {"type": "queued_command", "prompt": "go", "commandMode": "prompt"},
+    }
+    event = testkit.parse_event(line)
+    assert isinstance(event, AttachmentEvent)
+    return event
 
 
 def test_kind_is_keeps_matching() -> None:
     s = spec(Clause(KindIs(frozenset({"user"})), negate=True))
     assert keep(user("hi"), s)
     assert not keep(assistant(), s)
-    assert not keep(ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"), s)
+    assert not keep(mode(), s)
 
 
 def test_kind_is_attachment_keeps_and_drops() -> None:

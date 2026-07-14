@@ -13,11 +13,8 @@ import pytest
 from cc_transcript.activity import SessionActivity, ToolUse
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
-from cc_transcript.models import (
-    ToolResultBlock,
-    ToolUseBlock,
-)
 from cc_transcript.query import FileRef, Session, SubagentIndex, SubagentSession, ToolCallQuery
+from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
@@ -28,28 +25,28 @@ if TYPE_CHECKING:
 PLAN_FILE = "/Users/x/.claude/plans/p.md"
 
 
-def tool(id: str, name: str, **input: Any) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name=name, input=input)
+def tool(id: str, name: str, **input: Any) -> dict[str, Any]:
+    return testkit.tool_use(id, name, input)
 
 
-def bash(id: str, command: str) -> ToolUseBlock:
+def bash(id: str, command: str) -> dict[str, Any]:
     return tool(id, "Bash", command=command)
 
 
-def edit(id: str, path: str, old: str = "a", new: str = "b") -> ToolUseBlock:
+def edit(id: str, path: str, old: str = "a", new: str = "b") -> dict[str, Any]:
     return tool(id, "Edit", file_path=path, old_string=old, new_string=new)
 
 
-def write(id: str, path: str, content: str = "x") -> ToolUseBlock:
+def write(id: str, path: str, content: str = "x") -> dict[str, Any]:
     return tool(id, "Write", file_path=path, content=content)
 
 
-def read(id: str, path: str) -> ToolUseBlock:
+def read(id: str, path: str) -> dict[str, Any]:
     return tool(id, "Read", file_path=path)
 
 
-def result(id: str, content: str = "ok", *, is_error: bool = False) -> ToolResultBlock:
-    return ToolResultBlock(tool_use_id=ToolUseId(id), content=content, is_error=is_error)
+def result(id: str, content: str = "ok", *, is_error: bool = False) -> dict[str, Any]:
+    return testkit.tool_result(id, content, is_error=is_error)
 
 
 def session(*events: TranscriptEvent) -> Session:

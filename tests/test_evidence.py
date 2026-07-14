@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -20,8 +20,8 @@ from cc_transcript.evidence import (
     record_harvest,
 )
 from cc_transcript.ids import EventRef, EventUuid, ToolUseId, tool_digest
-from cc_transcript.models import ToolUseBlock
 from cc_transcript.tools import Hunk
+from tests import testkit
 from tests.support import SESSION, assistant, user
 
 if TYPE_CHECKING:
@@ -36,8 +36,8 @@ FIXED_LINE = "total = compute_grand_total(rows)"
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
 
-def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name="Edit", input={"file_path": path, "old_string": old, "new_string": new})
+def edit(id: str, path: str, old: str, new: str) -> dict[str, Any]:
+    return testkit.tool_use(id, "Edit", {"file_path": path, "old_string": old, "new_string": new})
 
 
 def ref(uuid: str, tool_use_id: str | None = None) -> EventRef:

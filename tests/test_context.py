@@ -22,12 +22,9 @@ from cc_transcript.context import (
     capture_window,
 )
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId, tool_digest
-from cc_transcript.models import (
-    TextBlock,
-    ToolUseBlock,
-)
 from cc_transcript.parser import parse_events_from_bytes
 from cc_transcript.render import Budget
+from tests import testkit
 from tests.support import assistant as _assistant
 from tests.support import user as _user
 
@@ -57,27 +54,15 @@ def session_events() -> tuple[TranscriptEvent, ...]:
         assistant(
             "a0",
             "working",
-            blocks=(
-                TextBlock("working"),
-                ToolUseBlock(
-                    id=ToolUseId("t1"),
-                    name="Edit",
-                    input={"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"},
-                ),
-            ),
+            blocks=(testkit.tool_use("t1", "Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}),),
             secs=1,
         ),
         user("u1", "two", secs=2),
-        assistant(
-            "a1",
-            "",
-            blocks=(ToolUseBlock(id=ToolUseId("t2"), name="Bash", input={"command": "uv run pytest"}),),
-            secs=3,
-        ),
+        assistant("a1", "", blocks=(testkit.tool_use("t2", "Bash", {"command": "uv run pytest"}),), secs=3),
         user("u2", "three", secs=4),
-        assistant("a2", "", blocks=(ToolUseBlock(id=ToolUseId("t3"), name="Edit", input=EDIT_INPUT),), secs=5),
+        assistant("a2", "", blocks=(testkit.tool_use("t3", "Edit", EDIT_INPUT),), secs=5),
         user("u3", "four", secs=6),
-        assistant("a3", "done", blocks=(TextBlock("done"),), secs=7),
+        assistant("a3", "done", secs=7),
     )
 
 

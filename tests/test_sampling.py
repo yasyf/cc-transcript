@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from cc_transcript.activity import SessionActivity, Turn
 from cc_transcript.context import ContextWindow
 from cc_transcript.ids import EventRef, EventUuid, SessionId
 from cc_transcript.mining import sample_windows
-from cc_transcript.models import AssistantEvent, CcVersion, EntryMeta, ModeEvent, TextBlock, UserEvent
+from cc_transcript.models import AssistantEvent, UserEvent
+from tests import support, testkit
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
@@ -16,36 +17,12 @@ BASE = datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC)
 SESSION = SessionId("33333333-3333-3333-3333-333333333333")
 
 
-def meta(uuid: str, *, secs: int = 0) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SESSION,
-        timestamp=BASE + timedelta(seconds=secs),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
-
-
 def user(uuid: str, text: str, *, secs: int = 0) -> UserEvent:
-    return UserEvent(meta=meta(uuid, secs=secs), text=text, blocks=(), interrupted=False)
+    return support.user(uuid, text, session=SESSION, base=BASE, secs=secs)
 
 
 def assistant(uuid: str, text: str, *, secs: int = 0) -> AssistantEvent:
-    return AssistantEvent(
-        meta=meta(uuid, secs=secs),
-        model="claude-opus-4-7",
-        text=text,
-        blocks=(TextBlock(text),),
-        stop_reason=None,
-        usage=None,
-    )
+    return support.assistant(uuid, text, session=SESSION, base=BASE, secs=secs)
 
 
 def turn(index: int, prompt: str, events: tuple[TranscriptEvent, ...]) -> Turn:
@@ -126,7 +103,7 @@ def test_sample_windows_ignores_unresolvable_exclusions() -> None:
 
 def test_sample_windows_skips_turns_without_resolvable_meta() -> None:
     base = make_activity(turns=4)
-    bare = turn(2, "", (ModeEvent(session_id=SESSION, channel="mode", value="default"),))
+    bare = turn(2, "", (testkit.parse_event(testkit.mode_line("default", session_id=str(SESSION))),))
     turns = (*base.turns[:2], bare, *(turn(t.index + 1, t.prompt, t.events) for t in base.turns[2:]))
     activity = SessionActivity(session_id=SESSION, turns=turns)
     assert [anchor_index(activity, w) for w in sample_windows(activity, n=99)] == [0, 1, 3]

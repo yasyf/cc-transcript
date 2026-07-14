@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from cc_transcript.builders import (
@@ -17,14 +15,10 @@ from cc_transcript.builders import (
 from cc_transcript.filterspec import ASSISTANTS, USERS, apply_spec
 from cc_transcript.models import (
     AssistantEvent,
-    EntryMeta,
-    EventUuid,
-    ModeEvent,
-    OtherEvent,
-    SessionId,
     TranscriptEvent,
     UserEvent,
 )
+from tests import testkit
 
 SENTIMENT_SPEC = build_spec(
     keep_only("user", "assistant"),
@@ -38,35 +32,16 @@ SENTIMENT_SPEC = build_spec(
 )
 
 
-def meta(
-    *,
-    is_sidechain: bool = False,
-    is_meta: bool = False,
-    is_compact_summary: bool = False,
-    entrypoint: str | None = "cli",
-) -> EntryMeta:
-    return EntryMeta(
-        uuid=EventUuid("u"),
-        parent_uuid=None,
-        session_id=SessionId("s"),
-        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=None,
-        is_sidechain=is_sidechain,
-        is_meta=is_meta,
-        entrypoint=entrypoint,
-        is_compact_summary=is_compact_summary,
-        is_visible_in_transcript_only=False,
-    )
-
-
 def user(text: str, **kw: bool | str | None) -> UserEvent:
-    return UserEvent(meta=meta(**kw), text=text, blocks=(), interrupted=False)  # type: ignore[arg-type]
+    event = testkit.parse_event(testkit.user_line("u", text, session_id="s", **kw))
+    assert isinstance(event, UserEvent)
+    return event
 
 
-def assistant(model: str) -> AssistantEvent:
-    return AssistantEvent(meta=meta(), model=model, text="hi", blocks=(), stop_reason=None, usage=None)
+def assistant(model: str, text: str = "hi") -> AssistantEvent:
+    event = testkit.parse_event(testkit.assistant_line("a", text, model=model, session_id="s"))
+    assert isinstance(event, AssistantEvent)
+    return event
 
 
 @pytest.mark.parametrize(
@@ -84,13 +59,10 @@ def assistant(model: str) -> AssistantEvent:
         pytest.param(user("  [request INTERRUPTED by user for tool use]"), id="interrupt-marker-casefolded-junk"),
         pytest.param(user("real but compacted", is_compact_summary=True), id="compact-summary"),
         pytest.param(user("   "), id="empty-user"),
-        pytest.param(
-            AssistantEvent(meta=meta(), model="claude-opus-4-7", text="", blocks=(), stop_reason=None, usage=None),
-            id="empty-assistant",
-        ),
-        pytest.param(OtherEvent(type="summary", raw={"type": "summary"}), id="summary-other"),
-        pytest.param(OtherEvent(type="queue-operation", raw={"type": "queue-operation"}), id="queue-operation-other"),
-        pytest.param(ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"), id="mode"),
+        pytest.param(assistant("claude-opus-4-7", text=""), id="empty-assistant"),
+        pytest.param(testkit.parse_event(testkit.other_line("summary")), id="summary-other"),
+        pytest.param(testkit.parse_event(testkit.other_line("queue-operation")), id="queue-operation-other"),
+        pytest.param(testkit.parse_event(testkit.mode_line("normal", session_id="s")), id="mode"),
     ],
 )
 def test_sentiment_spec_drops(event: TranscriptEvent) -> None:
@@ -101,8 +73,8 @@ def test_sentiment_spec_drops(event: TranscriptEvent) -> None:
 def test_sentiment_spec_keeps_only_conversational_events() -> None:
     keepers: list[TranscriptEvent] = [user("please refactor"), assistant("claude-opus-4-7")]
     dropped: list[TranscriptEvent] = [
-        OtherEvent(type="summary", raw={"type": "summary"}),
-        ModeEvent(session_id=SessionId("s"), channel="mode", value="normal"),
+        testkit.parse_event(testkit.other_line("summary")),
+        testkit.parse_event(testkit.mode_line("normal", session_id="s")),
     ]
     assert list(apply_spec(keepers + dropped, SENTIMENT_SPEC)) == keepers
 

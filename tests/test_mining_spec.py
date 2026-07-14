@@ -22,6 +22,7 @@ from cc_transcript.mining.signals import MiningSignal
 from cc_transcript.mining.sourcekind import REVIEW_COMMENT
 from cc_transcript.mining.spec import regex_review_comments
 from cc_transcript.models import CcVersion, EntryMeta, EventUuid, SessionId
+from tests import support
 
 CONDUCTOR_FINDING_RE = re.compile(
     r"^- file: (?P<file>\S+?):(?P<line>\d+)\s*$"
@@ -181,22 +182,7 @@ def test_regex_review_comments_matches_legacy_extractor_byte_for_byte() -> None:
 
 
 def meta(uuid: str) -> EntryMeta:
-    from datetime import UTC, datetime
-
-    return EntryMeta(
-        uuid=EventUuid(uuid),
-        parent_uuid=None,
-        session_id=SessionId("sess-1"),
-        timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-        cwd="/repo",
-        git_branch="main",
-        cc_version=CcVersion("1.2.3"),
-        is_sidechain=False,
-        is_meta=False,
-        entrypoint="cli",
-        is_compact_summary=False,
-        is_visible_in_transcript_only=False,
-    )
+    return support.meta(uuid)
 
 
 def test_signal_to_dict_canonical_shape() -> None:

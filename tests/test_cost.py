@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from cc_transcript.cost import MTOK, cost_of, resolve_pricing
-from cc_transcript.models import CacheCreation, ServerToolUse, Usage
+from cc_transcript.models import Usage
+from tests import support
 
 
 def usage(
@@ -12,18 +13,22 @@ def usage(
     output_tokens: int = 0,
     cache_read_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
-    cache_creation: CacheCreation | None = None,
+    cache_creation: dict[str, int] | None = None,
 ) -> Usage:
-    return Usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
-        cache_creation_input_tokens=cache_creation_input_tokens,
-        cache_creation=cache_creation,
-        service_tier="standard",
-        inference_geo="not_available",
-        server_tool_use=ServerToolUse(web_search_requests=0, web_fetch_requests=0),
-    )
+    payload: dict[str, object] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+    }
+    if cache_creation is not None:
+        payload["cache_creation"] = cache_creation
+    event = support.assistant("a0", usage=payload)
+    assert event.usage is not None
+    return event.usage
 
 
 @pytest.mark.parametrize(
@@ -48,7 +53,7 @@ def test_rate_math_per_family(
             input_tokens=MTOK,
             output_tokens=MTOK,
             cache_read_input_tokens=MTOK,
-            cache_creation=CacheCreation(ephemeral_5m_input_tokens=MTOK, ephemeral_1h_input_tokens=MTOK),
+            cache_creation={"ephemeral_5m_input_tokens": MTOK, "ephemeral_1h_input_tokens": MTOK},
         ),
         model,
     )
@@ -66,15 +71,12 @@ def test_flat_fallback_charges_5m_rate() -> None:
 
 
 def test_haiku_fixture_reconciles_to_the_cent() -> None:
-    fixture_usage = Usage(
+    fixture_usage = usage(
         input_tokens=28,
         output_tokens=250,
         cache_read_input_tokens=51020,
         cache_creation_input_tokens=25605,
-        cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25605),
-        service_tier="standard",
-        inference_geo="not_available",
-        server_tool_use=ServerToolUse(web_search_requests=0, web_fetch_requests=0),
+        cache_creation={"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 25605},
     )
     assert abs(cost_of(fixture_usage, "claude-haiku-4-5-20251001").total - 0.05759) < 1e-9
 

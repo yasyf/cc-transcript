@@ -14,11 +14,8 @@ from cc_transcript.filterspec import (
     USER_SAID_TRAILER,
 )
 from cc_transcript.ids import ToolUseId
-from cc_transcript.models import (
-    ModeEvent,
-    ToolResultBlock,
-    ToolUseBlock,
-)
+from cc_transcript.models import ToolResultBlock
+from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
 if TYPE_CHECKING:
@@ -27,19 +24,23 @@ if TYPE_CHECKING:
 PATH = Path("/proj/session.jsonl")
 
 
-def tool_use(id: str, name: str, **input: Any) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name=name, input=input)
+def tool_use(id: str, name: str, **input: Any) -> dict[str, Any]:
+    return testkit.tool_use(id, name, input)
 
 
-def bash(id: str, command: str) -> ToolUseBlock:
+def bash(id: str, command: str) -> dict[str, Any]:
     return tool_use(id, "Bash", command=command)
 
 
 def result(
     id: str, content: str = "ok", *, is_error: bool = False, denial_kind: str | None = None
 ) -> ToolResultBlock:
-    kind = denial_kind or (DENIAL_KIND_USER_REJECTED if is_error and content.startswith(DENIAL_PREFIX) else None)
-    return ToolResultBlock(tool_use_id=ToolUseId(id), content=content, is_error=is_error, denial_kind=kind)
+    event = testkit.parse_event(
+        testkit.user_line(
+            "_r", "", blocks=(testkit.tool_result(id, content, is_error=is_error),), tool_denial_kind=denial_kind
+        )
+    )
+    return event.blocks[0]
 
 
 def denial(said: str) -> str:
@@ -121,7 +122,7 @@ def test_denied_result_sets_denied_and_extracts_user_said() -> None:
             parsed(
                 user("u0", "cleanup"),
                 assistant("a0", blocks=(bash("t1", "rm -rf /tmp/x"),), secs=1),
-                user("u1", blocks=(result("t1", denial("do not run that"), is_error=True),), secs=2),
+                user("u1", blocks=(testkit.tool_result("t1", denial("do not run that"), is_error=True),), secs=2),
             )
         ]
     )
@@ -140,7 +141,8 @@ def test_permission_rule_block_is_not_a_denial() -> None:
                 assistant("a0", blocks=(bash("t1", "rm -rf /tmp/x"),), secs=1),
                 user(
                     "u1",
-                    blocks=(result("t1", "Error: BLOCKED: dangerous", is_error=True, denial_kind=DENIAL_KIND_PERMISSION_RULE),),
+                    blocks=(testkit.tool_result("t1", "Error: BLOCKED: dangerous", is_error=True),),
+                    tool_denial_kind=DENIAL_KIND_PERMISSION_RULE,
                     secs=2,
                 ),
             )
@@ -158,7 +160,7 @@ def test_error_result_without_denial_sets_is_error_only() -> None:
             parsed(
                 user("u0", "read"),
                 assistant("a0", blocks=(tool_use("t1", "Read", file_path="/missing.py"),), secs=1),
-                user("u1", blocks=(result("t1", "ENOENT: no such file", is_error=True),), secs=2),
+                user("u1", blocks=(testkit.tool_result("t1", "ENOENT: no such file", is_error=True),), secs=2),
             )
         ]
     )
@@ -175,7 +177,7 @@ def test_duration_ms_from_matched_result_timestamp() -> None:
             parsed(
                 user("u0", "go"),
                 assistant("a0", blocks=(bash("t1", "sleep 1"),), secs=3),
-                user("u1", blocks=(result("t1", "done"),), secs=5),
+                user("u1", blocks=(testkit.tool_result("t1", "done"),), secs=5),
             )
         ]
     )
@@ -185,7 +187,7 @@ def test_duration_ms_from_matched_result_timestamp() -> None:
 
 
 def test_transcript_without_meta_is_skipped() -> None:
-    assert list(tool_facts([parsed(ModeEvent(session_id=SESSION, channel="mode", value="plan"))])) == []
+    assert list(tool_facts([parsed(testkit.parse_event(testkit.mode_line("plan", session_id=str(SESSION))))])) == []
 
 
 def test_facts_span_multiple_transcripts_with_their_paths() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
@@ -11,18 +11,16 @@ pytest.importorskip("spawnllm")
 from cc_transcript.activity import SessionActivity  # noqa: E402
 from cc_transcript.corrections import CorrectionLog  # noqa: E402
 from cc_transcript.extract import CorrectionPick, extract_correction, usable_backend  # noqa: E402
-from cc_transcript.ids import EventRef, EventUuid, ToolUseId  # noqa: E402
-from cc_transcript.models import (  # noqa: E402
-    ToolUseBlock,
-)
+from cc_transcript.ids import EventRef, EventUuid  # noqa: E402
+from tests import testkit  # noqa: E402
 from tests.support import SESSION, assistant, user  # noqa: E402
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 
-def edit(id: str, path: str, old: str, new: str) -> ToolUseBlock:
-    return ToolUseBlock(id=ToolUseId(id), name="Edit", input={"file_path": path, "old_string": old, "new_string": new})
+def edit(id: str, path: str, old: str, new: str) -> dict[str, Any]:
+    return testkit.tool_use(id, "Edit", {"file_path": path, "old_string": old, "new_string": new})
 
 
 def ladder() -> SessionActivity:
