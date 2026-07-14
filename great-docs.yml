@@ -240,8 +240,6 @@ reference:
       - watch.watch
       - watch.tick
       - watch.WatchEvent
-      - watch.TailState
-      - watch.TailCursor
   - title: Filtering
     desc: Filters-as-data — declarative specs and composable builders, executed in Rust at parse time or over materialized events.
     contents:
