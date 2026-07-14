@@ -1,0 +1,52 @@
+"""The public facade surface must not lose names the pre-inversion modules exported.
+
+The v14 inversion turned ``models`` and ``tools`` into thin facades over the native
+views; the object-model rewrite silently dropped several runtime bindings existing
+direct imports depend on. These frozensets are the ``d936cee6`` public API surface of
+each module (locals, module constants, and ``cc_transcript.*`` re-exports — stdlib
+imports excluded). P4 curates the final surface; until then no old name may be missing.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from cc_transcript import models, tools
+
+MODELS_SURFACE = frozenset(
+    {
+        "ApiError", "AssistantEvent", "AsyncHookResponse", "AttachmentDetail", "AttachmentEvent",
+        "Attribution", "CacheCreation", "CcVersion", "CompactBoundary", "ContentBlock", "EntryMeta",
+        "EventUuid", "FallbackBlock", "HookAdditionalContext", "HookBlockingError", "HookCancelled",
+        "HookInfo", "HookNonBlockingError", "HookSuccess", "InitInfo", "McpServer", "ModeEvent",
+        "ModelRefusalFallback", "ModelUsage", "OtherAttachment", "OtherBlock", "OtherEvent",
+        "OtherSystemDetail", "Plugin", "PreservedMessages", "PreservedSegment", "PrintMessage",
+        "PrintResult", "Question", "QueuedCommand", "ServerToolUse", "SessionId", "StopHookSummary",
+        "SystemDetail", "SystemEvent", "TextBlock", "ThinkingBlock", "ToolCall", "ToolDigest",
+        "ToolResultBlock", "ToolUseBlock", "ToolUseId", "TranscriptEvent", "TurnDuration", "Usage",
+        "UserEvent", "parse_questions", "parse_tool_call", "thinking_chars", "tool_digest", "tool_uses",
+    }
+)
+
+TOOLS_SURFACE = frozenset(
+    {
+        "AskUserQuestionResult", "BashCall", "BashResult", "EditCall", "EditResult", "EditSpan",
+        "ExitPlanModeCall", "GlobCall", "GrepCall", "Hunk", "MCP_TOOL_ALIASES", "MultiEditCall",
+        "NotebookEditCall", "OtherCall", "OtherResult", "QuestionAnnotation", "READ_VERBS", "ReadCall",
+        "ReadResult", "SkillCall", "SkillResult", "TOOL_ALIASES", "TOOL_ALIASES_REVERSE",
+        "TOOL_RESULT_TYPES", "TOOL_TYPES", "TaskCall", "TaskCreateCall", "TaskLaunchResult",
+        "TaskResult", "TaskResultBase", "TaskUpdateCall", "TextResult", "ToolCall", "ToolCallBase",
+        "ToolDigest", "ToolInputError", "ToolResult", "ToolResultBase", "ToolResultError",
+        "WorkflowCall", "WriteCall", "WriteResult", "expand_tool_names", "file_path_of", "hunks_of",
+        "key_of", "matches_names", "mcp_access", "mcp_parts", "parse_tool_call", "parse_tool_result",
+        "required_key", "required_str", "tool_digest", "tool_name_matches",
+    }
+)
+
+
+@pytest.mark.parametrize(
+    ("module", "surface"),
+    [pytest.param(models, MODELS_SURFACE, id="models"), pytest.param(tools, TOOLS_SURFACE, id="tools")],
+)
+def test_facade_keeps_pre_inversion_surface(module: object, surface: frozenset[str]) -> None:
+    assert surface - set(dir(module)) == set()

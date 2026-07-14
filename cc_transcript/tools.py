@@ -17,6 +17,8 @@ import json
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _parser_rs
+from cc_transcript.ids import ToolDigest as ToolDigest
+from cc_transcript.ids import tool_digest as tool_digest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -41,6 +43,25 @@ MCP_TOOL_ALIASES: dict[str, str] = {
 }
 
 READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query", "describe", "show", "find"})
+
+
+def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
+    """The first non-null value among ``keys`` in ``raw``, else None."""
+    return next((value for key in keys if (value := raw.get(key)) is not None), None)
+
+
+def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
+    """The first non-null value among ``keys`` in ``raw``; raises ``KeyError`` if none is present."""
+    if (value := key_of(raw, *keys)) is None:
+        raise KeyError(keys[0])
+    return value
+
+
+def required_str(raw: Mapping[str, Any], *keys: str) -> str:
+    """The first non-null value among ``keys`` in ``raw`` as a str; raises if absent or not a str."""
+    if not isinstance(value := required_key(raw, *keys), str):
+        raise TypeError(f"{keys[0]} must be a str, got {type(value).__name__}")
+    return value
 
 
 class ToolInputError(ValueError):

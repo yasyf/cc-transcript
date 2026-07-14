@@ -8,13 +8,13 @@ class names, field names, and semantics match the pre-inversion dataclasses;
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NewType
+from typing import NewType
 
 from cc_transcript import _parser_rs
 from cc_transcript.ids import EventUuid, SessionId, ToolDigest, ToolUseId
-
-if TYPE_CHECKING:
-    from cc_transcript.tools import ToolCall as ToolCall
+from cc_transcript.ids import tool_digest as tool_digest
+from cc_transcript.tools import ToolCall as ToolCall
+from cc_transcript.tools import parse_tool_call as parse_tool_call
 
 CcVersion = NewType("CcVersion", str)
 
