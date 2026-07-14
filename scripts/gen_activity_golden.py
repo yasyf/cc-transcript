@@ -235,7 +235,7 @@ def overlaps_of(activity: SessionActivity) -> list[dict[str, object]]:
 
 def events_of(path: Path) -> list[TranscriptEvent]:
     parsed = _parser_rs.stream_parse([(str(path), 1.0)], 1).recv()
-    return [] if parsed is None else parsed[2]
+    return [] if parsed is None else list(parsed.events)
 
 
 def project_file(path: Path) -> dict[str, object]:

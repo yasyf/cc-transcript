@@ -171,7 +171,7 @@ def rust_filtered(path: Path, spec: FilterSpec) -> list[TranscriptEvent]:
     from cc_transcript import _parser_rs
 
     out = _parser_rs.stream_parse([(str(path), 1.0)], 1, spec_to_json(spec)).recv()
-    return [] if out is None else out[2]
+    return [] if out is None else list(out.events)
 
 
 @requires_rust

@@ -272,7 +272,21 @@ def line_budget(width: int) -> Budget:
 
 
 def event_dict(index: int, event: TranscriptEvent) -> dict[str, Any]:
-    return {"i": index, "kind": event_kind(event)} | asdict(event)
+    return {"i": index, "kind": event_kind(event)} | view_asdict(event)
+
+
+def view_asdict(view: object) -> dict[str, Any]:
+    return {name: view_field(getattr(view, name)) for name in type(view).__match_args__}
+
+
+def view_field(value: object) -> Any:
+    match value:
+        case tuple():
+            return tuple(view_field(item) for item in value)
+        case _ if type(value).__module__ == "cc_transcript.models":
+            return view_asdict(value)
+        case _:
+            return value
 
 
 def haystack(event: TranscriptEvent, *, where: frozenset[str]) -> str:
