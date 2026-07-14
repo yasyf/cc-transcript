@@ -8,3 +8,4 @@ mod python;
 mod render;
 mod score;
 mod toolcall;
+mod watch;

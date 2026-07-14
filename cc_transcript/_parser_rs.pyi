@@ -136,3 +136,19 @@ def render_stats(raws: list[bytes], /) -> str:
 
     Mirrors ``cc_transcript.render.render_stats(collect_stats(...))`` over the parsed transcripts.
     """
+
+class WatchTailer:
+    """A stateful byte-offset tail over the transcript tree (the Rust ``watch.tick`` port).
+
+    Holds one cursor per discovered ``*.jsonl`` file between calls; the Python facade
+    wraps it in the async poll-forever loop.
+    """
+
+    def __init__(self) -> None: ...
+    def tick(self, roots: list[str], from_start: bool = ..., /) -> list[tuple[str, str, bool, TranscriptEvent]]:
+        """Run one poll step over ``roots``, returning ``(path, session_id, is_sidechain, event)``
+        tuples for each freshly appended entry."""
+
+    def snapshot(self) -> dict[str, Any]:
+        """The whole cursor state: ``{"primed": bool, "cursors": {path: {offset, size, mtime,
+        session_id, seen}}}`` — the Python ``TailState`` projection."""

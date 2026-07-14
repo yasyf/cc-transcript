@@ -1,0 +1,308 @@
+{
+  "from_start": [
+    {
+      "name": "prime_all",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 2000.0,
+            "offset": 280,
+            "seen": [
+              "a",
+              "b"
+            ],
+            "session_id": "sess-1",
+            "size": 280
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "a"
+        },
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "b"
+        }
+      ]
+    },
+    {
+      "name": "append_more",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 2001.0,
+            "offset": 420,
+            "seen": [
+              "a",
+              "b",
+              "c"
+            ],
+            "session_id": "sess-1",
+            "size": 420
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "c"
+        }
+      ]
+    }
+  ],
+  "sidechain": [
+    {
+      "name": "sidechain_prime",
+      "state": {
+        "cursors": {
+          "projA/sess-main/subagents/agent-tool7.jsonl": {
+            "mtime": 3000.0,
+            "offset": 180,
+            "seen": [
+              "s1"
+            ],
+            "session_id": "sub-sess",
+            "size": 180
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": true,
+          "path": "projA/sess-main/subagents/agent-tool7.jsonl",
+          "session_id": "sess-main",
+          "uuid": null
+        },
+        {
+          "is_sidechain": true,
+          "path": "projA/sess-main/subagents/agent-tool7.jsonl",
+          "session_id": "sub-sess",
+          "uuid": "s1"
+        }
+      ]
+    }
+  ],
+  "tail": [
+    {
+      "name": "prime",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1000.0,
+            "offset": 280,
+            "seen": [],
+            "session_id": null,
+            "size": 280
+          }
+        },
+        "primed": true
+      },
+      "yields": []
+    },
+    {
+      "name": "partial",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1001.0,
+            "offset": 280,
+            "seen": [],
+            "session_id": null,
+            "size": 419
+          }
+        },
+        "primed": true
+      },
+      "yields": []
+    },
+    {
+      "name": "complete",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1002.0,
+            "offset": 560,
+            "seen": [
+              "c",
+              "d"
+            ],
+            "session_id": "sess-1",
+            "size": 560
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "c"
+        },
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "d"
+        }
+      ]
+    },
+    {
+      "name": "noop",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1002.0,
+            "offset": 560,
+            "seen": [
+              "c",
+              "d"
+            ],
+            "session_id": "sess-1",
+            "size": 560
+          }
+        },
+        "primed": true
+      },
+      "yields": []
+    },
+    {
+      "name": "dup_and_new",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1003.0,
+            "offset": 840,
+            "seen": [
+              "c",
+              "d",
+              "e"
+            ],
+            "session_id": "sess-1",
+            "size": 840
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "e"
+        }
+      ]
+    },
+    {
+      "name": "compact",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1004.0,
+            "offset": 140,
+            "seen": [
+              "f"
+            ],
+            "session_id": "sess-1",
+            "size": 140
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s1.jsonl",
+          "session_id": "sess-1",
+          "uuid": "f"
+        }
+      ]
+    },
+    {
+      "name": "new_file",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1004.0,
+            "offset": 140,
+            "seen": [
+              "f"
+            ],
+            "session_id": "sess-1",
+            "size": 140
+          },
+          "projA/s2.jsonl": {
+            "mtime": 1005.0,
+            "offset": 140,
+            "seen": [
+              "g"
+            ],
+            "session_id": "sess-2",
+            "size": 140
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s2.jsonl",
+          "session_id": "sess-2",
+          "uuid": "g"
+        }
+      ]
+    },
+    {
+      "name": "mixed_drops",
+      "state": {
+        "cursors": {
+          "projA/s1.jsonl": {
+            "mtime": 1004.0,
+            "offset": 140,
+            "seen": [
+              "f"
+            ],
+            "session_id": "sess-1",
+            "size": 140
+          },
+          "projA/s2.jsonl": {
+            "mtime": 1006.0,
+            "offset": 519,
+            "seen": [
+              "g",
+              "h"
+            ],
+            "session_id": "sess-2",
+            "size": 519
+          }
+        },
+        "primed": true
+      },
+      "yields": [
+        {
+          "is_sidechain": false,
+          "path": "projA/s2.jsonl",
+          "session_id": "sess-2",
+          "uuid": "h"
+        },
+        {
+          "is_sidechain": false,
+          "path": "projA/s2.jsonl",
+          "session_id": "sess-2",
+          "uuid": null
+        }
+      ]
+    }
+  ]
+}

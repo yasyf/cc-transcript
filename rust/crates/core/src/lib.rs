@@ -12,3 +12,4 @@ pub mod render;
 pub mod toolcall;
 pub mod types;
 pub mod value;
+pub mod watch;

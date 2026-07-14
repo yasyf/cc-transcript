@@ -486,5 +486,6 @@ fn _parser_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::render::render_stats, m)?)?;
     m.add_function(wrap_pyfunction!(crate::nlp::nlp_analyze, m)?)?;
     m.add_class::<ParseStream>()?;
+    m.add_class::<crate::watch::WatchTailer>()?;
     Ok(())
 }
