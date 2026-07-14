@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class LedgerCase[R: LedgerRecord]:
-    log_cls: type[SyncLedger[R]]
+    log_cls: type[SyncLedger[R]] | type[CorrectionLog]
     filename: str
     ddl: str
     sql_fixture: str
@@ -57,8 +57,16 @@ DECISION_CASE = LedgerCase(
 CASES = [pytest.param(CORRECTION_CASE, id="corrections"), pytest.param(DECISION_CASE, id="decisions")]
 
 
-def open_log(case: LedgerCase[Any], tmp_path: pathlib.Path) -> SyncLedger[Any]:
+def open_log(case: LedgerCase[Any], tmp_path: pathlib.Path) -> SyncLedger[Any] | CorrectionLog:
     return case.log_cls.open(tmp_path / case.filename)
+
+
+def journal_mode(log: SyncLedger[Any] | CorrectionLog) -> str:
+    match log:
+        case CorrectionLog():
+            return log.sql("PRAGMA journal_mode")[0]["journal_mode"]
+        case _:
+            return log.conn.execute("PRAGMA journal_mode").fetchone()[0]
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -90,7 +98,7 @@ def test_for_session_orders_by_ts_and_filters_by_session(case: LedgerCase[Any], 
 @pytest.mark.parametrize("case", CASES)
 def test_two_logs_on_one_path_interleave_appends(case: LedgerCase[Any], tmp_path: pathlib.Path) -> None:
     first, second = open_log(case, tmp_path), open_log(case, tmp_path)
-    assert first.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert journal_mode(first) == "wal"
     first.append(case.distinct(1_000, seq=0))
     second.append(case.distinct(2_000, seq=1))
     first.append(case.distinct(3_000, seq=2))
