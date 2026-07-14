@@ -70,3 +70,21 @@ pub(crate) fn opt_json<'py>(py: Python<'py>, value: Option<&Value>) -> PyResult<
         None => Ok(py.None().into_bound(py)),
     }
 }
+
+/// Wrap a memoized dict in a read-only `cc_transcript.models.ReadOnlyDict`; pass other
+/// values through. A mutable cached dict would let a caller diverge it from the
+/// Rust-backed derived properties (split-brain) and build a cycle through the untracked
+/// view. ReadOnlyDict stays a `dict` (serializes and canonicalizes like one) but raises
+/// on mutation; only the top level is frozen.
+pub(crate) fn read_only<'py>(
+    py: Python<'py>,
+    value: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if value.is_instance_of::<PyDict>() {
+        py.import("cc_transcript.models")?
+            .getattr("ReadOnlyDict")?
+            .call1((value,))
+    } else {
+        Ok(value)
+    }
+}

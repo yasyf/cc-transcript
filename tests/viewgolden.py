@@ -165,7 +165,9 @@ def compare(golden: Any, live: Any, path: str = "$") -> None:
             for i, item in enumerate(items):
                 compare(item, live[i], f"{path}[{i}]")
         case {"__mapping__": mapping}:
-            assert type(live) is dict, f"{path}: {type(live).__name__} != dict"
+            # v14: memoized dict fields (ToolUseBlock.input, ToolResultBlock.tool_use_result)
+            # are a read-only dict subclass, so compare by value/keys, not exact dict type.
+            assert isinstance(live, Mapping), f"{path}: {type(live).__name__} is not a Mapping"
             assert list(live.keys()) == list(mapping.keys()), f"{path}: keys {list(live)} != {list(mapping)}"
             for key, sub in mapping.items():
                 compare(sub, live[key], f"{path}[{key!r}]")

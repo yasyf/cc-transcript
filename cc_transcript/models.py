@@ -18,6 +18,33 @@ from cc_transcript.tools import parse_tool_call as parse_tool_call
 
 CcVersion = NewType("CcVersion", str)
 
+
+class ReadOnlyDict(dict):
+    """A ``dict`` that rejects mutation — the v14 read-only view of a tool input.
+
+    :attr:`ToolUseBlock.input` and :attr:`ToolResultBlock.tool_use_result` are
+    views over immutable parse output. Wrapping the memoized mapping in this type
+    keeps it a ``dict`` — so every dict-consuming path (``json``/``orjson``,
+    digest canonicalization, ``isinstance``) keeps working and it reprs as
+    ``{...}`` — while raising ``TypeError`` on any mutation, which also makes a
+    reference cycle back through the untracked view unconstructible.
+    """
+
+    __slots__ = ()
+
+    def read_only(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("ReadOnlyDict is read-only")
+
+    __setitem__ = read_only
+    __delitem__ = read_only
+    clear = read_only
+    pop = read_only
+    popitem = read_only
+    setdefault = read_only
+    update = read_only
+    __ior__ = read_only
+
+
 TextBlock = _parser_rs.TextBlock
 ThinkingBlock = _parser_rs.ThinkingBlock
 Question = _parser_rs.Question

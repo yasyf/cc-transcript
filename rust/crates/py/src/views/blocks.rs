@@ -7,7 +7,7 @@ use sonic_rs::Value;
 use cc_transcript_core::ids;
 use cc_transcript_core::types::{ContentBlock, ToolResultBlock, ToolUseBlock};
 
-use crate::views::convert::{json_to_py, opt_json};
+use crate::views::convert::{json_to_py, opt_json, read_only};
 use crate::views::dunder::{frozen_copy, view_dunders};
 use crate::views::meta::QuestionView;
 use crate::views::store::{BlockHost, BlockRef};
@@ -176,7 +176,11 @@ frozen_copy!(OtherBlockView);
 /// Attributes:
 ///     id: The tool-use identifier referenced by the matching result.
 ///     name: The tool's name.
-///     input: The tool's input arguments, preserved verbatim.
+///     input: The tool's input arguments, preserved verbatim. v14: a read-only
+///         :class:`~cc_transcript.models.ReadOnlyDict` — the view is immutable, so
+///         the input cannot be mutated out of step with :attr:`call`/:attr:`digest`.
+///         It stays a ``dict`` (serializes and canonicalizes like one); only the top
+///         level is frozen, so nested containers keep their plain-JSON types.
 #[pyclass(name = "ToolUseBlock", module = "cc_transcript.models", frozen)]
 pub(crate) struct ToolUseBlockView {
     pub r: BlockRef,
@@ -206,10 +210,11 @@ impl ToolUseBlockView {
         Ok(self.tool_use().name.clone())
     }
 
+    /// The tool's input arguments, as a read-only mapping (v14: immutable view).
     #[getter]
     fn input(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.input_cache.get_or_try_init(py, || {
-            json_to_py(py, &self.tool_use().input).map(Bound::unbind)
+            read_only(py, json_to_py(py, &self.tool_use().input)?).map(Bound::unbind)
         })?;
         Ok(cached.clone_ref(py))
     }
@@ -293,6 +298,8 @@ view_dunders!(
 ///         mapping for structured results, a plain string for denials, or None
 ///         when the record carried none. Pass a tool name and this payload to
 ///         :func:`~cc_transcript.tools.parse_tool_result` for the typed result.
+///         v14: a structured payload is a read-only
+///         :class:`~cc_transcript.models.ReadOnlyDict`, like :attr:`ToolUseBlock.input`.
 ///     denial_kind: The tool-denial kind, computed at the parse layer — the
 ///         record-level ``toolDenialKind`` (``user-rejected`` for a human
 ///         rejection, ``permission-rule`` for a hook/guard block) when present,
@@ -338,7 +345,11 @@ impl ToolResultBlockView {
     #[getter]
     fn tool_use_result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.result_cache.get_or_try_init(py, || {
-            opt_json(py, self.tool_result().tool_use_result.as_ref()).map(Bound::unbind)
+            read_only(
+                py,
+                opt_json(py, self.tool_result().tool_use_result.as_ref())?,
+            )
+            .map(Bound::unbind)
         })?;
         Ok(cached.clone_ref(py))
     }

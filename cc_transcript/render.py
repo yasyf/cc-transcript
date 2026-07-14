@@ -283,6 +283,8 @@ def view_field(value: object) -> Any:
     match value:
         case tuple():
             return tuple(view_field(item) for item in value)
+        case dict():
+            return value
         case _ if type(value).__module__ == "cc_transcript.models":
             return view_asdict(value)
         case _:
