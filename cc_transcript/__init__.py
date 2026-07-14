@@ -78,6 +78,7 @@ EXPORTS: dict[str, str] = {
             "Command",
             "CommandLine",
             "CommandLineQuery",
+            "Occurrence",
             "Redirect",
             "command_prefixes",
             "parse_command_line",

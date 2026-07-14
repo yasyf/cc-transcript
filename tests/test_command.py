@@ -341,6 +341,119 @@ class TestCommandLineQuery:
         assert CommandLine.parse(raw).q.contains_token(token) is expected
 
 
+class TestSplice:
+    def test_middle_of_three_preserves_neighbors(self) -> None:
+        assert CommandLine.parse("a; b; c").splice({1: "XX"}) == "a; XX; c"
+
+    @pytest.mark.parametrize(
+        ("raw", "spliced"),
+        [
+            pytest.param("a && b", "X && b", id="and"),
+            pytest.param("a || b", "X || b", id="or"),
+            pytest.param("a | b", "X | b", id="pipe"),
+            pytest.param("a & b", "X & b", id="background"),
+            pytest.param("a\nb", "X\nb", id="newline"),
+        ],
+    )
+    def test_joining_operator_survives(self, raw: str, spliced: str) -> None:
+        assert CommandLine.parse(raw).splice({0: "X"}) == spliced
+
+    def test_redirect_outside_span_survives(self) -> None:
+        assert CommandLine.parse("cat a > b; echo x").splice({0: "dog"}) == "dog > b; echo x"
+
+    def test_leading_redirect_outside_span(self) -> None:
+        # A leading redirect is a child of the command node; its bytes stay outside the span.
+        assert CommandLine.parse(">out echo hi").splice({0: "R"}) == ">out R"
+
+    def test_both_edge_redirects_preserved(self) -> None:
+        assert CommandLine.parse("<in echo hi >out").splice({0: "R"}) == "<in R >out"
+
+    def test_interleaved_redirect_has_no_span(self) -> None:
+        # 'echo a >out b' — tree-sitter folds the trailing 'b' into the redirect, splitting
+        # the command's args, so there is no contiguous span and splice refuses.
+        cl = CommandLine.parse("echo a >out b")
+        assert cl.occurrences[0].command.span is None
+        with pytest.raises(ValueError, match="no span"):
+            cl.splice({0: "X"})
+
+    def test_repeated_identical_commands_target_by_index(self) -> None:
+        # Defeats an rfind/replace-style implementation: only the index-1 'x' is rewritten.
+        assert CommandLine.parse("x; x; x").splice({1: "Y"}) == "x; Y; x"
+
+    def test_heredoc_body_matching_later_command(self) -> None:
+        # EDGE_CASES heredoc shape + a real trailing command identical to a body line:
+        # the byte span targets the real command (byte 42), never str.find's body hit (byte 21).
+        raw = "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\ngit push --force"
+        cl = CommandLine.parse(raw)
+        assert [occ.command.executable for occ in cl.occurrences] == ["cat", "git"]
+        spliced = cl.splice({1: "true"})
+        assert spliced == "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\ntrue"
+        assert "rm -rf /\ngit push --force\n" in spliced
+
+    def test_comment_tail_preserved(self) -> None:
+        assert CommandLine.parse("echo hi # trailing comment").splice({0: "ls"}) == "ls # trailing comment"
+
+    def test_subshell_interior(self) -> None:
+        assert CommandLine.parse("(cd src && make)").splice({1: "test"}) == "(cd src && test)"
+
+    def test_multibyte_unicode_before_span(self) -> None:
+        # 'é' is two UTF-8 bytes; the later command's span is a byte offset, not a char offset.
+        assert CommandLine.parse("echo café; rm x").splice({1: "ls"}) == "echo café; ls"
+
+    def test_span_less_command_raises(self) -> None:
+        line = CommandLine(raw="foo", parts=((Command(raw="foo", executable="foo", args=()), None),))
+        with pytest.raises(ValueError, match="no span"):
+            line.splice({0: "bar"})
+
+    def test_overlapping_spans_raise(self) -> None:
+        parts = (
+            (Command(raw="ab", executable="ab", args=(), span=(0, 4)), None),
+            (Command(raw="cd", executable="cd", args=(), span=(2, 6)), None),
+        )
+        line = CommandLine(raw="abcdef", parts=parts)
+        with pytest.raises(ValueError, match="overlaps"):
+            line.splice({0: "X", 1: "Y"})
+
+    def test_rewrite_occurrences_maps_and_splices(self) -> None:
+        cl = CommandLine.parse("git push; ls; git pull")
+        rewritten = cl.rewrite_occurrences(lambda occ: "BLOCKED" if occ.command.executable == "git" else None)
+        assert rewritten == "BLOCKED; ls; BLOCKED"
+
+    def test_rewrite_occurrences_none_when_no_match(self) -> None:
+        assert CommandLine.parse("ls -la").rewrite_occurrences(lambda occ: None) is None
+
+
+class TestOccurrences:
+    def test_one_occurrence_per_part_in_order(self) -> None:
+        cl = CommandLine.parse("cmd1 && cmd2 || cmd3")
+        assert [occ.index for occ in cl.occurrences] == [0, 1, 2]
+        assert [occ.command.executable for occ in cl.occurrences] == ["cmd1", "cmd2", "cmd3"]
+
+    def test_prev_and_next_op(self) -> None:
+        first, mid, last = CommandLine.parse("cmd1 && cmd2 || cmd3").occurrences
+        assert (first.prev_op, first.next_op) == (None, "&&")
+        assert (mid.prev_op, mid.next_op) == ("&&", "||")
+        assert (last.prev_op, last.next_op) == ("||", None)
+
+    @pytest.mark.parametrize(
+        ("raw", "piped"),
+        [
+            pytest.param("foo | bar", [True, True], id="pipe"),
+            pytest.param("a |& b", [True, True], id="pipe_ampersand"),
+            pytest.param("cat f | grep x | wc -l", [True, True, True], id="pipe_chain"),
+            pytest.param("a\nb", [False, False], id="newline_statements"),
+            pytest.param("a && b", [False, False], id="and_not_piped"),
+            pytest.param("a # x|y\nb", [False, False], id="comment_pipe"),
+            pytest.param("cat a > 'x|y'\nb", [False, False], id="quoted_redirect_pipe"),
+            pytest.param("cat <<'EOF'\nx|y\nEOF\nb", [False, False], id="heredoc_body_pipe"),
+            pytest.param("a\n[[ x || y ]]\nb", [False, False], id="test_command_or"),
+            pytest.param("a\n((1|2))\nb", [False, False], id="arithmetic_pipe"),
+        ],
+    )
+    def test_piped(self, raw: str, piped: list[bool]) -> None:
+        assert [occ.piped for occ in CommandLine.parse(raw).occurrences] == piped
+
+
 class TestDequote:
     @pytest.mark.parametrize(
         ("text", "expected"),
