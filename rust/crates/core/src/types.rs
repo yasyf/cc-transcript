@@ -451,7 +451,8 @@ pub fn tool_use_index(entries: &[Entry]) -> HashMap<&str, &ToolUseBlock> {
 pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
     names.contains(actual)
         || crate::toolcall::mcp_parts(actual).is_some_and(|(_, tool)| {
-            names.contains(tool) || crate::toolcall::mcp_tool_alias(tool).is_some_and(|b| names.contains(b))
+            names.contains(tool)
+                || crate::toolcall::mcp_tool_alias(tool).is_some_and(|b| names.contains(b))
         })
 }
 

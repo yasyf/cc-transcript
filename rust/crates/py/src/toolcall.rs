@@ -163,7 +163,10 @@ fn result_to_dict<'py>(py: Python<'py>, result: &ToolResult) -> PyResult<Bound<'
             d.set_item("is_image", json_to_py(py, &r.is_image)?)?;
             d.set_item("no_output_expected", json_to_py(py, &r.no_output_expected)?)?;
             d.set_item("background_task_id", some_json(py, &r.background_task_id)?)?;
-            d.set_item("return_code_interpretation", some_json(py, &r.return_code_interpretation)?)?;
+            d.set_item(
+                "return_code_interpretation",
+                some_json(py, &r.return_code_interpretation)?,
+            )?;
         }
         ToolResult::Edit(r) => {
             d.set_item("name", &r.name)?;
@@ -196,7 +199,10 @@ fn result_to_dict<'py>(py: Python<'py>, result: &ToolResult) -> PyResult<Bound<'
             d.set_item("status", some_json(py, &r.status)?)?;
             d.set_item("total_duration_ms", some_json(py, &r.total_duration_ms)?)?;
             d.set_item("total_tokens", some_json(py, &r.total_tokens)?)?;
-            d.set_item("total_tool_use_count", some_json(py, &r.total_tool_use_count)?)?;
+            d.set_item(
+                "total_tool_use_count",
+                some_json(py, &r.total_tool_use_count)?,
+            )?;
             d.set_item("tool_stats", some_json(py, &r.tool_stats)?)?;
             d.set_item("usage", some_json(py, &r.usage)?)?;
             d.set_item("content", some_json(py, &r.content)?)?;
@@ -208,7 +214,10 @@ fn result_to_dict<'py>(py: Python<'py>, result: &ToolResult) -> PyResult<Bound<'
             d.set_item("agent_id", some_json(py, &r.agent_id)?)?;
             d.set_item("output_file", some_json(py, &r.output_file)?)?;
             d.set_item("is_async", json_to_py(py, &r.is_async)?)?;
-            d.set_item("can_read_output_file", json_to_py(py, &r.can_read_output_file)?)?;
+            d.set_item(
+                "can_read_output_file",
+                json_to_py(py, &r.can_read_output_file)?,
+            )?;
             d.set_item("description", some_json(py, &r.description)?)?;
             d.set_item("prompt", some_json(py, &r.prompt)?)?;
             d.set_item("status", some_json(py, &r.status)?)?;
@@ -277,10 +286,11 @@ pub fn toolcall_parse<'py>(
     input_json: &str,
     on_error: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let input: Value =
-        sonic_rs::from_str(input_json).map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    let input: Value = sonic_rs::from_str(input_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
     let call = match on_error.unwrap_or("raise") {
-        "raise" => toolcall::parse_tool_call_strict(name, &input).map_err(|e| tool_input_error(py, name, &e))?,
+        "raise" => toolcall::parse_tool_call_strict(name, &input)
+            .map_err(|e| tool_input_error(py, name, &e))?,
         _ => toolcall::parse_tool_call(name, &input),
     };
     call_to_dict(py, &call)

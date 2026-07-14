@@ -82,7 +82,9 @@ fn get_or_false(input: &Value, key: &str) -> Value {
 
 // Parity: SkillResult `tuple(tools) if isinstance(tools, list) else None`.
 fn opt_array(input: &Value, key: &str) -> Option<Value> {
-    field(input, key).filter(|v| v.as_array().is_some()).cloned()
+    field(input, key)
+        .filter(|v| v.as_array().is_some())
+        .cloned()
 }
 
 // Parity: Python `x is not None` over a get — present and non-null.
@@ -154,10 +156,14 @@ pub enum ToolInputError {
 // Parity: tools.py required_str over a single key.
 fn req_str(input: &Value, key: &str) -> Result<String, ToolInputError> {
     match field(input, key) {
-        Some(v) if !v.is_null() => v
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| ToolInputError::WrongType { key: key.to_string(), py_type: py_type_name(v) }),
+        Some(v) if !v.is_null() => {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| ToolInputError::WrongType {
+                    key: key.to_string(),
+                    py_type: py_type_name(v),
+                })
+        }
         _ => Err(ToolInputError::MissingKey(key.to_string())),
     }
 }
@@ -167,10 +173,13 @@ fn req_str_keys(input: &Value, keys: &[&str]) -> Result<String, ToolInputError> 
     for key in keys {
         if let Some(v) = field(input, key) {
             if !v.is_null() {
-                return v.as_str().map(str::to_string).ok_or_else(|| ToolInputError::WrongType {
-                    key: keys[0].to_string(),
-                    py_type: py_type_name(v),
-                });
+                return v
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| ToolInputError::WrongType {
+                        key: keys[0].to_string(),
+                        py_type: py_type_name(v),
+                    });
             }
         }
     }
@@ -430,14 +439,26 @@ impl ToolCall {
     /// Parity: tools.py hunks_of.
     pub fn hunks(&self) -> Vec<Hunk> {
         match self {
-            ToolCall::Edit(c) => vec![Hunk { old: c.old.clone(), new: c.new.clone() }],
+            ToolCall::Edit(c) => vec![Hunk {
+                old: c.old.clone(),
+                new: c.new.clone(),
+            }],
             ToolCall::MultiEdit(c) => c
                 .edits
                 .iter()
-                .map(|s| Hunk { old: s.old.clone(), new: s.new.clone() })
+                .map(|s| Hunk {
+                    old: s.old.clone(),
+                    new: s.new.clone(),
+                })
                 .collect(),
-            ToolCall::Write(c) => vec![Hunk { old: String::new(), new: c.content.clone() }],
-            ToolCall::NotebookEdit(c) => vec![Hunk { old: String::new(), new: c.new_source.clone() }],
+            ToolCall::Write(c) => vec![Hunk {
+                old: String::new(),
+                new: c.content.clone(),
+            }],
+            ToolCall::NotebookEdit(c) => vec![Hunk {
+                old: String::new(),
+                new: c.new_source.clone(),
+            }],
             _ => Vec::new(),
         }
     }
@@ -483,7 +504,12 @@ fn multiedit_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputErro
         Some(v) => edit_spans(v)?,
         None => return Err(ToolInputError::MissingKey("edits".to_string())),
     };
-    Ok(ToolCall::MultiEdit(MultiEditCall { name: name.to_string(), raw: raw.clone(), file_path, edits }))
+    Ok(ToolCall::MultiEdit(MultiEditCall {
+        name: name.to_string(),
+        raw: raw.clone(),
+        file_path,
+        edits,
+    }))
 }
 
 fn write_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
@@ -599,7 +625,10 @@ fn exit_plan_mode_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInpu
 }
 
 fn other_call(name: &str, raw: Value) -> ToolCall {
-    ToolCall::Other(OtherCall { name: name.to_string(), raw })
+    ToolCall::Other(OtherCall {
+        name: name.to_string(),
+        raw,
+    })
 }
 
 /// Parity: tools.py parse_tool_call, on_error='raise'.
@@ -886,7 +915,10 @@ fn task_result(name: &str, raw: &Value) -> ToolResult {
             resolved_model: opt(raw, "resolvedModel"),
         })
     } else {
-        ToolResult::Other(OtherResult { name: name.to_string(), raw: raw.clone() })
+        ToolResult::Other(OtherResult {
+            name: name.to_string(),
+            raw: raw.clone(),
+        })
     }
 }
 
@@ -926,16 +958,28 @@ fn ask_user_question_result(name: &str, raw: &Value) -> ToolResult {
                 .collect()
         })
         .unwrap_or_default();
-    ToolResult::AskUserQuestion(AskUserQuestionResult { name: name.to_string(), raw: raw.clone(), answers, annotations })
+    ToolResult::AskUserQuestion(AskUserQuestionResult {
+        name: name.to_string(),
+        raw: raw.clone(),
+        answers,
+        annotations,
+    })
 }
 
 /// Parity: tools.py parse_tool_result. Total — a result lift never errors.
 pub fn parse_tool_result(name: &str, payload: &Value) -> ToolResult {
     if let Some(text) = payload.as_str() {
-        return ToolResult::Text(TextResult { name: name.to_string(), raw: payload.clone(), text: text.to_string() });
+        return ToolResult::Text(TextResult {
+            name: name.to_string(),
+            raw: payload.clone(),
+            text: text.to_string(),
+        });
     }
     if payload.as_object().is_none() {
-        return ToolResult::Other(OtherResult { name: name.to_string(), raw: payload.clone() });
+        return ToolResult::Other(OtherResult {
+            name: name.to_string(),
+            raw: payload.clone(),
+        });
     }
     match tool_alias_reverse(name).unwrap_or(name) {
         "Bash" => bash_result(name, payload),
@@ -945,13 +989,17 @@ pub fn parse_tool_result(name: &str, payload: &Value) -> ToolResult {
         "Agent" => task_result(name, payload),
         "Skill" => skill_result(name, payload),
         "AskUserQuestion" => ask_user_question_result(name, payload),
-        _ => ToolResult::Other(OtherResult { name: name.to_string(), raw: payload.clone() }),
+        _ => ToolResult::Other(OtherResult {
+            name: name.to_string(),
+            raw: payload.clone(),
+        }),
     }
 }
 
 /// Parity: tools.py mcp_parts. The single owner of the MCP-name split.
 pub fn mcp_parts(name: &str) -> Option<(&str, &str)> {
-    name.strip_prefix("mcp__").and_then(|rest| rest.split_once("__"))
+    name.strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
 }
 
 /// Parity: tools.py expand_tool_names.
@@ -1001,7 +1049,10 @@ mod tests {
 
     #[test]
     fn bash_preserves_loose_values() {
-        match parse_tool_call("Bash", &obj(r#"{"command":"ls","timeout":1.5,"description":5}"#)) {
+        match parse_tool_call(
+            "Bash",
+            &obj(r#"{"command":"ls","timeout":1.5,"description":5}"#),
+        ) {
             ToolCall::Bash(c) => {
                 assert_eq!(c.timeout, Some(obj("1.5")));
                 assert_eq!(c.description, Some(obj("5")));
@@ -1013,11 +1064,17 @@ mod tests {
 
     #[test]
     fn edit_replace_all_no_coercion() {
-        match parse_tool_call("Edit", &obj(r#"{"file_path":"a","old_string":"x","new_string":"y","replace_all":1}"#)) {
+        match parse_tool_call(
+            "Edit",
+            &obj(r#"{"file_path":"a","old_string":"x","new_string":"y","replace_all":1}"#),
+        ) {
             ToolCall::Edit(c) => assert_eq!(c.replace_all, obj("1")),
             other => panic!("{other:?}"),
         }
-        match parse_tool_call("Edit", &obj(r#"{"file_path":"a","old_string":"x","new_string":"y"}"#)) {
+        match parse_tool_call(
+            "Edit",
+            &obj(r#"{"file_path":"a","old_string":"x","new_string":"y"}"#),
+        ) {
             ToolCall::Edit(c) => assert_eq!(c.replace_all, obj("false")),
             other => panic!("{other:?}"),
         }
@@ -1025,7 +1082,10 @@ mod tests {
 
     #[test]
     fn key_of_first_non_null_wins() {
-        match parse_tool_call("Agent", &obj(r#"{"prompt":"p","subagent_type":5,"agent_type":"Explore"}"#)) {
+        match parse_tool_call(
+            "Agent",
+            &obj(r#"{"prompt":"p","subagent_type":5,"agent_type":"Explore"}"#),
+        ) {
             ToolCall::Task(c) => assert_eq!(c.agent_type, Some(obj("5"))),
             other => panic!("{other:?}"),
         }
@@ -1042,20 +1102,29 @@ mod tests {
         }
         for edits in [r#""ab""#, r#"{"k":"v"}"#, "5", "null"] {
             let input = obj(&format!(r#"{{"file_path":"a","edits":{edits}}}"#));
-            assert!(matches!(parse_tool_call("MultiEdit", &input), ToolCall::Other(_)), "edits={edits}");
+            assert!(
+                matches!(parse_tool_call("MultiEdit", &input), ToolCall::Other(_)),
+                "edits={edits}"
+            );
         }
     }
 
     #[test]
     fn strict_error_variants() {
-        assert_eq!(parse_tool_call_strict("Bash", &obj("5")), Err(ToolInputError::NonMapping("int")));
+        assert_eq!(
+            parse_tool_call_strict("Bash", &obj("5")),
+            Err(ToolInputError::NonMapping("int"))
+        );
         assert_eq!(
             parse_tool_call_strict("Bash", &obj("{}")),
             Err(ToolInputError::MissingKey("command".to_string()))
         );
         assert_eq!(
             parse_tool_call_strict("Bash", &obj(r#"{"command":5}"#)),
-            Err(ToolInputError::WrongType { key: "command".to_string(), py_type: "int" })
+            Err(ToolInputError::WrongType {
+                key: "command".to_string(),
+                py_type: "int"
+            })
         );
     }
 
@@ -1066,7 +1135,10 @@ mod tests {
         );
         match parse_tool_result("AskUserQuestion", &payload) {
             ToolResult::AskUserQuestion(r) => {
-                assert_eq!(r.answers, BTreeMap::from([("Q1".to_string(), "A".to_string())]));
+                assert_eq!(
+                    r.answers,
+                    BTreeMap::from([("Q1".to_string(), "A".to_string())])
+                );
                 let questions = r.questions();
                 assert_eq!(questions.len(), 1);
                 assert_eq!(questions[0].labels, vec!["A".to_string()]);
