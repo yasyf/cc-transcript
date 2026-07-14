@@ -144,6 +144,14 @@ mod tests {
     }
 
     #[test]
+    fn agent_injection_internal_c0_separator_is_pinned_dialect_divergence() {
+        // Trap-#8 (regex dialect, pinned): Rust regex \s omits the C0 separators U+1C–U+1F that
+        // Python re \s matches INSIDE a banner tag; only leading separators are lstripped.
+        assert!(!is_agent_injection("# Augment Agent\u{1c}payload"));
+        assert!(!is_agent_injection("<teammate-message\u{1c}x>"));
+    }
+
+    #[test]
     fn bare_marker_detection() {
         assert!(is_bare_interrupt_marker("[Request interrupted by user]"));
         assert!(!is_bare_interrupt_marker(

@@ -12,6 +12,8 @@ pub struct EntryMeta {
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub session_id: String,
+    // Representation-blocked divergence (accepted, e0ab2411): an offset-less timestamp or a
+    // non-string cwd fails / reads None vs Python's preserve. P3: inherit; do not widen.
     pub timestamp: DateTime<FixedOffset>,
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
@@ -483,6 +485,8 @@ pub struct ServerToolUse {
 
 #[derive(Debug)]
 pub struct Usage {
+    // Representation-blocked divergence (accepted, e0ab2411): an out-of-i64 or -0 token count
+    // fails the file vs Python's preserve. P3: inherit; do not widen. See EntryMeta.
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_input_tokens: i64,

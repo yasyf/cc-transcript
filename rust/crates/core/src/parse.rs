@@ -1098,4 +1098,33 @@ mod tests {
         assert!(parse_timestamp("2026-06-30T23:59:60Z").is_err());
         assert!(parse_timestamp("2026-06-30T23:59:59Z").is_ok());
     }
+
+    // Representation-blocked divergences (accepted, e0ab2411): the typed Entry field is the
+    // contract; an impossible input shape reads None / fails vs Python's preserve.
+
+    #[test]
+    fn nonstring_cwd_reads_none_representation_blocked() {
+        // cwd: Option<String> cannot hold Python's raw int, so a non-string cwd reads None.
+        let raw = r#"{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","cwd":7,"message":{"content":"hi"}}"#;
+        let entry = parse_entry(parse(raw)).unwrap();
+        assert_eq!(entry.meta().unwrap().cwd, None);
+    }
+
+    #[test]
+    fn out_of_i64_and_negative_zero_tokens_fail_representation_blocked() {
+        // input_tokens: i64 holds neither orjson's lossy float for a >i64 count nor the "-0"
+        // sonic refuses as i64; both fail the file where Python materializes.
+        for tok in ["99999999999999999999999999", "-0"] {
+            let raw = format!(
+                r#"{{"type":"assistant","uuid":"u1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","message":{{"model":"m1","content":[],"usage":{{"input_tokens":{tok},"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+            );
+            assert!(parse_entry(parse(&raw)).is_err(), "token {tok} should fail");
+        }
+    }
+
+    #[test]
+    fn naive_offset_less_timestamp_fails_representation_blocked() {
+        // timestamp: DateTime<FixedOffset> cannot hold Python's offset-less naive datetime.
+        assert!(parse_timestamp("2026-01-02T03:04:05").is_err());
+    }
 }
