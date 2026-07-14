@@ -189,3 +189,55 @@ def test_parse_event_drops_below_minyear_timestamp_as_none() -> None:
     # surfaces that as None (v14 divergence: the old Python parser raised ValueError).
     line = testkit.user_line("u1", "hi") | {"timestamp": "0000-01-01T00:00:00+00:00"}
     assert parse_event(line) is None
+
+
+# v14 accepted divergences below: the native backend differs from the old orjson parser
+# per case (root dup keys first-wins per task e0ab2411 item 9).
+def test_duplicate_root_type_is_first_wins() -> None:
+    # old (orjson last-wins): AssistantEvent; native (first-wins): UserEvent.
+    dup = (
+        b'{"type":"user","type":"assistant","uuid":"x","sessionId":"s",'
+        b'"timestamp":"2026-01-01T00:00:00+00:00","isSidechain":false,'
+        b'"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}'
+    )
+    assert [type(e).__name__ for e in parse_events_from_bytes(dup)] == ["UserEvent"]
+
+
+def test_year_zero_event_is_silently_dropped() -> None:
+    # old public bytes parser raised ValueError (fromisoformat rejects year 0);
+    # native tolerant parser drops the line and keeps the file.
+    line = orjson.dumps(
+        {"type": "user", "message": {"role": "user", "content": "hi"}}
+        | {"uuid": "x", "sessionId": "s", "isSidechain": False, "timestamp": "0000-01-01T00:00:00+00:00"}
+    )
+    assert parse_events_from_bytes(line) == []
+
+
+def test_non_string_mode_value_is_fail_fast() -> None:
+    # A non-string mode value raises KeyError. Unreachable from a well-typed transcript
+    # (every mode value is a string; the corpus carries zero), so pinned as fail-fast.
+    with pytest.raises(KeyError):
+        parse_events_from_bytes(orjson.dumps({"type": "mode", "sessionId": "s", "mode": 123}))
+
+
+def test_duplicate_print_total_cost_usd_is_first_wins() -> None:
+    # old (orjson last-wins): 2.0; native (first-wins): 1.0.
+    raw = (
+        b'[{"type":"result","total_cost_usd":1.0,"total_cost_usd":2.0,"modelUsage":{},'
+        b'"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,'
+        b'"cache_creation_input_tokens":0},"num_turns":1,"is_error":false,'
+        b'"session_id":"s","permission_denials":[]}]'
+    )
+    assert parse_print_result(raw).total_cost_usd == 1.0
+
+
+def test_invalid_print_json_raises_value_error() -> None:
+    # old: orjson.JSONDecodeError; native: plain ValueError.
+    with pytest.raises(ValueError):
+        parse_print_result(b"{not json")
+
+
+def test_empty_print_envelope_raises_value_error() -> None:
+    # old: StopIteration (next() over no result element); native: ValueError.
+    with pytest.raises(ValueError):
+        parse_print_result(b"[]")

@@ -13,6 +13,12 @@ use crate::views::events::event_view;
 /// The parsed events of a single transcript file, backed by the native parse
 /// output; ``events`` materializes lazy views on access.
 ///
+/// One parse owns one ``Arc<Vec<Entry>>`` that every event and nested view shares,
+/// so retaining any single view keeps that whole parse's entries alive; keeping one
+/// event from each of several parses retains all of their entries. The live
+/// :class:`~cc_transcript.watch.WatchEvent` stream is exempt — its tailer builds a
+/// one-entry Arc per yielded event, so a held watch event pins only itself.
+///
 /// Attributes:
 ///     path: The transcript's path on disk.
 ///     mtime: The transcript's modification time when parsed.
@@ -53,7 +59,8 @@ impl TranscriptView {
 /// ``EventList`` (``list(events) == events``). Views materialize fresh on each
 /// access, so identity across accesses is not guaranteed by design
 /// (``events[0] is events[0]`` is False). ``copy.copy`` and ``copy.deepcopy``
-/// return the immutable list itself; pickle is unsupported.
+/// return the immutable list itself; pickle is unsupported. Like the
+/// :class:`Transcript` it comes from, retaining any event pins the whole parse.
 #[pyclass(name = "EventList", module = "cc_transcript", frozen)]
 pub(crate) struct EventListView {
     pub entries: Arc<Vec<Entry>>,

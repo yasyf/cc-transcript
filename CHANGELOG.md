@@ -4,6 +4,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The object model inverts: the eager dataclasses become lazy views over one native
+parse. Stub — factual bullets only; P7 finalizes the prose.
+
+### Changed
+- **BREAKING: events, blocks, and tool calls/results are native frozen views, not
+  dataclasses.** They are not constructible from Python and not subclassable at the
+  leaves. `dataclasses.is_dataclass` is `False`, and `fields`/`asdict`/`replace`, `pickle`,
+  and `copy.replace` no longer apply; `copy.copy`/`copy.deepcopy` return the immutable
+  object itself. Import paths, class names, field names, `isinstance`, keyword `match`,
+  `repr`, and value equality/hash are unchanged.
+- **BREAKING: `ToolUseBlock.input` and `ToolResultBlock.tool_use_result` are read-only.**
+  A structured mapping is a `ReadOnlyDict` (a `dict` subclass that raises on mutation) — it
+  serializes, canonicalizes, and `isinstance`-checks as a `dict`, only the top level is
+  frozen, and mutation raises `TypeError`.
+- **BREAKING: `Transcript.events` is an `EventList`, not a `list`.** It implements the
+  immutable `collections.abc.Sequence` interface and registers as one; `copy()` returns a
+  plain `list`. Views materialize fresh on access, so identity across accesses is not
+  guaranteed (`events[0] is events[0]` is `False`).
+- **Memory model.** One parse owns one shared entry buffer; retaining any view keeps that
+  whole parse's entries alive. The live `watch` stream is exempt (one buffer per event).
+- **Parse divergences (native backend).** Root-level and print-envelope duplicate keys read
+  first-wins (orjson: last-wins); invalid or empty print JSON raises `ValueError` (not
+  `orjson.JSONDecodeError`/`StopIteration`); a below-`MINYEAR` timestamp drops the line
+  rather than raising; tool input serialized outside the JSON contract (datetime, bytes,
+  cycles) raises in strict mode and degrades to a fallback under `on_error='other'`.
+
 ## [13.1.0] - 2026-07-13
 
 Dispatch observability: a heartbeat ledger that records an event reached dispatch at

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections.abc
 import copy
+import dataclasses
 import pickle
 
 import orjson
@@ -16,6 +17,7 @@ import pytest
 
 from cc_transcript import _parser_rs
 from cc_transcript.ids import EventUuid
+from cc_transcript.models import ModeEvent
 from tests import testkit
 
 
@@ -103,3 +105,21 @@ def test_frozen_views_are_not_picklable() -> None:
     event = three_events()[0]
     with pytest.raises((TypeError, pickle.PicklingError)):
         pickle.dumps(event)
+
+
+def test_views_reject_the_dataclass_protocol() -> None:
+    # v14 contract: views are not dataclasses — is_dataclass/fields/asdict/replace do not
+    # apply (copy/deepcopy still work per the frozen-view tests above).
+    event = testkit.parse_event(testkit.mode_line("normal", session_id="s1"))
+    assert not dataclasses.is_dataclass(event)
+    with pytest.raises(TypeError):
+        dataclasses.fields(event)
+    with pytest.raises(TypeError):
+        dataclasses.asdict(event)
+    with pytest.raises(TypeError):
+        dataclasses.replace(event, value="plan")
+
+
+def test_view_leaves_are_not_subclassable() -> None:
+    with pytest.raises(TypeError):
+        type("SubMode", (ModeEvent,), {})
