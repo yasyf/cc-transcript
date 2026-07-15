@@ -18,6 +18,44 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _native
+from cc_transcript._native import AskUserQuestionResult as AskUserQuestionResult
+from cc_transcript._native import BashCall as BashCall
+from cc_transcript._native import BashResult as BashResult
+from cc_transcript._native import EditCall as EditCall
+from cc_transcript._native import EditResult as EditResult
+from cc_transcript._native import EditSpan as EditSpan
+from cc_transcript._native import ExitPlanModeCall as ExitPlanModeCall
+from cc_transcript._native import GlobCall as GlobCall
+from cc_transcript._native import GrepCall as GrepCall
+from cc_transcript._native import Hunk as Hunk
+from cc_transcript._native import MultiEditCall as MultiEditCall
+from cc_transcript._native import NotebookEditCall as NotebookEditCall
+from cc_transcript._native import OtherCall as OtherCall
+from cc_transcript._native import OtherResult as OtherResult
+from cc_transcript._native import QuestionAnnotation as QuestionAnnotation
+from cc_transcript._native import ReadCall as ReadCall
+from cc_transcript._native import ReadResult as ReadResult
+from cc_transcript._native import SkillCall as SkillCall
+from cc_transcript._native import SkillResult as SkillResult
+from cc_transcript._native import TaskCall as TaskCall
+from cc_transcript._native import TaskCreateCall as TaskCreateCall
+from cc_transcript._native import TaskLaunchResult as TaskLaunchResult
+from cc_transcript._native import TaskResult as TaskResult
+from cc_transcript._native import TaskResultBase as TaskResultBase
+from cc_transcript._native import TaskUpdateCall as TaskUpdateCall
+from cc_transcript._native import TextResult as TextResult
+from cc_transcript._native import ToolCallBase as ToolCallBase
+from cc_transcript._native import ToolResultBase as ToolResultBase
+from cc_transcript._native import WorkflowCall as WorkflowCall
+from cc_transcript._native import WriteCall as WriteCall
+from cc_transcript._native import WriteResult as WriteResult
+from cc_transcript._native import expand_tool_names as expand_tool_names
+from cc_transcript._native import file_path_of as file_path_of
+from cc_transcript._native import hunks_of as hunks_of
+from cc_transcript._native import matches_names as matches_names
+from cc_transcript._native import mcp_access as mcp_access
+from cc_transcript._native import mcp_parts as mcp_parts
+from cc_transcript._native import tool_name_matches as tool_name_matches
 from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
@@ -73,25 +111,6 @@ class ToolResultError(ValueError):
     """A known tool's result payload did not match its expected shape."""
 
 
-Hunk = _native.Hunk
-EditSpan = _native.EditSpan
-ToolCallBase = _native.ToolCallBase
-BashCall = _native.BashCall
-EditCall = _native.EditCall
-MultiEditCall = _native.MultiEditCall
-WriteCall = _native.WriteCall
-ReadCall = _native.ReadCall
-NotebookEditCall = _native.NotebookEditCall
-GrepCall = _native.GrepCall
-GlobCall = _native.GlobCall
-TaskCall = _native.TaskCall
-WorkflowCall = _native.WorkflowCall
-SkillCall = _native.SkillCall
-TaskCreateCall = _native.TaskCreateCall
-TaskUpdateCall = _native.TaskUpdateCall
-ExitPlanModeCall = _native.ExitPlanModeCall
-OtherCall = _native.OtherCall
-
 ToolCall = (
     BashCall
     | EditCall
@@ -127,19 +146,6 @@ TOOL_TYPES: dict[str, type] = {
     "ExitPlanMode": ExitPlanModeCall,
 }
 
-QuestionAnnotation = _native.QuestionAnnotation
-ToolResultBase = _native.ToolResultBase
-BashResult = _native.BashResult
-EditResult = _native.EditResult
-WriteResult = _native.WriteResult
-ReadResult = _native.ReadResult
-TaskResultBase = _native.TaskResultBase
-TaskResult = _native.TaskResult
-TaskLaunchResult = _native.TaskLaunchResult
-SkillResult = _native.SkillResult
-AskUserQuestionResult = _native.AskUserQuestionResult
-TextResult = _native.TextResult
-OtherResult = _native.OtherResult
 
 ToolResult = (
     BashResult
@@ -163,14 +169,6 @@ TOOL_RESULT_TYPES: dict[str, type] = {
     "Skill": SkillResult,
     "AskUserQuestion": AskUserQuestionResult,
 }
-
-hunks_of = _native.hunks_of
-file_path_of = _native.file_path_of
-expand_tool_names = _native.expand_tool_names
-matches_names = _native.matches_names
-tool_name_matches = _native.tool_name_matches
-mcp_parts = _native.mcp_parts
-mcp_access = _native.mcp_access
 
 
 @dataclass(frozen=True, slots=True)

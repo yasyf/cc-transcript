@@ -10,8 +10,53 @@ from __future__ import annotations
 
 from typing import NewType
 
-from cc_transcript import _native
-from cc_transcript.ids import EventUuid, SessionId, ToolDigest, ToolUseId
+from cc_transcript._native import ApiError as ApiError
+from cc_transcript._native import AssistantEvent as AssistantEvent
+from cc_transcript._native import AsyncHookResponse as AsyncHookResponse
+from cc_transcript._native import AttachmentEvent as AttachmentEvent
+from cc_transcript._native import Attribution as Attribution
+from cc_transcript._native import CacheCreation as CacheCreation
+from cc_transcript._native import CompactBoundary as CompactBoundary
+from cc_transcript._native import EntryMeta as EntryMeta
+from cc_transcript._native import EventList as EventList
+from cc_transcript._native import FallbackBlock as FallbackBlock
+from cc_transcript._native import HookAdditionalContext as HookAdditionalContext
+from cc_transcript._native import HookBlockingError as HookBlockingError
+from cc_transcript._native import HookCancelled as HookCancelled
+from cc_transcript._native import HookInfo as HookInfo
+from cc_transcript._native import HookNonBlockingError as HookNonBlockingError
+from cc_transcript._native import HookSuccess as HookSuccess
+from cc_transcript._native import InitInfo as InitInfo
+from cc_transcript._native import McpServer as McpServer
+from cc_transcript._native import ModeEvent as ModeEvent
+from cc_transcript._native import ModelRefusalFallback as ModelRefusalFallback
+from cc_transcript._native import ModelUsage as ModelUsage
+from cc_transcript._native import OtherAttachment as OtherAttachment
+from cc_transcript._native import OtherBlock as OtherBlock
+from cc_transcript._native import OtherEvent as OtherEvent
+from cc_transcript._native import OtherSystemDetail as OtherSystemDetail
+from cc_transcript._native import Plugin as Plugin
+from cc_transcript._native import PreservedMessages as PreservedMessages
+from cc_transcript._native import PreservedSegment as PreservedSegment
+from cc_transcript._native import PrintMessage as PrintMessage
+from cc_transcript._native import PrintResult as PrintResult
+from cc_transcript._native import Question as Question
+from cc_transcript._native import QueuedCommand as QueuedCommand
+from cc_transcript._native import ServerToolUse as ServerToolUse
+from cc_transcript._native import StopHookSummary as StopHookSummary
+from cc_transcript._native import SystemEvent as SystemEvent
+from cc_transcript._native import TextBlock as TextBlock
+from cc_transcript._native import ThinkingBlock as ThinkingBlock
+from cc_transcript._native import ToolResultBlock as ToolResultBlock
+from cc_transcript._native import ToolUseBlock as ToolUseBlock
+from cc_transcript._native import Transcript as Transcript
+from cc_transcript._native import TurnDuration as TurnDuration
+from cc_transcript._native import Usage as Usage
+from cc_transcript._native import UserEvent as UserEvent
+from cc_transcript.ids import EventUuid as EventUuid
+from cc_transcript.ids import SessionId as SessionId
+from cc_transcript.ids import ToolDigest as ToolDigest
+from cc_transcript.ids import ToolUseId as ToolUseId
 from cc_transcript.ids import tool_digest as tool_digest
 from cc_transcript.tools import ToolCall as ToolCall
 from cc_transcript.tools import parse_tool_call as parse_tool_call
@@ -62,45 +107,11 @@ class ReadOnlyDict(dict):
         raise TypeError("ReadOnlyDict is read-only")
 
 
-TextBlock = _native.TextBlock
-ThinkingBlock = _native.ThinkingBlock
-Question = _native.Question
-ToolUseBlock = _native.ToolUseBlock
-ToolResultBlock = _native.ToolResultBlock
-FallbackBlock = _native.FallbackBlock
-OtherBlock = _native.OtherBlock
-
 ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | FallbackBlock | OtherBlock
 
-EntryMeta = _native.EntryMeta
-UserEvent = _native.UserEvent
-Attribution = _native.Attribution
-ApiError = _native.ApiError
-AssistantEvent = _native.AssistantEvent
-
-HookInfo = _native.HookInfo
-StopHookSummary = _native.StopHookSummary
-PreservedSegment = _native.PreservedSegment
-PreservedMessages = _native.PreservedMessages
-CompactBoundary = _native.CompactBoundary
-TurnDuration = _native.TurnDuration
-ModelRefusalFallback = _native.ModelRefusalFallback
-OtherSystemDetail = _native.OtherSystemDetail
 
 SystemDetail = StopHookSummary | CompactBoundary | TurnDuration | ModelRefusalFallback | OtherSystemDetail
 
-SystemEvent = _native.SystemEvent
-ModeEvent = _native.ModeEvent
-OtherEvent = _native.OtherEvent
-
-HookSuccess = _native.HookSuccess
-HookBlockingError = _native.HookBlockingError
-HookNonBlockingError = _native.HookNonBlockingError
-HookCancelled = _native.HookCancelled
-HookAdditionalContext = _native.HookAdditionalContext
-AsyncHookResponse = _native.AsyncHookResponse
-QueuedCommand = _native.QueuedCommand
-OtherAttachment = _native.OtherAttachment
 
 AttachmentDetail = (
     HookSuccess
@@ -113,23 +124,9 @@ AttachmentDetail = (
     | OtherAttachment
 )
 
-AttachmentEvent = _native.AttachmentEvent
-
-CacheCreation = _native.CacheCreation
-ServerToolUse = _native.ServerToolUse
-Usage = _native.Usage
-ModelUsage = _native.ModelUsage
-McpServer = _native.McpServer
-Plugin = _native.Plugin
-InitInfo = _native.InitInfo
-PrintMessage = _native.PrintMessage
-PrintResult = _native.PrintResult
 
 TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEvent | AttachmentEvent
 """The union of every typed event a parsed transcript can yield."""
-
-EventList = _native.EventList
-Transcript = _native.Transcript
 
 
 def parse_questions(rounds: object) -> tuple[Question, ...] | None:
