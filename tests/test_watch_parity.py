@@ -15,42 +15,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from cc_transcript import _native
-from scripts.gen_watch_golden import (
-    SCENARIOS,
-    apply_ops,
-    project_events,
-    relativize_state,
-)
+from scripts.gen_watch_golden import SCENARIOS, run_scenario
 from tests.support import requires_rust
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    pass
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "watch_golden.json").read_text(encoding="utf-8"))
 SCENARIO_NAMES = [pytest.param(name, id=name) for name in SCENARIOS]
 
 
-def run_rust_scenario(root: Path, scenario: dict[str, object]) -> list[dict[str, object]]:
-    tailer = _native.WatchTailer()
-    from_start = bool(scenario["from_start"])
-    steps = scenario["steps"]
-    assert isinstance(steps, list)
-    results: list[dict[str, object]] = []
-    for step in steps:
-        apply_ops(root, step["ops"])
-        events: Sequence[tuple] = [tuple(row) for row in tailer.tick([str(root)], from_start)]
-        results.append(
-            {
-                "name": step["name"],
-                "yields": project_events(root, events),
-                "state": relativize_state(root, tailer.snapshot()),
-            }
-        )
-    return results
-
-
 @requires_rust
 @pytest.mark.parametrize("name", SCENARIO_NAMES)
 def test_rust_watch_matches_golden(name: str, tmp_path: Path) -> None:
-    assert run_rust_scenario(tmp_path, SCENARIOS[name]) == GOLDEN[name]
+    assert run_scenario(tmp_path, SCENARIOS[name]) == GOLDEN[name]

@@ -1,6 +1,6 @@
-"""Freeze the Python live-tail cursor into ``tests/testdata/watch_golden.json``.
+"""Freeze the live-tail cursor contract into ``tests/testdata/watch_golden.json``.
 
-Drives ``cc_transcript.watch.tick`` over a scripted sequence of filesystem states —
+Drives the native ``WatchTailer`` over a scripted sequence of filesystem states —
 append a partial line, complete it, append events, no-op, dedupe, compact (truncate),
 rotate in a new file, and drop the garbage/year-zero/mode lines — and records, per
 step, the yielded events and the resulting cursor state. File states are synthesized
@@ -8,8 +8,10 @@ deterministically in a throwaway tmp tree with fixed contents and ``os.utime``-p
 integer mtimes, so nothing depends on a corpus and every mtime float is exact on both
 sides.
 
-A later run plus ``git diff`` shows Python-side drift, and ``tests/test_watch_parity.py``
-asserts the Rust ``WatchTailer`` port reproduces every step's yields and cursor state.
+The golden was originally frozen from the v13 Python reference tailer; the native
+port reproduces it byte for byte, so a later run plus ``git diff`` shows tailer
+drift, and ``tests/test_watch_parity.py`` replays every step through the same
+``run_scenario`` against the frozen golden.
 
 Run: ``uv run --no-sync python scripts/gen_watch_golden.py``
 """
@@ -22,7 +24,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anyio
+from cc_transcript import _native
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -184,50 +186,31 @@ def relativize_state(root: Path, raw: dict[str, object]) -> dict[str, object]:
     return {"primed": raw["primed"], "cursors": {rel(root, path): cursor for path, cursor in cursors.items()}}
 
 
-def python_state(state: object) -> dict[str, object]:
-    return {
-        "primed": state.primed,
-        "cursors": {
-            str(path): {
-                "offset": cursor.offset,
-                "size": cursor.size,
-                "mtime": cursor.mtime,
-                "session_id": cursor.session_id,
-                "seen": list(cursor.seen),
-            }
-            for path, cursor in state.cursors.items()
-        },
-    }
-
-
-async def run_python_scenario(root: Path, scenario: dict[str, object]) -> list[dict[str, object]]:
-    from cc_transcript.watch import TailState, tick
-
-    state = TailState()
+def run_scenario(root: Path, scenario: dict[str, object]) -> list[dict[str, object]]:
+    tailer = _native.WatchTailer()
     from_start = bool(scenario["from_start"])
     steps = scenario["steps"]
     assert isinstance(steps, list)
     results: list[dict[str, object]] = []
     for step in steps:
         apply_ops(root, step["ops"])
-        events = await tick(state, [root], from_start=from_start)
         results.append(
             {
                 "name": step["name"],
-                "yields": project_events(root, [(str(e.path), e.session_id, e.is_sidechain, e.event) for e in events]),
-                "state": relativize_state(root, python_state(state)),
+                "yields": project_events(root, tailer.tick([str(root)], from_start)),
+                "state": relativize_state(root, tailer.snapshot()),
             }
         )
     return results
 
 
-def project_python(name: str) -> list[dict[str, object]]:
+def project_scenario(name: str) -> list[dict[str, object]]:
     with tempfile.TemporaryDirectory() as tmp:
-        return anyio.run(run_python_scenario, Path(tmp), SCENARIOS[name])
+        return run_scenario(Path(tmp), SCENARIOS[name])
 
 
 def main() -> None:
-    data = {name: project_python(name) for name in SCENARIOS}
+    data = {name: project_scenario(name) for name in SCENARIOS}
     GOLDEN.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {len(data)} watch scenarios ({sum(len(steps) for steps in data.values())} steps) to {GOLDEN.relative_to(REPO_ROOT)}")
 
