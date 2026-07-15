@@ -11,6 +11,7 @@ from cc_transcript.discovery import (
     TranscriptExpiredError,
     discover,
     find_in,
+    is_subagent_path,
     resolve,
     subagent_transcripts,
 )
@@ -159,3 +160,26 @@ def test_find_in_negative_limit_is_a_pinned_overflow(tmp_path: Path) -> None:
     """
     with pytest.raises(OverflowError):
         find_in(tmp_path, limit=-1)
+
+
+def test_surrogate_escaped_paths_cross_the_boundary(tmp_path: Path) -> None:
+    """FIX E (discovery-only): non-UTF-8 path INPUT no longer raises.
+
+    A surrogate-escaped Path used to die with UnicodeEncodeError at the &str
+    boundary; PathBuf converts via the OS codec. The output half (non-UTF-8
+    names read from disk, formerly corrupted by to_string_lossy) cannot be
+    exercised here — APFS rejects non-UTF-8 filenames — and rides the same
+    PathBuf conversion.
+    """
+    surrogate = tmp_path / "missing-\udcff"
+    assert discover(surrogate) == []
+    assert find_in(surrogate) == []
+    assert is_subagent_path(surrogate) is False
+    assert subagent_transcripts(surrogate) == {}
+
+
+def test_discovery_returns_pathlib_paths(tmp_path: Path) -> None:
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "s.jsonl").write_text("")
+    assert discover(tmp_path) == [tmp_path / "proj" / "s.jsonl"]
+    assert all(isinstance(p, Path) for p in discover(tmp_path))

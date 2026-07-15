@@ -61,7 +61,7 @@ def discover(root: Path | None = None) -> list[Path]:
         >>> for transcript in stream(discover()):
         ...     print(transcript.path)
     """
-    return [Path(p) for p in _native.discovery_find_transcripts(str(root or CLAUDE_PROJECTS_DIR))]
+    return _native.discovery_find_transcripts(root or CLAUDE_PROJECTS_DIR)
 
 
 def find_in(
@@ -83,10 +83,7 @@ def find_in(
     Returns:
         Pairs of ``(path, mtime)`` sorted by path.
     """
-    return [
-        (Path(p), mtime)
-        for p, mtime in _native.discovery_find_in(str(directory), name_contains, limit, known_mtimes)
-    ]
+    return _native.discovery_find_in(directory, name_contains, limit, known_mtimes)
 
 
 def resolve(session_id: SessionId, *, root: Path | None = None) -> Path | None:
@@ -108,10 +105,10 @@ def resolve(session_id: SessionId, *, root: Path | None = None) -> Path | None:
     key = (session_id, base.resolve())
     if (cached := TRANSCRIPT_MEMO.get(key)) is not None and cached.exists():
         return cached
-    if (hit := _native.discovery_find_transcript(str(base), session_id)) is None:
+    if (hit := _native.discovery_find_transcript(base, session_id)) is None:
         return None
-    TRANSCRIPT_MEMO[key] = (path := Path(hit))
-    return path
+    TRANSCRIPT_MEMO[key] = hit
+    return hit
 
 
 def is_subagent_path(path: Path) -> bool:
@@ -120,7 +117,7 @@ def is_subagent_path(path: Path) -> bool:
     Matches the ``agent-<tool_use_id>.jsonl`` naming convention that
     :func:`subagent_paths` discovers.
     """
-    return _native.discovery_is_subagent_path(str(path))
+    return _native.discovery_is_subagent_path(path)
 
 
 def subagent_paths(path: Path) -> tuple[Path, ...]:
@@ -133,7 +130,7 @@ def subagent_paths(path: Path) -> tuple[Path, ...]:
     Returns:
         The sidechain files sorted by path; ``()`` when none exist.
     """
-    return tuple(Path(p) for p in _native.discovery_subagent_paths(str(path)))
+    return tuple(_native.discovery_subagent_paths(path))
 
 
 def subagent_transcripts(path: Path) -> dict[ToolUseId, Path]:
@@ -147,6 +144,6 @@ def subagent_transcripts(path: Path) -> dict[ToolUseId, Path]:
         A mapping from tool-use id to sidechain file; ``{}`` when none exist.
     """
     return {
-        ToolUseId(tool_use_id): Path(p)
-        for tool_use_id, p in _native.discovery_subagent_transcripts(str(path)).items()
+        ToolUseId(tool_use_id): p
+        for tool_use_id, p in _native.discovery_subagent_transcripts(path).items()
     }
