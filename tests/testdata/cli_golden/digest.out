@@ -1,0 +1,16 @@
+[
+  {
+    "tool": "Bash",
+    "input": {
+      "command": "ls"
+    },
+    "digest": "78932af53c2f206888f04ea464514a5a38c95d186d8e07d5ec2ce8572f52b3cb"
+  },
+  {
+    "tool": "Read",
+    "input": {
+      "file_path": "a.py"
+    },
+    "digest": "8b627f2535d7e29b516aad442155068d57a6e0f108d806d1e3ee80fad1f0b7f7"
+  }
+]

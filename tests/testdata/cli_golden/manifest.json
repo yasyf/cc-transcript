@@ -5,7 +5,76 @@
       ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 12
+  },
+  "corrections_add": {
+    "argv": [
+      "corrections",
+      "add",
+      "--session",
+      "sess-golden",
+      "--source",
+      "cc-review",
+      "--anchor",
+      "review:41:7",
+      "--incorrect-file",
+      "cc_transcript/parser.py",
+      "--ts-ms",
+      "1769331734148",
+      "--origin",
+      "review",
+      "--incorrect-old",
+      "return None",
+      "--incorrect-new",
+      "return result",
+      "--correction-text",
+      "use the typed layer",
+      "--repo",
+      "cc-transcript"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 0
+  },
+  "corrections_query": {
+    "argv": [
+      "corrections",
+      "query",
+      "--session",
+      "sess-golden"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 438
+  },
+  "digest": {
+    "argv": [
+      "digest"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 315
+  },
+  "digest_badcheck": {
+    "argv": [
+      "digest",
+      "--check",
+      ".fixtures/digest_badcheck.json"
+    ],
+    "exit_code": 1,
+    "stderr_bytes": 164,
+    "stdout_bytes": 0
+  },
+  "digest_check": {
+    "argv": [
+      "digest",
+      "--check",
+      "tests/testdata/digest_fixtures.json"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 0
   },
   "grep_match": {
     "argv": [
@@ -19,6 +88,7 @@
       "10"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 1328
   },
   "grep_nomatch": {
@@ -29,6 +99,7 @@
       ".fixtures/corpus"
     ],
     "exit_code": 1,
+    "stderr_bytes": 0,
     "stdout_bytes": 19
   },
   "list": {
@@ -38,6 +109,7 @@
       ".fixtures/corpus"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 2360
   },
   "list_json": {
@@ -48,7 +120,54 @@
       "--json"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 2743
+  },
+  "mcp": {
+    "argv": [
+      "mcp",
+      "--root",
+      ".fixtures/corpus",
+      "--all"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 0
+  },
+  "mcp_json": {
+    "argv": [
+      "mcp",
+      "--root",
+      ".fixtures/corpus",
+      "--all",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 0
+  },
+  "permissions": {
+    "argv": [
+      "permissions",
+      "--root",
+      ".fixtures/corpus",
+      "--all"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 26233
+  },
+  "permissions_json": {
+    "argv": [
+      "permissions",
+      "--root",
+      ".fixtures/corpus",
+      "--all",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 396063
   },
   "show": {
     "argv": [
@@ -58,6 +177,7 @@
       "100"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 991
   },
   "show_head5": {
@@ -70,6 +190,7 @@
       "100"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 416
   },
   "show_json": {
@@ -79,7 +200,24 @@
       "--json"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 9791
+  },
+  "slice": {
+    "argv": [
+      "slice",
+      "--session",
+      "dceba062-133a-4395-5966-d6030613a956",
+      "--since",
+      "2020-01-01T00:00:00Z",
+      "--until",
+      "2030-01-01T00:00:00Z",
+      "--root",
+      ".fixtures/corpus"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 1768
   },
   "stats": {
     "argv": [
@@ -89,6 +227,7 @@
       "--all"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 463
   },
   "stats_json": {
@@ -100,6 +239,7 @@
       "--json"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 500
   },
   "tools": {
@@ -108,6 +248,7 @@
       ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl"
     ],
     "exit_code": 0,
+    "stderr_bytes": 0,
     "stdout_bytes": 144
   }
 }
