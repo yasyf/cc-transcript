@@ -13,6 +13,7 @@ with ``cargo run -p cc-transcript-py --bin stub_gen``.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from cc_transcript import _native
@@ -100,6 +101,21 @@ def signature_names(text_signature: str) -> list[str]:
         for part in stripped.split(",")
         if part.strip() not in ("$self", "/", "*", "")
     ]
+
+
+def test_optional_getters_declare_none() -> None:
+    crate = Path(__file__).parent.parent / "rust" / "crates" / "py" / "src"
+    liars = [
+        f"{path.name}: {match.group(2)} declared {match.group(1)!r}"
+        for path in crate.rglob("*.rs")
+        for match in re.finditer(
+            r'override_return_type\(type_repr = "((?:[^"\\]|\\.)*)"[^\]]*\)\s*\]\s*'
+            r"(?:pub(?:\(crate\))? )?fn (\w+)[^{]*\{\s*opt_json\(",
+            path.read_text(),
+        )
+        if not any(marker in match.group(1) for marker in ("None", "Any", "Optional"))
+    ]
+    assert not liars, f"opt_json getters whose stub type omits None: {liars}"
 
 
 def test_callable_parameter_names_match_text_signatures() -> None:

@@ -578,7 +578,7 @@ impl WorkflowCallView {
     }
 
     #[getter]
-    #[gen_stub(override_return_type(type_repr = "str", imports = ()))]
+    #[gen_stub(override_return_type(type_repr = "typing.Any", imports = ("typing",)))]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         opt_json(py, self.c().args.as_ref())
     }
