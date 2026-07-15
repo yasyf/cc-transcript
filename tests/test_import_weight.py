@@ -9,15 +9,17 @@ HEAVY = ("anyio", "orjson", "click", "aiosqlite", "pydantic", "loguru", "tree_si
 # Measured 2.5-6.3ms (cold) on a 2026 arm64 dev machine; ~2x the cold measurement.
 IMPORT_BUDGET_MS = 15
 
+# Delta vs a pre-import snapshot: .pth site hooks and __main__ predate the import.
 ROOT_PROBE = """
 import json, sys, time
+before = {m.split(".")[0] for m in sys.modules}
 start = time.perf_counter()
 import cc_transcript
 elapsed_ms = (time.perf_counter() - start) * 1000
 stdlib = set(sys.stdlib_module_names)
-roots = {m.split(".")[0] for m in sys.modules if not m.startswith("_")}
+pulled = {m.split(".")[0] for m in sys.modules} - before
 package = sorted(m for m in sys.modules if m.split(".")[0] == "cc_transcript")
-print(json.dumps([elapsed_ms, sorted(roots - stdlib - {"cc_transcript"}), package]))
+print(json.dumps([elapsed_ms, sorted(pulled - stdlib - {"cc_transcript"}), package]))
 """
 
 PROBE = """
