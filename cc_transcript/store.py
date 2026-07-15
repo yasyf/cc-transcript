@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Self
 
@@ -15,6 +17,25 @@ CREATE TABLE IF NOT EXISTS files (
   mtime REAL NOT NULL
 );
 """
+
+
+def current_owner() -> tuple[int, int | None]:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return (threading.get_ident(), id(task) if task is not None else None)
+
+
+class TransactionConflictError(RuntimeError):
+    """A write attempted while another task's transaction holds the connection.
+
+    The store shares one SQLite connection, so a transaction is exclusive: a
+    standalone write from a different task or thread must not silently join
+    it (a rollback would take the bystander's committed-looking write with
+    it). Callers hitting this serialize their writes or retry after the open
+    transaction finishes.
+    """
 
 
 # sqlite3.Connection is not weakref-able; a subclass restores __weakref__.
@@ -38,7 +59,7 @@ class FileStateStore:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
-        self.in_transaction = False
+        self._txn_owner: tuple[int, int | None] | None = None
 
     @classmethod
     def open(cls, path: Path, *, extra_schema: str = "") -> Self:
@@ -81,12 +102,19 @@ class FileStateStore:
 
         Use this to compose consumer writes with :meth:`record_file` so they
         commit or roll back together. :meth:`record_file` called within the
-        block joins this transaction instead of opening its own.
+        block by the same task joins this transaction instead of opening its
+        own; the transaction is exclusive, so opening another while one is in
+        flight raises :class:`TransactionConflictError`.
 
         Yields:
             The store's connection.
+
+        Raises:
+            TransactionConflictError: A transaction is already open.
         """
-        self.in_transaction = True
+        if self._txn_owner is not None:
+            raise TransactionConflictError(f"a transaction opened by {self._txn_owner} is already in flight")
+        self._txn_owner = current_owner()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield self.conn
@@ -96,7 +124,7 @@ class FileStateStore:
         else:
             self.conn.commit()
         finally:
-            self.in_transaction = False
+            self._txn_owner = None
 
     def file_mtimes(self) -> dict[str, float]:
         """Returns the recorded ``path`` to ``mtime`` map."""
@@ -106,9 +134,15 @@ class FileStateStore:
         """Upserts the recorded mtime for ``path``.
 
         Call inside :meth:`transaction` to commit alongside consumer writes;
-        called on its own it commits immediately.
+        called on its own it commits immediately. Only the task that opened
+        the transaction composes with it — a standalone call during another
+        task's transaction raises :class:`TransactionConflictError` rather
+        than joining writes to a transaction that may roll back.
+
+        Raises:
+            TransactionConflictError: Another task's transaction is open.
         """
-        if self.in_transaction:
+        if self._txn_owner == current_owner():
             self.upsert_file(path, mtime)
             return
         with self.transaction():

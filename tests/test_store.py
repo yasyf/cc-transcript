@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from cc_transcript.store import FileStateStore
+from cc_transcript.store import FileStateStore, TransactionConflictError
 
 EXTRA_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notes (
@@ -57,3 +58,45 @@ def test_context_manager_closes_connection(tmp_path: Path) -> None:
         store.record_file("/a.jsonl", 1.0)
     with pytest.raises(sqlite3.ProgrammingError):
         store.conn.execute("SELECT 1")
+
+
+def test_standalone_write_never_joins_a_foreign_transaction(tmp_path: Path) -> None:
+    async def scenario(store: FileStateStore) -> None:
+        in_transaction = asyncio.Event()
+
+        async def owner() -> None:
+            with pytest.raises(RuntimeError, match="owner rolls back"):
+                with store.transaction():
+                    store.record_file("/owned.jsonl", 1.0)
+                    in_transaction.set()
+                    await asyncio.sleep(0.01)
+                    raise RuntimeError("owner rolls back")
+
+        async def outsider() -> None:
+            await in_transaction.wait()
+            with pytest.raises(TransactionConflictError):
+                store.record_file("/outsider.jsonl", 2.0)
+
+        await asyncio.gather(owner(), outsider())
+
+    with FileStateStore.open(tmp_path / "state.db") as store:
+        asyncio.run(scenario(store))
+        store.record_file("/outsider.jsonl", 2.0)
+        assert store.file_mtimes() == {"/outsider.jsonl": 2.0}
+
+
+def test_owner_task_composes_inside_its_own_transaction(tmp_path: Path) -> None:
+    async def scenario(store: FileStateStore) -> None:
+        with store.transaction():
+            await asyncio.sleep(0)
+            store.record_file("/owned.jsonl", 1.0)
+
+    with FileStateStore.open(tmp_path / "state.db") as store:
+        asyncio.run(scenario(store))
+        assert store.file_mtimes() == {"/owned.jsonl": 1.0}
+
+
+def test_nested_transaction_raises(tmp_path: Path) -> None:
+    with FileStateStore.open(tmp_path / "state.db") as store:
+        with store.transaction(), pytest.raises(TransactionConflictError), store.transaction():
+            raise AssertionError("unreachable")
