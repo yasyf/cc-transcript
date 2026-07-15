@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_log","nonce":"82a708f42a59e82d19668f80432fc52a","title":"docs-speed in-repo delivery rollout","tags":["docs-speed","rollout"],"anchors":[{"kind":"path","value":"docs/scripts/build_docs.py"},{"kind":"path","value":"great-docs.yml"},{"kind":"path","value":".github/workflows/docs.yml"}]}]}
