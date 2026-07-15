@@ -36,6 +36,8 @@ from cc_transcript.render import (
     render_tool_call,
     render_turn,
     truncate,
+    view_asdict,
+    view_field,
 )
 from cc_transcript.tools import parse_tool_call
 from tests import testkit
@@ -648,3 +650,15 @@ def test_render_stats_empty_placeholders() -> None:
     assert "models       -" in rendered
     assert "tools        -" in rendered
     assert "span         -" in rendered
+
+
+def test_view_field_recurses_records_and_passes_non_record_views_through() -> None:
+    from cc_transcript.parser import parse
+
+    transcript = parse(orjson.dumps(testkit.user_line("u1", "hi")) + b"\n")
+    events = transcript.events
+    assert view_field(transcript) is transcript
+    assert view_field(events) is events
+    event = events[0]
+    assert view_field(event) == view_asdict(event)
+    assert view_field(event.meta)["uuid"] == "u1"

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import orjson
 
+from cc_transcript import _native
 from cc_transcript.filterspec import event_kind, event_meta, event_text
 from cc_transcript.models import (
     AssistantEvent,
@@ -58,6 +59,11 @@ UNCLIPPED = sys.maxsize
 @runtime_checkable
 class ViewLike(Protocol):
     __match_args__: ClassVar[tuple[str, ...]]
+
+
+VIEW_TYPES = frozenset(
+    cls for cls in vars(_native).values() if isinstance(cls, type) and hasattr(cls, "__match_args__")
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +296,7 @@ def view_field(value: object) -> Any:
             return tuple(view_field(item) for item in value)
         case dict():
             return value
-        case ViewLike() if type(value).__module__ == "cc_transcript.models":
+        case ViewLike() if type(value) in VIEW_TYPES:
             return view_asdict(value)
         case _:
             return value
