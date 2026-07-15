@@ -329,6 +329,9 @@ if TYPE_CHECKING:
         CommandLineQuery as CommandLineQuery,
     )
     from cc_transcript.command import (
+        Occurrence as Occurrence,
+    )
+    from cc_transcript.command import (
         Redirect as Redirect,
     )
     from cc_transcript.command import (
