@@ -149,3 +149,13 @@ def test_subagent_transcripts_keys_by_tool_use_id_and_skips_resource_forks(tmp_p
 
 def test_subagent_transcripts_empty_without_directory(tmp_path: Path) -> None:
     assert subagent_transcripts(write(tmp_path / f"{SESSION}.jsonl", 100.0)) == {}
+
+
+def test_find_in_negative_limit_is_a_pinned_overflow(tmp_path: Path) -> None:
+    """v14 divergence pin: the v13 all-but-last slice for limit=-1 was accidental.
+
+    The native boundary takes an unsigned limit, so a negative one raises at
+    conversion instead of silently slicing; callers pass None for "no limit".
+    """
+    with pytest.raises(OverflowError):
+        find_in(tmp_path, limit=-1)
