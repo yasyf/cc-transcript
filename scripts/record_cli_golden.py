@@ -25,8 +25,8 @@ Invocation matrix (name -> argv, cwd = repo root, binary = .venv/bin/cc-transcri
   stats_json        stats --root .fixtures/corpus --all --json
   tools             tools <smallest>
   commands          commands <smallest>
-  mcp               mcp --root .fixtures/corpus --all
-  mcp_json          mcp --root .fixtures/corpus --all --json
+  mcp               mcp --root tests/testdata/mcp_root --all   (committed MCP fixture; the corpus has no MCP uses)
+  mcp_json          mcp --root tests/testdata/mcp_root --all --json
   permissions       permissions --root .fixtures/corpus --all
   permissions_json  permissions --root .fixtures/corpus --all --json
   slice             slice --session <smallest session> --since/--until <wide pinned window> --root .fixtures/corpus
@@ -58,6 +58,7 @@ CORPUS_REL = Path(".fixtures") / "corpus"
 HOME_REL = Path(".fixtures") / "home"
 GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "cli_golden"
 CLI = REPO_ROOT / ".venv" / "bin" / "cc-transcript"
+MCP_ROOT = "tests/testdata/mcp_root"
 
 DIGEST_STDIN = b'[{"tool": "Bash", "input": {"command": "ls"}}, {"tool": "Read", "input": {"file_path": "a.py"}}]'
 
@@ -116,8 +117,8 @@ def matrix(smallest: str) -> dict[str, Case]:
         "stats_json": Case(["stats", "--root", root, "--all", "--json"]),
         "tools": Case(["tools", smallest]),
         "commands": Case(["commands", smallest]),
-        "mcp": Case(["mcp", "--root", root, "--all"]),
-        "mcp_json": Case(["mcp", "--root", root, "--all", "--json"]),
+        "mcp": Case(["mcp", "--root", MCP_ROOT, "--all"]),
+        "mcp_json": Case(["mcp", "--root", MCP_ROOT, "--all", "--json"]),
         "permissions": Case(["permissions", "--root", root, "--all"]),
         "permissions_json": Case(["permissions", "--root", root, "--all", "--json"]),
         "slice": Case(

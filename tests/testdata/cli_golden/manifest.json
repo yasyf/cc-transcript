@@ -127,24 +127,24 @@
     "argv": [
       "mcp",
       "--root",
-      ".fixtures/corpus",
+      "tests/testdata/mcp_root",
       "--all"
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 0
+    "stdout_bytes": 130
   },
   "mcp_json": {
     "argv": [
       "mcp",
       "--root",
-      ".fixtures/corpus",
+      "tests/testdata/mcp_root",
       "--all",
       "--json"
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 0
+    "stdout_bytes": 175
   },
   "permissions": {
     "argv": [

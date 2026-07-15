@@ -1,0 +1,2 @@
+{"server":"github","read":2,"write":0,"total":2,"tools":{"search_issues":1,"get_pull_request":1}}
+{"server":"linear","read":0,"write":1,"total":1,"tools":{"create_ticket":1}}
