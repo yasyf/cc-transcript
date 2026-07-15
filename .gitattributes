@@ -1,0 +1,5 @@
+cc_transcript/_native.pyi linguist-generated=true
+rust/crates/core/src/generated/*.rs linguist-generated=true
+swift/Sources/CCTranscript/SwiftBridgeCore.swift linguist-generated=true
+swift/Sources/CCTranscript/cc_transcript_swift.swift linguist-generated=true
+swift/RustXcframework.xcframework/** linguist-generated=true
