@@ -9,11 +9,11 @@ import orjson
 import pytest
 from click.testing import CliRunner
 
-from cc_transcript.cli import cli
+from cc_transcript.cli import cli, parse_transcripts
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 from cc_transcript.ids import tool_digest
-from cc_transcript.parser import parse
 from cc_transcript.render import human_size
+from tests import testkit
 
 BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 MODEL = "claude-opus-4-7"
@@ -945,3 +945,16 @@ def test_grep_with_result_human_appends_markers(runner: CliRunner, rich: Path) -
         "    3 asst  03:04:08 [claude-opus-4-7] mcp__semble__search(x) (1000ms)",
         "1 files, 2 matches",
     ]
+
+
+def test_parse_transcripts_warns_and_keeps_healthy_on_pruned_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    healthy = tmp_path / "ok.jsonl"
+    healthy.write_bytes(orjson.dumps(testkit.user_line("u1", "hi")) + b"\n")
+    pruned = tmp_path / "gone.jsonl"
+    parsed = parse_transcripts([(healthy, healthy.stat().st_mtime), (pruned, 0.0)])
+    assert [t.path for t in parsed] == [healthy]
+    warning = capsys.readouterr().err
+    assert "skipped 1 unparseable transcript(s)" in warning
+    assert "gone.jsonl" in warning

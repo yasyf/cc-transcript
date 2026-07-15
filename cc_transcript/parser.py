@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 STREAM_RECV_BATCH = 32
 
 
+def stat_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def parse(source: Path | bytes, *, drop: FilterSpec | None = None) -> Transcript:
     """Parses one transcript into a :class:`~cc_transcript.models.Transcript` view.
 
@@ -62,8 +69,9 @@ def stream(paths: Iterable[Path], *, drop: FilterSpec | None = None, prefetch: i
     """Streams parsed transcripts for ``paths`` off the native parse pool.
 
     Files parse in parallel with ``prefetch`` results buffered ahead of the
-    consumer; an unreadable file is skipped. Order follows parse completion,
-    not the input order.
+    consumer; an unreadable file — including one pruned between discovery
+    and parse — is skipped without disturbing the rest of the batch. Order
+    follows parse completion, not the input order.
 
     Args:
         paths: The transcript files to parse.
@@ -79,7 +87,8 @@ def stream(paths: Iterable[Path], *, drop: FilterSpec | None = None, prefetch: i
         ...     print(transcript.path, len(transcript.events))
     """
     spec_json = spec_to_json(drop) if drop is not None else None
-    native = _native.stream_parse([(str(path), path.stat().st_mtime) for path in paths], prefetch, spec_json)
+    targets = [(str(path), mtime) for path in paths if (mtime := stat_mtime(path)) is not None]
+    native = _native.stream_parse(targets, prefetch, spec_json)
     while batch := native.recv_many(STREAM_RECV_BATCH):
         yield from batch
 

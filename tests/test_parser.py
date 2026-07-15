@@ -23,7 +23,7 @@ from cc_transcript.models import (
     ToolUseBlock,
     UserEvent,
 )
-from cc_transcript.parser import parse, parse_event, parse_events_from_bytes, parse_print_result
+from cc_transcript.parser import parse, parse_event, parse_events_from_bytes, parse_print_result, stream
 from tests import testkit
 from tests.support import raw_envelope as envelope
 
@@ -88,6 +88,15 @@ def test_parse_bytes_source_has_no_path() -> None:
 def test_parse_missing_path_raises() -> None:
     with pytest.raises(OSError):
         parse(Path("/nonexistent/never/t.jsonl"))
+
+
+def test_stream_skips_a_pruned_file_and_parses_the_rest(tmp_path: Path) -> None:
+    healthy = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    for path in healthy:
+        path.write_bytes(orjson.dumps(user_str()) + b"\n")
+    parsed = list(stream([healthy[0], tmp_path / "pruned.jsonl", healthy[1]]))
+    assert sorted(t.path for t in parsed) == healthy
+    assert all(len(t.events) == 1 for t in parsed)
 
 
 def test_parse_print_result_haiku_envelope() -> None:
