@@ -2,7 +2,6 @@
 # ruff: noqa: E501, F401, F403, F405
 
 import builtins
-import cc_transcript
 from cc_transcript import command
 from cc_transcript import ids
 from cc_transcript import models
@@ -1030,8 +1029,8 @@ class OtherSystemDetail:
 
 @typing.final
 class ParseStream:
-    def recv(self) -> models.Transcript | None: ...
-    def recv_many(self, max: builtins.int) -> list[models.Transcript]: ...
+    def recv(self) -> Transcript | None: ...
+    def recv_many(self, max: builtins.int) -> list[Transcript]: ...
 
 @typing.final
 class Plugin:
@@ -2005,7 +2004,7 @@ def nlp_analyze(text: builtins.str) -> builtins.list[tuple[builtins.str, builtin
 
 def notifications_replay(raw: bytes) -> dict[str, list[str]]: ...
 
-def parse_bytes(raw: bytes, spec_json: typing.Optional[builtins.str] = None) -> models.Transcript: ...
+def parse_bytes(raw: bytes, spec_json: typing.Optional[builtins.str] = None) -> Transcript: ...
 
 def parse_print_result(raw: bytes) -> PrintResult: ...
 

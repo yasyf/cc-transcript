@@ -25,7 +25,7 @@ use crate::views::events::event_view;
 ///     mtime: The transcript's modification time when parsed.
 ///     events: The parsed events, in file order.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
-#[pyclass(name = "Transcript", module = "cc_transcript", frozen)]
+#[pyclass(name = "Transcript", module = "cc_transcript.models", frozen)]
 pub(crate) struct TranscriptView {
     pub path: Option<String>,
     pub mtime: f64,
@@ -65,7 +65,7 @@ impl TranscriptView {
 /// return the immutable list itself; pickle is unsupported. Like the
 /// :class:`Transcript` it comes from, retaining any event pins the whole parse.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
-#[pyclass(name = "EventList", module = "cc_transcript", frozen)]
+#[pyclass(name = "EventList", module = "cc_transcript.models", frozen)]
 pub(crate) struct EventListView {
     pub entries: Arc<Vec<Entry>>,
 }
