@@ -820,6 +820,17 @@ fn tool_facts<'py>(
         .collect()
 }
 
+/// The `cc-transcript` console-script entry (spike C): full `sys.argv` to the clap
+/// tree, a real Rust SIGINT handler installed up front, the GIL released for the whole
+/// run, and the exit code returned verbatim for the wrapper's `sys.exit`.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+fn cli_main(py: Python<'_>) -> PyResult<i32> {
+    let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
+    cc_transcript_cli::install_sigint_handler();
+    Ok(py.detach(|| cc_transcript_cli::run(argv)))
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -841,6 +852,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
+    m.add_function(wrap_pyfunction!(cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(crate::toolcall::toolcall_parse, m)?)?;
     m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;

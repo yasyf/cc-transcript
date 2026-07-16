@@ -92,6 +92,7 @@ __all__ = [
     "activity_hunk_overlap",
     "activity_lift",
     "bucket_events",
+    "cli_main",
     "command_parse",
     "command_prefixes",
     "context_capture_window",
@@ -1888,6 +1889,13 @@ def activity_hunk_overlap(a_old: builtins.str, a_new: builtins.str, b_old: built
 def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
 def bucket_events(raw: bytes) -> list[dict[str, typing.Any]]: ...
+
+def cli_main() -> builtins.int:
+    r"""
+    The `cc-transcript` console-script entry (spike C): full `sys.argv` to the clap
+    tree, a real Rust SIGINT handler installed up front, the GIL released for the whole
+    run, and the exit code returned verbatim for the wrapper's `sys.exit`.
+    """
 
 def command_parse(command: builtins.str) -> dict[str, typing.Any]: ...
 

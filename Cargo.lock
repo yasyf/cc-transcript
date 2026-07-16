@@ -201,6 +201,7 @@ dependencies = [
 name = "cc-transcript-py"
 version = "0.9.0"
 dependencies = [
+ "cc-transcript-cli",
  "cc-transcript-core",
  "chrono",
  "crossbeam-channel",

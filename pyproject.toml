@@ -52,7 +52,7 @@ judge = [
 ]
 
 [project.scripts]
-cc-transcript = "cc_transcript.cli:cli"
+cc-transcript = "cc_transcript._native:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/yasyf/cc-transcript"
