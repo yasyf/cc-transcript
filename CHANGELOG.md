@@ -32,6 +32,10 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   rather than raising; tool input serialized outside the JSON contract (datetime, bytes,
   cycles) raises in strict mode and degrades to a fallback under `on_error='other'`.
 
+### Removed
+- Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is
+  canonical); `PRICING` remains importable.
+
 ## [13.1.0] - 2026-07-13
 
 Dispatch observability: a heartbeat ledger that records an event reached dispatch at

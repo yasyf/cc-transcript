@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import orjson
+
+from cc_transcript import _native
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from cc_transcript.models import AssistantEvent, Usage
-
-MTOK = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +19,7 @@ class ModelPricing:
 
     Standard service tier, standard (non-long-context) pricing — current Claude
     4.x models serve their 1M context at standard rates with no long-context
-    premium. Override via the `pricing` argument to cost_of for other tiers.
+    premium. Override via the `pricing` argument to resolve_pricing for other tiers.
 
     Attributes:
         input: USD per million uncached input tokens.
@@ -85,7 +87,7 @@ def resolve_pricing(model: str, *, pricing: Mapping[str, ModelPricing] = PRICING
     raise KeyError(f"no pricing for model: {model}")
 
 
-def cost_of(usage: Usage, model: str, *, pricing: Mapping[str, ModelPricing] = PRICING) -> CostBreakdown:
+def cost_of(usage: Usage, model: str) -> CostBreakdown:
     """Compute the USD cost of a turn's token usage under a model's rates.
 
     The cache-creation split prefers the per-TTL ``usage.cache_creation`` when
@@ -95,7 +97,6 @@ def cost_of(usage: Usage, model: str, *, pricing: Mapping[str, ModelPricing] = P
     Args:
         usage: The turn's token usage and cache accounting.
         model: The model id whose rates apply.
-        pricing: The family-keyed pricing table to resolve against.
 
     Returns:
         The per-component and total cost.
@@ -104,35 +105,41 @@ def cost_of(usage: Usage, model: str, *, pricing: Mapping[str, ModelPricing] = P
         >>> cost_of(usage, "claude-haiku-4-5-20251001").total
         0.05759
     """
-    row = resolve_pricing(model, pricing=pricing)
-    write_5m, write_1h = (
-        (usage.cache_creation.ephemeral_5m_input_tokens, usage.cache_creation.ephemeral_1h_input_tokens)
-        if usage.cache_creation is not None
-        else (usage.cache_creation_input_tokens, 0)
+    split = (
+        {
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": cc.ephemeral_5m_input_tokens,
+                "ephemeral_1h_input_tokens": cc.ephemeral_1h_input_tokens,
+            }
+        }
+        if (cc := usage.cache_creation) is not None
+        else {}
     )
-    input_cost = usage.input_tokens / MTOK * row.input
-    output_cost = usage.output_tokens / MTOK * row.output
-    cache_read_cost = usage.cache_read_input_tokens / MTOK * row.cache_read
-    cache_write_cost = write_5m / MTOK * row.cache_write_5m + write_1h / MTOK * row.cache_write_1h
+    payload = {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+    } | split
+    breakdown = _native.cost_of_json(orjson.dumps(payload).decode(), model)
     return CostBreakdown(
-        input_cost=input_cost,
-        output_cost=output_cost,
-        cache_read_cost=cache_read_cost,
-        cache_write_cost=cache_write_cost,
-        total=input_cost + output_cost + cache_read_cost + cache_write_cost,
+        input_cost=breakdown["input_cost"],
+        output_cost=breakdown["output_cost"],
+        cache_read_cost=breakdown["cache_read_cost"],
+        cache_write_cost=breakdown["cache_write_cost"],
+        total=breakdown["total"],
     )
 
 
-def cost_of_assistant(event: AssistantEvent, *, pricing: Mapping[str, ModelPricing] = PRICING) -> CostBreakdown | None:
+def cost_of_assistant(event: AssistantEvent) -> CostBreakdown | None:
     """Compute the cost of an assistant turn, or None when it carries no usage.
 
     Args:
         event: The assistant turn whose usage is priced.
-        pricing: The family-keyed pricing table to resolve against.
 
     Returns:
         The cost breakdown, or None when ``event.usage`` is None.
     """
     if event.usage is None:
         return None
-    return cost_of(event.usage, event.model, pricing=pricing)
+    return cost_of(event.usage, event.model)

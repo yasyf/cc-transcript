@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from cc_transcript.cost import MTOK, cost_of, resolve_pricing
+from cc_transcript.cost import cost_of, resolve_pricing
 from cc_transcript.models import Usage
 from tests import support
+
+MTOK = 1_000_000
 
 
 def usage(
