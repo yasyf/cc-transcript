@@ -121,12 +121,12 @@ select = ["E", "F", "I", "UP"]
 [dependency-groups]
 docs = [
     # great-docs imports griffe's 2.x module layout; griffelib is the modern
-    # griffe (2.x) distribution, overriding the legacy griffe<2 pin great-docs
-    # itself still declares.
+    # griffe (2.x) distribution, kept aligned with the griffe~=2.1 pin great-docs
+    # 0.15 now declares directly.
     "griffelib>=2.0",
     # 0.14 ships the build-time GitHub widget stats (embedded via the CI
     # GITHUB_TOKEN) that drop the navbar widget's client-side API calls — the
     # source of GitHub 403 errors on the published site — so the git-main pin is
     # no longer needed.
-    "great-docs>=0.14",
+    "great-docs>=0.15,<0.16",
 ]
