@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from cc_transcript.literals import literal_str
 from cc_transcript.mining.engine import mine as mine
 
 if TYPE_CHECKING:
@@ -26,9 +27,9 @@ if TYPE_CHECKING:
     from cc_transcript.models import CcVersion, EventUuid, SessionId
 
 # Separators inside the ANSWERED banner's rendered '"Q"="A"' pairs.
-ANSWER_PREVIEW_SEP = " selected preview:\n"
-ANSWER_NOTES_SEP = " notes: "
-NO_OPTION_SELECTED = "(no option selected)"
+ANSWER_PREVIEW_SEP = literal_str("mining.ANSWER_PREVIEW_SEP")
+ANSWER_NOTES_SEP = literal_str("mining.ANSWER_NOTES_SEP")
+NO_OPTION_SELECTED = literal_str("mining.NO_OPTION_SELECTED")
 
 
 @dataclass(frozen=True, slots=True)

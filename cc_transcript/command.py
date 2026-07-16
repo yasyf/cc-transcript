@@ -18,39 +18,20 @@ from typing import TYPE_CHECKING
 import tree_sitter_bash as tsbash
 from tree_sitter import Language, Node, Parser
 
+from cc_transcript.literals import literal_str, literal_tuple
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
 BASH_PARSER = Parser(Language(tsbash.language()))
 
-COMPOUND_OPS = frozenset({"&&", "||", ";", "|", "&"})
+COMPOUND_OPS = frozenset(literal_tuple("command.COMPOUND_OPS"))
 
-MULTI_LEVEL_TOOLS = frozenset(
-    {
-        "git",
-        "gh",
-        "uv",
-        "uvx",
-        "npx",
-        "docker",
-        "jj",
-        "go",
-        "cargo",
-        "npm",
-        "pnpm",
-        "yarn",
-        "kubectl",
-        "pip",
-        "brew",
-        "aws",
-        "gcloud",
-        "terraform",
-    }
-)
+MULTI_LEVEL_TOOLS = frozenset(literal_tuple("command.MULTI_LEVEL_TOOLS"))
 
-WRAPPER_COMMANDS = frozenset({"sudo", "env", "time", "timeout", "nice", "nohup", "doas", "command", "exec", "xargs"})
+WRAPPER_COMMANDS = frozenset(literal_tuple("command.WRAPPER_COMMANDS"))
 
-ASSIGNMENT_RE = re.compile(r"^\w+=")
+ASSIGNMENT_RE = re.compile(literal_str("command.ASSIGNMENT_PATTERN"))
 
 PIPE_GAP_RE = re.compile(r"\s*\|&?\s*")
 

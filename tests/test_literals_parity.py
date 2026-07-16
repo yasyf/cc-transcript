@@ -1,41 +1,110 @@
-"""Parity + drift guards for the generated Rust protocol literals.
+"""Drift guard for the hand-owned shared literals now that Rust owns them.
 
-- Single source: `_native.embedded_literals()` equals the generator's `literals()`
-  manifest (the same manifest the Rust files render from). A constant added to the
-  manifest but missing from `python.rs`'s accessor fails here automatically. Skips
-  when the `_native` extension isn't built.
-- Freshness: the committed `rust/crates/core/src/generated/*` files still match the generator's
-  `render()` byte-for-byte, so a stale checkout fails loudly.
+``_native.embedded_literals()`` is the single source of truth for the constants the
+Rust core and Python both need (protocol markers, mining ids and floors, command
+tables, the corrections DDL). The old ``scripts/build_rust_literals.py`` generator
+is gone; these tests prove Python never carries its own copy:
+
+- every Python constant that mirrors a manifest entry equals the native value, and
+  the manifest is fully covered (a new native literal without a Python mirror fails);
+- the three derived filter patterns stay byte-identical to the groups Python
+  serializes into a :class:`~cc_transcript.FilterSpec`;
+- no ``cc_transcript`` module re-declares a distinctive literal value as a source
+  string.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import ast
 from pathlib import Path
-from types import ModuleType
 
 from tests.support import requires_rust
 
 ROOT = Path(__file__).resolve().parent.parent
-GENERATOR = ROOT / "scripts" / "build_rust_literals.py"
-
-
-def load_generator() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("build_rust_literals", GENERATOR)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+PACKAGE = ROOT / "cc_transcript"
 
 
 @requires_rust
-def test_embedded_literals_match_python_source() -> None:
+def test_python_mirrors_read_from_native() -> None:
+    from cc_transcript import _native, filterspec
+    from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
+    from cc_transcript.corrections import CORRECTIONS_DDL
+    from cc_transcript.filterspec import AGENT_INJECTION_GROUPS, INTERRUPT_MARKER_GROUPS, SENTIMENT_JUNK_GROUPS, group_pattern
+    from cc_transcript.mining import confidence, signals, sourcekind, spec
+
+    literals = _native.embedded_literals()
+
+    scalars = {
+        "protocol.DENIAL_PREFIX": filterspec.DENIAL_PREFIX,
+        "protocol.DENIAL_KIND_USER_REJECTED": filterspec.DENIAL_KIND_USER_REJECTED,
+        "protocol.DENIAL_KIND_PERMISSION_RULE": filterspec.DENIAL_KIND_PERMISSION_RULE,
+        "protocol.USER_SAID_MARKER": filterspec.USER_SAID_MARKER,
+        "protocol.USER_SAID_TRAILER": filterspec.USER_SAID_TRAILER,
+        "protocol.ANSWERED_PREFIX": filterspec.ANSWERED_PREFIX,
+        "protocol.ANSWERED_TRAILER": filterspec.ANSWERED_TRAILER,
+        "protocol.TASK_NOTIFICATION_MARKER": filterspec.TASK_NOTIFICATION_MARKER,
+        "protocol.TOOL_USE_ID_PREFIX": filterspec.TOOL_USE_ID_PREFIX,
+        "protocol.TOOL_USE_ID_SUFFIX": filterspec.TOOL_USE_ID_SUFFIX,
+        "mining.TRANSCRIPT_MESSAGE": sourcekind.TRANSCRIPT_MESSAGE,
+        "mining.PLAN_REVIEW": sourcekind.PLAN_REVIEW,
+        "mining.INTERRUPT_REJECTION": sourcekind.INTERRUPT_REJECTION,
+        "mining.REVIEW_COMMENT": sourcekind.REVIEW_COMMENT,
+        "mining.QUESTION_ANSWER": sourcekind.QUESTION_ANSWER,
+        "mining.DETECTOR_TRANSCRIPT_MESSAGE": spec.TRANSCRIPT_MESSAGE_DETECTOR,
+        "mining.DETECTOR_EXIT_PLAN_REJECTION": spec.EXIT_PLAN_REJECTION_DETECTOR,
+        "mining.DETECTOR_PLAN_REENTRY": spec.PLAN_REENTRY_DETECTOR,
+        "mining.DETECTOR_DENIAL": spec.DENIAL_DETECTOR,
+        "mining.DETECTOR_INTERRUPT": spec.INTERRUPT_DETECTOR,
+        "mining.DETECTOR_REVIEW_COMMENT": spec.REVIEW_COMMENT_DETECTOR,
+        "mining.DETECTOR_ASK_USER_QUESTION": spec.ASK_USER_QUESTION_DETECTOR,
+        "mining.ANSWER_PREVIEW_SEP": signals.ANSWER_PREVIEW_SEP,
+        "mining.ANSWER_NOTES_SEP": signals.ANSWER_NOTES_SEP,
+        "mining.NO_OPTION_SELECTED": signals.NO_OPTION_SELECTED,
+        "mining.NONE": confidence.NONE,
+        "mining.LOW": confidence.LOW,
+        "command.ASSIGNMENT_PATTERN": ASSIGNMENT_RE.pattern,
+        "corrections.DDL": CORRECTIONS_DDL,
+    }
+    for key, value in scalars.items():
+        assert value == literals[key], key
+
+    tables = {
+        "command.WRAPPER_COMMANDS": WRAPPER_COMMANDS,
+        "command.MULTI_LEVEL_TOOLS": MULTI_LEVEL_TOOLS,
+        "command.COMPOUND_OPS": COMPOUND_OPS,
+    }
+    for key, table in tables.items():
+        assert sorted(table) == literals[key], key
+
+    patterns = {
+        "protocol.INTERRUPT_MARKER_PATTERN": INTERRUPT_MARKER_GROUPS,
+        "protocol.AGENT_INJECTION_PATTERN": AGENT_INJECTION_GROUPS,
+        "protocol.SENTIMENT_JUNK_PATTERN": SENTIMENT_JUNK_GROUPS,
+    }
+    for key, groups in patterns.items():
+        assert group_pattern(groups) == literals[key], key
+
+    manifest = set(scalars) | set(tables) | set(patterns)
+    assert manifest == set(literals), set(literals) ^ manifest
+
+
+@requires_rust
+def test_no_python_redeclaration() -> None:
     from cc_transcript import _native
 
-    assert _native.embedded_literals() == {
-        key: list(value) if isinstance(value, tuple) else value for key, value in load_generator().literals().items()
-    }
+    # Scan only module-level statements: a redeclaration is a top-level constant, not a
+    # coincidental in-function reuse. Short tokens are covered by the equality check above.
+    distinctive = {value for value in _native.embedded_literals().values() if isinstance(value, str) and len(value) >= 10}
+    offenders = [
+        f"{path.relative_to(ROOT)}:{node.lineno} re-declares an inverted literal {node.value!r}"
+        for path in sorted(PACKAGE.rglob("*.py"))
+        for stmt in ast.parse(path.read_text(encoding="utf-8")).body
+        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in distinctive
+    ]
+    assert not offenders, "\n".join(offenders)
 
 
-def test_generated_files_match_render() -> None:
-    for relpath, content in load_generator().render().items():
-        assert (ROOT / relpath).read_text(encoding="utf-8") == content, f"{relpath} is stale; regenerate"
+def test_generator_removed() -> None:
+    assert not (ROOT / "scripts" / "build_rust_literals.py").exists(), "the literals generator is gone; Rust is the source of truth"

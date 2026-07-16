@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NewType
 
+from cc_transcript.literals import literal_float
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import Any
@@ -12,8 +14,8 @@ if TYPE_CHECKING:
 Confidence = NewType("Confidence", float)
 """A de-noising score in the closed interval [0, 1]; higher is more trustworthy."""
 
-NONE = Confidence(0.0)
-LOW = Confidence(0.25)
+NONE = Confidence(literal_float("mining.NONE"))
+LOW = Confidence(literal_float("mining.LOW"))
 MEDIUM = Confidence(0.5)
 HIGH = Confidence(0.75)
 VERY_HIGH = Confidence(0.95)

@@ -1,4 +1,4 @@
-pub mod generated;
+pub mod literals;
 
 pub mod activity;
 pub mod buckets;

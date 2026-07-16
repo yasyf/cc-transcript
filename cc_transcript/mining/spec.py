@@ -33,6 +33,7 @@ from cc_transcript.filterspec import (
     STRUCTURAL_NOISE_GROUPS,
     compile_groups,
 )
+from cc_transcript.literals import literal_str
 from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence, firm
 from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, StructuredFormat
 from cc_transcript.tools import expand_tool_names, matches_names
@@ -46,13 +47,13 @@ if TYPE_CHECKING:
 DetectorName = NewType("DetectorName", str)
 """One of the seven core detector identifiers a :class:`MiningSpec` may enable."""
 
-TRANSCRIPT_MESSAGE_DETECTOR = DetectorName("transcript_message")
-EXIT_PLAN_REJECTION_DETECTOR = DetectorName("exit_plan_rejection")
-PLAN_REENTRY_DETECTOR = DetectorName("plan_reentry")
-DENIAL_DETECTOR = DetectorName("denial")
-INTERRUPT_DETECTOR = DetectorName("interrupt")
-REVIEW_COMMENT_DETECTOR = DetectorName("review_comment")
-ASK_USER_QUESTION_DETECTOR = DetectorName("ask_user_question")
+TRANSCRIPT_MESSAGE_DETECTOR = DetectorName(literal_str("mining.DETECTOR_TRANSCRIPT_MESSAGE"))
+EXIT_PLAN_REJECTION_DETECTOR = DetectorName(literal_str("mining.DETECTOR_EXIT_PLAN_REJECTION"))
+PLAN_REENTRY_DETECTOR = DetectorName(literal_str("mining.DETECTOR_PLAN_REENTRY"))
+DENIAL_DETECTOR = DetectorName(literal_str("mining.DETECTOR_DENIAL"))
+INTERRUPT_DETECTOR = DetectorName(literal_str("mining.DETECTOR_INTERRUPT"))
+REVIEW_COMMENT_DETECTOR = DetectorName(literal_str("mining.DETECTOR_REVIEW_COMMENT"))
+ASK_USER_QUESTION_DETECTOR = DetectorName(literal_str("mining.DETECTOR_ASK_USER_QUESTION"))
 
 ALL_DETECTORS: frozenset[DetectorName] = frozenset(
     {

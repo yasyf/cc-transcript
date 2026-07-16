@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import orjson
 
+from cc_transcript.literals import literal_str
 from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
@@ -87,18 +88,18 @@ INTERRUPT_MARKER_GROUPS: tuple[tuple[str, str], ...] = (
 STOP_HOOK_GROUPS: tuple[tuple[str, str], ...] = (("stop_hook", r"Stop hook feedback:"),)
 
 # Raw CC-injected protocol strings carried in tool-result content, not user-authored text.
-DENIAL_PREFIX = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+DENIAL_PREFIX = literal_str("protocol.DENIAL_PREFIX")
 # Record-level ``toolDenialKind`` values: a human rejection versus a hook/guard block.
-DENIAL_KIND_USER_REJECTED = "user-rejected"
-DENIAL_KIND_PERMISSION_RULE = "permission-rule"
-USER_SAID_MARKER = "To tell you how to proceed, the user said:\n"
-USER_SAID_TRAILER = "Note: The user's next message"
-ANSWERED_PREFIX = "Your questions have been answered: "
-ANSWERED_TRAILER = ". You can now continue with these answers in mind."
+DENIAL_KIND_USER_REJECTED = literal_str("protocol.DENIAL_KIND_USER_REJECTED")
+DENIAL_KIND_PERMISSION_RULE = literal_str("protocol.DENIAL_KIND_PERMISSION_RULE")
+USER_SAID_MARKER = literal_str("protocol.USER_SAID_MARKER")
+USER_SAID_TRAILER = literal_str("protocol.USER_SAID_TRAILER")
+ANSWERED_PREFIX = literal_str("protocol.ANSWERED_PREFIX")
+ANSWERED_TRAILER = literal_str("protocol.ANSWERED_TRAILER")
 # Harness notification-delivery markers: the task-notification wrapper and the tool-use-id tag it carries.
-TASK_NOTIFICATION_MARKER = "<task-notification>"
-TOOL_USE_ID_PREFIX = "<tool-use-id>"
-TOOL_USE_ID_SUFFIX = "</tool-use-id>"
+TASK_NOTIFICATION_MARKER = literal_str("protocol.TASK_NOTIFICATION_MARKER")
+TOOL_USE_ID_PREFIX = literal_str("protocol.TOOL_USE_ID_PREFIX")
+TOOL_USE_ID_SUFFIX = literal_str("protocol.TOOL_USE_ID_SUFFIX")
 
 # Approve-and-advance directives advance the prior assistant turn rather than correct it — the opposite of
 # pushback — so pushback consumers drop them; start-anchoring keeps a mid-correction "commit"/"push" from matching.

@@ -1,10 +1,10 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use crate::generated::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
+use crate::literals::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
 use crate::pystr;
 
-pub use crate::generated::protocol::{
+pub use crate::literals::protocol::{
     ANSWERED_PREFIX, ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX, USER_SAID_MARKER,
     USER_SAID_TRAILER,
 };

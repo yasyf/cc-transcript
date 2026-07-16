@@ -5,9 +5,7 @@
 //! record to model which notifications are still queued, which were delivered, and
 //! which ever passed through.
 
-use crate::generated::protocol::{
-    TASK_NOTIFICATION_MARKER, TOOL_USE_ID_PREFIX, TOOL_USE_ID_SUFFIX,
-};
+use crate::literals::protocol::{TASK_NOTIFICATION_MARKER, TOOL_USE_ID_PREFIX, TOOL_USE_ID_SUFFIX};
 use crate::render::py_str;
 use crate::types::{AttachmentDetail, Entry};
 use crate::value::{field, field_str};

@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, FixedOffset, Timelike};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use crate::generated::protocol::SENTIMENT_JUNK_PATTERN;
+use crate::literals::protocol::SENTIMENT_JUNK_PATTERN;
 use crate::pystr::strip;
 use crate::types::Entry;
 

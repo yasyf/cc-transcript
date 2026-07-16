@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use tree_sitter::{Node, Parser};
 
-use crate::generated::command::{
+use crate::literals::command::{
     ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS,
 };
 use crate::pystr;

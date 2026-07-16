@@ -16,7 +16,8 @@
 //! side), because only Python's own encoder reproduces its NaN/Infinity and lone-surrogate
 //! output. Reads return each row's columns by SQLite storage class (`SqlCell`), so the
 //! caller projects them exactly as Python's dynamic `row[col]` does. `DDL` is generated
-//! from the canonical Python `CORRECTIONS_DDL` (`crate::generated::corrections`).
+//! the hand-owned `crate::literals::corrections` table (mirrored to Python's
+//! `CORRECTIONS_DDL` via `_native.embedded_literals()`).
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -26,7 +27,7 @@ use std::ptr;
 use rusqlite::types::ValueRef;
 use rusqlite::{ffi, params, Connection, Params, Row};
 
-use crate::generated::corrections::DDL;
+use crate::literals::corrections::DDL;
 
 // Parity: CorrectionLog.COLUMNS, in write order — the append list.
 const COLUMNS: [&str; 16] = [
