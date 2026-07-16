@@ -8,10 +8,13 @@ raw-byte-gap fallback), ``CommandLine.splice`` results, the parse-derived span-l
 command-prefix pins, the ``gen_command_golden`` edge cases, and splice-specific shapes
 (redirects, absorbed trailing words, heredocs, subshells, unicode, ``|&``/newline pipes).
 
-A later run plus ``git diff`` shows Python-side drift; ``tests/test_splice_parity.py``
-asserts the flipped native surface reproduces the frozen structure. The out-of-order and
-overlap ``ValueError`` legs need hand-built spans and stay as construction tests in
-``tests/test_command.py``.
+Regeneration reads the Python bodies directly (see :func:`python_reference`), never the
+native views under test, so it stays an independent oracle; a later run plus ``git diff``
+shows Python-side drift. The sub-lane 2 deletion sweep removes this generator together with
+command.py's Python bodies, and the committed goldens freeze as the contract.
+``tests/test_splice_parity.py`` asserts the flipped native surface reproduces the frozen
+structure. The out-of-order and overlap ``ValueError`` legs need hand-built spans and stay
+as construction tests in ``tests/test_command.py``.
 
 Run: ``uv run --no-sync python scripts/gen_splice_golden.py``
 """
@@ -21,7 +24,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from cc_transcript.command import parse_command_line
 from scripts.gen_command_golden import EDGE_CASES
 from scripts.gen_corpus import REPO_ROOT
 
@@ -29,6 +31,19 @@ if TYPE_CHECKING:
     from cc_transcript.command import CommandLine, Occurrence
 
 GOLDEN = REPO_ROOT / "tests" / "testdata" / "splice_golden.json"
+
+
+def python_reference() -> type:
+    """The pre-flip Python ``CommandLine``, so regeneration stays an oracle independent of the
+    native implementation under test. ``cc_transcript.command`` rebinds its names to the native
+    views (the flip), and the Python method bodies resolve those names late, so we exec the source
+    up to the flip in a fresh namespace where every class stays Python. Deleted alongside
+    command.py's Python bodies in the sub-lane 2 deletion sweep.
+    """
+    source = (REPO_ROOT / "cc_transcript" / "command.py").read_text(encoding="utf-8")
+    namespace: dict[str, object] = {}
+    exec(compile(source.split("\n# P6 flip:")[0], "cc_transcript/command.py[python-ref]", "exec"), namespace)  # noqa: S102
+    return namespace["CommandLine"]
 
 # Splice-layer shapes beyond the pins and edge cases: span extraction under redirects,
 # absorbed trailing words (span None), the piped heuristic, and multibyte offsets.
@@ -105,8 +120,9 @@ def collect() -> list[tuple[str, str]]:
 
 
 def main() -> None:
+    command_line = python_reference()
     data = [
-        {"id": cid, "command": command, "splice_layer": line_to_dict(parse_command_line(command))}
+        {"id": cid, "command": command, "splice_layer": line_to_dict(command_line.parse(command))}
         for cid, command in collect()
     ]
     GOLDEN.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
