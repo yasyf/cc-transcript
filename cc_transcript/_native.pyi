@@ -125,6 +125,7 @@ __all__ = [
     "mcp_parts",
     "mine_events",
     "nlp_analyze",
+    "noise_spec_json",
     "notifications_replay",
     "parse_bytes",
     "parse_print_result",
@@ -2177,6 +2178,8 @@ def nlp_analyze(text: builtins.str) -> builtins.list[tuple[builtins.str, builtin
     `(form, lower, lemma, upos, char_start, char_end, polarity, negated)` where
     polarity is the surface-keyed lexicon score and offsets are codepoint indices.
     """
+
+def noise_spec_json() -> builtins.str: ...
 
 def notifications_replay(raw: bytes) -> dict[str, list[str]]: ...
 

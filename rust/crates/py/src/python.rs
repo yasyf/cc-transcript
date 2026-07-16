@@ -831,6 +831,12 @@ fn cli_main(py: Python<'_>) -> PyResult<i32> {
     Ok(py.detach(|| cc_transcript_cli::run(argv)))
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+fn noise_spec_json() -> &'static str {
+    cc_transcript_core::filter::NOISE_SPEC_JSON
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
@@ -844,6 +850,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_overrides, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_literals, m)?)?;
+    m.add_function(wrap_pyfunction!(noise_spec_json, m)?)?;
     m.add_function(wrap_pyfunction!(score_short_circuit, m)?)?;
     m.add_function(wrap_pyfunction!(score_post_process, m)?)?;
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
