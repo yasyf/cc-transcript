@@ -113,6 +113,20 @@ def stub_param_names(args: ast.arguments) -> list[str]:
     return names
 
 
+def strip_receiver(params: list[str]) -> list[str]:
+    """Drop only the receiver POSITION (first param when named self/cls), never later params —
+    an extra caller-visible ``cls`` must stay so a wrong stub is caught."""
+    return params[1:] if params and params[0] in ("self", "cls") else params
+
+
+def test_strip_receiver_keeps_extra_cls_argument() -> None:
+    fn = ast.parse("def f(self, cls, value): ...").body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    stub_params = strip_receiver(stub_param_names(fn.args))
+    assert stub_params == ["cls", "value"]
+    assert stub_params != signature_names("($self, /, value)")
+
+
 def test_optional_getters_declare_none() -> None:
     crate = Path(__file__).parent.parent / "rust" / "crates" / "py" / "src"
     liars = [
@@ -146,5 +160,5 @@ def test_callable_parameter_names_match_text_signatures() -> None:
             sig = getattr(vars(cls)[stmt.name], "__text_signature__", None)
             if sig is None:
                 continue
-            stub_params = [n for n in stub_param_names(stmt.args) if n not in ("self", "cls")]
+            stub_params = strip_receiver(stub_param_names(stmt.args))
             assert stub_params == signature_names(sig), f"{cls_name}.{stmt.name}: stub {stub_params} != runtime {sig}"
