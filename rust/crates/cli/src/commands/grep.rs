@@ -124,14 +124,13 @@ fn compile_pattern(pattern: &str, ignore_case: bool) -> Result<Regex, CliExit> {
 }
 
 fn fact_index(parsed: &Parsed) -> HashMap<String, ToolFact> {
-    tool_facts(
-        &parsed.session_id,
-        &parsed.path.to_string_lossy(),
-        &parsed.entries,
-    )
-    .into_iter()
-    .map(|fact| (fact.tool_use_id.clone(), fact))
-    .collect()
+    let Some(session) = &parsed.session_id else {
+        return HashMap::new();
+    };
+    tool_facts(session, &parsed.path.to_string_lossy(), &parsed.entries)
+        .into_iter()
+        .map(|fact| (fact.tool_use_id.clone(), fact))
+        .collect()
 }
 
 pub fn run(args: GrepArgs) -> Result<(), CliExit> {

@@ -35,12 +35,9 @@ fn gather(
     )?;
     let facts: Vec<ToolFact> = parse_transcripts(&targets.paths)
         .iter()
-        .flat_map(|parsed| {
-            tool_facts(
-                &parsed.session_id,
-                &parsed.path.to_string_lossy(),
-                &parsed.entries,
-            )
+        .flat_map(|parsed| match &parsed.session_id {
+            Some(session) => tool_facts(session, &parsed.path.to_string_lossy(), &parsed.entries),
+            None => Vec::new(),
         })
         .collect();
     Ok((targets, facts))

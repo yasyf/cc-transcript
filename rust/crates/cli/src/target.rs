@@ -89,14 +89,16 @@ pub fn scope_note(targets: &Targets) -> Option<String> {
 
 pub struct Parsed {
     pub path: PathBuf,
-    pub session_id: String,
+    pub session_id: Option<String>,
     pub entries: Vec<Entry>,
 }
 
-fn session_id_of(path: &Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
+// filterspec.session_id_of: the first meta-bearing entry names the session; the
+// facts pipeline skips transcripts without one (facts.tool_facts).
+fn session_id_of(entries: &[Entry]) -> Option<String> {
+    entries
+        .iter()
+        .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()))
 }
 
 /// Parse every target in parallel, keeping target order and warning once about
@@ -109,7 +111,7 @@ pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
             let entries = parse_bytes(&bytes, |_| true).ok()?;
             Some(Parsed {
                 path: path.clone(),
-                session_id: session_id_of(path),
+                session_id: session_id_of(&entries),
                 entries,
             })
         })
