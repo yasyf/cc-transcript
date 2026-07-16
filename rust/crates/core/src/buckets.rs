@@ -75,9 +75,16 @@ fn is_substantive_user(entry: &Entry) -> bool {
 /// any assistant turn are dropped. Sessions are emitted in first-appearance order to
 /// match the Python dict's insertion order.
 pub fn bucket_events(entries: &[Entry]) -> Vec<ConversationBucket<'_>> {
-    let mut order: Vec<&str> = Vec::new();
-    let mut by_session: HashMap<&str, Vec<&Entry>> = HashMap::new();
-    for entry in entries {
+    bucket_events_refs(&entries.iter().collect::<Vec<_>>())
+}
+
+/// `bucket_events` over borrowed entry views — the events-in native path, where each
+/// view borrows its `&Entry` behind the shared parse buffer (no re-parse). `bucket_events`
+/// delegates here after collecting its owned entries into refs.
+pub fn bucket_events_refs<'a>(entries: &[&'a Entry]) -> Vec<ConversationBucket<'a>> {
+    let mut order: Vec<&'a str> = Vec::new();
+    let mut by_session: HashMap<&'a str, Vec<&'a Entry>> = HashMap::new();
+    for &entry in entries {
         let session_id = match entry {
             Entry::User(user) => {
                 if SENTIMENT_JUNK_RE.is_match(&user.content.text()) {
@@ -290,5 +297,35 @@ mod tests {
             buckets.iter().map(|b| b.bucket_index).collect::<Vec<_>>(),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn bucket_events_refs_matches_the_owned_slice_path() {
+        let entries = parse(&[
+            user("s", "2026-01-06T09:01:00.000Z", "please fix the parser"),
+            assistant("s", "2026-01-06T09:01:30.000Z"),
+            user("s", "2026-01-06T09:02:00.000Z", "and the tests"),
+        ]);
+        let refs: Vec<&Entry> = entries.iter().collect();
+        let via_refs = bucket_events_refs(&refs);
+        let via_owned = bucket_events(&entries);
+        assert_eq!(via_refs.len(), via_owned.len());
+        let project = |buckets: &[ConversationBucket]| {
+            buckets
+                .iter()
+                .map(|b| {
+                    (
+                        b.session_id.to_owned(),
+                        b.bucket_index,
+                        b.bucket_start.timestamp_millis(),
+                        b.events
+                            .iter()
+                            .map(|e| e.meta().unwrap().uuid.to_string())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(project(&via_refs), project(&via_owned));
     }
 }

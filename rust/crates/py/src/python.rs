@@ -259,6 +259,43 @@ fn bucket_events<'py>(
         .collect()
 }
 
+// buckets.ConversationBucketer.bucket_events over already-materialized event views: each
+// view's `Entry` borrowed via view_entry (no re-parse), same dict as raw `bucket_events`.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
+fn bucket_events_from_events<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'py, PyAny>>,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let entries = events
+        .iter()
+        .map(mining::view_entry)
+        .collect::<PyResult<Vec<_>>>()?;
+    buckets::bucket_events_refs(&entries)
+        .iter()
+        .map(|bucket| {
+            let dict = PyDict::new(py);
+            dict.set_item("session_id", bucket.session_id)?;
+            dict.set_item("bucket_index", bucket.bucket_index)?;
+            dict.set_item("bucket_start_ms", bucket.bucket_start.timestamp_millis())?;
+            let uuids: Vec<&str> = bucket
+                .events
+                .iter()
+                .map(|e| {
+                    e.meta()
+                        .expect("user/assistant entries carry meta")
+                        .uuid
+                        .as_str()
+                })
+                .collect();
+            dict.set_item("uuids", uuids)?;
+            Ok(dict)
+        })
+        .collect()
+}
+
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[gen_stub(override_return_type(type_repr = "dict[str, list[str]]", imports = ()))]
@@ -905,6 +942,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_events, m)?)?;
+    m.add_function(wrap_pyfunction!(bucket_events_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_has_hit, m)?)?;

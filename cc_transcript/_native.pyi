@@ -97,6 +97,7 @@ __all__ = [
     "activity_hunk_overlap",
     "activity_lift",
     "bucket_events",
+    "bucket_events_from_events",
     "cli_main",
     "command_parse",
     "command_prefixes",
@@ -2060,6 +2061,8 @@ def activity_hunk_overlap(a_old: builtins.str, a_new: builtins.str, b_old: built
 def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
 def bucket_events(raw: bytes) -> list[dict[str, typing.Any]]: ...
+
+def bucket_events_from_events(events: list[models.TranscriptEvent]) -> list[dict[str, typing.Any]]: ...
 
 def cli_main() -> builtins.int:
     r"""
