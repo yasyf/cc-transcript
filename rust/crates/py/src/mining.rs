@@ -1455,14 +1455,14 @@ pub fn mine_events<'py>(
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let entries = events
         .iter()
-        .map(view_entry)
+        .map(|event| view_entry(event, "mine"))
         .collect::<PyResult<Vec<_>>>()?;
     mine_events_impl(py, &Events::new(entries), spec)
 }
 
 /// Borrows the shared `Entry` behind a native event view — the no-round-trip
 /// handle mining and the filter bindings run on.
-pub(crate) fn view_entry<'a>(event: &'a Bound<'_, PyAny>) -> PyResult<&'a Entry> {
+pub(crate) fn view_entry<'a>(event: &'a Bound<'_, PyAny>, caller: &str) -> PyResult<&'a Entry> {
     use crate::views::events::{
         AssistantEventView, AttachmentEventView, ModeEventView, OtherEventView, SystemEventView,
         UserEventView,
@@ -1492,7 +1492,7 @@ pub(crate) fn view_entry<'a>(event: &'a Bound<'_, PyAny>) -> PyResult<&'a Entry>
         return Ok(&r.entries[r.idx]);
     }
     Err(PyTypeError::new_err(format!(
-        "mine() takes parsed transcript events, got {}",
+        "{caller}() takes parsed transcript events, got {}",
         event.get_type().name()?
     )))
 }

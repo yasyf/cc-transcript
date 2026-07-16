@@ -271,7 +271,7 @@ fn bucket_events_from_events<'py>(
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let entries = events
         .iter()
-        .map(mining::view_entry)
+        .map(|event| mining::view_entry(event, "bucket_events_from_events"))
         .collect::<PyResult<Vec<_>>>()?;
     buckets::bucket_events_refs(&entries)
         .iter()
@@ -322,7 +322,7 @@ fn notifications_from_events<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let entries = events
         .iter()
-        .map(mining::view_entry)
+        .map(|event| mining::view_entry(event, "notifications_from_events"))
         .collect::<PyResult<Vec<_>>>()?;
     let notifications = Notifications::from_entry_refs(&entries);
     let dict = PyDict::new(py);
@@ -536,7 +536,7 @@ fn keep_events(
     let spec = compile_spec(spec_json).map_err(PyValueError::new_err)?;
     events
         .iter()
-        .map(|event| Ok(spec_keep(&spec, mining::view_entry(event)?)))
+        .map(|event| Ok(spec_keep(&spec, mining::view_entry(event, "keep_events")?)))
         .collect()
 }
 
@@ -554,10 +554,12 @@ fn label_events(
     events
         .iter()
         .map(|event| {
-            Ok(spec_labels(&spec, mining::view_entry(event)?)
-                .into_iter()
-                .map(String::from)
-                .collect())
+            Ok(
+                spec_labels(&spec, mining::view_entry(event, "label_events")?)
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            )
         })
         .collect()
 }

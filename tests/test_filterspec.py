@@ -68,6 +68,12 @@ def attachment() -> AttachmentEvent:
     return event
 
 
+def test_keep_rejects_non_event_and_names_itself() -> None:
+    # The events-in binding names itself, not mine(), so keep/apply_spec misuse points at the right API.
+    with pytest.raises(TypeError, match=r"keep_events\(\) takes parsed transcript events"):
+        keep(object(), spec())  # type: ignore[arg-type]
+
+
 def test_kind_is_keeps_matching() -> None:
     s = spec(Clause(KindIs(frozenset({"user"})), negate=True))
     assert keep(user("hi"), s)
