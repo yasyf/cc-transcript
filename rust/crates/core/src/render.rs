@@ -903,6 +903,8 @@ pub enum Json {
     Int(i64),
     UInt(u64),
     Float(f64),
+    /// An integer lexeme beyond 64 bits, kept verbatim (Python ints are unbounded).
+    RawNum(String),
     Str(String),
     Datetime(DateTime<FixedOffset>),
     Value(Value),
@@ -967,6 +969,7 @@ impl Json {
             Json::Int(i) => out.push_str(&i.to_string()),
             Json::UInt(u) => out.push_str(&u.to_string()),
             Json::Float(f) => out.push_str(&py_float_repr(*f, false)),
+            Json::RawNum(lexeme) => out.push_str(lexeme),
             Json::Str(s) => encode_string(s, out),
             Json::Datetime(dt) => encode_string(&format_datetime(dt), out),
             Json::Value(v) => write_orjson(v, out),
@@ -1031,6 +1034,313 @@ fn write_orjson_pretty(value: &Value, out: &mut String, depth: usize) {
         }
         _ => write_orjson(value, out),
     }
+}
+
+/// Python `json.loads`: strict JSON plus the NaN/Infinity/-Infinity literals, duplicate
+/// object keys collapsing last-wins at the first slot (the corrections detail contract).
+pub fn pyjson_loads(text: &str) -> Result<Json, String> {
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    let value = pyjson_value(bytes, &mut pos)?;
+    pyjson_ws(bytes, &mut pos);
+    if pos != bytes.len() {
+        return Err(format!("trailing data at position {pos}"));
+    }
+    Ok(value)
+}
+
+fn pyjson_ws(bytes: &[u8], pos: &mut usize) {
+    while *pos < bytes.len() && matches!(bytes[*pos], b' ' | b'\t' | b'\n' | b'\r') {
+        *pos += 1;
+    }
+}
+
+fn pyjson_expect(bytes: &[u8], pos: &mut usize, token: &str) -> Result<(), String> {
+    if bytes[*pos..].starts_with(token.as_bytes()) {
+        *pos += token.len();
+        Ok(())
+    } else {
+        Err(format!("expected {token} at position {pos}"))
+    }
+}
+
+fn pyjson_value(bytes: &[u8], pos: &mut usize) -> Result<Json, String> {
+    pyjson_ws(bytes, pos);
+    match bytes.get(*pos) {
+        None => Err("unexpected end of input".to_string()),
+        Some(b'{') => {
+            *pos += 1;
+            let mut order: Vec<String> = Vec::new();
+            let mut pairs: Vec<(String, Json)> = Vec::new();
+            pyjson_ws(bytes, pos);
+            if bytes.get(*pos) == Some(&b'}') {
+                *pos += 1;
+                return Ok(Json::Obj(pairs));
+            }
+            loop {
+                pyjson_ws(bytes, pos);
+                let key = match pyjson_value(bytes, pos)? {
+                    Json::Str(key) => key,
+                    _ => return Err(format!("expected a string key at position {pos}")),
+                };
+                pyjson_ws(bytes, pos);
+                pyjson_expect(bytes, pos, ":")?;
+                let value = pyjson_value(bytes, pos)?;
+                match order.iter().position(|seen| *seen == key) {
+                    Some(index) => pairs[index].1 = value,
+                    None => {
+                        order.push(key.clone());
+                        pairs.push((key, value));
+                    }
+                }
+                pyjson_ws(bytes, pos);
+                match bytes.get(*pos) {
+                    Some(b',') => *pos += 1,
+                    Some(b'}') => {
+                        *pos += 1;
+                        return Ok(Json::Obj(pairs));
+                    }
+                    _ => return Err(format!("expected ',' or '}}' at position {pos}")),
+                }
+            }
+        }
+        Some(b'[') => {
+            *pos += 1;
+            let mut items: Vec<Json> = Vec::new();
+            pyjson_ws(bytes, pos);
+            if bytes.get(*pos) == Some(&b']') {
+                *pos += 1;
+                return Ok(Json::Arr(items));
+            }
+            loop {
+                items.push(pyjson_value(bytes, pos)?);
+                pyjson_ws(bytes, pos);
+                match bytes.get(*pos) {
+                    Some(b',') => *pos += 1,
+                    Some(b']') => {
+                        *pos += 1;
+                        return Ok(Json::Arr(items));
+                    }
+                    _ => return Err(format!("expected ',' or ']' at position {pos}")),
+                }
+            }
+        }
+        Some(b'"') => pyjson_string(bytes, pos).map(Json::Str),
+        Some(b't') => pyjson_expect(bytes, pos, "true").map(|()| Json::Bool(true)),
+        Some(b'f') => pyjson_expect(bytes, pos, "false").map(|()| Json::Bool(false)),
+        Some(b'n') => pyjson_expect(bytes, pos, "null").map(|()| Json::Null),
+        Some(b'N') => pyjson_expect(bytes, pos, "NaN").map(|()| Json::Float(f64::NAN)),
+        Some(b'I') => pyjson_expect(bytes, pos, "Infinity").map(|()| Json::Float(f64::INFINITY)),
+        Some(b'-') if bytes[*pos..].starts_with(b"-Infinity") => {
+            *pos += "-Infinity".len();
+            Ok(Json::Float(f64::NEG_INFINITY))
+        }
+        Some(b'-' | b'0'..=b'9') => pyjson_number(bytes, pos),
+        Some(other) => Err(format!("unexpected byte {other:#04x} at position {pos}")),
+    }
+}
+
+fn pyjson_string(bytes: &[u8], pos: &mut usize) -> Result<String, String> {
+    *pos += 1;
+    let mut out = String::new();
+    loop {
+        match bytes.get(*pos) {
+            None => return Err("unterminated string".to_string()),
+            Some(b'"') => {
+                *pos += 1;
+                return Ok(out);
+            }
+            Some(b'\\') => {
+                *pos += 1;
+                match bytes.get(*pos) {
+                    Some(b'"') => out.push('"'),
+                    Some(b'\\') => out.push('\\'),
+                    Some(b'/') => out.push('/'),
+                    Some(b'b') => out.push('\u{08}'),
+                    Some(b'f') => out.push('\u{0c}'),
+                    Some(b'n') => out.push('\n'),
+                    Some(b'r') => out.push('\r'),
+                    Some(b't') => out.push('\t'),
+                    Some(b'u') => {
+                        let unit = pyjson_hex4(bytes, *pos + 1)?;
+                        *pos += 4;
+                        let code = if (0xD800..0xDC00).contains(&unit) {
+                            if bytes.get(*pos + 1..*pos + 3).is_some_and(|s| s == b"\\u") {
+                                let low = pyjson_hex4(bytes, *pos + 3)?;
+                                if !(0xDC00..0xE000).contains(&low) {
+                                    return Err("unpaired surrogate escape".to_string());
+                                }
+                                *pos += 6;
+                                0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
+                            } else {
+                                return Err("lone surrogate escape".to_string());
+                            }
+                        } else if (0xDC00..0xE000).contains(&unit) {
+                            return Err("lone surrogate escape".to_string());
+                        } else {
+                            unit
+                        };
+                        out.push(char::from_u32(code).ok_or("invalid escape code point")?);
+                    }
+                    _ => return Err(format!("invalid escape at position {pos}")),
+                }
+                *pos += 1;
+            }
+            Some(raw) if *raw < 0x20 => {
+                // json.loads strict mode: raw control characters are invalid in strings.
+                return Err(format!("invalid control character at position {pos}"));
+            }
+            Some(_) => {
+                let rest = std::str::from_utf8(&bytes[*pos..]).map_err(|e| e.to_string())?;
+                let c = rest.chars().next().expect("non-empty remainder");
+                out.push(c);
+                *pos += c.len_utf8();
+            }
+        }
+    }
+}
+
+fn pyjson_hex4(bytes: &[u8], at: usize) -> Result<u32, String> {
+    let hex = bytes
+        .get(at..at + 4)
+        .and_then(|s| std::str::from_utf8(s).ok())
+        .ok_or("truncated \\u escape")?;
+    u32::from_str_radix(hex, 16).map_err(|e| e.to_string())
+}
+
+// The JSON number grammar json.loads enforces: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+fn pyjson_number_lexeme(lexeme: &str) -> bool {
+    let b = lexeme.strip_prefix('-').unwrap_or(lexeme).as_bytes();
+    let mut i = match b.first() {
+        Some(b'0') => 1,
+        Some(b'1'..=b'9') => b.iter().take_while(|c| c.is_ascii_digit()).count(),
+        _ => return false,
+    };
+    if b.get(i) == Some(&b'.') {
+        let frac = b[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if frac == 0 {
+            return false;
+        }
+        i += 1 + frac;
+    }
+    if let Some(b'e' | b'E') = b.get(i) {
+        i += 1;
+        if let Some(b'+' | b'-') = b.get(i) {
+            i += 1;
+        }
+        let exp = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if exp == 0 {
+            return false;
+        }
+        i += exp;
+    }
+    i == b.len()
+}
+
+fn pyjson_number(bytes: &[u8], pos: &mut usize) -> Result<Json, String> {
+    let start = *pos;
+    if bytes.get(*pos) == Some(&b'-') {
+        *pos += 1;
+    }
+    while bytes
+        .get(*pos)
+        .is_some_and(|b| matches!(b, b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-'))
+    {
+        *pos += 1;
+    }
+    let lexeme = std::str::from_utf8(&bytes[start..*pos]).map_err(|e| e.to_string())?;
+    if !pyjson_number_lexeme(lexeme) {
+        return Err(format!("invalid number {lexeme:?}"));
+    }
+    if lexeme.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
+        return lexeme
+            .parse::<f64>()
+            .map(Json::Float)
+            .map_err(|e| e.to_string());
+    }
+    if let Ok(int) = lexeme.parse::<i64>() {
+        return Ok(Json::Int(int));
+    }
+    Ok(Json::RawNum(py_int(lexeme)))
+}
+
+/// Python `json.dumps` with defaults — `", "`/`": "` separators, `ensure_ascii`
+/// escaping, NaN/Infinity literals — the corrections detail storage byte contract.
+pub fn pyjson_dumps(json: &Json) -> String {
+    let mut out = String::new();
+    write_pyjson(json, &mut out);
+    out
+}
+
+fn write_pyjson(json: &Json, out: &mut String) {
+    match json {
+        Json::Null => out.push_str("null"),
+        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Json::Int(i) => out.push_str(&i.to_string()),
+        Json::UInt(u) => out.push_str(&u.to_string()),
+        Json::RawNum(lexeme) => out.push_str(lexeme),
+        Json::Float(f) if f.is_nan() => out.push_str("NaN"),
+        Json::Float(f) if f.is_infinite() && *f > 0.0 => out.push_str("Infinity"),
+        Json::Float(f) if f.is_infinite() => out.push_str("-Infinity"),
+        Json::Float(f) => out.push_str(&py_float_repr(*f, true)),
+        Json::Str(s) => encode_string_ascii(s, out),
+        Json::Datetime(_) | Json::Value(_) => {
+            unreachable!("pyjson trees carry only parsed scalars and containers")
+        }
+        Json::Arr(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_pyjson(item, out);
+            }
+            out.push(']');
+        }
+        Json::Obj(pairs) => {
+            out.push('{');
+            for (i, (key, item)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                encode_string_ascii(key, out);
+                out.push_str(": ");
+                write_pyjson(item, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+// json.dumps ensure_ascii: every non-ASCII code point becomes \uXXXX (surrogate pairs
+// for astral), controls use the short escapes.
+fn encode_string_ascii(text: &str, out: &mut String) {
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if c.is_ascii() => out.push(c),
+            c if (c as u32) > 0xFFFF => {
+                let v = c as u32 - 0x10000;
+                out.push_str(&format!(
+                    "\\u{:04x}\\u{:04x}",
+                    0xD800 + (v >> 10),
+                    0xDC00 + (v & 0x3FF)
+                ));
+            }
+            c => out.push_str(&format!("\\u{:04x}", c as u32)),
+        }
+    }
+    out.push('"');
 }
 
 fn obj(pairs: Vec<(&str, Json)>) -> Json {
@@ -1726,6 +2036,69 @@ mod tests {
         assert_eq!(py_float_repr(f64::INFINITY, true), "inf");
         assert_eq!(py_float_repr(f64::NEG_INFINITY, true), "-inf");
         assert_eq!(Json::Float(f64::NAN).dumps(), "null");
+    }
+
+    #[test]
+    fn pyjson_round_trips_the_detail_contract() {
+        // Expected bytes pinned from CPython json.dumps defaults.
+        let parsed =
+            pyjson_loads(r#"{"n": NaN, "i": Infinity, "ni": -Infinity, "a": 1, "a": 2}"#).unwrap();
+        assert_eq!(
+            pyjson_dumps(&parsed),
+            r#"{"n": NaN, "i": Infinity, "ni": -Infinity, "a": 2}"#
+        );
+        let unicode = pyjson_loads(r#"{"k": "éé 🤖 x"}"#).unwrap();
+        assert_eq!(
+            pyjson_dumps(&unicode),
+            r#"{"k": "\u00e9\u00e9 \ud83e\udd16 x"}"#
+        );
+        let nested = pyjson_loads(r#"[true, null, 1.5, 1e-5, 18446744073709551616, "s"]"#).unwrap();
+        assert_eq!(
+            pyjson_dumps(&nested),
+            r#"[true, null, 1.5, 1e-05, 18446744073709551616, "s"]"#
+        );
+        assert_eq!(pyjson_dumps(&pyjson_loads("1e400").unwrap()), "Infinity");
+        assert!(pyjson_loads(r#"{"k": "\ud800"}"#).is_err());
+        assert!(pyjson_loads("{").is_err());
+        assert!(pyjson_loads("[1,]").is_err());
+    }
+
+    #[test]
+    fn pyjson_rejects_what_python_json_rejects() {
+        // json.loads strictness: number grammar and raw control characters.
+        for invalid in [
+            "01",
+            "-01",
+            "1.",
+            ".5",
+            "+1",
+            "1.e5",
+            "1e",
+            "1e+",
+            "--1",
+            "1-",
+            "0x1",
+            "nan",
+            "-NaN",
+            "\"\u{01}\"",
+            "\"\t\"",
+        ] {
+            assert!(pyjson_loads(invalid).is_err(), "{invalid:?}");
+        }
+        for (valid, dumped) in [
+            ("-0", "0"),
+            ("0.5", "0.5"),
+            ("1E5", "100000.0"),
+            ("1e+5", "100000.0"),
+            ("-0.0", "-0.0"),
+            (" 7\t", "7"),
+        ] {
+            assert_eq!(
+                pyjson_dumps(&pyjson_loads(valid).unwrap()),
+                dumped,
+                "{valid:?}"
+            );
+        }
     }
 
     #[test]

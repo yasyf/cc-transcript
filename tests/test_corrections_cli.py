@@ -81,6 +81,56 @@ def test_sql_escape_hatch(tmp_path: pathlib.Path) -> None:
     assert row == {"source": "cc-review", "correction_text": "use uv add"}
 
 
+def test_detail_round_trips_python_json_bytes(tmp_path: pathlib.Path) -> None:
+    detail = {"n": float("nan"), "i": float("inf"), "ni": float("-inf"), "k": "éé 🤖"}
+    add_review(tmp_path, detail='{"n": NaN, "i": Infinity, "ni": -Infinity, "k": "éé 🤖"}')
+    stored = rows_of(run_cli(tmp_path, "sql", "SELECT detail_json FROM corrections").stdout)
+    assert stored == [{"detail_json": json.dumps(detail | {"repo": "repo-a"})}]
+    result = run_cli(tmp_path, "query", "--session", SESSION)
+    assert result.returncode == 0, result.stderr
+    (row,) = rows_of(result.stdout)
+    assert row["detail"] == {"n": None, "i": None, "ni": None, "k": "éé 🤖", "repo": "repo-a"}
+
+
+def test_empty_options_keep_python_truthiness(tmp_path: pathlib.Path) -> None:
+    add_review(tmp_path, detail="", incorrect_digest="")
+    result = run_cli(tmp_path, "sql", "SELECT detail_json, incorrect_digest FROM corrections")
+    (row,) = rows_of(result.stdout)
+    assert row == {"detail_json": json.dumps({"repo": "repo-a"}), "incorrect_digest": None}
+
+
+def test_empty_repo_is_omitted_from_detail(tmp_path: pathlib.Path) -> None:
+    result = run_cli(
+        tmp_path,
+        "add",
+        "--session", SESSION,
+        "--source", "cc-review",
+        "--anchor", "review:r1:8",
+        "--incorrect-file", "/a.py",
+        "--ts-ms", "1000",
+        "--repo", "",
+        "--detail", "",
+    )
+    assert result.returncode == 0, result.stderr
+    stored = rows_of(run_cli(tmp_path, "sql", "SELECT detail_json FROM corrections").stdout)
+    assert stored == [{"detail_json": "{}"}]
+
+
+def test_sql_duplicate_columns_keep_the_first(tmp_path: pathlib.Path) -> None:
+    add_review(tmp_path)
+    result = run_cli(tmp_path, "sql", "SELECT 1 AS x, 2 AS x")
+    assert result.returncode == 0
+    assert rows_of(result.stdout) == [{"x": 1}]
+
+
+def test_sql_blob_column_fails_loud(tmp_path: pathlib.Path) -> None:
+    add_review(tmp_path)
+    result = run_cli(tmp_path, "sql", "SELECT X'ff' AS x")
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "cannot serialize BLOB column" in result.stderr
+
+
 def test_python_facade_reads_what_the_cli_wrote(tmp_path: pathlib.Path) -> None:
     # Cross-process engine mixing is the supported mode (doc 3f9e034a): the Rust CLI
     # writes in one process, the Python facade's native engine reads in another.
