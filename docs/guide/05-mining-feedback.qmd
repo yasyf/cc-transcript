@@ -174,12 +174,11 @@ preview rendered now, at an explicit budget. Together the key, the window, and
 the anchor fill a candidate:
 
 ```{python}
-from cc_transcript import EventRef, SessionActivity, capture_window
+from cc_transcript import EventRef, capture_window
 from cc_transcript.mining import FeedbackCandidate
 
-activity = SessionActivity.from_events(signal.session_id, events)
 anchor = EventRef(signal.session_id, signal.event_uuid)
-window = capture_window(activity, anchor)
+window = capture_window(raw, anchor)
 candidate = FeedbackCandidate(
     dedup_key=key,
     source_kind=signal.kind,
@@ -241,10 +240,7 @@ noisy = FeedbackCandidate(
     source_kind=structural.kind,
     occurred_at=structural.occurred_at,
     text=structural.text,
-    window=capture_window(
-        SessionActivity.from_events(structural.session_id, followup_events),
-        noisy_anchor,
-    ),
+    window=capture_window(followup_raw, noisy_anchor),
     ref=noisy_anchor,
     signal=structural.signal,
 )

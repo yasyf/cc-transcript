@@ -12,7 +12,6 @@ cc-transcript/
 │   ├── models.py       # Typed superset event model (the central contract)
 │   ├── ids.py          # Identity primitives shared by every layer of the platform
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
-│   ├── backend.py      # Backend protocol + ParsedTranscript
 │   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
 │   ├── rust.py         # RustBackend — the fast path over cc_transcript._native
 │   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters, plus the CC-protocol text layer (denial/interrupt markers)
