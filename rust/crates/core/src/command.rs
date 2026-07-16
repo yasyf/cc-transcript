@@ -72,18 +72,19 @@ impl fmt::Debug for Command {
     }
 }
 
-// Parity: command.py CommandLine.splice — the ValueError legs for a span-less index and an
-// out-of-order/overlapping span.
+// Parity: command.py CommandLine.splice error legs. NoSpan/Overlap carry the raw (maybe negative)
+// key the Python message prints; IndexOutOfRange maps to IndexError at the py boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpliceError {
     NoSpan {
-        index: usize,
+        index: isize,
     },
     Overlap {
         span: (usize, usize),
-        index: usize,
+        index: isize,
         cursor: usize,
     },
+    IndexOutOfRange,
 }
 
 impl fmt::Display for SpliceError {
@@ -99,6 +100,7 @@ impl fmt::Display for SpliceError {
                 "span ({}, {}) at index {index} overlaps or precedes cursor {cursor}",
                 span.0, span.1
             ),
+            SpliceError::IndexOutOfRange => write!(f, "tuple index out of range"),
         }
     }
 }
@@ -259,22 +261,27 @@ impl CommandLine {
         false
     }
 
-    // Parity: command.py CommandLine.splice — swap each indexed command's byte span for its
-    // replacement, passing every other byte through; indices apply in ascending order.
-    pub fn splice(&self, replacements: &BTreeMap<usize, String>) -> Result<String, SpliceError> {
+    // Parity: command.py CommandLine.splice — keys apply in ascending order (BTreeMap = sorted());
+    // a negative key resolves like tuple indexing, out-of-range raises IndexError.
+    pub fn splice(&self, replacements: &BTreeMap<isize, String>) -> Result<String, SpliceError> {
         let source = self.raw.as_bytes();
+        let len = self.parts.len() as isize;
         let mut out: Vec<u8> = Vec::new();
         let mut cursor = 0usize;
-        for (&index, text) in replacements {
-            let span = self.parts[index]
+        for (&key, text) in replacements {
+            let index = if key < 0 { key + len } else { key };
+            if index < 0 || index >= len {
+                return Err(SpliceError::IndexOutOfRange);
+            }
+            let span = self.parts[index as usize]
                 .0
                 .span
-                .ok_or(SpliceError::NoSpan { index })?;
+                .ok_or(SpliceError::NoSpan { index: key })?;
             let (start, end) = span;
             if start < cursor {
                 return Err(SpliceError::Overlap {
                     span,
-                    index,
+                    index: key,
                     cursor,
                 });
             }
@@ -292,8 +299,8 @@ impl CommandLine {
         &self,
         mut to: impl FnMut(usize) -> Option<String>,
     ) -> Result<Option<String>, SpliceError> {
-        let replacements: BTreeMap<usize, String> = (0..self.parts.len())
-            .filter_map(|index| to(index).map(|text| (index, text)))
+        let replacements: BTreeMap<isize, String> = (0..self.parts.len())
+            .filter_map(|index| to(index).map(|text| (index as isize, text)))
             .collect();
         if replacements.is_empty() {
             Ok(None)
@@ -768,6 +775,26 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "span (2, 6) at index 1 overlaps or precedes cursor 4"
+        );
+    }
+
+    #[test]
+    fn splice_resolves_negative_and_rejects_out_of_range() {
+        let line = CommandLine::parse("a; b");
+        // A negative key resolves like Python tuple indexing.
+        assert_eq!(
+            line.splice(&BTreeMap::from([(-1, "X".to_string())]))
+                .unwrap(),
+            "a; X"
+        );
+        // Out of range in either direction is IndexOutOfRange (→ IndexError at the boundary).
+        assert_eq!(
+            line.splice(&BTreeMap::from([(2, "X".to_string())])),
+            Err(SpliceError::IndexOutOfRange)
+        );
+        assert_eq!(
+            line.splice(&BTreeMap::from([(-3, "X".to_string())])),
+            Err(SpliceError::IndexOutOfRange)
         );
     }
 

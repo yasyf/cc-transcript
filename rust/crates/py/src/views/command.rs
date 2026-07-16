@@ -1,14 +1,22 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyType};
 use pyo3::IntoPyObjectExt;
 
-use cc_transcript_core::command::{dequote, Command, CommandLine, Redirect};
+use cc_transcript_core::command::{dequote, Command, CommandLine, Redirect, SpliceError};
 
 use crate::views::dunder::view_dunders;
+
+// Parity: command.py CommandLine.splice — an out-of-range index is IndexError, the rest ValueError.
+fn splice_error(error: SpliceError) -> PyErr {
+    match error {
+        SpliceError::IndexOutOfRange => PyIndexError::new_err(error.to_string()),
+        _ => PyValueError::new_err(error.to_string()),
+    }
+}
 
 /// A shell redirect parsed from a bash command (e.g. ``> file.txt``, ``2>&1``).
 ///
@@ -519,10 +527,21 @@ impl CommandLineView {
         .into_bound_py_any(py)
     }
 
-    fn splice(&self, replacements: BTreeMap<usize, String>) -> PyResult<String> {
-        self.line
-            .splice(&replacements)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+    // Accept any Mapping[int, str] (dict, mappingproxy, UserDict, ...): iterate keys, index by key.
+    fn splice(
+        &self,
+        #[gen_stub(override_type(type_repr = "typing.Mapping[builtins.int, builtins.str]", imports = ("typing", "builtins")))]
+        replacements: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        let mut map: BTreeMap<isize, String> = BTreeMap::new();
+        for key in replacements.try_iter()? {
+            let key = key?;
+            map.insert(
+                key.extract::<isize>()?,
+                replacements.get_item(&key)?.extract::<String>()?,
+            );
+        }
+        self.line.splice(&map).map_err(splice_error)
     }
 
     fn rewrite_occurrences(
@@ -530,7 +549,7 @@ impl CommandLineView {
         #[gen_stub(override_type(type_repr = "collections.abc.Callable[[cc_transcript.command.Occurrence], str | None]", imports = ("collections.abc", "cc_transcript.command")))]
         to: &Bound<'_, PyAny>,
     ) -> PyResult<Option<String>> {
-        let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+        let mut replacements: BTreeMap<isize, String> = BTreeMap::new();
         for index in 0..self.line.parts.len() {
             let occ = OccurrenceView {
                 line: Arc::clone(&self.line),
@@ -538,7 +557,7 @@ impl CommandLineView {
             };
             let result = to.call1((occ,))?;
             if !result.is_none() {
-                replacements.insert(index, result.extract::<String>()?);
+                replacements.insert(index as isize, result.extract::<String>()?);
             }
         }
         if replacements.is_empty() {
@@ -547,7 +566,7 @@ impl CommandLineView {
         self.line
             .splice(&replacements)
             .map(Some)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+            .map_err(splice_error)
     }
 
     #[gen_stub(override_return_type(type_repr = "collections.abc.Iterator[cc_transcript.command.Command]", imports = ("collections.abc", "cc_transcript.command")))]

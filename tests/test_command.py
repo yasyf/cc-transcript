@@ -422,6 +422,22 @@ class TestSplice:
     def test_rewrite_occurrences_none_when_no_match(self) -> None:
         assert CommandLine.parse("ls -la").rewrite_occurrences(lambda occ: None) is None
 
+    def test_accepts_any_mapping(self) -> None:
+        from collections import UserDict
+        from types import MappingProxyType
+
+        assert CommandLine.parse("a; b").splice(MappingProxyType({1: "X"})) == "a; X"
+        assert CommandLine.parse("a; b").splice(UserDict({1: "X"})) == "a; X"
+
+    def test_negative_index_resolves_like_tuple(self) -> None:
+        assert CommandLine.parse("a; b").splice({-1: "X"}) == "a; X"
+        assert CommandLine.parse("a; b").splice({-2: "X"}) == "X; b"
+
+    @pytest.mark.parametrize("index", [2, -3])
+    def test_out_of_range_index_raises_indexerror(self, index: int) -> None:
+        with pytest.raises(IndexError, match="tuple index out of range"):
+            CommandLine.parse("a; b").splice({index: "X"})
+
 
 class TestOccurrences:
     def test_one_occurrence_per_part_in_order(self) -> None:
