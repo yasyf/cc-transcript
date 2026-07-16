@@ -1,0 +1,3 @@
+# Golden fixtures assert exact bytes (incl. EOF shape); hygiene hooks must not
+# rewrite them.
+exclude: ^tests/testdata/

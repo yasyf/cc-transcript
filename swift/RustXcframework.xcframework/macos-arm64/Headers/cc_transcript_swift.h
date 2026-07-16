@@ -33,3 +33,5 @@ void* __swift_bridge__$PendingItem$tool_use_id(void* self);
 struct RustStr __swift_bridge__$PendingItem$name(void* self);
 struct RustStr __swift_bridge__$PendingItem$kind(void* self);
 struct __private__ResultPtrAndPtr __swift_bridge__$session_activity(void* path, void* waiting_tools, void* human_facing_tools);
+
+
