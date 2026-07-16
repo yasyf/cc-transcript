@@ -30,6 +30,8 @@ Invocation matrix (name -> argv, cwd = repo root, binary = .venv/bin/cc-transcri
   permissions       permissions --root .fixtures/corpus --all
   permissions_json  permissions --root .fixtures/corpus --all --json
   slice             slice --session <smallest session> --since/--until <wide pinned window> --root .fixtures/corpus
+  scratchpad_missing scratchpad --session <reserved UUID>, TMPDIR=.fixtures/tmp   (exit 1, not-found on stderr)
+  scratchpad_invalid scratchpad --session not-a-uuid   (exit 2, usage error on stderr)
   digest            digest, pinned two-row JSON array on stdin
   digest_check      digest --check tests/testdata/digest_fixtures.json
   digest_badcheck   digest --check <fixture with one corrupted digest>   (exit 1, mismatch on stderr)
@@ -38,6 +40,8 @@ Invocation matrix (name -> argv, cwd = repo root, binary = .venv/bin/cc-transcri
 
 Skipped commands:
   watch  a poll-forever loop with no bounded run mode; nothing byte-stable to record.
+  scratchpad (success leg)  prints an absolute tmp-root path that varies by machine and uid;
+    the behavioral tests in tests/test_cli.py cover resolution.
 
 Run: ``uv run --no-sync python scripts/record_cli_golden.py``
 """
@@ -82,6 +86,7 @@ class Case(NamedTuple):
     argv: list[str]
     stdin: bytes | None = None
     home: Path | None = None
+    env: dict[str, str] | None = None
 
 
 def regenerate_corpus() -> None:
@@ -130,6 +135,11 @@ def matrix(smallest: str) -> dict[str, Case]:
                 "--root", root,
             ]
         ),
+        "scratchpad_missing": Case(
+            ["scratchpad", "--session", "cccccccc-cccc-cccc-cccc-cccccccccccc"],
+            env={"TMPDIR": str(REPO_ROOT / ".fixtures" / "tmp")},
+        ),
+        "scratchpad_invalid": Case(["scratchpad", "--session", "not-a-uuid"]),
         "digest": Case(["digest"], stdin=DIGEST_STDIN),
         "digest_check": Case(["digest", "--check", "tests/testdata/digest_fixtures.json"]),
         "digest_badcheck": Case(["digest", "--check", corrupted_digest_fixture()]),
@@ -139,7 +149,7 @@ def matrix(smallest: str) -> dict[str, Case]:
 
 
 def run(case: Case) -> tuple[bytes, bytes, int]:
-    env = os.environ | {"TZ": "UTC"} | ({"HOME": str(case.home)} if case.home else {})
+    env = os.environ | {"TZ": "UTC"} | (case.env or {}) | ({"HOME": str(case.home)} if case.home else {})
     proc = subprocess.run(
         [str(CLI), *case.argv],
         cwd=REPO_ROOT,
@@ -154,6 +164,7 @@ def record() -> None:
     regenerate_corpus()
     shutil.rmtree(REPO_ROOT / HOME_REL, ignore_errors=True)
     (REPO_ROOT / HOME_REL).mkdir(parents=True)
+    (REPO_ROOT / ".fixtures" / "tmp").mkdir(parents=True, exist_ok=True)
     GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
     for existing in (*GOLDEN_DIR.glob("*.out"), *GOLDEN_DIR.glob("*.err")):
         existing.unlink()

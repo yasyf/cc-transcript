@@ -1,0 +1,4 @@
+Usage: cc-transcript scratchpad [OPTIONS]
+Try 'cc-transcript scratchpad --help' for help.
+
+Error: invalid --session 'not-a-uuid'; expected a UUID

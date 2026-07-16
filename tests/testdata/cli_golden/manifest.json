@@ -169,6 +169,26 @@
     "stderr_bytes": 0,
     "stdout_bytes": 396063
   },
+  "scratchpad_invalid": {
+    "argv": [
+      "scratchpad",
+      "--session",
+      "not-a-uuid"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 146,
+    "stdout_bytes": 0
+  },
+  "scratchpad_missing": {
+    "argv": [
+      "scratchpad",
+      "--session",
+      "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    ],
+    "exit_code": 1,
+    "stderr_bytes": 70,
+    "stdout_bytes": 0
+  },
   "show": {
     "argv": [
       "show",
