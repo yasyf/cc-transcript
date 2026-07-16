@@ -71,6 +71,7 @@ __all__ = [
     "ServerToolUse",
     "SkillCall",
     "SkillResult",
+    "SpecMatcher",
     "StopHookSummary",
     "SystemEvent",
     "TaskCall",
@@ -1485,6 +1486,12 @@ class SkillResult(ToolResultBase):
     def success(self) -> bool: ...
     @property
     def allowed_tools(self) -> tuple[str, ...] | None: ...
+
+@typing.final
+class SpecMatcher:
+    def __new__(cls, spec_json: builtins.str) -> SpecMatcher: ...
+    def keep(self, event: models.TranscriptEvent) -> builtins.bool: ...
+    def labels(self, event: models.TranscriptEvent) -> builtins.list[builtins.str]: ...
 
 @typing.final
 class StopHookSummary:

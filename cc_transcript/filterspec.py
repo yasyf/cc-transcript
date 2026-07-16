@@ -443,40 +443,30 @@ def keep(event: TranscriptEvent, spec: FilterSpec) -> bool:
     Filters an already-materialized :class:`~cc_transcript.models.TranscriptEvent`;
     parse-time filtering runs in Rust before materialization via :func:`spec_to_json`.
     """
-    return _native.keep_events([event], spec_to_json(spec))[0]
+    return _native.SpecMatcher(spec_to_json(spec)).keep(event)
 
 
 def labels_for(event: TranscriptEvent, spec: FilterSpec) -> tuple[str, ...]:
     """Returns the TAG labels ``spec`` records for ``event``, in clause order."""
-    return tuple(_native.label_events([event], spec_to_json(spec))[0])
+    return tuple(_native.SpecMatcher(spec_to_json(spec)).labels(event))
 
 
 def apply_spec(events: Iterable[TranscriptEvent], spec: FilterSpec) -> Iterator[TranscriptEvent]:
-    """Yields the already-materialized events that survive every ``DROP`` clause of ``spec``."""
-    surviving = list(events)
-    return (
-        event
-        for event, kept in zip(surviving, _native.keep_events(surviving, spec_to_json(spec)), strict=True)
-        if kept
-    )
+    """Yields the already-materialized events that survive every ``DROP`` clause of ``spec``.
+
+    Streams ``events`` lazily: the spec compiles once, then each event is tested as it
+    is pulled, so consumers can stop early without materializing the tail.
+    """
+    matcher = _native.SpecMatcher(spec_to_json(spec))
+    return (event for event in events if matcher.keep(event))
 
 
 def annotate_spec(
     events: Iterable[TranscriptEvent], spec: FilterSpec
 ) -> Iterator[tuple[TranscriptEvent, tuple[str, ...]]]:
-    """Yields ``(event, labels)`` for events surviving ``spec``, with TAG labels."""
-    materialized = list(events)
-    spec_json = spec_to_json(spec)
-    return (
-        (event, tuple(labels))
-        for event, labels, kept in zip(
-            materialized,
-            _native.label_events(materialized, spec_json),
-            _native.keep_events(materialized, spec_json),
-            strict=True,
-        )
-        if kept
-    )
+    """Yields ``(event, labels)`` for events surviving ``spec``, with TAG labels, streaming lazily."""
+    matcher = _native.SpecMatcher(spec_to_json(spec))
+    return ((event, tuple(matcher.labels(event))) for event in events if matcher.keep(event))
 
 
 def spec_to_json(spec: FilterSpec) -> str:

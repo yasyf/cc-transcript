@@ -523,6 +523,46 @@ fn mine_events<'py>(
     mining::mine_events(py, &events, &spec)
 }
 
+// filterspec.apply_spec/keep and annotate_spec/labels_for: the spec compiled once, tested
+// per already-materialized event so the facade streams lazily instead of buffering its input.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass]
+pub struct SpecMatcher {
+    spec: CompiledSpec,
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl SpecMatcher {
+    #[new]
+    fn new(spec_json: &str) -> PyResult<Self> {
+        Ok(Self {
+            spec: compile_spec(spec_json).map_err(PyValueError::new_err)?,
+        })
+    }
+
+    fn keep(
+        &self,
+        #[gen_stub(override_type(type_repr = "cc_transcript.models.TranscriptEvent", imports = ("cc_transcript.models",)))]
+        event: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        Ok(spec_keep(&self.spec, mining::view_entry(event, "keep")?))
+    }
+
+    fn labels(
+        &self,
+        #[gen_stub(override_type(type_repr = "cc_transcript.models.TranscriptEvent", imports = ("cc_transcript.models",)))]
+        event: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<String>> {
+        Ok(
+            spec_labels(&self.spec, mining::view_entry(event, "labels")?)
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        )
+    }
+}
+
 // filterspec.apply_spec/keep: the DROP verdict per already-materialized event, over
 // the shared `Entry` borrowed behind each view — no re-parse, no round-trip.
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -1004,6 +1044,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .getattr("Sequence")?
         .call_method1("register", (m.getattr("EventList")?,))?;
     m.add_class::<ParseStream>()?;
+    m.add_class::<SpecMatcher>()?;
     m.add_class::<crate::watch::WatchTailer>()?;
     m.add_class::<crate::corrections::RustCorrectionLog>()?;
     Ok(())

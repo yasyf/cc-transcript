@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
+from cc_transcript import _native
 from cc_transcript.filterspec import (
     AGENT_INJECTION_GROUPS,
     COMMAND_ECHO_GROUPS,
@@ -24,6 +27,7 @@ from cc_transcript.filterspec import (
     is_agent_injection,
     keep,
     labels_for,
+    spec_to_json,
 )
 from cc_transcript.models import (
     AssistantEvent,
@@ -68,10 +72,21 @@ def attachment() -> AttachmentEvent:
     return event
 
 
-def test_keep_rejects_non_event_and_names_itself() -> None:
-    # The events-in binding names itself, not mine(), so keep/apply_spec misuse points at the right API.
+def test_keep_events_rejects_non_event_and_names_itself() -> None:
+    # The events-in binding names itself, not mine(), so misuse points at the right API.
     with pytest.raises(TypeError, match=r"keep_events\(\) takes parsed transcript events"):
-        keep(object(), spec())  # type: ignore[arg-type]
+        _native.keep_events([object()], spec_to_json(spec()))
+
+
+def test_apply_spec_streams_without_pulling_the_next_event() -> None:
+    first = user("first substantive prompt")
+
+    def gen() -> Iterator[TranscriptEvent]:
+        yield first
+        raise RuntimeError("apply_spec must not pull past the first event")
+
+    survivors = apply_spec(gen(), spec())  # empty spec keeps everything
+    assert next(survivors) is first
 
 
 def test_kind_is_keeps_matching() -> None:
