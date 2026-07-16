@@ -27,7 +27,7 @@ use cc_transcript_core::ids;
 use cc_transcript_core::notifications::Notifications;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
 use cc_transcript_core::query::{FileRef, Session};
-use cc_transcript_core::types::Entry;
+use cc_transcript_core::types::{epoch_ms, Entry};
 
 static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
     let n = std::env::var("CC_TRANSCRIPT_PARSE_THREADS")
@@ -484,10 +484,6 @@ fn ids_tool_digest(name: &str, input_json: &str) -> PyResult<String> {
 
 // activity.py `ms`: round(dt.timestamp() * 1000), the round-half-even float path Python
 // takes — not chrono's truncating timestamp_millis — so sub-ms stamps project identically.
-fn epoch_ms(dt: DateTime<FixedOffset>) -> i64 {
-    ((dt.timestamp_micros() as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
-}
-
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (path, max_events))]

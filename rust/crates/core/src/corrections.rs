@@ -96,6 +96,18 @@ pub enum LedgerError {
     MultipleStatements,
 }
 
+impl std::fmt::Display for LedgerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LedgerError::Io { error, path } => write!(f, "{}: {error}", path.display()),
+            LedgerError::Sqlite { message, .. } => write!(f, "{message}"),
+            LedgerError::MultipleStatements => {
+                write!(f, "You can only execute one statement at a time.")
+            }
+        }
+    }
+}
+
 impl From<rusqlite::Error> for LedgerError {
     fn from(error: rusqlite::Error) -> Self {
         match error {

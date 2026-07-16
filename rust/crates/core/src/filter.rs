@@ -187,7 +187,7 @@ pub(crate) fn entry_text(entry: &Entry) -> String {
 }
 
 /// Parity: filterspec.event_kind — the string kind tag the renderer and stats key on.
-pub(crate) fn event_kind(entry: &Entry) -> &'static str {
+pub fn event_kind(entry: &Entry) -> &'static str {
     match entry {
         Entry::User(_) => "user",
         Entry::Assistant(_) => "assistant",

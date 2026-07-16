@@ -462,6 +462,11 @@ pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
 
 /// The space-joined text of the ``Text`` blocks — the ``text`` field of the
 /// Python ``AssistantEvent``/``PrintMessage``.
+/// Python `round(dt.timestamp() * 1000)`: half-even over the float product.
+pub fn epoch_ms(dt: DateTime<FixedOffset>) -> i64 {
+    ((dt.timestamp_micros() as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
+}
+
 pub fn joined_text(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
