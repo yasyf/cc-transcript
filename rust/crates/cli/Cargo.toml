@@ -18,3 +18,6 @@ rayon = "1.10"
 ctrlc = "3.4"
 libc = "0.2"
 once_cell = "1"
+
+[dev-dependencies]
+tempfile = "3"

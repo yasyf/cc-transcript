@@ -178,6 +178,7 @@ dependencies = [
  "rayon",
  "regex",
  "sonic-rs",
+ "tempfile",
 ]
 
 [[package]]

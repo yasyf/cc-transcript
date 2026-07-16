@@ -14,10 +14,9 @@ emits the per-tool-call JSONL bridge cc-review consumes, `digest` checks the
 cross-language digest fixture contract — and this page leaves them alone.
 
 Real usage is `uvx cc-transcript …` — no install step, nothing to import. The
-executed cells on this page call the same entry point in-process, via
-`subprocess` and `sys.executable -m cc_transcript`, against a fixture tree
-built in the next cell — so every output you see is real CLI output,
-regenerated on every build.
+executed cells on this page call the same installed `cc-transcript` entry
+point via `subprocess`, against a fixture tree built in the next cell — so
+every output you see is real CLI output, regenerated on every build.
 
 ## A fixture tree to investigate
 
@@ -122,7 +121,8 @@ write("-Users-dev-api/sess-c3d7.jsonl", deploy, "2026-06-09T09:04")
 MAIN = write("-Users-dev-webapp/sess-9f2c.jsonl", fix_login, "2026-06-09T15:10")
 
 def cc(*args):
-    return subprocess.run([sys.executable, "-m", "cc_transcript", *args],
+    cli = Path(sys.executable).parent / "cc-transcript"
+    return subprocess.run([str(cli), *args],
                           capture_output=True, text=True).stdout
 
 sorted(str(path.relative_to(ROOT.parent)) for path in ROOT.rglob("*.jsonl"))

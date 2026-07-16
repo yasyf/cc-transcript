@@ -57,12 +57,6 @@ sections:
     navbar_after: Getting Started
     index: true
 
-# Generated Click CLI reference (uvx cc-transcript: list/show/grep/stats/slice/digest/watch).
-cli:
-  enabled: true
-  module: cc_transcript.cli
-  name: cli
-
 authors:
   - name: Yasyf Mohamedali
     role: Maintainer

@@ -258,7 +258,7 @@ pub enum Cmd {
         #[arg(long = "root")]
         roots: Vec<PathBuf>,
         /// Seconds between filesystem polls.
-        #[arg(long, default_value_t = 1.0, value_parser = parse_poll)]
+        #[arg(long, default_value_t = 1.0, value_parser = parse_poll, allow_hyphen_values = true)]
         poll: f64,
         /// Replay preexisting transcript content instead of tailing from EOF.
         #[arg(long = "from-start")]

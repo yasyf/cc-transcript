@@ -116,3 +116,140 @@ pub fn run(session: &str) -> Result<(), CliExit> {
     eline(&format!("scratchpad not found for session {session}"));
     Err(CliExit(1))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SESSION: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+    fn utime_ns(path: &Path, ns: i64) {
+        let spec = libc::timespec {
+            tv_sec: ns / 1_000_000_000,
+            tv_nsec: ns % 1_000_000_000,
+        };
+        let times = [spec, spec];
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) },
+            0
+        );
+    }
+
+    #[test]
+    fn formula_fallback_when_the_glob_leg_cannot_scan() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = Path::new("/Users/yasyf/Code/cc-skills");
+        let claude_dir = tmp.path().join("claude-501");
+        let expected = claude_dir
+            .join("-Users-yasyf-Code-cc-skills")
+            .join("fallback-session")
+            .join("scratchpad");
+        std::fs::create_dir_all(&expected).unwrap();
+        // Execute-only claude dir: read_dir (the glob leg) fails, path traversal
+        // (the formula leg) still works — the Python suite forced this split by
+        // monkeypatching Path.glob to yield nothing.
+        std::fs::set_permissions(&claude_dir, std::fs::Permissions::from_mode(0o311)).unwrap();
+        let resolved =
+            resolve_scratchpad(&[tmp.path().to_path_buf()], 501, cwd, "fallback-session");
+        std::fs::set_permissions(&claude_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn traversal_and_dot_sessions_resolve_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("claude-501/x/scratchpad")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("claude-501/scratchpad")).unwrap();
+        let roots = vec![tmp.path().to_path_buf()];
+        let cwd = Path::new("/cwd");
+        for session in ["../x", "..", ".", ""] {
+            assert_eq!(
+                resolve_scratchpad(&roots, 501, cwd, session),
+                None,
+                "{session:?}"
+            );
+        }
+        let absolute = tmp.path().join("absolute-session");
+        std::fs::create_dir_all(absolute.join("scratchpad")).unwrap();
+        assert_eq!(
+            resolve_scratchpad(&roots, 501, cwd, absolute.to_str().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn uid_is_respected() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(
+            tmp.path()
+                .join(format!("claude-502/slug/{SESSION}/scratchpad")),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_scratchpad(&[tmp.path().to_path_buf()], 501, Path::new("/cwd"), SESSION),
+            None
+        );
+    }
+
+    #[test]
+    fn nanosecond_mtime_breaks_ties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp
+            .path()
+            .join(format!("claude-501/old-slug/{SESSION}/scratchpad"));
+        let new = tmp
+            .path()
+            .join(format!("claude-501/new-slug/{SESSION}/scratchpad"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let base_ns: i64 = 1_700_000_000_000_000_000;
+        utime_ns(&old, base_ns);
+        utime_ns(&new, base_ns + 1);
+        assert_eq!(
+            resolve_scratchpad(&[tmp.path().to_path_buf()], 501, Path::new("/cwd"), SESSION),
+            Some(new)
+        );
+    }
+
+    #[test]
+    fn dangling_candidate_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let surviving = tmp
+            .path()
+            .join(format!("claude-501/b-slug/{SESSION}/scratchpad"));
+        std::fs::create_dir_all(tmp.path().join("claude-501")).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join("nowhere"),
+            tmp.path().join("claude-501/a-slug"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(&surviving).unwrap();
+        assert_eq!(
+            resolve_scratchpad(&[tmp.path().to_path_buf()], 501, Path::new("/cwd"), SESSION),
+            Some(surviving)
+        );
+    }
+
+    #[test]
+    fn file_candidate_is_not_a_scratchpad() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(format!("claude-501/slug/{SESSION}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scratchpad"), b"not a dir").unwrap();
+        assert_eq!(
+            resolve_scratchpad(&[tmp.path().to_path_buf()], 501, Path::new("/cwd"), SESSION),
+            None
+        );
+    }
+
+    #[test]
+    fn slug_matches_the_observed_pair() {
+        assert_eq!(
+            scratchpad_slug(Path::new("/Users/yasyf/Code/cc-skills")),
+            "-Users-yasyf-Code-cc-skills"
+        );
+        assert_eq!(scratchpad_slug(Path::new("a__é")), "a---");
+    }
+}

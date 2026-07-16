@@ -29,18 +29,15 @@ cc-transcript/
 │   ├── ledger.py       # SyncLedger — the append-only SQLite base under both family ledgers
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
 │   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes
-│   ├── corrections_cli.py # The corrections CLI: the ledger for non-Python consumers
 │   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
 │   ├── cost.py         # Token-usage → USD cost model (cost_of, PRICING)
-│   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
-│   ├── __main__.py     # python -m cc_transcript → the CLI
 │   ├── render.py       # The one renderer — every cut happens here, under a Budget
 │   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
 │   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
 │   ├── judge/          # LLM verdict passes over mined feedback
 │   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
 │   └── sentiment/      # Sentiment domain: event buckets + composable score spec
-├── rust/               # Rust extension (cc_transcript._native)
+├── rust/               # Rust workspace: core, the _native extension, and the cc-transcript CLI
 ├── rust-swift/         # swift-bridge crate (cc_transcript_swift) over the Rust core
 ├── swift/              # Generated Swift package: bridge sources + the committed macos-arm64 xcframework
 ├── tests/              # Pytest suite

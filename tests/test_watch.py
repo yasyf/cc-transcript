@@ -1,30 +1,83 @@
 from __future__ import annotations
 
+import json
+import signal
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import orjson
 
-from cc_transcript.cli import watch_dict, watch_line
 from cc_transcript.ids import EventUuid, SessionId
 from cc_transcript.watch import Watcher, WatchEvent
 from tests import testkit
 
+CLI = Path(sys.executable).parent / "cc-transcript"
 SESSION = SessionId("44444444-4444-4444-4444-444444444444")
 
 
-def test_watch_dict_and_line_render_the_event() -> None:
-    event = testkit.parse_event(
-        testkit.user_line("e1", "hello world", is_sidechain=True, timestamp=datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC))
+def spawn_watch(tmp_path: Path, *args: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [str(CLI), "watch", "--root", str(tmp_path), "--from-start", "--poll", "0.05", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    item = WatchEvent(path=Path("/t.jsonl"), session_id=SESSION, is_sidechain=True, event=event)
-    payload = watch_dict(item)
+
+
+def first_line_then_sigint(proc: subprocess.Popen[str]) -> str:
+    assert proc.stdout is not None
+    line = proc.stdout.readline()
+    proc.send_signal(signal.SIGINT)
+    assert proc.wait(timeout=30) == 0
+    return line
+
+
+def test_watch_cli_renders_lines_and_exits_zero_on_sigint(tmp_path: Path) -> None:
+    # The agent-*.jsonl name marks a subagent sidechain, which renders the tag star.
+    write_transcript(
+        tmp_path,
+        "agent-toolu_w1.jsonl",
+        testkit.user_line(
+            "e1",
+            "hello world",
+            session_id=str(SESSION),
+            timestamp=datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC),
+        ),
+    )
+    line = first_line_then_sigint(spawn_watch(tmp_path))
+    assert line.startswith("09:00:00 44444444 user*")
+    assert "hello world" in line
+
+
+def test_watch_cli_json_leg_renders_the_event_dict(tmp_path: Path) -> None:
+    write_transcript(
+        tmp_path,
+        f"{SESSION}.jsonl",
+        testkit.user_line(
+            "e1",
+            "hello world",
+            session_id=str(SESSION),
+            timestamp=datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC),
+        ),
+    )
+    payload = json.loads(first_line_then_sigint(spawn_watch(tmp_path, "--json")))
     assert (payload["uuid"], payload["kind"], payload["role"]) == ("e1", "user", "user")
-    assert (payload["session_id"], payload["is_sidechain"]) == (SESSION, True)
+    assert (payload["session_id"], payload["is_sidechain"]) == (SESSION, False)
     assert "hello world" in payload["preview"]
-    rendered = watch_line(item)
-    assert rendered.startswith("09:00:00 44444444 user*")
-    assert "hello world" in rendered
+
+
+def test_watch_rejects_a_negative_poll_cleanly(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(CLI), "watch", "--root", str(tmp_path), "--poll", "-1"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "not a non-negative number" in result.stderr
+    assert "panic" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def write_transcript(root: Path, name: str, *lines: dict) -> None:

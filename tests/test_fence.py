@@ -71,6 +71,16 @@ def domain_imports(path: Path, *packages: str) -> list[str]:
     return sorted(mod for mod in imported_modules(path) if mod.startswith(prefixes))
 
 
+def test_no_module_imports_click() -> None:
+    # The CLI is Rust (P5); click must never load through any package import again.
+    offenders = [
+        str(path.relative_to(PACKAGE))
+        for path in py_files(PACKAGE)
+        if "click" in {mod.partition(".")[0] for mod in imported_modules(path)}
+    ]
+    assert not offenders, f"click import crept back in: {offenders}"
+
+
 def test_core_never_imports_domains() -> None:
     offenders = {str(path.relative_to(PACKAGE)): domain_imports(path, *DOMAIN_PACKAGES) for path in core_files()}
     assert not {path: mods for path, mods in offenders.items() if mods}
