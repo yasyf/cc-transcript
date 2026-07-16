@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use sonic_rs::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::thread;
 
@@ -259,8 +259,8 @@ fn bucket_events<'py>(
         .collect()
 }
 
-// buckets.ConversationBucketer.bucket_events over already-materialized event views: each
-// view's `Entry` borrowed via view_entry (no re-parse), same dict as raw `bucket_events`.
+// buckets.ConversationBucketer.bucket_events over already-materialized event views (borrowed
+// via view_entry, no re-parse). Members are `indices` into the input `events`, not uuids.
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
@@ -273,6 +273,11 @@ fn bucket_events_from_events<'py>(
         .iter()
         .map(|event| mining::view_entry(event, "bucket_events_from_events"))
         .collect::<PyResult<Vec<_>>>()?;
+    let index_of: HashMap<*const Entry, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, &entry)| (entry as *const Entry, i))
+        .collect();
     buckets::bucket_events_refs(&entries)
         .iter()
         .map(|bucket| {
@@ -280,17 +285,12 @@ fn bucket_events_from_events<'py>(
             dict.set_item("session_id", bucket.session_id)?;
             dict.set_item("bucket_index", bucket.bucket_index)?;
             dict.set_item("bucket_start_ms", bucket.bucket_start.timestamp_millis())?;
-            let uuids: Vec<&str> = bucket
+            let indices: Vec<usize> = bucket
                 .events
                 .iter()
-                .map(|e| {
-                    e.meta()
-                        .expect("user/assistant entries carry meta")
-                        .uuid
-                        .as_str()
-                })
+                .map(|&e| index_of[&(e as *const Entry)])
                 .collect();
-            dict.set_item("uuids", uuids)?;
+            dict.set_item("indices", indices)?;
             Ok(dict)
         })
         .collect()

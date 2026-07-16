@@ -18,8 +18,9 @@ import pytest
 
 from cc_transcript import _native
 from cc_transcript.parser import parse_events_from_bytes
-from cc_transcript.sentiment.buckets import extract_bucket_keys
+from cc_transcript.sentiment.buckets import ConversationBucketer, extract_bucket_keys
 from scripts.gen_buckets_golden import project, to_bytes
+from tests import testkit
 from tests.support import requires_rust
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "buckets_golden.json").read_text(encoding="utf-8"))
@@ -37,6 +38,29 @@ def test_facade_bucket_events_matches_golden(entry: dict) -> None:
     # project() routes ConversationBucketer.bucket_events through the events-in native
     # binding + uuid rehydration, so this pins that path (not a Python reimpl) to golden.
     assert project(tuple(entry["records"])) == entry["buckets"]
+
+
+def test_facade_rehydrates_shared_uuids_by_index_not_last_wins() -> None:
+    # Finder F4: two parses share session "s" + uuids u1/a1/u2 with distinct content; a
+    # last-wins (session_id, uuid) map dropped the A events and duplicated the B events.
+    def side(tag: str, offset: int) -> list:
+        lines = (
+            testkit.user_line("u1", f"substantive prompt {tag} one", session_id="s", timestamp=testkit.BASE, secs=offset),
+            testkit.assistant_line("a1", "working", session_id="s", timestamp=testkit.BASE, secs=offset + 1),
+            testkit.user_line("u2", f"substantive prompt {tag} two", session_id="s", timestamp=testkit.BASE, secs=offset + 2),
+        )
+        return list(parse_events_from_bytes(to_bytes(lines)))
+
+    a_events = side("A", 0)
+    b_events = side("B", 10)
+    all_events = a_events + b_events
+
+    (bucket,) = ConversationBucketer.bucket_events(all_events)
+    assert bucket.session_id == "s"
+    returned = list(bucket.events)
+    assert len(returned) == 6
+    assert len({id(e) for e in returned}) == 6  # every object distinct: none dropped, none duplicated
+    assert all(got is want for got, want in zip(returned, all_events, strict=True))  # timestamp order == input order
 
 
 @pytest.mark.parametrize("entry", CASES)

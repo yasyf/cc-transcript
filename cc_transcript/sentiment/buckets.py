@@ -62,13 +62,12 @@ class ConversationBucketer:
             [ConversationBucket(session_id='s', bucket_index=0, ...)]
         """
         events = list(events)
-        by_key = {(e.meta.session_id, e.meta.uuid): e for e in events if isinstance(e, UserEvent | AssistantEvent)}
         return [
             ConversationBucket(
                 session_id=SessionId(bucket["session_id"]),
                 bucket_index=BucketIndex(bucket["bucket_index"]),
                 bucket_start=datetime.fromtimestamp(bucket["bucket_start_ms"] / 1000, tz=UTC),
-                events=tuple(by_key[bucket["session_id"], uuid] for uuid in bucket["uuids"]),
+                events=tuple(events[i] for i in bucket["indices"]),
             )
             for bucket in _native.bucket_events_from_events(events)
         ]
