@@ -11,6 +11,10 @@ is gone; these tests prove Python never carries its own copy:
   serializes into a :class:`~cc_transcript.FilterSpec`;
 - no ``cc_transcript`` module re-declares a distinctive literal value as a source
   string.
+
+The ``command.*`` tables are consumed only by the native command parser after the P6
+facade flip — no Python module mirrors them — so they count toward manifest coverage
+here while ``tests/test_command_parity.py`` gates their parser behaviour.
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ PACKAGE = ROOT / "cc_transcript"
 @requires_rust
 def test_python_mirrors_read_from_native() -> None:
     from cc_transcript import _native, filterspec
-    from cc_transcript.command import ASSIGNMENT_RE, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS
     from cc_transcript.corrections import CORRECTIONS_DDL
     from cc_transcript.filterspec import AGENT_INJECTION_GROUPS, INTERRUPT_MARKER_GROUPS, SENTIMENT_JUNK_GROUPS, group_pattern
     from cc_transcript.mining import confidence, signals, sourcekind, spec
@@ -62,19 +65,10 @@ def test_python_mirrors_read_from_native() -> None:
         "mining.NO_OPTION_SELECTED": signals.NO_OPTION_SELECTED,
         "mining.NONE": confidence.NONE,
         "mining.LOW": confidence.LOW,
-        "command.ASSIGNMENT_PATTERN": ASSIGNMENT_RE.pattern,
         "corrections.DDL": CORRECTIONS_DDL,
     }
     for key, value in scalars.items():
         assert value == literals[key], key
-
-    tables = {
-        "command.WRAPPER_COMMANDS": WRAPPER_COMMANDS,
-        "command.MULTI_LEVEL_TOOLS": MULTI_LEVEL_TOOLS,
-        "command.COMPOUND_OPS": COMPOUND_OPS,
-    }
-    for key, table in tables.items():
-        assert sorted(table) == literals[key], key
 
     patterns = {
         "protocol.INTERRUPT_MARKER_PATTERN": INTERRUPT_MARKER_GROUPS,
@@ -84,7 +78,16 @@ def test_python_mirrors_read_from_native() -> None:
     for key, groups in patterns.items():
         assert group_pattern(groups) == literals[key], key
 
-    manifest = set(scalars) | set(tables) | set(patterns)
+    # Native-only literals: the command parser reads these in Rust and no Python module
+    # mirrors them, so they carry no equality check here — only manifest coverage.
+    command_native_only = {
+        "command.WRAPPER_COMMANDS",
+        "command.MULTI_LEVEL_TOOLS",
+        "command.COMPOUND_OPS",
+        "command.ASSIGNMENT_PATTERN",
+    }
+
+    manifest = set(scalars) | set(patterns) | command_native_only
     assert manifest == set(literals), set(literals) ^ manifest
 
 
