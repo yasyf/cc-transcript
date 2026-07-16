@@ -44,25 +44,31 @@ fn subtree_has_duplicate_keys(value: &Value) -> bool {
     }
 }
 
+/// An object's pairs with Python ``json.loads`` duplicate-key semantics: last value
+/// wins, kept at the first occurrence's slot.
+pub(crate) fn deduped_pairs(object: &sonic_rs::Object) -> Vec<(&str, &Value)> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut last: HashMap<&str, &Value> = HashMap::new();
+    for (key, item) in object.iter() {
+        if last.insert(key, item).is_none() {
+            order.push(key);
+        }
+    }
+    order.into_iter().map(|key| (key, last[key])).collect()
+}
+
 // Re-serialize `value` dropping earlier duplicate object keys; leaves go through sonic's
 // own encoder so raw number text and string escapes survive verbatim.
 fn write_deduped(value: &Value, out: &mut String) {
     if let Some(object) = value.as_object() {
         out.push('{');
-        let mut order: Vec<&str> = Vec::new();
-        let mut last: HashMap<&str, &Value> = HashMap::new();
-        for (key, item) in object.iter() {
-            if last.insert(key, item).is_none() {
-                order.push(key);
-            }
-        }
-        for (i, key) in order.into_iter().enumerate() {
+        for (i, (key, item)) in deduped_pairs(object).into_iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push_str(&sonic_rs::to_string(&key).unwrap());
             out.push(':');
-            write_deduped(last[key], out);
+            write_deduped(item, out);
         }
         out.push('}');
     } else if let Some(array) = value.as_array() {

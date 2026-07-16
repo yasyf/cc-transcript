@@ -165,7 +165,10 @@ fn write_orjson(value: &Value, out: &mut String) {
         }
         JsonType::Object => {
             out.push('{');
-            for (i, (key, item)) in value.as_object().unwrap().iter().enumerate() {
+            for (i, (key, item)) in crate::value::deduped_pairs(value.as_object().unwrap())
+                .into_iter()
+                .enumerate()
+            {
                 if i > 0 {
                     out.push(',');
                 }
@@ -185,7 +188,7 @@ fn orjson_dumps(value: &Value) -> String {
 }
 
 // str()/repr() of a parsed JSON number: int -> canonical decimal (signed zero -> "0"),
-// float -> shortest Python-layout repr; pad_exp two-pads the exponent (1e-07 vs orjson 1e-7).
+// float -> the layout `pad_exp` selects (true = Python repr, false = orjson).
 fn format_number(value: &Value, pad_exp: bool) -> String {
     if let Some(raw) = value.as_raw_number() {
         let lexeme = raw.as_str();
@@ -220,13 +223,22 @@ fn py_int(lexeme: &str) -> String {
     }
 }
 
-// Python repr(float): shortest digits in Python's layout — scientific when the base-10
-// exponent E is <= -5 or >= 16, else fixed with a mandatory fractional part.
+// pad_exp=true: Python repr(float) layout. false: installed-orjson layout (fixed
+// notation through exponent -5, bare exponent, nonfinite -> null; orjson 3.11.9).
 fn py_float_repr(value: f64, pad_exp: bool) -> String {
+    if !value.is_finite() {
+        return match (pad_exp, value.is_nan(), value.is_sign_negative()) {
+            (false, _, _) => "null".to_string(),
+            (true, true, _) => "nan".to_string(),
+            (true, false, false) => "inf".to_string(),
+            (true, false, true) => "-inf".to_string(),
+        };
+    }
+    let sci_floor = if pad_exp { -5 } else { -6 };
     let sign = if value.is_sign_negative() { "-" } else { "" };
     let (digits, exp) = shortest_digits(value.abs());
     let n = digits.len() as i64;
-    if exp <= -5 || exp >= 16 {
+    if exp <= sci_floor || exp >= 16 {
         let mant = if n > 1 {
             format!("{}.{}", &digits[..1], &digits[1..])
         } else {
@@ -1001,7 +1013,10 @@ fn write_orjson_pretty(value: &Value, out: &mut String, depth: usize) {
         }
         JsonType::Object if value.as_object().unwrap().iter().next().is_some() => {
             out.push_str("{\n");
-            for (i, (key, item)) in value.as_object().unwrap().iter().enumerate() {
+            for (i, (key, item)) in crate::value::deduped_pairs(value.as_object().unwrap())
+                .into_iter()
+                .enumerate()
+            {
                 if i > 0 {
                     out.push_str(",\n");
                 }
@@ -1147,6 +1162,22 @@ fn block_json(block: &ContentBlock) -> Json {
 
 fn blocks_json(blocks: &[ContentBlock]) -> Json {
     Json::Arr(blocks.iter().map(block_json).collect())
+}
+
+// The user view's block projection: text blocks first, then tool results, nothing else.
+fn user_blocks_json(blocks: &[ContentBlock]) -> Json {
+    Json::Arr(
+        blocks
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::Text(_)))
+            .chain(
+                blocks
+                    .iter()
+                    .filter(|b| matches!(b, ContentBlock::ToolResult(_))),
+            )
+            .map(block_json)
+            .collect(),
+    )
 }
 
 fn cache_creation_json(c: &CacheCreation) -> Json {
@@ -1399,7 +1430,7 @@ pub fn event_json(index: usize, event: &Entry) -> Json {
         Entry::User(u) => pairs.extend(vec![
             ("meta", meta_json(&u.meta)),
             ("text", Json::Str(u.content.text())),
-            ("blocks", blocks_json(u.blocks())),
+            ("blocks", user_blocks_json(u.blocks())),
             ("interrupted", Json::Bool(u.interrupted())),
             ("is_agent_injected", Json::Bool(u.is_agent_injected())),
             ("prompt_id", opt_str(&u.prompt_id)),
@@ -1665,6 +1696,56 @@ mod tests {
             "{\"ts\":\"2026-01-25T09:01:03.739000+00:00\",\"whole\":\"2026-01-06T09:01:06+00:00\",\
              \"mtime\":1700072000.0,\"n\":-3,\"s\":\"é\\\"\",\"none\":null,\"arr\":[true]}"
         );
+    }
+
+    #[test]
+    fn orjson_layout_keeps_exponent_minus_five_fixed() {
+        // orjson 3.11.9: fixed through E == -5 (repr says 1e-05), scientific from E <= -6.
+        for (value, expected) in [
+            (0.0001, "0.0001"),
+            (0.00001, "0.00001"),
+            (0.0000999, "0.0000999"),
+            (-0.00001, "-0.00001"),
+            (1e-6, "1e-6"),
+            (1.5e-6, "1.5e-6"),
+            (1e-7, "1e-7"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1e+16"),
+            (5e-324, "5e-324"),
+        ] {
+            assert_eq!(py_float_repr(value, false), expected, "{value}");
+        }
+        assert_eq!(py_float_repr(0.00001, true), "1e-05");
+    }
+
+    #[test]
+    fn nonfinite_projects_as_null_in_orjson_layout_and_text_in_repr() {
+        let parsed: Value = sonic_rs::from_str(r#"{"big":1e400,"neg":-1e400}"#).unwrap();
+        assert_eq!(orjson_dumps(&parsed), r#"{"big":null,"neg":null}"#);
+        assert_eq!(py_float_repr(f64::NAN, true), "nan");
+        assert_eq!(py_float_repr(f64::INFINITY, true), "inf");
+        assert_eq!(py_float_repr(f64::NEG_INFINITY, true), "-inf");
+        assert_eq!(Json::Float(f64::NAN).dumps(), "null");
+    }
+
+    #[test]
+    fn oversized_integers_render_verbatim() {
+        // Improvement over orjson, which raised on >64-bit ints; pinned deliberately.
+        let parsed: Value =
+            sonic_rs::from_str(r#"{"a":18446744073709551616,"b":-9223372036854775809}"#).unwrap();
+        assert_eq!(
+            orjson_dumps(&parsed),
+            r#"{"a":18446744073709551616,"b":-9223372036854775809}"#
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_collapse_last_wins_first_position() {
+        let parsed: Value = sonic_rs::from_str(r#"{"a":1,"b":2,"a":3}"#).unwrap();
+        assert_eq!(orjson_dumps(&parsed), r#"{"a":3,"b":2}"#);
+        let mut pretty = String::new();
+        write_orjson_pretty(&parsed, &mut pretty, 0);
+        assert_eq!(pretty, "{\n  \"a\": 3,\n  \"b\": 2\n}");
     }
 
     #[test]
