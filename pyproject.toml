@@ -30,16 +30,12 @@ classifiers = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "aiosqlite>=0.20",
-    "anyio>=4.4",
-    "click>=8.1",
     "orjson>=3.10",
-    "tree-sitter>=0.26",
-    "tree-sitter-bash>=0.25",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "anyio>=4.4",
     "pytest>=8.0",
     "ty>=0.0.44",
     "ruff>=0.8",
