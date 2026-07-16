@@ -1,5 +1,6 @@
 pub(crate) mod attachment;
 pub(crate) mod blocks;
+pub(crate) mod command;
 pub(crate) mod convert;
 pub(crate) mod dunder;
 pub(crate) mod events;
@@ -59,5 +60,10 @@ pub(crate) fn add_view_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     toolresult::add_classes(m)?;
     m.add_class::<transcript::TranscriptView>()?;
     m.add_class::<transcript::EventListView>()?;
+    m.add_class::<command::RedirectView>()?;
+    m.add_class::<command::CommandView>()?;
+    m.add_class::<command::OccurrenceView>()?;
+    m.add_class::<command::CommandLineQueryView>()?;
+    m.add_class::<command::CommandLineView>()?;
     Ok(())
 }

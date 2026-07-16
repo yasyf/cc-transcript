@@ -21,6 +21,9 @@ __all__ = [
     "BashCall",
     "BashResult",
     "CacheCreation",
+    "Command",
+    "CommandLine",
+    "CommandLineQuery",
     "CompactBoundary",
     "EditCall",
     "EditResult",
@@ -45,6 +48,7 @@ __all__ = [
     "ModelUsage",
     "MultiEditCall",
     "NotebookEditCall",
+    "Occurrence",
     "OtherAttachment",
     "OtherBlock",
     "OtherCall",
@@ -62,6 +66,7 @@ __all__ = [
     "QueuedCommand",
     "ReadCall",
     "ReadResult",
+    "Redirect",
     "RustCorrectionLog",
     "ServerToolUse",
     "SkillCall",
@@ -326,9 +331,9 @@ class BashCall(ToolCallBase):
     @property
     def run_in_background(self) -> bool | None: ...
     @property
-    def command_line(self) -> command.CommandLine:
+    def command_line(self) -> CommandLine:
         r"""
-        The command parsed into a :class:`~command.CommandLine`.
+        The command parsed into a :class:`~CommandLine`.
         """
 
 @typing.final
@@ -368,6 +373,121 @@ class CacheCreation:
     def ephemeral_5m_input_tokens(self) -> builtins.int: ...
     @property
     def ephemeral_1h_input_tokens(self) -> builtins.int: ...
+
+@typing.final
+class Command:
+    r"""
+    A single parsed shell command with executable, arguments, env vars, and redirects.
+    
+    Use ``Command.parse(raw)`` to parse a command string, or access via ``CommandLine``.
+    
+    Attributes:
+        raw: The command's source text.
+        executable: The command name, or "" when nothing parsed.
+        args: The arguments after the executable.
+        env: The leading ``VAR=val`` assignments, as name/value pairs.
+        redirects: The command's file redirects.
+        span: The command's byte span in the line, or None when a redirect
+            absorbed a trailing word; excluded from equality and repr.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def raw(self) -> builtins.str: ...
+    @property
+    def executable(self) -> builtins.str: ...
+    @property
+    def args(self) -> tuple[str, ...]: ...
+    @property
+    def env(self) -> tuple[tuple[str, str], ...]: ...
+    @property
+    def redirects(self) -> tuple[Redirect, ...]: ...
+    @property
+    def span(self) -> typing.Optional[tuple[builtins.int, builtins.int]]: ...
+    @property
+    def argv(self) -> tuple[str, ...]: ...
+    @property
+    def program(self) -> builtins.str: ...
+    @property
+    def env_dict(self) -> dict[str, str]: ...
+    @property
+    def unwrapped(self) -> Command: ...
+    @property
+    def prefix(self) -> typing.Optional[builtins.str]: ...
+    def __new__(cls, raw: builtins.str, executable: builtins.str, args: typing.Sequence[builtins.str], env: typing.Optional[typing.Sequence[tuple[builtins.str, builtins.str]]] = None, redirects: typing.Optional[typing.Sequence[Redirect]] = None, span: typing.Optional[tuple[builtins.int, builtins.int]] = None) -> Command: ...
+    @classmethod
+    def parse(cls, raw: builtins.str) -> typing.Optional[Command]: ...
+    def runs(self, *argv: typing.Any) -> builtins.bool: ...
+    def matches(self, pattern: builtins.str) -> builtins.bool: ...
+    def has_arg(self, *patterns: typing.Any) -> builtins.bool: ...
+    def __str__(self) -> builtins.str: ...
+    def __contains__(self, item: builtins.str) -> builtins.bool: ...
+    def __bool__(self) -> builtins.bool: ...
+
+@typing.final
+class CommandLine:
+    r"""
+    A full parsed bash command line, potentially containing multiple commands joined by operators.
+    
+    Use ``CommandLine.parse(raw)`` (or the cached ``parse_command_line``) to parse. Access
+    individual commands via ``.commands`` or the final command via ``.primary``.
+    
+    Attributes:
+        raw: The line's source text.
+        parts: Each command paired with the operator that follows it (None for the last).
+        commands: The parsed commands, in line order.
+        primary: The final command, or None when nothing parsed.
+        head: The first command, or None when nothing parsed.
+        prefixes: The permission-style prefix of each command, absent prefixes dropped.
+        q: The predicate helper for this line.
+        occurrences: One Occurrence per part, in line order.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def raw(self) -> builtins.str: ...
+    @property
+    def parts(self) -> tuple[tuple[Command, str | None], ...]: ...
+    @property
+    def commands(self) -> tuple[Command, ...]: ...
+    @property
+    def primary(self) -> typing.Optional[Command]: ...
+    @property
+    def head(self) -> typing.Optional[Command]: ...
+    @property
+    def prefixes(self) -> tuple[str, ...]: ...
+    @property
+    def q(self) -> CommandLineQuery: ...
+    @property
+    def occurrences(self) -> tuple[Occurrence, ...]: ...
+    def __new__(cls, raw: builtins.str, parts: tuple[tuple[Command, str | None], ...]) -> CommandLine: ...
+    @classmethod
+    def parse(cls, raw: builtins.str) -> CommandLine: ...
+    @staticmethod
+    def dequote(text: builtins.str) -> builtins.str: ...
+    def splice(self, replacements: typing.Mapping[builtins.int, builtins.str]) -> builtins.str: ...
+    def rewrite_occurrences(self, to: collections.abc.Callable[[Occurrence], str | None]) -> typing.Optional[builtins.str]: ...
+    def __iter__(self) -> collections.abc.Iterator[Command]: ...
+    def __len__(self) -> builtins.int: ...
+    def __str__(self) -> builtins.str: ...
+    def __contains__(self, item: builtins.str) -> builtins.bool: ...
+    def __bool__(self) -> builtins.bool: ...
+
+@typing.final
+class CommandLineQuery:
+    r"""
+    Predicate helpers for inspecting a parsed ``CommandLine``. Obtain one via ``CommandLine.q``.
+    
+    Attributes:
+        line: The command line these predicates run over.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def line(self) -> CommandLine: ...
+    def __new__(cls, line: CommandLine) -> CommandLineQuery: ...
+    def runs(self, *argv: typing.Any) -> builtins.bool: ...
+    def has_subcommand(self, name: builtins.str) -> builtins.bool: ...
+    def any_command(self, pred: collections.abc.Callable[[Command], bool]) -> builtins.bool: ...
+    def uses_redirect(self) -> builtins.bool: ...
+    def contains_token(self, token: builtins.str) -> builtins.bool: ...
 
 @typing.final
 class CompactBoundary:
@@ -935,6 +1055,34 @@ class NotebookEditCall(ToolCallBase):
     def edit_mode(self) -> str | None: ...
 
 @typing.final
+class Occurrence:
+    r"""
+    One command of a ``CommandLine`` with its position and joining context.
+    
+    Attributes:
+        line: The command line this occurrence belongs to.
+        index: This command's index into ``line.parts``.
+        command: The command at this occurrence's index.
+        prev_op: The operator joining the previous command; None at index 0.
+        next_op: The operator joining this command to the next; None for the final command.
+        piped: Whether this command sits on either side of a pipe.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def line(self) -> CommandLine: ...
+    @property
+    def index(self) -> builtins.int: ...
+    @property
+    def command(self) -> Command: ...
+    @property
+    def prev_op(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def next_op(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def piped(self) -> builtins.bool: ...
+    def __new__(cls, line: CommandLine, index: builtins.int) -> Occurrence: ...
+
+@typing.final
 class OtherAttachment:
     r"""
     Any attachment whose type has no typed detail, carried verbatim.
@@ -1259,6 +1407,25 @@ class ReadResult(ToolResultBase):
     def __repr__(self) -> builtins.str: ...
     def __eq__(self, other: typing.Any) -> typing.Any: ...
     def __hash__(self) -> builtins.int: ...
+
+@typing.final
+class Redirect:
+    r"""
+    A shell redirect parsed from a bash command (e.g. ``> file.txt``, ``2>&1``).
+    
+    Attributes:
+        op: The redirect operator (``>``, ``>>``, ``2>&1`` yields ``>&``).
+        target: The redirect target word.
+        fd: The leading file descriptor number, or None when unspecified.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def op(self) -> builtins.str: ...
+    @property
+    def target(self) -> builtins.str: ...
+    @property
+    def fd(self) -> typing.Optional[builtins.int]: ...
+    def __new__(cls, op: builtins.str, target: builtins.str, fd: typing.Optional[builtins.int] = None) -> Redirect: ...
 
 @typing.final
 class RustCorrectionLog:

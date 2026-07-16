@@ -632,3 +632,15 @@ def bulk_command_prefixes(commands: Sequence[str]) -> list[tuple[str, ...]]:
     from cc_transcript import _native
 
     return [tuple(prefixes) for prefixes in _native.command_prefixes(list(commands))]
+
+
+# P6 flip: native views supersede the (now-dead) Python bodies above; sub-lane 2 deletes them.
+from cc_transcript._native import (  # noqa: E402
+    Command as Command,  # pyright: ignore[reportAssignmentType]
+    CommandLine as CommandLine,  # pyright: ignore[reportAssignmentType]
+    CommandLineQuery as CommandLineQuery,  # pyright: ignore[reportAssignmentType]
+    Occurrence as Occurrence,  # pyright: ignore[reportAssignmentType]
+    Redirect as Redirect,  # pyright: ignore[reportAssignmentType]
+)
+
+parse_command_line = lru_cache(maxsize=4096)(CommandLine.parse)

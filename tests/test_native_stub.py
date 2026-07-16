@@ -99,8 +99,18 @@ def signature_names(text_signature: str) -> list[str]:
     return [
         part.split("=")[0].split(":")[0].strip()
         for part in stripped.split(",")
-        if part.strip() not in ("$self", "/", "*", "")
+        if part.strip() not in ("$self", "$cls", "/", "*", "")
     ]
+
+
+def stub_param_names(args: ast.arguments) -> list[str]:
+    names = [a.arg for a in (*args.posonlyargs, *args.args)]
+    if args.vararg:
+        names.append(f"*{args.vararg.arg}")
+    names += [a.arg for a in args.kwonlyargs]
+    if args.kwarg:
+        names.append(f"**{args.kwarg.arg}")
+    return names
 
 
 def test_optional_getters_declare_none() -> None:
@@ -124,8 +134,7 @@ def test_callable_parameter_names_match_text_signatures() -> None:
         sig = getattr(getattr(_native, name), "__text_signature__", None)
         if sig is None:
             continue
-        args = node.args
-        stub_params = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+        stub_params = stub_param_names(node.args)
         assert stub_params == signature_names(sig), f"{name}: stub {stub_params} != runtime {sig}"
     for cls_name, node in stub_classes(tree).items():
         cls = getattr(_native, cls_name)
@@ -137,6 +146,5 @@ def test_callable_parameter_names_match_text_signatures() -> None:
             sig = getattr(vars(cls)[stmt.name], "__text_signature__", None)
             if sig is None:
                 continue
-            args = stmt.args
-            stub_params = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs) if a.arg != "self"]
+            stub_params = [n for n in stub_param_names(stmt.args) if n not in ("self", "cls")]
             assert stub_params == signature_names(sig), f"{cls_name}.{stmt.name}: stub {stub_params} != runtime {sig}"
