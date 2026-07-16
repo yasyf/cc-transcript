@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-import orjson
 import pytest
 
 from cc_transcript.activity import SessionActivity
@@ -20,13 +19,10 @@ from cc_transcript.models import (
 from cc_transcript.render import (
     Budget,
     clip,
-    event_dict,
     primary_arg,
     render_session,
     render_tool_call,
     render_turn,
-    view_asdict,
-    view_field,
 )
 from cc_transcript.tools import parse_tool_call
 from tests import testkit
@@ -237,63 +233,3 @@ def test_tool_names_correlates_ids_across_events() -> None:
         other("summary"),
     )
     assert tool_names(events) == {ToolUseId("t1"): "Read", ToolUseId("t2"): "Bash"}
-
-
-def test_event_dict_user_round_trips_through_orjson() -> None:
-    event = user(blocks=(testkit.text_block("hi"),))
-    assert orjson.loads(orjson.dumps(event_dict(7, event))) == {
-        "i": 7,
-        "kind": "user",
-        "meta": {
-            "uuid": "uuid-1",
-            "parent_uuid": None,
-            "session_id": "sess-1",
-            "timestamp": "2026-01-02T03:04:05+00:00",
-            "cwd": "/repo",
-            "git_branch": "main",
-            "cc_version": "1.2.3",
-            "is_sidechain": False,
-            "is_meta": False,
-            "entrypoint": "cli",
-            "is_compact_summary": False,
-            "is_visible_in_transcript_only": False,
-            "user_type": None,
-            "slug": None,
-        },
-        "text": "hi",
-        "blocks": [{"text": "hi"}],
-        "interrupted": False,
-        "is_agent_injected": False,
-        "prompt_id": None,
-        "prompt_source": None,
-        "queue_priority": None,
-        "image_paste_ids": None,
-        "source_tool_use_id": None,
-        "source_tool_assistant_uuid": None,
-        "mcp_meta": None,
-        "permission_mode": None,
-        "interrupted_message_id": None,
-    }
-
-
-def test_event_dict_mode_event_has_no_meta() -> None:
-    event = mode("plan", session_id="sess-1")
-    assert orjson.loads(orjson.dumps(event_dict(3, event))) == {
-        "i": 3,
-        "kind": "mode",
-        "session_id": "sess-1",
-        "channel": "mode",
-        "value": "plan",
-    }
-
-
-def test_view_field_recurses_records_and_passes_non_record_views_through() -> None:
-    from cc_transcript.parser import parse
-
-    transcript = parse(orjson.dumps(testkit.user_line("u1", "hi")) + b"\n")
-    events = transcript.events
-    assert view_field(transcript) is transcript
-    assert view_field(events) is events
-    event = events[0]
-    assert view_field(event) == view_asdict(event)
-    assert view_field(event.meta)["uuid"] == "u1"

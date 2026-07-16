@@ -46,7 +46,7 @@ pub struct McpServerSummary {
     pub tools: Vec<(String, usize)>,
 }
 
-/// facts.py `denial_fields`.
+/// Denial flag and embedded user-rejection text carried by a tool result.
 fn denial_fields(result: Option<&ToolResultBlock>) -> (bool, Option<String>) {
     match result {
         Some(block) if block.denial_kind.as_deref() == Some(DENIAL_KIND_USER_REJECTED) => {
@@ -56,7 +56,7 @@ fn denial_fields(result: Option<&ToolResultBlock>) -> (bool, Option<String>) {
     }
 }
 
-/// facts.py `mcp_split`.
+/// Splits an MCP tool name into its server, tool, and access parts.
 fn mcp_split(name: &str) -> (Option<String>, Option<String>, Option<String>) {
     match mcp_parts(name) {
         Some((server, tool)) => (
@@ -68,7 +68,7 @@ fn mcp_split(name: &str) -> (Option<String>, Option<String>, Option<String>) {
     }
 }
 
-/// facts.py `fact_of`.
+/// Flattens one lifted [`ToolUse`] into a [`ToolFact`].
 fn fact_of(use_: &ToolUse, session_id: &str, path: &str) -> ToolFact {
     let call = &use_.call;
     let name = call.name();

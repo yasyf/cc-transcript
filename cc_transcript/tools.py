@@ -6,9 +6,8 @@ native frozen views re-exported at the stable import path; each call retains
 its raw input mapping (excluded from equality and repr), and the digest is
 always derived from that raw substrate — a typed-vs-raw digest fork is
 impossible by construction. Import-light by contract: standard library plus the
-native extension only; :attr:`BashCall.command_line` reaches into
-``cc_transcript.command`` lazily so the tree-sitter grammar never loads on the
-hook hot path.
+native extension only; :attr:`BashCall.command_line` is a native property, so
+parsing a command pulls in no Python module or bash grammar on the hook hot path.
 """
 
 from __future__ import annotations

@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
-from cc_transcript import _native
-from cc_transcript.filterspec import event_kind
 from cc_transcript.models import AssistantEvent, TextBlock, ToolUseBlock
 from cc_transcript.tools import BashCall, EditCall, MultiEditCall, WriteCall
 
@@ -17,21 +14,10 @@ if TYPE_CHECKING:
     from typing import Any
 
     from cc_transcript.activity import SessionActivity, ToolUse, Turn
-    from cc_transcript.facts import ToolFact
-    from cc_transcript.models import ContentBlock, TranscriptEvent
+    from cc_transcript.models import ContentBlock
     from cc_transcript.tools import FallbackCall, ToolCall
 
 PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
-
-
-@runtime_checkable
-class ViewLike(Protocol):
-    __match_args__: ClassVar[tuple[str, ...]]
-
-
-VIEW_TYPES = frozenset(
-    cls for cls in vars(_native).values() if isinstance(cls, type) and hasattr(cls, "__match_args__")
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,94 +128,3 @@ def display_path(path: Path) -> str:
 
 def transcript_header(path: Path) -> str:
     return f"== {display_path(path)}"
-
-
-def event_dict(index: int, event: TranscriptEvent) -> dict[str, Any]:
-    return {"i": index, "kind": event_kind(event)} | view_asdict(event)
-
-
-def view_asdict(view: ViewLike) -> dict[str, Any]:
-    return {name: view_field(getattr(view, name)) for name in type(view).__match_args__}
-
-
-def view_field(value: object) -> Any:
-    match value:
-        case tuple():
-            return tuple(view_field(item) for item in value)
-        case dict():
-            return value
-        case ViewLike() if type(value) in VIEW_TYPES:
-            return view_asdict(value)
-        case _:
-            return value
-
-
-def render_histogram(counts: Mapping[str, int]) -> str:
-    return " · ".join(f"{name} {count}" for name, count in counts.items()) or "-"
-
-
-def render_counts(counts: Mapping[str, int]) -> list[str]:
-    width = len(str(max(counts.values(), default=0)))
-    return [
-        f"  {count:>{width}}  {name}" for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    ]
-
-
-def render_mcp(summary: Mapping[str, Mapping[str, int | dict[str, int]]]) -> list[str]:
-    width = max((len(server) for server in summary), default=0)
-    lines: list[str] = []
-    for server, data in summary.items():
-        match data:
-            case {"read": int(read), "write": int(write), "total": int(total), "tools": dict(tools)}:
-                lines.append(
-                    f"{server:<{width}}  read {read} · write {write} · total {total}  "
-                    f"{render_histogram(dict(islice(tools.items(), 5)))}"
-                )
-    return lines
-
-
-def fact_dict(fact: ToolFact) -> dict[str, Any]:
-    return {
-        "ts": fact.ts,
-        "session_id": fact.session_id,
-        "path": str(fact.path),
-        "tool_use_id": fact.tool_use_id,
-        "tool": fact.tool,
-        "command_prefixes": list(fact.command_prefixes),
-        "command": fact.command,
-        "mcp_server": fact.mcp_server,
-        "mcp_tool": fact.mcp_tool,
-        "mcp_access": fact.mcp_access,
-        "file_path": fact.file_path,
-        "is_error": fact.is_error,
-        "denied": fact.denied,
-        "denial_kind": fact.denial_kind,
-        "user_said": fact.user_said,
-        "duration_ms": fact.duration_ms,
-    }
-
-
-def fact_line(fact: ToolFact) -> str:
-    ts = f"{fact.ts:%Y-%m-%d %H:%M:%S}" if fact.ts is not None else "-"
-    name = f"{fact.mcp_server}/{fact.mcp_tool}" if fact.mcp_server is not None else fact.tool
-    prefixes = f" {','.join(fact.command_prefixes)}" if fact.command_prefixes else ""
-    marker = " [denied]" if fact.denied else " [err]" if fact.is_error else ""
-    return f"{ts} {fact.session_id[:8]} {name}{prefixes}{marker}"
-
-
-def denial_dict(fact: ToolFact) -> dict[str, Any]:
-    return {
-        "ts": fact.ts,
-        "session": fact.session_id,
-        "path": str(fact.path),
-        "tool": fact.tool,
-        "command": fact.command,
-        "file_path": fact.file_path,
-        "denial_kind": fact.denial_kind,
-        "user_said": fact.user_said,
-    }
-
-
-def denial_line(fact: ToolFact) -> str:
-    head = f"{fact.tool} {target}" if (target := fact.command or fact.file_path) else fact.tool
-    return f"{head} → {fact.user_said}" if fact.user_said else head
