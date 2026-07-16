@@ -1,51 +1,30 @@
-"""The single tool-call analytics substrate.
+"""The single tool-call analytics substrate, rehydrated from the native core.
 
 A pure projection of a parsed transcript's tool activity: :func:`tool_facts`
-lifts every :class:`~cc_transcript.activity.SessionActivity` tool use into a
-flat :class:`ToolFact` — command prefixes, MCP server/tool/access, file path,
-error and denial state, and duration — and the aggregators
-(:func:`command_prefix_counts`, :func:`mcp_summary`) roll those facts up. Every
-function is pure over :attr:`~cc_transcript.backend.ParsedTranscript.events`,
-so the CLI's stats surface and any downstream analytics share one substrate.
+runs the native tool-fact aggregator over transcript paths and rehydrates every
+tool call into a flat :class:`ToolFact` — command prefixes, MCP server/tool/access,
+file path, error and denial state, and duration — and the aggregators
+(:func:`command_prefix_counts`, :func:`mcp_summary`) roll those facts up. The
+projection runs entirely in the native core, so the CLI's stats surface and any
+downstream analytics share one substrate.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING
 
-from cc_transcript.activity import SessionActivity
-from cc_transcript.filterspec import DENIAL_KIND_USER_REJECTED, embedded_user_text, session_id_of
-from cc_transcript.tools import BashCall, file_path_of, mcp_access, mcp_parts
+from cc_transcript import _native
+from cc_transcript.ids import SessionId, ToolUseId
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
-    from datetime import datetime
-    from pathlib import Path
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from typing import Any, Literal
 
-    from cc_transcript.activity import ToolUse
-    from cc_transcript.backend import ParsedTranscript
-    from cc_transcript.ids import SessionId, ToolUseId
-    from cc_transcript.models import ToolResultBlock, Transcript
-
-
-def is_denial(block: ToolResultBlock) -> bool:
-    return block.denial_kind == DENIAL_KIND_USER_REJECTED
-
-
-def denial_fields(result: ToolResultBlock | None) -> tuple[bool, str | None]:
-    if result is None or not is_denial(result):
-        return False, None
-    return True, embedded_user_text(result.content)
-
-
-def mcp_split(name: str) -> tuple[str | None, str | None, Literal["read", "write"] | None]:
-    match mcp_parts(name):
-        case (server, tool):
-            return server, tool, mcp_access(tool)
-        case None:
-            return None, None, None
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,59 +70,50 @@ class ToolFact:
     duration_ms: int | None
 
 
-def fact_of(use: ToolUse, session_id: SessionId, path: Path, prefixes: tuple[str, ...]) -> ToolFact:
-    call = use.call
-    server, tool, access = mcp_split(call.name)
-    denied, user_said = denial_fields(use.result)
-    assert use.ref.tool_use_id is not None, "ToolUse refs always carry the tool-use id"
+def rehydrate_fact(fact: Mapping[str, Any], path: Path) -> ToolFact:
     return ToolFact(
-        ts=use.ts,
-        session_id=session_id,
+        ts=EPOCH + timedelta(milliseconds=fact["ts_ms"]),
+        session_id=SessionId(fact["session_id"]),
         path=path,
-        tool_use_id=use.ref.tool_use_id,
-        tool=call.name,
-        command_prefixes=prefixes,
-        command=call.command if isinstance(call, BashCall) else None,
-        mcp_server=server,
-        mcp_tool=tool,
-        mcp_access=access,
-        file_path=file_path_of(call),
-        is_error=use.result.is_error if use.result is not None else False,
-        denied=denied,
-        denial_kind=use.result.denial_kind if use.result is not None else None,
-        user_said=user_said,
-        duration_ms=use.duration_ms,
+        tool_use_id=ToolUseId(fact["tool_use_id"]),
+        tool=fact["tool"],
+        command_prefixes=tuple(fact["command_prefixes"]),
+        command=fact["command"],
+        mcp_server=fact["mcp_server"],
+        mcp_tool=fact["mcp_tool"],
+        mcp_access=fact["mcp_access"],
+        file_path=fact["file_path"],
+        is_error=fact["is_error"],
+        denied=fact["denied"],
+        denial_kind=fact["denial_kind"],
+        user_said=fact["user_said"],
+        duration_ms=fact["duration_ms"],
     )
 
 
-def tool_facts(transcripts: Iterable[Transcript | ParsedTranscript]) -> Iterator[ToolFact]:
-    """Yields one :class:`ToolFact` per tool call across every transcript.
+def tool_facts(paths: Sequence[str | Path], *, max_events: int) -> Iterator[ToolFact]:
+    """Yields one :class:`ToolFact` per tool call across every transcript file.
 
-    Each transcript is lifted into a :class:`~cc_transcript.activity.SessionActivity`
-    keyed by the session of its first meta-bearing event; transcripts carrying no
-    such event — or no path, as a bytes parse — are skipped. Bash commands are prefix-parsed in one
-    :func:`~cc_transcript.command.bulk_command_prefixes` batch per transcript.
-    Calls are yielded in turn order, then call order.
+    Each path is parsed and projected by the native core over its first
+    ``max_events`` events; a file whose events carry no session identity yields
+    nothing. Every fact re-attaches its source ``path`` and rehydrates the native
+    projection — command prefixes, MCP split, denial fields, and duration — into
+    the typed :class:`ToolFact`. Calls are yielded per file, then in turn order,
+    then call order.
 
     Args:
-        transcripts: The parsed transcripts to project.
+        paths: The transcript files to project, in order.
+        max_events: The per-file cap on parsed events to project.
 
     Yields:
         A flattened fact per tool use, in file order.
     """
-    from cc_transcript.command import bulk_command_prefixes
-
-    for parsed in transcripts:
-        session_id = session_id_of(parsed.events)
-        if session_id is None or (path := parsed.path) is None:
-            continue
-        activity = SessionActivity.from_events(session_id, parsed.events)
-        uses = [use for turn in activity.turns for use in turn.tool_uses]
-        prefixes = iter(bulk_command_prefixes([use.call.command for use in uses if isinstance(use.call, BashCall)]))
-        yield from (
-            fact_of(use, session_id, path, next(prefixes) if isinstance(use.call, BashCall) else ())
-            for use in uses
-        )
+    resolved = [Path(path) for path in paths]
+    return (
+        rehydrate_fact(fact, path)
+        for path, entry in zip(resolved, _native.tool_facts([str(path) for path in resolved], max_events), strict=True)
+        for fact in entry["facts"]
+    )
 
 
 def command_prefix_counts(facts: Iterable[ToolFact]) -> dict[str, int]:

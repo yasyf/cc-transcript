@@ -31,6 +31,11 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   `orjson.JSONDecodeError`/`StopIteration`); a below-`MINYEAR` timestamp drops the line
   rather than raising; tool input serialized outside the JSON contract (datetime, bytes,
   cycles) raises in strict mode and degrades to a fallback under `on_error='other'`.
+- **BREAKING: `tool_facts(paths, *, max_events)` takes transcript file paths, not parsed
+  transcripts.** The tool-fact projection runs entirely in the native core; the facade
+  re-parses each path, caps it at `max_events` events, and rehydrates each call into a
+  `ToolFact`, re-attaching its source `path`. `command_prefix_counts` and `mcp_summary` keep
+  their signatures; the internal `is_denial`/`denial_fields`/`mcp_split`/`fact_of` helpers are gone.
 
 ### Removed
 - Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is

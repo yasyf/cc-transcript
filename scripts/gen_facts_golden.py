@@ -1,16 +1,15 @@
-"""Freeze the Python facts.py analytics into ``tests/testdata/facts_golden.json``.
+"""Freeze the native facts aggregator into ``tests/testdata/facts_golden.json``.
 
-Projects :func:`cc_transcript.facts.tool_facts` plus the aggregators
-(:func:`~cc_transcript.facts.command_prefix_counts`, :func:`~cc_transcript.facts.mcp_summary`)
-over the first :data:`MAX_EVENTS` parsed events of every bench-corpus file (``.fixtures/corpus``)
-plus a battery of hand-built synthetic transcripts pinning the branches the corpus never reaches
-(command-prefix ordering, MCP server/tool ranking, user-rejection denials, sub-millisecond
-durations, file-path calls, dup-key last-wins). Events are sourced through the Rust parser on both
-this generator and the parity test, so only the *facts* projection is under test, not the parser.
+Projects :func:`cc_transcript._native.tool_facts` over the first :data:`MAX_EVENTS` parsed events
+of every bench-corpus file (``.fixtures/corpus``) plus a battery of hand-built synthetic transcripts
+pinning the branches the corpus never reaches (command-prefix ordering, MCP server/tool ranking,
+user-rejection denials, sub-millisecond durations, file-path calls, dup-key last-wins). Native
+returns each file's projection — the flattened facts plus the ordered ``command_prefix_counts`` and
+``mcp_summary`` aggregates — as the golden dict directly.
 
-``tests/test_facts_parity.py`` asserts the Rust ``tool_facts`` port reproduces the same projection
-and that the Python reference still projects to the frozen golden. The aggregate lists are ordered,
-so Counter.most_common tie-ordering and the server sort are under test, not just membership.
+``tests/test_facts_parity.py`` pins the native ``tool_facts`` projection against the frozen golden.
+The aggregate lists are ordered, so Counter tie-ordering and the server sort are under test, not
+just membership.
 
 Run: ``uv run --no-sync python scripts/gen_facts_golden.py``
 """
@@ -22,20 +21,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from cc_transcript import _native
-from cc_transcript import facts as cc_facts
-from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
 from scripts.gen_corpus import DEFAULT_OUT as CORPUS
 from scripts.gen_corpus import REPO_ROOT
-
-if TYPE_CHECKING:
-    from datetime import datetime
-
-    from cc_transcript.facts import ToolFact
-    from cc_transcript.models import TranscriptEvent
 
 GOLDEN = REPO_ROOT / "tests" / "testdata" / "facts_golden.json"
 
@@ -132,60 +122,8 @@ SYNTHETIC_CASES: dict[str, str] = {
 }
 
 
-def ms(stamp: datetime) -> int:
-    return round(stamp.timestamp() * 1000)
-
-
-def fact_dict(f: ToolFact) -> dict[str, object]:
-    return {
-        "session_id": f.session_id,
-        "tool_use_id": f.tool_use_id,
-        "tool": f.tool,
-        "command_prefixes": list(f.command_prefixes),
-        "command": f.command,
-        "mcp_server": f.mcp_server,
-        "mcp_tool": f.mcp_tool,
-        "mcp_access": f.mcp_access,
-        "file_path": f.file_path,
-        "is_error": f.is_error,
-        "denied": f.denied,
-        "denial_kind": f.denial_kind,
-        "user_said": f.user_said,
-        "duration_ms": f.duration_ms,
-        "ts_ms": ms(f.ts),
-    }
-
-
-def pairs_list(pairs: dict[str, int], key: str) -> list[dict[str, object]]:
-    return [{key: name, "count": count} for name, count in pairs.items()]
-
-
-def mcp_list(summary: dict[str, dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
-            "server": server,
-            "read": rollup["read"],
-            "write": rollup["write"],
-            "total": rollup["total"],
-            "tools": pairs_list(rollup["tools"], "tool"),
-        }
-        for server, rollup in summary.items()
-    ]
-
-
-def events_of(path: Path) -> list[TranscriptEvent]:
-    parsed = _native.stream_parse([(str(path), 1.0)], 1).recv()
-    return [] if parsed is None else list(parsed.events)
-
-
 def project_file(path: Path) -> dict[str, object]:
-    events = events_of(path)[:MAX_EVENTS]
-    facts = list(cc_facts.tool_facts([ParsedTranscript(path=path, mtime=1.0, events=tuple(events))]))
-    return {
-        "facts": [fact_dict(f) for f in facts],
-        "command_prefix_counts": pairs_list(cc_facts.command_prefix_counts(facts), "prefix"),
-        "mcp_summary": mcp_list(cc_facts.mcp_summary(facts)),
-    }
+    return _native.tool_facts([str(path)], MAX_EVENTS)[0]
 
 
 def project_jsonl(text: str) -> dict[str, object]:
