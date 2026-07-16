@@ -1,0 +1,2321 @@
+[
+  {
+    "command": "VAR=1 sudo docker compose up -d",
+    "id": "pin-assignment-wrapper-multilevel",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            31
+          ]
+        }
+      ],
+      "raw": "VAR=1 sudo docker compose up -d",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "git add . && git commit -m 'x; y'",
+    "id": "pin-quoted-operator-not-split",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            9
+          ]
+        },
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            13,
+            33
+          ]
+        }
+      ],
+      "raw": "git add . && git commit -m 'x; y'",
+      "splice": {
+        "combined": "R0 && R1",
+        "error": null,
+        "rewrite": "X0 && X1",
+        "single": {
+          "0": "R0 && git commit -m 'x; y'",
+          "1": "git add . && R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "git --version",
+    "id": "pin-multilevel-only-flags",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            13
+          ]
+        }
+      ],
+      "raw": "git --version",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat a && grep b",
+    "id": "pin-two-plain-segments",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            5
+          ]
+        },
+        {
+          "executable": "grep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            9,
+            15
+          ]
+        }
+      ],
+      "raw": "cat a && grep b",
+      "splice": {
+        "combined": "R0 && R1",
+        "error": null,
+        "rewrite": "X0 && X1",
+        "single": {
+          "0": "R0 && grep b",
+          "1": "cat a && R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "ls -la",
+    "id": "pin-single-plain-command",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "ls",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            6
+          ]
+        }
+      ],
+      "raw": "ls -la",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo \"unterminated",
+    "id": "pin-unterminated-quote-recovered",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            4
+          ]
+        }
+      ],
+      "raw": "echo \"unterminated",
+      "splice": {
+        "combined": "R0 \"unterminated",
+        "error": null,
+        "rewrite": "X0 \"unterminated",
+        "single": {
+          "0": "R0 \"unterminated"
+        }
+      }
+    }
+  },
+  {
+    "command": "for f in *.py; do python $f; done",
+    "id": "pin-loop-do-unwraps-body",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "python",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            18,
+            27
+          ]
+        }
+      ],
+      "raw": "for f in *.py; do python $f; done",
+      "splice": {
+        "combined": "for f in *.py; do R0; done",
+        "error": null,
+        "rewrite": "for f in *.py; do X0; done",
+        "single": {
+          "0": "for f in *.py; do R0; done"
+        }
+      }
+    }
+  },
+  {
+    "command": "while true; do sleep 1; done",
+    "id": "pin-while-condition-and-body",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "true",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            6,
+            10
+          ]
+        },
+        {
+          "executable": "sleep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            15,
+            22
+          ]
+        }
+      ],
+      "raw": "while true; do sleep 1; done",
+      "splice": {
+        "combined": "while R0; do R1; done",
+        "error": null,
+        "rewrite": "while X0; do X1; done",
+        "single": {
+          "0": "while R0; do sleep 1; done",
+          "1": "while true; do R1; done"
+        }
+      }
+    }
+  },
+  {
+    "command": "if grep -q x f; then echo y; else echo z; fi",
+    "id": "pin-if-condition-then-else",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "grep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            3,
+            14
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            21,
+            27
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            34,
+            40
+          ]
+        }
+      ],
+      "raw": "if grep -q x f; then echo y; else echo z; fi",
+      "splice": {
+        "combined": "if R0; then R1; else R2; fi",
+        "error": null,
+        "rewrite": "if X0; then X1; else X2; fi",
+        "single": {
+          "0": "if R0; then echo y; else echo z; fi",
+          "1": "if grep -q x f; then R1; else echo z; fi",
+          "2": "if grep -q x f; then echo y; else R2; fi"
+        }
+      }
+    }
+  },
+  {
+    "command": "",
+    "id": "pin-empty",
+    "splice_layer": {
+      "parts": [],
+      "raw": "",
+      "splice": {
+        "combined": null,
+        "error": null,
+        "rewrite": null,
+        "single": {}
+      }
+    }
+  },
+  {
+    "command": "timeout 30 git push",
+    "id": "pin-timeout-integer-arg-unwrapped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "timeout",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            19
+          ]
+        }
+      ],
+      "raw": "timeout 30 git push",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "git commit -m x",
+    "id": "pin-single-git-subcommand",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            15
+          ]
+        }
+      ],
+      "raw": "git commit -m x",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "docker compose up -d",
+    "id": "pin-single-docker-compose-subcommand",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "docker",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            20
+          ]
+        }
+      ],
+      "raw": "docker compose up -d",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo docker compose up",
+    "id": "pin-sudo-wrapper-keeps-subcommand",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            22
+          ]
+        }
+      ],
+      "raw": "sudo docker compose up",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "nice -n 10 cargo build",
+    "id": "pin-nice-wrapper-numeric-flag-stripped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "nice",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            22
+          ]
+        }
+      ],
+      "raw": "nice -n 10 cargo build",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo",
+    "id": "pin-bare-wrapper-yields-nothing",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            4
+          ]
+        }
+      ],
+      "raw": "sudo",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "env -i FOO=bar make test",
+    "id": "pin-env-wrapper-flags-and-assignment-stripped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "env",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            24
+          ]
+        }
+      ],
+      "raw": "env -i FOO=bar make test",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo env FOO=1 timeout 5 ls -la",
+    "id": "pin-stacked-wrappers-unwrapped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            31
+          ]
+        }
+      ],
+      "raw": "sudo env FOO=1 timeout 5 ls -la",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo git push -f && echo hi",
+    "id": "pin-sudo-wrapper-two-segments",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            16
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            20,
+            27
+          ]
+        }
+      ],
+      "raw": "sudo git push -f && echo hi",
+      "splice": {
+        "combined": "R0 && R1",
+        "error": null,
+        "rewrite": "X0 && X1",
+        "single": {
+          "0": "R0 && echo hi",
+          "1": "sudo git push -f && R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "> out.txt",
+    "id": "pin-redirect-only-empty-executable",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            9
+          ]
+        }
+      ],
+      "raw": "> out.txt",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo ''",
+    "id": "pin-empty-token-stops-unwrap",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            7
+          ]
+        }
+      ],
+      "raw": "sudo ''",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "git '' status",
+    "id": "pin-empty-token-not-a-subcommand",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            13
+          ]
+        }
+      ],
+      "raw": "git '' status",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "timeout ٣ git push",
+    "id": "pin-arabic-digit-not-skipped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "timeout",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            19
+          ]
+        }
+      ],
+      "raw": "timeout ٣ git push",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "git \"'commit'\"",
+    "id": "pin-quoted-subcommand-keeps-inner-quotes",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            14
+          ]
+        }
+      ],
+      "raw": "git \"'commit'\"",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "diff <(sort a.txt) <(sort b.txt)",
+    "id": "pin-process-substitution",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "diff",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            32
+          ]
+        }
+      ],
+      "raw": "diff <(sort a.txt) <(sort b.txt)",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat <(git log) | head -3",
+    "id": "pin-process-substitution-in-pipeline",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            0,
+            14
+          ]
+        },
+        {
+          "executable": "head",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            17,
+            24
+          ]
+        }
+      ],
+      "raw": "cat <(git log) | head -3",
+      "splice": {
+        "combined": "R0 | R1",
+        "error": null,
+        "rewrite": "X0 | X1",
+        "single": {
+          "0": "R0 | head -3",
+          "1": "cat <(git log) | R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo $((1 + 2))",
+    "id": "pin-arithmetic-expansion",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            15
+          ]
+        }
+      ],
+      "raw": "echo $((1 + 2))",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "x=$((COUNT + 1)) make build",
+    "id": "pin-arithmetic-assignment-prefix",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "make",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            27
+          ]
+        }
+      ],
+      "raw": "x=$((COUNT + 1)) make build",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo `git rev-parse HEAD`",
+    "id": "pin-backtick-substitution",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            25
+          ]
+        }
+      ],
+      "raw": "echo `git rev-parse HEAD`",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "foo() { git status; }; foo",
+    "id": "pin-function-definition-body-and-call",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            8,
+            18
+          ]
+        },
+        {
+          "executable": "foo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            23,
+            26
+          ]
+        }
+      ],
+      "raw": "foo() { git status; }; foo",
+      "splice": {
+        "combined": "foo() { R0; }; R1",
+        "error": null,
+        "rewrite": "foo() { X0; }; X1",
+        "single": {
+          "0": "foo() { R0; }; foo",
+          "1": "foo() { git status; }; R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "git commit -m \"line1\nline2\"",
+    "id": "pin-multiline-quoted-string",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            27
+          ]
+        }
+      ],
+      "raw": "git commit -m \"line1\nline2\"",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "git add .\ngit commit -m x",
+    "id": "pin-newline-separated-commands",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            9
+          ]
+        },
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            10,
+            25
+          ]
+        }
+      ],
+      "raw": "git add .\ngit commit -m x",
+      "splice": {
+        "combined": "R0\nR1",
+        "error": null,
+        "rewrite": "X0\nX1",
+        "single": {
+          "0": "R0\ngit commit -m x",
+          "1": "git add .\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "(cd src && (make && make test)) || echo fail",
+    "id": "edge-nested-subshells",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cd",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            1,
+            7
+          ]
+        },
+        {
+          "executable": "make",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            12,
+            16
+          ]
+        },
+        {
+          "executable": "make",
+          "next_op": "||",
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            20,
+            29
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "||",
+          "span": [
+            35,
+            44
+          ]
+        }
+      ],
+      "raw": "(cd src && (make && make test)) || echo fail",
+      "splice": {
+        "combined": "(R0 && (R1 && R2)) || R3",
+        "error": null,
+        "rewrite": "(X0 && (X1 && X2)) || X3",
+        "single": {
+          "0": "(R0 && (make && make test)) || echo fail",
+          "1": "(cd src && (R1 && make test)) || echo fail",
+          "2": "(cd src && (make && R2)) || echo fail",
+          "3": "(cd src && (make && make test)) || R3"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo $(git log --format=%H | head -1)",
+    "id": "edge-command-substitution-nested",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            37
+          ]
+        }
+      ],
+      "raw": "echo $(git log --format=%H | head -1)",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF",
+    "id": "edge-heredoc-body-not-commands",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            3
+          ]
+        }
+      ],
+      "raw": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF",
+      "splice": {
+        "combined": "R0 <<'EOF'\nrm -rf /\ngit push --force\nEOF",
+        "error": null,
+        "rewrite": "X0 <<'EOF'\nrm -rf /\ngit push --force\nEOF",
+        "single": {
+          "0": "R0 <<'EOF'\nrm -rf /\ngit push --force\nEOF"
+        }
+      }
+    }
+  },
+  {
+    "command": "diff <(sort a) <(sort b) > out.txt",
+    "id": "edge-process-substitution-both",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "diff",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            24
+          ]
+        }
+      ],
+      "raw": "diff <(sort a) <(sort b) > out.txt",
+      "splice": {
+        "combined": "R0 > out.txt",
+        "error": null,
+        "rewrite": "X0 > out.txt",
+        "single": {
+          "0": "R0 > out.txt"
+        }
+      }
+    }
+  },
+  {
+    "command": "git commit -m 'héllo 🤖 漢字'",
+    "id": "edge-unicode-args",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            34
+          ]
+        }
+      ],
+      "raw": "git commit -m 'héllo 🤖 漢字'",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "café --brew",
+    "id": "edge-unicode-executable",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "café",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            12
+          ]
+        }
+      ],
+      "raw": "café --brew",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "ENV=prod uv run pytest -k test 2>&1 | tee log | grep -c PASS",
+    "id": "edge-pipe-and-redirect-mix",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "uv",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            0,
+            30
+          ]
+        },
+        {
+          "executable": "tee",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            38,
+            45
+          ]
+        },
+        {
+          "executable": "grep",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            48,
+            60
+          ]
+        }
+      ],
+      "raw": "ENV=prod uv run pytest -k test 2>&1 | tee log | grep -c PASS",
+      "splice": {
+        "combined": "R0 2>&1 | R1 | R2",
+        "error": null,
+        "rewrite": "X0 2>&1 | X1 | X2",
+        "single": {
+          "0": "R0 2>&1 | tee log | grep -c PASS",
+          "1": "ENV=prod uv run pytest -k test 2>&1 | R1 | grep -c PASS",
+          "2": "ENV=prod uv run pytest -k test 2>&1 | tee log | R2"
+        }
+      }
+    }
+  },
+  {
+    "command": "sleep 5 & echo started",
+    "id": "edge-background-job",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sleep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            7
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            10,
+            22
+          ]
+        }
+      ],
+      "raw": "sleep 5 & echo started",
+      "splice": {
+        "combined": "R0 & R1",
+        "error": null,
+        "rewrite": "X0 & X1",
+        "single": {
+          "0": "R0 & echo started",
+          "1": "sleep 5 & R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "sudo env FOO=1 BAR=2 timeout 30 nice -n 5 cargo build --release",
+    "id": "edge-stacked-wrappers-env",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sudo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            63
+          ]
+        }
+      ],
+      "raw": "sudo env FOO=1 BAR=2 timeout 30 nice -n 5 cargo build --release",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "# nothing to run here",
+    "id": "edge-comment-only",
+    "splice_layer": {
+      "parts": [],
+      "raw": "# nothing to run here",
+      "splice": {
+        "combined": null,
+        "error": null,
+        "rewrite": null,
+        "single": {}
+      }
+    }
+  },
+  {
+    "command": "2>&1 > out.txt",
+    "id": "edge-only-redirect",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            14
+          ]
+        }
+      ],
+      "raw": "2>&1 > out.txt",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "a; b\nc && d || e",
+    "id": "edge-semicolons-and-newlines",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            3,
+            4
+          ]
+        },
+        {
+          "executable": "c",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            5,
+            6
+          ]
+        },
+        {
+          "executable": "d",
+          "next_op": "||",
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            10,
+            11
+          ]
+        },
+        {
+          "executable": "e",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "||",
+          "span": [
+            15,
+            16
+          ]
+        }
+      ],
+      "raw": "a; b\nc && d || e",
+      "splice": {
+        "combined": "R0; R1\nR2 && R3 || R4",
+        "error": null,
+        "rewrite": "X0; X1\nX2 && X3 || X4",
+        "single": {
+          "0": "R0; b\nc && d || e",
+          "1": "a; R1\nc && d || e",
+          "2": "a; b\nR2 && d || e",
+          "3": "a; b\nc && R3 || e",
+          "4": "a; b\nc && d || R4"
+        }
+      }
+    }
+  },
+  {
+    "command": "FOO=bar BAZ=qux",
+    "id": "edge-assignment-only",
+    "splice_layer": {
+      "parts": [],
+      "raw": "FOO=bar BAZ=qux",
+      "splice": {
+        "combined": null,
+        "error": null,
+        "rewrite": null,
+        "single": {}
+      }
+    }
+  },
+  {
+    "command": "ls -la {src,tests}/*.py",
+    "id": "edge-glob-and-braces",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "ls",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            23
+          ]
+        }
+      ],
+      "raw": "ls -la {src,tests}/*.py",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "grep pattern <<< \"$var\"",
+    "id": "edge-here-string",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "grep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            23
+          ]
+        }
+      ],
+      "raw": "grep pattern <<< \"$var\"",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "(echo a; echo b) | sort | uniq -c",
+    "id": "edge-subshell-pipeline",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            1,
+            7
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            9,
+            15
+          ]
+        },
+        {
+          "executable": "sort",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            19,
+            23
+          ]
+        },
+        {
+          "executable": "uniq",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            26,
+            33
+          ]
+        }
+      ],
+      "raw": "(echo a; echo b) | sort | uniq -c",
+      "splice": {
+        "combined": "(R0; R1) | R2 | R3",
+        "error": null,
+        "rewrite": "(X0; X1) | X2 | X3",
+        "single": {
+          "0": "(R0; echo b) | sort | uniq -c",
+          "1": "(echo a; R1) | sort | uniq -c",
+          "2": "(echo a; echo b) | R2 | uniq -c",
+          "3": "(echo a; echo b) | sort | R3"
+        }
+      }
+    }
+  },
+  {
+    "command": "greet() { echo hi; }; greet && greet",
+    "id": "edge-function-def-and-call",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            10,
+            17
+          ]
+        },
+        {
+          "executable": "greet",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            22,
+            27
+          ]
+        },
+        {
+          "executable": "greet",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            31,
+            36
+          ]
+        }
+      ],
+      "raw": "greet() { echo hi; }; greet && greet",
+      "splice": {
+        "combined": "greet() { R0; }; R1 && R2",
+        "error": null,
+        "rewrite": "greet() { X0; }; X1 && X2",
+        "single": {
+          "0": "greet() { R0; }; greet && greet",
+          "1": "greet() { echo hi; }; R1 && greet",
+          "2": "greet() { echo hi; }; greet && R2"
+        }
+      }
+    }
+  },
+  {
+    "command": "EMPTY= make build",
+    "id": "edge-empty-assignment-value",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "make",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            17
+          ]
+        }
+      ],
+      "raw": "EMPTY= make build",
+      "splice": {
+        "combined": "R0",
+        "error": null,
+        "rewrite": "X0",
+        "single": {
+          "0": "R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo a >out b",
+    "id": "splice-absorbed-trailing-word",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": null
+        }
+      ],
+      "raw": "echo a >out b",
+      "splice": {
+        "combined": null,
+        "error": "command at index 0 has no span",
+        "rewrite": null,
+        "single": {}
+      }
+    }
+  },
+  {
+    "command": ">out echo hi",
+    "id": "splice-leading-redirect",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            5,
+            12
+          ]
+        }
+      ],
+      "raw": ">out echo hi",
+      "splice": {
+        "combined": ">out R0",
+        "error": null,
+        "rewrite": ">out X0",
+        "single": {
+          "0": ">out R0"
+        }
+      }
+    }
+  },
+  {
+    "command": "<in echo hi >out",
+    "id": "splice-both-edge-redirects",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            4,
+            11
+          ]
+        }
+      ],
+      "raw": "<in echo hi >out",
+      "splice": {
+        "combined": "<in R0 >out",
+        "error": null,
+        "rewrite": "<in X0 >out",
+        "single": {
+          "0": "<in R0 >out"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat a > b; echo x",
+    "id": "splice-redirect-outside-span",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            5
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            11,
+            17
+          ]
+        }
+      ],
+      "raw": "cat a > b; echo x",
+      "splice": {
+        "combined": "R0 > b; R1",
+        "error": null,
+        "rewrite": "X0 > b; X1",
+        "single": {
+          "0": "R0 > b; echo x",
+          "1": "cat a > b; R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "foo | bar",
+    "id": "splice-pipe-simple",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "foo",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            0,
+            3
+          ]
+        },
+        {
+          "executable": "bar",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            6,
+            9
+          ]
+        }
+      ],
+      "raw": "foo | bar",
+      "splice": {
+        "combined": "R0 | R1",
+        "error": null,
+        "rewrite": "X0 | X1",
+        "single": {
+          "0": "R0 | bar",
+          "1": "foo | R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "a |& b",
+    "id": "splice-pipe-ampersand",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": null,
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            5,
+            6
+          ]
+        }
+      ],
+      "raw": "a |& b",
+      "splice": {
+        "combined": "R0 |& R1",
+        "error": null,
+        "rewrite": "X0 |& X1",
+        "single": {
+          "0": "R0 |& b",
+          "1": "a |& R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat f | grep x | wc -l",
+    "id": "splice-pipe-chain",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": [
+            0,
+            5
+          ]
+        },
+        {
+          "executable": "grep",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            8,
+            14
+          ]
+        },
+        {
+          "executable": "wc",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": [
+            17,
+            22
+          ]
+        }
+      ],
+      "raw": "cat f | grep x | wc -l",
+      "splice": {
+        "combined": "R0 | R1 | R2",
+        "error": null,
+        "rewrite": "X0 | X1 | X2",
+        "single": {
+          "0": "R0 | grep x | wc -l",
+          "1": "cat f | R1 | wc -l",
+          "2": "cat f | grep x | R2"
+        }
+      }
+    }
+  },
+  {
+    "command": "a\nb",
+    "id": "splice-newline-statements",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            2,
+            3
+          ]
+        }
+      ],
+      "raw": "a\nb",
+      "splice": {
+        "combined": "R0\nR1",
+        "error": null,
+        "rewrite": "X0\nX1",
+        "single": {
+          "0": "R0\nb",
+          "1": "a\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "a && b",
+    "id": "splice-and-not-piped",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            5,
+            6
+          ]
+        }
+      ],
+      "raw": "a && b",
+      "splice": {
+        "combined": "R0 && R1",
+        "error": null,
+        "rewrite": "X0 && X1",
+        "single": {
+          "0": "R0 && b",
+          "1": "a && R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "a # x|y\nb",
+    "id": "splice-comment-pipe-gap",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            8,
+            9
+          ]
+        }
+      ],
+      "raw": "a # x|y\nb",
+      "splice": {
+        "combined": "R0 # x|y\nR1",
+        "error": null,
+        "rewrite": "X0 # x|y\nX1",
+        "single": {
+          "0": "R0 # x|y\nb",
+          "1": "a # x|y\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat a > 'x|y'\nb",
+    "id": "splice-quoted-redirect-pipe",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            5
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            14,
+            15
+          ]
+        }
+      ],
+      "raw": "cat a > 'x|y'\nb",
+      "splice": {
+        "combined": "R0 > 'x|y'\nR1",
+        "error": null,
+        "rewrite": "X0 > 'x|y'\nX1",
+        "single": {
+          "0": "R0 > 'x|y'\nb",
+          "1": "cat a > 'x|y'\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat <<'EOF'\nx|y\nEOF\nb",
+    "id": "splice-heredoc-body-pipe",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            3
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            20,
+            21
+          ]
+        }
+      ],
+      "raw": "cat <<'EOF'\nx|y\nEOF\nb",
+      "splice": {
+        "combined": "R0 <<'EOF'\nx|y\nEOF\nR1",
+        "error": null,
+        "rewrite": "X0 <<'EOF'\nx|y\nEOF\nX1",
+        "single": {
+          "0": "R0 <<'EOF'\nx|y\nEOF\nb",
+          "1": "cat <<'EOF'\nx|y\nEOF\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "a\n[[ x || y ]]\nb",
+    "id": "splice-test-command-or",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            15,
+            16
+          ]
+        }
+      ],
+      "raw": "a\n[[ x || y ]]\nb",
+      "splice": {
+        "combined": "R0\n[[ x || y ]]\nR1",
+        "error": null,
+        "rewrite": "X0\n[[ x || y ]]\nX1",
+        "single": {
+          "0": "R0\n[[ x || y ]]\nb",
+          "1": "a\n[[ x || y ]]\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "a\n((1|2))\nb",
+    "id": "splice-arithmetic-pipe",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "a",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "b",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            10,
+            11
+          ]
+        }
+      ],
+      "raw": "a\n((1|2))\nb",
+      "splice": {
+        "combined": "R0\n((1|2))\nR1",
+        "error": null,
+        "rewrite": "X0\n((1|2))\nX1",
+        "single": {
+          "0": "R0\n((1|2))\nb",
+          "1": "a\n((1|2))\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\ngit push --force",
+    "id": "splice-heredoc-body-later-command",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cat",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            3
+          ]
+        },
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            42,
+            58
+          ]
+        }
+      ],
+      "raw": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\ngit push --force",
+      "splice": {
+        "combined": "R0 <<'EOF'\nrm -rf /\ngit push --force\nEOF\nR1",
+        "error": null,
+        "rewrite": "X0 <<'EOF'\nrm -rf /\ngit push --force\nEOF\nX1",
+        "single": {
+          "0": "R0 <<'EOF'\nrm -rf /\ngit push --force\nEOF\ngit push --force",
+          "1": "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\nR1"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo café; rm x",
+    "id": "splice-multibyte-before-span",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            10
+          ]
+        },
+        {
+          "executable": "rm",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            12,
+            16
+          ]
+        }
+      ],
+      "raw": "echo café; rm x",
+      "splice": {
+        "combined": "R0; R1",
+        "error": null,
+        "rewrite": "X0; X1",
+        "single": {
+          "0": "R0; rm x",
+          "1": "echo café; R1"
+        }
+      }
+    }
+  },
+  {
+    "command": "(cd src && make)",
+    "id": "splice-subshell-interior",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "cd",
+          "next_op": "&&",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            1,
+            7
+          ]
+        },
+        {
+          "executable": "make",
+          "next_op": null,
+          "piped": false,
+          "prev_op": "&&",
+          "span": [
+            11,
+            15
+          ]
+        }
+      ],
+      "raw": "(cd src && make)",
+      "splice": {
+        "combined": "(R0 && R1)",
+        "error": null,
+        "rewrite": "(X0 && X1)",
+        "single": {
+          "0": "(R0 && make)",
+          "1": "(cd src && R1)"
+        }
+      }
+    }
+  },
+  {
+    "command": "echo hi # trailing comment",
+    "id": "splice-comment-tail",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "echo",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            7
+          ]
+        }
+      ],
+      "raw": "echo hi # trailing comment",
+      "splice": {
+        "combined": "R0 # trailing comment",
+        "error": null,
+        "rewrite": "X0 # trailing comment",
+        "single": {
+          "0": "R0 # trailing comment"
+        }
+      }
+    }
+  },
+  {
+    "command": "x; x; x",
+    "id": "splice-repeated-identical",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "x",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            1
+          ]
+        },
+        {
+          "executable": "x",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            3,
+            4
+          ]
+        },
+        {
+          "executable": "x",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            6,
+            7
+          ]
+        }
+      ],
+      "raw": "x; x; x",
+      "splice": {
+        "combined": "R0; R1; R2",
+        "error": null,
+        "rewrite": "X0; X1; X2",
+        "single": {
+          "0": "R0; x; x",
+          "1": "x; R1; x",
+          "2": "x; x; R2"
+        }
+      }
+    }
+  },
+  {
+    "command": "sleep 5 & echo started; wait",
+    "id": "splice-background-and-list",
+    "splice_layer": {
+      "parts": [
+        {
+          "executable": "sleep",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            0,
+            7
+          ]
+        },
+        {
+          "executable": "echo",
+          "next_op": ";",
+          "piped": false,
+          "prev_op": null,
+          "span": [
+            10,
+            22
+          ]
+        },
+        {
+          "executable": "wait",
+          "next_op": null,
+          "piped": false,
+          "prev_op": ";",
+          "span": [
+            24,
+            28
+          ]
+        }
+      ],
+      "raw": "sleep 5 & echo started; wait",
+      "splice": {
+        "combined": "R0 & R1; R2",
+        "error": null,
+        "rewrite": "X0 & X1; X2",
+        "single": {
+          "0": "R0 & echo started; wait",
+          "1": "sleep 5 & R1; wait",
+          "2": "sleep 5 & echo started; R2"
+        }
+      }
+    }
+  }
+]
