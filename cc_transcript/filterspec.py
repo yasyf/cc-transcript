@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import orjson
 
+from cc_transcript import _native
 from cc_transcript.literals import literal_str
 from cc_transcript.models import (
     AssistantEvent,
@@ -436,86 +437,46 @@ def is_agent_injection(text: str) -> bool:
     return AGENT_INJECTION_RE.search(text) is not None
 
 
-def normalize_bare(text: str, strip_trailing: str = TRAILING_PUNCT) -> str:
-    return text.strip().rstrip(strip_trailing).strip().lower()
-
-
-def predicate_matches(predicate: Predicate, event: TranscriptEvent, kind: EventKind) -> bool:
-    match predicate:
-        case KindIs(kinds):
-            return kind in kinds
-        case ModelIs(models):
-            return isinstance(event, AssistantEvent) and event.model in models
-        case TextEmpty(consider_tool_use=consider_tool_use):
-            match event:
-                case AssistantEvent() if consider_tool_use:
-                    return not event.text.strip() and not any(isinstance(b, ToolUseBlock) for b in event.blocks)
-                case UserEvent() | AssistantEvent():
-                    return not event.text.strip()
-                case _:
-                    return False
-        case TextMatchesAny(groups=groups, ignore_case=ignore_case):
-            return compile_groups(groups, ignore_case).search(event_text(event)) is not None
-        case TextInSet(phrases=phrases, strip_trailing=strip_trailing):
-            return normalize_bare(event_text(event), strip_trailing) in phrases
-        case WordCountAtMost(n):
-            return len(event_text(event).split()) <= n
-        case MetaFlag(flag):
-            return (meta := event_meta(event)) is not None and meta_flag(meta, flag)
-        case EntrypointIn(entrypoints):
-            return (meta := event_meta(event)) is not None and meta.entrypoint in entrypoints
-
-
-def meta_flag(meta: EntryMeta, flag: MetaFlagName) -> bool:
-    match flag:
-        case "is_sidechain":
-            return meta.is_sidechain
-        case "is_meta":
-            return meta.is_meta
-        case "is_compact_summary":
-            return meta.is_compact_summary
-        case "is_visible_in_transcript_only":
-            return meta.is_visible_in_transcript_only
-
-
-def clause_matches(clause: Clause, event: TranscriptEvent, kind: EventKind) -> bool:
-    if clause.applies_to and kind not in clause.applies_to:
-        return False
-    return predicate_matches(clause.predicate, event, kind) is not clause.negate
-
-
 def keep(event: TranscriptEvent, spec: FilterSpec) -> bool:
     """Returns whether ``event`` survives every ``DROP`` clause of ``spec``.
 
     Filters an already-materialized :class:`~cc_transcript.models.TranscriptEvent`;
     parse-time filtering runs in Rust before materialization via :func:`spec_to_json`.
     """
-    kind = event_kind(event)
-    return not any(clause.action is Action.DROP and clause_matches(clause, event, kind) for clause in spec.clauses)
+    return _native.keep_events([event], spec_to_json(spec))[0]
 
 
 def labels_for(event: TranscriptEvent, spec: FilterSpec) -> tuple[str, ...]:
     """Returns the TAG labels ``spec`` records for ``event``, in clause order."""
-    kind = event_kind(event)
-    return tuple(
-        clause.label
-        for clause in spec.clauses
-        if clause.action is Action.TAG
-        if clause.label is not None
-        if clause_matches(clause, event, kind)
-    )
+    return tuple(_native.label_events([event], spec_to_json(spec))[0])
 
 
 def apply_spec(events: Iterable[TranscriptEvent], spec: FilterSpec) -> Iterator[TranscriptEvent]:
     """Yields the already-materialized events that survive every ``DROP`` clause of ``spec``."""
-    return (event for event in events if keep(event, spec))
+    surviving = list(events)
+    return (
+        event
+        for event, kept in zip(surviving, _native.keep_events(surviving, spec_to_json(spec)), strict=True)
+        if kept
+    )
 
 
 def annotate_spec(
     events: Iterable[TranscriptEvent], spec: FilterSpec
 ) -> Iterator[tuple[TranscriptEvent, tuple[str, ...]]]:
     """Yields ``(event, labels)`` for events surviving ``spec``, with TAG labels."""
-    return ((event, labels_for(event, spec)) for event in events if keep(event, spec))
+    materialized = list(events)
+    spec_json = spec_to_json(spec)
+    return (
+        (event, tuple(labels))
+        for event, labels, kept in zip(
+            materialized,
+            _native.label_events(materialized, spec_json),
+            _native.keep_events(materialized, spec_json),
+            strict=True,
+        )
+        if kept
+    )
 
 
 def spec_to_json(spec: FilterSpec) -> str:

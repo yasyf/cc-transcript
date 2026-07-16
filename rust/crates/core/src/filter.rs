@@ -33,10 +33,18 @@ pub struct CompiledSpec {
     clauses: Vec<CompiledClause>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Drop,
+    Tag,
+}
+
 struct CompiledClause {
     predicate: CompiledPredicate,
     applies_to: Vec<Kind>,
     negate: bool,
+    action: Action,
+    label: Option<String>,
 }
 
 enum CompiledPredicate {
@@ -64,6 +72,14 @@ fn parse_kind(name: &str) -> Result<Kind, String> {
         "other" => Ok(Kind::Other),
         "attachment" => Ok(Kind::Attachment),
         other => Err(format!("unknown event kind: {other}")),
+    }
+}
+
+fn parse_action(name: &str) -> Result<Action, String> {
+    match name {
+        "drop" => Ok(Action::Drop),
+        "tag" => Ok(Action::Tag),
+        other => Err(format!("unknown clause action: {other}")),
     }
 }
 
@@ -162,11 +178,14 @@ fn compile_clause(clause: &Value) -> Result<CompiledClause, String> {
         )?,
         applies_to: kind_array(clause, "applies_to")?,
         negate: field_bool(clause, "negate"),
+        action: parse_action(field_str(clause, "action").ok_or("clause missing 'action'")?)?,
+        label: field_str(clause, "label").map(String::from),
     })
 }
 
 /// Compiles the JSON contract emitted by ``cc_transcript.filterspec.spec_to_json``.
-/// Only ``DROP`` clauses are compiled; ``TAG`` clauses are applied Python-side.
+/// Every clause is compiled; ``spec_keep`` reads the ``DROP`` clauses and
+/// ``spec_labels`` reads the ``TAG`` clauses.
 pub fn compile_spec(spec_json: &str) -> Result<CompiledSpec, String> {
     let root: Value =
         sonic_rs::from_str(spec_json).map_err(|e| format!("invalid filter spec json: {e}"))?;
@@ -174,7 +193,6 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledSpec, String> {
         .and_then(JsonContainerTrait::as_array)
         .ok_or("spec missing 'clauses' array")?
         .iter()
-        .filter(|clause| field_str(clause, "action") == Some("drop"))
         .map(compile_clause)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(CompiledSpec { clauses })
@@ -262,7 +280,24 @@ pub fn spec_keep(spec: &CompiledSpec, entry: &Entry) -> bool {
     !spec
         .clauses
         .iter()
-        .any(|clause| clause_matches(clause, entry, kind, &text))
+        .any(|clause| clause.action == Action::Drop && clause_matches(clause, entry, kind, &text))
+}
+
+/// Returns the labels every matching ``TAG`` clause of ``spec`` records for ``entry``,
+/// in clause order (mirrors ``cc_transcript.filterspec.labels_for``).
+pub fn spec_labels<'a>(spec: &'a CompiledSpec, entry: &Entry) -> Vec<&'a str> {
+    let kind = entry_kind(entry);
+    let text = entry_text(entry);
+    spec.clauses
+        .iter()
+        .filter(|clause| clause.action == Action::Tag)
+        .filter_map(|clause| {
+            clause
+                .label
+                .as_deref()
+                .filter(|_| clause_matches(clause, entry, kind, &text))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -343,5 +378,44 @@ mod tests {
     fn wellknown_specs_compile() {
         assert!(!super::SIGNAL_SPEC.clauses.is_empty());
         assert!(!super::NOISE_SPEC.clauses.is_empty());
+    }
+
+    fn tag_spec() -> CompiledSpec {
+        compile_spec(
+            r#"{"clauses":[
+                {"predicate":{"kind":"TextInSet","phrases":["go ahead"],"strip_trailing":""},"action":"tag","applies_to":["user"],"negate":false,"label":"resume"},
+                {"predicate":{"kind":"WordCountAtMost","n":5},"action":"tag","applies_to":["user"],"negate":false,"label":"short"},
+                {"predicate":{"kind":"MetaFlag","flag":"is_sidechain"},"action":"drop","applies_to":[],"negate":false,"label":null}
+            ]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn spec_labels_records_matching_tags_in_clause_order() {
+        let spec = tag_spec();
+        let event = user("go ahead");
+        // TAG clauses never drop; the DROP clause does not fire on a non-sidechain user.
+        assert!(spec_keep(&spec, &event));
+        assert_eq!(spec_labels(&spec, &event), vec!["resume", "short"]);
+        // A long, non-phrase message matches neither TAG clause.
+        assert_eq!(
+            spec_labels(
+                &spec,
+                &user("this message runs well past the five word ceiling here today")
+            ),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn tag_clauses_never_drop_but_drop_clauses_still_drop() {
+        let spec = tag_spec();
+        // "go ahead" fires two TAG clauses yet survives.
+        assert!(spec_keep(&spec, &user("go ahead")));
+        let sidechain = parse(
+            r#"{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","isSidechain":true,"message":{"role":"user","content":"go ahead"}}"#,
+        );
+        assert!(!spec_keep(&spec, &sidechain));
     }
 }

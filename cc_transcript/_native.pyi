@@ -116,6 +116,8 @@ __all__ = [
     "hunks_of",
     "ids_canonical_json",
     "ids_tool_digest",
+    "keep_events",
+    "label_events",
     "lexicon_has_hit",
     "lexicon_overrides",
     "lexicon_polarity",
@@ -2112,6 +2114,10 @@ def hunks_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[Hunk, ...]:
 def ids_canonical_json(value_json: builtins.str) -> builtins.str: ...
 
 def ids_tool_digest(name: builtins.str, input_json: builtins.str) -> builtins.str: ...
+
+def keep_events(events: list[models.TranscriptEvent], spec_json: builtins.str) -> builtins.list[builtins.bool]: ...
+
+def label_events(events: list[models.TranscriptEvent], spec_json: builtins.str) -> builtins.list[builtins.list[builtins.str]]: ...
 
 def lexicon_has_hit(text: builtins.str, want_negative: builtins.bool) -> builtins.bool: ...
 

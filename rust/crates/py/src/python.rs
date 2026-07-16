@@ -22,7 +22,7 @@ use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::cost::{cost_of, CostError};
 use cc_transcript_core::facts;
-use cc_transcript_core::filter::{compile_spec, spec_keep, CompiledSpec};
+use cc_transcript_core::filter::{compile_spec, spec_keep, spec_labels, CompiledSpec};
 use cc_transcript_core::ids;
 use cc_transcript_core::notifications::Notifications;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
@@ -466,6 +466,45 @@ fn mine_events<'py>(
     mining::mine_events(py, &events, &spec)
 }
 
+// filterspec.apply_spec/keep: the DROP verdict per already-materialized event, over
+// the shared `Entry` borrowed behind each view — no re-parse, no round-trip.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (events, spec_json))]
+fn keep_events(
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'_, PyAny>>,
+    spec_json: &str,
+) -> PyResult<Vec<bool>> {
+    let spec = compile_spec(spec_json).map_err(PyValueError::new_err)?;
+    events
+        .iter()
+        .map(|event| Ok(spec_keep(&spec, mining::view_entry(event)?)))
+        .collect()
+}
+
+// filterspec.labels_for/annotate_spec: the TAG labels each already-materialized event
+// earns, in clause order, over the same borrowed `Entry`.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (events, spec_json))]
+fn label_events(
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'_, PyAny>>,
+    spec_json: &str,
+) -> PyResult<Vec<Vec<String>>> {
+    let spec = compile_spec(spec_json).map_err(PyValueError::new_err)?;
+    events
+        .iter()
+        .map(|event| {
+            Ok(spec_labels(&spec, mining::view_entry(event)?)
+                .into_iter()
+                .map(String::from)
+                .collect())
+        })
+        .collect()
+}
+
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn ids_canonical_json(value_json: &str) -> PyResult<String> {
@@ -856,6 +895,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(command_parse, m)?)?;
     m.add_function(wrap_pyfunction!(mine_events, m)?)?;
+    m.add_function(wrap_pyfunction!(keep_events, m)?)?;
+    m.add_function(wrap_pyfunction!(label_events, m)?)?;
     m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
