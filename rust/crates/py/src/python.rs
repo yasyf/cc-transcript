@@ -277,6 +277,26 @@ fn notifications_replay<'py>(
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
+#[gen_stub(override_return_type(type_repr = "dict[str, list[str]]", imports = ()))]
+fn notifications_from_events<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entries = events
+        .iter()
+        .map(mining::view_entry)
+        .collect::<PyResult<Vec<_>>>()?;
+    let notifications = Notifications::from_entry_refs(&entries);
+    let dict = PyDict::new(py);
+    dict.set_item("queued", notifications.queued)?;
+    dict.set_item("delivered", notifications.delivered)?;
+    dict.set_item("enqueued", notifications.enqueued)?;
+    Ok(dict)
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
 fn lexicon_tokenize(text: &str) -> PyResult<Vec<String>> {
     lexicon::tokenize(text).map_err(PyValueError::new_err)
 }
@@ -883,6 +903,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
+    m.add_function(wrap_pyfunction!(notifications_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_events, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;

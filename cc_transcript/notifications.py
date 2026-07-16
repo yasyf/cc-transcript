@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from cc_transcript import _native
 from cc_transcript.filterspec import TASK_NOTIFICATION_MARKER, TOOL_USE_ID_PREFIX, TOOL_USE_ID_SUFFIX
-from cc_transcript.models import AttachmentEvent, OtherEvent, QueuedCommand, UserEvent
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,34 +25,6 @@ if TYPE_CHECKING:
 
 def tool_use_marker(tool_use_id: str) -> str:
     return f"{TOOL_USE_ID_PREFIX}{tool_use_id}{TOOL_USE_ID_SUFFIX}"
-
-
-def delivered_text(event: TranscriptEvent) -> str | None:
-    match event:
-        case UserEvent(text=text) if TASK_NOTIFICATION_MARKER in text:
-            return text
-        case AttachmentEvent(attachment_type="queued_command", detail=QueuedCommand(prompt=prompt)):
-            return prompt or ""
-        case _:
-            return None
-
-
-def replay_queue(events: Sequence[TranscriptEvent]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    queued: list[str] = []
-    enqueued: list[str] = []
-    for event in events:
-        if not (isinstance(event, OtherEvent) and event.type == "queue-operation"):
-            continue
-        match event.raw.get("operation"):
-            case "enqueue":
-                enqueued.append(content := str(event.raw.get("content", "")))
-                queued.append(content)
-            case "dequeue" | "remove" if queued:
-                queued.pop(0)
-            case "popAll":
-                content = str(event.raw.get("content", ""))
-                queued = [item for item in queued if item not in content]
-    return tuple(queued), tuple(enqueued)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,11 +56,11 @@ class Notifications:
     @classmethod
     def from_events(cls, events: Sequence[TranscriptEvent]) -> Notifications:
         """Replays the notification queue over ``events``, in order."""
-        queued, enqueued = replay_queue(events)
+        data = _native.notifications_from_events(list(events))
         return cls(
-            queued=queued,
-            delivered=tuple(text for event in events if (text := delivered_text(event)) is not None),
-            enqueued=enqueued,
+            queued=tuple(data["queued"]),
+            delivered=tuple(data["delivered"]),
+            enqueued=tuple(data["enqueued"]),
         )
 
     def completed(self, tool_use_id: str) -> bool:

@@ -38,6 +38,10 @@ fn delivered_text(entry: &Entry) -> Option<String> {
 /// and to the enqueued log; `dequeue`/`remove` drop the head; `popAll` subtracts every
 /// queued item whose text is a substring of the operation's content.
 pub fn replay_queue(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
+    replay_queue_iter(entries.iter())
+}
+
+fn replay_queue_iter<'a>(entries: impl Iterator<Item = &'a Entry>) -> (Vec<String>, Vec<String>) {
     let mut queued: Vec<String> = Vec::new();
     let mut enqueued: Vec<String> = Vec::new();
     for entry in entries {
@@ -77,10 +81,16 @@ pub struct Notifications {
 impl Notifications {
     /// from_events (notifications.py): replays the queue over `entries`, in order.
     pub fn from_entries(entries: &[Entry]) -> Self {
-        let (queued, enqueued) = replay_queue(entries);
+        Self::from_entry_refs(&entries.iter().collect::<Vec<_>>())
+    }
+
+    /// `from_entries` over borrowed entry views — the events-in native path, where each
+    /// view borrows its `&Entry` behind the shared parse buffer (no re-parse).
+    pub fn from_entry_refs(entries: &[&Entry]) -> Self {
+        let (queued, enqueued) = replay_queue_iter(entries.iter().copied());
         Notifications {
             queued,
-            delivered: entries.iter().filter_map(delivered_text).collect(),
+            delivered: entries.iter().copied().filter_map(delivered_text).collect(),
             enqueued,
         }
     }

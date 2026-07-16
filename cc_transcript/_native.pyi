@@ -128,6 +128,7 @@ __all__ = [
     "mine_events",
     "nlp_analyze",
     "noise_spec_json",
+    "notifications_from_events",
     "notifications_replay",
     "parse_bytes",
     "parse_print_result",
@@ -2186,6 +2187,8 @@ def nlp_analyze(text: builtins.str) -> builtins.list[tuple[builtins.str, builtin
     """
 
 def noise_spec_json() -> builtins.str: ...
+
+def notifications_from_events(events: list[models.TranscriptEvent]) -> dict[str, list[str]]: ...
 
 def notifications_replay(raw: bytes) -> dict[str, list[str]]: ...
 
