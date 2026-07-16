@@ -6,12 +6,22 @@ validation."""
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import random
+import struct
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+import orjson
 import pytest
+
+from cc_transcript.filterspec import DENIAL_PREFIX, USER_SAID_MARKER, USER_SAID_TRAILER
+from cc_transcript.ids import tool_digest
 
 CLI = Path(sys.executable).parent / "cc-transcript"
 SCRATCHPAD_SESSION = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -176,3 +186,433 @@ def test_scratchpad_rejects_malformed_session(session: str) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "expected a UUID" in result.stderr
+
+
+BASE_TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+MODEL = "claude-opus-4-7"
+WINDOW = ("--since", "2026-01-02T03:04:00Z", "--until", "2026-01-02T03:05:00Z")
+
+EXPECTED_SHOW = (
+    "    0 user  03:04:05 hello world",
+    '    1 asst  03:04:06 [claude-opus-4-7] "hi there"',
+    "    2 asst  03:04:07 [claude-opus-4-7] th(12ch) Read(/x)",
+    "    3 user  03:04:08 <-Read (9ch) ok output",
+    "    4 asst  03:04:09 [claude-opus-4-7] ls",
+    "    5 user  03:04:10 <-Bash[err] (4ch) boom",
+    "    6 user  03:04:11 [int] [Request interrupted by user]",
+    "    7 user  03:04:12 <system-reminder>do not respond</system-reminder>",
+    "    8 user* 03:04:13 subagent prompt",
+    "    9 sys   03:04:14 stop_hook_summary: hook ran",
+    "   10 mode           mode=normal",
+    "   11 other          summary",
+    "   12 user  03:04:17 final question",
+)
+
+EXPECTED_STATS = "\n".join(
+    (
+        "files        1",
+        "events       13",
+        "kinds        user 7 · assistant 3 · system 1 · mode 1 · other 1",
+        "models       claude-opus-4-7 3",
+        "tools        Read 1 · Bash 1",
+        "text         126B",
+        "thinking     12B",
+        "tool io      47B",
+        "sessions     1",
+        "span         2026-01-02 03:04:05 → 2026-01-02 03:04:17",
+        "interrupts   1",
+        "tool errors  1",
+        "sidechain    1",
+    )
+)
+
+READ_SLICE = {
+    "schema": "cc-transcript.slice/1",
+    "event_uuid": "u2",
+    "tool_use_id": "toolu_read",
+    "ts_ms": int((BASE_TS + timedelta(seconds=2)).timestamp() * 1000),
+    "tool_name": "Read",
+    "tool_digest": tool_digest("Read", {"file_path": "/x"}),
+    "file_path": "/x",
+    "summary": "Read(/x)",
+}
+
+BASH_SLICE = {
+    "schema": "cc-transcript.slice/1",
+    "event_uuid": "u4",
+    "tool_use_id": "toolu_bash",
+    "ts_ms": int((BASE_TS + timedelta(seconds=4)).timestamp() * 1000),
+    "tool_name": "Bash",
+    "tool_digest": tool_digest("Bash", {"command": "ls"}),
+    "file_path": None,
+    "summary": "ls",
+}
+
+
+def envelope(n: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "uuid": f"u{n}",
+        "parentUuid": None,
+        "sessionId": "sess-1",
+        "timestamp": (BASE_TS + timedelta(seconds=n)).isoformat(),
+        "cwd": "/repo",
+        "gitBranch": "main",
+        "version": "1.2.3",
+        "isSidechain": False,
+        "entrypoint": "cli",
+    } | overrides
+
+
+def user_entry(n: int, text: str, **overrides: Any) -> dict[str, Any]:
+    return envelope(n, type="user", message={"role": "user", "content": text}, **overrides)
+
+
+def assistant_entry(n: int, content: list[dict[str, Any]], *, stop_reason: str = "end_turn") -> dict[str, Any]:
+    return envelope(
+        n,
+        type="assistant",
+        message={"role": "assistant", "model": MODEL, "stop_reason": stop_reason, "content": content},
+    )
+
+
+def tool_result_entry(n: int, tool_use_id: str, content: str, *, is_error: bool) -> dict[str, Any]:
+    return envelope(
+        n,
+        type="user",
+        message={
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}],
+        },
+    )
+
+
+def tool_use_entry(n: int, tool_use_id: str, name: str, **input: Any) -> dict[str, Any]:
+    return assistant_entry(
+        n, [{"type": "tool_use", "id": tool_use_id, "name": name, "input": input}], stop_reason="tool_use"
+    )
+
+
+def denial(said: str) -> str:
+    return f"{DENIAL_PREFIX}.\n{USER_SAID_MARKER}{said}\n{USER_SAID_TRAILER} will follow."
+
+
+def fixture_entries() -> list[dict[str, Any]]:
+    return [
+        user_entry(0, "hello world"),
+        assistant_entry(1, [{"type": "text", "text": "hi there"}]),
+        assistant_entry(
+            2,
+            [
+                {"type": "thinking", "thinking": "let me think"},
+                {"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "/x"}},
+            ],
+            stop_reason="tool_use",
+        ),
+        tool_result_entry(3, "toolu_read", "ok output", is_error=False),
+        assistant_entry(
+            4,
+            [{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "ls"}}],
+            stop_reason="tool_use",
+        ),
+        tool_result_entry(5, "toolu_bash", "boom", is_error=True),
+        user_entry(6, "[Request interrupted by user]"),
+        user_entry(7, "<system-reminder>do not respond</system-reminder>"),
+        user_entry(8, "subagent prompt", isSidechain=True),
+        envelope(9, type="system", subtype="stop_hook_summary", content="hook ran"),
+        {"type": "mode", "mode": "normal", "sessionId": "sess-1"},
+        {"type": "summary", "summary": "did stuff", "leafUuid": "uuid-x"},
+        user_entry(12, "final question"),
+    ]
+
+
+def rich_entries() -> list[dict[str, Any]]:
+    return [
+        user_entry(0, "do stuff"),
+        tool_use_entry(1, "toolu_rm", "Bash", command="rm -rf /tmp/x"),
+        tool_result_entry(2, "toolu_rm", denial("do not delete that"), is_error=True),
+        tool_use_entry(3, "toolu_srch", "mcp__semble__search", query="x"),
+        tool_result_entry(4, "toolu_srch", "results", is_error=False),
+        tool_use_entry(5, "toolu_rel", "mcp__semble__find_related", ref="y"),
+        tool_result_entry(6, "toolu_rel", "related", is_error=False),
+        tool_use_entry(7, "toolu_dep", "mcp__railway__deploy"),
+        tool_result_entry(8, "toolu_dep", "deployed", is_error=False),
+    ]
+
+
+def write_transcript(path: Path, entries: list[dict[str, Any]]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\n".join(orjson.dumps(entry) for entry in entries) + b"\n")
+    return path
+
+
+@pytest.fixture
+def transcript(tmp_path: Path) -> Path:
+    return write_transcript(tmp_path / "t.jsonl", fixture_entries())
+
+
+@pytest.fixture
+def rich(tmp_path: Path) -> Path:
+    return write_transcript(tmp_path / "rich.jsonl", rich_entries())
+
+
+@pytest.fixture
+def unparseable(tmp_path: Path) -> Path:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
+    return bad
+
+
+@pytest.fixture
+def session_root(tmp_path: Path) -> Path:
+    root = tmp_path / "projects"
+    write_transcript(root / "-Users-x-proj-a" / "sess-1.jsonl", fixture_entries())
+    return root
+
+
+def test_show_renders_each_event_kind(transcript: Path) -> None:
+    result = run_cli("show", str(transcript))
+    assert result.returncode == 0, result.stderr
+    assert tuple(result.stdout.splitlines()) == EXPECTED_SHOW
+
+
+def test_show_caps_at_200_with_notice(tmp_path: Path) -> None:
+    path = write_transcript(tmp_path / "big.jsonl", [user_entry(n, f"msg {n}") for n in range(205)])
+    result = run_cli("show", str(path))
+    lines = result.stdout.splitlines()
+    assert result.returncode == 0
+    assert lines[0] == "… 5 earlier events hidden — use --head/--range/--all"
+    assert len(lines) == 201
+    assert lines[1] == f"    5 user  {BASE_TS + timedelta(seconds=5):%H:%M:%S} msg 5"
+    assert lines[-1] == f"  204 user  {BASE_TS + timedelta(seconds=204):%H:%M:%S} msg 204"
+    assert len(run_cli("show", str(path), "--all").stdout.splitlines()) == 205
+
+
+def test_show_head_tail_range_are_mutually_exclusive(transcript: Path) -> None:
+    result = run_cli("show", str(transcript), "--head", "1", "--tail", "1")
+    assert result.returncode == 2
+    assert "--head, --tail, and --range are mutually exclusive" in result.stderr
+
+
+def test_grep_kind_filter(transcript: Path) -> None:
+    result = run_cli("grep", "o", str(transcript), "--kind", "system")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [f"== {transcript}", EXPECTED_SHOW[9], "1 files, 1 matches"]
+
+
+def test_grep_context_windows_and_separator(transcript: Path) -> None:
+    result = run_cli("grep", "hello|final", str(transcript), "-C", "1")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[0],
+        EXPECTED_SHOW[1],
+        "--",
+        EXPECTED_SHOW[11],
+        EXPECTED_SHOW[12],
+        "1 files, 2 matches",
+    ]
+
+
+def test_grep_with_result_human_appends_markers(rich: Path) -> None:
+    result = run_cli("grep", "rm|query", str(rich), "--with-result")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        f"== {rich}",
+        "    1 asst  03:04:06 [claude-opus-4-7] rm -rf /tmp/x [denied] (1000ms)",
+        "    3 asst  03:04:08 [claude-opus-4-7] mcp__semble__search(x) (1000ms)",
+        "1 files, 2 matches",
+    ]
+
+
+def test_grep_with_result_json_adds_results_sibling(rich: Path) -> None:
+    result = run_cli("grep", "rm|query", str(rich), "--json", "--with-result")
+    assert result.returncode == 0
+    by_i = {row["i"]: row for line in result.stdout.splitlines() if (row := json.loads(line))}
+    assert by_i[1]["results"] == {"toolu_rm": {"is_error": True, "denied": True, "duration_ms": 1000}}
+    assert by_i[3]["results"] == {"toolu_srch": {"is_error": False, "denied": False, "duration_ms": 1000}}
+
+
+def test_stats_warns_on_unparseable_file(transcript: Path, unparseable: Path) -> None:
+    result = run_cli("stats", str(transcript), str(unparseable))
+    assert result.returncode == 0
+    assert result.stderr == f"warning: skipped 1 unparseable transcript(s): {unparseable}\n"
+    assert result.stdout == EXPECTED_STATS + "\n"
+
+
+def test_slice_emits_one_line_per_tool_call(session_root: Path) -> None:
+    result = run_cli("slice", "--session", "sess-1", *WINDOW, "--root", str(session_root))
+    assert result.returncode == 0
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert rows == [READ_SLICE, BASH_SLICE]
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "expected_uuids"),
+    [
+        pytest.param("2026-01-02T03:04:07Z", "2026-01-02T03:04:09Z", ["u2"], id="until_exclusive"),
+        pytest.param("2026-01-02T03:04:09Z", "2026-01-02T03:05:00Z", ["u4"], id="since_inclusive"),
+    ],
+)
+def test_slice_window_boundaries(session_root: Path, since: str, until: str, expected_uuids: list[str]) -> None:
+    result = run_cli("slice", "--session", "sess-1", "--since", since, "--until", until, "--root", str(session_root))
+    assert result.returncode == 0
+    assert [json.loads(line)["event_uuid"] for line in result.stdout.splitlines()] == expected_uuids
+
+
+def test_slice_unparseable_transcript_exits_two_with_empty_stdout(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    bad = root / "-Users-x-proj-a" / "sess-9.jsonl"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(orjson.dumps(envelope(0, type="user", message={"role": "user", "content": None})) + b"\n")
+    result = run_cli("slice", "--session", "sess-9", *WINDOW, "--root", str(root))
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+def test_digest_rejects_invalid_stdin() -> None:
+    result = subprocess.run(
+        [str(CLI), "digest"], capture_output=True, text=True, input="not json", env=dict(os.environ)
+    )
+    assert result.returncode == 2
+    assert "invalid JSON on stdin" in result.stderr
+
+
+def test_digest_check_missing_file_exits_two(tmp_path: Path) -> None:
+    result = run_cli("digest", "--check", str(tmp_path / "nope.json"))
+    assert result.returncode == 2
+    assert "does not exist" in result.stderr
+
+
+def test_tools_lists_every_call_with_outcomes(rich: Path) -> None:
+    result = run_cli("tools", str(rich))
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        "2026-01-02 03:04:06 sess-1 Bash rm [denied]",
+        "2026-01-02 03:04:08 sess-1 semble/search",
+        "2026-01-02 03:04:10 sess-1 semble/find_related",
+        "2026-01-02 03:04:12 sess-1 railway/deploy",
+    ]
+
+
+def test_commands_human_counts(rich: Path) -> None:
+    result = run_cli("commands", str(rich))
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["  1  rm"]
+
+
+def test_commands_json_rows(transcript: Path) -> None:
+    result = run_cli("commands", str(transcript), "--json")
+    assert result.returncode == 0
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [{"prefix": "ls", "count": 1}]
+
+
+def test_permissions_human_line(rich: Path) -> None:
+    result = run_cli("permissions", str(rich))
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["Bash rm -rf /tmp/x → do not delete that"]
+
+
+def test_permissions_json_row_shape(rich: Path) -> None:
+    result = run_cli("permissions", str(rich), "--json")
+    assert result.returncode == 0
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        {
+            "ts": "2026-01-02T03:04:06+00:00",
+            "session": "sess-1",
+            "path": str(rich),
+            "tool": "Bash",
+            "command": "rm -rf /tmp/x",
+            "file_path": None,
+            "denial_kind": "user-rejected",
+            "user_said": "do not delete that",
+        }
+    ]
+
+
+def test_permissions_excludes_plan_and_question_rejections(tmp_path: Path) -> None:
+    path = write_transcript(
+        tmp_path / "plan.jsonl",
+        [
+            user_entry(0, "go"),
+            tool_use_entry(1, "toolu_plan", "ExitPlanMode", plan="do it"),
+            tool_result_entry(2, "toolu_plan", denial("not yet"), is_error=True),
+            tool_use_entry(3, "toolu_ask", "AskUserQuestion", questions=[]),
+            tool_result_entry(4, "toolu_ask", denial("skip"), is_error=True),
+            tool_use_entry(5, "toolu_rm", "Bash", command="rm -rf /x"),
+            tool_result_entry(6, "toolu_rm", denial("stop"), is_error=True),
+        ],
+    )
+    result = run_cli("permissions", str(path), "--json")
+    assert result.returncode == 0
+    assert [json.loads(line)["tool"] for line in result.stdout.splitlines()] == ["Bash"]
+
+
+def test_mcp_human_table_ordered_by_total(rich: Path) -> None:
+    result = run_cli("mcp", str(rich))
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        "semble   read 2 · write 0 · total 2  search 1 · find_related 1",
+        "railway  read 0 · write 1 · total 1  deploy 1",
+    ]
+
+
+def test_mcp_json_rows(rich: Path) -> None:
+    result = run_cli("mcp", str(rich), "--json")
+    assert result.returncode == 0
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        {"server": "semble", "read": 2, "write": 0, "total": 2, "tools": {"search": 1, "find_related": 1}},
+        {"server": "railway", "read": 0, "write": 1, "total": 1, "tools": {"deploy": 1}},
+    ]
+
+
+def test_root_option_rejects_a_file(tmp_path: Path) -> None:
+    file_root = tmp_path / "not-a-dir"
+    file_root.write_text("x")
+    for args in (["list"], ["watch", "--poll", "0.05"], ["slice", "--session", "s", *WINDOW]):
+        result = run_cli(*args, "--root", str(file_root))
+        assert result.returncode == 2, args
+        assert "is a file." in result.stderr, args
+
+
+def test_bare_invocation_prints_help_to_stderr_and_exits_two() -> None:
+    result = run_cli()
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Usage: cc-transcript" in result.stderr
+
+
+def test_show_json_floats_match_orjson_layout(tmp_path: Path) -> None:
+    """The ids shortest-repr fuzz extended to the CLI writer: 10k seeded bit-random
+    f64s plus the exponent edges must survive an orjson re-serialization byte-for-byte
+    (orjson is the reference the deleted Python CLI emitted through)."""
+    rng = random.Random(0xC0FFEE)
+    values = [698957826421429.2, 0.0001, 0.00001, 0.0000999, -0.00001, 1e-6, 1e-7, 1e15, 1e16, 5e-324, -0.0]
+    while len(values) < 10_000:
+        candidate = struct.unpack("<d", struct.pack("<Q", rng.getrandbits(64)))[0]
+        if math.isfinite(candidate):
+            values.append(candidate)
+    path = write_transcript(tmp_path / "floats.jsonl", [tool_use_entry(0, "toolu_f", "Bash", xs=values)])
+    result = run_cli("show", str(path), "--json")
+    assert result.returncode == 0, result.stderr
+    (line,) = result.stdout.splitlines()
+    assert orjson.dumps(orjson.loads(line)).decode() == line
+    assert json.loads(line)["blocks"][0]["input"]["xs"] == values
+
+
+def test_show_json_nonfinite_lexemes_project_null(tmp_path: Path) -> None:
+    entry = tool_use_entry(0, "toolu_n", "Bash", big="BIG", neg="NEG", nan_x="NAN")
+    raw = orjson.dumps(entry).replace(b'"BIG"', b"1e400").replace(b'"NEG"', b"-1e999").replace(b'"NAN"', b"2e308")
+    path = tmp_path / "nonfinite.jsonl"
+    path.write_bytes(raw + b"\n")
+    result = run_cli("show", str(path), "--json")
+    assert result.returncode == 0, result.stderr
+    (line,) = result.stdout.splitlines()
+    assert json.loads(line)["blocks"][0]["input"] == {"big": None, "neg": None, "nan_x": None}
+
+
+def test_home_unset_falls_back_to_the_pwd_home(tmp_path: Path) -> None:
+    decoy = tmp_path / ".claude" / "projects" / "-x-proj"
+    write_transcript(decoy / "decoy-session.jsonl", [user_entry(0, "decoy")])
+    result = run_cli("list", "--limit", "5", drop=("HOME",), cwd=tmp_path)
+    assert result.returncode == 0
+    assert "decoy-session" not in result.stdout

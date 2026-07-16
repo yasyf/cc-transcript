@@ -160,30 +160,30 @@ def run(case: Case) -> tuple[bytes, bytes, int]:
     return proc.stdout, proc.stderr, proc.returncode
 
 
-def record() -> None:
+def record(golden_dir: Path) -> None:
     regenerate_corpus()
     shutil.rmtree(REPO_ROOT / HOME_REL, ignore_errors=True)
     (REPO_ROOT / HOME_REL).mkdir(parents=True)
     (REPO_ROOT / ".fixtures" / "tmp").mkdir(parents=True, exist_ok=True)
-    GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
-    for existing in (*GOLDEN_DIR.glob("*.out"), *GOLDEN_DIR.glob("*.err")):
+    golden_dir.mkdir(parents=True, exist_ok=True)
+    for existing in (*golden_dir.glob("*.out"), *golden_dir.glob("*.err")):
         existing.unlink()
     manifest: dict[str, dict[str, object]] = {}
     for name, case in matrix(smallest_transcript()).items():
         stdout, stderr, code = run(case)
-        (GOLDEN_DIR / f"{name}.out").write_bytes(stdout)
-        (GOLDEN_DIR / f"{name}.err").write_bytes(stderr)
+        (golden_dir / f"{name}.out").write_bytes(stdout)
+        (golden_dir / f"{name}.err").write_bytes(stderr)
         manifest[name] = {
             "argv": case.argv,
             "exit_code": code,
             "stdout_bytes": len(stdout),
             "stderr_bytes": len(stderr),
         }
-    (GOLDEN_DIR / "manifest.json").write_bytes(
+    (golden_dir / "manifest.json").write_bytes(
         orjson.dumps(manifest, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
     )
-    print(f"recorded {len(manifest)} golden commands to {GOLDEN_DIR.relative_to(REPO_ROOT)}")
+    print(f"recorded {len(manifest)} golden commands to {golden_dir}")
 
 
 if __name__ == "__main__":
-    record()
+    record(GOLDEN_DIR)
