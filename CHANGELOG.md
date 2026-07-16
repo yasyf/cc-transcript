@@ -40,6 +40,11 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
 ### Removed
 - Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is
   canonical); `PRICING` remains importable.
+- Removed the Python raw-bytes renderers now owned by the native core — `compact_line`,
+  `haystack`, and `collect_stats`/`Stats`/`render_stats` (with their `truncate`/`human_size`
+  helpers). `render_compact_lines`/`render_haystacks`/`render_stats` on the native core are
+  canonical; `Budget`, `render_tool_call`, `render_turn`, and `render_session` remain the
+  Python object renderers.
 
 ## [13.1.0] - 2026-07-13
 

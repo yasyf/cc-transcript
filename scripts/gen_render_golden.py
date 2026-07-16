@@ -1,20 +1,22 @@
-"""Generate the renderer parity golden from the Python reference.
+"""Generate the renderer parity golden.
 
-Freezes the Python ``cc_transcript.render`` outputs so ``tests/test_render_parity.py``
-can replay them against both the Python reference (a drift guard) and the Rust
-``_native`` port. Three sections:
+Freezes the renderer outputs so ``tests/test_render_parity.py`` can replay them. The
+raw-path renderers live only in the native core, so their sections come from
+``_native``; ``render_tool_call`` stays a Python object renderer, so its section is the
+frozen Python value the parity test still drift-guards against ``_native``. Three
+sections:
 
 * ``tool_calls`` — ``render_tool_call`` over every corpus tool-use input (deduped by
   ``(name, value-shape)`` like the toolcall golden), each of the 15 typed classes, and
   hand-built edge inputs (unicode clipped by code point, huge payloads straddling the
   clip boundary, multi-line hunks, and non-string ``primary_arg`` values), at several
   budgets.
-* ``transcripts`` — ``compact_line`` (several width/thinking/uuids combos), ``haystack``
-  (several ``where`` sets), and per-transcript ``render_stats`` over the shared parser
-  fixture (``tests.support.fixture_bytes`` — every event/attachment kind) plus the
-  smallest corpus files. Raw JSONL is embedded base64, so the test never needs the
-  gitignored corpus. Cap: the ``CORPUS_SAMPLE`` smallest files (the full corpus is the
-  ``render`` bench's job, not the parity golden's).
+* ``transcripts`` — ``render_compact_lines`` (several width/thinking/uuids combos),
+  ``render_haystacks`` (several ``where`` sets), and per-transcript ``render_stats`` over
+  the shared parser fixture (``tests.support.fixture_bytes`` — every event/attachment
+  kind) plus the smallest corpus files. Raw JSONL is embedded base64, so the test never
+  needs the gitignored corpus. Cap: the ``CORPUS_SAMPLE`` smallest files (the full corpus
+  is the ``render`` bench's job, not the parity golden's).
 * ``stats_all`` — ``render_stats`` over every sampled transcript at once.
 
 Run: ``uv run --no-sync python scripts/gen_render_golden.py``
@@ -34,17 +36,8 @@ import orjson
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from cc_transcript.backend import ParsedTranscript  # noqa: E402
-from cc_transcript.filterspec import tool_names  # noqa: E402
-from cc_transcript.parser import parse_events_from_bytes  # noqa: E402
-from cc_transcript.render import (  # noqa: E402
-    Budget,
-    collect_stats,
-    compact_line,
-    haystack,
-    render_stats,
-    render_tool_call,
-)
+from cc_transcript import _native  # noqa: E402
+from cc_transcript.render import Budget, render_tool_call  # noqa: E402
 from cc_transcript.tools import parse_tool_call  # noqa: E402
 from tests.support import fixture_bytes  # noqa: E402
 
@@ -242,9 +235,6 @@ def numeric_transcript() -> bytes:
 
 
 def transcript_case(id_: str, raw: bytes) -> dict[str, Any]:
-    events = parse_events_from_bytes(raw)
-    names = tool_names(events)
-    parsed = ParsedTranscript(path=Path(id_), mtime=0.0, events=tuple(events))
     return {
         "id": id_,
         "jsonl_b64": base64.b64encode(raw).decode("ascii"),
@@ -253,21 +243,18 @@ def transcript_case(id_: str, raw: bytes) -> dict[str, Any]:
                 "width": width,
                 "thinking": thinking,
                 "uuids": uuids,
-                "lines": [
-                    compact_line(i, event, names=names, width=width, thinking=thinking, uuids=uuids)
-                    for i, event in enumerate(events)
-                ],
+                "lines": _native.render_compact_lines(raw, width, thinking, uuids),
             }
             for width, thinking, uuids in COMPACT_COMBOS
         ],
         "haystack": [
             {
                 "where": list(wheres),
-                "lines": [haystack(event, where=frozenset(wheres)) for event in events],
+                "lines": _native.render_haystacks(raw, list(wheres)),
             }
             for wheres in HAYSTACK_COMBOS
         ],
-        "stats": render_stats(collect_stats([parsed])),
+        "stats": _native.render_stats([raw]),
     }
 
 
@@ -284,16 +271,12 @@ def sample_transcripts() -> list[tuple[str, bytes]]:
 def main() -> None:
     samples = sample_transcripts()
     transcripts = [transcript_case(id_, raw) for id_, raw in samples]
-    all_parsed = [
-        ParsedTranscript(path=Path(id_), mtime=0.0, events=tuple(parse_events_from_bytes(raw)))
-        for id_, raw in samples
-    ]
     golden = {
         "tool_calls": tool_call_cases(),
         "dup_key_calls": dup_key_call_cases(),
         "raw_json_calls": raw_json_call_cases(),
         "transcripts": transcripts,
-        "stats_all": render_stats(collect_stats(all_parsed)),
+        "stats_all": _native.render_stats([raw for _, raw in samples]),
     }
     GOLDEN.write_text(json.dumps(golden, indent=2, ensure_ascii=False), encoding="utf-8")
     print(

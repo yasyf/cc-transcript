@@ -2,47 +2,34 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import orjson
 import pytest
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.backend import ParsedTranscript
 from cc_transcript.filterspec import tool_names
 from cc_transcript.models import (
     AssistantEvent,
-    AttachmentEvent,
     ModeEvent,
     OtherEvent,
     SessionId,
-    SystemEvent,
     ToolUseId,
-    TranscriptEvent,
     UserEvent,
 )
 from cc_transcript.render import (
     Budget,
-    Stats,
     clip,
-    collect_stats,
-    compact_line,
     event_dict,
-    human_size,
     primary_arg,
     render_session,
-    render_stats,
     render_tool_call,
     render_turn,
-    truncate,
     view_asdict,
     view_field,
 )
 from cc_transcript.tools import parse_tool_call
 from tests import testkit
-
-NAMES = {ToolUseId("toolu_1"): "Bash"}
 
 TS = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
@@ -85,23 +72,6 @@ def assistant(
     return event
 
 
-def system(subtype: str, *, content: str | None = None, **mk: Any) -> SystemEvent:
-    line: dict[str, Any] = {"type": "system", "subtype": subtype} | testkit.meta_fields("uuid-1", **_mkw(**mk))
-    if content is not None:
-        line["content"] = content
-    event = testkit.parse_event(line)
-    assert isinstance(event, SystemEvent)
-    return event
-
-
-def attachment(payload: dict[str, Any], **mk: Any) -> AttachmentEvent:
-    event = testkit.parse_event(
-        {"type": "attachment", "attachment": payload} | testkit.meta_fields("uuid-1", **_mkw(**mk))
-    )
-    assert isinstance(event, AttachmentEvent)
-    return event
-
-
 def mode(value: str = "plan", *, session_id: str = "sess-1") -> ModeEvent:
     event = testkit.parse_event(testkit.mode_line(value, session_id=session_id))
     assert isinstance(event, ModeEvent)
@@ -112,43 +82,6 @@ def other(type: str) -> OtherEvent:
     event = testkit.parse_event(testkit.other_line(type))
     assert isinstance(event, OtherEvent)
     return event
-
-
-ASSISTANT_THINKING = assistant(
-    blocks=(testkit.thinking_block("let me think"), testkit.tool_use("t9", "Read", {"file_path": "/x"})),
-    stop_reason="tool_use",
-)
-
-
-@pytest.mark.parametrize(
-    ("text", "width", "expected"),
-    [
-        pytest.param("a  b\n\tc", 100, "a b c", id="whitespace-collapse"),
-        pytest.param("abcdef", 4, "abc…", id="width-cut"),
-        pytest.param("a    bcdef", 4, "a b…", id="collapse-then-cut"),
-        pytest.param("ab   cd", 0, "ab cd", id="width-zero-no-cut"),
-        pytest.param("abcd", 4, "abcd", id="exact-fit"),
-    ],
-)
-def test_truncate(text: str, width: int, expected: str) -> None:
-    assert truncate(text, width) == expected
-
-
-@pytest.mark.parametrize(
-    ("n", "expected"),
-    [
-        pytest.param(0, "0B", id="zero"),
-        pytest.param(1023, "1023B", id="bytes-max"),
-        pytest.param(1024, "1.0KB", id="kb-min"),
-        pytest.param(1536, "1.5KB", id="kb-fraction"),
-        pytest.param(1024**2, "1.0MB", id="mb"),
-        pytest.param(1024**3, "1.0GB", id="gb"),
-        pytest.param(1024**4, "1.0TB", id="tb"),
-        pytest.param(1024**5, "1024.0TB", id="beyond-tb-stays-tb"),
-    ],
-)
-def test_human_size(n: int, expected: str) -> None:
-    assert human_size(n) == expected
 
 
 @pytest.mark.parametrize(
@@ -291,189 +224,6 @@ def test_render_session_joins_turns_skipping_empty() -> None:
     assert render_session(act, budget=Budget()) == "user: one\nassistant: ack\n\nuser: two"
 
 
-@pytest.mark.parametrize(
-    ("index", "event", "thinking", "expected"),
-    [
-        pytest.param(
-            1,
-            user("fix the bug"),
-            False,
-            "    1 user  03:04:05 fix the bug",
-            id="user-plain",
-        ),
-        pytest.param(
-            2,
-            user("[Request interrupted by user]", interrupted=True),
-            False,
-            "    2 user  03:04:05 [int] [Request interrupted by user]",
-            id="user-interrupted",
-        ),
-        pytest.param(
-            3,
-            user(blocks=(testkit.tool_result("toolu_1", "ok output"),)),
-            False,
-            "    3 user  03:04:05 <-Bash (9ch) ok output",
-            id="user-tool-result-correlated-name",
-        ),
-        pytest.param(
-            4,
-            user(blocks=(testkit.tool_result("toolu_1", "boom", is_error=True),)),
-            False,
-            "    4 user  03:04:05 <-Bash[err] (4ch) boom",
-            id="user-tool-result-error",
-        ),
-        pytest.param(
-            5,
-            user(blocks=(testkit.tool_result("missing", "boom"),)),
-            False,
-            "    5 user  03:04:05 <-? (4ch) boom",
-            id="user-tool-result-unknown-id",
-        ),
-        pytest.param(
-            6,
-            ASSISTANT_THINKING,
-            False,
-            "    6 asst  03:04:05 [claude-opus-4-7] th(12ch) Read(/x)",
-            id="assistant-thinking-marker",
-        ),
-        pytest.param(
-            6,
-            ASSISTANT_THINKING,
-            True,
-            "    6 asst  03:04:05 [claude-opus-4-7] th(12ch) let me think Read(/x)",
-            id="assistant-thinking-inline",
-        ),
-        pytest.param(
-            7,
-            assistant("hi there", stop_reason="end_turn"),
-            False,
-            '    7 asst  03:04:05 [claude-opus-4-7] "hi there"',
-            id="assistant-text",
-        ),
-        pytest.param(
-            8,
-            system("stop_hook_summary", content="hook ran"),
-            False,
-            "    8 sys   03:04:05 stop_hook_summary: hook ran",
-            id="system-with-content",
-        ),
-        pytest.param(
-            9,
-            system("init"),
-            False,
-            "    9 sys   03:04:05 init",
-            id="system-no-content",
-        ),
-        pytest.param(
-            10,
-            user("subagent prompt", is_sidechain=True),
-            False,
-            "   10 user* 03:04:05 subagent prompt",
-            id="sidechain-star-tag",
-        ),
-        pytest.param(
-            11,
-            mode("plan", session_id="sess-1"),
-            False,
-            "   11 mode           mode=plan",
-            id="mode-no-meta-blank-time",
-        ),
-        pytest.param(
-            12,
-            other("summary"),
-            False,
-            "   12 other          summary",
-            id="other-no-meta-blank-time",
-        ),
-        pytest.param(
-            18,
-            attachment(
-                {
-                    "type": "hook_success",
-                    "hookName": "PostToolUse:Bash",
-                    "hookEvent": "PostToolUse",
-                    "content": "hook ran ok",
-                }
-            ),
-            False,
-            "   18 att   03:04:05 hook_success hook ran ok",
-            id="attachment-hook-success",
-        ),
-        pytest.param(
-            13,
-            assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "ls -la"}),), stop_reason="tool_use"),
-            False,
-            "   13 asst  03:04:05 [claude-opus-4-7] ls -la",
-            id="bash-renders-bare-command",
-        ),
-        pytest.param(
-            14,
-            assistant(
-                blocks=(
-                    testkit.tool_use(
-                        "t1", "Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}
-                    ),
-                ),
-                stop_reason="tool_use",
-            ),
-            False,
-            "   14 asst  03:04:05 [claude-opus-4-7] Edit /a.py - x = 1 + x = 2",
-            id="edit-delegates-to-tool-renderer-collapsed",
-        ),
-        pytest.param(
-            15,
-            assistant(blocks=(testkit.tool_use("t1", "Edit", {"file_path": "/a.py"}),), stop_reason="tool_use"),
-            False,
-            "   15 asst  03:04:05 [claude-opus-4-7] Edit(/a.py)",
-            id="malformed-known-tool-degrades-to-compact",
-        ),
-        pytest.param(
-            16,
-            assistant(
-                model="claude-opus-4-8",
-                blocks=({"type": "fallback", "from": {"model": "claude-fable-5"}, "to": {"model": "claude-opus-4-8"}},),
-                stop_reason="tool_use",
-            ),
-            False,
-            "   16 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8",
-            id="fallback-block-renders-model-transition",
-        ),
-        pytest.param(
-            17,
-            assistant(model="claude-opus-4-8", blocks=({"type": "future_block"},)),
-            False,
-            "   17 asst  03:04:05 [claude-opus-4-8] future_block",
-            id="other-block-renders-bare-type",
-        ),
-    ],
-)
-def test_compact_line(index: int, event: TranscriptEvent, thinking: bool, expected: str) -> None:
-    assert compact_line(index, event, names=NAMES, width=100, thinking=thinking, uuids=False) == expected
-
-
-def test_compact_line_tool_input_clips_with_omitted_count() -> None:
-    event = assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "abcdefghij"}),), stop_reason="tool_use")
-    assert (
-        compact_line(1, event, names={}, width=8, thinking=False, uuids=False)
-        == "    1 asst  03:04:05 [claude-opus-4-7] abcdefgh…(+2ch)"
-    )
-
-
-def test_compact_line_width_zero_never_clips_tool_input() -> None:
-    event = assistant(blocks=(testkit.tool_use("t1", "Bash", {"command": "x" * 500}),), stop_reason="tool_use")
-    assert compact_line(1, event, names={}, width=0, thinking=False, uuids=False).endswith("x" * 500)
-
-
-def test_compact_line_appends_uuid_with_meta() -> None:
-    event = user("hi")
-    assert compact_line(1, event, names={}, width=100, thinking=False, uuids=True) == "    1 user  03:04:05 hi uuid-1"
-
-
-def test_compact_line_uuids_flag_skips_metaless_events() -> None:
-    event = mode("plan", session_id="sess-1")
-    assert compact_line(2, event, names={}, width=100, thinking=False, uuids=True) == "    2 mode           mode=plan"
-
-
 def test_tool_names_correlates_ids_across_events() -> None:
     events = (
         user("q"),
@@ -535,121 +285,6 @@ def test_event_dict_mode_event_has_no_meta() -> None:
         "channel": "mode",
         "value": "plan",
     }
-
-
-STATS_TRANSCRIPTS = (
-    ParsedTranscript(
-        path=Path("/a.jsonl"),
-        mtime=0.0,
-        events=(
-            user("hello"),
-            assistant(
-                "hi",
-                blocks=(testkit.thinking_block("hmm"), testkit.tool_use("t1", "Read", {"file_path": "/x"})),
-                stop_reason="tool_use",
-                timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC),
-            ),
-            user(
-                blocks=(testkit.tool_result("t1", "out", is_error=True),),
-                timestamp=datetime(2026, 1, 2, 3, 4, 7, tzinfo=UTC),
-            ),
-            user(
-                "[int]",
-                interrupted=True,
-                is_sidechain=True,
-                timestamp=datetime(2026, 1, 2, 3, 4, 8, tzinfo=UTC),
-            ),
-            system("stop_hook_summary", content="ran", timestamp=datetime(2026, 1, 2, 3, 4, 9, tzinfo=UTC)),
-            mode("plan", session_id="sess-2"),
-            other("summary"),
-            attachment(
-                {"type": "hook_success", "hookName": "Stop", "hookEvent": "Stop", "content": "ok"},
-                timestamp=datetime(2026, 1, 2, 3, 4, 6, tzinfo=UTC),
-            ),
-        ),
-    ),
-    ParsedTranscript(
-        path=Path("/b.jsonl"),
-        mtime=0.0,
-        events=(
-            assistant(
-                "yo",
-                model="claude-haiku",
-                stop_reason="end_turn",
-                timestamp=datetime(2026, 1, 2, 3, 5, 0, tzinfo=UTC),
-                session_id="sess-3",
-            ),
-        ),
-    ),
-)
-
-EXPECTED_STATS = Stats(
-    files=2,
-    events=9,
-    kinds={"user": 3, "assistant": 2, "system": 1, "mode": 1, "other": 1, "attachment": 1},
-    models={"claude-opus-4-7": 1, "claude-haiku": 1},
-    tools={"Read": 1},
-    text_chars=14,
-    thinking_chars=3,
-    tool_io_chars=21,
-    sessions=3,
-    first_timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
-    last_timestamp=datetime(2026, 1, 2, 3, 5, 0, tzinfo=UTC),
-    interrupts=1,
-    tool_errors=1,
-    sidechain=1,
-)
-
-
-def test_collect_stats_exact_counters() -> None:
-    assert collect_stats(STATS_TRANSCRIPTS) == EXPECTED_STATS
-
-
-def test_collect_stats_empty() -> None:
-    assert collect_stats([]) == Stats(
-        files=0,
-        events=0,
-        kinds={},
-        models={},
-        tools={},
-        text_chars=0,
-        thinking_chars=0,
-        tool_io_chars=0,
-        sessions=0,
-        first_timestamp=None,
-        last_timestamp=None,
-        interrupts=0,
-        tool_errors=0,
-        sidechain=0,
-    )
-
-
-def test_render_stats_exact_output() -> None:
-    assert render_stats(EXPECTED_STATS) == "\n".join(
-        (
-            "files        2",
-            "events       9",
-            "kinds        user 3 · assistant 2 · system 1 · mode 1 · other 1 · attachment 1",
-            "models       claude-opus-4-7 1 · claude-haiku 1",
-            "tools        Read 1",
-            "text         14B",
-            "thinking     3B",
-            "tool io      21B",
-            "sessions     3",
-            "span         2026-01-02 03:04:05 → 2026-01-02 03:05:00",
-            "interrupts   1",
-            "tool errors  1",
-            "sidechain    1",
-        )
-    )
-
-
-def test_render_stats_empty_placeholders() -> None:
-    rendered = render_stats(collect_stats([]))
-    assert "kinds        -" in rendered
-    assert "models       -" in rendered
-    assert "tools        -" in rendered
-    assert "span         -" in rendered
 
 
 def test_view_field_recurses_records_and_passes_non_record_views_through() -> None:

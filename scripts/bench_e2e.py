@@ -25,7 +25,6 @@ from cc_transcript.activity_probe import session_activity_probe
 from cc_transcript.filterspec import apply_spec
 from cc_transcript.mining import MiningSpec, mine
 from cc_transcript.parser import parse, stream
-from cc_transcript.render import collect_stats
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CORPUS = REPO_ROOT / ".fixtures" / "corpus"
@@ -48,7 +47,7 @@ def timed(fn: Callable[[], object], runs: int) -> dict[str, object]:
 
 
 def stream_stats(files: list[Path]) -> int:
-    return collect_stats(list(stream(files, prefetch=8))).events
+    return sum(len(parsed.events) for parsed in stream(files, prefetch=8))
 
 
 def bench_e2e(corpus: Path, runs: int) -> dict[str, object]:

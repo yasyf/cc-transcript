@@ -1,9 +1,10 @@
 """Rust ↔ Python parity for the renderer over the frozen golden.
 
-Each case asserts twice: the Python ``cc_transcript.render`` reference still produces the
-frozen value (a drift guard), and the Rust ``_native`` port produces the identical
-string. ``tool_calls`` pins ``render_tool_call`` under a budget; ``transcripts`` pins
-``compact_line``/``haystack``/``render_stats`` over embedded raw JSONL. Regenerate with
+``render_tool_call`` stays a Python object renderer, so each of its cases asserts twice:
+the Python ``cc_transcript.render`` reference still produces the frozen value (a drift
+guard), and the Rust ``_native`` port produces the identical string. The raw-path
+renderers — ``render_compact_lines``/``render_haystacks``/``render_stats`` over embedded
+raw JSONL — live only in the native core, so they pin native-vs-golden. Regenerate with
 ``scripts/gen_render_golden.py``.
 """
 
@@ -16,10 +17,7 @@ from pathlib import Path
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.backend import ParsedTranscript
-from cc_transcript.filterspec import tool_names
-from cc_transcript.parser import parse_events_from_bytes
-from cc_transcript.render import Budget, collect_stats, compact_line, haystack, render_stats, render_tool_call
+from cc_transcript.render import Budget, render_tool_call
 from cc_transcript.tools import parse_tool_call
 from tests.support import requires_rust
 
@@ -28,10 +26,6 @@ TOOL_CALLS = GOLDEN["tool_calls"]
 DUP_KEY_CALLS = GOLDEN["dup_key_calls"]
 RAW_JSON_CALLS = GOLDEN["raw_json_calls"]
 TRANSCRIPTS = GOLDEN["transcripts"]
-
-
-def parsed_of(raw: bytes, id_: str) -> ParsedTranscript:
-    return ParsedTranscript(path=Path(id_), mtime=0.0, events=tuple(parse_events_from_bytes(raw)))
 
 
 @requires_rust
@@ -77,24 +71,15 @@ def test_raw_json_call_parity(case: dict[str, object]) -> None:
 @pytest.mark.parametrize("tc", TRANSCRIPTS, ids=[t["id"] for t in TRANSCRIPTS])
 def test_transcript_parity(tc: dict[str, object]) -> None:
     raw = base64.b64decode(tc["jsonl_b64"])
-    events = parse_events_from_bytes(raw)
-    names = tool_names(events)
     for combo in tc["compact"]:
         width, thinking, uuids = combo["width"], combo["thinking"], combo["uuids"]
-        py = [compact_line(i, event, names=names, width=width, thinking=thinking, uuids=uuids) for i, event in enumerate(events)]
-        assert py == combo["lines"]
         assert _native.render_compact_lines(raw, width, thinking, uuids) == combo["lines"]
     for combo in tc["haystack"]:
-        wheres = combo["where"]
-        py = [haystack(event, where=frozenset(wheres)) for event in events]
-        assert py == combo["lines"]
-        assert _native.render_haystacks(raw, wheres) == combo["lines"]
-    assert render_stats(collect_stats([parsed_of(raw, tc["id"])])) == tc["stats"]
+        assert _native.render_haystacks(raw, combo["where"]) == combo["lines"]
     assert _native.render_stats([raw]) == tc["stats"]
 
 
 @requires_rust
 def test_stats_all_parity() -> None:
     raws = [base64.b64decode(tc["jsonl_b64"]) for tc in TRANSCRIPTS]
-    assert render_stats(collect_stats([parsed_of(raw, tc["id"]) for raw, tc in zip(raws, TRANSCRIPTS)])) == GOLDEN["stats_all"]
     assert _native.render_stats(raws) == GOLDEN["stats_all"]
