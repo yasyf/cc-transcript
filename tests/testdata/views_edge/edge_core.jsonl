@@ -1,6 +1,6 @@
 {"uuid":"uuid-1","parentUuid":"uuid-0","sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/repo","gitBranch":"main","version":"1.2.3","isSidechain":false,"entrypoint":"cli","type":"user","message":{"role":"user","content":"  fix the bug  "}}
 
-   
+
 {not valid json
 {"uuid":"uuid-1","parentUuid":"uuid-0","sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/repo","gitBranch":"main","version":"1.2.3","isSidechain":false,"entrypoint":"cli","type":"user","message":{"role":"user","content":"  fix the bug  "}}
 {"uuid":"uuid-1","parentUuid":null,"sessionId":"sess-1","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/repo","gitBranch":"main","version":"","isSidechain":false,"entrypoint":"cli","type":"user","message":{"role":"user","content":[{"type":"text","text":"here is context"},{"type":"text","text":"and more"},{"type":"tool_result","tool_use_id":"toolu_1","content":"ok output","is_error":false},{"type":"document","source":{"kind":"file"}}]}}

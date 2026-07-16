@@ -15,18 +15,18 @@ unterminated-quote-recovered	echo "unterminated	echo
 loop-do-unwraps-body	for f in *.py; do python $f; done	python
 while-condition-and-body	while true; do sleep 1; done	true|sleep
 if-condition-then-else	if grep -q x f; then echo y; else echo z; fi	grep|echo|echo
-empty		
+empty
 timeout-integer-arg-unwrapped	timeout 30 git push	git push
 single-git-subcommand	git commit -m x	git commit
 single-docker-compose-subcommand	docker compose up -d	docker compose
 sudo-wrapper-keeps-subcommand	sudo docker compose up	docker compose
 nice-wrapper-numeric-flag-stripped	nice -n 10 cargo build	cargo build
-bare-wrapper-yields-nothing	sudo	
+bare-wrapper-yields-nothing	sudo
 env-wrapper-flags-and-assignment-stripped	env -i FOO=bar make test	make
 stacked-wrappers-unwrapped	sudo env FOO=1 timeout 5 ls -la	ls
 sudo-wrapper-two-segments	sudo git push -f && echo hi	git push|echo
-redirect-only-empty-executable	> out.txt	
-empty-token-stops-unwrap	sudo ''	
+redirect-only-empty-executable	> out.txt
+empty-token-stops-unwrap	sudo ''
 empty-token-not-a-subcommand	git '' status	git
 arabic-digit-not-skipped	timeout ٣ git push	٣
 quoted-subcommand-keeps-inner-quotes	git "'commit'"	git 'commit'
