@@ -71,8 +71,12 @@ reference:
       - canonical_json
       - tool_digest
   - title: Events & parsing
-    desc: The typed superset event model and the parsers that produce it.
+    desc: The typed superset event model and the native parse entry points that produce it.
     contents:
+      - parse
+      - stream
+      - Transcript
+      - EventList
       - TranscriptEvent
       - UserEvent
       - AssistantEvent
@@ -124,9 +128,6 @@ reference:
       - parse_event
       - parse_events_from_bytes
       - parse_print_result
-      - parse_events_async
-      - TranscriptParser
-      - ParsedTranscript
   - title: Cost
     desc: Token pricing and the cost helper over assistant usage.
     contents:
@@ -216,18 +217,22 @@ reference:
   - title: Discovery & ingestion state
     desc: Finding transcripts on disk and tracking what has been ingested.
     contents:
-      - TranscriptDiscovery
-      - find_transcript
-      - find_transcript_sync
+      - discover
+      - resolve
+      - find_in
+      - subagent_paths
       - TranscriptExpiredError
       - CLAUDE_PROJECTS_DIR
       - FileStateStore
   - title: Watch
     desc: Live transcript tailing — byte-offset polling that yields each appended event exactly once.
     contents:
-      - watch.watch
-      - watch.tick
-      - watch.WatchEvent
+      - Watcher
+      - WatchEvent
+  - title: Notifications
+    desc: The harness notification-delivery queue, replayed from a session's events.
+    contents:
+      - Notifications
   - title: Filtering
     desc: Filters-as-data — declarative specs and composable builders, executed in Rust at parse time or over materialized events.
     contents:
