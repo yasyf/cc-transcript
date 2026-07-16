@@ -36,6 +36,13 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   re-parses each path, caps it at `max_events` events, and rehydrates each call into a
   `ToolFact`, re-attaching its source `path`. `command_prefix_counts` and `mcp_summary` keep
   their signatures; the internal `is_denial`/`denial_fields`/`mcp_split`/`fact_of` helpers are gone.
+- **BREAKING: `capture_window(raw, anchor, *, before, after, preview_chars)` takes transcript
+  bytes, not a `SessionActivity`.** Window capture and typed-preview construction run in the
+  native core; the facade re-parses `raw`, captures around `anchor`, and rehydrates the
+  `ContextWindow`. `sample_windows(raw, ...)` likewise takes bytes and lifts internally. The
+  `ContextWindow`/`TurnRef`/preview dataclasses, `to_json`/`from_json`, `hydrate`, and
+  `render_preview` stay Python; the internal `build_previews`/`preview_of_call`/`ask_preview`/
+  `turn_ref` builders are gone.
 
 ### Removed
 - Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is

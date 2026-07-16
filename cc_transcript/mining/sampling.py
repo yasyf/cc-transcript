@@ -15,19 +15,21 @@ import random
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from cc_transcript.activity import SessionActivity
 from cc_transcript.context import capture_window
 from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
+from cc_transcript.parser import parse_events_from_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from cc_transcript.activity import SessionActivity, Turn
+    from cc_transcript.activity import Turn
     from cc_transcript.context import ContextWindow
 
 
 def sample_windows(
-    activity: SessionActivity,
+    raw: bytes,
     *,
     n: int,
     exclude: Iterable[EventRef] = (),
@@ -55,7 +57,7 @@ def sample_windows(
     turn order, so one seed always yields the same windows for a session.
 
     Args:
-        activity: The lifted session to sample from.
+        raw: The session's transcript bytes to sample from.
         n: The maximum number of windows to return.
         exclude: Anchors of known positives to keep clear of.
         exclusion_radius: How many turns before each excluded turn to drop
@@ -72,6 +74,9 @@ def sample_windows(
     Returns:
         The sampled windows, sorted by sampled turn index.
     """
+    events = parse_events_from_bytes(raw)
+    session_id = next(meta.session_id for event in events if (meta := event_meta(event)) is not None)
+    activity = SessionActivity.from_events(session_id, events)
     excluded = {turn.index for ref in exclude if (turn := activity.turn_of(ref)) is not None}
     candidates = [
         (turn.index, anchor)
@@ -79,11 +84,11 @@ def sample_windows(
         if all(not (0 <= index - turn.index <= exclusion_radius) for index in excluded)
         if (anchor := turn_anchor(turn)) is not None
     ]
-    rng = random.Random(f"{seed}:{activity.session_id}")
+    rng = random.Random(f"{seed}:{session_id}")
     chosen = rng.sample(candidates, min(n, len(candidates)))
     return [
         fold_trigger(
-            capture_window(activity, anchor, before=before, after=after, preview_chars=preview_chars),
+            capture_window(raw, anchor, before=before, after=after, preview_chars=preview_chars),
             keep=before,
         )
         for _, anchor in sorted(chosen, key=lambda pair: pair[0])

@@ -13,25 +13,22 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from cc_transcript import _native
 from cc_transcript.activity import SessionActivity
 from cc_transcript.discovery import TranscriptExpiredError
-from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolDigest, ToolUseId
-from cc_transcript.models import AssistantEvent, Question, TextBlock, ToolUseBlock
-from cc_transcript.render import Budget, clip, render_tool_call, render_turn
-from cc_transcript.tools import AskUserQuestionResult
+from cc_transcript.models import Question
+from cc_transcript.render import Budget, clip, render_turn
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Mapping
     from typing import Any
 
-    from cc_transcript.activity import ToolUse, Turn
-    from cc_transcript.models import ContentBlock
+    from cc_transcript.activity import Turn
 
 SCHEMA = "cc-transcript.context/2"
 PREVIEW_SCHEMA = "cc-transcript.preview/1"
 SUMMARY_LABEL = "[summary fidelity — transcript unavailable]"
-ASK_USER_QUESTION = "AskUserQuestion"
 
 type Fidelity = Literal["full", "summary"]
 type Role = Literal["user", "assistant"]
@@ -127,7 +124,7 @@ class ContextWindow:
             when the turn refs carry typed previews, or None for a legacy window.
 
     Example:
-        >>> window = capture_window(activity, anchor)
+        >>> window = capture_window(raw, anchor)
         >>> hydrated = window.hydrate()
         >>> text = hydrated.render(budget=Budget()) if hydrated else window.render_preview(budget=Budget())
     """
@@ -238,7 +235,7 @@ class HydratedWindow:
 
 
 def capture_window(
-    activity: SessionActivity,
+    raw: bytes,
     anchor: EventRef,
     *,
     before: int = 6,
@@ -247,86 +244,26 @@ def capture_window(
 ) -> ContextWindow:
     """Capture the turns around ``anchor`` as a live, full-fidelity window.
 
-    Builds a :class:`TurnRef` per turn with a preview rendered now via
-    :func:`~cc_transcript.render.render_turn` at the explicit, persisted
-    preview budget.
+    Parses ``raw`` in the native core, lifts it into turns under native Claude
+    Code semantics, and builds a :class:`TurnRef` per turn with a preview
+    rendered at the explicit, persisted preview budget.
 
     Args:
-        activity: The lifted session containing the anchor.
-        anchor: The event the window centers on.
+        raw: The session's transcript bytes, exactly as they hit disk.
+        anchor: The event the window centers on; its session, event, and
+            tool-use ids locate the anchor within ``raw``.
         before: How many turns before the anchor's turn to capture.
         after: How many turns after the anchor's turn to capture.
         preview_chars: The per-chunk preview budget, persisted on the window.
 
     Raises:
-        ValueError: When ``anchor`` does not resolve within ``activity``.
+        ValueError: When ``anchor`` does not resolve within ``raw``.
     """
-    if (trigger := activity.turn_of(anchor)) is None:
-        raise ValueError(f"anchor {anchor.event_uuid} not found in session {activity.session_id}")
-    budget = Budget(turn_chars=preview_chars, tool_chars=preview_chars)
-    return ContextWindow(
-        anchor=anchor,
-        before=tuple(
-            turn_ref(turn, budget) for turn in activity.turns[max(0, trigger.index - before) : trigger.index]
-        ),
-        trigger=turn_ref(trigger, budget),
-        after=tuple(turn_ref(turn, budget) for turn in activity.turns[trigger.index + 1 : trigger.index + 1 + after]),
-        fidelity="full",
-        preview_chars=preview_chars,
-        preview_schema=PREVIEW_SCHEMA,
+    return ContextWindow.from_json(
+        _native.context_capture_window(
+            raw, anchor.session_id, anchor.event_uuid, anchor.tool_use_id, before, after, preview_chars
+        )
     )
-
-
-def turn_ref(turn: Turn, budget: Budget) -> TurnRef:
-    return TurnRef(
-        role="user" if turn.prompt else "assistant",
-        refs=tuple(
-            EventRef(meta.session_id, meta.uuid) for event in turn.events if (meta := event_meta(event)) is not None
-        ),
-        preview=render_turn(turn, budget=budget),
-        tool_digests=tuple(use.call.digest for use in turn.tool_uses),
-        previews=build_previews(turn, budget),
-    )
-
-
-def build_previews(turn: Turn, budget: Budget) -> tuple[Preview, ...]:
-    calls = iter(turn.tool_uses)
-    return (
-        *((TextPreview(text=clip(turn.prompt, budget.turn_chars)),) if turn.prompt else ()),
-        *(
-            preview
-            for event in turn.events
-            if isinstance(event, AssistantEvent)
-            for block in event.blocks
-            for preview in preview_block_parts(block, calls, budget=budget)
-        ),
-    )
-
-
-def preview_block_parts(block: ContentBlock, calls: Iterator[ToolUse], *, budget: Budget) -> tuple[Preview, ...]:
-    match block:
-        case TextBlock(text=text) if text.strip():
-            return (TextPreview(text=clip(text, budget.turn_chars)),)
-        case ToolUseBlock():
-            return (preview_of_call(block, next(calls), budget),)
-        case _:
-            return ()
-
-
-def preview_of_call(block: ToolUseBlock, use: ToolUse, budget: Budget) -> Preview:
-    if block.name == ASK_USER_QUESTION:
-        return ask_preview(block, use)
-    return ToolCallPreview(name=block.name, digest=block.digest, summary=render_tool_call(use.call, budget=budget))
-
-
-def ask_preview(block: ToolUseBlock, use: ToolUse) -> AskUserQuestionPreview:
-    result = use.typed_result
-    if isinstance(result, AskUserQuestionResult):
-        selections = dict(result.answers)
-        notes = {question: note for question, ann in result.annotations.items() if (note := ann.notes) is not None}
-    else:
-        selections, notes = {}, {}
-    return AskUserQuestionPreview(questions=block.questions or (), selections=selections, notes=notes)
 
 
 def window_refs(window: ContextWindow) -> tuple[TurnRef, ...]:

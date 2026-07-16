@@ -1,11 +1,10 @@
 """Rust ↔ Python parity for durable context windows over the frozen golden.
 
-Each case asserts twice: the Python ``cc_transcript.context`` reference still produces
-the frozen value (a drift guard), and the Rust ``_native`` port produces the
-identical bytes. ``captures`` pins ``capture_window(...).to_json()`` and
-``render_preview`` over synthesized transcripts; ``windows`` pins the ``from_json`` →
-``to_json`` round-trip and ``render_preview`` over hand-built windows; ``rejects`` pins
-schema rejection. Regenerate with ``scripts/gen_context_golden.py``.
+``capture_window`` is a native facade in v14, so ``captures`` pins the native
+``context_capture_window`` against the frozen ``to_json`` alongside the Python
+``from_json`` → ``to_json`` round-trip and ``render_preview`` over it; ``windows``
+pins the same round-trip and ``render_preview`` over hand-built windows; ``rejects``
+pins schema rejection on both sides. Regenerate with ``scripts/gen_context_golden.py``.
 """
 
 from __future__ import annotations
@@ -17,10 +16,7 @@ from pathlib import Path
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.activity import SessionActivity
-from cc_transcript.context import ContextWindow, SchemaError, capture_window
-from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId
-from cc_transcript.parser import parse_events_from_bytes
+from cc_transcript.context import ContextWindow, SchemaError
 from cc_transcript.render import Budget
 from tests.support import requires_rust
 
@@ -36,10 +32,6 @@ CAPTURE_CASES = [
 ]
 
 
-def anchor_ref(sid: str, uuid: str, tool_use_id: str | None) -> EventRef:
-    return EventRef(SessionId(sid), EventUuid(uuid), None if tool_use_id is None else ToolUseId(tool_use_id))
-
-
 @requires_rust
 @pytest.mark.parametrize(
     "b64, sid, case",
@@ -48,26 +40,18 @@ def anchor_ref(sid: str, uuid: str, tool_use_id: str | None) -> EventRef:
 )
 def test_capture_parity(b64: str, sid: str, case: dict[str, object]) -> None:
     raw = base64.b64decode(b64)
-    activity = SessionActivity.from_events(SessionId(sid), parse_events_from_bytes(raw))
-    window = capture_window(
-        activity,
-        anchor_ref(sid, case["anchor_uuid"], case["anchor_tool_use_id"]),
-        before=case["before"],
-        after=case["after"],
-        preview_chars=case["preview_chars"],
-    )
-    assert window.to_json() == case["to_json"]
     assert (
         _native.context_capture_window(
             raw, sid, case["anchor_uuid"], case["anchor_tool_use_id"], case["before"], case["after"], case["preview_chars"]
         )
         == case["to_json"]
     )
-    assert ContextWindow.from_json(case["to_json"]).to_json() == case["to_json"]
+    restored = ContextWindow.from_json(case["to_json"])
+    assert restored.to_json() == case["to_json"]
     assert _native.context_roundtrip(case["to_json"]) == case["to_json"]
     for preview in case["previews"]:
         tc = preview["turn_chars"]
-        assert window.render_preview(budget=Budget(turn_chars=tc, tool_chars=tc)) == preview["expected"]
+        assert restored.render_preview(budget=Budget(turn_chars=tc, tool_chars=tc)) == preview["expected"]
         assert _native.context_render_preview(case["to_json"], tc) == preview["expected"]
 
 

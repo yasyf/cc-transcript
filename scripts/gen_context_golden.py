@@ -176,12 +176,12 @@ def dup_key_transcript() -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def capture_cases(sid: str, activity: SessionActivity) -> list[dict]:
+def capture_cases(sid: str, activity: SessionActivity, raw: bytes) -> list[dict]:
     cases: list[dict] = []
     for uuid, tool_use_id in anchors(activity):
         for before, after, preview_chars in BUDGETS:
             try:
-                window = capture_window(activity, anchor_ref(sid, uuid, tool_use_id), before=before, after=after, preview_chars=preview_chars)
+                window = capture_window(raw, anchor_ref(sid, uuid, tool_use_id), before=before, after=after, preview_chars=preview_chars)
             except (ValueError, OverflowError):
                 continue
             cases.append(
@@ -203,7 +203,7 @@ def capture_cases(sid: str, activity: SessionActivity) -> list[dict]:
 
 def capture_section(id_: str, raw: bytes, sid: str) -> dict:
     activity = SessionActivity.from_events(SessionId(sid), parse_events_from_bytes(raw))
-    return {"id": id_, "jsonl_b64": base64.b64encode(raw).decode("ascii"), "session_id": sid, "cases": capture_cases(sid, activity)}
+    return {"id": id_, "jsonl_b64": base64.b64encode(raw).decode("ascii"), "session_id": sid, "cases": capture_cases(sid, activity, raw)}
 
 
 def window_section(window: ContextWindow) -> dict:
@@ -218,8 +218,7 @@ def window_section(window: ContextWindow) -> dict:
 
 
 def hand_built_windows() -> list[dict]:
-    activity = SessionActivity.from_events(SessionId(SID), parse_events_from_bytes(basic_transcript()))
-    base = capture_window(activity, anchor_ref(SID, "a2", "t3"), before=2, after=1, preview_chars=50)
+    base = capture_window(basic_transcript(), anchor_ref(SID, "a2", "t3"), before=2, after=1, preview_chars=50)
     return [
         window_section(replace(base, fidelity="summary")),
         window_section(

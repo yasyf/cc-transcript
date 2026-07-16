@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from cc_transcript.activity import SessionActivity
 from cc_transcript.context import (
     PREVIEW_SCHEMA,
     SUMMARY_LABEL,
@@ -21,16 +19,10 @@ from cc_transcript.context import (
     capture_window,
 )
 from cc_transcript.ids import EventRef, EventUuid, SessionId, ToolUseId, tool_digest
-from cc_transcript.parser import parse_events_from_bytes
 from cc_transcript.render import Budget
-from tests import testkit
-from tests.support import assistant as _assistant
-from tests.support import user as _user
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from cc_transcript.models import TranscriptEvent
 
 BASE = datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC)
 SESSION = SessionId("22222222-2222-2222-2222-222222222222")
@@ -39,35 +31,12 @@ LONG_NEW = "n" * 120
 EDIT_INPUT = {"file_path": "/a.py", "old_string": LONG_OLD, "new_string": LONG_NEW}
 
 
-user = partial(_user, session=SESSION, base=BASE)
-assistant = partial(_assistant, session=SESSION, base=BASE)
-
-
 def ref(uuid: str, tool_use_id: str | None = None) -> EventRef:
     return EventRef(SESSION, EventUuid(uuid), ToolUseId(tool_use_id) if tool_use_id else None)
 
 
-def session_events() -> tuple[TranscriptEvent, ...]:
-    return (
-        user("u0", "one"),
-        assistant(
-            "a0",
-            "working",
-            blocks=(testkit.tool_use("t1", "Edit", {"file_path": "/a.py", "old_string": "x = 1", "new_string": "x = 2"}),),
-            secs=1,
-        ),
-        user("u1", "two", secs=2),
-        assistant("a1", "", blocks=(testkit.tool_use("t2", "Bash", {"command": "uv run pytest"}),), secs=3),
-        user("u2", "three", secs=4),
-        assistant("a2", "", blocks=(testkit.tool_use("t3", "Edit", EDIT_INPUT),), secs=5),
-        user("u3", "four", secs=6),
-        assistant("a3", "done", secs=7),
-    )
-
-
 def in_memory_window(**overrides: Any) -> ContextWindow:
-    activity = SessionActivity.from_events(SESSION, session_events())
-    window = capture_window(activity, ref("a2", "t3"), before=2, after=1, preview_chars=50)
+    window = capture_window(session_bytes(), ref("a2", "t3"), before=2, after=1, preview_chars=50)
     return replace(window, **overrides) if overrides else window
 
 
@@ -97,9 +66,7 @@ def user_line(uuid: str, secs: int, text: str) -> str:
     return transcript_line(uuid, secs, type="user", message={"role": "user", "content": text})
 
 
-def write_transcript(root: Path) -> Path:
-    path = root / "proj" / f"{SESSION}.jsonl"
-    path.parent.mkdir(parents=True)
+def session_bytes() -> bytes:
     lines = [
         user_line("u0", 0, "one"),
         assistant_line(
@@ -124,7 +91,13 @@ def write_transcript(root: Path) -> Path:
         user_line("u3", 6, "four"),
         assistant_line("a3", 7, [{"type": "text", "text": "done"}]),
     ]
-    path.write_text("\n".join(lines) + "\n")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def write_transcript(root: Path) -> Path:
+    path = root / "proj" / f"{SESSION}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(session_bytes())
     return path
 
 
@@ -148,15 +121,13 @@ def test_capture_window_builds_refs_previews_and_digests() -> None:
 
 
 def test_capture_window_clamps_at_session_edges() -> None:
-    activity = SessionActivity.from_events(SESSION, session_events())
-    window = capture_window(activity, ref("a2", "t3"))
+    window = capture_window(session_bytes(), ref("a2", "t3"))
     assert (len(window.before), len(window.after)) == (2, 1)
 
 
 def test_capture_window_raises_for_unknown_anchor() -> None:
-    activity = SessionActivity.from_events(SESSION, session_events())
     with pytest.raises(ValueError, match="anchor"):
-        capture_window(activity, ref("compacted-away"))
+        capture_window(session_bytes(), ref("compacted-away"))
 
 
 def test_render_preview_full_fidelity_joins_previews_without_label() -> None:
@@ -257,8 +228,7 @@ def test_capture_attaches_typed_previews() -> None:
 
 
 def test_ask_user_question_preview_covers_cc_steer_fields() -> None:
-    activity = SessionActivity.from_events(SESSION, parse_events_from_bytes(ask_transcript_bytes()))
-    window = capture_window(activity, ref("a0", "q1"), before=0, after=0, preview_chars=200)
+    window = capture_window(ask_transcript_bytes(), ref("a0", "q1"), before=0, after=0, preview_chars=200)
     assert window.trigger is not None
     ask = next(p for p in window.trigger.previews or () if isinstance(p, AskUserQuestionPreview))
     round_ = ask.questions[0]
@@ -291,8 +261,7 @@ def test_from_json_rejects_unknown_schema(data: str) -> None:
 
 def test_hydrate_resolves_full_turns_beyond_preview_budget(projects_root: Path) -> None:
     write_transcript(projects_root)
-    activity = SessionActivity.from_session(SESSION)
-    window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
+    window = capture_window(session_bytes(), ref("a2", "t3"), before=2, after=1, preview_chars=50)
     assert window.trigger is not None
     assert LONG_OLD not in window.trigger.preview
     hydrated = window.hydrate()
@@ -307,8 +276,7 @@ def test_hydrate_resolves_full_turns_beyond_preview_budget(projects_root: Path) 
 
 def test_hydrate_none_once_transcript_deleted_and_previews_survive(projects_root: Path) -> None:
     path = write_transcript(projects_root)
-    activity = SessionActivity.from_session(SESSION)
-    window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
+    window = capture_window(session_bytes(), ref("a2", "t3"), before=2, after=1, preview_chars=50)
     path.unlink()
     assert window.hydrate() is None
     preview = replace(window, fidelity="summary").render_preview(budget=Budget())
@@ -328,6 +296,5 @@ def test_hydrate_none_once_transcript_deleted_and_previews_survive(projects_root
 )
 def test_hydrate_none_when_any_ref_unresolvable(projects_root: Path, tampered: TurnRef) -> None:
     write_transcript(projects_root)
-    activity = SessionActivity.from_session(SESSION)
-    window = capture_window(activity, activity.turns[2].tool_uses[0].ref, before=2, after=1, preview_chars=50)
+    window = capture_window(session_bytes(), ref("a2", "t3"), before=2, after=1, preview_chars=50)
     assert replace(window, before=(*window.before, tampered)).hydrate() is None
