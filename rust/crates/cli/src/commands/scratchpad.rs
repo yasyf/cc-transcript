@@ -180,6 +180,24 @@ mod tests {
     }
 
     #[test]
+    fn glob_metacharacters_in_the_session_stay_literal() {
+        // Decoys at the session level: a globbing resolver would match them.
+        for (session, decoy) in [("*", "literal"), ("?", "q"), ("[ab]", "a")] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(
+                tmp.path()
+                    .join(format!("claude-501/slug/{decoy}/scratchpad")),
+            )
+            .unwrap();
+            assert_eq!(
+                resolve_scratchpad(&[tmp.path().to_path_buf()], 501, Path::new("/cwd"), session),
+                None,
+                "{session:?}"
+            );
+        }
+    }
+
+    #[test]
     fn uid_is_respected() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(
