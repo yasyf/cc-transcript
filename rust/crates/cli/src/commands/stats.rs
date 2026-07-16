@@ -28,7 +28,10 @@ pub fn run(
     )?;
     let targets = resolve_targets(
         &paths,
-        &discovery.root(),
+        &discovery.validated_root(
+            "cc-transcript stats [OPTIONS] [PATHS]...",
+            "cc-transcript stats",
+        )?,
         discovery.project.as_deref(),
         discovery.contains.as_deref(),
         discovery.effective_limit(),

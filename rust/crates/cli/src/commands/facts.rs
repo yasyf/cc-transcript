@@ -23,15 +23,12 @@ fn gather(
         .iter()
         .map(|p| py_path(&p.to_string_lossy()))
         .collect();
-    require_files(
-        &paths,
-        "'[PATHS]...'",
-        &format!("cc-transcript {name} [OPTIONS] [PATHS]..."),
-        &format!("cc-transcript {name}"),
-    )?;
+    let usage = format!("cc-transcript {name} [OPTIONS] [PATHS]...");
+    let help_path = format!("cc-transcript {name}");
+    require_files(&paths, "'[PATHS]...'", &usage, &help_path)?;
     let targets = resolve_targets(
         &paths,
-        &discovery.root(),
+        &discovery.validated_root(&usage, &help_path)?,
         discovery.project.as_deref(),
         discovery.contains.as_deref(),
         discovery.effective_limit(),

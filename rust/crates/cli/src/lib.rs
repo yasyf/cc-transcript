@@ -81,6 +81,12 @@ impl DiscoveryOpts {
             .unwrap_or_else(target::claude_projects_dir)
     }
 
+    pub fn validated_root(&self, usage: &str, help_path: &str) -> Result<PathBuf, CliExit> {
+        let root = self.root();
+        target::require_dir(&root, "'--root'", usage, help_path)?;
+        Ok(root)
+    }
+
     pub fn effective_limit(&self) -> Option<usize> {
         if self.all {
             None
@@ -371,9 +377,10 @@ pub fn run(argv: Vec<String>) -> i32 {
         }
     };
     let Some(cmd) = cli.cmd else {
+        // click: a bare group invocation prints help to stderr and exits 2.
         let mut help = <Cli as clap::CommandFactory>::command();
-        let _ = help.print_help();
-        return 0;
+        eprint!("{}", help.render_long_help());
+        return 2;
     };
     match dispatch(cmd) {
         Ok(()) => 0,

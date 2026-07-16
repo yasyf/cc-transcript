@@ -7,6 +7,9 @@ use crate::output::{click_error, CliExit, Out};
 use crate::target::discover;
 use crate::DiscoveryOpts;
 
+const USAGE: &str = "cc-transcript list [OPTIONS]";
+const HELP_PATH: &str = "cc-transcript list";
+
 fn local_minute(mtime: f64) -> String {
     let secs = mtime.floor();
     let nanos = ((mtime - secs) * 1e9) as u32;
@@ -17,7 +20,7 @@ fn local_minute(mtime: f64) -> String {
 }
 
 pub fn run(discovery: &DiscoveryOpts, json: bool) -> Result<(), CliExit> {
-    let root = discovery.root();
+    let root = discovery.validated_root(USAGE, HELP_PATH)?;
     let matched = discover(
         &root,
         discovery.project.as_deref(),

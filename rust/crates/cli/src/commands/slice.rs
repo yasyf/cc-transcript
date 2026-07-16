@@ -74,6 +74,7 @@ pub fn run(session: &str, since: &str, until: &str, root: Option<PathBuf>) -> Re
     let start = parse_rfc3339("--since", since)?;
     let end = parse_rfc3339("--until", until)?;
     let root = root.unwrap_or_else(claude_projects_dir);
+    crate::target::require_dir(&root, "'--root'", USAGE, HELP_PATH)?;
     let Some(path) = find_transcript(&root, session) else {
         return Err(CliExit(1));
     };

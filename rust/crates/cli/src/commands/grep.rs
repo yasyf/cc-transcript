@@ -153,7 +153,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     crate::target::require_files(&paths, "'[PATHS]...'", USAGE, HELP_PATH)?;
     let targets = resolve_targets(
         &paths,
-        &args.discovery.root(),
+        &args.discovery.validated_root(USAGE, HELP_PATH)?,
         args.discovery.project.as_deref(),
         args.discovery.contains.as_deref(),
         args.discovery.effective_limit(),

@@ -1402,11 +1402,11 @@ fn format_datetime(dt: &DateTime<FixedOffset>) -> String {
     }
 }
 
-/// `~`-relativize a path under `$HOME` (render.py display_path; `Path.home()` reads
-/// the environment on POSIX).
+/// `~`-relativize a path under the home directory (render.py display_path over
+/// `Path.home()`: HOME env, then the pwd database).
 pub fn display_path(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home)
+    match std::env::home_dir().map(|home| home.to_string_lossy().into_owned()) {
+        Some(home)
             if !home.is_empty() && path.strip_prefix(&home).is_some_and(|r| r.starts_with('/')) =>
         {
             format!("~/{}", &path[home.len() + 1..])

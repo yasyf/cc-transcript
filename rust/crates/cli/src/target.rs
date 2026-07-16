@@ -11,8 +11,9 @@ use rayon::prelude::*;
 
 use crate::output::{click_error, eline, CliExit};
 
+// Python Path.home(): HOME env, then the pwd database (std::env::home_dir does both).
 pub fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+    std::env::home_dir().expect("a home directory resolves via HOME or the pwd database")
 }
 
 /// discovery.py CLAUDE_PROJECTS_DIR.
@@ -143,6 +144,21 @@ pub fn parse_single(path: &Path) -> Result<Parsed, CliExit> {
                 display_path(&path.to_string_lossy())
             ))
         })
+}
+
+/// click `Path(file_okay=False)`: an existing non-directory root exits 2.
+pub fn require_dir(path: &Path, hint: &str, usage: &str, help_path: &str) -> Result<(), CliExit> {
+    if path.exists() && !path.is_dir() {
+        return Err(crate::output::usage_error(
+            usage,
+            help_path,
+            &format!(
+                "Invalid value for {hint}: Directory {} is a file.",
+                crate::output::py_repr(&path.to_string_lossy())
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// click `Path(exists=True, dir_okay=False)`: missing or directory args exit 2 with a

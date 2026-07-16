@@ -13,6 +13,8 @@ use crate::target::claude_projects_dir;
 use crate::{WATCH_ACTIVE, WATCH_INTERRUPTED};
 
 const BLANK_TIME: &str = "        ";
+const USAGE: &str = "cc-transcript watch [OPTIONS]";
+const HELP_PATH: &str = "cc-transcript watch";
 
 fn tag_for(kind: &str) -> &'static str {
     match kind {
@@ -91,6 +93,9 @@ pub fn run(roots: &[PathBuf], poll: f64, from_start: bool, json: bool) -> Result
     } else {
         roots.to_vec()
     };
+    for root in &roots {
+        crate::target::require_dir(root, "'--root'", USAGE, HELP_PATH)?;
+    }
     let mut state = TailState::default();
     let mut out = Out::new();
     WATCH_ACTIVE.store(true, Ordering::SeqCst);
