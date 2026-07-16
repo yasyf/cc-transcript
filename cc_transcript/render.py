@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cc_transcript.models import AssistantEvent, TextBlock, ToolUseBlock
@@ -120,11 +119,3 @@ def render_session(activity: SessionActivity, *, budget: Budget) -> str:
 
 def primary_arg(input: Mapping[str, Any]) -> str:
     return str(next((input[key] for key in PRIMARY_KEYS if key in input), next(iter(input.values()), "")))
-
-
-def display_path(path: Path) -> str:
-    return f"~/{path.relative_to(home)}" if path.is_relative_to(home := Path.home()) else str(path)
-
-
-def transcript_header(path: Path) -> str:
-    return f"== {display_path(path)}"

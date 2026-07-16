@@ -6,8 +6,8 @@ command, so a later phase re-runs this script and ``git diff`` shows any behavio
 drift. An empty ``.err`` file pins "no stderr" as part of the contract.
 
 Hermeticity: every command is scoped with a relative ``--root .fixtures/corpus`` or
-an explicit relative transcript path (so ``display_path`` stays relative and portable,
-never an absolute worktree/home path), ``--width`` is pinned, ``TZ=UTC`` fixes the
+an explicit relative transcript path (so the printed transcript path stays relative
+and portable, never an absolute worktree/home path), ``--width`` is pinned, ``TZ=UTC`` fixes the
 ``list`` mtime formatting, and the corrections cases run under ``HOME=.fixtures/home``
 — wiped per recording — so the ledger is fresh and its rows carry only pinned values.
 The corpus filenames are seed-deterministic, so the exact argv reproduces across
