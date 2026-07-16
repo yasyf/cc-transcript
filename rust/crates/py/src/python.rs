@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, FixedOffset};
+use chrono::Datelike;
 use crossbeam_channel::{bounded, Receiver};
 use once_cell::sync::Lazy;
 use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
@@ -847,6 +847,7 @@ fn fact_to_dict<'py>(py: Python<'py>, fact: &facts::ToolFact) -> PyResult<Bound<
     d.set_item("user_said", &fact.user_said)?;
     d.set_item("duration_ms", fact.duration_ms)?;
     d.set_item("ts_ms", epoch_ms(fact.ts))?;
+    d.set_item("ts", fact.ts.to_rfc3339())?;
     Ok(d)
 }
 

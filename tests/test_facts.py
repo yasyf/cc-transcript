@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -178,6 +178,20 @@ def test_duration_ms_from_matched_result_timestamp(tmp_path: Path) -> None:
     assert fact.ts == BASE + timedelta(seconds=3)
     assert fact.duration_ms == 2000
     assert (fact.is_error, fact.denied) == (False, False)
+
+
+def test_ts_preserves_microseconds_and_offset(tmp_path: Path) -> None:
+    exotic = datetime(2026, 1, 1, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    path = write(
+        tmp_path,
+        "s.jsonl",
+        usr("u0", "go"),
+        testkit.assistant_line("a0", blocks=(bash("t1", "ls"),), session_id=str(SESSION), timestamp=exotic),
+    )
+    (fact,) = facts_of(path)
+    assert fact.ts == exotic
+    assert fact.ts.utcoffset() == timedelta(hours=5, minutes=30)
+    assert fact.ts.microsecond == 123456
 
 
 def test_transcript_without_meta_is_skipped(tmp_path: Path) -> None:

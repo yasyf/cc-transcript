@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,8 +23,6 @@ from cc_transcript.ids import SessionId, ToolUseId
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
     from typing import Any, Literal
-
-EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +70,7 @@ class ToolFact:
 
 def rehydrate_fact(fact: Mapping[str, Any], path: Path) -> ToolFact:
     return ToolFact(
-        ts=EPOCH + timedelta(milliseconds=fact["ts_ms"]),
+        ts=datetime.fromisoformat(fact["ts"]),
         session_id=SessionId(fact["session_id"]),
         path=path,
         tool_use_id=ToolUseId(fact["tool_use_id"]),
