@@ -1,6 +1,6 @@
 # ![cc-transcript](https://github.com/yasyf/cc-transcript/raw/main/docs/assets/readme-banner.webp)
 
-**Grep every Claude Code session you've ever run.** cc-transcript's lossless parser reads Claude Code's on-disk JSONL; the CLI lists transcripts, greps their content, and renders one compact line per event.
+**Grep every Claude Code session you've ever run.** The lossless Rust parser reads Claude Code's on-disk JSONL at 169 MB/s; the compiled CLI greps it and renders one line per event, 25 ms cold.
 
 [![CI](https://github.com/yasyf/cc-transcript/actions/workflows/ci.yml/badge.svg)](https://github.com/yasyf/cc-transcript/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cc-transcript.svg)](https://pypi.org/project/cc-transcript/)
@@ -71,13 +71,26 @@ uvx cc-transcript stats --per-file --project myapp
 
 Each block reports text, thinking, and tool-io bytes plus per-tool call counts; the blowup stands out as an outsized `tool io` line. Then `grep --tool <name> --with-result` pins it to the exact calls.
 
+### Script it from Python
+
+The CLI's funnel is four commands; your own tooling wants the events themselves. `parse` turns a path into a `Transcript` of typed lazy views, with the noise already dropped inside the engine:
+
+```python
+from cc_transcript import NOISE_SPEC, discover, parse
+
+transcript = parse(discover()[0], drop=NOISE_SPEC)
+print(len(transcript.events), "events after the noise drop")
+```
+
+`discover()` lists every transcript on disk newest first, `stream` fans a whole corpus across the parse pool, and `resolve` finds one session by UUID. The [getting-started guide](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) builds this out to a composed filter and a sentiment score.
+
 ## More in the docs
 
-- [The Python library](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) turns raw JSONL bytes into typed events, a composed filter, and a score in a dozen lines.
+- [The Python library](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) turns a transcript into typed lazy views, a composed filter, and a score in a dozen lines.
 - [Filtering events](https://yasyf.github.io/cc-transcript/docs/guide/filtering-events.html) covers composable clauses, specs, and the ready-made `NOISE_SPEC`.
 - [Sentiment scoring](https://yasyf.github.io/cc-transcript/docs/guide/scoring-sentiment.html) buckets conversations and scores them around any inference engine.
 - [Feedback mining](https://yasyf.github.io/cc-transcript/docs/guide/mining-feedback.html) runs detectors, confidence calibration, and LLM verdict passes over your corpus.
-- [The Rust engine](https://yasyf.github.io/cc-transcript/docs/guide/rust-engine.html) executes parsing, filtering, scoring, and mining, its correctness pinned by generated literals and golden fixtures.
+- [The Rust engine](https://yasyf.github.io/cc-transcript/docs/guide/rust-engine.html) is the implementation — parsing, filtering, scoring, and mining — its correctness pinned by hand-owned literals and golden fixtures.
 - [API reference](https://yasyf.github.io/cc-transcript/reference/index.html) documents the complete typed surface, from `TranscriptEvent` to `SessionActivity`.
 
 Read the [docs](https://yasyf.github.io/cc-transcript/) for the full guide. Licensed under [PolyForm Noncommercial 1.0.0](https://github.com/yasyf/cc-transcript/blob/main/LICENSE).
