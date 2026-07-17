@@ -50,6 +50,11 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   `ContextWindow`/`TurnRef`/preview dataclasses, `to_json`/`from_json`, `hydrate`, and
   `render_preview` stay Python; the internal `build_previews`/`preview_of_call`/`ask_preview`/
   `turn_ref` builders are gone.
+- **`ConversationBucket.bucket_start` is UTC-aligned.** The native bucketer emits each window's
+  start as a `tzinfo=UTC` `datetime`, where the deleted Python bucketer preserved the source
+  event's original offset. The instant is unchanged — `2026-01-06T09:00:00+05:30` and
+  `2026-01-06T03:30:00+00:00` are the same moment — but `tzinfo` and `isoformat()` now render in
+  UTC.
 
 ### Removed
 - Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is
@@ -59,6 +64,18 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   helpers). `render_compact_lines`/`render_haystacks`/`render_stats` on the native core are
   canonical; `Budget`, `render_tool_call`, `render_turn`, and `render_session` remain the
   Python object renderers.
+- Removed the remaining module-visible helpers the native facade flip absorbed. None appeared
+  in the curated API reference, but each was an importable module-level name:
+  - `render.py`: `display_path`, `transcript_header`, `render_counts`, `render_mcp`,
+    `render_histogram`, `fact_dict`, `denial_dict`, `event_dict`, `view_asdict`, `view_field`
+    — the CLI-line and record-projection helpers the native renderers replaced.
+  - `filterspec.py`: `clause_matches`, `predicate_matches`, `normalize_bare` — the Python
+    spec-evaluation helpers now living in the native `SpecMatcher`.
+  - `notifications.py`: `replay_queue`, `delivered_text` — the notification-replay helpers now
+    lifted in the native core.
+  - `sentiment/buckets.py`: `ConversationBucketer.align_to_bucket` — bucket alignment is
+    internal to the native bucketer.
+  - `cost.py`: `MTOK` — the per-million-tokens constant folded into the native cost model.
 
 ## [13.1.0] - 2026-07-13
 
