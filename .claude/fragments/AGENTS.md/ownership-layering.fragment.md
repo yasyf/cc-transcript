@@ -5,7 +5,7 @@
   `command.CommandLine` for bash. Never regex or split a raw command string or `input`
   dict at a call site — if the typed layer can't answer the question, extend it.
 - **One owner module per concept.** Before writing a detector, predicate, or projection,
-  find the existing implementation (`semble`, LSP) and extend it. Two implementations of
+  find the existing implementation (`ccx code search`, LSP) and extend it. Two implementations of
   one semantic are a bug even while both are correct.
 - **Rust parity is atomic.** A semantic change to a Rust-mirrored domain (filterspec,
   mining, score, lexicon, command) lands with its Rust port and the parity-suite re-pin
