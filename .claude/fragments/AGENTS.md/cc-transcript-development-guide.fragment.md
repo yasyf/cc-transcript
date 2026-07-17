@@ -1,6 +1,6 @@
 # cc-transcript Development Guide
 
-Typed events for Claude Code transcripts: discovery, a superset JSONL parser — a Rust fast path and a Python reference behind one `Backend` protocol — session-activity queries, durable context windows, mining/judging/sentiment domain tiers, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
+Typed events for Claude Code transcripts: discovery, a superset JSONL parser — one native Rust core under a light, typed Python API — session-activity queries, durable context windows, mining/judging/sentiment domain tiers, and a transcript-investigation CLI. Published to PyPI as `cc-transcript`; the CLI is `cc-transcript`, run as `uvx cc-transcript`.
 
 ## Repository Structure
 
@@ -11,15 +11,14 @@ cc-transcript/
 │   ├── models.py       # Typed superset event model (the central contract)
 │   ├── ids.py          # Identity primitives shared by every layer of the platform
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
-│   ├── parser.py       # PythonBackend reference parser + TranscriptParser facade
-│   ├── rust.py         # RustBackend — the fast path over cc_transcript._native
-│   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses + interpreters, plus the CC-protocol text layer (denial/interrupt markers)
+│   ├── parser.py       # parse + stream — the native parse entry points (path or bytes → Transcript views)
+│   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses the native core compiles, plus the CC-protocol text layer (denial/interrupt markers)
 │   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
 │   ├── tools.py        # The single typed tool-call hierarchy (stdlib-only by contract)
 │   ├── command.py      # Parsed bash command lines: Command/CommandLine/CommandLineQuery, tree-sitter-backed
 │   ├── facts.py        # Tool-call analytics substrate lifted from session activity
 │   ├── activity.py     # Session activity lifted from parsed transcript events
-│   ├── activity_probe.py # Dual-backend is_waiting oracle over one transcript (captain-hook's probe)
+│   ├── activity_probe.py # Disk-only is_waiting oracle over one transcript (captain-hook's probe)
 │   ├── notifications.py # Harness notification-delivery queue, replayed from a session's events
 │   ├── query.py        # Session-level queries over lifted activity
 │   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
@@ -27,24 +26,21 @@ cc-transcript/
 │   ├── ledger.py       # SyncLedger — the append-only SQLite base under both family ledgers
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
 │   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes
-│   ├── corrections_cli.py # The corrections CLI: the ledger for non-Python consumers
 │   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
 │   ├── cost.py         # Token-usage → USD cost model (cost_of, PRICING)
-│   ├── cli.py          # The cc-transcript CLI (list/show/grep/stats)
-│   ├── __main__.py     # python -m cc_transcript → the CLI
 │   ├── render.py       # The one renderer — every cut happens here, under a Budget
 │   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
 │   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
 │   ├── judge/          # LLM verdict passes over mined feedback
 │   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
 │   └── sentiment/      # Sentiment domain: event buckets + composable score spec
-├── rust/               # Rust extension (cc_transcript._native)
+├── rust/               # Rust workspace: core, the _native extension, and the cc-transcript CLI
 ├── rust-swift/         # swift-bridge crate (cc_transcript_swift) over the Rust core
 ├── swift/              # Generated Swift package: bridge sources + the committed macos-arm64 xcframework
 ├── tests/              # Pytest suite
 ├── docs/               # Guide and getting-started sources for the docs site
-├── great-docs/         # The Great Docs Quarto project: site config + curated API reference
-├── scripts/            # Maintenance scripts: lexicon data, Rust literals, the Swift package build
+├── great-docs.yml      # Great Docs site config: hero, doc sections, and the curated API reference
+├── scripts/            # Maintenance scripts: lexicon data, golden generators, the bench harness, the Swift package build
 ├── .claude-plugin/     # Claude Code plugin + marketplace manifests
 ├── skills/             # cc-transcript-investigate skill (CLI-driven transcript investigation)
 ├── .github/            # CI, docs, and PyPI release workflows
