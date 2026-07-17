@@ -83,3 +83,29 @@ def test_transcript_parity(tc: dict[str, object]) -> None:
 def test_stats_all_parity() -> None:
     raws = [base64.b64decode(tc["jsonl_b64"]) for tc in TRANSCRIPTS]
     assert _native.render_stats(raws) == GOLDEN["stats_all"]
+
+
+@requires_rust
+def test_raw_renderers_over_empty_input() -> None:
+    # The golden pins only non-empty transcripts; pin the empty edge the deleted
+    # test_render_stats_empty_placeholders / test_collect_stats_empty covered.
+    assert _native.render_compact_lines(b"", 100, True, True) == []
+    assert _native.render_haystacks(b"", ["text", "thinking", "tools"]) == []
+    assert _native.render_stats([]) == "\n".join(
+        [
+            "files        0",
+            "events       0",
+            "kinds        -",
+            "models       -",
+            "tools        -",
+            "text         0B",
+            "thinking     0B",
+            "tool io      0B",
+            "sessions     0",
+            "span         -",
+            "interrupts   0",
+            "tool errors  0",
+            "sidechain    0",
+        ]
+    )
+    assert _native.render_stats([b""]).splitlines()[0] == "files        1"  # a present-but-empty file counts
