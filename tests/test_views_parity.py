@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -16,17 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = json.loads((REPO_ROOT / "tests" / "testdata" / "views_golden.json").read_text())
 
 
-def ensure_fixture(path: Path) -> Path:
-    if not path.exists() and ".fixtures" in path.parts:
-        subprocess.run(
-            [sys.executable, str(REPO_ROOT / "scripts" / "gen_corpus.py")],
-            check=True,
-            cwd=REPO_ROOT,
-            capture_output=True,
-        )
-    return path
-
-
 def test_golden_version() -> None:
     assert GOLDEN["version"] == viewgolden.GOLDEN_VERSION
     assert GOLDEN["str_cap"] == viewgolden.STR_CAP
@@ -34,7 +21,7 @@ def test_golden_version() -> None:
 
 @pytest.mark.parametrize("record", GOLDEN["files"], ids=[r["file"] for r in GOLDEN["files"]])
 def test_views_reproduce_golden(record: dict) -> None:
-    path = ensure_fixture(REPO_ROOT / record["file"])
+    path = REPO_ROOT / record["file"]
     assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"], f"{record['file']} drifted"
     viewgolden.replay_file(record, list(parse(path).events))
 
