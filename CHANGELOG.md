@@ -91,6 +91,17 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
     internal to the native bucketer.
   - `cost.py`: `MTOK` — the per-million-tokens constant folded into the native cost model.
 
+## [13.2.0] - 2026-07-14
+
+### Added
+- **The byte-span splice layer on parsed command lines.** `Command.span` is the
+  command's byte range in its source line; `CommandLine.occurrences()` yields typed
+  `Occurrence` handles (each carrying its command plus `prev_op`/`next_op`/`piped`
+  context); `CommandLine.splice(replacements)` rewrites exact byte ranges in the
+  original line, raising `ValueError` on overlapping spans or a span-less command;
+  and `CommandLine.rewrite_occurrences(to)` maps a callable over every occurrence
+  and splices the results. `Occurrence` joins the root exports.
+
 ## [13.1.0] - 2026-07-13
 
 Dispatch observability: a heartbeat ledger that records an event reached dispatch at
