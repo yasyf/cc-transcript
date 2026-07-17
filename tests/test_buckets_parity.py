@@ -63,6 +63,25 @@ def test_facade_rehydrates_shared_uuids_by_index_not_last_wins() -> None:
     assert all(got is want for got, want in zip(returned, all_events, strict=True))  # timestamp order == input order
 
 
+def test_facade_rehydrates_two_sessions_sharing_uuids_by_index() -> None:
+    # Finder F7: two distinct sessions share uuids u1/a1/u2; a uuid-ONLY lookup would give s2's
+    # bucket s1's events. Each session's bucket must rehydrate exactly its own three objects.
+    def session(sid: str, tag: str) -> list:
+        lines = (
+            testkit.user_line("u1", f"substantive prompt {tag} one", session_id=sid, timestamp=testkit.BASE, secs=0),
+            testkit.assistant_line("a1", "working", session_id=sid, timestamp=testkit.BASE, secs=1),
+            testkit.user_line("u2", f"substantive prompt {tag} two", session_id=sid, timestamp=testkit.BASE, secs=2),
+        )
+        return list(parse_events_from_bytes(to_bytes(lines)))
+
+    s1 = session("s1", "A")
+    s2 = session("s2", "B")
+    by_session = {b.session_id: b for b in ConversationBucketer.bucket_events(s1 + s2)}
+    assert set(by_session) == {"s1", "s2"}
+    assert all(got is want for got, want in zip(by_session["s1"].events, s1, strict=True))
+    assert all(got is want for got, want in zip(by_session["s2"].events, s2, strict=True))
+
+
 @pytest.mark.parametrize("entry", CASES)
 def test_extract_bucket_keys_matches_buckets(entry: dict) -> None:
     keys = extract_bucket_keys(parse_events_from_bytes(to_bytes(tuple(entry["records"]))))
