@@ -167,11 +167,12 @@ key = dedup_key("sess-1", signal.kind, signal.text)
 ```
 
 `capture_window` captures the conversational window around the feedback as a
-`ContextWindow` — refs, not prose. Lift the events into a `SessionActivity`,
-anchor on the signal's event with an `EventRef`, and capture: each turn becomes
-a `TurnRef` carrying resolvable references back into the transcript plus a
-preview rendered now, at an explicit budget. Together the key, the window, and
-the anchor fill a candidate:
+`ContextWindow` — refs, not prose. Hand it the raw transcript bytes and an
+`EventRef` anchored on the signal's event; the native core parses and lifts
+the turns itself, and each one becomes a `TurnRef` carrying resolvable
+references back into the transcript plus a preview rendered now, at an
+explicit budget. Together the key, the window, and the anchor fill a
+candidate:
 
 ```{python}
 from cc_transcript import EventRef, capture_window
@@ -320,16 +321,20 @@ and a derived recall estimate, gated by a frozen golden fixture.
 
 Persistence runs through `FeedbackStore`, which layers a `feedback_events` table
 on the file-mtime ledger so a scan is atomic and re-scanning an unchanged file is
-a no-op. It is async SQLite, so it stays out of this page's cells:
+a no-op. It rides stdlib `sqlite3` — plain calls, no event loop — so it runs
+right here, against a throwaway database:
 
-```python
+```{python}
+import tempfile
 from pathlib import Path
 
 from cc_transcript.mining import FeedbackStore
 
-with FeedbackStore.open(Path("feedback.db")) as store:
-    inserted = store.record_file_scan(str(path), mtime, [candidate])
-    print(store.stats())  # Stats(total=1, files=1, by_source={'interrupt_rejection': 1})
+with FeedbackStore.open(Path(tempfile.mkdtemp()) / "feedback.db") as store:
+    inserted = store.record_file_scan("sess-1.jsonl", 1.0, [candidate])
+    stats = store.stats()
+(inserted, stats)
+# -> (1, Stats(total=1, files=1, by_source={'interrupt_rejection': 1}))
 ```
 
 ## Next steps
