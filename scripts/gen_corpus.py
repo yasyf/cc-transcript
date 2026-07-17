@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from random import Random
@@ -400,9 +399,10 @@ def generate_file(rng: Random, session_id: str, start: datetime, target_bytes: i
 
 
 def generate(out: Path, seed: int) -> tuple[int, int]:
-    if out.exists():
-        shutil.rmtree(out)
+    # Atomic per-file swap so a concurrent reader never sees a half-built tree.
     rng = Random(seed)
+    out.mkdir(parents=True, exist_ok=True)
+    written: set[Path] = set()
     total_bytes = 0
     for index, (project, target) in enumerate(FILE_PLAN):
         session_id = make_uuid(rng)
@@ -410,10 +410,15 @@ def generate(out: Path, seed: int) -> tuple[int, int]:
         data = generate_file(rng, session_id, start, target)
         path = out / project / f"{session_id}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        staging.write_bytes(data)
         mtime = BASE_MTIME + index * 3600
-        os.utime(path, (mtime, mtime))
+        os.utime(staging, (mtime, mtime))
+        os.replace(staging, path)
+        written.add(path)
         total_bytes += len(data)
+    for stale in set(out.rglob("*.jsonl")) - written:
+        stale.unlink()
     return len(FILE_PLAN), total_bytes
 
 
