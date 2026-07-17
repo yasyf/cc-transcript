@@ -82,6 +82,23 @@ def test_facade_rehydrates_two_sessions_sharing_uuids_by_index() -> None:
     assert all(got is want for got, want in zip(by_session["s2"].events, s2, strict=True))
 
 
+def test_bucketer_drops_combining_mark_hash_banner_via_rust_word_class() -> None:
+    # Finder F6: Rust \w matches the combining mark U+0301 (Python re's \w did not), so the junk
+    # filter reads this as a hash banner, drops the first user, and drops the sub-floor session.
+    def with_first(first: str) -> list:
+        lines = (
+            testkit.user_line("u1", first, session_id="s", timestamp=testkit.BASE, secs=0),
+            testkit.user_line("u2", "hello", session_id="s", timestamp=testkit.BASE, secs=1),
+            testkit.assistant_line("a1", "ok", session_id="s", timestamp=testkit.BASE, secs=2),
+        )
+        return list(parse_events_from_bytes(to_bytes(lines)))
+
+    banner = "### e\u0301 ### e\u0301 ### e\u0301 ###"  # decomposed e + combining acute
+    assert ConversationBucketer.bucket_events(with_first(banner)) == []
+    (bucket,) = ConversationBucketer.bucket_events(with_first("a normal substantive first prompt"))
+    assert len(bucket.events) == 3  # non-banner first user: both turns count, one bucket
+
+
 @pytest.mark.parametrize("entry", CASES)
 def test_extract_bucket_keys_matches_buckets(entry: dict) -> None:
     keys = extract_bucket_keys(parse_events_from_bytes(to_bytes(tuple(entry["records"]))))

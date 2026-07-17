@@ -1,4 +1,4 @@
-"""Drift guard for the hand-owned shared literals now that Rust owns them.
+r"""Drift guard for the hand-owned shared literals now that Rust owns them.
 
 ``_native.embedded_literals()`` is the single source of truth for the constants the
 Rust core and Python both need (protocol markers, mining ids and floors, command
@@ -7,8 +7,11 @@ is gone; these tests prove Python never carries its own copy:
 
 - every Python constant that mirrors a manifest entry equals the native value, and
   the manifest is fully covered (a new native literal without a Python mirror fails);
-- the three derived filter patterns stay byte-identical to the groups Python
-  serializes into a :class:`~cc_transcript.FilterSpec`;
+- the three derived filter patterns serialize to a byte-identical *source string* on
+  both sides. This is a TEXTUAL pin — the same regex text reaches the engine — not a
+  semantic one: it does not prove Python ``re`` and Rust ``regex`` *evaluate* that text
+  alike. They diverge (e.g. ``\w`` matches combining marks in Rust but not Python), and
+  that behavioral divergence is pinned in ``tests/test_buckets_parity.py``;
 - no ``cc_transcript`` module re-declares a distinctive literal value as a source
   string.
 
@@ -70,6 +73,8 @@ def test_python_mirrors_read_from_native() -> None:
     for key, value in scalars.items():
         assert value == literals[key], key
 
+    # TEXTUAL pin: the serialized pattern STRING matches byte-for-byte. Not a semantic pin — it
+    # does not assert re and regex evaluate it alike (\w divergence: test_buckets_parity.py).
     patterns = {
         "protocol.INTERRUPT_MARKER_PATTERN": INTERRUPT_MARKER_GROUPS,
         "protocol.AGENT_INJECTION_PATTERN": AGENT_INJECTION_GROUPS,
