@@ -159,9 +159,9 @@ flip. One deliberate per-surface contract survives it — `Command.matches` and
 `score_golden.json`, and `mining_golden.json` freeze the engine's output over
 hand-built batteries: presets and regex edge cases for the filter, the full
 four-stage spec for the score executor, one case per detector (plus
-near-misses, case folds, and unicode) for mining. `command_golden.json` (60
-parsed command lines) and `splice_golden.json` (70 byte-range splice cases)
-do the same for the bash layer. The goldens were captured
+near-misses, case folds, and unicode) for mining. `command_golden.json` and
+`splice_golden.json` do the same for the bash layer: batteries of parsed
+command lines and byte-range splices frozen at the switch. The goldens were captured
 from the historical Python reference at the moment of the switch — proven
 equal then — and the suite asserts the engine still reproduces them, so a
 behavior change fails loudly with no second implementation to compare
