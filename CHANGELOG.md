@@ -6,8 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The object model inverts: the eager dataclasses become lazy views over one native
-parse. Stub — factual bullets only; P7 finalizes the prose.
+The inversion release: the Rust core is now the implementation, and Python is a
+light, typed API over it. One native parse owns every event and Python holds lazy
+views into it; the CLI is a compiled binary; the async I/O surface is synchronous
+calls into the engine; the shared literals are hand-owned Rust source. `orjson` is
+the only runtime dependency left, the package sheds 3,700 lines of Python
+(12,680 → 8,991), parsing runs at ~169 MB/s, and the CLI cold-starts in
+25 ms where v13's click tree took 231 ms. Breaking throughout — consumers move
+in lockstep.
 
 ### Changed
 - **BREAKING: events, blocks, and tool calls/results are native frozen views, not
@@ -24,6 +30,38 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   immutable `collections.abc.Sequence` interface and registers as one; `copy()` returns a
   plain `list`. Views materialize fresh on access, so identity across accesses is not
   guaranteed (`events[0] is events[0]` is `False`).
+- **BREAKING: parsing and discovery are four functions, not two classes.**
+  `parse(source, *, drop=None)` turns a path or raw bytes into a `Transcript`;
+  `stream(paths, *, drop=None, prefetch=4)` fans a batch across the native parse pool;
+  `discover(root=None)` lists transcripts newest-first; `resolve(session_id, *, root=None)`
+  is the memoized by-UUID lookup. `find_in` (a `TranscriptDiscovery` method until now)
+  joins the root exports as a function; `subagent_paths`, `parse_event`,
+  `parse_events_from_bytes`, and `parse_print_result` are unchanged.
+  `TranscriptParser`, `TranscriptDiscovery`, `find_transcript`, `find_transcript_sync`,
+  and `parse_events_async` are gone (see Removed).
+- **BREAKING: the I/O surface is synchronous.** The engine releases the GIL and
+  parallelizes internally, so there is no async seam left to await through: `parse`,
+  `stream`, `discover`, and `resolve` are plain calls; live tailing is
+  `Watcher(roots, *, from_start=False)` and `Watcher.tick()`, replacing the
+  `watch`/`tick` coroutines and their `TailState`/`TailCursor` cursor types;
+  `FileStateStore` (and the stores built on it, `FeedbackStore` included) rides stdlib
+  `sqlite3` — `with store:` and plain methods replace `async with` and coroutines, and
+  a `transaction()` opened while another connection holds one raises the new
+  `TransactionConflictError` instead of losing the write. `anyio` and `aiosqlite`
+  leave the runtime dependencies. `run_verdicts` and the judge fan-out stay async —
+  that concurrency is real I/O against an LLM backend.
+- **BREAKING: the CLI is a compiled binary.** The console script (and
+  `uvx cc-transcript`) enters the Rust CLI through `cc_transcript._native:cli_main`;
+  the click tree is deleted, and cold start drops from 231 ms to 24.6 ms (`--help`,
+  hyperfine minimum). Commands, flags, and output are pinned byte-for-byte by a
+  23-case golden matrix covering stdout, stderr, and exit codes, with the deliberate
+  divergences documented: argument-parse errors render in clap's format (exit 2, and
+  `-h`/`-V` now exist), `--version` prints `cc-transcript X.Y.Z`, numeric options
+  reject negatives and repeated flags instead of silently coercing, `grep` compiles
+  the Rust regex dialect (lookaround, backreferences, and `\Z` are invalid patterns,
+  and `$` no longer matches before a trailing newline), `slice --since`/`--until`
+  require RFC 3339 timestamps, engine errors render as one-line `Error: …` (exit 1)
+  instead of tracebacks, and SIGINT outside `watch` exits 130.
 - **Memory model.** One parse owns one shared entry buffer; retaining any view keeps that
   whole parse's entries alive. The live `watch` stream is exempt (one buffer per event).
 - **Parse divergences (native backend).** Root-level and print-envelope duplicate keys read
@@ -38,6 +76,31 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   longer matches before a trailing newline (`foo$` misses `"foo\n"`), and constructs Rust
   `regex` has no equivalent for — lookaround (`(?=…)`, `(?<=…)`) and `\Z` — raise `ValueError`
   at match time rather than compiling.
+- **Post-parse spec matching, notification replay, and conversation bucketing run in
+  the native core.** `keep`/`labels_for`/`apply_spec`/`annotate_spec`, `Notifications`,
+  and `sentiment.bucket_events` hand borrowed native views across the FFI boundary —
+  no serialization — and the Python evaluation legs they replaced are deleted.
+  `apply_spec` and `annotate_spec` stay lazy, driving a per-event native matcher.
+- **Bash parsing is fully native.** `command.py` is a thin facade: `Command`,
+  `CommandLine`, `CommandLineQuery`, `Occurrence`, and `Redirect` are native views,
+  tree-sitter runs embedded in the extension only, and `tree-sitter`/`tree-sitter-bash`
+  leave the runtime dependencies. The 13.2.0 splice layer (`Command.span`,
+  `Occurrence`, `CommandLine.occurrences`/`splice`/`rewrite_occurrences`) crossed with
+  it, pinned by a 70-entry golden recorded from the Python reference before the flip.
+  One deliberate per-surface contract: `Command.matches`/`has_arg` keep exact Python
+  `re` semantics (lookaround works), while the CLI `grep` and every spec regex run the
+  Rust dialect.
+- **Shared literals are hand-owned Rust source.** The generation direction inverted:
+  the constants both languages consume — the CC-protocol markers, the mining
+  ids/separators/floors, the command tables, the corrections DDL — live in
+  `rust/crates/core/src/literals/`, the crate compiles them in, and
+  `_native.embedded_literals()` feeds the typed accessors in `cc_transcript/literals.py`,
+  so no Python module re-declares a value. To change a literal, edit the Rust source
+  and rebuild; `tests/test_literals_parity.py` stays the drift gate, asserting mirror
+  equality, full manifest coverage, and no re-declaration.
+- **The extension module is `cc_transcript._native`** (formerly `_parser_rs`), typed by
+  a machine-generated `_native.pyi` — pyo3-stub-gen emits it, and a two-way drift gate
+  keeps the committed stub honest against the built module.
 - **BREAKING: `tool_facts(paths, *, max_events)` takes transcript file paths, not parsed
   transcripts.** The tool-fact projection runs entirely in the native core; the facade
   re-parses each path, caps it at `max_events` events, and rehydrates each call into a
@@ -56,7 +119,24 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   `2026-01-06T03:30:00+00:00` are the same moment — but `tzinfo` and `isoformat()` now render in
   UTC.
 
+### Added
+- **`scratchpad` CLI command.** Resolves and prints the newest harness scratchpad
+  directory for a Claude Code session UUID (`--session`, defaulting to
+  `CLAUDE_CODE_SESSION_ID`), exit 1 when none exists.
+
 ### Removed
+- Removed `TranscriptParser` and `TranscriptDiscovery`, the class API around parsing
+  and discovery, along with `find_transcript`/`find_transcript_sync` (use `resolve`)
+  and `parse_events_async` (`parse(path)` is synchronous). See Changed for the
+  function surface that replaces them.
+- Removed `watch`, `tick`, `TailState`, and `TailCursor` from `cc_transcript.watch` —
+  `Watcher`/`WatchEvent` are the tailing surface.
+- Removed `python -m cc_transcript` (`__main__.py`) and the click CLI modules
+  (`cc_transcript.cli`, `cc_transcript.corrections_cli`); the console script and
+  `uvx cc-transcript` enter the native CLI.
+- Removed `scripts/build_rust_literals.py` and the committed
+  `rust/crates/core/src/generated/` modules; the Rust literals source is hand-owned
+  (see Changed).
 - Removed the `pricing=` override from `cost_of`/`cost_of_assistant` (native pricing is
   canonical); `PRICING` remains importable.
 - Removed the Python raw-bytes renderers now owned by the native core — `compact_line`,
@@ -90,6 +170,15 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   - `sentiment/buckets.py`: `ConversationBucketer.align_to_bucket` — bucket alignment is
     internal to the native bucketer.
   - `cost.py`: `MTOK` — the per-million-tokens constant folded into the native cost model.
+
+### Fixed
+- **Tool inputs carrying integers beyond 64 bits render verbatim** in the CLI's JSON
+  projections; orjson raised `Integer exceeds 64-bit range` and killed the whole
+  projection.
+- **`corrections sql` fails loud on BLOB columns** (`cannot serialize BLOB column …`,
+  exit 1) where the click CLI crashed with an orjson `TypeError` traceback.
+- **`watch --poll` rejects negative and non-numeric values** with a clean usage error
+  (exit 2); the click CLI accepted a negative poll interval and slept on it.
 
 ## [13.2.0] - 2026-07-14
 
