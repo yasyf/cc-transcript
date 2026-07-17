@@ -1,6 +1,6 @@
 ---
 title: "The Rust engine"
-description: "Why cc-transcript executes on a single compiled engine, and how generated literals and golden fixtures pin its correctness without a second implementation."
+description: "Why cc-transcript executes on a single compiled engine, and how hand-owned literals and golden fixtures pin its correctness without a second implementation."
 ---
 
 Every hot path in `cc-transcript` executes in one place: `_native`, the
@@ -120,18 +120,23 @@ pattern uses it raises at mine time. Lookaround belongs in a
 
 Cross-backend parity used to be the correctness mechanism: run both
 implementations, assert identical output. With one implementation, the suite
-pins behavior against generated sources and frozen fixtures instead. `uv run
+pins behavior against hand-owned sources and frozen fixtures instead. `uv run
 pytest` runs all of it.
 
-**Generated literals, one direction.** The Python constants — the CC-protocol
+**Hand-owned literals, one source.** The shared constants — the CC-protocol
 markers, the mining ids, separators, and confidence floors, the command
-tables — are the single source of truth.
-`scripts/build_rust_literals.py` renders them into the committed
-`rust/crates/core/src/generated/` modules the crate compiles in; to change one, edit the
-Python constant, regenerate, and commit. Never hand-edit the generated Rust.
-`tests/test_literals_parity.py` is the drift gate: `embedded_literals()` must
-equal the generator's manifest as one whole dict, and the committed files
-must match a fresh render byte for byte.
+tables, and the corrections DDL — are hand-owned in Rust, under
+`rust/crates/core/src/literals/`. The crate compiles them in, and
+`embedded_literals()` exposes the whole table to Python as one dict;
+`cc_transcript/literals.py` binds each Python-side constant through a typed
+accessor (`literal_str`, `literal_float`, `literal_tuple`) rather than keeping
+its own copy of the value. There is no generator — `scripts/build_rust_literals.py`
+is gone, and the generation direction inverted: to change a literal, edit the
+Rust source and rebuild. `tests/test_literals_parity.py` is the drift gate:
+every Python mirror must equal its `embedded_literals()` entry, the manifest
+must be fully covered (a native literal with no Python mirror fails), and no
+`cc_transcript` module may re-declare a distinctive literal as its own source
+string.
 
 **Vendored TSVs.** The lexicon data lives once, as package data:
 `afinn-en-165.tsv` (provenance in its header) and `domain_overrides.tsv`
@@ -157,5 +162,5 @@ behavior change fails loudly with no second implementation to compare
 against.
 
 That is the trade. The reference implementation is gone, and in its place the
-correctness story is data — generated literals, vendored tables, and frozen
+correctness story is data — hand-owned literals, vendored tables, and frozen
 output — which drifts louder and costs one implementation instead of two.
