@@ -64,13 +64,27 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   helpers). `render_compact_lines`/`render_haystacks`/`render_stats` on the native core are
   canonical; `Budget`, `render_tool_call`, `render_turn`, and `render_session` remain the
   Python object renderers.
+- Removed `cc_transcript/backend.py` and its `ParsedTranscript` dataclass — the
+  `(path, mtime, events)` container that `tool_facts` and the raw-bytes renderers consumed.
+  Both surfaces now take transcript paths or bytes (see Changed), leaving it no consumer.
 - Removed the remaining module-visible helpers the native facade flip absorbed. None appeared
   in the curated API reference, but each was an importable module-level name:
   - `render.py`: `display_path`, `transcript_header`, `render_counts`, `render_mcp`,
-    `render_histogram`, `fact_dict`, `denial_dict`, `event_dict`, `view_asdict`, `view_field`
-    — the CLI-line and record-projection helpers the native renderers replaced.
-  - `filterspec.py`: `clause_matches`, `predicate_matches`, `normalize_bare` — the Python
-    spec-evaluation helpers now living in the native `SpecMatcher`.
+    `render_histogram`, `fact_dict`, `fact_line`, `denial_dict`, `denial_line`, `event_dict`,
+    `view_asdict`, `view_field`, `render_span`, `line_budget`, `stats_dict`, the
+    `assistant_payload`/`user_payload`/`event_payload`/`block_payload`/`result_payload`/
+    `attachment_text`/`tool_haystack` projections, the `ViewLike` protocol, and the
+    `BLANK_TIME`/`SIZE_UNITS`/`TAGS`/`UNCLIPPED`/`VIEW_TYPES`/`WHERE_ALL` constants — the
+    CLI-line and record-projection layer the native renderers replaced.
+  - `filterspec.py`: `clause_matches`, `predicate_matches`, `normalize_bare`, `meta_flag` — the
+    Python spec-evaluation helpers now living in the native `SpecMatcher`.
+  - `command.py`: `BASH_PARSER` and the `ASSIGNMENT_RE`/`PIPE_GAP_RE`/`COMPOUND_OPS`/
+    `MULTI_LEVEL_TOOLS`/`REDIRECT_OP_TYPES`/`WRAPPER_COMMANDS` parsing tables — bash parsing
+    runs in the native splice layer; `Command`, `CommandLine`, `CommandLineQuery`,
+    `Occurrence`, and `Redirect` stay importable as native views.
+  - `context.py`: `preview_block_parts` and the `ASK_USER_QUESTION` constant — the last
+    Python-side preview builder and its tool-name key, alongside the builders already noted
+    under Changed.
   - `notifications.py`: `replay_queue`, `delivered_text` — the notification-replay helpers now
     lifted in the native core.
   - `sentiment/buckets.py`: `ConversationBucketer.align_to_bucket` — bucket alignment is
