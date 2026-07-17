@@ -264,7 +264,6 @@ reference:
       - ContextWindow
       - HydratedWindow
       - TurnRef
-      - Fidelity
       - capture_window
       - SchemaError
   - title: Rendering
