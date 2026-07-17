@@ -2273,5 +2273,124 @@
       ],
       "raw": "EMPTY= make build"
     }
+  },
+  {
+    "command": "cat <<A <<B\none\nA\ntwo\nB\necho done",
+    "id": "edge-multi-heredoc-trailing-command",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "done"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo done",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "done"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat",
+        "echo"
+      ],
+      "raw": "cat <<A <<B\none\nA\ntwo\nB\necho done"
+    }
+  },
+  {
+    "command": "cat <<EOF\nline one\nline two",
+    "id": "edge-unterminated-heredoc",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat"
+      ],
+      "raw": "cat <<EOF\nline one\nline two"
+    }
+  },
+  {
+    "command": "cat <<-A <<-B\n\tone\n\tA\n\ttwo\n\tB\necho done",
+    "id": "edge-multi-heredoc-dash-tab-strip",
+    "parsed": {
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "cat",
+            "prefix": "cat",
+            "program": "cat",
+            "raw": "cat",
+            "redirects": [],
+            "unwrapped_argv": [
+              "cat"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "done"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo done",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "done"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "cat",
+        "echo"
+      ],
+      "raw": "cat <<-A <<-B\n\tone\n\tA\n\ttwo\n\tB\necho done"
+    }
   }
 ]

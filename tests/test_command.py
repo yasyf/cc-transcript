@@ -390,6 +390,15 @@ class TestSplice:
         assert spliced == "cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\ntrue"
         assert "rm -rf /\ngit push --force\n" in spliced
 
+    def test_multi_heredoc_drops_body_and_guards_splice(self) -> None:
+        # Degraded multi-heredoc: walk keeps cat + the real trailing command, and the degraded
+        # command is span-less so splice can never rewrite heredoc bytes.
+        cl = CommandLine.parse("cat <<A <<B\none\nA\ntwo\nB\necho done")
+        assert [occ.command.executable for occ in cl.occurrences] == ["cat", "echo"]
+        with pytest.raises(ValueError, match="no span"):
+            cl.splice({0: "X"})
+        assert cl.splice({1: "echo DONE"}) == "cat <<A <<B\none\nA\ntwo\nB\necho DONE"
+
     def test_comment_tail_preserved(self) -> None:
         assert CommandLine.parse("echo hi # trailing comment").splice({0: "ls"}) == "ls # trailing comment"
 

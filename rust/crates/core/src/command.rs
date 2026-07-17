@@ -565,7 +565,7 @@ fn walk_redirected(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
 // command extracts, redirected_statement unwraps, everything else recurses in order.
 fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
     match node.kind() {
-        "program" => collect_parts(node, src, &[";"]),
+        "program" => walk_program(node, src),
         "list" => collect_parts(node, src, COMPOUND_OPS),
         "pipeline" => collect_parts(node, src, &["|"]),
         "command" => vec![(extract_command(node, src), None)],
@@ -579,6 +579,150 @@ fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             parts
         }
     }
+}
+
+// Parity: command.py CommandLine.walk_program — collect_parts over `;`, dropping the heredoc body
+// and delimiter lines that tree-sitter's multi-heredoc ERROR recovery re-parses as sibling commands.
+fn walk_program(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+    let mut suppress_until = 0usize;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.start_byte() < suppress_until {
+            continue;
+        }
+        let text = node_text(child, src);
+        if child.kind() == ";" || text == ";" {
+            if let Some(last) = parts.last_mut() {
+                last.1 = Some(text);
+            }
+            continue;
+        }
+        // A degraded multi-heredoc: emit its command(s) span-less (splice must never rewrite heredoc
+        // bytes), then suppress the sibling nodes re-parsed from its heredoc text.
+        if let Some(range_end) = heredoc_suppression(child, src) {
+            let mut inner = walk_node(child, src);
+            for (cmd, _) in inner.iter_mut() {
+                cmd.span = None;
+            }
+            parts.extend(inner);
+            suppress_until = range_end;
+            continue;
+        }
+        parts.extend(walk_node(child, src));
+    }
+    parts
+}
+
+// Parity: command.py CommandLine.heredoc_suppression — suppressed byte range of a
+// redirected_statement whose heredoc degraded (a heredoc_redirect carrying an ERROR), else None.
+fn heredoc_suppression(node: Node, src: &[u8]) -> Option<usize> {
+    if node.kind() != "redirected_statement" {
+        return None;
+    }
+    let degraded = find_degraded_heredoc(node)?;
+    let delimiters = fabricated_delimiters(degraded, src);
+    if delimiters.is_empty() {
+        return None;
+    }
+    // Each unconsumed delimiter extends the range through its matching line, or to EOF when never
+    // matched (bash reads an unmatched heredoc to EOF too).
+    let raw = std::str::from_utf8(src).expect("valid utf-8 source");
+    let mut cursor = node.end_byte();
+    for (delimiter, dash) in &delimiters {
+        cursor = scan_delimiter_line(raw, cursor, delimiter, *dash);
+    }
+    Some(cursor)
+}
+
+// Parity: command.py CommandLine.find_degraded_heredoc — first heredoc_redirect under `node` whose
+// subtree carries an ERROR node.
+fn find_degraded_heredoc(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "heredoc_redirect" && subtree_has_error(child) {
+            return Some(child);
+        }
+        if let Some(found) = find_degraded_heredoc(child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn subtree_has_error(node: Node) -> bool {
+    node.is_error() || {
+        let mut cursor = node.walk();
+        let has_error = node
+            .children(&mut cursor)
+            .any(|child| subtree_has_error(child));
+        has_error
+    }
+}
+
+// Parity: command.py CommandLine.fabricated_delimiters — the degraded heredoc's unconsumed
+// delimiters in byte order; an unquoted leading `-` is the `<<-` tab-strip marker, split off.
+fn fabricated_delimiters(hr: Node, src: &[u8]) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    collect_fabricated(hr, src, &mut out);
+    out
+}
+
+fn collect_fabricated(node: Node, src: &[u8], out: &mut Vec<(String, bool)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "file_redirect" && redirect_is_input(child) {
+            if let Some(delimiter) = redirect_delimiter(child, src) {
+                out.push(delimiter);
+            }
+        } else {
+            collect_fabricated(child, src, out);
+        }
+    }
+}
+
+fn redirect_is_input(node: Node) -> bool {
+    let mut cursor = node.walk();
+    let is_input = node.children(&mut cursor).any(|child| child.kind() == "<");
+    is_input
+}
+
+fn redirect_delimiter(node: Node, src: &[u8]) -> Option<(String, bool)> {
+    let mut cursor = node.walk();
+    let target = node
+        .children(&mut cursor)
+        .find(|child| !REDIRECT_OP_TYPES.contains(&child.kind()))?;
+    let text = word_text(target, src);
+    if !matches!(target.kind(), "string" | "raw_string") {
+        if let Some(rest) = text.strip_prefix('-') {
+            return Some((rest.to_string(), true));
+        }
+    }
+    Some((text, false))
+}
+
+// Parity: command.py CommandLine.scan_delimiter_line — byte offset just past the next line at or
+// after `from` equal to `delimiter` (leading tabs stripped when `dash`), or the end of `raw`.
+fn scan_delimiter_line(raw: &str, from: usize, delimiter: &str, dash: bool) -> usize {
+    let end = raw.len();
+    let mut pos = from;
+    while pos < end {
+        let line_end = raw[pos..].find('\n').map_or(end, |i| pos + i);
+        let line = &raw[pos..line_end];
+        let candidate = if dash {
+            line.trim_start_matches('\t')
+        } else {
+            line
+        };
+        if candidate == delimiter {
+            return if line_end < end { line_end + 1 } else { end };
+        }
+        if line_end >= end {
+            break;
+        }
+        pos = line_end + 1;
+    }
+    end
 }
 
 // Parity: command.py command_prefixes — the permission-style prefix of each command.
@@ -705,6 +849,68 @@ mod tests {
     fn absorbed_trailing_word_has_no_span() {
         let line = CommandLine::parse("echo a >out b");
         assert_eq!(line.parts[0].0.span, None);
+    }
+
+    // A degraded multi-heredoc drops its fabricated sibling parts, keeps the real trailing command,
+    // and goes span-less so splice can't rewrite heredoc bytes.
+    #[test]
+    fn multi_heredoc_drops_fabricated_parts_and_keeps_trailing_command() {
+        let line = CommandLine::parse("cat <<A <<B\none\nA\ntwo\nB\necho done");
+        assert_eq!(
+            line.commands()
+                .iter()
+                .map(|c| c.executable.as_str())
+                .collect::<Vec<_>>(),
+            ["cat", "echo"]
+        );
+        assert_eq!(line.parts[1].0.args, ["done"]);
+        // The degraded heredoc command is unspliceable; the real trailing command keeps its span.
+        assert_eq!(line.parts[0].0.span, None);
+        assert!(line.parts[1].0.span.is_some());
+        assert_eq!(
+            line.splice(&BTreeMap::from([(0, "X".to_string())])),
+            Err(SpliceError::NoSpan { index: 0 })
+        );
+        // Splicing the real trailing command leaves every heredoc byte verbatim.
+        assert_eq!(
+            line.splice(&BTreeMap::from([(1, "echo DONE".to_string())]))
+                .unwrap(),
+            "cat <<A <<B\none\nA\ntwo\nB\necho DONE"
+        );
+    }
+
+    #[test]
+    fn multi_heredoc_dash_strips_tabs_and_unmatched_reads_to_eof() {
+        // `<<-` matches its delimiter ignoring leading tabs; the trailing command still survives.
+        let dash = CommandLine::parse("cat <<-A <<-B\n\tone\n\tA\n\ttwo\n\tB\necho done");
+        assert_eq!(
+            dash.commands()
+                .iter()
+                .map(|c| c.executable.as_str())
+                .collect::<Vec<_>>(),
+            ["cat", "echo"]
+        );
+        assert_eq!(dash.parts[0].0.span, None);
+        // An unmatched second delimiter reads to EOF (bash semantics), so no fabricated trailing part.
+        let eof = CommandLine::parse("cat <<A <<B\none\nA\ntwo\necho done");
+        assert_eq!(
+            eof.commands()
+                .iter()
+                .map(|c| c.executable.as_str())
+                .collect::<Vec<_>>(),
+            ["cat"]
+        );
+        // A single unterminated heredoc is not degraded: its body is absorbed, no fabricated parts.
+        let single = CommandLine::parse("cat <<EOF\nline one\nline two");
+        assert_eq!(
+            single
+                .commands()
+                .iter()
+                .map(|c| c.executable.as_str())
+                .collect::<Vec<_>>(),
+            ["cat"]
+        );
+        assert!(single.parts[0].0.span.is_some());
     }
 
     #[test]

@@ -50,6 +50,10 @@ EDGE_CASES: tuple[tuple[str, str], ...] = (
     ("subshell-pipeline", "(echo a; echo b) | sort | uniq -c"),
     ("function-def-and-call", "greet() { echo hi; }; greet && greet"),
     ("empty-assignment-value", "EMPTY= make build"),
+    # Degraded multi-heredoc recovery (command.rs walk_program): fabricated body/delimiter parts suppressed.
+    ("multi-heredoc-trailing-command", "cat <<A <<B\none\nA\ntwo\nB\necho done"),
+    ("unterminated-heredoc", "cat <<EOF\nline one\nline two"),
+    ("multi-heredoc-dash-tab-strip", "cat <<-A <<-B\n\tone\n\tA\n\ttwo\n\tB\necho done"),
 )
 
 
