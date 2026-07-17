@@ -142,6 +142,16 @@ def iso(dt: datetime) -> str:
     return f"{dt:%Y-%m-%dT%H:%M:%S}.{dt.microsecond // 1000:03d}Z"
 
 
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class Session:
     def __init__(self, rng: Random, session_id: str, start: datetime) -> None:
         self.rng = rng
@@ -418,7 +428,10 @@ def generate(out: Path, seed: int) -> tuple[int, int]:
         written.add(path)
         total_bytes += len(data)
     for stale in set(out.rglob("*.jsonl")) - written:
-        stale.unlink()
+        stale.unlink(missing_ok=True)
+    for orphan in out.rglob(".*.jsonl.*.tmp"):
+        if not process_alive(int(orphan.name.split(".")[-2])):
+            orphan.unlink(missing_ok=True)
     return len(FILE_PLAN), total_bytes
 
 
