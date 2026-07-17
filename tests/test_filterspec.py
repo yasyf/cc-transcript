@@ -150,6 +150,24 @@ def test_text_matches_any_named_groups_ignore_case() -> None:
     assert keep(user("goodbye"), s)
 
 
+def test_post_parse_regex_uses_rust_dialect() -> None:
+    # Post-parse TextMatchesAny compiles in Rust regex now, not Python re. Rust `$` does not
+    # match before a trailing newline, so "foo\n" survives a `foo$` DROP while "foo" is dropped.
+    s = spec(Clause(TextMatchesAny((("end", r"foo$"),)), applies_to=frozenset({"user"})))
+    assert keep(user("foo\n"), s)
+    assert not keep(user("foo"), s)
+
+
+@pytest.mark.parametrize(
+    "pattern", [r"a(?=b)", r"a(?<=x)", r"foo\Z"], ids=["lookahead", "lookbehind", "end-of-text-Z"]
+)
+def test_post_parse_regex_rejects_non_rust_constructs(pattern: str) -> None:
+    # Lookaround and \Z, which Rust's regex crate has no equivalent for, raise at compile time.
+    s = spec(Clause(TextMatchesAny((("p", pattern),)), applies_to=frozenset({"user"})))
+    with pytest.raises(ValueError, match=r"regex parse error"):
+        keep(user("ab"), s)
+
+
 @pytest.mark.parametrize(
     ("text", "dropped"),
     [

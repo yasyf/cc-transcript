@@ -31,6 +31,13 @@ parse. Stub — factual bullets only; P7 finalizes the prose.
   `orjson.JSONDecodeError`/`StopIteration`); a below-`MINYEAR` timestamp drops the line
   rather than raising; tool input serialized outside the JSON contract (datetime, bytes,
   cycles) raises in strict mode and degrades to a fallback under `on_error='other'`.
+- **BREAKING: post-parse spec regexes use the Rust regex dialect.** `keep`, `labels_for`,
+  `apply_spec`, and `annotate_spec` compile a `TextMatchesAny` clause in the native core (the
+  Rust `regex` crate) — the same engine parse-time filtering always used, so one dialect now
+  governs a spec everywhere. Two shifts from the former Python `re` post-parse path: `$` no
+  longer matches before a trailing newline (`foo$` misses `"foo\n"`), and constructs Rust
+  `regex` has no equivalent for — lookaround (`(?=…)`, `(?<=…)`) and `\Z` — raise `ValueError`
+  at match time rather than compiling.
 - **BREAKING: `tool_facts(paths, *, max_events)` takes transcript file paths, not parsed
   transcripts.** The tool-fact projection runs entirely in the native core; the facade
   re-parses each path, caps it at `max_events` events, and rehydrates each call into a
