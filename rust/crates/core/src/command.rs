@@ -183,10 +183,21 @@ pub struct CommandLine {
 impl CommandLine {
     // Parity: command.py CommandLine.parse — blank/comment-only input yields empty parts.
     pub fn parse(raw: &str) -> CommandLine {
-        let parts = BASH_PARSER.with(|parser| match parser.borrow_mut().parse(raw, None) {
+        let mut parts = BASH_PARSER.with(|parser| match parser.borrow_mut().parse(raw, None) {
             Some(tree) => walk_node(tree.root_node(), raw.as_bytes()),
             None => Vec::new(),
         });
+        // Nested inside an enumerated host's span: visible but span-less, like an absorbed word.
+        let spans: Vec<Option<(usize, usize)>> = parts.iter().map(|(cmd, _)| cmd.span).collect();
+        for (i, (cmd, _)) in parts.iter_mut().enumerate() {
+            let Some((start, end)) = cmd.span else { continue };
+            let enclosed = spans.iter().enumerate().any(|(j, other)| {
+                j != i && matches!(other, Some((os, oe)) if *os <= start && end <= *oe && (*os, *oe) != (start, end))
+            });
+            if enclosed {
+                cmd.span = None;
+            }
+        }
         CommandLine {
             raw: raw.to_string(),
             parts,
@@ -1092,22 +1103,21 @@ mod tests {
         assert_eq!(word.next_op(1), Some("&&"));
         assert_eq!(word.prev_op(2), Some("&&"));
         assert!(!word.piped(0) && !word.piped(1));
-        // The nested span indexes the raw line, so splicing just it rewrites in place; rewriting
-        // host and nested together overlaps (the host span encloses the substitution bytes).
+        // Nested inside the host's span: visible but span-less (splice's non-overlap invariant);
+        // assignment position has no host, so its span survives and splices in place.
         let line = CommandLine::parse("echo $(ccx repo overview)");
         assert_eq!(line.parts[0].0.span, Some((0, 25)));
-        assert_eq!(line.parts[1].0.span, Some((7, 24)));
-        assert_eq!(
-            line.splice(&BTreeMap::from([(1, "ls".to_string())])).unwrap(),
-            "echo $(ls)"
-        );
+        assert_eq!(line.parts[1].0.span, None);
         assert!(matches!(
-            line.splice(&BTreeMap::from([
-                (0, "X".to_string()),
-                (1, "Y".to_string())
-            ])),
-            Err(SpliceError::Overlap { .. })
+            line.splice(&BTreeMap::from([(1, "ls".to_string())])),
+            Err(SpliceError::NoSpan { index: 1 })
         ));
+        let assign_only = CommandLine::parse("x=$(ccx repo overview)");
+        assert_eq!(assign_only.parts[0].0.span, Some((4, 21)));
+        assert_eq!(
+            assign_only.splice(&BTreeMap::from([(0, "ls".to_string())])).unwrap(),
+            "x=$(ls)"
+        );
     }
 
     #[test]

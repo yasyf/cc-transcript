@@ -20,10 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command name, double-quoted string, concatenation, env-prefix assignment value),
   nested substitutions included. The treatment mirrors what assignment-position
   substitutions (`x=$(ccx repo overview)`) already got: parts enumerate in document
-  order (host command first, then each outermost substitution left to right), the
-  joining operator attaches to the last enumerated part, and a nested command's `span`
-  indexes the raw line so `splice` rewrites it in place. Substitutions inside redirect
-  targets stay out, matching statement-level redirects.
+  order (host command first, then each outermost substitution left to right), and the
+  joining operator attaches to the last enumerated part. A command nested inside an
+  enumerated host command's span is visible but span-less (`span` is `None`, like a
+  redirect-absorbed word) — the splice layer's non-overlap invariant is untouched, and
+  assignment-position substitutions, which have no host command, keep their spans and
+  splice in place exactly as in 14.0.0. Substitutions inside redirect targets stay
+  out, matching statement-level redirects.
 
 ## [14.0.0] - 2026-07-18
 

@@ -647,7 +647,7 @@
     }
   },
   {
-    "command": "timeout ٣ git push",
+    "command": "timeout \u0663 git push",
     "id": "pin-arabic-digit-not-skipped",
     "splice_layer": {
       "parts": [
@@ -662,7 +662,7 @@
           ]
         }
       ],
-      "raw": "timeout ٣ git push",
+      "raw": "timeout \u0663 git push",
       "splice": {
         "combined": "R0",
         "error": null,
@@ -833,12 +833,19 @@
             0,
             25
           ]
+        },
+        {
+          "executable": "git",
+          "next_op": null,
+          "piped": false,
+          "prev_op": null,
+          "span": null
         }
       ],
       "raw": "echo `git rev-parse HEAD`",
       "splice": {
         "combined": "R0",
-        "error": null,
+        "error": "command at index 1 has no span",
         "rewrite": "X0",
         "single": {
           "0": "R0"
@@ -1023,12 +1030,26 @@
             0,
             37
           ]
+        },
+        {
+          "executable": "git",
+          "next_op": "|",
+          "piped": true,
+          "prev_op": null,
+          "span": null
+        },
+        {
+          "executable": "head",
+          "next_op": null,
+          "piped": true,
+          "prev_op": "|",
+          "span": null
         }
       ],
       "raw": "echo $(git log --format=%H | head -1)",
       "splice": {
         "combined": "R0",
-        "error": null,
+        "error": "command at index 1 has no span",
         "rewrite": "X0",
         "single": {
           "0": "R0"
@@ -1091,7 +1112,7 @@
     }
   },
   {
-    "command": "git commit -m 'héllo 🤖 漢字'",
+    "command": "git commit -m 'h\u00e9llo \ud83e\udd16 \u6f22\u5b57'",
     "id": "edge-unicode-args",
     "splice_layer": {
       "parts": [
@@ -1106,7 +1127,7 @@
           ]
         }
       ],
-      "raw": "git commit -m 'héllo 🤖 漢字'",
+      "raw": "git commit -m 'h\u00e9llo \ud83e\udd16 \u6f22\u5b57'",
       "splice": {
         "combined": "R0",
         "error": null,
@@ -1118,12 +1139,12 @@
     }
   },
   {
-    "command": "café --brew",
+    "command": "caf\u00e9 --brew",
     "id": "edge-unicode-executable",
     "splice_layer": {
       "parts": [
         {
-          "executable": "café",
+          "executable": "caf\u00e9",
           "next_op": null,
           "piped": false,
           "prev_op": null,
@@ -1133,7 +1154,7 @@
           ]
         }
       ],
-      "raw": "café --brew",
+      "raw": "caf\u00e9 --brew",
       "splice": {
         "combined": "R0",
         "error": null,
@@ -2118,7 +2139,7 @@
     }
   },
   {
-    "command": "echo café; rm x",
+    "command": "echo caf\u00e9; rm x",
     "id": "splice-multibyte-before-span",
     "splice_layer": {
       "parts": [
@@ -2143,14 +2164,14 @@
           ]
         }
       ],
-      "raw": "echo café; rm x",
+      "raw": "echo caf\u00e9; rm x",
       "splice": {
         "combined": "R0; R1",
         "error": null,
         "rewrite": "X0; X1",
         "single": {
           "0": "R0; rm x",
-          "1": "echo café; R1"
+          "1": "echo caf\u00e9; R1"
         }
       }
     }

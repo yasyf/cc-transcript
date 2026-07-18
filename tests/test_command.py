@@ -313,10 +313,16 @@ class TestCommandSubstitutions:
         assert word.occurrences[1].next_op == "&&"
         assert word.occurrences[2].prev_op == "&&"
 
-    def test_substitution_span_splices_in_place(self) -> None:
+    def test_nested_substitution_is_visible_but_spanless(self) -> None:
         line = CommandLine.parse("echo $(ccx repo overview)")
-        assert line.commands[1].span == (7, 24)
-        assert line.splice({1: "ls"}) == "echo $(ls)"
+        assert line.commands[1].span is None
+        with pytest.raises(ValueError, match="no span"):
+            line.splice({1: "ls"})
+
+    def test_assignment_substitution_keeps_span_and_splices(self) -> None:
+        line = CommandLine.parse("x=$(ccx repo overview)")
+        assert line.commands[0].span == (4, 21)
+        assert line.splice({0: "ls"}) == "x=$(ls)"
 
 
 class TestCommandLineQuery:
