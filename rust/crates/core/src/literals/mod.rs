@@ -5,5 +5,6 @@
 
 pub mod command;
 pub mod corrections;
+pub mod feedback;
 pub mod mining;
 pub mod protocol;

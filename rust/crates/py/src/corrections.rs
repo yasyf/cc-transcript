@@ -11,14 +11,12 @@
 
 use std::path::Path;
 
-use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyString};
-use pyo3::IntoPyObjectExt;
+use pyo3::types::PyDict;
 
-use cc_transcript_core::corrections::{
-    Correction, CorrectionLog, LedgerError, SqlCell, SqlRow, SqliteErrorClass,
-};
+use cc_transcript_core::corrections::{Correction, CorrectionLog, SqlRow};
+
+use crate::sqlite::{cell_to_py, ledger_err, rows_to_dicts};
 
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(unsendable)]
@@ -45,79 +43,6 @@ fn detached<T: Send>(
 ) -> T {
     let pinned = Pinned(log);
     py.detach(move || call(pinned.log()))
-}
-
-fn ledger_err(py: Python<'_>, error: LedgerError) -> PyErr {
-    match error {
-        LedgerError::MultipleStatements => sqlite3_error(
-            py,
-            "ProgrammingError",
-            "You can only execute one statement at a time.",
-            None,
-            None,
-        ),
-        // SQLITE_NOMEM maps to the builtin MemoryError (CPython's PyErr_NoMemory), with no
-        // sqlite payload; every other class is looked up in the sqlite3 module.
-        LedgerError::Sqlite {
-            class: SqliteErrorClass::Memory,
-            message,
-            ..
-        } => PyMemoryError::new_err(message),
-        LedgerError::Sqlite {
-            class,
-            message,
-            code,
-            name,
-        } => sqlite3_error(py, class.name(), &message, code, name.as_deref()),
-        LedgerError::Io { error, path } => os_error(py, &error, path.to_string_lossy().as_ref()),
-    }
-}
-
-fn sqlite3_error(
-    py: Python<'_>,
-    class: &str,
-    message: &str,
-    code: Option<i32>,
-    name: Option<&str>,
-) -> PyErr {
-    let build = || -> PyResult<Bound<'_, PyAny>> {
-        let exc = py.import("sqlite3")?.getattr(class)?.call1((message,))?;
-        if let Some(code) = code {
-            exc.setattr("sqlite_errorcode", code)?;
-            exc.setattr("sqlite_errorname", name.unwrap_or("unknown"))?;
-        }
-        Ok(exc)
-    };
-    match build() {
-        Ok(exc) => PyErr::from_value(exc),
-        Err(err) => err,
-    }
-}
-
-fn os_error(py: Python<'_>, error: &std::io::Error, filename: &str) -> PyErr {
-    // OSError(errno, strerror, filename) dispatches to the errno-specific subclass
-    // (FileExistsError, NotADirectoryError, …) and carries the Python-shaped payload.
-    let build = || -> PyResult<Bound<'_, PyAny>> {
-        let errno = error.raw_os_error().unwrap_or(0);
-        let strerror = py.import("os")?.getattr("strerror")?.call1((errno,))?;
-        py.import("builtins")?
-            .getattr("OSError")?
-            .call1((errno, strerror, filename))
-    };
-    match build() {
-        Ok(exc) => PyErr::from_value(exc),
-        Err(err) => err,
-    }
-}
-
-fn cell_to_py<'py>(py: Python<'py>, cell: SqlCell) -> PyResult<Bound<'py, PyAny>> {
-    match cell {
-        SqlCell::Null => Ok(py.None().into_bound(py)),
-        SqlCell::Int(i) => i.into_bound_py_any(py),
-        SqlCell::Real(f) => f.into_bound_py_any(py),
-        SqlCell::Text(s) => Ok(PyString::new(py, &s).into_any()),
-        SqlCell::Blob(b) => Ok(PyBytes::new(py, &b).into_any()),
-    }
 }
 
 // Mirror row_to_record: drop the DB `id` (asdict omits it) and read detail as
@@ -270,20 +195,6 @@ impl RustCorrectionLog {
     fn sql<'py>(&self, py: Python<'py>, statement: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let rows =
             detached(py, &self.log, |log| log.sql(statement)).map_err(|e| ledger_err(py, e))?;
-        rows.into_iter()
-            .map(|row| {
-                // dict(sqlite3.Row): a name resolves to the value of the FIRST column matching
-                // it ASCII-case-insensitively (inverse of the JSON last-wins trap).
-                let dict = PyDict::new(py);
-                for (name, _) in &row {
-                    let first = row
-                        .iter()
-                        .position(|(other, _)| other.eq_ignore_ascii_case(name))
-                        .unwrap();
-                    dict.set_item(name, cell_to_py(py, row[first].1.clone())?)?;
-                }
-                Ok(dict)
-            })
-            .collect()
+        rows_to_dicts(py, rows)
     }
 }

@@ -11,6 +11,8 @@ pub mod cost;
 pub mod discovery;
 #[cfg(feature = "command")]
 pub mod facts;
+#[cfg(feature = "sqlite")]
+pub mod feedback;
 pub mod filter;
 pub mod ids;
 pub mod notifications;
@@ -19,6 +21,8 @@ pub mod protocol;
 pub mod pystr;
 pub mod query;
 pub mod render;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod toolcall;
 pub mod types;
 pub mod value;

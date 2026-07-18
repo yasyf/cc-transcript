@@ -1007,5 +1007,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SpecMatcher>()?;
     m.add_class::<crate::watch::WatchTailer>()?;
     m.add_class::<crate::corrections::RustCorrectionLog>()?;
+    m.add_class::<crate::feedback::RustFeedbackStore>()?;
     Ok(())
 }
