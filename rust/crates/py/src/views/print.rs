@@ -264,6 +264,8 @@ view_dunders!(
 ///     blocks: The structured content blocks of the message.
 ///     uuid: The message's event uuid, when present.
 ///     session_id: The session the message belongs to.
+///     id: The API message id, when present (assistant messages carry one).
+///     usage: The message's token usage, when present (assistant messages carry one).
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "PrintMessage", module = "cc_transcript.models", frozen)]
 pub(crate) struct PrintMessageView {
@@ -326,12 +328,24 @@ impl PrintMessageView {
     fn session_id(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.message().session_id.clone())
     }
+
+    #[getter]
+    fn id(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.message().id.clone())
+    }
+
+    #[getter]
+    fn usage(&self, _py: Python<'_>) -> PyResult<Option<UsageView>> {
+        Ok(self.message().usage.as_ref().map(|_| UsageView {
+            host: UsageHost::PrintMessage(Arc::clone(&self.p.0), self.msg),
+        }))
+    }
 }
 
 view_dunders!(
     PrintMessageView,
     "PrintMessage",
-    fields = [role, model, text, blocks, uuid, session_id]
+    fields = [role, model, text, blocks, uuid, session_id, id, usage]
 );
 
 /// A parsed 'claude -p --output-format json' result.

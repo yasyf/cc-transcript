@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from cc_transcript import _native
-from cc_transcript.parser import TranscriptParser
+from cc_transcript.parser import parse
 from tests import viewgolden
 from tests.support import fixture_bytes, raw_envelope
 
@@ -468,7 +468,7 @@ def build_golden() -> dict[str, Any]:
         raise SystemExit("no corpus under .fixtures/corpus — run scripts/gen_corpus.py first")
     files = []
     for path, mode in [(p, "full") for p in edge_files] + [(p, "sampled") for p in corpus_files]:
-        events = TranscriptParser.parse_file(path)
+        events = parse(path).events
         if not events:
             raise SystemExit(f"{path} parsed to zero events — a whole-file parse failure in a fixture")
         files.append(

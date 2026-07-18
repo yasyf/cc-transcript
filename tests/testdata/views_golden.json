@@ -80312,7 +80312,9 @@
        },
        "uuid": "pm-1",
        "session_id": "sess-p",
-       "__repr__": "PrintMessage(role='user', model=None, text='hello', blocks=(), uuid='pm-1', session_id='sess-p')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='user', model=None, text='hello', blocks=(), uuid='pm-1', session_id='sess-p', id=None, usage=None)"
       },
       {
        "__class__": "PrintMessage",
@@ -80341,7 +80343,9 @@
        },
        "uuid": null,
        "session_id": "sess-p",
-       "__repr__": "PrintMessage(role='user', model=None, text='t', blocks=(TextBlock(text='t'), ToolResultBlock(tool_use_id='toolu_p1', content='ok', is_error=False, is_async=False, tool_use_result=None, denial_kind=None)), uuid=None, session_id='sess-p')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='user', model=None, text='t', blocks=(TextBlock(text='t'), ToolResultBlock(tool_use_id='toolu_p1', content='ok', is_error=False, is_async=False, tool_use_result=None, denial_kind=None)), uuid=None, session_id='sess-p', id=None, usage=None)"
       },
       {
        "__class__": "PrintMessage",
@@ -80393,7 +80397,9 @@
        },
        "uuid": "pm-2",
        "session_id": "sess-p",
-       "__repr__": "PrintMessage(role='assistant', model='claude-opus-4-8', text='hi', blocks=(TextBlock(text='hi'), ToolUseBlock(id='toolu_p1', name='Bash', input={'command': 'ls'})), uuid='pm-2', session_id='sess-p')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='assistant', model='claude-opus-4-8', text='hi', blocks=(TextBlock(text='hi'), ToolUseBlock(id='toolu_p1', name='Bash', input={'command': 'ls'})), uuid='pm-2', session_id='sess-p', id=None, usage=None)"
       },
       {
        "__class__": "PrintMessage",
@@ -80412,11 +80418,13 @@
        },
        "uuid": null,
        "session_id": "sess-p",
-       "__repr__": "PrintMessage(role='assistant', model=None, text='', blocks=(ThinkingBlock(thinking='think'),), uuid=None, session_id='sess-p')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='assistant', model=None, text='', blocks=(ThinkingBlock(thinking='think'),), uuid=None, session_id='sess-p', id=None, usage=None)"
       }
      ]
     },
-    "__repr__": "PrintResult(total_cost_usd=0.1234, model_usage={'claude-opus-4-8': ModelUsage(input_tokens=10, output_tokens=2, cache_read_input_tokens=0, cache_creation_input_tokens=1, web_search_requests=0, cost_usd=0.12, context_window=200000, max_output_tokens=32000), 'claude-haiku-4-5': ModelUsage(input_tokens=1, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0, web_search_requests=2, cost_usd=0.001, context_window=200000, max_output_tokens=8192)}, usage=Usage(input_tokens=11, output_tokens=3, cache_read_input_tokens=0, cache_creation_input_tokens=1, cache_creation=CacheCreation(ephemeral_5m_input_tokens=1, ephemeral_1h_input_tokens=0), service_tier='standard', inference_geo='us', server_tool_use=ServerToolUse(web_search_requests=2, web_fetch_requests=0)), structured_output={'k': [1, 2]}, num_turns=3, is_error=False, result='final text', session_id='sess-p', fast_mode_state='enabled', stop_reason='end_turn', permission_denials=({'tool_name': 'Bash', 'tool_input': {'command': 'rm'}},), init=InitInfo(mcp_servers=(McpServer(name='semble', status='connected'),), plugins=(Plugin(name='cc-notes', path='/p', source='marketplace'),), tools=('Bash', 'Read'), skills=('codex',)), messages=(PrintMessage(role='user', model=None, text='hello', blocks=(), uuid='pm-1', session_id='sess-p'), PrintMessage(role='user', model=None, text='t', blocks=(TextBlock(text='t'), ToolResultBlock(tool_use_id='toolu_p1', content='ok', is_error=False, is_async=False, tool_use_result=None, denial_kind=None)), uuid=None, session_id='sess-p'), PrintMessage(role='assistant', model='claude-opus-4-8', text='hi', blocks=(TextBlock(text='hi'), ToolUseBlock(id='toolu_p1', name='Bash', input={'command': 'ls'})), uuid='pm-2', session_id='sess-p'), PrintMessage(role='assistant', model=None, text='', blocks=(ThinkingBlock(thinking='think'),), uuid=None, session_id='sess-p')))"
+    "__repr__": "PrintResult(total_cost_usd=0.1234, model_usage={'claude-opus-4-8': ModelUsage(input_tokens=10, output_tokens=2, cache_read_input_tokens=0, cache_creation_input_tokens=1, web_search_requests=0, cost_usd=0.12, context_window=200000, max_output_tokens=32000), 'claude-haiku-4-5': ModelUsage(input_tokens=1, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0, web_search_requests=2, cost_usd=0.001, context_window=200000, max_output_tokens=8192)}, usage=Usage(input_tokens=11, output_tokens=3, cache_read_input_tokens=0, cache_creation_input_tokens=1, cache_creation=CacheCreation(ephemeral_5m_input_tokens=1, ephemeral_1h_input_tokens=0), service_tier='standard', inference_geo='us', server_tool_use=ServerToolUse(web_search_requests=2, web_fetch_requests=0)), structured_output={'k': [1, 2]}, num_turns=3, is_error=False, result='final text', session_id='sess-p', fast_mode_state='enabled', stop_reason='end_turn', permission_denials=({'tool_name': 'Bash', 'tool_input': {'command': 'rm'}},), init=InitInfo(mcp_servers=(McpServer(name='semble', status='connected'),), plugins=(Plugin(name='cc-notes', path='/p', source='marketplace'),), tools=('Bash', 'Read'), skills=('codex',)), messages=(PrintMessage(role='user', model=None, text='hello', blocks=(), uuid='pm-1', session_id='sess-p', id=None, usage=None), PrintMessage(role='user', model=None, text='t', blocks=(TextBlock(text='t'), ToolResultBlock(tool_use_id='toolu_p1', content='ok', is_error=False, is_async=False, tool_use_result=None, denial_kind=None)), uuid=None, session_id='sess-p', id=None, usage=None), PrintMessage(role='assistant', model='claude-opus-4-8', text='hi', blocks=(TextBlock(text='hi'), ToolUseBlock(id='toolu_p1', name='Bash', input={'command': 'ls'})), uuid='pm-2', session_id='sess-p', id=None, usage=None), PrintMessage(role='assistant', model=None, text='', blocks=(ThinkingBlock(thinking='think'),), uuid=None, session_id='sess-p', id=None, usage=None)))"
    }
   },
   {
@@ -80778,7 +80786,25 @@
        },
        "uuid": "1e96b191-70be-4c7e-8259-6a0bbd4e7113",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='The user is asking me to reply with the word \"pong\" in the answer field. This seems to be a test or a simple request. They want me to use the StructuredOutput tool and provide \"pong\" as the answer.\\n\\nLet me do that.'),), uuid='1e96b191-70be-4c7e-8259-6a0bbd4e7113', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": "msg_01AmGLcqfEDeNty3QMFWQQEw",
+       "usage": {
+        "__class__": "Usage",
+        "input_tokens": 10,
+        "output_tokens": 7,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 25437,
+        "cache_creation": {
+         "__class__": "CacheCreation",
+         "ephemeral_5m_input_tokens": 0,
+         "ephemeral_1h_input_tokens": 25437,
+         "__repr__": "CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437)"
+        },
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": null,
+        "__repr__": "Usage(input_tokens=10, output_tokens=7, cache_read_input_tokens=0, cache_creation_input_tokens=25437, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437), service_tier='standard', inference_geo='not_available', server_tool_use=None)"
+       },
+       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='The user is asking me to reply with the word \"pong\" in the answer field. This seems to be a test or a simple request. They want me to use the StructuredOutput tool and provide \"pong\" as the answer.\\n\\nLet me do that.'),), uuid='1e96b191-70be-4c7e-8259-6a0bbd4e7113', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id='msg_01AmGLcqfEDeNty3QMFWQQEw', usage=Usage(input_tokens=10, output_tokens=7, cache_read_input_tokens=0, cache_creation_input_tokens=25437, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437), service_tier='standard', inference_geo='not_available', server_tool_use=None))"
       },
       {
        "__class__": "PrintMessage",
@@ -80821,7 +80847,25 @@
        },
        "uuid": "e365701f-b937-41fb-9647-fe62b115fed0",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ToolUseBlock(id='toolu_01SJS5vmBXnubHcweD2DrzXT', name='StructuredOutput', input={'answer': 'pong'}),), uuid='e365701f-b937-41fb-9647-fe62b115fed0', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": "msg_01AmGLcqfEDeNty3QMFWQQEw",
+       "usage": {
+        "__class__": "Usage",
+        "input_tokens": 10,
+        "output_tokens": 7,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 25437,
+        "cache_creation": {
+         "__class__": "CacheCreation",
+         "ephemeral_5m_input_tokens": 0,
+         "ephemeral_1h_input_tokens": 25437,
+         "__repr__": "CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437)"
+        },
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": null,
+        "__repr__": "Usage(input_tokens=10, output_tokens=7, cache_read_input_tokens=0, cache_creation_input_tokens=25437, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437), service_tier='standard', inference_geo='not_available', server_tool_use=None)"
+       },
+       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ToolUseBlock(id='toolu_01SJS5vmBXnubHcweD2DrzXT', name='StructuredOutput', input={'answer': 'pong'}),), uuid='e365701f-b937-41fb-9647-fe62b115fed0', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id='msg_01AmGLcqfEDeNty3QMFWQQEw', usage=Usage(input_tokens=10, output_tokens=7, cache_read_input_tokens=0, cache_creation_input_tokens=25437, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=25437), service_tier='standard', inference_geo='not_available', server_tool_use=None))"
       },
       {
        "__class__": "PrintMessage",
@@ -80845,7 +80889,9 @@
        },
        "uuid": "046660d5-4974-46b7-964c-55a31b17e3b0",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='user', model=None, text='', blocks=(ToolResultBlock(tool_use_id='toolu_01SJS5vmBXnubHcweD2DrzXT', content='Structured output provided successfully', is_error=False, is_async=False, tool_use_result=None, denial_kind=None),), uuid='046660d5-4974-46b7-964c-55a31b17e3b0', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='user', model=None, text='', blocks=(ToolResultBlock(tool_use_id='toolu_01SJS5vmBXnubHcweD2DrzXT', content='Structured output provided successfully', is_error=False, is_async=False, tool_use_result=None, denial_kind=None),), uuid='046660d5-4974-46b7-964c-55a31b17e3b0', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id=None, usage=None)"
       },
       {
        "__class__": "PrintMessage",
@@ -80864,7 +80910,25 @@
        },
        "uuid": "1e731db1-b418-4bed-a9b6-c1acf33c1217",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='Great, I\\'ve successfully provided \"pong\" as the answer using the StructuredOutput tool as requested.'),), uuid='1e731db1-b418-4bed-a9b6-c1acf33c1217', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": "msg_014CsRA33isK3FzznHjxj7sQ",
+       "usage": {
+        "__class__": "Usage",
+        "input_tokens": 8,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 25437,
+        "cache_creation_input_tokens": 146,
+        "cache_creation": {
+         "__class__": "CacheCreation",
+         "ephemeral_5m_input_tokens": 0,
+         "ephemeral_1h_input_tokens": 146,
+         "__repr__": "CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=146)"
+        },
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": null,
+        "__repr__": "Usage(input_tokens=8, output_tokens=2, cache_read_input_tokens=25437, cache_creation_input_tokens=146, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=146), service_tier='standard', inference_geo='not_available', server_tool_use=None)"
+       },
+       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='Great, I\\'ve successfully provided \"pong\" as the answer using the StructuredOutput tool as requested.'),), uuid='1e731db1-b418-4bed-a9b6-c1acf33c1217', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id='msg_014CsRA33isK3FzznHjxj7sQ', usage=Usage(input_tokens=8, output_tokens=2, cache_read_input_tokens=25437, cache_creation_input_tokens=146, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=146), service_tier='standard', inference_geo='not_available', server_tool_use=None))"
       },
       {
        "__class__": "PrintMessage",
@@ -80883,7 +80947,9 @@
        },
        "uuid": "ee5e80dd-7505-4310-9287-eb0a2d50eb44",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='user', model=None, text='[Your previous response had no visible output. Please continue and produce a user-visible response.]', blocks=(TextBlock(text='[Your previous response had no visible output. Please continue and produce a user-visible response.]'),), uuid='ee5e80dd-7505-4310-9287-eb0a2d50eb44', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": null,
+       "usage": null,
+       "__repr__": "PrintMessage(role='user', model=None, text='[Your previous response had no visible output. Please continue and produce a user-visible response.]', blocks=(TextBlock(text='[Your previous response had no visible output. Please continue and produce a user-visible response.]'),), uuid='ee5e80dd-7505-4310-9287-eb0a2d50eb44', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id=None, usage=None)"
       },
       {
        "__class__": "PrintMessage",
@@ -80902,7 +80968,25 @@
        },
        "uuid": "ce79deba-d06f-4a17-9210-655be78ad138",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='The user is pointing out that my previous response had no visible output to them. That\\'s because I only called the StructuredOutput tool without providing any text output before it. The instruction was to \"Reply with the word pong in the answer field,\" which I did via the StructuredOutput tool, but I didn\\'t provide any visible text to the user.\\n\\nLet me provide a visible response now.'),), uuid='ce79deba-d06f-4a17-9210-655be78ad138', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": "msg_0159eLkQGgtWXQZBR6zYCe1C",
+       "usage": {
+        "__class__": "Usage",
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 25583,
+        "cache_creation_input_tokens": 22,
+        "cache_creation": {
+         "__class__": "CacheCreation",
+         "ephemeral_5m_input_tokens": 0,
+         "ephemeral_1h_input_tokens": 22,
+         "__repr__": "CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22)"
+        },
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": null,
+        "__repr__": "Usage(input_tokens=10, output_tokens=4, cache_read_input_tokens=25583, cache_creation_input_tokens=22, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22), service_tier='standard', inference_geo='not_available', server_tool_use=None)"
+       },
+       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='', blocks=(ThinkingBlock(thinking='The user is pointing out that my previous response had no visible output to them. That\\'s because I only called the StructuredOutput tool without providing any text output before it. The instruction was to \"Reply with the word pong in the answer field,\" which I did via the StructuredOutput tool, but I didn\\'t provide any visible text to the user.\\n\\nLet me provide a visible response now.'),), uuid='ce79deba-d06f-4a17-9210-655be78ad138', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id='msg_0159eLkQGgtWXQZBR6zYCe1C', usage=Usage(input_tokens=10, output_tokens=4, cache_read_input_tokens=25583, cache_creation_input_tokens=22, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22), service_tier='standard', inference_geo='not_available', server_tool_use=None))"
       },
       {
        "__class__": "PrintMessage",
@@ -80921,13 +81005,31 @@
        },
        "uuid": "242adc4d-db79-4755-ac18-0a67a8f0af2e",
        "session_id": "01fb78f3-fc93-4eb1-b399-07e6a60c3e2c",
-       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='pong', blocks=(TextBlock(text='pong'),), uuid='242adc4d-db79-4755-ac18-0a67a8f0af2e', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c')"
+       "id": "msg_0159eLkQGgtWXQZBR6zYCe1C",
+       "usage": {
+        "__class__": "Usage",
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 25583,
+        "cache_creation_input_tokens": 22,
+        "cache_creation": {
+         "__class__": "CacheCreation",
+         "ephemeral_5m_input_tokens": 0,
+         "ephemeral_1h_input_tokens": 22,
+         "__repr__": "CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22)"
+        },
+        "service_tier": "standard",
+        "inference_geo": "not_available",
+        "server_tool_use": null,
+        "__repr__": "Usage(input_tokens=10, output_tokens=4, cache_read_input_tokens=25583, cache_creation_input_tokens=22, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22), service_tier='standard', inference_geo='not_available', server_tool_use=None)"
+       },
+       "__repr__": "PrintMessage(role='assistant', model='claude-haiku-4-5-20251001', text='pong', blocks=(TextBlock(text='pong'),), uuid='242adc4d-db79-4755-ac18-0a67a8f0af2e', session_id='01fb78f3-fc93-4eb1-b399-07e6a60c3e2c', id='msg_0159eLkQGgtWXQZBR6zYCe1C', usage=Usage(input_tokens=10, output_tokens=4, cache_read_input_tokens=25583, cache_creation_input_tokens=22, cache_creation=CacheCreation(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=22), service_tier='standard', inference_geo='not_available', server_tool_use=None))"
       }
      ]
     },
     "__repr__": {
-     "__strhash__": "72d7f3408e4f0933883eb9ae3ad89c9836f253e54563e209577275b7c77ba8ff",
-     "__len__": 7268
+     "__strhash__": "059568911d828b1d03cdefcba99cc47adbfd36c9d869ca0b8f43fbc50f5471d0",
+     "__len__": 8875
     }
    }
   }

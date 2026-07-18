@@ -21,6 +21,7 @@ from cc_transcript.models import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    Usage,
     UserEvent,
 )
 from cc_transcript.parser import parse, parse_event, parse_events_from_bytes, parse_print_result, stream
@@ -163,6 +164,37 @@ def test_parse_print_result_haiku_envelope() -> None:
         for message in env.messages
     )
     assert any(message.model == "claude-haiku-4-5-20251001" for message in env.messages)
+
+    first_assistant = next(m for m in env.messages if m.role == "assistant")
+    assert first_assistant.id == "msg_01AmGLcqfEDeNty3QMFWQQEw"
+    message_usage = first_assistant.usage
+    assert isinstance(message_usage, Usage)
+    assert message_usage.input_tokens == 10
+    assert message_usage.output_tokens == 7
+    assert message_usage.cache_creation_input_tokens == 25437
+    assert message_usage.cache_read_input_tokens == 0
+    assert isinstance(message_usage.cache_creation, CacheCreation)
+    assert message_usage.cache_creation.ephemeral_1h_input_tokens == 25437
+    assert message_usage.service_tier == "standard"
+    assert message_usage.inference_geo == "not_available"
+    first_user = next(m for m in env.messages if m.role == "user")
+    assert first_user.id is None
+    assert first_user.usage is None
+
+
+def test_print_message_without_id_or_usage_yields_none() -> None:
+    raw = (
+        b'[{"type":"assistant","session_id":"s",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}},'
+        b'{"type":"result","total_cost_usd":0.0,"modelUsage":{},'
+        b'"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,'
+        b'"cache_creation_input_tokens":0},"num_turns":1,"is_error":false,'
+        b'"session_id":"s","permission_denials":[]}]'
+    )
+    message = parse_print_result(raw).messages[0]
+    assert message.role == "assistant"
+    assert message.id is None
+    assert message.usage is None
 
 
 @pytest.mark.parametrize(

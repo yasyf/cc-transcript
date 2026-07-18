@@ -1259,6 +1259,8 @@ class PrintMessage:
         blocks: The structured content blocks of the message.
         uuid: The message's event uuid, when present.
         session_id: The session the message belongs to.
+        id: The API message id, when present (assistant messages carry one).
+        usage: The message's token usage, when present (assistant messages carry one).
     """
     __match_args__: typing.ClassVar[tuple[str, ...]]
     @property
@@ -1273,6 +1275,10 @@ class PrintMessage:
     def uuid(self) -> ids.EventUuid | None: ...
     @property
     def session_id(self) -> ids.SessionId: ...
+    @property
+    def id(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def usage(self) -> typing.Optional[Usage]: ...
 
 @typing.final
 class PrintResult:

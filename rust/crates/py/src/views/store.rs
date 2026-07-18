@@ -100,12 +100,13 @@ impl BlockRef {
     }
 }
 
-/// Where a Usage lives: an assistant entry's optional usage, or the aggregate
-/// usage of a ``--print`` result.
+/// Where a Usage lives: an assistant entry's optional usage, the aggregate
+/// usage of a ``--print`` result, or one ``--print`` message's usage.
 #[derive(Clone)]
 pub(crate) enum UsageHost {
     Entry(EventRef),
     Print(Arc<PrintResult>),
+    PrintMessage(Arc<PrintResult>, usize),
 }
 
 impl UsageHost {
@@ -117,6 +118,10 @@ impl UsageHost {
                 .as_ref()
                 .expect("usage view over an assistant entry with usage"),
             UsageHost::Print(pr) => &pr.usage,
+            UsageHost::PrintMessage(pr, msg) => pr.messages[*msg]
+                .usage
+                .as_ref()
+                .expect("usage view over a print message with usage"),
         }
     }
 }

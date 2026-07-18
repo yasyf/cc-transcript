@@ -699,6 +699,8 @@ fn parse_print_message(element: &Value) -> Result<PrintMessage, ParseError> {
     };
     Ok(PrintMessage {
         body,
+        id: field_str(message, "id").map(str::to_string),
+        usage: parse_usage(message)?,
         uuid: field_str(element, "uuid").map(str::to_string),
         session_id: require_str(element, "session_id")?.to_string(),
     })

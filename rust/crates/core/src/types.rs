@@ -549,6 +549,8 @@ pub enum PrintBody {
 #[derive(Debug)]
 pub struct PrintMessage {
     pub body: PrintBody,
+    pub id: Option<String>,
+    pub usage: Option<Usage>,
     pub uuid: Option<String>,
     pub session_id: String,
 }
