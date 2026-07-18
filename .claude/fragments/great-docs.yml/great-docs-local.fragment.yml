@@ -257,7 +257,6 @@ reference:
       - RESUME_PHRASE_SET
       - TRIVIAL_ACK_SET
       - STRUCTURAL_NOISE_RE
-      - INTERRUPT_MARKER_RE
       - JUNK_USER_MESSAGE_RE
   - title: Context windows
     desc: Refs-not-prose context — persisted EventRefs plus previews that hydrate back to full fidelity.
@@ -362,11 +361,6 @@ reference:
       - mining.FeedbackCandidate
       - mining.DedupKey
       - mining.dedup_key
-      - mining.CandidateFilterSpec
-      - mining.build_candidate_filter
-      - mining.at_least
-      - mining.only_kinds
-      - mining.apply_candidate_filter
       - mining.ReviewComment
       - mining.ReviewFormat
       - mining.extract_structured
