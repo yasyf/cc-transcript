@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`PrintMessage.id` and `PrintMessage.usage`.** The `-p` (print mode) conversational
+  messages expose the API message id (`str | None`) and the per-message token usage
+  (`Usage | None` — the same shape as `AssistantEvent.usage`, with `cache_creation`,
+  `service_tier`, and `inference_geo`); each is `None` when the element carries no such
+  field, as user messages don't. Existing `PrintMessage` properties are unchanged.
+
+### Changed
+- **Command substitutions in word/argument position join command enumeration.**
+  `parse_command_line("echo $(ccx repo overview)").commands` now includes the nested
+  `ccx` command — `$(…)` and backticks in any word/argument position (bare argument,
+  command name, double-quoted string, concatenation, env-prefix assignment value),
+  nested substitutions included. The treatment mirrors what assignment-position
+  substitutions (`x=$(ccx repo overview)`) already got: parts enumerate in document
+  order (host command first, then each outermost substitution left to right), the
+  joining operator attaches to the last enumerated part, and a nested command's `span`
+  indexes the raw line so `splice` rewrites it in place. Substitutions inside redirect
+  targets stay out, matching statement-level redirects.
+
 ## [14.0.0] - 2026-07-18
 
 The inversion release: the Rust core is now the implementation, and Python is a
