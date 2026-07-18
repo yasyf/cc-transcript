@@ -16,7 +16,6 @@ from cc_transcript.models import (
 from cc_transcript.render import (
     Budget,
     clip,
-    primary_arg,
     render_session,
     render_tool_call,
     render_turn,
@@ -69,19 +68,6 @@ def mode(value: str = "plan", *, session_id: str = "sess-1") -> ModeEvent:
     event = testkit.parse_event(testkit.mode_line(value, session_id=session_id))
     assert isinstance(event, ModeEvent)
     return event
-
-
-@pytest.mark.parametrize(
-    ("input", "expected"),
-    [
-        pytest.param({"command": "ls", "file_path": "/x"}, "/x", id="file-path-beats-command"),
-        pytest.param({"description": "d", "command": "ls"}, "ls", id="command-beats-description"),
-        pytest.param({"weird": 42}, "42", id="fallback-first-value"),
-        pytest.param({}, "", id="empty-input"),
-    ],
-)
-def test_primary_arg(input: dict[str, Any], expected: str) -> None:
-    assert primary_arg(input) == expected
 
 
 def test_budget_defaults() -> None:

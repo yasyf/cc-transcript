@@ -1,10 +1,9 @@
-"""Rust ↔ Python parity for the renderer over the frozen golden.
+"""Native view ↔ JSON renderer parity over the frozen golden.
 
-``render_tool_call`` stays a Python object renderer, so each of its cases asserts twice:
-the Python ``cc_transcript.render`` reference still produces the frozen value (a drift
-guard), and the Rust ``_native`` port produces the identical string. The raw-path
-renderers — ``render_compact_lines``/``render_haystacks``/``render_stats`` over embedded
-raw JSONL — live only in the native core, so they pin native-vs-golden. Regenerate with
+Each tool-call case asserts that the facade's native-view arm and the native JSON arm
+produce the same frozen value. The raw-path renderers — ``render_compact_lines`` /
+``render_haystacks`` / ``render_stats`` over embedded raw JSONL — live only in the
+native core, so they pin native-vs-golden. Regenerate with
 ``scripts/gen_render_golden.py``.
 """
 
@@ -18,7 +17,7 @@ import pytest
 
 from cc_transcript import _native
 from cc_transcript.render import Budget, render_tool_call
-from cc_transcript.tools import parse_tool_call
+from cc_transcript.tools import ToolCallBase, parse_tool_call
 from tests.support import requires_rust
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "testdata" / "render_golden.json").read_text("utf-8"))
@@ -37,8 +36,12 @@ def test_tool_call_parity(case: dict[str, object]) -> None:
     turn, tool = case["budget"]
     expected = case["expected"]
     call = parse_tool_call(name, json.loads(input_json), on_error="other")
-    assert render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool)) == expected
-    assert _native.render_tool_call(name, input_json, turn, tool) == expected
+    assert isinstance(call, ToolCallBase)
+    assert (
+        render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool))
+        == _native.render_tool_call(name, input_json, turn, tool)
+        == expected
+    )
 
 
 @requires_rust
@@ -50,8 +53,12 @@ def test_dup_key_call_parity(case: dict[str, object]) -> None:
     turn, tool = case["budget"]
     expected = case["expected"]
     call = parse_tool_call(name, json.loads(input_json), on_error="other")
-    assert render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool)) == expected
-    assert _native.render_tool_call(name, input_json, turn, tool) == expected
+    assert isinstance(call, ToolCallBase)
+    assert (
+        render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool))
+        == _native.render_tool_call(name, input_json, turn, tool)
+        == expected
+    )
 
 
 @requires_rust
@@ -63,8 +70,12 @@ def test_raw_json_call_parity(case: dict[str, object]) -> None:
     turn, tool = case["budget"]
     expected = case["expected"]
     call = parse_tool_call(name, json.loads(input_json), on_error="other")
-    assert render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool)) == expected
-    assert _native.render_tool_call(name, input_json, turn, tool) == expected
+    assert isinstance(call, ToolCallBase)
+    assert (
+        render_tool_call(call, budget=Budget(turn_chars=turn, tool_chars=tool))
+        == _native.render_tool_call(name, input_json, turn, tool)
+        == expected
+    )
 
 
 @requires_rust

@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cc_transcript.models import AssistantEvent, TextBlock, ToolUseBlock
-from cc_transcript.tools import BashCall, EditCall, MultiEditCall, WriteCall
+from cc_transcript import _native
+from cc_transcript.tools import ToolCallBase
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
-    from typing import Any
-
-    from cc_transcript.activity import SessionActivity, ToolUse, Turn
-    from cc_transcript.models import ContentBlock
+    from cc_transcript.activity import SessionActivity, Turn
     from cc_transcript.tools import FallbackCall, ToolCall
-
-PRIMARY_KEYS = ("file_path", "path", "command", "pattern", "url", "prompt", "query", "description")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,26 +46,11 @@ def render_tool_call(call: ToolCall | FallbackCall, *, budget: Budget) -> str:
         >>> render_tool_call(parse_tool_call("Bash", {"command": "ls"}), budget=Budget())
         'ls'
     """
-    match call:
-        case BashCall(command=command):
-            return clip(command, budget.tool_chars)
-        case EditCall(file_path=file_path, old=old, new=new):
-            return "\n".join((f"Edit {file_path}", *hunk_lines(old, new, budget=budget)))
-        case MultiEditCall(file_path=file_path, edits=edits):
-            return "\n".join(
-                (
-                    f"MultiEdit {file_path}",
-                    *(
-                        line
-                        for i, span in enumerate(edits, 1)
-                        for line in (f"edit {i}/{len(edits)}", *hunk_lines(span.old, span.new, budget=budget))
-                    ),
-                )
-            )
-        case WriteCall(file_path=file_path, content=content):
-            return f"Write {file_path}\n{clip(content, budget.tool_chars)}"
-        case _:
-            return f"{call.name}({clip(primary_arg(call.raw), budget.tool_chars)})"
+    if isinstance(call, ToolCallBase):
+        return _native.render_tool_call_view(call, budget.turn_chars, budget.tool_chars)
+    return _native.render_tool_call(
+        call.name, json.dumps(call.raw, default=str), budget.turn_chars, budget.tool_chars
+    )
 
 
 def hunk_lines(old: str, new: str, *, budget: Budget) -> tuple[str, ...]:
@@ -87,35 +67,14 @@ def render_turn(turn: Turn, *, budget: Budget) -> str:
     Prose chunks clip to ``budget.turn_chars``; each tool call renders via
     :func:`render_tool_call` under ``budget.tool_chars``.
     """
-    calls = iter(turn.tool_uses)
-    return "\n".join(
-        (
-            *((f"user: {clip(turn.prompt, budget.turn_chars)}",) if turn.prompt else ()),
-            *(
-                part
-                for event in turn.events
-                if isinstance(event, AssistantEvent)
-                for block in event.blocks
-                for part in turn_block_parts(block, calls, budget=budget)
-            ),
-        )
+    return _native.render_turn_from_events(
+        turn.prompt,
+        list(turn.events),
+        budget.turn_chars,
+        budget.tool_chars,
     )
-
-
-def turn_block_parts(block: ContentBlock, calls: Iterator[ToolUse], *, budget: Budget) -> tuple[str, ...]:
-    match block:
-        case TextBlock(text=text) if text.strip():
-            return (f"assistant: {clip(text, budget.turn_chars)}",)
-        case ToolUseBlock():
-            return (render_tool_call(next(calls).call, budget=budget),)
-        case _:
-            return ()
 
 
 def render_session(activity: SessionActivity, *, budget: Budget) -> str:
     """Render every turn of a session under ``budget``, separated by blank lines."""
     return "\n\n".join(rendered for turn in activity.turns if (rendered := render_turn(turn, budget=budget)))
-
-
-def primary_arg(input: Mapping[str, Any]) -> str:
-    return str(next((input[key] for key in PRIMARY_KEYS if key in input), next(iter(input.values()), "")))

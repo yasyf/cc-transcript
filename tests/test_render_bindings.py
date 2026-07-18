@@ -15,9 +15,11 @@ import json
 
 import pytest
 
+from datetime import datetime
+
 from cc_transcript import _native
 from cc_transcript.activity import SessionActivity
-from cc_transcript.render import Budget, render_turn
+from cc_transcript.render import Budget, render_tool_call, render_turn
 from cc_transcript.tools import FallbackCall, parse_tool_call
 from tests import testkit
 from tests.support import SESSION, assistant, requires_rust, user
@@ -45,6 +47,20 @@ def test_render_tool_call_view_rejects_fallback_call() -> None:
     assert isinstance(fallback, FallbackCall)
     with pytest.raises(TypeError):
         _native.render_tool_call_view(fallback, 700, 1500)
+
+
+@requires_rust
+@pytest.mark.parametrize(
+    ("name", "input", "expected"),
+    [
+        pytest.param("Bash", {"command": b"ls"}, "b'ls'", id="bytes-command"),
+        pytest.param("Frobnicate", {"widget": datetime(2024, 1, 1)}, "Frobnicate(2024-01-01 00:00:00)", id="datetime-arg"),
+    ],
+)
+def test_render_tool_call_renders_non_json_fallback_raw(name: str, input: dict[str, object], expected: str) -> None:
+    call = parse_tool_call(name, input, on_error="other")
+    assert isinstance(call, FallbackCall)
+    assert render_tool_call(call, budget=Budget()) == expected
 
 
 @requires_rust

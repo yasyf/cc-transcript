@@ -2,9 +2,8 @@
 
 Freezes the renderer outputs so ``tests/test_render_parity.py`` can replay them. The
 raw-path renderers live only in the native core, so their sections come from
-``_native``; ``render_tool_call`` stays a Python object renderer, so its section is the
-frozen Python value the parity test still drift-guards against ``_native``. Three
-sections:
+``_native``; ``render_tool_call`` delegates through the Python facade to the native
+renderer, so its section pins that native renderer via the facade. Three sections:
 
 * ``tool_calls`` — ``render_tool_call`` over every corpus tool-use input (deduped by
   ``(name, value-shape)`` like the toolcall golden), each of the 15 typed classes, and
