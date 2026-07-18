@@ -97,6 +97,7 @@ __all__ = [
     "WriteResult",
     "activity_hunk_overlap",
     "activity_lift",
+    "activity_lift_from_events",
     "bucket_events",
     "bucket_events_from_events",
     "cli_main",
@@ -139,6 +140,8 @@ __all__ = [
     "render_haystacks",
     "render_stats",
     "render_tool_call",
+    "render_tool_call_view",
+    "render_turn_from_events",
     "score_post_process",
     "score_short_circuit",
     "session_activity_probe",
@@ -155,10 +158,10 @@ __all__ = [
 class ApiError:
     r"""
     The upstream API error an assistant turn failed with.
-    
+
     Present on an :class:`AssistantEvent` only when the entry's
     ``isApiErrorMessage`` flag is set; each component is independently optional.
-    
+
     Attributes:
         error: The error kind the API reported, e.g. ``rate_limit``, or None.
         status: The HTTP status of the failed request, e.g. ``429``, or None.
@@ -176,7 +179,7 @@ class ApiError:
 class AskUserQuestionResult(ToolResultBase):
     r"""
     An AskUserQuestion result: the rounds, the answers, and any annotations.
-    
+
     Attributes:
         questions: The rounds echoed in the payload, lifted via
             :func:`~models.parse_questions`.
@@ -203,7 +206,7 @@ class AskUserQuestionResult(ToolResultBase):
 class AssistantEvent:
     r"""
     An assistant turn.
-    
+
     Attributes:
         meta: The entry envelope metadata.
         model: The model that produced the turn, e.g. ``<synthetic>``.
@@ -246,7 +249,7 @@ class AssistantEvent:
 class AsyncHookResponse:
     r"""
     The result of an asynchronously-executed hook, matched back by process id.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, or None.
         hook_event: The lifecycle event that triggered it, or None.
@@ -277,11 +280,11 @@ class AttachmentEvent:
     r"""
     A harness attachment record — a hook firing, a queued command, or an
     informational injection — carrying the full envelope it was written with.
-    
+
     Recognized attachment types carry their typed :class:`AttachmentDetail`;
     every other type carries the full record verbatim under
     :class:`OtherAttachment`, so no attachment is lossy.
-    
+
     Attributes:
         meta: The entry envelope metadata.
         attachment_type: The raw ``attachment.type`` string, e.g. ``hook_success``.
@@ -300,10 +303,10 @@ class AttachmentEvent:
 class Attribution:
     r"""
     The plugin, skill, or MCP tool an assistant turn is attributed to.
-    
+
     Present on an :class:`AssistantEvent` only when the entry carries at least one
     of the four attribution fields; each component is independently optional.
-    
+
     Attributes:
         plugin: The plugin the turn is attributed to, or None.
         skill: The skill the turn is attributed to, or None.
@@ -369,7 +372,7 @@ class BashResult(ToolResultBase):
 class CacheCreation:
     r"""
     The split of cache-creation input tokens by TTL bucket.
-    
+
     Attributes:
         ephemeral_5m_input_tokens: Cache-creation tokens written to the 5-minute TTL bucket.
         ephemeral_1h_input_tokens: Cache-creation tokens written to the 1-hour TTL bucket.
@@ -384,9 +387,9 @@ class CacheCreation:
 class Command:
     r"""
     A single parsed shell command with executable, arguments, env vars, and redirects.
-    
+
     Use ``Command.parse(raw)`` to parse a command string, or access via ``CommandLine``.
-    
+
     Attributes:
         raw: The command's source text.
         executable: The command name, or "" when nothing parsed.
@@ -433,10 +436,10 @@ class Command:
 class CommandLine:
     r"""
     A full parsed bash command line, potentially containing multiple commands joined by operators.
-    
+
     Use ``CommandLine.parse(raw)`` (or the cached ``parse_command_line``) to parse. Access
     individual commands via ``.commands`` or the final command via ``.primary``.
-    
+
     Attributes:
         raw: The line's source text.
         parts: Each command paired with the operator that follows it (None for the last).
@@ -481,7 +484,7 @@ class CommandLine:
 class CommandLineQuery:
     r"""
     Predicate helpers for inspecting a parsed ``CommandLine``. Obtain one via ``CommandLine.q``.
-    
+
     Attributes:
         line: The command line these predicates run over.
     """
@@ -499,7 +502,7 @@ class CommandLineQuery:
 class CompactBoundary:
     r"""
     The typed detail of a ``compact_boundary`` system entry.
-    
+
     Attributes:
         trigger: What triggered the compaction, such as ``manual`` or ``auto``.
         pre_tokens: The context token count before compaction.
@@ -557,7 +560,7 @@ class EditCall(ToolCallBase):
 class EditResult(ToolResultBase):
     r"""
     An Edit result: the applied replacement and its structured patch.
-    
+
     ``structured_patch`` and ``original_file`` are kept verbatim — the patch as
     the raw hunk list Claude Code emits, the original file as its full text.
     """
@@ -599,7 +602,7 @@ class EditSpan:
 class EntryMeta:
     r"""
     Envelope metadata shared by the conversational transcript events.
-    
+
     Attributes:
         uuid: The entry's unique identifier.
         parent_uuid: The parent entry's id, or None for roots.
@@ -650,7 +653,7 @@ class EntryMeta:
 class EventList(collections.abc.Sequence[models.TranscriptEvent]):
     r"""
     A lazily-materializing sequence of transcript events over one parse output.
-    
+
     Implements the immutable ``collections.abc.Sequence`` interface — indexing,
     slicing, iteration, ``len``, ``in``, :func:`reversed`, ``index``, and
     ``count`` — and is registered as a virtual ``Sequence``. ``copy()`` returns a
@@ -687,10 +690,10 @@ class ExitPlanModeCall(ToolCallBase):
 class FallbackBlock:
     r"""
     A marker that the assistant turn fell back from one model to another.
-    
+
     Claude Code records this when a turn switches models mid-stream; it carries
     no message content, only the two model names.
-    
+
     Attributes:
         from_model: The model the turn started on.
         to_model: The model the turn fell back to.
@@ -737,7 +740,7 @@ class GrepCall(ToolCallBase):
 class HookAdditionalContext:
     r"""
     Context a hook injected into the turn without blocking it.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, or None.
         hook_event: The lifecycle event that triggered it, or None.
@@ -758,7 +761,7 @@ class HookAdditionalContext:
 class HookBlockingError:
     r"""
     A hook that blocked the turn, carrying the structured blocking payload.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, or None.
         hook_event: The lifecycle event that triggered it, or None.
@@ -779,7 +782,7 @@ class HookBlockingError:
 class HookCancelled:
     r"""
     A hook the harness cancelled, typically on timeout.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, or None.
         hook_event: The lifecycle event that triggered it, or None.
@@ -809,7 +812,7 @@ class HookCancelled:
 class HookInfo:
     r"""
     One hook invocation recorded in a stop-hook summary.
-    
+
     Attributes:
         command: The hook command that ran.
         duration_ms: The hook's wall-clock duration in milliseconds, when recorded.
@@ -824,7 +827,7 @@ class HookInfo:
 class HookNonBlockingError:
     r"""
     A hook that failed without blocking the turn.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, or None.
         hook_event: The lifecycle event that triggered it, or None.
@@ -857,7 +860,7 @@ class HookNonBlockingError:
 class HookSuccess:
     r"""
     A hook that fired and exited cleanly, attached to the turn it ran on.
-    
+
     Attributes:
         hook_name: The hook matcher that fired, e.g. ``PostToolUse:Bash``, or None.
         hook_event: The lifecycle event that triggered it, e.g. ``PostToolUse``, or None.
@@ -893,7 +896,7 @@ class HookSuccess:
 class Hunk:
     r"""
     A before/after content pair lowered from an edit-shaped tool call.
-    
+
     Attributes:
         old: The content replaced; empty for pure additions such as Write.
         new: The content written.
@@ -909,7 +912,7 @@ class Hunk:
 class InitInfo:
     r"""
     The session init snapshot from a -p system/init element.
-    
+
     Attributes:
         mcp_servers: The MCP servers configured for the session.
         plugins: The plugins loaded for the session.
@@ -930,7 +933,7 @@ class InitInfo:
 class McpServer:
     r"""
     An MCP server entry from the -p init element.
-    
+
     Attributes:
         name: The configured name of the MCP server.
         status: The connection status reported for the server.
@@ -945,11 +948,11 @@ class McpServer:
 class ModeEvent:
     r"""
     A mode or permission-mode change marker.
-    
+
     These entries carry only a session id on disk — no uuid, timestamp, or
     other envelope fields — so they hold a :attr:`session_id` directly rather
     than an :class:`EntryMeta`.
-    
+
     Attributes:
         session_id: The session whose mode changed.
         channel: Which mode channel changed.
@@ -967,7 +970,7 @@ class ModeEvent:
 class ModelRefusalFallback:
     r"""
     The typed detail of a ``model_refusal_fallback`` system entry.
-    
+
     Attributes:
         api_refusal_category: The refusal category the API reported, when present.
         api_refusal_explanation: The refusal explanation the API reported, when present.
@@ -1001,7 +1004,7 @@ class ModelRefusalFallback:
 class ModelUsage:
     r"""
     Per-model token usage and cost from a -p (print mode) result's modelUsage map.
-    
+
     Attributes:
         input_tokens: The number of input tokens consumed by the model.
         output_tokens: The number of output tokens produced by the model.
@@ -1064,7 +1067,7 @@ class NotebookEditCall(ToolCallBase):
 class Occurrence:
     r"""
     One command of a ``CommandLine`` with its position and joining context.
-    
+
     Attributes:
         line: The command line this occurrence belongs to.
         index: This command's index into ``line.parts``.
@@ -1092,11 +1095,11 @@ class Occurrence:
 class OtherAttachment:
     r"""
     Any attachment whose type has no typed detail, carried verbatim.
-    
+
     Covers the many informational attachment types (skill/tool/agent listings,
     reminders, plan-mode markers, file references, and anything future) whose
     shape is not further decomposed, mirroring :class:`OtherSystemDetail`.
-    
+
     Attributes:
         raw: The attachment entry's full decoded payload.
     """
@@ -1108,10 +1111,10 @@ class OtherAttachment:
 class OtherBlock:
     r"""
     Any assistant content block whose ``type`` is not yet modeled.
-    
+
     The escape hatch that keeps an unrecognized block from crashing the parser
     as Claude Code's transcript format evolves, mirroring :class:`OtherEvent`.
-    
+
     Attributes:
         type: The block's ``type`` field.
         raw: The block's full decoded payload.
@@ -1139,12 +1142,12 @@ class OtherCall(ToolCallBase):
 class OtherEvent:
     r"""
     Any recognized entry without a guaranteed conversational envelope.
-    
+
     Covers ai-title, last-prompt, summary, queue-operation,
     file-history-snapshot, and similar entry types whose shape carries no
     :class:`EntryMeta`. Attachments are typed separately as
     :class:`AttachmentEvent`.
-    
+
     Attributes:
         type: The entry's ``type`` field.
         raw: The entry's full decoded payload.
@@ -1172,10 +1175,10 @@ class OtherResult(ToolResultBase):
 class OtherSystemDetail:
     r"""
     The catch-all detail for a system entry without a typed subtype.
-    
+
     Carries the entry's full decoded payload verbatim, so no system entry is
     lossy regardless of subtype.
-    
+
     Attributes:
         raw: The entry's full decoded payload.
     """
@@ -1192,7 +1195,7 @@ class ParseStream:
 class Plugin:
     r"""
     A plugin entry from the -p init element.
-    
+
     Attributes:
         name: The plugin's name.
         path: The filesystem path the plugin was loaded from.
@@ -1210,7 +1213,7 @@ class Plugin:
 class PreservedMessages:
     r"""
     The message uuids preserved across a compaction.
-    
+
     Attributes:
         anchor_uuid: The anchor event's uuid.
         uuids: The uuids of the preserved messages, in order.
@@ -1229,7 +1232,7 @@ class PreservedMessages:
 class PreservedSegment:
     r"""
     The head/anchor/tail uuids of the segment preserved across a compaction.
-    
+
     Attributes:
         head_uuid: The first preserved event's uuid.
         anchor_uuid: The anchor event's uuid.
@@ -1247,11 +1250,11 @@ class PreservedSegment:
 class PrintMessage:
     r"""
     A conversational message lifted from a -p (print mode) result.
-    
+
     Unlike on-disk events it carries no EntryMeta — the -p element shape lacks
     timestamp/parentUuid — so it holds only role, model, text, blocks, and the ids
     that are present.
-    
+
     Attributes:
         role: The author of the message, either "user" or "assistant".
         model: The model that produced the message, when present.
@@ -1284,10 +1287,10 @@ class PrintMessage:
 class PrintResult:
     r"""
     A parsed 'claude -p --output-format json' result.
-    
+
     Holds the billing/usage/structured-output payload, the init snapshot, and the
     conversational messages. Reuses the shared Usage model; not a TranscriptEvent.
-    
+
     Attributes:
         total_cost_usd: The total cost in USD for the run.
         model_usage: Per-model usage and cost, keyed by model name.
@@ -1335,7 +1338,7 @@ class PrintResult:
 class Question:
     r"""
     One AskUserQuestion round lifted from a tool-use input's ``questions`` array.
-    
+
     Attributes:
         question: The prompt text shown to the user.
         header: The round's short header, or None when the input omits one.
@@ -1357,7 +1360,7 @@ class Question:
 class QuestionAnnotation:
     r"""
     A reviewer's annotation on one answered AskUserQuestion round.
-    
+
     Attributes:
         preview: The short preview the picker rendered under the answer, if any.
         notes: The free-text note the reviewer attached, if any.
@@ -1373,7 +1376,7 @@ class QuestionAnnotation:
 class QueuedCommand:
     r"""
     A user command queued for delivery to the agent, replayed as an attachment.
-    
+
     Attributes:
         prompt: The queued command's prompt text, or None when it carries no
             plain-string prompt (e.g. an image-paste payload).
@@ -1405,7 +1408,7 @@ class ReadCall(ToolCallBase):
 class ReadResult(ToolResultBase):
     r"""
     A Read result: the file payload and its content type.
-    
+
     ``file`` is kept verbatim — the raw mapping (``filePath``, ``content``,
     ``numLines``, …) Claude Code emits for the read window.
     """
@@ -1424,7 +1427,7 @@ class ReadResult(ToolResultBase):
 class Redirect:
     r"""
     A shell redirect parsed from a bash command (e.g. ``> file.txt``, ``2>&1``).
-    
+
     Attributes:
         op: The redirect operator (``>``, ``>>``, ``2>&1`` yields ``>&``).
         target: The redirect target word.
@@ -1454,7 +1457,7 @@ class RustCorrectionLog:
 class ServerToolUse:
     r"""
     Server-side tool invocation counts billed within a turn.
-    
+
     Attributes:
         web_search_requests: The number of server-side web-search requests.
         web_fetch_requests: The number of server-side web-fetch requests.
@@ -1503,7 +1506,7 @@ class SpecMatcher:
 class StopHookSummary:
     r"""
     The typed detail of a ``stop_hook_summary`` system entry.
-    
+
     Attributes:
         hook_count: The number of hooks that ran.
         hook_infos: The per-hook command and duration records.
@@ -1536,7 +1539,7 @@ class StopHookSummary:
 class SystemEvent:
     r"""
     A system entry, such as a hook summary or notice.
-    
+
     Attributes:
         meta: The entry envelope metadata.
         subtype: The system entry's subtype.
@@ -1621,7 +1624,7 @@ class TaskLaunchResult(TaskResultBase):
 class TaskResult(TaskResultBase):
     r"""
     A completed Agent/Task subagent run.
-    
+
     ``tool_stats``, ``usage``, and ``content`` are kept verbatim — the raw
     per-tool stats, usage mapping, and final content-block list the subagent
     returned.
@@ -1655,7 +1658,7 @@ class TaskResult(TaskResultBase):
 class TaskResultBase(ToolResultBase):
     r"""
     The Agent/Task result family head; :meth:`from_raw` picks the variant.
-    
+
     A terminal run (``totalDurationMs``/``usage`` present) becomes a
     :class:`TaskResult`; an in-flight launch (``outputFile`` present) becomes a
     :class:`TaskLaunchResult`; a payload matching neither shape degrades to
@@ -1684,7 +1687,7 @@ class TaskUpdateCall(ToolCallBase):
 class TextBlock:
     r"""
     A text content block from a user or assistant message.
-    
+
     Attributes:
         text: The block's literal text.
     """
@@ -1707,7 +1710,7 @@ class TextResult(ToolResultBase):
 class ThinkingBlock:
     r"""
     An extended-thinking content block emitted by the assistant.
-    
+
     Attributes:
         thinking: The model's thinking text.
     """
@@ -1718,7 +1721,7 @@ class ThinkingBlock:
 class ToolCallBase:
     r"""
     Common shape of every typed tool call.
-    
+
     Attributes:
         name: The tool name exactly as invoked (aliases are not normalized —
             the digest must match what the hook saw).
@@ -1738,7 +1741,7 @@ class ToolCallBase:
 class ToolResultBase:
     r"""
     Common shape of every typed tool result.
-    
+
     Attributes:
         name: The tool name exactly as invoked (aliases are not normalized).
         raw: The verbatim ``toolUseResult`` payload — a mapping for structured
@@ -1755,7 +1758,7 @@ class ToolResultBase:
 class ToolResultBlock:
     r"""
     The result of a tool invocation, delivered in a user turn.
-    
+
     Attributes:
         tool_use_id: The id of the originating tool-use block.
         content: The result text, flattened from string or block content.
@@ -1794,7 +1797,7 @@ class ToolResultBlock:
 class ToolUseBlock:
     r"""
     An assistant request to invoke a tool.
-    
+
     Attributes:
         id: The tool-use identifier referenced by the matching result.
         name: The tool's name.
@@ -1818,7 +1821,7 @@ class ToolUseBlock:
     def call(self) -> tools.ToolCall:
         r"""
         The block parsed into the typed tool-call hierarchy.
-        
+
         Strict: a known tool whose input is malformed raises
         :class:`~tools.ToolInputError`.
         """
@@ -1831,7 +1834,7 @@ class ToolUseBlock:
     def file_path(self) -> typing.Optional[builtins.str]:
         r"""
         The raw ``file_path`` input argument when it is a string, else None.
-        
+
         Mirrors the Rust parse-layer lift in ``rust/crates/core/src/parse.rs``: the value is
         read verbatim from the input for every tool, and a non-object input or a
         non-string value reads as None. Mining denial evidence consumes this uniform
@@ -1841,7 +1844,7 @@ class ToolUseBlock:
     def questions(self) -> tuple[Question, ...] | None:
         r"""
         The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
-        
+
         Delegates to :func:`parse_questions`, which mirrors the Rust parse layer; a
         non-object input reads as None.
         """
@@ -1852,13 +1855,13 @@ class Transcript:
     r"""
     The parsed events of a single transcript file, backed by the native parse
     output; ``events`` materializes lazy views on access.
-    
+
     One parse owns one ``Arc<Vec<Entry>>`` that every event and nested view shares,
     so retaining any single view keeps that whole parse's entries alive; keeping one
     event from each of several parses retains all of their entries. The live
     :class:`~watch.WatchEvent` stream is exempt — its tailer builds a
     one-entry Arc per yielded event, so a held watch event pins only itself.
-    
+
     Attributes:
         path: The transcript's path on disk; None for a bytes parse.
         mtime: The transcript's modification time when parsed.
@@ -1875,7 +1878,7 @@ class Transcript:
 class TurnDuration:
     r"""
     The typed detail of a ``turn_duration`` system entry.
-    
+
     Attributes:
         duration_ms: The turn's wall-clock duration in milliseconds.
         message_count: The number of messages in the turn.
@@ -1897,10 +1900,10 @@ class TurnDuration:
 class Usage:
     r"""
     Token usage and cache accounting for a single assistant turn or a -p (print mode) result.
-    
+
     Exposes both the flat cache_creation_input_tokens and the per-TTL cache_creation
     split, faithfully and without opinion.
-    
+
     Attributes:
         input_tokens: The number of input tokens consumed by the turn.
         output_tokens: The number of output tokens produced by the turn.
@@ -1933,7 +1936,7 @@ class Usage:
 class UserEvent:
     r"""
     A user turn.
-    
+
     Attributes:
         meta: The entry envelope metadata.
         text: The joined text of the turn.
@@ -2013,7 +2016,7 @@ class WatchTailer:
 class WorkflowCall(ToolCallBase):
     r"""
     A Workflow dynamic-orchestration dispatch.
-    
+
     Attributes:
         script: The inline workflow script, when passed directly.
         script_path: Path to a script file on disk, when passed instead of
@@ -2073,6 +2076,8 @@ def activity_hunk_overlap(a_old: builtins.str, a_new: builtins.str, b_old: built
 
 def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
+def activity_lift_from_events(events: list[models.TranscriptEvent], opener_flags: typing.Optional[typing.Sequence[builtins.bool]] = None) -> list[dict[str, typing.Any]]: ...
+
 def bucket_events(raw: bytes) -> list[dict[str, typing.Any]]: ...
 
 def bucket_events_from_events(events: list[models.TranscriptEvent]) -> list[dict[str, typing.Any]]: ...
@@ -2123,7 +2128,7 @@ def file_path_of(call: tools.ToolCall | tools.FallbackCall) -> typing.Optional[b
 def hunks_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[Hunk, ...]:
     r"""
     Lower an edit-shaped call to before/after hunks; ``()`` for the rest.
-    
+
     MultiEdit yields one hunk per span in application order — never just the
     first. Write and NotebookEdit are pure additions with an empty old side.
     """
@@ -2147,7 +2152,7 @@ def lexicon_tokenize(text: builtins.str) -> builtins.list[builtins.str]: ...
 def matches_names(actual: builtins.str, names: collections.abc.Container[str]) -> builtins.bool:
     r"""
     Whether ``actual`` is one of ``names``, exactly or as an MCP tool suffix.
-    
+
     True when ``actual`` is in ``names``, or when it splits as
     ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
     :data:`MCP_TOOL_ALIASES` builtin equivalent — is in ``names``. That alias
@@ -2155,7 +2160,7 @@ def matches_names(actual: builtins.str, names: collections.abc.Container[str]) -
     ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
     gate would catch. Harness-rename aliases are not closed over — ``names`` is
     taken verbatim; pre-expand with :func:`expand_tool_names` for those.
-    
+
     Example:
         >>> matches_names("mcp__github__Grep", {"Grep"})
         True
@@ -2168,11 +2173,11 @@ def matches_names(actual: builtins.str, names: collections.abc.Container[str]) -
 def mcp_access(tool: builtins.str) -> typing.Literal["read", "write"]:
     r"""
     Classify an MCP tool segment as ``"read"`` or ``"write"`` by its verbs.
-    
+
     Returns ``"read"`` when ``tool`` starts with, or has an underscore-delimited
     token equal to, a read verb (``get``, ``list``, ``search``, …); otherwise
     ``"write"``. The token check catches namespaced names like ``ccx_read``.
-    
+
     Example:
         >>> mcp_access("search")
         'read'
@@ -2185,7 +2190,7 @@ def mcp_access(tool: builtins.str) -> typing.Literal["read", "write"]:
 def mcp_parts(name: builtins.str) -> tuple[str, str] | None:
     r"""
     Split an ``mcp__server__tool`` name into ``(server, tool)``, else ``None``.
-    
+
     Example:
         >>> mcp_parts("mcp__semble__search")
         ('semble', 'search')
@@ -2222,6 +2227,10 @@ def render_stats(raws: list[bytes]) -> builtins.str: ...
 
 def render_tool_call(name: builtins.str, input_json: builtins.str, turn_chars: builtins.int, tool_chars: builtins.int) -> builtins.str: ...
 
+def render_tool_call_view(call: tools.ToolCall, turn_chars: builtins.int, tool_chars: builtins.int) -> builtins.str: ...
+
+def render_turn_from_events(prompt: builtins.str, events: list[models.TranscriptEvent], turn_chars: builtins.int, tool_chars: builtins.int) -> builtins.str: ...
+
 def score_post_process(spec_json: builtins.str, buckets: typing.Sequence[typing.Sequence[builtins.str]], raw: typing.Sequence[builtins.int]) -> builtins.list[builtins.int]: ...
 
 def score_short_circuit(spec_json: builtins.str, buckets: typing.Sequence[typing.Sequence[builtins.str]]) -> builtins.list[typing.Optional[builtins.int]]: ...
@@ -2235,7 +2244,7 @@ def tool_facts(paths: typing.Sequence[builtins.str], max_events: builtins.int) -
 def tool_name_matches(actual: builtins.str, spec: builtins.str) -> builtins.bool:
     r"""
     Whether ``actual`` matches a pipe spec, honoring aliases and MCP suffixes.
-    
+
     Example:
         >>> tool_name_matches("Execute", "Bash|Grep")
         True
@@ -2259,4 +2268,3 @@ def toolresult_parse_view(name: builtins.str, payload_json: builtins.str) -> too
     the typed view hierarchy; the ``cc_transcript.tools`` facade owns the public
     signature.
     """
-

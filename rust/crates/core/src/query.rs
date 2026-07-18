@@ -330,7 +330,7 @@ impl<'a> WindowTurn<'a> {
         }
     }
 
-    fn events(&self) -> &'a [Entry] {
+    fn events(&self) -> &'a [&'a Entry] {
         &self.turn.events[self.lo..self.hi]
     }
 
@@ -387,7 +387,7 @@ impl<'a> Session<'a> {
     }
 
     fn events_iter(&self) -> impl Iterator<Item = &'a Entry> + '_ {
-        self.turns.iter().flat_map(|wt| wt.events().iter())
+        self.turns.iter().flat_map(|wt| wt.events().iter().copied())
     }
 
     /// Every event in the window, in order.

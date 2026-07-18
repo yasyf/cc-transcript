@@ -465,7 +465,7 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
     if !turn.prompt.is_empty() {
         parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
     }
-    for event in turn.events {
+    for &event in &turn.events {
         let Entry::Assistant(assistant) = event else {
             continue;
         };

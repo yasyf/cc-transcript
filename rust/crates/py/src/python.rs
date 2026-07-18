@@ -15,8 +15,8 @@ use crate::views::print::print_result_view;
 use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
-    hunk_overlap, lift_session, overlap_between, result_index, session_activity, ActivityOpts,
-    Hunk, SessionActivity,
+    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index, session_activity,
+    ActivityOpts, Hunk, SessionActivity,
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
@@ -292,6 +292,57 @@ fn bucket_events_from_events<'py>(
                 .collect();
             dict.set_item("indices", indices)?;
             Ok(dict)
+        })
+        .collect()
+}
+
+// activity.SessionActivity.from_events over view_entry-borrowed views: the index skeleton
+// from the core walk; `opener_flags` supplants opens_turn (activity.py native_user_classifier).
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (events, opener_flags=None))]
+#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
+fn activity_lift_from_events<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'py, PyAny>>,
+    opener_flags: Option<Vec<bool>>,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    if let Some(flags) = &opener_flags {
+        if flags.len() != events.len() {
+            return Err(PyValueError::new_err(format!(
+                "activity_lift_from_events() got {} opener_flags for {} events",
+                flags.len(),
+                events.len()
+            )));
+        }
+    }
+    let entries = events
+        .iter()
+        .map(|event| mining::view_entry(event, "activity_lift_from_events"))
+        .collect::<PyResult<Vec<_>>>()?;
+    lift_session_index(&entries, opener_flags.as_deref())
+        .iter()
+        .map(|turn| {
+            let td = PyDict::new(py);
+            td.set_item("prompt", &turn.prompt)?;
+            td.set_item("start", turn.start)?;
+            td.set_item("end", turn.end)?;
+            td.set_item("started_idx", turn.started_idx)?;
+            td.set_item("ended_idx", turn.ended_idx)?;
+            let tool_uses = turn
+                .tool_uses
+                .iter()
+                .map(|use_| {
+                    let ud = PyDict::new(py);
+                    ud.set_item("event_idx", use_.event_idx)?;
+                    ud.set_item("tool_use_id", use_.tool_use_id)?;
+                    ud.set_item("result_event_idx", use_.result_event_idx)?;
+                    Ok(ud)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            td.set_item("tool_uses", PyList::new(py, tool_uses)?)?;
+            Ok(td)
         })
         .collect()
 }
@@ -702,7 +753,7 @@ fn activity_lift<'py>(
         })
         .collect::<PyResult<Vec<_>>>()?;
     out.set_item("turns", PyList::new(py, turns)?)?;
-    let index = result_index(&capped)
+    let index = result_index(&capped.iter().collect::<Vec<_>>())
         .iter()
         .map(|r| {
             let rd = PyDict::new(py);
@@ -1006,6 +1057,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::toolcall::toolcall_parse, m)?)?;
     m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_lift_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
@@ -1013,6 +1065,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_session, m)?)?;
     m.add_function(wrap_pyfunction!(tool_facts, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_tool_call, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::render::render_tool_call_view, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::render::render_turn_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_compact_lines, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_haystacks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::render::render_stats, m)?)?;

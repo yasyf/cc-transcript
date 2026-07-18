@@ -4,13 +4,16 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use sonic_rs::Value;
 
+use cc_transcript_core::activity::Turn;
 use cc_transcript_core::parse::parse_bytes;
 use cc_transcript_core::render::{self, Budget};
 use cc_transcript_core::toolcall::parse_tool_call;
 use cc_transcript_core::types::{tool_use_index, Entry};
 use cc_transcript_core::value::normalize_last_wins;
 
+use crate::mining::view_entry;
 use crate::views::convert::parse_err;
+use crate::views::toolcall::ToolCallBaseView;
 
 // The tool_use_id -> tool name join the renderer keys on (filterspec.tool_names).
 fn tool_names(entries: &[Entry]) -> HashMap<&str, &str> {
@@ -34,6 +37,56 @@ pub(crate) fn render_tool_call(
     normalize_last_wins(&mut input);
     Ok(render::render_tool_call(
         &parse_tool_call(name, &input),
+        &Budget {
+            turn_chars,
+            tool_chars,
+        },
+    ))
+}
+
+// render.render_tool_call over an already-parsed typed call view (no re-parse); mirrors
+// render_tool_call's numeric budget.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+pub(crate) fn render_tool_call_view(
+    #[gen_stub(override_type(type_repr = "cc_transcript.tools.ToolCall", imports = ("cc_transcript.tools",)))]
+    call: &Bound<'_, PyAny>,
+    turn_chars: usize,
+    tool_chars: usize,
+) -> PyResult<String> {
+    Ok(render::render_tool_call(
+        &call.cast::<ToolCallBaseView>()?.get().call,
+        &Budget {
+            turn_chars,
+            tool_chars,
+        },
+    ))
+}
+
+// render.render_turn over view_entry-borrowed events; render_turn reads only prompt + events.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+pub(crate) fn render_turn_from_events(
+    prompt: String,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'_, PyAny>>,
+    turn_chars: usize,
+    tool_chars: usize,
+) -> PyResult<String> {
+    let entries = events
+        .iter()
+        .map(|event| view_entry(event, "render_turn_from_events"))
+        .collect::<PyResult<Vec<_>>>()?;
+    let turn = Turn {
+        index: 0,
+        prompt,
+        started_at: None,
+        ended_at: None,
+        events: entries,
+        tool_uses: Vec::new(),
+    };
+    Ok(render::render_turn(
+        &turn,
         &Budget {
             turn_chars,
             tool_chars,

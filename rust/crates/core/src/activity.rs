@@ -325,14 +325,15 @@ pub struct Edit<'a> {
 }
 
 /// One prompt-to-prompt span of a session (activity.py Turn); `events` is the
-/// turn's contiguous slice of the parsed entries, edits derived on demand.
+/// turn's contiguous run of the parsed entries as borrowed refs, edits derived
+/// on demand.
 #[derive(Debug)]
 pub struct Turn<'a> {
     pub index: usize,
     pub prompt: String,
     pub started_at: Option<DateTime<FixedOffset>>,
     pub ended_at: Option<DateTime<FixedOffset>>,
-    pub events: &'a [Entry],
+    pub events: Vec<&'a Entry>,
     pub tool_uses: Vec<ToolUse<'a>>,
 }
 
@@ -382,11 +383,11 @@ pub struct ResultRef<'a> {
 
 /// Indexes tool results by the tool-use id they answer (activity.py `result_index`):
 /// each user entry's tool-result blocks paired with that entry's timestamp.
-pub fn result_index(entries: &[Entry]) -> Vec<ResultRef<'_>> {
-    let mut order: Vec<&str> = Vec::new();
-    let mut latest: HashMap<&str, (&ToolResultBlock, Option<DateTime<FixedOffset>>)> =
+pub fn result_index<'a>(entries: &[&'a Entry]) -> Vec<ResultRef<'a>> {
+    let mut order: Vec<&'a str> = Vec::new();
+    let mut latest: HashMap<&'a str, (&'a ToolResultBlock, Option<DateTime<FixedOffset>>)> =
         HashMap::new();
-    for entry in entries {
+    for &entry in entries {
         if let Entry::User(user) = entry {
             for block in user.tool_results() {
                 let key = block.tool_use_id.as_str();
@@ -472,13 +473,17 @@ struct Segment {
     end: usize,
 }
 
-// activity.py from_events segmentation: a turn-opening user entry starts a
-// contiguous segment; everything else folds into the current one (or segment 0).
-fn segments(entries: &[Entry]) -> Vec<Segment> {
+// activity.py from_events segmentation: a turn-opening user entry starts a contiguous
+// segment, else folds into the current one; `Some(openers)` replaces that per-entry decision.
+fn segments(entries: &[&Entry], openers: Option<&[bool]>) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
+    for (index, &entry) in entries.iter().enumerate() {
+        let opens = openers.map_or_else(
+            || matches!(entry, Entry::User(user) if opens_turn(user)),
+            |flags| flags[index],
+        );
         match entry {
-            Entry::User(user) if opens_turn(user) => segments.push(Segment {
+            Entry::User(user) if opens => segments.push(Segment {
                 prompt: user.content.text(),
                 start: index,
                 end: index + 1,
@@ -499,10 +504,11 @@ fn segments(entries: &[Entry]) -> Vec<Segment> {
 // activity.py event_stamps: first and last timestamps among a turn's events;
 // Mode and Other entries carry no envelope and are skipped.
 fn event_stamps(
-    events: &[Entry],
+    events: &[&Entry],
 ) -> (Option<DateTime<FixedOffset>>, Option<DateTime<FixedOffset>>) {
     let stamps: Vec<DateTime<FixedOffset>> = events
         .iter()
+        .copied()
         .filter_map(Entry::meta)
         .map(|m| m.timestamp)
         .collect();
@@ -512,13 +518,14 @@ fn event_stamps(
 fn lift_turn<'a>(
     index: usize,
     segment: &Segment,
-    entries: &'a [Entry],
+    entries: &[&'a Entry],
     results: &HashMap<&'a str, (&'a ToolResultBlock, Option<DateTime<FixedOffset>>)>,
 ) -> Turn<'a> {
-    let events = &entries[segment.start..segment.end];
-    let (started_at, ended_at) = event_stamps(events);
+    let events: Vec<&'a Entry> = entries[segment.start..segment.end].to_vec();
+    let (started_at, ended_at) = event_stamps(&events);
     let tool_uses = events
         .iter()
+        .copied()
         .filter_map(|entry| match entry {
             Entry::Assistant(assistant) => Some(assistant),
             _ => None,
@@ -561,17 +568,106 @@ fn lift_turn<'a>(
 /// Lifts parsed entries into turns (activity.py SessionActivity.from_events): a
 /// turn-opening user opens a turn, and each tool-use is paired via `result_index`.
 pub fn lift_session<'a>(session_id: &'a str, entries: &'a [Entry]) -> LiftedSession<'a> {
-    let results: HashMap<&str, (&ToolResultBlock, Option<DateTime<FixedOffset>>)> =
+    lift_session_refs(session_id, &entries.iter().collect::<Vec<_>>(), None)
+}
+
+/// `lift_session` over borrowed entry views — the events-in native path, where each
+/// view borrows its `&Entry` behind the shared parse buffer (no re-parse). `Some(openers)`
+/// supplies one caller-precomputed turn-opening flag per entry in place of `opens_turn`.
+pub fn lift_session_refs<'a>(
+    session_id: &'a str,
+    entries: &[&'a Entry],
+    openers: Option<&[bool]>,
+) -> LiftedSession<'a> {
+    let results: HashMap<&'a str, (&'a ToolResultBlock, Option<DateTime<FixedOffset>>)> =
         result_index(entries)
             .into_iter()
             .map(|r| (r.tool_use_id, (r.block, r.result_ts)))
             .collect();
-    let turns = segments(entries)
+    let turns = segments(entries, openers)
         .iter()
         .enumerate()
         .map(|(index, segment)| lift_turn(index, segment, entries, &results))
         .collect();
     LiftedSession { session_id, turns }
+}
+
+/// A tool use located by positional index within the input slice: `event_idx` is
+/// the assistant entry's position and `result_event_idx` the position of the user
+/// entry answering it. Both come straight off the segments walk, so a slice with
+/// repeated entries or uuids never collapses.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ToolUseIndex<'a> {
+    pub event_idx: usize,
+    pub tool_use_id: &'a str,
+    pub result_event_idx: Option<usize>,
+}
+
+/// One turn projected to positional indices over the input slice (activity.py
+/// SessionActivity.from_events skeleton): the `start..end` span, the first and last
+/// metadata-bearing event positions, and the turn's tool uses located by index.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TurnIndex<'a> {
+    pub prompt: String,
+    pub start: usize,
+    pub end: usize,
+    pub started_idx: Option<usize>,
+    pub ended_idx: Option<usize>,
+    pub tool_uses: Vec<ToolUseIndex<'a>>,
+}
+
+/// Lifts entries into per-turn positional index skeletons over the input slice,
+/// tracking every index directly from the segments walk. Unlike `lift_session_refs`,
+/// whose turns hold borrowed entry refs, this hands the events-in binding the indices
+/// themselves, so the binding never reverse-maps a `*const Entry` or uuid back to a
+/// position (both last-write-wins on a slice that repeats an entry or uuid).
+/// `Some(openers)` supplies one turn-opening flag per entry in place of `opens_turn`.
+pub fn lift_session_index<'a>(entries: &[&'a Entry], openers: Option<&[bool]>) -> Vec<TurnIndex<'a>> {
+    let result_pos: HashMap<&'a str, usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &entry)| match entry {
+            Entry::User(user) => Some((index, user)),
+            _ => None,
+        })
+        .flat_map(|(index, user)| {
+            user.tool_results()
+                .map(move |block| (block.tool_use_id.as_str(), index))
+        })
+        .collect();
+    segments(entries, openers)
+        .into_iter()
+        .map(|segment| {
+            let meta_positions: Vec<usize> = (segment.start..segment.end)
+                .filter(|&index| entries[index].meta().is_some())
+                .collect();
+            let tool_uses = (segment.start..segment.end)
+                .filter_map(|index| match entries[index] {
+                    Entry::Assistant(assistant) => Some((index, assistant)),
+                    _ => None,
+                })
+                .flat_map(|(index, assistant)| {
+                    assistant.blocks.iter().filter_map(move |block| match block {
+                        ContentBlock::ToolUse(tool_use) => Some((index, tool_use)),
+                        _ => None,
+                    })
+                })
+                .map(|(index, tool_use)| ToolUseIndex {
+                    event_idx: index,
+                    tool_use_id: tool_use.id.as_str(),
+                    result_event_idx: result_pos.get(tool_use.id.as_str()).copied(),
+                })
+                .collect();
+            TurnIndex {
+                prompt: segment.prompt,
+                start: segment.start,
+                end: segment.end,
+                started_idx: meta_positions.first().copied(),
+                ended_idx: meta_positions.last().copied(),
+                tool_uses,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1255,11 +1351,92 @@ mod tests {
             tool_result("b1"),
         ];
         assert_eq!(
-            result_index(&entries)
+            result_index(&entries.iter().collect::<Vec<_>>())
                 .iter()
                 .map(|r| r.tool_use_id)
                 .collect::<Vec<_>>(),
             vec!["b2", "b1"]
+        );
+    }
+
+    #[test]
+    fn refs_matches_the_owned_slice_path() {
+        let entries = vec![
+            user("do the thing"),
+            tool_use("Edit", "e1", r#"{"file_path":"/a","old_string":"x","new_string":"y"}"#),
+            tool_result("e1"),
+            user("and then"),
+            tool_use("Bash", "b1", r#"{"command":"make"}"#),
+            result_entry("b1", true, false),
+        ];
+        let refs: Vec<&Entry> = entries.iter().collect();
+        let via_owned = lift_session("s1", &entries);
+        let via_refs = lift_session_refs("s1", &refs, None);
+        let project = |lift: &LiftedSession| {
+            (
+                lift.session_id.to_owned(),
+                lift.turns
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.index,
+                            t.prompt.clone(),
+                            t.started_at,
+                            t.ended_at,
+                            t.events
+                                .iter()
+                                .filter_map(|e| e.meta())
+                                .map(|m| m.uuid.clone())
+                                .collect::<Vec<_>>(),
+                            t.tool_uses
+                                .iter()
+                                .map(|u| {
+                                    (
+                                        u.tool_use_id.to_owned(),
+                                        u.name.to_owned(),
+                                        u.result.map(|r| r.is_error),
+                                        u.duration_ms(),
+                                        u.edit.clone(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(project(&via_owned), project(&via_refs));
+    }
+
+    #[test]
+    fn openers_override_supplants_the_classifier() {
+        // openers=[false, true] must invert opens_turn's verdict on both entries.
+        let entries = vec![user("first ask"), user_with("second ask", r#""isMeta":true,"#)];
+        let refs: Vec<&Entry> = entries.iter().collect();
+
+        let classifier = lift_session_refs("s1", &refs, None);
+        assert_eq!(
+            classifier.turns.iter().map(|t| t.prompt.as_str()).collect::<Vec<_>>(),
+            ["first ask"],
+            "classifier opens the real prompt and folds the meta entry into it"
+        );
+
+        let overridden = lift_session_refs("s1", &refs, Some(&[false, true]));
+        assert_eq!(
+            overridden.turns.iter().map(|t| t.prompt.as_str()).collect::<Vec<_>>(),
+            ["", "second ask"],
+            "override (not OR: both open, not AND: neither) suppresses 0 and promotes meta 1"
+        );
+        assert_eq!(
+            overridden.turns.iter().map(|t| t.events.len()).collect::<Vec<_>>(),
+            [1, 1]
+        );
+
+        let skeleton = lift_session_index(&refs, Some(&[false, true]));
+        assert_eq!(
+            skeleton.iter().map(|t| (t.prompt.as_str(), t.start, t.end)).collect::<Vec<_>>(),
+            [("", 0, 1), ("second ask", 1, 2)],
+            "the index skeleton aligns the promoted boundary to entry 1"
         );
     }
 

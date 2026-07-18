@@ -506,6 +506,7 @@ fn turn_ref(turn: &Turn, budget: &Budget) -> TurnRef {
         refs: turn
             .events
             .iter()
+            .copied()
             .filter_map(Entry::meta)
             .map(|m| EventRef {
                 session_id: m.session_id.clone(),
@@ -525,6 +526,7 @@ fn turn_ref(turn: &Turn, budget: &Budget) -> TurnRef {
 fn turn_tool_uses<'a>(turn: &'a Turn<'a>) -> impl Iterator<Item = &'a ToolUseBlock> {
     turn.events
         .iter()
+        .copied()
         .filter_map(|event| match event {
             Entry::Assistant(assistant) => Some(assistant),
             _ => None,
@@ -546,7 +548,7 @@ fn build_previews(turn: &Turn, budget: &Budget) -> Vec<Preview> {
         });
     }
     let mut uses = turn.tool_uses.iter();
-    for event in turn.events {
+    for &event in &turn.events {
         let Entry::Assistant(assistant) = event else {
             continue;
         };
