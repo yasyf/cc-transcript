@@ -216,8 +216,8 @@ class TestCommandLine:
 
     def test_and_chain(self) -> None:
         cl = CommandLine.parse('eval "$(direnv export bash)" && uv run mtest run tests/')
-        assert len(cl) == 2
-        assert cl.parts[0][1] == "&&"
+        assert [cmd.executable for cmd in cl.commands] == ["eval", "direnv", "uv"]
+        assert cl.parts[1][1] == "&&"
         assert cl.primary is not None
         assert cl.primary.executable == "uv"
         assert cl.primary.program == "mtest"
@@ -277,6 +277,38 @@ class TestCommandLine:
 
     def test_subshell_parsed(self) -> None:
         assert len(CommandLine.parse('eval "$(direnv export bash)"')) >= 1
+
+
+class TestCommandSubstitutions:
+    @pytest.mark.parametrize(
+        ("raw", "executables"),
+        [
+            pytest.param("x=$(ccx repo overview)", ["ccx"], id="assignment_position"),
+            pytest.param("echo $(ccx repo overview)", ["echo", "ccx"], id="word_position"),
+            pytest.param("echo `ccx repo overview`", ["echo", "ccx"], id="backticks"),
+            pytest.param('echo "$(a)"', ["echo", "a"], id="double_quoted"),
+            pytest.param("FOO=$(a) cmd", ["cmd", "a"], id="env_prefix_value"),
+            pytest.param("$(which python) --version", ["$(which python)", "which"], id="command_name"),
+            pytest.param("diff $(sort a) $(b $(c))", ["diff", "sort", "b", "c"], id="nested_document_order"),
+            pytest.param("echo hi > $(target)", ["echo"], id="redirect_target_excluded"),
+        ],
+    )
+    def test_substitutions_join_enumeration(self, raw: str, executables: list[str]) -> None:
+        assert [cmd.executable for cmd in CommandLine.parse(raw).commands] == executables
+
+    def test_word_position_mirrors_assignment_position_operators(self) -> None:
+        assign = CommandLine.parse("x=$(a) && foo")
+        assert [(cmd.executable, op) for cmd, op in assign.parts] == [("a", "&&"), ("foo", None)]
+        word = CommandLine.parse("echo $(a) && foo")
+        assert [(cmd.executable, op) for cmd, op in word.parts] == [("echo", None), ("a", "&&"), ("foo", None)]
+        assert word.occurrences[1].prev_op is None
+        assert word.occurrences[1].next_op == "&&"
+        assert word.occurrences[2].prev_op == "&&"
+
+    def test_substitution_span_splices_in_place(self) -> None:
+        line = CommandLine.parse("echo $(ccx repo overview)")
+        assert line.commands[1].span == (7, 24)
+        assert line.splice({1: "ls"}) == "echo $(ls)"
 
     def test_prefixes(self) -> None:
         assert CommandLine.parse("sudo git push -f && echo hi").prefixes == ("git push", "echo")
@@ -512,7 +544,7 @@ class TestEdgeCases:
         cl = CommandLine.parse(
             'eval "$(direnv export bash)" && ENV=prod uv run mtest run tests/test_foo.py -k test_name 2>&1 | head -50'
         )
-        assert len(cl) == 3
+        assert [cmd.executable for cmd in cl.commands] == ["eval", "direnv", "uv", "head"]
         assert cl.primary is not None
         assert cl.primary.executable == "head"
 

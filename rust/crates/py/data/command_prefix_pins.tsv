@@ -34,7 +34,7 @@ process-substitution	diff <(sort a.txt) <(sort b.txt)	diff
 process-substitution-in-pipeline	cat <(git log) | head -3	cat|head
 arithmetic-expansion	echo $((1 + 2))	echo
 arithmetic-assignment-prefix	x=$((COUNT + 1)) make build	make
-backtick-substitution	echo `git rev-parse HEAD`	echo
+backtick-substitution	echo `git rev-parse HEAD`	echo|git rev-parse
 function-definition-body-and-call	foo() { git status; }; foo	git status|foo
 multiline-quoted-string	git commit -m "line1\nline2"	git commit
 newline-separated-commands	git add .\ngit commit -m x	git add|git commit

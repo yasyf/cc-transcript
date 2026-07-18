@@ -568,7 +568,11 @@ fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
         "program" => walk_program(node, src),
         "list" => collect_parts(node, src, COMPOUND_OPS),
         "pipeline" => collect_parts(node, src, &["|"]),
-        "command" => vec![(extract_command(node, src), None)],
+        "command" => {
+            let mut parts = vec![(extract_command(node, src), None)];
+            parts.extend(substitution_parts(node, src));
+            parts
+        }
         "redirected_statement" => walk_redirected(node, src),
         _ => {
             let mut parts = Vec::new();
@@ -579,6 +583,21 @@ fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             parts
         }
     }
+}
+
+// Word/argument-position `$(…)`/backtick substitutions under a command node, enumerated as parts
+// mirroring assignment position: document order (host first), redirect targets excluded.
+fn substitution_parts(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "command_substitution" => parts.extend(walk_node(child, src)),
+            "file_redirect" => {}
+            _ => parts.extend(substitution_parts(child, src)),
+        }
+    }
+    parts
 }
 
 // Parity: command.py CommandLine.walk_program — collect_parts over `;`, dropping the heredoc body
@@ -1015,6 +1034,80 @@ mod tests {
         // A file descriptor above i64::MAX overflows to None.
         let line = CommandLine::parse("9223372036854775808>out");
         assert_eq!(line.parts[0].0.redirects[0].fd, None);
+    }
+
+    fn execs(line: &CommandLine) -> Vec<&str> {
+        line.parts
+            .iter()
+            .map(|(cmd, _)| cmd.executable.as_str())
+            .collect()
+    }
+
+    // Both substitution positions get one treatment: the nested command is a first-class part.
+    #[test]
+    fn substitutions_enumerate_in_word_position_like_assignment_position() {
+        assert_eq!(execs(&CommandLine::parse("x=$(ccx repo overview)")), ["ccx"]);
+        let word = CommandLine::parse("echo $(ccx repo overview)");
+        assert_eq!(execs(&word), ["echo", "ccx"]);
+        assert_eq!(word.parts[1].0.args, ["repo", "overview"]);
+        assert_eq!(
+            execs(&CommandLine::parse("echo `ccx repo overview`")),
+            ["echo", "ccx"]
+        );
+        // command_name, quoted, concatenated, and env-prefix-value positions all enumerate.
+        assert_eq!(
+            execs(&CommandLine::parse("$(which python) --version")),
+            ["$(which python)", "which"]
+        );
+        assert_eq!(execs(&CommandLine::parse("echo \"$(a)\"")), ["echo", "a"]);
+        assert_eq!(execs(&CommandLine::parse("tag=v$(git rev-parse HEAD) make")), ["make", "git"]);
+        // Redirect targets stay out, matching statement-level redirects.
+        assert_eq!(execs(&CommandLine::parse("echo hi > $(target)")), ["echo"]);
+    }
+
+    // Document order: the host command first, then each outermost substitution left to right,
+    // recursing so nested substitutions follow their host.
+    #[test]
+    fn substitutions_enumerate_nested_in_document_order() {
+        assert_eq!(
+            execs(&CommandLine::parse("diff $(sort a) $(b $(c))")),
+            ["diff", "sort", "b", "c"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse("echo $(a | b; c)")),
+            ["echo", "a", "b", "c"]
+        );
+    }
+
+    // Operator attachment mirrors assignment position: the op hangs off the last enumerated part.
+    #[test]
+    fn substitution_parts_carry_operators_and_spans_like_assignment_position() {
+        let assign = CommandLine::parse("x=$(a) && foo");
+        assert_eq!(execs(&assign), ["a", "foo"]);
+        assert_eq!(assign.parts[0].1.as_deref(), Some("&&"));
+        let word = CommandLine::parse("echo $(a) && foo");
+        assert_eq!(execs(&word), ["echo", "a", "foo"]);
+        assert_eq!(word.parts[0].1, None);
+        assert_eq!(word.parts[1].1.as_deref(), Some("&&"));
+        assert_eq!(word.next_op(1), Some("&&"));
+        assert_eq!(word.prev_op(2), Some("&&"));
+        assert!(!word.piped(0) && !word.piped(1));
+        // The nested span indexes the raw line, so splicing just it rewrites in place; rewriting
+        // host and nested together overlaps (the host span encloses the substitution bytes).
+        let line = CommandLine::parse("echo $(ccx repo overview)");
+        assert_eq!(line.parts[0].0.span, Some((0, 25)));
+        assert_eq!(line.parts[1].0.span, Some((7, 24)));
+        assert_eq!(
+            line.splice(&BTreeMap::from([(1, "ls".to_string())])).unwrap(),
+            "echo $(ls)"
+        );
+        assert!(matches!(
+            line.splice(&BTreeMap::from([
+                (0, "X".to_string()),
+                (1, "Y".to_string())
+            ])),
+            Err(SpliceError::Overlap { .. })
+        ));
     }
 
     #[test]

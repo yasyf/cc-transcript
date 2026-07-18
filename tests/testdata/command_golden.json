@@ -999,10 +999,31 @@
             ]
           },
           "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "rev-parse",
+              "HEAD"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git rev-parse",
+            "program": "git",
+            "raw": "git rev-parse HEAD",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ]
+          },
+          "op": null
         }
       ],
       "prefixes": [
-        "echo"
+        "echo",
+        "git rev-parse"
       ],
       "raw": "echo `git rev-parse HEAD`"
     }
@@ -1579,10 +1600,50 @@
             ]
           },
           "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "log",
+              "--format=%H"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git log",
+            "program": "git",
+            "raw": "git log --format=%H",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "log",
+              "--format=%H"
+            ]
+          },
+          "op": "|"
+        },
+        {
+          "command": {
+            "args": [
+              "-1"
+            ],
+            "env": [],
+            "executable": "head",
+            "prefix": "head",
+            "program": "head",
+            "raw": "head -1",
+            "redirects": [],
+            "unwrapped_argv": [
+              "head",
+              "-1"
+            ]
+          },
+          "op": null
         }
       ],
       "prefixes": [
-        "echo"
+        "echo",
+        "git log",
+        "head"
       ],
       "raw": "echo $(git log --format=%H | head -1)"
     }
