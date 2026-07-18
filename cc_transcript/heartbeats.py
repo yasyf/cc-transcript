@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
+from cc_transcript.decisions import DecisionLog
+from cc_transcript.ledger import open_sqlite
+
 if TYPE_CHECKING:
     from cc_transcript.ids import SessionId
 
@@ -32,9 +35,6 @@ CREATE TABLE IF NOT EXISTS dispatch_heartbeats (
 
 CREATE INDEX IF NOT EXISTS idx_heartbeats_session ON dispatch_heartbeats (session_id);
 """
-
-FILENAME = "decisions.db"
-
 
 @dataclass(frozen=True, slots=True)
 class Heartbeat:
@@ -74,14 +74,7 @@ class HeartbeatLog:
     @classmethod
     def open(cls, path: Path | None = None) -> Self:
         """Opens (creating if needed) the heartbeat table at ``path`` (defaults to ``decisions.db``)."""
-        path = path or Path.home() / ".cc-transcript" / FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, autocommit=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 2000")
-        conn.executescript(HEARTBEATS_DDL)
-        return cls(conn)
+        return cls(open_sqlite(path, filename=DecisionLog.FILENAME, ddl=HEARTBEATS_DDL))
 
     def beat(self, session_id: SessionId, event: str, ts_ms: int) -> None:
         """Records one dispatch of ``event`` in ``session_id`` at ``ts_ms`` (upsert; ``count += 1``)."""
@@ -104,14 +97,5 @@ class HeartbeatLog:
             )
             for row in self.conn.execute(
                 "SELECT * FROM dispatch_heartbeats WHERE session_id = ? ORDER BY first_ts_ms, event", (session_id,)
-            )
-        )
-
-    def events_seen(self, session_id: SessionId) -> frozenset[str]:
-        """The set of event names that have dispatched at least once in ``session_id``."""
-        return frozenset(
-            row["event"]
-            for row in self.conn.execute(
-                "SELECT event FROM dispatch_heartbeats WHERE session_id = ?", (session_id,)
             )
         )

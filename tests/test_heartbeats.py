@@ -32,15 +32,15 @@ def test_distinct_events_are_distinct_rows(tmp_path: Path) -> None:
     log.beat("sess-a", "UserPromptSubmit", 100)
     log.beat("sess-a", "PreToolUse", 200)
     log.beat("sess-a", "Stop", 300)
-    assert log.events_seen("sess-a") == frozenset({"UserPromptSubmit", "PreToolUse", "Stop"})
+    assert tuple(beat.event for beat in log.for_session("sess-a")) == ("UserPromptSubmit", "PreToolUse", "Stop")
 
 
 def test_sessions_are_isolated(tmp_path: Path) -> None:
     log = HeartbeatLog.open(tmp_path / "decisions.db")
     log.beat("sess-a", "PreToolUse", 100)
     log.beat("sess-b", "Stop", 200)
-    assert log.events_seen("sess-a") == frozenset({"PreToolUse"})
-    assert log.events_seen("sess-b") == frozenset({"Stop"})
+    assert tuple(beat.event for beat in log.for_session("sess-a")) == ("PreToolUse",)
+    assert tuple(beat.event for beat in log.for_session("sess-b")) == ("Stop",)
     assert log.for_session("unknown") == ()
 
 
@@ -83,5 +83,5 @@ def test_coexists_with_decisions_table_in_same_file(tmp_path: Path) -> None:
             action="allow",
         )
     )
-    assert HeartbeatLog.open(db).events_seen("sess-a") == frozenset({"PreToolUse"})
+    assert tuple(beat.event for beat in HeartbeatLog.open(db).for_session("sess-a")) == ("PreToolUse",)
     assert len(DecisionLog.open(db).for_session("sess-a")) == 1

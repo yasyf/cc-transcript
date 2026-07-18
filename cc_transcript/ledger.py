@@ -27,6 +27,17 @@ if TYPE_CHECKING:
     from cc_transcript.ids import SessionId
 
 
+def open_sqlite(path: Path | None, *, filename: str, ddl: str) -> sqlite3.Connection:
+    path = path or Path.home() / ".cc-transcript" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, autocommit=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 2000")
+    conn.executescript(ddl)
+    return conn
+
+
 class LedgerRecord(Protocol):
     @property
     def detail(self) -> Mapping[str, Any]: ...
@@ -55,14 +66,7 @@ class SyncLedger[R: LedgerRecord](ABC):
         Returns:
             The opened log.
         """
-        path = path or Path.home() / ".cc-transcript" / cls.FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, autocommit=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 2000")
-        conn.executescript(cls.DDL)
-        return cls(conn)
+        return cls(open_sqlite(path, filename=cls.FILENAME, ddl=cls.DDL))
 
     def append(self, record: R) -> None:
         """Appends ``record`` as a single ``INSERT OR IGNORE``.
