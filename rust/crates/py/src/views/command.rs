@@ -125,6 +125,7 @@ impl CommandView {
                     .map(|rv| rv.r)
                     .collect(),
                 span,
+                substitution: false,
             },
         }
     }

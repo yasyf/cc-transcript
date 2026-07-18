@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.1.1] - 2026-07-18
+
+### Fixed
+- **`primary`/`head` no longer return substitution-derived commands.** 14.1.0's
+  word/argument-position substitution enumeration appended nested commands to the
+  parts stream, so `parse_command_line('gh pr list --search "$(cat q.txt)"').primary`
+  came back as the nested `cat` instead of the host `gh`, mis-identifying the command
+  for every `primary`-reading guard. Commands now carry a native-only
+  substitution-provenance bit; `primary` and `head` select the last/first top-level
+  command, while `commands`, occurrence enumeration, and the splice layer keep seeing
+  the full stream unchanged.
+
 ## [14.1.0] - 2026-07-18
 
 ### Added

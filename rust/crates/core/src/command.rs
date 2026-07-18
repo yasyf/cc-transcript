@@ -46,6 +46,10 @@ pub struct Command {
     // Parity: command.py Command.span — byte offsets (start, end), None when a redirect absorbs a
     // trailing word; carries compare=False, repr=False, so it is excluded from PartialEq and Debug.
     pub span: Option<(usize, usize)>,
+    // Native-only provenance for top-level selectors. Substitution commands remain visible in
+    // occurrence APIs; this flag is excluded from PartialEq, Debug, and the PyO3 command surface.
+    #[doc(hidden)]
+    pub substitution: bool,
 }
 
 impl PartialEq for Command {
@@ -145,6 +149,7 @@ impl Command {
             env: self.env.clone(),
             redirects: self.redirects.clone(),
             span: self.span,
+            substitution: self.substitution,
         }
     }
 
@@ -211,14 +216,19 @@ impl CommandLine {
         self.parts.iter().map(|(cmd, _)| cmd).collect()
     }
 
-    // Parity: command.py CommandLine.primary — the final command, or None.
+    // Parity: command.py CommandLine.primary — the final top-level command, or None.
     pub fn primary(&self) -> Option<&Command> {
-        self.parts.last().map(|(cmd, _)| cmd)
+        self.parts
+            .iter()
+            .rev()
+            .find_map(|(cmd, _)| (!cmd.substitution).then_some(cmd))
     }
 
-    // Parity: command.py CommandLine.head — the first command, or None.
+    // Parity: command.py CommandLine.head — the first top-level command, or None.
     pub fn head(&self) -> Option<&Command> {
-        self.parts.first().map(|(cmd, _)| cmd)
+        self.parts
+            .iter()
+            .find_map(|(cmd, _)| (!cmd.substitution).then_some(cmd))
     }
 
     // Parity: command.py CommandLine.prefixes — each command's prefix, None dropped.
@@ -514,6 +524,7 @@ fn extract_command(node: Node, src: &[u8]) -> Command {
         env,
         redirects,
         span: Some(span),
+        substitution: false,
     }
 }
 
@@ -575,7 +586,8 @@ fn walk_redirected(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
 }
 
 // Parity: command.py CommandLine.walk_node — program/list/pipeline split at their ops,
-// command extracts, redirected_statement unwraps, everything else recurses in order.
+// command extracts, command substitutions mark their recursive commands, redirected_statement
+// unwraps, and everything else recurses in order.
 fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
     match node.kind() {
         "program" => walk_program(node, src),
@@ -586,6 +598,7 @@ fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             parts.extend(substitution_parts(node, src));
             parts
         }
+        "command_substitution" => walk_substitution(node, src),
         "redirected_statement" => walk_redirected(node, src),
         _ => {
             let mut parts = Vec::new();
@@ -596,6 +609,18 @@ fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             parts
         }
     }
+}
+
+fn walk_substitution(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        parts.extend(walk_node(child, src));
+    }
+    for (cmd, _) in &mut parts {
+        cmd.substitution = true;
+    }
+    parts
 }
 
 // Word/argument-position `$(…)`/backtick substitutions under a command node, enumerated as parts
@@ -1082,6 +1107,27 @@ mod tests {
         );
         // Redirect targets stay out, matching statement-level redirects.
         assert_eq!(execs(&CommandLine::parse("echo hi > $(target)")), ["echo"]);
+    }
+
+    #[test]
+    fn primary_skips_argument_position_substitution() {
+        let line = CommandLine::parse(r#"gh pr list --json number --search "$(cat q.txt)""#);
+        assert_eq!(execs(&line), ["gh", "cat"]);
+        assert_eq!(line.primary().unwrap().executable, "gh");
+    }
+
+    #[test]
+    fn primary_keeps_word_position_host_command() {
+        let line = CommandLine::parse(r#""$(get-cmd)" --flag"#);
+        assert_eq!(execs(&line), ["\"$(get-cmd)\"", "get-cmd"]);
+        assert_eq!(line.primary().unwrap().executable, "\"$(get-cmd)\"");
+    }
+
+    #[test]
+    fn head_skips_leading_assignment_position_substitution() {
+        let line = CommandLine::parse("x=$(get-cmd); host --flag");
+        assert_eq!(execs(&line), ["get-cmd", "host"]);
+        assert_eq!(line.head().unwrap().executable, "host");
     }
 
     // Document order: the host command first, then each outermost substitution left to right,
