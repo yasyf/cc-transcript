@@ -1,1 +1,1 @@
-{"v":1,"lamport":6,"session":"c7ba18bf-524f-4a57-a209-fcf723446a07","ops":[{"kind":"set_criterion_status","id":"8a3294c85a3dc45aeee23868eb10a735","status":"met","note":"987dd057: macos-arm64 xcframework rebuilt against final core (8.24→8.74MB), bridge sources byte-identical, swift-bridge held =0.1.59."}]}
+{"v":1,"lamport":7,"session":"c7ba18bf-524f-4a57-a209-fcf723446a07","ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"661805f602a06b84481515081cbb121aca6ade32"}]}
