@@ -35,8 +35,6 @@ from cc_transcript.literals import literal_str
 from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
-    ModeEvent,
-    OtherEvent,
     SystemEvent,
     ToolUseBlock,
     UserEvent,
@@ -240,7 +238,6 @@ TRIVIAL_ACK_SET: frozenset[str] = frozenset(
 
 SHORT_MESSAGE_MAX_WORDS = 3
 
-CONVERSATIONAL: frozenset[EventKind] = frozenset({"user", "assistant"})
 USERS: frozenset[EventKind] = frozenset({"user"})
 ASSISTANTS: frozenset[EventKind] = frozenset({"assistant"})
 
@@ -365,22 +362,6 @@ def compile_groups(groups: tuple[tuple[str, str], ...], ignore_case: bool, *, mu
     return re.compile(group_pattern(groups), (re.IGNORECASE if ignore_case else 0) | (re.MULTILINE if multiline else 0))
 
 
-def event_kind(event: TranscriptEvent) -> EventKind:
-    match event:
-        case UserEvent():
-            return "user"
-        case AssistantEvent():
-            return "assistant"
-        case SystemEvent():
-            return "system"
-        case ModeEvent():
-            return "mode"
-        case OtherEvent():
-            return "other"
-        case AttachmentEvent():
-            return "attachment"
-
-
 def event_text(event: TranscriptEvent) -> str:
     match event:
         case UserEvent(text=text) | AssistantEvent(text=text):
@@ -409,32 +390,6 @@ def tool_uses(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, ToolUseBlock
         for block in event.blocks
         if isinstance(block, ToolUseBlock)
     }
-
-
-def tool_names(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, str]:
-    return {tid: block.name for tid, block in tool_uses(events).items()}
-
-
-def embedded_user_text(content: str) -> str | None:
-    if (start := content.find(USER_SAID_MARKER)) == -1:
-        return None
-    return content[start + len(USER_SAID_MARKER) :].split(USER_SAID_TRAILER, 1)[0].strip()
-
-
-def interrupt_marker(content: str) -> str | None:
-    stripped = content.lstrip()
-    if (match := INTERRUPT_MARKER_RE.match(stripped)) is None:
-        return None
-    end = stripped.find("]")
-    return stripped[: end + 1] if end != -1 else match.group(0)
-
-
-def is_bare_interrupt_marker(text: str) -> bool:
-    return (marker := interrupt_marker(text)) is not None and not text.strip()[len(marker.strip()) :].strip()
-
-
-def is_agent_injection(text: str) -> bool:
-    return AGENT_INJECTION_RE.search(text) is not None
 
 
 def keep(event: TranscriptEvent, spec: FilterSpec) -> bool:
@@ -505,6 +460,4 @@ def predicate_to_dict(predicate: Predicate) -> dict[str, Any]:
 
 
 STRUCTURAL_NOISE_RE = compile_groups(STRUCTURAL_NOISE_GROUPS, True)
-AGENT_INJECTION_RE = compile_groups(AGENT_INJECTION_GROUPS, True)
-INTERRUPT_MARKER_RE = compile_groups(INTERRUPT_MARKER_GROUPS, True)
 JUNK_USER_MESSAGE_RE = compile_groups(SENTIMENT_JUNK_GROUPS, True)

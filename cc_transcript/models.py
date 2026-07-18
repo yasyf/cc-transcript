@@ -129,43 +129,6 @@ TranscriptEvent = UserEvent | AssistantEvent | SystemEvent | ModeEvent | OtherEv
 """The union of every typed event a parsed transcript can yield."""
 
 
-def parse_questions(rounds: object) -> tuple[Question, ...] | None:
-    """Lift an AskUserQuestion ``questions`` array into typed rounds, or None.
-
-    Mirrors the Rust parse-layer lift (``parse_questions`` in ``rust/crates/core/src/parse.rs``):
-    a missing or non-list ``rounds`` reads as None; within the array each entry
-    lacking a string ``question`` is dropped, ``header`` reads as None unless a
-    string, ``multi_select`` is False unless ``multiSelect`` is a bool, and
-    ``labels`` collects each option's string ``label``, skipping any without one.
-
-    The single owner of the lift: :attr:`ToolUseBlock.questions` reads it from a
-    tool-use input, and :attr:`~cc_transcript.tools.AskUserQuestionResult.questions`
-    from the echoed result payload.
-    """
-    if not isinstance(rounds, list):
-        return None
-    return tuple(
-        Question(
-            question=text,
-            header=h if isinstance(h := q.get("header"), str) else None,
-            multi_select=isinstance(m := q.get("multiSelect"), bool) and m,
-            labels=question_labels(q.get("options")),
-        )
-        for q in rounds
-        if isinstance(q, dict) and isinstance(text := q.get("question"), str)
-    )
-
-
-def question_labels(options: object) -> tuple[str, ...]:
-    if not isinstance(options, list):
-        return ()
-    return tuple(
-        label
-        for option in options
-        if isinstance(option, dict) and isinstance(label := option.get("label"), str)
-    )
-
-
 def tool_uses(event: UserEvent | AssistantEvent) -> tuple[ToolUseBlock, ...]:
     """The event's tool-use blocks, in content order."""
     return tuple(block for block in event.blocks if isinstance(block, ToolUseBlock))

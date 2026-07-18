@@ -217,24 +217,18 @@ transcript's lifetime carries summary fidelity, and its preview then leads with
 the `[summary fidelity — transcript unavailable]` label — consumers always know
 which fidelity they are reading.
 
-## Filter candidates
+## Verdicts and audits
 
-Which candidates survive is policy, and the mining layer expresses it the same
-way the event layer does: as data. `CandidateFilterSpec` is the candidate-level companion
-to the event-level `FilterSpec` from [Filtering events](01-filtering-events.qmd),
-with one twist — every clause must hold for a candidate to pass. Map the noisy
-signal from earlier into a candidate too, then keep only confident
-interrupt-rejections:
+Detectors are recall-heavy by design — they report facts and let confidence
+de-noise. For precision, apps run an LLM judge over stored candidates.
+`run_verdicts` is the fan-out: it awaits one prompt per row (the builder is
+async, so a prompt can hydrate its context window first), runs the judge
+concurrently, and persists each verdict as it lands, so a failed call is
+retried on the next pass. Map the structural denial from earlier into a
+candidate too — the same key derivation and window capture — so the fan-out
+below carries one substantive row and one noise row:
 
 ```{python}
-from cc_transcript.mining import (
-    INTERRUPT_REJECTION,
-    apply_candidate_filter,
-    at_least,
-    build_candidate_filter,
-    only_kinds,
-)
-
 noisy_anchor = EventRef(structural.session_id, structural.event_uuid)
 noisy = FeedbackCandidate(
     dedup_key=dedup_key("sess-1", structural.kind, structural.text),
@@ -245,25 +239,11 @@ noisy = FeedbackCandidate(
     ref=noisy_anchor,
     signal=structural.signal,
 )
-
-spec = build_candidate_filter(at_least(NOISE_FLOOR), only_kinds(INTERRUPT_REJECTION))
-[kept.text for kept in apply_candidate_filter([candidate, noisy], spec)]
-# -> ['use uv, not pip']
+noisy.signal.reasons
+# -> ('structural_only',)
 ```
 
-The `structural_only` candidate scores `0.0` and falls below the floor; the
-substantive one passes both clauses. Beyond `at_least` and `only_kinds`, clauses
-can match a reason code (`HasReason`), match durability (`IsDurable`), or negate
-via `CandidateClause(predicate, negate=True)`.
-
-## Verdicts and audits
-
-Detectors are recall-heavy by design — they report facts and let confidence
-de-noise. For precision, apps run an LLM judge over stored candidates.
-`run_verdicts` is the fan-out: it awaits one prompt per row (the builder is
-async, so a prompt can hydrate its context window first), runs the judge
-concurrently, and persists each verdict as it lands, so a failed call is
-retried on the next pass. The judge is any async callable returning an object
+The judge is any async callable returning an object
 with `category`, `summary`, `confidence`, `rationale`, and `accepted` (the
 `VerdictLike` shape). A deterministic stub keeps this page hermetic:
 

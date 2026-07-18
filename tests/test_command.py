@@ -8,7 +8,6 @@ from cc_transcript.command import (
     Command,
     CommandLine,
     Redirect,
-    bulk_command_prefixes,
     command_prefixes,
     parse_command_line,
 )
@@ -593,9 +592,6 @@ class TestCommandPrefixes:
     @pytest.mark.parametrize(("command", "expected"), PREFIX_PIN_CASES, ids=PREFIX_PIN_IDS)
     def test_command_prefixes(self, command: str, expected: tuple[str, ...]) -> None:
         assert command_prefixes(command) == expected
-
-    def test_bulk_command_prefixes(self) -> None:
-        assert bulk_command_prefixes(["ls -la", "sudo git push -f && echo hi"]) == [("ls",), ("git push", "echo")]
 
     def test_parse_command_line_caches(self) -> None:
         assert parse_command_line("ls -la") is parse_command_line("ls -la")

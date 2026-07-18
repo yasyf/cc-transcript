@@ -420,12 +420,11 @@ def test_terminals_and_dunders() -> None:
     assert len(calls) == 2
     assert bool(calls)
     assert [type(use) for use in calls] == [ToolUse, ToolUse]
-    assert calls.list() == [*calls.items]
     assert (first := calls.first()) is not None and first.ref.tool_use_id == ToolUseId("t1")
     assert (last := calls.last()) is not None and last.ref.tool_use_id == ToolUseId("t2")
     empty = calls.named("Grep")
     assert isinstance(empty, ToolCallQuery)
-    assert (empty.count(), empty.any(), empty.first(), empty.last(), empty.list()) == (0, False, None, None, [])
+    assert (empty.count(), empty.any(), empty.first(), empty.last()) == (0, False, None, None)
 
 
 def test_files_touched_and_edited_files() -> None:

@@ -10,7 +10,6 @@ predicates compose over progressively narrower windows.
 
 from __future__ import annotations
 
-import builtins
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -215,10 +214,6 @@ class ToolCallQuery:
     def last(self) -> ToolUse | None:
         """The latest matching call, or None."""
         return items[-1] if (items := self.items) else None
-
-    def list(self) -> builtins.list[ToolUse]:
-        """The matching calls as a list."""
-        return [*self.items]
 
     def files(self) -> tuple[FileRef, ...]:
         """The files the matching calls target, one entry per call, in order."""

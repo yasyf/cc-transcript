@@ -70,37 +70,6 @@ TOOL_ALIASES: dict[str, str] = {
     "ExitPlanMode": "ExitSpecMode",
 }
 
-TOOL_ALIASES_REVERSE: dict[str, str] = {v: k for k, v in TOOL_ALIASES.items()}
-
-# cc-context routes real file edits through MCP tools whose bare names match no
-# builtin edit gate; alias its write surface to the builtins those gates watch so
-# an edit through the MCP can't slip past a Tool("Edit"/"Write"/"MultiEdit") guard.
-MCP_TOOL_ALIASES: dict[str, str] = {
-    "ccx_code_edit": "Edit",
-    "ccx_code_replace": "Write",
-}
-
-READ_VERBS = frozenset({"get", "list", "search", "read", "view", "fetch", "query", "describe", "show", "find"})
-
-
-def key_of(raw: Mapping[str, Any], *keys: str) -> Any | None:
-    """The first non-null value among ``keys`` in ``raw``, else None."""
-    return next((value for key in keys if (value := raw.get(key)) is not None), None)
-
-
-def required_key(raw: Mapping[str, Any], *keys: str) -> Any:
-    """The first non-null value among ``keys`` in ``raw``; raises ``KeyError`` if none is present."""
-    if (value := key_of(raw, *keys)) is None:
-        raise KeyError(keys[0])
-    return value
-
-
-def required_str(raw: Mapping[str, Any], *keys: str) -> str:
-    """The first non-null value among ``keys`` in ``raw`` as a str; raises if absent or not a str."""
-    if not isinstance(value := required_key(raw, *keys), str):
-        raise TypeError(f"{keys[0]} must be a str, got {type(value).__name__}")
-    return value
-
 
 class ToolInputError(ValueError):
     """A known tool's input did not match its expected shape."""
@@ -128,23 +97,6 @@ ToolCall = (
     | OtherCall
 )
 
-TOOL_TYPES: dict[str, type] = {
-    "Bash": BashCall,
-    "Edit": EditCall,
-    "MultiEdit": MultiEditCall,
-    "Write": WriteCall,
-    "Read": ReadCall,
-    "NotebookEdit": NotebookEditCall,
-    "Grep": GrepCall,
-    "Glob": GlobCall,
-    "Agent": TaskCall,
-    "Workflow": WorkflowCall,
-    "Skill": SkillCall,
-    "TaskCreate": TaskCreateCall,
-    "TaskUpdate": TaskUpdateCall,
-    "ExitPlanMode": ExitPlanModeCall,
-}
-
 
 ToolResult = (
     BashResult
@@ -158,16 +110,6 @@ ToolResult = (
     | TextResult
     | OtherResult
 )
-
-TOOL_RESULT_TYPES: dict[str, type] = {
-    "Bash": BashResult,
-    "Edit": EditResult,
-    "Write": WriteResult,
-    "Read": ReadResult,
-    "Agent": TaskResultBase,
-    "Skill": SkillResult,
-    "AskUserQuestion": AskUserQuestionResult,
-}
 
 
 @dataclass(frozen=True, slots=True)

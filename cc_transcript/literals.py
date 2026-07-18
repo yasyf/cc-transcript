@@ -25,9 +25,3 @@ def literal_float(key: str) -> float:
     value = LITERALS[key]
     assert isinstance(value, float), key
     return value
-
-
-def literal_tuple(key: str) -> tuple[str, ...]:
-    value = LITERALS[key]
-    assert isinstance(value, list), key
-    return tuple(value)

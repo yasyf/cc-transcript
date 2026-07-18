@@ -24,22 +24,21 @@ MODELS_SURFACE = frozenset(
         "PrintResult", "Question", "QueuedCommand", "ServerToolUse", "SessionId", "StopHookSummary",
         "SystemDetail", "SystemEvent", "TextBlock", "ThinkingBlock", "ToolCall", "ToolDigest",
         "ToolResultBlock", "ToolUseBlock", "ToolUseId", "TranscriptEvent", "TurnDuration", "Usage",
-        "UserEvent", "parse_questions", "parse_tool_call", "thinking_chars", "tool_digest", "tool_uses",
+        "UserEvent", "parse_tool_call", "thinking_chars", "tool_digest", "tool_uses",
     }
 )
 
 TOOLS_SURFACE = frozenset(
     {
         "AskUserQuestionResult", "BashCall", "BashResult", "EditCall", "EditResult", "EditSpan",
-        "ExitPlanModeCall", "GlobCall", "GrepCall", "Hunk", "MCP_TOOL_ALIASES", "MultiEditCall",
-        "NotebookEditCall", "OtherCall", "OtherResult", "QuestionAnnotation", "READ_VERBS", "ReadCall",
-        "ReadResult", "SkillCall", "SkillResult", "TOOL_ALIASES", "TOOL_ALIASES_REVERSE",
-        "TOOL_RESULT_TYPES", "TOOL_TYPES", "TaskCall", "TaskCreateCall", "TaskLaunchResult",
+        "ExitPlanModeCall", "GlobCall", "GrepCall", "Hunk", "MultiEditCall", "NotebookEditCall",
+        "OtherCall", "OtherResult", "QuestionAnnotation", "ReadCall", "ReadResult", "SkillCall",
+        "SkillResult", "TOOL_ALIASES", "TaskCall", "TaskCreateCall", "TaskLaunchResult",
         "TaskResult", "TaskResultBase", "TaskUpdateCall", "TextResult", "ToolCall", "ToolCallBase",
         "ToolDigest", "ToolInputError", "ToolResult", "ToolResultBase", "ToolResultError",
         "WorkflowCall", "WriteCall", "WriteResult", "expand_tool_names", "file_path_of", "hunks_of",
-        "key_of", "matches_names", "mcp_access", "mcp_parts", "parse_tool_call", "parse_tool_result",
-        "required_key", "required_str", "tool_digest", "tool_name_matches",
+        "matches_names", "mcp_access", "mcp_parts", "parse_tool_call", "parse_tool_result",
+        "tool_digest", "tool_name_matches",
     }
 )
 

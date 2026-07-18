@@ -16,7 +16,6 @@ from cc_transcript.builders import (
 )
 from cc_transcript.filterspec import (
     ASSISTANTS,
-    CONVERSATIONAL,
     RESUME_PHRASE_SET,
     SENTIMENT_JUNK_GROUPS,
     STRUCTURAL_GROUPS,
@@ -38,7 +37,7 @@ from cc_transcript.filterspec import (
 
 def test_keep_only() -> None:
     assert keep_only("user") == Clause(KindIs(frozenset({"user"})), negate=True)
-    assert keep_only("user", "assistant") == Clause(KindIs(CONVERSATIONAL), negate=True)
+    assert keep_only("user", "assistant") == Clause(KindIs(frozenset({"user", "assistant"})), negate=True)
 
 
 def test_drop_synthetic() -> None:

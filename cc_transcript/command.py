@@ -12,16 +12,12 @@ permission-style prefix (``"git commit"``, ``"docker compose"``).
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING
 
 from cc_transcript._native import Command as Command
 from cc_transcript._native import CommandLine as CommandLine
 from cc_transcript._native import CommandLineQuery as CommandLineQuery
 from cc_transcript._native import Occurrence as Occurrence
 from cc_transcript._native import Redirect as Redirect
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 parse_command_line = lru_cache(maxsize=4096)(CommandLine.parse)
 
@@ -39,10 +35,3 @@ def command_prefixes(command: str) -> tuple[str, ...]:
         ('git push', 'echo')
     """
     return parse_command_line(command).prefixes
-
-
-def bulk_command_prefixes(commands: Sequence[str]) -> list[tuple[str, ...]]:
-    """``command_prefixes`` over many commands at once, on the Rust fast path."""
-    from cc_transcript import _native
-
-    return [tuple(prefixes) for prefixes in _native.command_prefixes(list(commands))]

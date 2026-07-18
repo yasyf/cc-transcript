@@ -6,8 +6,8 @@ the confidence-scoring stages each detector folds over a candidate, the provenan
 classification set, and the review-format policy. Its JSON contract
 (:func:`mining_spec_to_json`) is executed solely by the Rust backend.
 
-Confidence scoring is an ordered tuple of :class:`ConfStage` folded over a
-:class:`ScoreCtx`. :class:`NoiseIfStructural` short-circuits to noise like
+Confidence scoring is an ordered tuple of :class:`ConfStage` interpreted by the
+Rust backend. :class:`NoiseIfStructural` short-circuits to noise like
 :class:`~cc_transcript.sentiment.scorespec.FrustrationShortCircuit`. The stage order
 in :data:`CALIBRATED_SPEC` and :data:`USER_MESSAGE_SPEC` reproduces the historical
 ``firm → +substantive → −hedged`` and ``structural → firm − short + proximate``
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from functools import reduce
 from typing import TYPE_CHECKING, Literal, NewType
 
 import orjson
@@ -31,12 +30,11 @@ import orjson
 from cc_transcript.filterspec import (
     HEDGE_GROUPS,
     STRUCTURAL_NOISE_GROUPS,
-    compile_groups,
 )
 from cc_transcript.literals import literal_str
-from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence, firm
+from cc_transcript.mining.confidence import MEDIUM, NONE, CandidateSignal, Confidence
 from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, StructuredFormat
-from cc_transcript.tools import expand_tool_names, matches_names
+from cc_transcript.tools import expand_tool_names
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -78,13 +76,6 @@ TIGHT_PROXIMITY = 2
 
 Provenance = Literal["typed", "surfaced", "claude"]
 DEFAULT_SURFACES: frozenset[Provenance] = frozenset({"typed", "surfaced"})
-
-
-@dataclass(frozen=True, slots=True)
-class ScoreCtx:
-    text: str
-    index: int
-    trigger: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +140,7 @@ ConfStage = Base | BumpIfSubstantive | DemoteIfHedged | DemoteIfShort | BumpIfPr
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceSpec:
-    """An ordered tuple of :class:`ConfStage` folded over a :class:`ScoreCtx`."""
+    """An ordered tuple of :class:`ConfStage` interpreted by the Rust backend."""
 
     stages: tuple[ConfStage, ...]
 
@@ -187,8 +178,8 @@ class RegexReviewFormat:
     The comment is built from ``comment_groups`` in order: each matched group is
     stripped first, groups that are unmatched or empty after stripping are skipped,
     and the remaining parts are joined with ``join``. Line groups are stripped then
-    parsed as integers; an unmatched or unparseable value yields ``None``. Both
-    backends implement exactly these semantics.
+    parsed as integers; an unmatched or unparseable value yields ``None``. The Rust
+    executor implements exactly these semantics.
 
     Attributes:
         name: The format's identifier.
@@ -273,94 +264,10 @@ class MiningSpec:
     denial_excluded_tools: frozenset[str] = DENIAL_EXCLUDED_TOOLS
 
 
-def run_confidence(spec: ConfidenceSpec, ctx: ScoreCtx, base: CandidateSignal) -> CandidateSignal:
-    """Folds ``spec``'s stages over ``ctx``, seeded by ``base``.
-
-    A :class:`NoiseIfStructural` hit short-circuits to its band with only its reason,
-    like the score spec's :class:`~cc_transcript.sentiment.scorespec.FrustrationShortCircuit`.
-    """
-    for stage in spec.stages:
-        if isinstance(stage, NoiseIfStructural) and compile_groups(stage.groups, stage.ignore_case).search(ctx.text):
-            return CandidateSignal(stage.band, (stage.reason,), base.durable)
-    return reduce(lambda signal, stage: apply_conf_stage(stage, ctx, signal), spec.stages, base)
-
-
-def apply_conf_stage(stage: ConfStage, ctx: ScoreCtx, signal: CandidateSignal) -> CandidateSignal:
-    match stage:
-        case Base(band=band, reason=reason):
-            return CandidateSignal(band, (*signal.reasons, reason), signal.durable)
-        case BumpIfSubstantive(groups=groups, delta=delta, min_words=mw, ignore_case=ic, reason=reason) if (
-            len(ctx.text.split()) > mw and not compile_groups(groups, ic).search(ctx.text)
-        ):
-            return bump(signal, delta, reason)
-        case DemoteIfHedged(groups=groups, delta=delta, ignore_case=ic, reason=reason) if compile_groups(
-            groups, ic
-        ).search(ctx.text):
-            return bump(signal, delta, reason)
-        case DemoteIfShort(max_words=mw, delta=delta, reason=reason) if len(ctx.text.split()) <= mw:
-            return bump(signal, delta, reason)
-        case BumpIfProximate(within=within, delta=delta, reason=reason) if (
-            ctx.trigger is not None and ctx.index - ctx.trigger <= within
-        ):
-            return bump(signal, delta, reason)
-        case _:
-            return signal
-
-
 def bump(signal: CandidateSignal, delta: float, reason: str) -> CandidateSignal:
     return CandidateSignal(
         Confidence(min(1.0, max(0.0, signal.confidence + delta))), (*signal.reasons, reason), signal.durable
     )
-
-
-def calibrated(spec: ConfidenceSpec, text: str, *, seed: str) -> CandidateSignal:
-    """Scores ``text`` by folding ``spec`` over a :class:`Base` seeded with ``seed``."""
-    return run_confidence(spec, ScoreCtx(text, 0, None), firm(seed))
-
-
-def score_user_message(spec: ConfidenceSpec, text: str, index: int, trigger: int | None) -> CandidateSignal:
-    """Scores a transcript user message by folding ``spec`` over its context."""
-    return run_confidence(spec, ScoreCtx(text, index, trigger), CandidateSignal(NONE, (), True))
-
-
-def classify_provenance(spec: ProvenanceSpec, tool_name: str | None, *, is_sidechain: bool) -> Provenance:
-    match (tool_name, is_sidechain):
-        case (None, _):
-            return "typed"
-        case (name, False) if not matches_names(name, spec.subagent_tools):
-            return "surfaced"
-        case _:
-            return "claude"
-
-
-def regex_review_comments(fmt: RegexReviewFormat, text: str) -> tuple[ReviewComment, ...]:
-    """Extracts comments from ``text`` per ``fmt``'s declarative group map."""
-    pattern = compile_groups(fmt.groups, fmt.ignore_case, multiline=fmt.multiline)
-    return tuple(
-        ReviewComment(
-            file=group_value(match, fmt.file_group),
-            line_start=int_group(match, fmt.line_start_group),
-            line_end=int_group(match, fmt.line_end_group),
-            comment=fmt.join.join(
-                part for index in fmt.comment_groups if (part := (match.group(index) or "").strip())
-            ),
-        )
-        for match in pattern.finditer(text)
-    )
-
-
-def group_value(match: re.Match[str], index: int | None) -> str | None:
-    return None if index is None else match.group(index)
-
-
-def int_group(match: re.Match[str], index: int | None) -> int | None:
-    if index is None or (value := match.group(index)) is None:
-        return None
-    try:
-        return int(value.strip())
-    except ValueError:
-        return None
-
 
 def conf_spec_to_dict(spec: ConfidenceSpec) -> dict[str, Any]:
     return {"stages": [conf_stage_to_dict(stage) for stage in spec.stages]}

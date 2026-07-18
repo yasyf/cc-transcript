@@ -23,8 +23,6 @@ from cc_transcript.filterspec import (
     WordCountAtMost,
     annotate_spec,
     apply_spec,
-    interrupt_marker,
-    is_agent_injection,
     keep,
     labels_for,
     spec_to_json,
@@ -247,45 +245,6 @@ def test_role_reminder_is_agent_injection_noise() -> None:
     s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
     assert not keep(user("[Role Reminder: You are a Coordinator. You NEVER edit files."), s)
     assert keep(user("remind me what the coordinator role does"), s)
-
-
-AGENT_INJECTION_ROWS = [
-    pytest.param("<teammate-message from='reviewer'>please rebase</teammate-message>", True, id="teammate-message"),
-    pytest.param("<scheduled-task id='7'>run the suite</scheduled-task>", True, id="scheduled-task"),
-    pytest.param("[Role Reminder: You are a Coordinator.", True, id="role-reminder-head-anchored"),
-    pytest.param("# Augment Agent\nyou have these tools", True, id="augment-agent-head-anchored"),
-    # Leading whitespace before the marker is tolerated — still a banner.
-    pytest.param("   <teammate-message from='mate'>ping</teammate-message>", True, id="teammate-message-leading-ws"),
-    # A real injected banner BEGINS with its marker; a relay tag mentioned mid-text is authored, not injected.
-    pytest.param("as noted in the <teammate-message> above", False, id="teammate-tag-mid-text-no-match"),
-    pytest.param("Why did the transcript contain <teammate-message from=a>?", False, id="authored-prompt-about-tag"),
-    pytest.param("discussing the [Role Reminder] banner mid-sentence", False, id="role-reminder-mid-text-no-match"),
-    # A combining mark (U+0301) after the tag name is not a portable word boundary — not a banner on either backend.
-    pytest.param("<teammate-message\u0301>", False, id="teammate-message-combining-mark"),
-    pytest.param("remind me what the teammate coordinator does", False, id="plain-prose"),
-]
-
-
-@pytest.mark.parametrize(("text", "injected"), AGENT_INJECTION_ROWS)
-def test_is_agent_injection_helper(text: str, injected: bool) -> None:
-    assert is_agent_injection(text) is injected
-
-
-@pytest.mark.parametrize(("text", "injected"), AGENT_INJECTION_ROWS)
-def test_is_agent_injection_matches_agent_injection_group_drop(text: str, injected: bool) -> None:
-    s = spec(Clause(TextMatchesAny(AGENT_INJECTION_GROUPS), applies_to=frozenset({"user"})))
-    assert is_agent_injection(text) is (not keep(user(text), s))
-
-
-def test_interrupt_marker_ascii_pins_leading_i() -> None:
-    assert (
-        interrupt_marker("  [request INTERRUPTED by user for tool use]")
-        == "[request INTERRUPTED by user for tool use]"
-    )
-    # The leading "i" is ASCII-pinned: re.IGNORECASE must no longer fold the dotted/
-    # dotless-I forms (U+0130/U+0131) that Rust regex never matched — Rust parity.
-    assert interrupt_marker("[Request ınterrupted by user]") is None
-    assert interrupt_marker("[Request İnterrupted by user]") is None
 
 
 def test_applies_to_gates_evaluation() -> None:

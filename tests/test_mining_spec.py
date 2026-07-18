@@ -1,6 +1,4 @@
-"""The declarative mining spec: JSON round-trip and the regex-review-format
-extractor that the Rust backend must reproduce.
-"""
+"""The declarative mining spec and its JSON contract."""
 
 from __future__ import annotations
 
@@ -20,7 +18,6 @@ from cc_transcript.mining import (
 from cc_transcript.mining.confidence import HIGH, MEDIUM, CandidateSignal
 from cc_transcript.mining.signals import MiningSignal
 from cc_transcript.mining.sourcekind import REVIEW_COMMENT
-from cc_transcript.mining.spec import regex_review_comments
 from cc_transcript.models import CcVersion, EntryMeta, EventUuid, SessionId
 from tests import support
 
@@ -144,41 +141,6 @@ def test_review_spec_to_json_serializes_each_format_arm() -> None:
         "confirmedHigh",
         "confirmedCritical",
     ]
-
-
-def test_regex_review_comments_joins_claim_and_suggestion() -> None:
-    text = (
-        "- file: a.py:24\n- theme: bug\n"
-        "- claim: this leaks a file descriptor\n- suggestion: use a context manager"
-    )
-    comments = regex_review_comments(CONDUCTOR_FINDING, text)
-    assert comments[0].file == "a.py"
-    assert comments[0].line_start == 24
-    assert comments[0].line_end is None
-    assert comments[0].comment == "this leaks a file descriptor use a context manager"
-
-
-def test_regex_review_comments_skips_missing_optional_group() -> None:
-    text = "- file: b.py:9\n- claim: only a claim here"
-    comments = regex_review_comments(CONDUCTOR_FINDING, text)
-    assert comments[0].comment == "only a claim here"
-
-
-def test_regex_review_comments_matches_legacy_extractor_byte_for_byte() -> None:
-    text = (
-        "- file: a.py:24\n- theme: bug\n"
-        "- claim: this leaks a file descriptor\n- suggestion: use a context manager"
-    )
-    legacy = tuple(
-        (
-            match.group("file"),
-            int(match.group("line")),
-            " ".join(part.strip() for part in (match.group("claim"), match.group("suggestion")) if part),
-        )
-        for match in CONDUCTOR_FINDING_RE.finditer(text)
-    )
-    ported = tuple((c.file, c.line_start, c.comment) for c in regex_review_comments(CONDUCTOR_FINDING, text))
-    assert ported == legacy
 
 
 def meta(uuid: str) -> EntryMeta:

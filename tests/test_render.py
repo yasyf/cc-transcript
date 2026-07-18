@@ -7,13 +7,10 @@ from typing import Any
 import pytest
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.filterspec import tool_names
 from cc_transcript.models import (
     AssistantEvent,
     ModeEvent,
-    OtherEvent,
     SessionId,
-    ToolUseId,
     UserEvent,
 )
 from cc_transcript.render import (
@@ -71,12 +68,6 @@ def assistant(
 def mode(value: str = "plan", *, session_id: str = "sess-1") -> ModeEvent:
     event = testkit.parse_event(testkit.mode_line(value, session_id=session_id))
     assert isinstance(event, ModeEvent)
-    return event
-
-
-def other(type: str) -> OtherEvent:
-    event = testkit.parse_event(testkit.other_line(type))
-    assert isinstance(event, OtherEvent)
     return event
 
 
@@ -218,18 +209,3 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
     )
     assert render_session(act, budget=Budget()) == "user: one\nassistant: ack\n\nuser: two"
-
-
-def test_tool_names_correlates_ids_across_events() -> None:
-    events = (
-        user("q"),
-        assistant(
-            blocks=(
-                testkit.tool_use("t1", "Read", {"file_path": "/x"}),
-                testkit.tool_use("t2", "Bash", {"command": "ls"}),
-            ),
-            stop_reason="tool_use",
-        ),
-        other("summary"),
-    )
-    assert tool_names(events) == {ToolUseId("t1"): "Read", ToolUseId("t2"): "Bash"}

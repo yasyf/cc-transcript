@@ -31,7 +31,7 @@ Avoid intermediate variables. Chain operations or return directly.
 # Good
 def expand_tool_names(name: str) -> set[str]:
     return (base := set(name.split("|"))) | {
-        alias for n in base for alias in (TOOL_ALIASES.get(n), TOOL_ALIASES_REVERSE.get(n)) if alias
+        alias for n in base if (alias := TOOL_ALIASES.get(n))
     }
 
 # Bad

@@ -47,20 +47,6 @@ from cc_transcript.mining.confidence import (
     weak,
 )
 from cc_transcript.mining.engine import mine, rehydrate_signal
-from cc_transcript.mining.filterspec import (
-    CandidateClause,
-    CandidateFilterSpec,
-    CandidatePredicate,
-    ConfidenceAtLeast,
-    HasReason,
-    IsDurable,
-    SourceKindIn,
-    apply_candidate_filter,
-    at_least,
-    build_candidate_filter,
-    keep_candidate,
-    only_kinds,
-)
 from cc_transcript.mining.formats import (
     ReviewComment,
     StructuredFormat,

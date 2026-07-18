@@ -1,21 +1,8 @@
-"""Shared projector and hand-built edge cases for the tool-call parity golden.
-
-``project`` lowers a parsed ``ToolCall``/``ToolResult`` dataclass into the plain,
-JSON-native dict the Rust ``toolcall_parse``/``toolresult_parse`` pyfunctions emit:
-``cls`` (the dataclass name) plus every field — ``raw`` included, since Rust retains
-it and consumers read it — recursing through nested dataclasses (``EditSpan``,
-``QuestionAnnotation``), tuples, lists, and mappings. ``AskUserQuestionResult`` also
-projects its derived ``questions`` property, the one raw-derived observable the
-typed fields do not already carry.
-"""
+"""Hand-built edge cases for the tool-call parity golden."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
 from typing import Any
-
-from cc_transcript.tools import AskUserQuestionResult
 
 # (tool_name, input) — aliases, MCP names, loose-value preservation, coercion quirks.
 EDGE_CALLS: list[tuple[str, dict[str, Any]]] = [
@@ -32,7 +19,7 @@ EDGE_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("Bash", {"command": "ls", "timeout": 1.5, "description": 5, "run_in_background": "yes"}),
     ("Bash", {"command": "ls", "timeout": None}),
     ("Bash", {"command": "big", "timeout": 18446744073709551617}),
-    # key_of returns the first non-null value verbatim, not the first string.
+    # Alias resolution keeps the first non-null value verbatim, not the first string.
     ("Agent", {"prompt": "p", "subagent_type": 5, "agent_type": "Explore"}),
     ("Workflow", {"scriptPath": 5, "script_path": "/s"}),
     # EditCall.replace_all is not coerced (only EditSpan is): 1 stays 1, null stays None.
@@ -175,16 +162,3 @@ STRICT_RAISERS: list[tuple[str, object]] = [
     ("Bash", None),
     ("Bash", [1, 2]),
 ]
-
-
-def project(obj: object) -> object:
-    if is_dataclass(obj) and not isinstance(obj, type):
-        result = {"cls": type(obj).__name__} | {f.name: project(getattr(obj, f.name)) for f in fields(obj)}
-        if isinstance(obj, AskUserQuestionResult):
-            result["questions"] = project(obj.questions)
-        return result
-    if isinstance(obj, tuple | list):
-        return [project(item) for item in obj]
-    if isinstance(obj, Mapping):
-        return {key: project(value) for key, value in obj.items()}
-    return obj
