@@ -3,7 +3,7 @@
 :func:`extract_correction` harvests the candidate incorrect edits around a
 feedback anchor (deterministically, via :mod:`cc_transcript.evidence`), then picks
 the single edit the feedback faults and appends that one row to the shared
-ledger. The pick is an LLM call by default — lifted from cc-pushback's enrich
+ledger. The pick is an LLM call by default — lifted from cc-steer's enrich
 prompt — and degrades to the best-overlap candidate when no LLM backend is ready
 (:func:`usable_backend` returns None). The pick keys to the candidate's index, so
 the row carries the real cross-language ``incorrect_digest`` from the harvested

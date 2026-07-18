@@ -189,7 +189,7 @@ pushback_spec = build_spec(
 )
 ```
 
-This is the shape `cc-pushback` composes: the library ships the primitives — the
+This is the shape `cc-steer` composes: the library ships the primitives — the
 predicates, builders, and named categories — and the consumer owns the policy that
 combines them. For a walkthrough of designing a spec for your own use case, see
 [Compose your own policy](04-compose-your-own-policy.qmd).

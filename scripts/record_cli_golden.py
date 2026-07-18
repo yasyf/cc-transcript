@@ -1,7 +1,7 @@
 """Record the hermetic CLI golden transcripts under ``tests/testdata/cli_golden/``.
 
 Regenerates the deterministic corpus (``scripts/gen_corpus.py``), then runs the
-current Python CLI over it and captures exact stdout + stderr + exit code for each
+CLI over it and captures exact stdout + stderr + exit code for each
 command, so a later phase re-runs this script and ``git diff`` shows any behavioral
 drift. An empty ``.err`` file pins "no stderr" as part of the contract.
 

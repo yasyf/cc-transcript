@@ -1,6 +1,6 @@
 [project]
 name = "cc-transcript"
-version = "13.0.0"
+version = "14.1.1" # informational — releases stamp the version from the git tag
 description = "Grep every Claude Code session you've ever run."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -72,7 +72,6 @@ include = ["cc_transcript/sentiment/data/*.tsv", "cc_transcript/sentiment/data/e
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--tb=short", "-q"]
 markers = [
-    "unit: Pure unit tests",
     "integration: Integration tests",
 ]
 

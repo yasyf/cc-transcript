@@ -13,7 +13,7 @@ So a consumer owns its policy. Not as scattered `if` branches threaded through t
 ingestion code, but as **data** — a `FilterSpec` and a `ScoreSpec` declared once,
 in one place, from the small builders the library exports. This guide is the
 capstone: it puts both halves into a single `policy.py` the way a real consumer
-(like `cc-sentiment` or `cc-pushback`) would write it.
+(like `cc-sentiment` or `cc-steer`) would write it.
 
 The two halves are taught in detail elsewhere — see the
 [Filtering guide](01-filtering-events.qmd) for the filter builders and predicate
@@ -191,6 +191,6 @@ predicate classes (`KindIs`, `MetaFlag`, `TextMatchesAny`, …) and shared sets 
 `TRIVIAL_ACK_SET`. If a name is not re-exported from one of those namespaces, it is
 not part of the policy surface.
 
-`cc-sentiment` and `cc-pushback` are the reference consumers: each owns a
+`cc-sentiment` and `cc-steer` are the reference consumers: each owns a
 `policy.py` of exactly this shape, and each is a worked example of the library's
 one promise — a faithful parse, with the policy living in your code, as data.
