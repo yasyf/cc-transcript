@@ -4,9 +4,11 @@
 
 module: cc_transcript
 display_name: cc-transcript
-# Dynamic griffe analysis is REQUIRED: cc_transcript's public API re-exports through
-# the __init__ façade, and static analysis drops ~21 of them as cyclic aliases
-# (TranscriptEvent, ContentBlock, ToolCall/ToolResult, PRICING, …). Keep it true.
+# The reference renders through STATIC griffe over the generated cc_transcript/_native.pyi.
+# Dynamic mode can't: the public-API union aliases (TranscriptEvent, ContentBlock,
+# ToolCall, …) are types.UnionType with no __module__, so griffe's dynamic loader
+# self-aliases them and the CyclicAliasError flips the whole reference to static. Left
+# true because great-docs applies that fallback itself; see cc-notes 4e18bcca.
 dynamic: true
 repo: https://github.com/yasyf/cc-transcript
 site_url: "https://yasyf.github.io/cc-transcript/"
