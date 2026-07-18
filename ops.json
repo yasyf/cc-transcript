@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"session":"c7ba18bf-524f-4a57-a209-fcf723446a07","ops":[{"kind":"set_criterion_status","id":"ae571bc224e9975faba22f615aba968a","status":"met","note":"highlight.py consumes cc_transcript.nlp; tokenize_spans/WORD_BOUNDARY_PATTERN/local negation deleted in the rebased branch that shipped in v0.2.133."}]}
+{"v":1,"lamport":5,"session":"c7ba18bf-524f-4a57-a209-fcf723446a07","ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"e09d39f51ec8faa891ff8898d54f49d32003d53b"}]}
