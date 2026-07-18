@@ -239,7 +239,6 @@ EXPORTS: dict[str, str] = {
             "drop_synthetic",
             "keep_only",
         ),
-        "cc_transcript.store": ("FileStateStore",),
         "cc_transcript.watch": ("WatchEvent", "Watcher"),
     }.items()
     for name in names

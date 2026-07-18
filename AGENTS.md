@@ -11,7 +11,9 @@ cc-transcript/
 │   ├── __init__.py     # The platform façade: the one-spine public API re-exports
 │   ├── models.py       # Typed superset event model (the central contract)
 │   ├── ids.py          # Identity primitives shared by every layer of the platform
+│   ├── literals.py     # Typed accessors over the native embedded_literals manifest
 │   ├── discovery.py    # Locating transcript files under ~/.claude/projects
+│   ├── watch.py        # Live transcript tailing: drain each event freshly appended to the projects tree
 │   ├── parser.py       # parse + stream — the native parse entry points (path or bytes → Transcript views)
 │   ├── filterspec.py   # Declarative FilterSpec: typed predicate clauses the native core compiles, plus the CC-protocol text layer (denial/interrupt markers)
 │   ├── builders.py     # Composable spec builders (keep_only, drop_junk, NOISE_SPEC, …)
@@ -24,14 +26,15 @@ cc-transcript/
 │   ├── query.py        # Session-level queries over lifted activity
 │   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
 │   ├── evidence.py     # Evidence harvest around a feedback anchor
-│   ├── ledger.py       # SyncLedger — the append-only SQLite base under both family ledgers
+│   ├── ledger.py       # SyncLedger + the shared sqlite open ritual under decisions.py and heartbeats.py
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
+│   ├── heartbeats.py   # HeartbeatLog — dispatch-heartbeat upserts in decisions.db
 │   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes
 │   ├── disktruth.py    # What actually hit disk, per cc-review's turn ledger
 │   ├── cost.py         # Token-usage → USD cost model (cost_of, PRICING)
 │   ├── render.py       # The one renderer — every cut happens here, under a Budget
-│   ├── store.py        # FileStateStore — SQLite ingestion-state tracking
-│   ├── mining/         # Feedback-mining domain: detectors, confidence, feedback store
+│   ├── nlp.py          # The UDPipe-backed NLP substrate: typed tokens with POS, offsets, and negation
+│   ├── mining/         # Feedback-mining domain: detectors, confidence, the composed feedback store
 │   ├── judge/          # LLM verdict passes over mined feedback
 │   ├── extract/        # LLM-grounded correction extractor: evidence + judge, one pick
 │   └── sentiment/      # Sentiment domain: event buckets + composable score spec
@@ -150,6 +153,14 @@ Reach for your **LSP** when the answer must be exhaustive/structural (findRefere
   equality, full manifest coverage, and no re-declaration. Hand-written `// Parity:`
   comments cite the Python reference a port reproduces by symbol name
   (`command.py CommandLine.splice`), never line numbers.
+- **The store tier is native.** `feedback.db` and the corrections ledger are owned by
+  Rust engines (`rust/crates/core/src/{feedback,corrections}.rs`) — one SQLite library
+  per file per process. Python composes, never subclasses: a consumer holds a
+  `mining.FeedbackStore` configured by a frozen `StoreSchema` (extra DDL, event
+  columns, migrations, verdict naming, event filter) and adds its domain methods
+  around it. The domain layering law follows the same split: policy is declared in
+  Python as frozen spec dataclasses with a JSON contract, the Rust core is the sole
+  executor, and only LLM orchestration (spawnllm) plus policy declaration stay Python.
 - **Build on the lifted layers.** New analysis features consume `activity`/`query`/
   `facts` or a domain package — never re-parse raw events — unless the feature *is*
   the raw layer. The fences in `tests/test_fence.py` and `tests/test_import_weight.py`

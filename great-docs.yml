@@ -220,12 +220,20 @@ reference:
       - subagent_paths
       - TranscriptExpiredError
       - CLAUDE_PROJECTS_DIR
-      - FileStateStore
   - title: Watch
     desc: Live transcript tailing — byte-offset polling that yields each appended event exactly once.
     contents:
       - Watcher
       - WatchEvent
+  - title: Activity probe
+    desc: Disk-only session-activity verdicts over one transcript — captain-hook's is_waiting oracle, read straight from the file.
+    contents:
+      - activity_probe.SessionActivityProbe
+      - activity_probe.session_activity_probe
+  - title: Heartbeats
+    desc: Dispatch-heartbeat liveness records in the shared decisions.db ledger.
+    contents:
+      - heartbeats.HeartbeatLog
   - title: Notifications
     desc: The harness notification-delivery queue, replayed from a session's events.
     contents:
@@ -366,13 +374,15 @@ reference:
       - mining.ReviewFormat
       - mining.extract_structured
       - mining.FeedbackStore
+      - mining.StoreSchema
+      - mining.ColumnMigration
+      - mining.TransactionConflictError
       - mining.Stats
       - mining.sample_windows
   - title: Judge
     desc: LLM verdict passes over the mined corpus — structured judging, audits, and eval math.
     contents:
       - judge.VerdictLike
-      - judge.VerdictStoreMixin
       - judge.run_verdicts
       - judge.sample_audit
       - judge.Metrics

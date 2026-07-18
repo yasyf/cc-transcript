@@ -19,6 +19,14 @@
   equality, full manifest coverage, and no re-declaration. Hand-written `// Parity:`
   comments cite the Python reference a port reproduces by symbol name
   (`command.py CommandLine.splice`), never line numbers.
+- **The store tier is native.** `feedback.db` and the corrections ledger are owned by
+  Rust engines (`rust/crates/core/src/{feedback,corrections}.rs`) — one SQLite library
+  per file per process. Python composes, never subclasses: a consumer holds a
+  `mining.FeedbackStore` configured by a frozen `StoreSchema` (extra DDL, event
+  columns, migrations, verdict naming, event filter) and adds its domain methods
+  around it. The domain layering law follows the same split: policy is declared in
+  Python as frozen spec dataclasses with a JSON contract, the Rust core is the sole
+  executor, and only LLM orchestration (spawnllm) plus policy declaration stay Python.
 - **Build on the lifted layers.** New analysis features consume `activity`/`query`/
   `facts` or a domain package — never re-parse raw events — unless the feature *is*
   the raw layer. The fences in `tests/test_fence.py` and `tests/test_import_weight.py`

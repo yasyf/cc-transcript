@@ -121,6 +121,9 @@ fn render() -> pyo3_stub_gen::Result<(std::path::PathBuf, String)> {
         let qualified = regex::Regex::new(&format!(r"\b{short}\.{name}\b"))?;
         rendered = qualified.replace_all(&rendered, name.as_str()).to_string();
     }
+    // The repo commit hooks strip trailing whitespace per line and normalize
+    // the file to one terminating newline; emit exactly that shape so the
+    // committed stub byte-matches this render.
     let out = rendered
         .lines()
         .filter(|line| {
@@ -130,8 +133,11 @@ fn render() -> pyo3_stub_gen::Result<(std::path::PathBuf, String)> {
                     || rendered.contains(&format!("{short}."))
             })
         })
+        .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n")
+        .trim_end_matches('\n')
+        .to_string()
         + "\n";
 
     Ok((

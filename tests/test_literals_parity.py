@@ -37,6 +37,7 @@ def test_python_mirrors_read_from_native() -> None:
     from cc_transcript.corrections import CORRECTIONS_DDL
     from cc_transcript.filterspec import AGENT_INJECTION_GROUPS, INTERRUPT_MARKER_GROUPS, SENTIMENT_JUNK_GROUPS, group_pattern
     from cc_transcript.mining import confidence, signals, sourcekind, spec
+    from cc_transcript.mining.store import FEEDBACK_DDL
 
     literals = _native.embedded_literals()
 
@@ -69,6 +70,7 @@ def test_python_mirrors_read_from_native() -> None:
         "mining.NONE": confidence.NONE,
         "mining.LOW": confidence.LOW,
         "corrections.DDL": CORRECTIONS_DDL,
+        "feedback.FEEDBACK_DDL": FEEDBACK_DDL,
     }
     for key, value in scalars.items():
         assert value == literals[key], key
@@ -83,16 +85,19 @@ def test_python_mirrors_read_from_native() -> None:
     for key, groups in patterns.items():
         assert group_pattern(groups) == literals[key], key
 
-    # Native-only literals: the command parser reads these in Rust and no Python module
-    # mirrors them, so they carry no equality check here — only manifest coverage.
-    command_native_only = {
+    # Native-only literals: the command parser and the store engine read these in Rust and
+    # no Python module mirrors them, so they carry no equality check here — only coverage.
+    native_only = {
         "command.WRAPPER_COMMANDS",
         "command.MULTI_LEVEL_TOOLS",
         "command.COMPOUND_OPS",
         "command.ASSIGNMENT_PATTERN",
+        "feedback.FILE_SCHEMA",
+        "feedback.VERDICT_DDL_TEMPLATE",
+        "feedback.EVENT_COLUMNS",
     }
 
-    manifest = set(scalars) | set(patterns) | command_native_only
+    manifest = set(scalars) | set(patterns) | native_only
     assert manifest == set(literals), set(literals) ^ manifest
 
 

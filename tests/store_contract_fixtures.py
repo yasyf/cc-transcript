@@ -1,21 +1,17 @@
 """Store-tier contract fixtures: the one module the native-store flip re-points.
 
 Every construction of the three store configurations — the platform default, a
-cc-steer-shaped subclass, and a captain-hook-shaped subclass — lives here, built
-against today's synchronous subclassing API (:class:`VerdictStoreMixin` over
-:class:`FeedbackStore` over :class:`FileStateStore`). ``test_store_contract.py``
-talks to a store only through the helpers this module exports — never
-``store.store.conn`` directly — so the later swap (Python impl → native-engine
-facade) edits this module alone and every assertion in the suite carries over
-verbatim.
+cc-steer-shaped store, and a captain-hook-shaped store — lives here, built against
+the native-engine facade (:class:`FeedbackStore` composed with a
+:class:`StoreSchema`). ``test_store_contract.py`` talks to a store only through the
+helpers this module exports — never a raw connection — so this module carries the
+whole flip and every assertion in the suite carries over verbatim.
 
-The two downstream shapes are replicated locally rather than imported: cc-steer is
-on the v13-era async ``aiosqlite`` API, so its schema (``origin_path`` /
-``quarantined_reason`` columns, the ``triage`` verdict naming, the triage/refine/
-gate views) is mirrored here against the sync API; captain-hook is already sync but
-its store pulls in the whole review package, so its six review tables and its
-guarded-ALTER migration runner are mirrored here too. Both mirrors reproduce the
-schema and observable behaviour the downstream subclass produces, not its code.
+The two downstream shapes are replicated locally rather than imported: cc-steer's
+schema (``origin_path`` / ``quarantined_reason`` columns, the ``triage`` verdict
+naming, the triage/refine/gate views) and captain-hook's six review tables plus its
+guarded-ALTER migrations are mirrored here. Both mirrors reproduce the schema and
+observable behaviour the downstream store produces, not its code.
 """
 
 from __future__ import annotations
@@ -24,29 +20,27 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from importlib.util import find_spec
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, Self
 
 import pytest
 
 from cc_transcript.context import ContextWindow, TurnRef
 from cc_transcript.ids import EventRef, EventUuid, SessionId
 from cc_transcript.judge import similar
-from cc_transcript.judge.verdicts import EVENT_COLUMNS, VerdictStoreMixin, hydratable
 from cc_transcript.mining.candidates import DedupKey, FeedbackCandidate
 from cc_transcript.mining.confidence import CandidateSignal, Confidence
 from cc_transcript.mining.sourcekind import SourceKind
-from cc_transcript.mining.store import FEEDBACK_DDL as BASE_FEEDBACK_DDL
-from cc_transcript.mining.store import FeedbackStore, event_row, now
-from cc_transcript.store import FileStateStore, TransactionConflictError
+from cc_transcript.mining.store import ColumnMigration, FeedbackStore, StoreSchema, TransactionConflictError, event_row, now
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
-# TransactionConflictError moves to mining.store at the flip; the suite imports it from here.
+# TransactionConflictError now lives in mining.store; the suite imports it from here.
 __all__ = [
     "CONFIG_NAMES",
     "FIXED_NOW",
+    "FileStateStore",
     "StoreClock",
     "TransactionConflictError",
     "candidate",
@@ -80,10 +74,7 @@ SCHEMA_QUERY = (
     "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name"
 )
 
-STEER_FEEDBACK_DDL = BASE_FEEDBACK_DDL.replace(
-    "  ingested_at TEXT NOT NULL\n",
-    "  ingested_at TEXT NOT NULL,\n  origin_path TEXT,\n  quarantined_reason TEXT\n",
-)
+STEER_EVENT_COLUMNS = ("origin_path TEXT", "quarantined_reason TEXT")
 STEER_ACCRUED_EMPTY_REASON = "accrued_context_empty"
 STEER_REBUILD_QUARANTINE_REASONS = (
     STEER_ACCRUED_EMPTY_REASON,
@@ -97,12 +88,6 @@ STEER_QUARANTINE_ELIGIBLE = (
     + ", ".join(f"'{reason}'" for reason in STEER_REBUILD_QUARANTINE_REASONS)
     + "))"
 )
-STEER_INSERT_EVENT = """
-INSERT OR IGNORE INTO feedback_events (
-  dedup_key, source_kind, session_id, event_uuid,
-  occurred_at, text, payload_json, context_json, cc_version, ingested_at, origin_path
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
 STEER_QUARANTINE_CONTEXT = f"""
 UPDATE feedback_events SET quarantined_reason = ?
 WHERE dedup_key = ? AND {STEER_QUARANTINE_ELIGIBLE}
@@ -283,6 +268,25 @@ CREATE TABLE IF NOT EXISTS pr_states (
 );
 """
 
+HOOK_CANDIDATE_MIGRATIONS: tuple[ColumnMigration, ...] = (
+    ColumnMigration("candidates", "generation", "generation INTEGER NOT NULL DEFAULT 1"),
+    ColumnMigration(
+        "candidates",
+        "resolved_at",
+        "resolved_at TEXT",
+        "UPDATE candidates SET resolved_at = updated_at WHERE status = 'accepted'",
+    ),
+    ColumnMigration("candidates", "origin_repo_key", "origin_repo_key TEXT"),
+    ColumnMigration("candidates", "pack_name", "pack_name TEXT"),
+    ColumnMigration(
+        "candidates",
+        "announced_status",
+        "announced_status TEXT",
+        "UPDATE candidates SET announced_status = status WHERE status NOT IN ('watching', 'pr_open')",
+    ),
+)
+HOOK_FEEDBACK_MIGRATIONS: tuple[ColumnMigration, ...] = (ColumnMigration("feedback_events", "triage", "triage TEXT"),)
+
 requires_judge = pytest.mark.skipif(
     not JUDGE_DEPS_PRESENT, reason="cc-transcript[judge] extra (sqlite-vec, model2vec, numpy) not installed"
 )
@@ -317,7 +321,6 @@ class StoreClock:
 def store_clock(monkeypatch: pytest.MonkeyPatch) -> StoreClock:
     clock = StoreClock()
     monkeypatch.setattr("cc_transcript.mining.store.now", clock)
-    monkeypatch.setattr("cc_transcript.judge.verdicts.now", clock)
     monkeypatch.setattr(__name__ + ".now", clock)
     return clock
 
@@ -361,12 +364,12 @@ def candidate(
 
 def query(store: object, sql: str, params: Sequence[object] = ()) -> list[dict[str, object]]:
     """Runs a read statement, returning rows as dicts (flip-safe)."""
-    return [dict(row) for row in store.store.conn.execute(sql, tuple(params))]  # type: ignore[attr-defined]
+    return store.store.sql(sql, tuple(params))  # type: ignore[attr-defined]
 
 
 def execute(store: object, sql: str, params: Sequence[object] = ()) -> None:
     """Runs one write statement, autocommitting or joining the open transaction (flip-safe)."""
-    store.store.conn.execute(sql, tuple(params))  # type: ignore[attr-defined]
+    store.store.execute(sql, tuple(params))  # type: ignore[attr-defined]
 
 
 def count(store: object, table: str, where: str = "", params: Sequence[object] = ()) -> int:
@@ -414,9 +417,9 @@ def reject_evidence_metadata_writes(store: object) -> None:
     )
 
 
-def _format_schema(rows: Sequence[dict[str, object]]) -> str:
+def _format_schema(rows: Sequence[Mapping[str, object]]) -> str:
     return "".join(
-        f"-- {row['type']} {row['name']} (on {row['tbl_name']})\n{(row['sql'] or '').strip()};\n\n" for row in rows
+        f"-- {row['type']} {row['name']} (on {row['tbl_name']})\n{(str(row['sql']) or '').strip()};\n\n" for row in rows
     )
 
 
@@ -435,49 +438,35 @@ def raw_schema_dump(path: Path) -> str:
         conn.close()
 
 
-class PlatformStore(VerdictStoreMixin, FeedbackStore):
-    """Config (a): platform default — generic ``verdicts`` / ``accepted`` / ``summary`` naming."""
+class FileStateStore:
+    """Flip shim: the deleted file-state store, re-expressed over the facade.
 
-    @classmethod
-    def open(cls, path: Path) -> Self:
-        return cls(FileStateStore.open(path, extra_schema=BASE_FEEDBACK_DDL + cls.verdicts_ddl()))
+    Serves the one contract test that builds a bare store from a standalone
+    ``extra_schema`` and then exercises the guarded-ALTER migration runner.
+    """
+
+    @staticmethod
+    def open(path: Path, *, extra_schema: str = "") -> FeedbackStore:
+        return FeedbackStore.open(path, StoreSchema(extra_ddl=(extra_schema,) if extra_schema else ()))
 
 
-class SteerStore(VerdictStoreMixin, FeedbackStore):
-    """Config (b): cc-steer shape (sync) — ``triage`` naming, quarantine column + event filter."""
+class ContractStore:
+    """Downstream-shaped wrapper: holds a :class:`FeedbackStore` and adds domain methods."""
 
-    VERDICT_TABLE: ClassVar[str] = "triage"
-    ACCEPTED_COLUMN: ClassVar[str] = "is_steering"
-    SUMMARY_COLUMN: ClassVar[str] = "what_claude_did"
-    EVENT_FILTER: ClassVar[str] = "e.quarantined_reason IS NULL"
+    def __init__(self, store: FeedbackStore) -> None:
+        self.store = store
 
-    @classmethod
-    def open(cls, path: Path) -> Self:
-        store = FileStateStore.open(
-            path,
-            extra_schema=STEER_FEEDBACK_DDL
-            + cls.verdicts_ddl()
-            + STEER_TRIAGE_VIEWS_DDL
-            + STEER_REFINE_DDL
-            + STEER_GATE_DDL,
-        )
-        return cls(store)
+    def close(self) -> None:
+        self.store.close()
 
     def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
-        ingested_at = now()
-        with self.store.transaction() as conn:
-            inserted: list[FeedbackCandidate] = []
-            for cand in candidates:
-                before = conn.total_changes
-                conn.execute(STEER_INSERT_EVENT, (*event_row(cand, ingested_at), path))
-                if conn.total_changes > before:
-                    inserted.append(cand)
-            conn.executemany(
-                STEER_QUARANTINE_CONTEXT,
-                [(STEER_ACCRUED_EMPTY_REASON, cand.dedup_key) for cand in inserted if not cand.window.before],
-            )
-            self.store.record_file(path, mtime)
-            return len(inserted)
+        return self.store.record_file_scan(path, mtime, candidates)
+
+    def file_mtimes(self) -> dict[str, float]:
+        return self.store.file_mtimes()
+
+    def events(self) -> list[dict[str, object]]:
+        return self.store.events()
 
     def unjudged(
         self,
@@ -488,110 +477,96 @@ class SteerStore(VerdictStoreMixin, FeedbackStore):
         refresh_summary: bool = False,
         probe_hydration: bool = True,
     ) -> list[dict[str, object]]:
-        self.ensure_verdict_schema()
-        if not refresh_summary:
-            sql = (
-                f"SELECT {EVENT_COLUMNS} FROM feedback_events e "
-                f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
-                "AND t.role = ? AND t.prompt_version = ? "
-                f"WHERE t.id IS NULL AND {self.EVENT_FILTER} ORDER BY e.id"
-            )
-            params: tuple[object, ...] = (role, prompt_version)
-            if limit is not None:
-                sql += " LIMIT ?"
-                params = (*params, limit)
-            return [dict(row) for row in self.store.conn.execute(sql, params)]
-        if limit == 0:
-            return []
-        sql = (
-            f"SELECT {EVENT_COLUMNS}, t.id AS verdict_id FROM feedback_events e "
-            f"LEFT JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
-            "AND t.role = ? AND t.prompt_version = ? "
-            f"WHERE {self.EVENT_FILTER} AND (t.id IS NULL OR t.fidelity = 'summary') "
-            "ORDER BY (t.id IS NOT NULL), e.id"
+        return self.store.unjudged(
+            role=role,
+            prompt_version=prompt_version,
+            limit=limit,
+            refresh_summary=refresh_summary,
+            probe_hydration=probe_hydration,
         )
-        params = (role, prompt_version)
-        kept: list[dict[str, object]] = []
-        if limit is None:
-            for raw in self.store.conn.execute(sql, params):
-                row = dict(raw)
-                fresh = row.pop("verdict_id") is None
-                if not probe_hydration or fresh or hydratable(str(row["context_json"])):
-                    kept.append(row)
-            return kept
-        offset = 0
-        while len(kept) < limit:
-            page = [dict(row) for row in self.store.conn.execute(sql + " LIMIT ? OFFSET ?", (*params, limit, offset))]
-            if not page:
-                break
-            offset += len(page)
-            for row in page:
-                fresh = row.pop("verdict_id") is None
-                if not probe_hydration or fresh or hydratable(str(row["context_json"])):
-                    kept.append(row)
-                    if len(kept) >= limit:
-                        break
-        return kept
 
     def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
-        self.ensure_verdict_schema()
-        cur = self.store.conn.execute(
-            f"SELECT {EVENT_COLUMNS}, t.category, t.{self.ACCEPTED_COLUMN} AS accepted, t.confidence, "
-            f"t.{self.SUMMARY_COLUMN} AS summary, t.rationale, t.model "
-            f"FROM feedback_events e JOIN {self.VERDICT_TABLE} t ON t.dedup_key = e.dedup_key "
-            f"WHERE t.role = ? AND t.prompt_version = ? AND {self.EVENT_FILTER} ORDER BY e.id",
-            (role, prompt_version),
+        return self.store.judged(role=role, prompt_version=prompt_version)
+
+    async def record_verdict(
+        self, key: DedupKey, verdict: object, *, role: str, prompt_version: int, model: str, fidelity: str
+    ) -> None:
+        self.store.record_verdict(
+            key, verdict, role=role, prompt_version=prompt_version, model=model, fidelity=fidelity  # type: ignore[arg-type]
         )
-        return [dict(row) for row in cur]
 
 
-@dataclass(frozen=True, slots=True)
-class ColumnMigration:
-    column: str
-    ddl: str
-    backfill: str | None = None
+class PlatformStore(ContractStore):
+    """Config (a): platform default — generic ``verdicts`` / ``accepted`` / ``summary`` naming."""
+
+    @classmethod
+    def open(cls, path: Path) -> Self:
+        return cls(FeedbackStore.open(path, StoreSchema()))
 
 
-HOOK_CANDIDATE_MIGRATIONS: tuple[ColumnMigration, ...] = (
-    ColumnMigration("generation", "generation INTEGER NOT NULL DEFAULT 1"),
-    ColumnMigration(
-        "resolved_at", "resolved_at TEXT", "UPDATE candidates SET resolved_at = updated_at WHERE status = 'accepted'"
-    ),
-    ColumnMigration("origin_repo_key", "origin_repo_key TEXT"),
-    ColumnMigration("pack_name", "pack_name TEXT"),
-    ColumnMigration(
-        "announced_status",
-        "announced_status TEXT",
-        "UPDATE candidates SET announced_status = status WHERE status NOT IN ('watching', 'pr_open')",
-    ),
-)
-HOOK_FEEDBACK_MIGRATIONS: tuple[ColumnMigration, ...] = (ColumnMigration("triage", "triage TEXT"),)
+class SteerStore(ContractStore):
+    """Config (b): cc-steer shape (sync) — ``triage`` naming, quarantine column + event filter."""
+
+    @classmethod
+    def open(cls, path: Path) -> Self:
+        return cls(
+            FeedbackStore.open(
+                path,
+                StoreSchema(
+                    extra_ddl=(STEER_TRIAGE_VIEWS_DDL, STEER_REFINE_DDL, STEER_GATE_DDL),
+                    event_columns=STEER_EVENT_COLUMNS,
+                    verdict_table="triage",
+                    accepted_column="is_steering",
+                    summary_column="what_claude_did",
+                    event_filter="e.quarantined_reason IS NULL",
+                ),
+            )
+        )
+
+    def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
+        ingested_at = now()
+        by_key = {str(cand.dedup_key): cand for cand in candidates}
+        with self.store.transaction() as db:
+            inserted = db.insert_candidates(
+                [list(event_row(cand, ingested_at)) for cand in candidates],
+                extras=[[path, None] for _ in candidates],
+            )
+            db.executemany(
+                STEER_QUARANTINE_CONTEXT,
+                [(STEER_ACCRUED_EMPTY_REASON, key) for key in inserted if not by_key[key].window.before],
+            )
+            db.record_file(path, mtime)
+            return len(inserted)
 
 
-class HookStore(VerdictStoreMixin, FeedbackStore):
+class HookStore(ContractStore):
     """Config (c): captain-hook shape — generic naming + review tables + guarded-ALTER migrations."""
 
     @classmethod
-    def open(cls, path: Path, *, busy_timeout_ms: int | None = None) -> Self:
-        store = cls(FileStateStore.open(path, extra_schema=BASE_FEEDBACK_DDL + cls.verdicts_ddl() + HOOK_REVIEW_DDL))
-        if busy_timeout_ms is not None:
-            store.store.conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-        store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)
-        store.migrate_columns("feedback_events", HOOK_FEEDBACK_MIGRATIONS)
-        return store
+    def open(cls, path: Path) -> Self:
+        return cls(
+            FeedbackStore.open(
+                path,
+                StoreSchema(
+                    extra_ddl=(HOOK_REVIEW_DDL,),
+                    migrations=HOOK_CANDIDATE_MIGRATIONS + HOOK_FEEDBACK_MIGRATIONS,
+                ),
+            )
+        )
 
     def migrate_columns(self, table: str, migrations: tuple[ColumnMigration, ...]) -> None:
-        def pending(conn: sqlite3.Connection) -> list[ColumnMigration]:
-            existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
-            return [migration for migration in migrations if migration.column not in existing]
+        def pending(columns: set[str]) -> list[ColumnMigration]:
+            return [migration for migration in migrations if migration.column not in columns]
 
-        if not pending(self.store.conn):
+        columns = {str(row["name"]) for row in query(self, f"PRAGMA table_info({table})")}
+        if not pending(columns):
             return
-        with self.store.transaction() as conn:
-            for migration in pending(conn):
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {migration.ddl}")
+        with self.store.transaction() as db:
+            columns = {str(row["name"]) for row in db.sql(f"PRAGMA table_info({table})")}
+            for migration in pending(columns):
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {migration.ddl}")
                 if migration.backfill is not None:
-                    conn.execute(migration.backfill)
+                    db.execute(migration.backfill)
 
 
 @dataclass(frozen=True, slots=True)

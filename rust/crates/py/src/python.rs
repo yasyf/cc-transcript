@@ -364,7 +364,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 #[pyfunction]
 #[gen_stub(override_return_type(type_repr = "dict[str, str | float | list[str]]", imports = ()))]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    use cc_transcript_core::literals::{command, corrections, mining, protocol};
+    use cc_transcript_core::literals::{command, corrections, feedback, mining, protocol};
 
     let dict = PyDict::new(py);
     dict.set_item("protocol.DENIAL_PREFIX", protocol::DENIAL_PREFIX)?;
@@ -435,6 +435,13 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("command.COMPOUND_OPS", command::COMPOUND_OPS)?;
     dict.set_item("command.ASSIGNMENT_PATTERN", command::ASSIGNMENT_PATTERN)?;
     dict.set_item("corrections.DDL", corrections::DDL)?;
+    dict.set_item("feedback.FILE_SCHEMA", feedback::FILE_SCHEMA)?;
+    dict.set_item("feedback.FEEDBACK_DDL", feedback::FEEDBACK_DDL)?;
+    dict.set_item(
+        "feedback.VERDICT_DDL_TEMPLATE",
+        feedback::VERDICT_DDL_TEMPLATE,
+    )?;
+    dict.set_item("feedback.EVENT_COLUMNS", feedback::EVENT_COLUMNS)?;
     Ok(dict)
 }
 

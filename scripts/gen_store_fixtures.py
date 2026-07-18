@@ -1,6 +1,6 @@
 """Generate the store-tier schema goldens and committed fixture databases.
 
-Freezes, for each of the three store configurations built via today's subclassing API
+Freezes, for each of the three store configurations built via the composition API
 (platform default, cc-steer-shaped, captain-hook-shaped), two artifacts that
 ``tests/test_store_contract.py`` pins:
 
@@ -70,9 +70,9 @@ def seed(store: object, name: str) -> None:
 
 
 def finalize(store: object) -> None:
-    conn = store.store.conn
-    conn.execute("VACUUM")
-    conn.execute("PRAGMA journal_mode = DELETE")
+    facade = store.store
+    facade.execute("VACUUM")
+    facade.sql("PRAGMA journal_mode = DELETE")
     store.close()
 
 
@@ -84,8 +84,7 @@ def clear(path: Path) -> None:
 def generate() -> None:
     TESTDATA.mkdir(parents=True, exist_ok=True)
     with mock.patch.object(fx, "now", lambda: fx.FIXED_NOW), \
-        mock.patch("cc_transcript.mining.store.now", lambda: fx.FIXED_NOW), \
-        mock.patch("cc_transcript.judge.verdicts.now", lambda: fx.FIXED_NOW):
+        mock.patch("cc_transcript.mining.store.now", lambda: fx.FIXED_NOW):
         for name in fx.CONFIG_NAMES:
             config = fx.CONFIGS[name]
             db_path = TESTDATA / config.fixture_db

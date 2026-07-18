@@ -2,8 +2,11 @@
 
 - core modules never import the domain packages (``sentiment``, ``mining``,
   ``judge``, ``extract``);
-- ``sentiment`` and ``mining`` never import each other, and neither imports
-  ``judge``; ``judge`` layers on ``mining`` only, never ``sentiment``;
+- ``sentiment`` and ``mining`` never import each other, and ``sentiment``
+  never imports ``judge``; ``judge`` layers on ``mining``, never
+  ``sentiment`` — and the ``mining`` store facade may lazily compose the
+  ``judge`` evidence tier, since the native store owns feedback.db
+  end-to-end (the eager-import fence below still binds);
   ``extract`` layers on ``judge``, and the lower domains never import it;
 - the top-level package re-exports core only;
 - importing core (and each domain package) needs no domain extra installed.
@@ -23,7 +26,6 @@ FORBIDDEN_EDGES = (
     ("sentiment", "mining"),
     ("mining", "sentiment"),
     ("sentiment", "judge"),
-    ("mining", "judge"),
     ("judge", "sentiment"),
     ("sentiment", "extract"),
     ("mining", "extract"),
@@ -99,7 +101,7 @@ def test_top_level_init_is_core_only() -> None:
 
 
 def test_core_imports_without_domain_extras() -> None:
-    for module in ("facts", "parser", "store", "filterspec"):
+    for module in ("facts", "parser", "filterspec"):
         importlib.import_module(f"cc_transcript.{module}")
     importlib.import_module("cc_transcript")
 

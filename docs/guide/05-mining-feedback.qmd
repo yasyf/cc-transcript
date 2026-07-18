@@ -287,7 +287,7 @@ judged, failed = await run_verdicts(rows, prompt_for, stub_judge, persist, concu
 ```
 
 In production the judge is `structured_judge` from `cc_transcript.judge` (it
-loads its model client lazily), rows come from `VerdictStoreMixin.unjudged`, and
+loads its model client lazily), rows come from `FeedbackStore.unjudged`, and
 `persist` is `record_verdict` — keyed by `(dedup_key, role, prompt_version,
 model)`, so re-running a pass judges only new rows. Verdicts are fidelity-aware:
 each records whether its context window rendered at full fidelity or from

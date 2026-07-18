@@ -207,10 +207,6 @@ from cc_transcript.render import (
     render_turn as render_turn,
 )
 
-from cc_transcript.store import (
-    FileStateStore as FileStateStore,
-)
-
 from cc_transcript.tools import (
     AskUserQuestionResult as AskUserQuestionResult,
     BashCall as BashCall,
@@ -312,7 +308,6 @@ __all__ = [
     "Fidelity",
     "FileAttribution",
     "FileRef",
-    "FileStateStore",
     "FilterSpec",
     "GitFix",
     "GlobCall",

@@ -87,4 +87,12 @@ from cc_transcript.mining.spec import (
     mining_spec_to_json,
     signal_to_dict,
 )
-from cc_transcript.mining.store import FEEDBACK_DDL, FeedbackStore, Stats, event_row
+from cc_transcript.mining.store import (
+    FEEDBACK_DDL,
+    ColumnMigration,
+    FeedbackStore,
+    Stats,
+    StoreSchema,
+    TransactionConflictError,
+    event_row,
+)
