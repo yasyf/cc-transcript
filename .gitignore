@@ -41,8 +41,9 @@ coverage.xml
 great-docs/
 docs/scripts/.gd-build/
 
-# Rust build output
-/target/
+# Rust build output — any cargo target dir variant, anywhere
+target/
+target-cargo/
 wheelhouse/
 
 # Swift bridge codegen and package build (swift/ itself is committed)
