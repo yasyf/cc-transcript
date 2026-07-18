@@ -190,7 +190,9 @@ impl CommandLine {
         // Nested inside an enumerated host's span: visible but span-less, like an absorbed word.
         let spans: Vec<Option<(usize, usize)>> = parts.iter().map(|(cmd, _)| cmd.span).collect();
         for (i, (cmd, _)) in parts.iter_mut().enumerate() {
-            let Some((start, end)) = cmd.span else { continue };
+            let Some((start, end)) = cmd.span else {
+                continue;
+            };
             let enclosed = spans.iter().enumerate().any(|(j, other)| {
                 j != i && matches!(other, Some((os, oe)) if *os <= start && end <= *oe && (*os, *oe) != (start, end))
             });
@@ -1057,7 +1059,10 @@ mod tests {
     // Both substitution positions get one treatment: the nested command is a first-class part.
     #[test]
     fn substitutions_enumerate_in_word_position_like_assignment_position() {
-        assert_eq!(execs(&CommandLine::parse("x=$(ccx repo overview)")), ["ccx"]);
+        assert_eq!(
+            execs(&CommandLine::parse("x=$(ccx repo overview)")),
+            ["ccx"]
+        );
         let word = CommandLine::parse("echo $(ccx repo overview)");
         assert_eq!(execs(&word), ["echo", "ccx"]);
         assert_eq!(word.parts[1].0.args, ["repo", "overview"]);
@@ -1071,7 +1076,10 @@ mod tests {
             ["$(which python)", "which"]
         );
         assert_eq!(execs(&CommandLine::parse("echo \"$(a)\"")), ["echo", "a"]);
-        assert_eq!(execs(&CommandLine::parse("tag=v$(git rev-parse HEAD) make")), ["make", "git"]);
+        assert_eq!(
+            execs(&CommandLine::parse("tag=v$(git rev-parse HEAD) make")),
+            ["make", "git"]
+        );
         // Redirect targets stay out, matching statement-level redirects.
         assert_eq!(execs(&CommandLine::parse("echo hi > $(target)")), ["echo"]);
     }
@@ -1115,7 +1123,9 @@ mod tests {
         let assign_only = CommandLine::parse("x=$(ccx repo overview)");
         assert_eq!(assign_only.parts[0].0.span, Some((4, 21)));
         assert_eq!(
-            assign_only.splice(&BTreeMap::from([(0, "ls".to_string())])).unwrap(),
+            assign_only
+                .splice(&BTreeMap::from([(0, "ls".to_string())]))
+                .unwrap(),
             "x=$(ls)"
         );
     }
