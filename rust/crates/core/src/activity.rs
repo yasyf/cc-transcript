@@ -622,7 +622,10 @@ pub struct TurnIndex<'a> {
 /// themselves, so the binding never reverse-maps a `*const Entry` or uuid back to a
 /// position (both last-write-wins on a slice that repeats an entry or uuid).
 /// `Some(openers)` supplies one turn-opening flag per entry in place of `opens_turn`.
-pub fn lift_session_index<'a>(entries: &[&'a Entry], openers: Option<&[bool]>) -> Vec<TurnIndex<'a>> {
+pub fn lift_session_index<'a>(
+    entries: &[&'a Entry],
+    openers: Option<&[bool]>,
+) -> Vec<TurnIndex<'a>> {
     let result_pos: HashMap<&'a str, usize> = entries
         .iter()
         .enumerate()
@@ -647,10 +650,13 @@ pub fn lift_session_index<'a>(entries: &[&'a Entry], openers: Option<&[bool]>) -
                     _ => None,
                 })
                 .flat_map(|(index, assistant)| {
-                    assistant.blocks.iter().filter_map(move |block| match block {
-                        ContentBlock::ToolUse(tool_use) => Some((index, tool_use)),
-                        _ => None,
-                    })
+                    assistant
+                        .blocks
+                        .iter()
+                        .filter_map(move |block| match block {
+                            ContentBlock::ToolUse(tool_use) => Some((index, tool_use)),
+                            _ => None,
+                        })
                 })
                 .map(|(index, tool_use)| ToolUseIndex {
                     event_idx: index,
@@ -1363,7 +1369,11 @@ mod tests {
     fn refs_matches_the_owned_slice_path() {
         let entries = vec![
             user("do the thing"),
-            tool_use("Edit", "e1", r#"{"file_path":"/a","old_string":"x","new_string":"y"}"#),
+            tool_use(
+                "Edit",
+                "e1",
+                r#"{"file_path":"/a","old_string":"x","new_string":"y"}"#,
+            ),
             tool_result("e1"),
             user("and then"),
             tool_use("Bash", "b1", r#"{"command":"make"}"#),
@@ -1411,30 +1421,48 @@ mod tests {
     #[test]
     fn openers_override_supplants_the_classifier() {
         // openers=[false, true] must invert opens_turn's verdict on both entries.
-        let entries = vec![user("first ask"), user_with("second ask", r#""isMeta":true,"#)];
+        let entries = vec![
+            user("first ask"),
+            user_with("second ask", r#""isMeta":true,"#),
+        ];
         let refs: Vec<&Entry> = entries.iter().collect();
 
         let classifier = lift_session_refs("s1", &refs, None);
         assert_eq!(
-            classifier.turns.iter().map(|t| t.prompt.as_str()).collect::<Vec<_>>(),
+            classifier
+                .turns
+                .iter()
+                .map(|t| t.prompt.as_str())
+                .collect::<Vec<_>>(),
             ["first ask"],
             "classifier opens the real prompt and folds the meta entry into it"
         );
 
         let overridden = lift_session_refs("s1", &refs, Some(&[false, true]));
         assert_eq!(
-            overridden.turns.iter().map(|t| t.prompt.as_str()).collect::<Vec<_>>(),
+            overridden
+                .turns
+                .iter()
+                .map(|t| t.prompt.as_str())
+                .collect::<Vec<_>>(),
             ["", "second ask"],
             "override (not OR: both open, not AND: neither) suppresses 0 and promotes meta 1"
         );
         assert_eq!(
-            overridden.turns.iter().map(|t| t.events.len()).collect::<Vec<_>>(),
+            overridden
+                .turns
+                .iter()
+                .map(|t| t.events.len())
+                .collect::<Vec<_>>(),
             [1, 1]
         );
 
         let skeleton = lift_session_index(&refs, Some(&[false, true]));
         assert_eq!(
-            skeleton.iter().map(|t| (t.prompt.as_str(), t.start, t.end)).collect::<Vec<_>>(),
+            skeleton
+                .iter()
+                .map(|t| (t.prompt.as_str(), t.start, t.end))
+                .collect::<Vec<_>>(),
             [("", 0, 1), ("second ask", 1, 2)],
             "the index skeleton aligns the promoted boundary to entry 1"
         );

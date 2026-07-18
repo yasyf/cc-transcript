@@ -15,8 +15,8 @@ use crate::views::print::print_result_view;
 use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
-    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index, session_activity,
-    ActivityOpts, Hunk, SessionActivity,
+    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index,
+    session_activity, ActivityOpts, Hunk, SessionActivity,
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
