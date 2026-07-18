@@ -4,9 +4,11 @@ The deterministic bench corpus carries no ``queue-operation`` records, so this u
 curated battery of synthetic transcripts exercising every queue verb
 (enqueue/dequeue/remove/popAll), task-notification user delivery, queued-command
 attachment delivery, the empty-enqueue slot, and a plain no-delivery conversation.
-Each case freezes the Python ``Notifications.from_events`` replay (queued/delivered/
-enqueued); ``tests/test_notifications_parity.py`` asserts the Rust
-``notifications_replay`` port reproduces it and that the Python reference still does.
+Each case freezes the ``Notifications.from_events`` replay (queued/delivered/
+enqueued), which delegates to the native ``notifications_from_events`` binding —
+the goldens pin that binding's output over time, and the independent oracle for
+replay semantics is the core test battery in ``rust/crates/core/src/notifications.rs``.
+``tests/test_notifications_parity.py`` asserts the frozen cases still reproduce.
 
 Run: ``uv run --no-sync python scripts/gen_notifications_golden.py``
 """

@@ -619,15 +619,6 @@ impl<'a> Session<'a> {
             .collect()
     }
 
-    /// The window's Bash commands parsed into `CommandLine` objects (query.py `command_lines`).
-    #[cfg(feature = "command")]
-    pub fn command_lines(&self) -> Vec<CommandLine> {
-        self.commands()
-            .iter()
-            .map(|c| CommandLine::parse(c))
-            .collect()
-    }
-
     /// Whether any Bash command in the window runs `argv` (query.py `has_command`, self-session only).
     #[cfg(feature = "command")]
     pub fn has_command(&self, argv: &[&str]) -> bool {

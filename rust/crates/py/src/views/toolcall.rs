@@ -954,10 +954,11 @@ pub(crate) fn expand_tool_names<'py>(
 ///
 /// True when ``actual`` is in ``names``, or when it splits as
 /// ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
-/// :data:`MCP_TOOL_ALIASES` builtin equivalent — is in ``names``. That alias
-/// closes the edit-gate bypass where cc-context's ``ccx_code_edit`` /
+/// native built-in edit-gate equivalent — is in ``names``. That alias closes
+/// the edit-gate bypass where cc-context's ``ccx_code_edit`` /
 /// ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
-/// gate would catch. Harness-rename aliases are not closed over — ``names`` is
+/// gate would catch. Display-name aliases from
+/// :data:`~cc_transcript.tools.TOOL_ALIASES` are not closed over — ``names`` is
 /// taken verbatim; pre-expand with :func:`expand_tool_names` for those.
 ///
 /// Example:

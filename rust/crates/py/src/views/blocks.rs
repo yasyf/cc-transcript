@@ -276,8 +276,8 @@ impl ToolUseBlockView {
 
     /// The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
     ///
-    /// Delegates to :func:`parse_questions`, which mirrors the Rust parse layer; a
-    /// non-object input reads as None.
+    /// The native getter reads the typed tool call's questions; a non-object input
+    /// reads as None.
     #[getter]
     #[gen_stub(override_return_type(
         type_repr = "tuple[cc_transcript.models.Question, ...] | None",

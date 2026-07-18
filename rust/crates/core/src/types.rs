@@ -449,7 +449,7 @@ pub fn tool_use_index<'a>(
 
 /// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
 /// segment of an ``mcp__<server>__<tool>`` name (via toolcall::mcp_parts) — or that
-/// segment's MCP_TOOL_ALIASES builtin. The alias closure is load-bearing: the probe
+/// segment's native built-in edit-gate alias. The alias closure is load-bearing: the probe
 /// path (session_activity_probe waiting_tools) passes raw, un-expanded names, so
 /// ``mcp__…__ccx_code_edit`` must still match ``{"Edit"}``.
 pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {

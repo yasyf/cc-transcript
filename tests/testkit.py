@@ -30,6 +30,11 @@ Content = str | list[dict[str, Any]]
 def parse_events(*lines: Mapping[str, Any]) -> list[TranscriptEvent]:
     """Parses raw transcript-line dicts through the native backend into view events."""
     raw = b"\n".join(orjson.dumps(dict(line)) for line in lines)
+    return parse_bytes(raw)
+
+
+def parse_bytes(raw: bytes) -> list[TranscriptEvent]:
+    """Parses transcript bytes through the native backend into view events."""
     return list(_native.parse_bytes(raw).events)
 
 

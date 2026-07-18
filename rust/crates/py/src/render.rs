@@ -33,7 +33,7 @@ pub(crate) fn render_tool_call(
 ) -> PyResult<String> {
     let mut input: Value = sonic_rs::from_str(input_json)
         .map_err(|e| PyValueError::new_err(format!("invalid JSON: {e}")))?;
-    // This standalone gateway bypasses parse_entry's dedup, so normalize like toolcall_parse.
+    // This standalone gateway bypasses parse_entry's dedup, so normalize before parse_tool_call.
     normalize_last_wins(&mut input);
     Ok(render::render_tool_call(
         &parse_tool_call(name, &input),

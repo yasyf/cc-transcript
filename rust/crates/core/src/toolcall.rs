@@ -37,11 +37,11 @@ fn tool_alias_reverse(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Parity: tools.py MCP_TOOL_ALIASES (bare MCP write tool -> builtin edit gate).
+/// Bare MCP write-tool aliases used by built-in edit-gate matching.
 pub const MCP_TOOL_ALIASES: [(&str, &str); 2] =
     [("ccx_code_edit", "Edit"), ("ccx_code_replace", "Write")];
 
-/// The builtin edit gate a bare MCP write tool aliases to (tools.py MCP_TOOL_ALIASES).
+/// Resolves a bare MCP write tool to its built-in edit gate.
 pub fn mcp_tool_alias(tool: &str) -> Option<&'static str> {
     MCP_TOOL_ALIASES
         .iter()
@@ -1059,7 +1059,7 @@ pub fn expand_tool_names(spec: &str) -> std::collections::HashSet<String> {
 }
 
 /// Parity: tools.py tool_name_matches — the expand_tool_names set feeds the shared
-/// types::matches_names primitive, which closes over MCP_TOOL_ALIASES itself.
+/// types::matches_names primitive, which closes over the native bare-MCP aliases.
 pub fn tool_name_matches(actual: &str, spec: &str) -> bool {
     crate::types::matches_names(actual, &expand_tool_names(spec))
 }

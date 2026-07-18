@@ -98,7 +98,6 @@ __all__ = [
     "activity_hunk_overlap",
     "activity_lift",
     "activity_lift_from_events",
-    "bucket_events",
     "bucket_events_from_events",
     "cli_main",
     "command_parse",
@@ -119,8 +118,6 @@ __all__ = [
     "hunks_of",
     "ids_canonical_json",
     "ids_tool_digest",
-    "keep_events",
-    "label_events",
     "lexicon_has_hit",
     "lexicon_overrides",
     "lexicon_polarity",
@@ -132,7 +129,6 @@ __all__ = [
     "nlp_analyze",
     "noise_spec_json",
     "notifications_from_events",
-    "notifications_replay",
     "parse_bytes",
     "parse_print_result",
     "query_session",
@@ -148,9 +144,7 @@ __all__ = [
     "stream_parse",
     "tool_facts",
     "tool_name_matches",
-    "toolcall_parse",
     "toolcall_parse_view",
-    "toolresult_parse",
     "toolresult_parse_view",
 ]
 
@@ -181,8 +175,7 @@ class AskUserQuestionResult(ToolResultBase):
     An AskUserQuestion result: the rounds, the answers, and any annotations.
 
     Attributes:
-        questions: The rounds echoed in the payload, lifted via
-            :func:`~models.parse_questions`.
+        questions: The rounds echoed in the native result payload.
         answers: A mapping from each round's question text to the chosen answer.
             Non-string answer values are dropped, mirroring the Rust lift.
         annotations: A mapping from question text to the reviewer's
@@ -1845,8 +1838,8 @@ class ToolUseBlock:
         r"""
         The AskUserQuestion rounds lifted from the ``questions`` input array, or None.
 
-        Delegates to :func:`parse_questions`, which mirrors the Rust parse layer; a
-        non-object input reads as None.
+        The native getter reads the typed tool call's questions; a non-object input
+        reads as None.
         """
     def __hash__(self) -> builtins.int: ...
 
@@ -2078,8 +2071,6 @@ def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typ
 
 def activity_lift_from_events(events: list[models.TranscriptEvent], opener_flags: typing.Optional[typing.Sequence[builtins.bool]] = None) -> list[dict[str, typing.Any]]: ...
 
-def bucket_events(raw: bytes) -> list[dict[str, typing.Any]]: ...
-
 def bucket_events_from_events(events: list[models.TranscriptEvent]) -> list[dict[str, typing.Any]]: ...
 
 def cli_main() -> builtins.int:
@@ -2137,10 +2128,6 @@ def ids_canonical_json(value_json: builtins.str) -> builtins.str: ...
 
 def ids_tool_digest(name: builtins.str, input_json: builtins.str) -> builtins.str: ...
 
-def keep_events(events: list[models.TranscriptEvent], spec_json: builtins.str) -> builtins.list[builtins.bool]: ...
-
-def label_events(events: list[models.TranscriptEvent], spec_json: builtins.str) -> builtins.list[builtins.list[builtins.str]]: ...
-
 def lexicon_has_hit(text: builtins.str, want_negative: builtins.bool) -> builtins.bool: ...
 
 def lexicon_overrides() -> builtins.list[tuple[builtins.str, builtins.int]]: ...
@@ -2155,10 +2142,11 @@ def matches_names(actual: builtins.str, names: collections.abc.Container[str]) -
 
     True when ``actual`` is in ``names``, or when it splits as
     ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
-    :data:`MCP_TOOL_ALIASES` builtin equivalent — is in ``names``. That alias
-    closes the edit-gate bypass where cc-context's ``ccx_code_edit`` /
+    native built-in edit-gate equivalent — is in ``names``. That alias closes
+    the edit-gate bypass where cc-context's ``ccx_code_edit`` /
     ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
-    gate would catch. Harness-rename aliases are not closed over — ``names`` is
+    gate would catch. Display-name aliases from
+    :data:`~tools.TOOL_ALIASES` are not closed over — ``names`` is
     taken verbatim; pre-expand with :func:`expand_tool_names` for those.
 
     Example:
@@ -2211,8 +2199,6 @@ def noise_spec_json() -> builtins.str: ...
 
 def notifications_from_events(events: list[models.TranscriptEvent]) -> dict[str, list[str]]: ...
 
-def notifications_replay(raw: bytes) -> dict[str, list[str]]: ...
-
 def parse_bytes(raw: bytes, spec_json: typing.Optional[builtins.str] = None) -> Transcript: ...
 
 def parse_print_result(raw: bytes) -> PrintResult: ...
@@ -2252,15 +2238,11 @@ def tool_name_matches(actual: builtins.str, spec: builtins.str) -> builtins.bool
         True
     """
 
-def toolcall_parse(name: builtins.str, input_json: builtins.str, on_error: typing.Optional[builtins.str] = None) -> dict[str, typing.Any]: ...
-
 def toolcall_parse_view(name: builtins.str, input_json: builtins.str, on_error: typing.Optional[builtins.str] = None) -> tools.ToolCall:
     r"""
     Parse a tool's name and raw input (as a JSON document) into the typed view
     hierarchy; the ``cc_transcript.tools`` facade owns the public signature.
     """
-
-def toolresult_parse(name: builtins.str, payload_json: builtins.str) -> dict[str, typing.Any]: ...
 
 def toolresult_parse_view(name: builtins.str, payload_json: builtins.str) -> tools.ToolResult:
     r"""

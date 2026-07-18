@@ -33,14 +33,6 @@ fn delivered_text(entry: &Entry) -> Option<String> {
     }
 }
 
-/// replay_queue (notifications.py): folds the transcript's `queue-operation` records
-/// into `(still-queued, ever-enqueued)`. Each `enqueue` appends its content to a FIFO
-/// and to the enqueued log; `dequeue`/`remove` drop the head; `popAll` subtracts every
-/// queued item whose text is a substring of the operation's content.
-pub fn replay_queue(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
-    replay_queue_iter(entries.iter())
-}
-
 fn replay_queue_iter<'a>(entries: impl Iterator<Item = &'a Entry>) -> (Vec<String>, Vec<String>) {
     let mut queued: Vec<String> = Vec::new();
     let mut enqueued: Vec<String> = Vec::new();

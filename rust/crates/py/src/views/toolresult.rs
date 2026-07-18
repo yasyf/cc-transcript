@@ -672,8 +672,7 @@ view_dunders!(
 /// An AskUserQuestion result: the rounds, the answers, and any annotations.
 ///
 /// Attributes:
-///     questions: The rounds echoed in the payload, lifted via
-///         :func:`~cc_transcript.models.parse_questions`.
+///     questions: The rounds echoed in the native result payload.
 ///     answers: A mapping from each round's question text to the chosen answer.
 ///         Non-string answer values are dropped, mirroring the Rust lift.
 ///     annotations: A mapping from question text to the reviewer's

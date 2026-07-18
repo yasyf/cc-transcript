@@ -228,37 +228,6 @@ fn cost_of_json<'py>(
     Ok(dict)
 }
 
-#[pyo3_stub_gen::derive::gen_stub_pyfunction]
-#[pyfunction]
-#[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-fn bucket_events<'py>(
-    py: Python<'py>,
-    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
-) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
-    buckets::bucket_events(&entries)
-        .iter()
-        .map(|bucket| {
-            let dict = PyDict::new(py);
-            dict.set_item("session_id", bucket.session_id)?;
-            dict.set_item("bucket_index", bucket.bucket_index)?;
-            dict.set_item("bucket_start_ms", bucket.bucket_start.timestamp_millis())?;
-            let uuids: Vec<&str> = bucket
-                .events
-                .iter()
-                .map(|e| {
-                    e.meta()
-                        .expect("user/assistant entries carry meta")
-                        .uuid
-                        .as_str()
-                })
-                .collect();
-            dict.set_item("uuids", uuids)?;
-            Ok(dict)
-        })
-        .collect()
-}
-
 // buckets.ConversationBucketer.bucket_events over already-materialized event views (borrowed
 // via view_entry, no re-parse). Members are `indices` into the input `events`, not uuids.
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -345,22 +314,6 @@ fn activity_lift_from_events<'py>(
             Ok(td)
         })
         .collect()
-}
-
-#[pyo3_stub_gen::derive::gen_stub_pyfunction]
-#[pyfunction]
-#[gen_stub(override_return_type(type_repr = "dict[str, list[str]]", imports = ()))]
-fn notifications_replay<'py>(
-    py: Python<'py>,
-    #[gen_stub(override_type(type_repr = "bytes"))] raw: &[u8],
-) -> PyResult<Bound<'py, PyDict>> {
-    let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
-    let notifications = Notifications::from_entries(&entries);
-    let dict = PyDict::new(py);
-    dict.set_item("queued", notifications.queued)?;
-    dict.set_item("delivered", notifications.delivered)?;
-    dict.set_item("enqueued", notifications.enqueued)?;
-    Ok(dict)
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -612,47 +565,6 @@ impl SpecMatcher {
                 .collect(),
         )
     }
-}
-
-// filterspec.apply_spec/keep: the DROP verdict per already-materialized event, over
-// the shared `Entry` borrowed behind each view — no re-parse, no round-trip.
-#[pyo3_stub_gen::derive::gen_stub_pyfunction]
-#[pyfunction]
-#[pyo3(signature = (events, spec_json))]
-fn keep_events(
-    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
-    events: Vec<Bound<'_, PyAny>>,
-    spec_json: &str,
-) -> PyResult<Vec<bool>> {
-    let spec = compile_spec(spec_json).map_err(PyValueError::new_err)?;
-    events
-        .iter()
-        .map(|event| Ok(spec_keep(&spec, mining::view_entry(event, "keep_events")?)))
-        .collect()
-}
-
-// filterspec.labels_for/annotate_spec: the TAG labels each already-materialized event
-// earns, in clause order, over the same borrowed `Entry`.
-#[pyo3_stub_gen::derive::gen_stub_pyfunction]
-#[pyfunction]
-#[pyo3(signature = (events, spec_json))]
-fn label_events(
-    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
-    events: Vec<Bound<'_, PyAny>>,
-    spec_json: &str,
-) -> PyResult<Vec<Vec<String>>> {
-    let spec = compile_spec(spec_json).map_err(PyValueError::new_err)?;
-    events
-        .iter()
-        .map(|event| {
-            Ok(
-                spec_labels(&spec, mining::view_entry(event, "label_events")?)
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-            )
-        })
-        .collect()
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -1033,9 +945,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_bytes_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
-    m.add_function(wrap_pyfunction!(notifications_replay, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_from_events, m)?)?;
-    m.add_function(wrap_pyfunction!(bucket_events, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_events_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(lexicon_polarity, m)?)?;
@@ -1048,14 +958,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(command_prefixes, m)?)?;
     m.add_function(wrap_pyfunction!(command_parse, m)?)?;
     m.add_function(wrap_pyfunction!(mine_events, m)?)?;
-    m.add_function(wrap_pyfunction!(keep_events, m)?)?;
-    m.add_function(wrap_pyfunction!(label_events, m)?)?;
     m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
-    m.add_function(wrap_pyfunction!(crate::toolcall::toolcall_parse, m)?)?;
-    m.add_function(wrap_pyfunction!(crate::toolcall::toolresult_parse, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;

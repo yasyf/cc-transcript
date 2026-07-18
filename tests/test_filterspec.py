@@ -70,10 +70,9 @@ def attachment() -> AttachmentEvent:
     return event
 
 
-def test_keep_events_rejects_non_event_and_names_itself() -> None:
-    # The events-in binding names itself, not mine(), so misuse points at the right API.
-    with pytest.raises(TypeError, match=r"keep_events\(\) takes parsed transcript events"):
-        _native.keep_events([object()], spec_to_json(spec()))
+def test_spec_matcher_keep_rejects_non_event_and_names_itself() -> None:
+    with pytest.raises(TypeError, match=r"keep\(\) takes parsed transcript events"):
+        _native.SpecMatcher(spec_to_json(spec())).keep(object())
 
 
 def test_apply_spec_streams_without_pulling_the_next_event() -> None:
