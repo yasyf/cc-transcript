@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from cc_transcript import _native
 from cc_transcript.discovery import TranscriptExpiredError, resolve
 from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
@@ -24,7 +25,7 @@ from cc_transcript.parser import parse
 from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call, parse_tool_result
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
     from datetime import datetime
     from pathlib import Path
 
@@ -176,23 +177,62 @@ class SessionActivity:
         turn; everything else folds into the current one. Events before the
         first qualifying prompt form turn 0 with prompt ``""``.
         """
-        segments: list[tuple[str, list[TranscriptEvent]]] = []
-        for event in events:
-            match event:
-                case UserEvent() if user_classifier(event):
-                    segments.append((event.text, [event]))
-                case _ if segments:
-                    segments[-1][1].append(event)
-                case _:
-                    segments.append(("", [event]))
-        results = result_index(events)
-        return cls(
-            session_id=session_id,
-            turns=tuple(
-                lift_turn(session_id, index, prompt, tuple(turn_events), results)
-                for index, (prompt, turn_events) in enumerate(segments)
-            ),
+        evs = list(events)
+        opener_flags = (
+            None
+            if user_classifier is native_user_classifier
+            else [bool(user_classifier(event)) if isinstance(event, UserEvent) else False for event in evs]
         )
+        tool_blocks = {
+            event_idx: tuple(block for block in event.blocks if isinstance(block, ToolUseBlock))
+            for event_idx, event in enumerate(evs)
+            if isinstance(event, AssistantEvent)
+        }
+        tool_block_positions: dict[int, int] = {}
+        turns: list[Turn] = []
+        for index, skeleton in enumerate(_native.activity_lift_from_events(evs, opener_flags)):
+            tool_uses: list[ToolUse] = []
+            for use in skeleton["tool_uses"]:
+                event_idx = use["event_idx"]
+                event = evs[event_idx]
+                block_position = tool_block_positions.get(event_idx, 0)
+                block = tool_blocks[event_idx][block_position]
+                tool_block_positions[event_idx] = block_position + 1
+                result_event_idx = use["result_event_idx"]
+                if result_event_idx is None:
+                    result = None
+                    result_ts = None
+                else:
+                    result_event = evs[result_event_idx]
+                    result = next(
+                        candidate
+                        for candidate in reversed(result_event.blocks)
+                        if isinstance(candidate, ToolResultBlock) and candidate.tool_use_id == use["tool_use_id"]
+                    )
+                    result_ts = result_event.meta.timestamp
+                tool_uses.append(
+                    ToolUse(
+                        ref=EventRef(session_id, event.meta.uuid, block.id),
+                        call=parse_tool_call(block.name, block.input, on_error="other"),
+                        result=result,
+                        result_ts=result_ts,
+                        turn_index=index,
+                        ts=event.meta.timestamp,
+                    )
+                )
+            started_idx = skeleton["started_idx"]
+            ended_idx = skeleton["ended_idx"]
+            turns.append(
+                Turn(
+                    index=index,
+                    prompt=skeleton["prompt"],
+                    started_at=None if started_idx is None else evs[started_idx].meta.timestamp,
+                    ended_at=None if ended_idx is None else evs[ended_idx].meta.timestamp,
+                    events=tuple(evs[skeleton["start"] : skeleton["end"]]),
+                    tool_uses=tuple(tool_uses),
+                )
+            )
+        return cls(session_id=session_id, turns=tuple(turns))
 
     @classmethod
     def from_session(
@@ -289,11 +329,7 @@ def hunk_overlap(a: Hunk, b: Hunk) -> float:
     Returns:
         A value in ``[0.0, 1.0]``; 0.0 when ``a.new`` has no non-empty lines.
     """
-    lines = [normalized for line in a.new.splitlines() if (normalized := " ".join(line.split()))]
-    if not lines:
-        return 0.0
-    olds = {normalized for line in b.old.splitlines() if (normalized := " ".join(line.split()))}
-    return sum(line in olds for line in lines) / len(lines)
+    return _native.activity_hunk_overlap(a.old, a.new, b.old, b.new)
 
 
 def result_index(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, tuple[ToolResultBlock, datetime | None]]:
@@ -320,37 +356,6 @@ def result_index(events: Sequence[TranscriptEvent]) -> dict[ToolUseId, tuple[Too
 def event_stamps(events: Sequence[TranscriptEvent]) -> tuple[datetime | None, datetime | None]:
     stamps = [meta.timestamp for event in events if (meta := event_meta(event)) is not None]
     return (stamps[0], stamps[-1]) if stamps else (None, None)
-
-
-def lift_turn(
-    session_id: SessionId,
-    index: int,
-    prompt: str,
-    events: tuple[TranscriptEvent, ...],
-    results: Mapping[ToolUseId, tuple[ToolResultBlock, datetime | None]],
-) -> Turn:
-    started_at, ended_at = event_stamps(events)
-    return Turn(
-        index=index,
-        prompt=prompt,
-        started_at=started_at,
-        ended_at=ended_at,
-        events=events,
-        tool_uses=tuple(
-            ToolUse(
-                ref=EventRef(session_id, event.meta.uuid, block.id),
-                call=parse_tool_call(block.name, block.input, on_error="other"),
-                result=pair[0] if (pair := results.get(block.id)) is not None else None,
-                result_ts=pair[1] if pair is not None else None,
-                turn_index=index,
-                ts=event.meta.timestamp,
-            )
-            for event in events
-            if isinstance(event, AssistantEvent)
-            for block in event.blocks
-            if isinstance(block, ToolUseBlock)
-        ),
-    )
 
 
 def position_in(turn: Turn, ref: EventRef) -> tuple[int, int]:
