@@ -4,6 +4,73 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.2.0] - 2026-07-19
+
+### Added
+- **The native feedback-store engine.** `feedback.db` is owned end-to-end by a Rust
+  engine (exposed as `_native.RustFeedbackStore`): one connection per file per
+  process, explicit `busy_timeout=5000ms`/`foreign_keys=ON`/WAL defaults,
+  CPython-`sqlite3`-faithful exceptions (probed and pinned: `DataError` on oversized
+  text/blobs, `ProgrammingError` on bind-arity mismatches, unsupported parameter
+  types, closed-database use, and cross-thread use with the `check_same_thread`
+  message shape, `OverflowError` on over-64-bit ints), strict identifier validation
+  on schema config, and sqlite-vec loaded into the engine connection via
+  `load_extension`.
+- **`mining.StoreSchema` composition.** `mining.FeedbackStore` is a final facade
+  configured by a frozen `StoreSchema` — extra DDL run per open, guard-ALTERed event
+  columns, run-once migrations (precheck + BEGIN IMMEDIATE + backfill), verdict
+  table/column naming, and an `event_filter` predicate — replacing subclassing.
+  `StoreSchema`, `ColumnMigration`, and `TransactionConflictError` export from
+  `cc_transcript.mining`; the feedback DDL flows from the native literals manifest.
+- **Events-in activity and render facades.** `SessionActivity.from_events`
+  rehydrates from a native index skeleton (`activity_lift_from_events`, positional
+  provenance — duplicate events keep distinct indices), and
+  `render_tool_call`/`render_turn` dispatch to
+  `render_tool_call_view`/`render_turn_from_events`. Both require Rust-view events
+  and fail loudly on hand-built ones, completing the v14 events-in contract.
+- **A generated root stub.** `cc_transcript/__init__.pyi` is generated from
+  `EXPORTS` by `scripts/gen_export_stub.py` and drift-gated by
+  `tests/test_export_stub.py`, replacing the hand-written `TYPE_CHECKING` mirror.
+- Curated docs for the activity probe (`SessionActivityProbe`,
+  `session_activity_probe`) and `HeartbeatLog`.
+
+### Changed
+- **The store API is synchronous.** `record_verdict` and the evidence tier
+  (`judge.similar`) are sync — the async signatures were v13 leftovers. The paged
+  `unjudged` loop and dead-summary hydration probe live on the facade as the one
+  implementation, preserving the `refresh_summary` `limit=0` behavior split between
+  event-filtered and unfiltered schemas.
+- The layering fence now permits the mining store facade to lazily compose the
+  judge evidence tier — the native store owns feedback.db end-to-end; the
+  eager-import fence is unchanged.
+- `heartbeats` and `decisions` share one SQLite open ritual in `ledger`.
+
+### Removed
+- `FileStateStore` (`cc_transcript.store`) — `record_file`/`file_mtimes` live on
+  `mining.FeedbackStore`.
+- `judge.VerdictStoreMixin`, `ensure_verdict_schema`, and the Python verdict DDL
+  constants — folded into the facade and the engine's open-time validation.
+- `mining/filterspec.py`: `CandidateFilterSpec`, `build_candidate_filter`,
+  `apply_candidate_filter`, `at_least`, `only_kinds`, `keep_candidate`.
+- The filterspec text layer: `interrupt_marker`, `is_bare_interrupt_marker`,
+  `is_agent_injection`, `embedded_user_text`, `event_kind`, `tool_names`,
+  `CONVERSATIONAL`, `INTERRUPT_MARKER_RE`, `AGENT_INJECTION_RE`.
+- The mining reference chain: `run_confidence`, `apply_conf_stage`, `calibrated`,
+  `score_user_message`, `classify_provenance`, `regex_review_comments`,
+  `group_value`, `int_group`, `ScoreCtx`.
+- `models.parse_questions`/`question_labels`; the `tools` tables `TOOL_TYPES`,
+  `TOOL_RESULT_TYPES`, `MCP_TOOL_ALIASES`, `TOOL_ALIASES_REVERSE`, `READ_VERBS` and
+  the `key_of`/`required_key`/`required_str` chain; `command.bulk_command_prefixes`;
+  `ToolCallQuery.list`; `literals.literal_tuple`; `HeartbeatLog.events_seen`.
+- Dead native surface: `toolcall_parse`, `toolresult_parse`, `keep_events`,
+  `label_events`, `notifications_replay`, the bytes-variant `bucket_events`.
+
+### Fixed
+- `render_tool_call` on a `FallbackCall` whose raw payload holds
+  non-JSON-serializable values (bytes, datetimes) renders instead of raising.
+- The stub generator emits hook-normalized output (no trailing whitespace, one
+  EOF newline), so the committed stub byte-matches every regeneration.
+
 ## [14.1.1] - 2026-07-18
 
 ### Fixed

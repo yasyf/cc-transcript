@@ -14,53 +14,53 @@
   },
   "criterion_medians": {
     "parse/parse_corpus": {
-      "median_ns": 47365557.375,
-      "median_ms": 47.3656,
-      "mib_per_s": 161.12,
-      "mb_per_s": 168.95
+      "median_ns": 18714386.4375,
+      "median_ms": 18.7144,
+      "mib_per_s": 407.79,
+      "mb_per_s": 427.6
     },
     "parse/filter_spec": {
-      "median_ns": 58248453.0,
-      "median_ms": 58.2485,
-      "mib_per_s": 131.02,
-      "mb_per_s": 137.38
+      "median_ns": 23907295.32142857,
+      "median_ms": 23.9073,
+      "mib_per_s": 319.22,
+      "mb_per_s": 334.72
     },
     "activity/session_activity": {
-      "median_ns": 3031003.2000487326,
-      "median_ms": 3.031
+      "median_ns": 474192.4974489796,
+      "median_ms": 0.4742
     }
   },
   "bench_e2e": {
     "stream_stats": {
-      "min_s": 0.524255,
+      "min_s": 0.033299,
       "runs_s": [
-        0.714714,
-        0.524255,
-        0.637407
+        0.038451,
+        0.033692,
+        0.033299
       ]
     },
     "probe_sweep": {
-      "min_s": 0.177398,
+      "min_s": 0.076433,
       "runs_s": [
-        0.177398,
-        0.309624,
-        0.386298
+        0.087619,
+        0.077303,
+        0.076433
       ]
     },
     "mine": {
-      "min_s": 1.62725,
+      "min_s": 0.57292,
       "runs_s": [
-        2.114794,
-        1.803828,
-        1.62725
+        0.590853,
+        0.607896,
+        0.57292
       ]
     },
     "post_filter": {
-      "min_s": 0.123912,
+      "min_s": 0.258618,
       "runs_s": [
-        0.126493,
-        0.123912,
-        0.129541
+        0.261483,
+        0.258618,
+        0.263066
       ]
     }
   },
@@ -68,13 +68,13 @@
     "method": "hyperfine --warmup 2",
     "help": {
       "cmd": ".venv/bin/cc-transcript --help",
-      "mean_s": 0.637401,
-      "min_s": 0.231314
+      "mean_s": 0.016283,
+      "min_s": 0.013998
     },
     "stats": {
       "cmd": ".venv/bin/cc-transcript stats --root .fixtures/corpus --all",
-      "mean_s": 2.864011,
-      "min_s": 1.684264
+      "mean_s": 0.079563,
+      "min_s": 0.077733
     }
   },
   "mining_rationale": "mining has no pure-Rust entry pre-v14; baselined e2e through pyo3, which is exactly the number the v14 native-handle mining path must beat."
