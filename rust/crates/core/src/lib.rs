@@ -2,6 +2,7 @@ pub mod literals;
 
 pub mod activity;
 pub mod buckets;
+pub mod codex;
 #[cfg(feature = "command")]
 pub mod command;
 pub mod context;
