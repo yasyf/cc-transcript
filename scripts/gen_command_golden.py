@@ -1,13 +1,14 @@
-"""Freeze the Python ``CommandLine`` structure into ``tests/testdata/command_golden.json``.
+"""Freeze the native ``CommandLine`` structure into ``tests/testdata/command_golden.json``.
 
 Serializes the parsed command line for a battery of bash command strings — the
 command-prefix pins (single-sourced in
 ``rust/crates/py/data/command_prefix_pins.tsv`` and reached through the
 ``tests.test_command`` loader), every distinct ``Bash`` command in the deterministic
 bench corpus (``.fixtures/corpus``, regenerated via ``scripts/gen_corpus.py``), and
-hand-built edge cases (nested subshells, quoting, heredocs, unicode). A later run plus
-``git diff`` shows Python-side drift, and ``tests/test_command_parity.py`` asserts the
-Rust ``command_parse`` port reproduces the same structure.
+hand-built edge cases (nested subshells, quoting, heredocs, unicode). ``command.py`` is
+now a native facade, so a later run plus ``git diff`` surfaces any drift in the Rust
+parser's output, and ``tests/test_command_parity.py`` asserts ``_native.command_parse``
+reproduces each frozen entry.
 
 Run: ``uv run --no-sync python scripts/gen_command_golden.py``
 """
