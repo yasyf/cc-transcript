@@ -278,6 +278,14 @@ class TestCommandLine:
     def test_subshell_parsed(self) -> None:
         assert len(CommandLine.parse('eval "$(direnv export bash)"')) >= 1
 
+    def test_prefixes(self) -> None:
+        assert CommandLine.parse("sudo git push -f && echo hi").prefixes == ("git push", "echo")
+
+    def test_prefixes_drops_empty_executable(self) -> None:
+        cl = CommandLine.parse("> out.txt")
+        assert len(cl) == 1
+        assert cl.prefixes == ()
+
 
 class TestCommandSubstitutions:
     @pytest.mark.parametrize(
@@ -309,14 +317,6 @@ class TestCommandSubstitutions:
         line = CommandLine.parse("echo $(ccx repo overview)")
         assert line.commands[1].span == (7, 24)
         assert line.splice({1: "ls"}) == "echo $(ls)"
-
-    def test_prefixes(self) -> None:
-        assert CommandLine.parse("sudo git push -f && echo hi").prefixes == ("git push", "echo")
-
-    def test_prefixes_drops_empty_executable(self) -> None:
-        cl = CommandLine.parse("> out.txt")
-        assert len(cl) == 1
-        assert cl.prefixes == ()
 
 
 class TestCommandLineQuery:
