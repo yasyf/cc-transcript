@@ -19,6 +19,7 @@ pub mod feedback;
 pub mod filter;
 pub mod gateway;
 pub mod ids;
+pub mod judge;
 pub mod notifications;
 pub mod parse;
 pub mod protocol;

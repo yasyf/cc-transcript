@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 from dataclasses import dataclass
 from importlib.util import find_spec
+from math import comb
 from typing import TYPE_CHECKING
 
 import pytest
@@ -660,6 +661,64 @@ def test_sample_audit_exhausts_none_quota_kinds_before_remainder() -> None:
     assert [row["dedup_key"] for row in sample.oversample] == ["t00"]
 
 
+def test_sample_audit_rejects_a_negative_quota() -> None:
+    rows = [judged_row(f"k{i:02d}", confidence=0.5 + i / 100) for i in range(10)]
+    with pytest.raises(ValueError, match="negative audit quota"):
+        sample_audit(
+            rows,
+            accepts=5,
+            rejects=0,
+            seed=7,
+            quotas={"transcript_message": -1},
+            remainder_kind="transcript_message",
+        )
+
+
+def test_sample_audit_errors_when_duplicate_keys_exhaust_the_pool() -> None:
+    rows = [judged_row("dup", confidence=0.5 + i / 100) for i in range(5)]
+    with pytest.raises(ValueError, match="after oversampling"):
+        sample_audit(
+            rows,
+            accepts=3,
+            rejects=0,
+            seed=7,
+            quotas={},
+            remainder_kind="transcript_message",
+        )
+
+
+def test_sample_audit_accepts_arbitrary_int_seeds() -> None:
+    rows = [judged_row(f"k{i:02d}", accepted=i % 2 == 0, confidence=0.5 + i / 100) for i in range(30)]
+    draws = [
+        sample_audit(
+            rows,
+            accepts=5,
+            rejects=5,
+            seed=2**63,
+            quotas={"interrupt_rejection": None},
+            remainder_kind="transcript_message",
+        )
+        for _ in range(2)
+    ]
+    assert draws[0] == draws[1]
+    assert len(draws[0].core) == 6
+
+
+def test_sample_audit_core_draw_is_pinned() -> None:
+    # Freezes the exact native core draw for one seed so the deterministic
+    # stratified sample stays stable across processes and releases.
+    rows = [judged_row(f"k{i:02d}", accepted=i % 2 == 0, confidence=0.5 + i / 100) for i in range(30)]
+    sample = sample_audit(
+        rows,
+        accepts=5,
+        rejects=5,
+        seed=7,
+        quotas={"interrupt_rejection": None},
+        remainder_kind="transcript_message",
+    )
+    assert sorted(str(row["dedup_key"]) for row in sample.core) == ["k06", "k07", "k09", "k18", "k28", "k29"]
+
+
 @pytest.mark.parametrize(
     ("hits", "n", "expected"),
     [
@@ -676,6 +735,26 @@ def test_exact_upper_bound_matches_clopper_pearson(hits: int, n: int, expected: 
 def test_exact_upper_bound_saturates_at_one() -> None:
     assert exact_upper_bound(3, 3) == 1.0
     assert exact_upper_bound(5, 3) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("hits", "n"),
+    [pytest.param(900, 1000, id="underflow-regime-n1000"), pytest.param(450, 500, id="underflow-regime-n500")],
+)
+def test_exact_upper_bound_survives_the_pmf_underflow_regime(hits: int, n: int) -> None:
+    # (1-p)^n underflows f64 past n ~ 350; the reference is the math.comb bisection
+    # the native port replaced, computed inline.
+    def reference(hits: int, n: int, alpha: float) -> float:
+        lo, hi = hits / n, 1.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            cdf = sum(comb(n, k) * mid**k * (1 - mid) ** (n - k) for k in range(hits + 1))
+            lo, hi = (mid, hi) if cdf > alpha else (lo, mid)
+        return hi
+
+    bound = exact_upper_bound(hits, n)
+    assert bound == pytest.approx(reference(hits, n, 0.05), abs=1e-9)
+    assert bound > hits / n
 
 
 def metrics(*, judged: int, accepted: int, core_accepts: AuditEstimate, core_rejects: AuditEstimate) -> Metrics:

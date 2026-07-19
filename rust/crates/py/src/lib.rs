@@ -10,6 +10,7 @@ mod context;
 mod corrections;
 mod discovery;
 mod feedback;
+mod judge;
 mod lexicon;
 mod mining;
 mod nlp;

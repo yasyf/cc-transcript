@@ -1013,6 +1013,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(command_parse, m)?)?;
     m.add_function(wrap_pyfunction!(mine_events, m)?)?;
     m.add_function(wrap_pyfunction!(crate::mining::mining_sample_refs, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::judge::judge_sample_audit, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::judge::judge_exact_upper_bound, m)?)?;
     m.add_function(wrap_pyfunction!(ids_canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(ids_tool_digest, m)?)?;
     m.add_function(wrap_pyfunction!(session_activity_probe, m)?)?;

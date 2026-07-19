@@ -135,6 +135,8 @@ __all__ = [
     "hunks_of",
     "ids_canonical_json",
     "ids_tool_digest",
+    "judge_exact_upper_bound",
+    "judge_sample_audit",
     "lexicon_has_hit",
     "lexicon_overrides",
     "lexicon_polarity",
@@ -2353,6 +2355,19 @@ def ids_canonical_json(value_json: builtins.str) -> builtins.str: ...
 
 def ids_tool_digest(name: builtins.str, input_json: builtins.str) -> builtins.str: ...
 
+def judge_exact_upper_bound(hits: builtins.int, n: builtins.int, alpha: builtins.float) -> builtins.float:
+    r"""
+    The exact (Clopper-Pearson) one-sided upper confidence bound
+    (judge/verdicts.py exact_upper_bound).
+    """
+
+def judge_sample_audit(rows: typing.Sequence[tuple[builtins.str, builtins.str, builtins.float, builtins.bool]], accepts: builtins.int, rejects: builtins.int, seed: builtins.str, quotas: typing.Sequence[tuple[builtins.str, typing.Optional[builtins.int]]], remainder_kind: builtins.str, oversample_share: builtins.float) -> tuple[builtins.list[builtins.int], builtins.list[builtins.int]]:
+    r"""
+    The seeded stratified audit draw over pre-coerced judged rows
+    (judge/verdicts.py sample_audit): returns `(core, oversample)` as row indexes
+    into `rows`.
+    """
+
 def lexicon_has_hit(text: builtins.str, want_negative: builtins.bool) -> builtins.bool: ...
 
 def lexicon_overrides() -> builtins.list[tuple[builtins.str, builtins.int]]: ...
@@ -2410,7 +2425,7 @@ def mcp_parts(name: builtins.str) -> tuple[str, str] | None:
 
 def mine_events(events: list[models.TranscriptEvent], spec_json: builtins.str, callable_formats: typing.Sequence[tuple[builtins.str, typing.Any, typing.Any]]) -> list[dict[str, typing.Any]]: ...
 
-def mining_sample_refs(data: bytes, n: builtins.int, exclude: typing.Sequence[tuple[builtins.str, builtins.str]], exclusion_radius: builtins.int, seed: builtins.int) -> builtins.list[tuple[builtins.int, builtins.str, builtins.str]]:
+def mining_sample_refs(data: bytes, n: builtins.int, exclude: typing.Sequence[tuple[builtins.str, builtins.str]], exclusion_radius: builtins.int, seed: builtins.str) -> builtins.list[tuple[builtins.int, builtins.str, builtins.str]]:
     r"""
     The seeded negative-window draw over a transcript's completed turns
     (mining/sampling.py sample_windows candidate build + draw): returns each drawn

@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from math import comb
-from random import Random
 from typing import TYPE_CHECKING, Protocol
+
+from cc_transcript import _native
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -356,44 +356,6 @@ async def run_verdicts[V](
     return counts["judged"], counts["failed"]
 
 
-def draw(
-    group: Sequence[Mapping[str, object]], k: int, rng: Random, oversample_share: float
-) -> tuple[list[Mapping[str, object]], list[Mapping[str, object]]]:
-    if k >= len(group):
-        return list(group), []
-    n_over = round(k * oversample_share)
-    over = sorted(group, key=lambda r: (float(str(r["confidence"])), str(r["dedup_key"])))[:n_over]
-    over_keys = {str(r["dedup_key"]) for r in over}
-    pool = [r for r in group if str(r["dedup_key"]) not in over_keys]
-    return rng.sample(pool, k - n_over), over
-
-
-def stratified(
-    rows: Sequence[Mapping[str, object]],
-    n: int,
-    rng: Random,
-    quotas: Mapping[str, int | None],
-    remainder_kind: str,
-    oversample_share: float,
-) -> tuple[list[Mapping[str, object]], list[Mapping[str, object]]]:
-    by_kind: dict[str, list[Mapping[str, object]]] = {}
-    for row in sorted(rows, key=lambda r: str(r["dedup_key"])):
-        by_kind.setdefault(str(row["source_kind"]), []).append(row)
-    core: list[Mapping[str, object]] = []
-    oversample: list[Mapping[str, object]] = []
-    spent = 0
-    for kind, quota in quotas.items():
-        group = by_kind.get(kind, [])
-        take = len(group) if quota is None else min(quota, len(group))
-        kind_core, kind_over = draw(group, take, rng, oversample_share)
-        core.extend(kind_core)
-        oversample.extend(kind_over)
-        spent += take
-    remainder = by_kind.get(remainder_kind, [])
-    rest_core, rest_over = draw(remainder, min(max(n - spent, 0), len(remainder)), rng, oversample_share)
-    return core + rest_core, oversample + rest_over
-
-
 def sample_audit(
     judged_rows: Sequence[Mapping[str, object]],
     *,
@@ -426,12 +388,23 @@ def sample_audit(
     Returns:
         The sampled rows, split into the uniform core and the oversample.
     """
-    rng = Random(seed)
-    accepted = [row for row in judged_rows if row["accepted"]]
-    rejected = [row for row in judged_rows if not row["accepted"]]
-    accept_core, accept_over = stratified(accepted, accepts, rng, quotas, remainder_kind, oversample_share)
-    reject_core, reject_over = stratified(rejected, rejects, rng, quotas, remainder_kind, oversample_share)
-    return AuditSample(core=(*accept_core, *reject_core), oversample=(*accept_over, *reject_over))
+    rows = list(judged_rows)
+    core, oversample = _native.judge_sample_audit(
+        [
+            (str(row["dedup_key"]), str(row["source_kind"]), float(str(row["confidence"])), bool(row["accepted"]))
+            for row in rows
+        ],
+        accepts,
+        rejects,
+        str(seed),
+        list(quotas.items()),
+        remainder_kind,
+        oversample_share,
+    )
+    return AuditSample(
+        core=tuple(rows[index] for index in core),
+        oversample=tuple(rows[index] for index in oversample),
+    )
 
 
 def exact_upper_bound(hits: int, n: int, alpha: float = 0.05) -> float:
@@ -449,16 +422,7 @@ def exact_upper_bound(hits: int, n: int, alpha: float = 0.05) -> float:
     Returns:
         The upper bound on the true rate.
     """
-    if hits >= n:
-        return 1.0
-    lo, hi = hits / n, 1.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if sum(comb(n, k) * mid**k * (1 - mid) ** (n - k) for k in range(hits + 1)) > alpha:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+    return _native.judge_exact_upper_bound(hits, n, alpha)
 
 
 def golden_failure(row: GoldenRow, verdict: Mapping[str, object] | None) -> GoldenFailure | None:
