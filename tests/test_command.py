@@ -182,6 +182,34 @@ class TestUnwrapped:
     def test_operand_skip_only_consumes_digit_led_duration(self, raw: str, executable: str) -> None:
         assert parse(raw).unwrapped.executable == executable
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("timeout -k 3 5s rm -rf /x", id="short_kill_after_then_duration"),
+            pytest.param("timeout --kill-after=3 5s rm -rf /x", id="equals_kill_after_then_duration"),
+        ],
+    )
+    def test_value_flag_consumes_arg_then_operand_skips_duration(self, raw: str) -> None:
+        assert parse(raw).unwrapped.executable == "rm"
+
+    @pytest.mark.parametrize(
+        ("raw", "executable"),
+        [
+            pytest.param("sudo -r sysadm_r rm -rf /x", "rm", id="f1_sudo_role_value_flag"),
+            pytest.param("sudo -t sysadm_t rm -rf /x", "rm", id="f1_sudo_type_value_flag"),
+            pytest.param("timeout .5s rm -rf /x", "rm", id="f3_leading_dot_duration"),
+            pytest.param('"sudo" -u root rm -rf /x', "rm", id="f4_double_quoted_head"),
+            pytest.param("'sudo' rm /x", "rm", id="f4_single_quoted_head"),
+            pytest.param('/usr/bin/"sudo" rm /x', "rm", id="f4_path_quoted_basename"),
+            pytest.param("sudo -h rm -rf /x", "rm", id="f5_host_no_over_consume"),
+        ],
+    )
+    def test_adversarial_wrapper_bypasses_reach_inner_command(self, raw: str, executable: str) -> None:
+        assert parse(raw).unwrapped.executable == executable
+
+    def test_env_split_string_keeps_payload_visible(self) -> None:
+        assert parse('env -S "rm -rf /"').unwrapped.executable == "rm -rf /"
+
 
 class TestPrefix:
     @pytest.mark.parametrize(

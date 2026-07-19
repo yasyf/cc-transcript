@@ -208,7 +208,7 @@ impl Command {
     // Parity: command.py Command.unwrapped — returns self when nothing is stripped.
     pub fn unwrapped(&self) -> Command {
         let argv = self.argv();
-        let stripped = strip_wrappers(&argv);
+        let stripped = strip_wrappers(&argv, &self.words);
         if stripped.len() == argv.len() {
             return self.clone();
         }
@@ -232,7 +232,7 @@ impl Command {
 
     // Parity: command.py Command.prefix — over the unwrapped argv; empty pick falls back to the tool.
     pub fn prefix(&self) -> Option<String> {
-        let argv = strip_wrappers(&self.argv());
+        let argv = strip_wrappers(&self.argv(), &self.words);
         match argv.first() {
             None | Some(&"") => None,
             Some(&exe) if MULTI_LEVEL_TOOLS.contains(&exe) => Some(
@@ -251,7 +251,7 @@ impl Command {
         if argv.is_empty() {
             return false;
         }
-        let unwrapped = strip_wrappers(&self.argv());
+        let unwrapped = strip_wrappers(&self.argv(), &self.words);
         unwrapped.len() >= argv.len() && unwrapped[..argv.len()] == *argv
     }
 
@@ -775,8 +775,17 @@ fn is_value_flag(flag: &str, value_flags: &[&str]) -> bool {
     !flag.contains('=') && value_flags.contains(&flag)
 }
 
+// A GNU duration operand: `[0-9]`-led or `.[0-9]`-led (`.5s`), never a bare command like `rm`.
+fn duration_led(operand: &str) -> bool {
+    match operand.as_bytes() {
+        [b'.', d, ..] => d.is_ascii_digit(),
+        [d, ..] => d.is_ascii_digit(),
+        [] => false,
+    }
+}
+
 // Tokens `wrapper` consumes before the real command: value flags swallow their argument, then the
-// operand budget consumes a digit-led duration only (so a malformed `timeout rm` never hides the
+// operand budget consumes a duration-led operand only (so a malformed `timeout rm` never hides the
 // command), then today's bare-integer / VAR=val skips. Unknown flags keep flag-only skip.
 fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
     let value_flags = wrapper_value_flags(wrapper);
@@ -787,7 +796,7 @@ fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
             flag if flag.len() > 1 && flag.starts_with('-') => {
                 i += 1 + usize::from(is_value_flag(flag, value_flags));
             }
-            operand if budget > 0 && operand.as_bytes().first().is_some_and(u8::is_ascii_digit) => {
+            operand if budget > 0 && duration_led(operand) => {
                 budget -= 1;
                 i += 1;
             }
@@ -798,16 +807,19 @@ fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
     i.min(tokens.len())
 }
 
-// Parity: command.py Command.unwrapped — drop each leading wrapper plus its skippable args. The
-// wrapper head matches on its basename (`/usr/bin/sudo` → `sudo`).
-fn strip_wrappers<'a>(argv: &[&'a str]) -> Vec<&'a str> {
+// Drop each leading wrapper plus its skippable args. The head matches on the dequoted word value
+// (`"sudo"` → `sudo`), basenamed (`/usr/bin/sudo` → `sudo`); argv and words slice in lockstep.
+fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
     let mut argv: Vec<&str> = argv.to_vec();
-    while argv
-        .first()
-        .is_some_and(|head| WRAPPER_COMMANDS.contains(&basename(head)))
-    {
-        let skip = wrapper_skip(basename(argv[0]), &argv[1..]);
+    let mut words: &[Word] = words;
+    while let Some(&raw_head) = argv.first() {
+        let head = basename(words.first().and_then(|w| w.value.as_deref()).unwrap_or(raw_head));
+        if !WRAPPER_COMMANDS.contains(&head) {
+            break;
+        }
+        let skip = wrapper_skip(head, &argv[1..]);
         argv = argv[1 + skip..].to_vec();
+        words = words.get(1 + skip..).unwrap_or_default();
     }
     argv
 }
@@ -1381,6 +1393,44 @@ mod tests {
             let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
             assert_eq!(cmd.executable, executable, "unwrapping {raw}");
         }
+    }
+
+    #[test]
+    fn value_flag_consumes_its_arg_before_the_operand_budget_skips_the_duration() {
+        for raw in [
+            "timeout -k 3 5s rm -rf /x",
+            "timeout --kill-after=3 5s rm -rf /x",
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn adversarial_wrapper_bypasses_reach_the_inner_command() {
+        for (raw, executable) in [
+            ("sudo -r sysadm_r rm -rf /x", "rm"),
+            ("sudo -t sysadm_t rm -rf /x", "rm"),
+            ("timeout .5s rm -rf /x", "rm"),
+            ("\"sudo\" -u root rm -rf /x", "rm"),
+            ("'sudo' rm /x", "rm"),
+            ("/usr/bin/\"sudo\" rm /x", "rm"),
+            ("sudo -h rm -rf /x", "rm"),
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.executable, executable, "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn env_split_string_keeps_the_payload_visible() {
+        // env -S's argument is a shell command env re-splits and runs; a bare flag leaves the
+        // payload as the executable so the guards see it instead of an empty command.
+        let cmd = CommandLine::parse("env -S \"rm -rf /\"")
+            .primary()
+            .unwrap()
+            .unwrapped();
+        assert_eq!(cmd.executable, "rm -rf /");
     }
 
     #[test]

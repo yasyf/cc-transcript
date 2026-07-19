@@ -36,31 +36,36 @@ pub const PAYLOAD_DEPTH_LIMIT: u8 = 3;
 // only (man-page verified); boolean and optional-argument flags are excluded so unwrap never
 // swallows the wrapped command.
 pub const WRAPPER_VALUE_FLAGS: &[(&str, &[&str])] = &[
-    (
-        "env",
-        &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
-    ),
+    // env -S/--split-string is omitted on purpose: its argument is a shell command env re-splits
+    // and runs, so consuming it would hide the wrapped command; a bare flag keeps it visible.
+    ("env", &["-u", "-C", "--unset", "--chdir"]),
     (
         "sudo",
         &[
             "-u",
             "-g",
             "-p",
-            "-h",
             "-U",
             "-R",
             "-D",
             "-C",
             "-T",
+            "-r",
+            "-t",
+            "-c",
+            "-a",
             "--user",
             "--group",
             "--prompt",
-            "--host",
             "--other-user",
             "--chroot",
             "--chdir",
             "--close-from",
             "--command-timeout",
+            "--role",
+            "--type",
+            "--login-class",
+            "--auth-type",
         ],
     ),
     ("doas", &["-u", "-C"]),
