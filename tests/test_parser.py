@@ -29,6 +29,7 @@ from tests import testkit
 from tests.support import raw_envelope as envelope
 
 TESTDATA = Path(__file__).parent / "testdata"
+NEWLINE = ord("\n")
 
 
 def user_str() -> dict[str, Any]:
@@ -208,7 +209,8 @@ def test_print_message_without_id_or_usage_yields_none() -> None:
             testkit.mode_line("plan", session_id="s1", channel="permission-mode"), ModeEvent, id="permission-mode"
         ),
         pytest.param(
-            {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "go"}} | testkit.meta_fields("att"),
+            {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "go"}}
+            | testkit.meta_fields("att"),
             AttachmentEvent,
             id="attachment",
         ),
@@ -302,3 +304,76 @@ def test_empty_print_envelope_raises_value_error() -> None:
     # old: StopIteration (next() over no result element); native: ValueError.
     with pytest.raises(ValueError):
         parse_print_result(b"[]")
+
+
+def compositionality_corpus() -> bytes:
+    # Every modeled event/block shape, plus skippable lines (blank, whitespace,
+    # bare scalar/array, invalid JSON, raw undecodable bytes b"\xff").
+    lines = [
+        orjson.dumps(testkit.user_line("u1", "fix the bug")),
+        orjson.dumps(testkit.user_line("u2", "", blocks=[testkit.tool_result("t0", "ok")])),
+        b"",
+        b"   ",
+        orjson.dumps(testkit.user_line("u3", "wait", interrupted=True)),
+        orjson.dumps(
+            testkit.assistant_line(
+                "a1",
+                "working",
+                blocks=[testkit.thinking_block("hmm"), testkit.tool_use("t1", "Bash", {"command": "ls"})],
+                stop_reason="tool_use",
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+            )
+        ),
+        b"{not valid json",
+        b"\xff",
+        b"5",
+        b"[]",
+        orjson.dumps(
+            testkit.assistant_line(
+                "a2",
+                blocks=[{"type": "fallback", "from": {"model": "claude-opus-4-7"}, "to": {"model": "claude-sonnet-4-5"}}],
+            )
+        ),
+        orjson.dumps(
+            testkit.assistant_line("a3", blocks=[{"type": "server_tool_use", "id": "st1", "name": "web_search"}])
+        ),
+        orjson.dumps(testkit.mode_line("plan", session_id="s1")),
+        orjson.dumps(testkit.mode_line("acceptEdits", session_id="s1", channel="permission-mode")),
+        orjson.dumps(
+            envelope(
+                type="attachment",
+                attachment={"type": "queued_command", "prompt": "run the tests", "commandMode": "prompt"},
+            )
+        ),
+        orjson.dumps(testkit.system_line("stop_hook_summary")),
+        orjson.dumps(testkit.other_line("summary")),
+    ]
+    return b"\n".join(lines)
+
+
+@pytest.mark.parametrize("trailing", [b"", b"\n"], ids=["unterminated", "terminated"])
+def test_parse_events_from_bytes_is_compositional_at_every_line_boundary(trailing: bytes) -> None:
+    # Pins the parse_events_from_bytes compositionality contract; views have value __eq__.
+    raw = compositionality_corpus() + trailing
+    whole = parse_events_from_bytes(raw)
+    assert [type(event).__name__ for event in whole] == [
+        "UserEvent",
+        "UserEvent",
+        "UserEvent",
+        "AssistantEvent",
+        "AssistantEvent",
+        "AssistantEvent",
+        "ModeEvent",
+        "ModeEvent",
+        "AttachmentEvent",
+        "SystemEvent",
+        "OtherEvent",
+    ]
+    boundaries = [0, *(i + 1 for i, byte in enumerate(raw) if byte == NEWLINE), len(raw)]
+    for cut in boundaries:
+        assert parse_events_from_bytes(raw[:cut]) + parse_events_from_bytes(raw[cut:]) == whole
