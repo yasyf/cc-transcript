@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.5.1] - 2026-07-19
+
+### Fixed
+- `judge.run_verdicts` serializes its `persist` calls on a dedicated lock. Persist
+  runs after the judge semaphore, so concurrent workers raced `record_verdict`'s
+  exclusive transaction into `TransactionConflictError` on any pass judging more
+  than one row — the platform's own fan-out violated its own store contract.
+  Judge concurrency is unchanged.
+
 ## [14.5.0] - 2026-07-19
 
 ### Changed

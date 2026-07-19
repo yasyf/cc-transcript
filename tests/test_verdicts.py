@@ -565,6 +565,28 @@ async def test_structured_judge_wraps_a_non_json_response_as_judge_error(monkeyp
     await go()
 
 
+async def test_run_verdicts_serializes_persist_against_the_exclusive_store(tmp_path: Path) -> None:
+    store = await open_generic(tmp_path)
+    rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(8)]
+
+    async def prompt_for(row: Mapping[str, object]) -> str:
+        return str(row["text"])
+
+    async def judge(prompt: str) -> str:
+        return prompt
+
+    async def persist(row: Mapping[str, object], verdict: str) -> None:
+        del verdict
+        async with store.transaction():
+            await store.record_file(f"{row['dedup_key']}.jsonl", 1.0)
+            await asyncio.sleep(0.005)
+
+    judged, failed = await run_verdicts(rows, prompt_for, judge, persist, concurrency=4)
+    assert (judged, failed) == (8, 0)
+    assert len(await store.file_mtimes()) == 8
+    await store.close()
+
+
 async def test_run_verdicts_respects_concurrency() -> None:
     state = {"active": 0, "peak": 0}
 

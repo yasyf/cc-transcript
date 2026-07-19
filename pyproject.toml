@@ -1,6 +1,6 @@
 [project]
 name = "cc-transcript"
-version = "14.5.0" # informational — releases stamp the version from the git tag
+version = "14.5.1" # informational — releases stamp the version from the git tag
 description = "Grep every Claude Code session you've ever run."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"

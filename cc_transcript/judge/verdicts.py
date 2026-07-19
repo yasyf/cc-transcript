@@ -334,6 +334,7 @@ async def run_verdicts[V](
     """
     counts = {"judged": 0, "failed": 0}
     limiter = asyncio.Semaphore(concurrency)
+    persister = asyncio.Lock()
 
     async def worker(row: Mapping[str, object]) -> None:
         async with limiter:
@@ -342,7 +343,11 @@ async def run_verdicts[V](
             except JudgeError:
                 counts["failed"] += 1
                 return
-        await persist(row, verdict)
+        # The store's transaction is exclusive by contract; persists serialize on
+        # this lock so concurrent workers never race record_verdict into a
+        # TransactionConflictError. Judge concurrency is untouched.
+        async with persister:
+            await persist(row, verdict)
         counts["judged"] += 1
 
     async with asyncio.TaskGroup() as tg:
