@@ -23,12 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in Python. Near-duplicate centroid similarities are now accumulated and
   normalized in f64 rather than numpy `float32`, so a similarity can shift by at
   most a floating-point epsilon (non-breaking); suggestion scores are unchanged.
+- **`Command.split_options(value_flags)`** partitions the argument words into
+  `(options, operands)` as `Word` tuples, so a caller keeps each token's raw
+  spelling and span: `--` ends option parsing, a lone `-` is an operand, and a
+  listed value flag consumes its following word.
 
 ### Changed
 - **BREAKING (next major): activity tool-use edits are plural.** The lowered
   `ToolUse.edit` projection is now `ToolUse.edits`, changing from an optional
   `(file_path, hunks)` pair to an ordered collection with one pair per edited
   file so multi-file `apply_patch` calls preserve every target.
+- **Wrapper unwrap is option-arity aware.** `Command.unwrapped` (and `prefix`,
+  `runs`, `prefixes`) now consult per-wrapper value-flag tables, so a flag's
+  argument is dropped with the flag: `env -u HOME rm /x`, `sudo -u root rm /x`, and
+  `timeout 5s rm /x` unwrap to `rm` instead of stopping at `HOME`/`root`/`5s`.
+  `timeout`'s leading duration is skipped only when it is ASCII-digit-led (a
+  malformed `timeout rm -rf /` still exposes `rm`, and a non-ASCII digit like
+  `timeout ٣ …` is left as the command), `=`-joined value flags consume nothing
+  extra, unknown flags keep the prior flag-only skip, and the wrapper head matches
+  on the basename of the unquoted word (`/usr/bin/sudo` → `sudo`). The value-flag
+  tables cover env/sudo/doas/timeout/nice/xargs/exec/time, including sudo's
+  SELinux/BSD value options (`-r/-t/-c/-a`), so a wrapped command can no longer be
+  hidden behind a flag's argument.
 
 ### Removed
 - **Breaking:** `extract_structured` and the private extractor helpers `first`,

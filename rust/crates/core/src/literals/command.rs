@@ -31,3 +31,62 @@ pub const SHELL_COMMANDS: &[&str] = &[
 ];
 pub const POSIX_QUOTING_SHELLS: &[&str] = &["ash", "bash", "dash", "ksh", "sh", "zsh"];
 pub const PAYLOAD_DEPTH_LIMIT: u8 = 3;
+
+// Per-wrapper flags that consume the next token as a value. Mandatory space-separable arguments
+// only (man-page verified); boolean and optional-argument flags are excluded so unwrap never
+// swallows the wrapped command.
+pub const WRAPPER_VALUE_FLAGS: &[(&str, &[&str])] = &[
+    (
+        "env",
+        &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
+    ),
+    (
+        "sudo",
+        &[
+            "-u",
+            "-g",
+            "-p",
+            "-h",
+            "-U",
+            "-R",
+            "-D",
+            "-C",
+            "-T",
+            "--user",
+            "--group",
+            "--prompt",
+            "--host",
+            "--other-user",
+            "--chroot",
+            "--chdir",
+            "--close-from",
+            "--command-timeout",
+        ],
+    ),
+    ("doas", &["-u", "-C"]),
+    ("timeout", &["-k", "-s", "--kill-after", "--signal"]),
+    ("nice", &["-n", "--adjustment"]),
+    (
+        "xargs",
+        &[
+            "-I",
+            "-n",
+            "-P",
+            "-s",
+            "-d",
+            "-a",
+            "-E",
+            "-L",
+            "--max-args",
+            "--max-procs",
+            "--max-chars",
+            "--delimiter",
+            "--arg-file",
+        ],
+    ),
+    ("exec", &["-a"]),
+    ("time", &["-f", "-o", "--format", "--output"]),
+];
+
+// Leading positional operands a wrapper consumes after its flags — timeout's DURATION.
+pub const WRAPPER_OPERAND_SKIP: &[(&str, usize)] = &[("timeout", 1)];

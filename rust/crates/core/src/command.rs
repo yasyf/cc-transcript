@@ -8,7 +8,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::literals::command::{
     ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS,
-    SHELL_COMMANDS, WRAPPER_COMMANDS,
+    SHELL_COMMANDS, WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
 };
 use crate::pystr;
 
@@ -253,6 +253,36 @@ impl Command {
         }
         let unwrapped = strip_wrappers(&self.argv());
         unwrapped.len() >= argv.len() && unwrapped[..argv.len()] == *argv
+    }
+
+    // Split the argument words into (options, operands): `--` ends options (dropped), a lone `-` is
+    // an operand, a `-`-led token is an option that pulls its next word when it is a listed value
+    // flag. Classification reads the dequoted arg text; the returned Word handles carry each token's
+    // raw spelling and span so a value flag can never match a duplicate operand back to the wrong word.
+    pub fn split_options(&self, value_flags: &[&str]) -> (Vec<Word>, Vec<Word>) {
+        let words = self.words.get(1..).unwrap_or_default();
+        let mut options: Vec<Word> = Vec::new();
+        let mut operands: Vec<Word> = Vec::new();
+        let mut i = 0;
+        while i < self.args.len() {
+            match self.args[i].as_str() {
+                "--" => {
+                    operands.extend(words[i + 1..].iter().cloned());
+                    break;
+                }
+                "-" => operands.push(words[i].clone()),
+                flag if flag.starts_with('-') => {
+                    options.push(words[i].clone());
+                    if is_value_flag(flag, value_flags) && i + 1 < self.args.len() {
+                        options.push(words[i + 1].clone());
+                        i += 1;
+                    }
+                }
+                _ => operands.push(words[i].clone()),
+            }
+            i += 1;
+        }
+        (options, operands)
     }
 }
 
@@ -723,11 +753,60 @@ fn is_wrapper_skip(arg: &str) -> bool {
         || ASSIGNMENT_RE.is_match(arg)
 }
 
-// Parity: command.py Command.unwrapped — drop each leading wrapper plus its skippable args.
+fn basename(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+fn wrapper_value_flags(wrapper: &str) -> &'static [&'static str] {
+    WRAPPER_VALUE_FLAGS
+        .iter()
+        .find(|(name, _)| *name == wrapper)
+        .map_or(&[], |(_, flags)| *flags)
+}
+
+fn wrapper_operand_skip(wrapper: &str) -> usize {
+    WRAPPER_OPERAND_SKIP
+        .iter()
+        .find(|(name, _)| *name == wrapper)
+        .map_or(0, |(_, count)| *count)
+}
+
+fn is_value_flag(flag: &str, value_flags: &[&str]) -> bool {
+    !flag.contains('=') && value_flags.contains(&flag)
+}
+
+// Tokens `wrapper` consumes before the real command: value flags swallow their argument, then the
+// operand budget consumes a digit-led duration only (so a malformed `timeout rm` never hides the
+// command), then today's bare-integer / VAR=val skips. Unknown flags keep flag-only skip.
+fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
+    let value_flags = wrapper_value_flags(wrapper);
+    let mut budget = wrapper_operand_skip(wrapper);
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i] {
+            flag if flag.len() > 1 && flag.starts_with('-') => {
+                i += 1 + usize::from(is_value_flag(flag, value_flags));
+            }
+            operand if budget > 0 && operand.as_bytes().first().is_some_and(u8::is_ascii_digit) => {
+                budget -= 1;
+                i += 1;
+            }
+            arg if is_wrapper_skip(arg) => i += 1,
+            _ => break,
+        }
+    }
+    i.min(tokens.len())
+}
+
+// Parity: command.py Command.unwrapped — drop each leading wrapper plus its skippable args. The
+// wrapper head matches on its basename (`/usr/bin/sudo` → `sudo`).
 fn strip_wrappers<'a>(argv: &[&'a str]) -> Vec<&'a str> {
     let mut argv: Vec<&str> = argv.to_vec();
-    while !argv.is_empty() && WRAPPER_COMMANDS.contains(&argv[0]) {
-        let skip = argv[1..].iter().take_while(|a| is_wrapper_skip(a)).count();
+    while argv
+        .first()
+        .is_some_and(|head| WRAPPER_COMMANDS.contains(&basename(head)))
+    {
+        let skip = wrapper_skip(basename(argv[0]), &argv[1..]);
         argv = argv[1 + skip..].to_vec();
     }
     argv
@@ -1270,6 +1349,101 @@ mod tests {
             ..Command::default()
         };
         assert_eq!(cmd.unwrapped(), cmd);
+    }
+
+    #[test]
+    fn arity_aware_unwrap_reaches_the_real_command() {
+        for raw in [
+            "env -u HOME rm /x",
+            "sudo -u root rm /x",
+            "timeout 5s rm /x",
+            "sudo -u root -g wheel rm /x",
+            "env --unset=HOME rm /x",
+            "nice -n 10 rm /x",
+            "xargs -I{} rm {}",
+            "sudo env -u HOME rm /x",
+            "sudo -Z rm /x",
+            "/usr/bin/sudo rm /x",
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn operand_skip_only_consumes_a_digit_led_duration() {
+        // A non-digit token in the duration slot is the command, not the duration — never hidden.
+        for (raw, executable) in [
+            ("timeout rm -rf /", "rm"),
+            ("timeout git push", "git"),
+            ("timeout ٣ git push", "٣"),
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.executable, executable, "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn split_options_partitions_options_from_operands() {
+        let texts = |raw: &str, value_flags: &[&str]| {
+            let (options, operands) = CommandLine::parse(raw)
+                .primary()
+                .unwrap()
+                .split_options(value_flags);
+            (
+                options
+                    .iter()
+                    .map(|w| w.value.clone().unwrap())
+                    .collect::<Vec<_>>(),
+                operands
+                    .iter()
+                    .map(|w| w.value.clone().unwrap())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let strs = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // `--` ends options (dropped from both sides); everything after is an operand.
+        assert_eq!(texts("run -a -- -b c", &[]), (strs(&["-a"]), strs(&["-b", "c"])));
+        // A lone `-` is an operand (stdin), not an option.
+        assert_eq!(texts("run - -v", &[]), (strs(&["-v"]), strs(&["-"])));
+        // A listed value flag pulls its next token into the options.
+        assert_eq!(
+            texts("run -o file rest", &["-o"]),
+            (strs(&["-o", "file"]), strs(&["rest"]))
+        );
+        // An `=`-joined value flag consumes nothing extra.
+        assert_eq!(
+            texts("run -o=file rest", &["-o"]),
+            (strs(&["-o=file"]), strs(&["rest"]))
+        );
+        // Empty args split into two empty vectors.
+        assert_eq!(texts("run", &["-o"]), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn split_options_returns_words_with_provenance() {
+        let (options, operands) = CommandLine::parse("run --name \"x y\" pos")
+            .primary()
+            .unwrap()
+            .split_options(&["--name"]);
+        assert_eq!(
+            options
+                .iter()
+                .map(|w| w.value.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["--name", "x y"]
+        );
+        // The consumed value keeps its verbatim raw spelling and a source span.
+        assert_eq!(options[1].raw, "\"x y\"");
+        assert!(options[1].span.is_some());
+        assert_eq!(
+            operands
+                .iter()
+                .map(|w| w.value.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["pos"]
+        );
     }
 
     #[test]
