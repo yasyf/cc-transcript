@@ -121,8 +121,24 @@ reference:
       - tool_uses
       - thinking_chars
       - parse_event
+      - parse_events
       - parse_events_from_bytes
       - parse_print_result
+  - title: Synthetic transcripts
+    desc: Test-only builders that mint real native events by round-tripping envelope dicts through the parser.
+    contents:
+      - synthetic_user_event
+      - synthetic_assistant_event
+      - user_line
+      - assistant_line
+      - text_block
+      - thinking_block
+      - tool_use
+      - tool_result
+      - meta_fields
+      - mode_line
+      - system_line
+      - other_line
   - title: Cost
     desc: Token pricing and the cost helper over assistant usage.
     contents:
@@ -190,6 +206,7 @@ reference:
       - CommandLineQuery
       - Occurrence
       - Redirect
+      - Word
       - parse_command_line
       - command_prefixes
   - title: Tool facts

@@ -108,7 +108,37 @@ def parse_event(data: Mapping[str, Any]) -> TranscriptEvent | None:
 
 
 def parse_events_from_bytes(raw: bytes) -> list[TranscriptEvent]:
+    """Parse a JSONL transcript byte buffer into typed native events.
+
+    Compositionality contract: parsing splits on newlines and folds each line
+    independently, so for any split of ``raw`` on a line boundary,
+    ``parse_events_from_bytes(prefix) + parse_events_from_bytes(suffix)`` equals
+    ``parse_events_from_bytes(prefix + suffix)`` — value equality on the views'
+    structural ``__eq__``. Each call owns its buffer; no state carries across calls.
+    Blank, undecodable, and non-mapping lines are skipped identically wherever the
+    split falls, and an unterminated final line parses the same as a terminated one.
+    A line that fails typed parsing — a JSON object missing a required field —
+    raises identically wherever the split falls: the side containing that line
+    raises, so the equation above applies to inputs that parse. Splits inside a
+    line are out of contract: a mid-line split is not a line boundary, and the
+    fragments may parse differently than the whole line.
+
+    Incremental consumers — tail parsers re-parsing an appended slice cut on a
+    newline boundary — may rely on this contract; it is pinned by the line-boundary
+    sweep in ``tests/test_parser.py``.
+    """
     return list(_native.parse_bytes(raw).events)
+
+
+def parse_events(*lines: Mapping[str, Any]) -> list[TranscriptEvent]:
+    """Parse raw transcript-line mappings into typed native events.
+
+    Serializes each mapping to a JSONL line and folds them through the native
+    backend — the same path :func:`parse_events_from_bytes` and production use — so
+    the result is a list of lazy views over a multi-line parse. Lines the tolerant
+    parser drops (a below-``MINYEAR`` timestamp) never materialize.
+    """
+    return parse_events_from_bytes(b"\n".join(orjson.dumps(dict(line)) for line in lines))
 
 
 def parse_print_result(raw: bytes) -> PrintResult:
