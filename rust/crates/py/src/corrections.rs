@@ -1,48 +1,34 @@
 //! pyo3 exposure of the core correction-ledger engine (`cc_transcript_core::corrections`)
-//! for the parity suite and the future Rust CLI: a handle mirroring
-//! `cc_transcript.corrections.CorrectionLog`.
+//! for the `cc_transcript.corrections.CorrectionLog` facade: `__new__` stores the path,
+//! `open()` spawns the actor thread that owns the connection, and every op returns an
+//! `asyncio.Future` resolved from that thread.
 //!
 //! Detail is delegated to Python's own `json` module — `dict(detail)` normalizes or raises
-//! and `json.dumps`/`json.loads` reproduce NaN/Infinity and lone-surrogate output exactly.
-//! Rows project column-by-column from their SQLite storage class, mirroring Python's dynamic
-//! `row[col]`. Every core call runs with the GIL released (`py.detach`) so a blocked writer
-//! never convoys other threads; errors raise the same `sqlite3`/`OSError` types callers
-//! branch on, carrying `sqlite_errorcode`/`sqlite_errorname` and `errno`/`filename` payloads.
+//! (non-mapping TypeError stays synchronous) and `json.dumps`/`json.loads` reproduce
+//! NaN/Infinity and lone-surrogate output exactly. Rows project column-by-column from their
+//! SQLite storage class, mirroring Python's dynamic `row[col]`. Errors raise the same
+//! `sqlite3`/`OSError` types callers branch on, carrying the `sqlite_errorcode`/`errno`
+//! payloads.
 
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3::IntoPyObjectExt;
 
+use cc_transcript_core::actor::Actor;
 use cc_transcript_core::corrections::{Correction, CorrectionLog, SqlRow};
 
-use crate::sqlite::{cell_to_py, ledger_err, rows_to_dicts};
+use crate::actor_bridge::{
+    closed_error, done_callback, none, on_open_callback, running_loop, submit,
+};
+use crate::sqlite::{cell_to_py, rows_to_dicts};
 
-#[pyo3_stub_gen::derive::gen_stub_pyclass]
-#[pyclass(unsendable)]
-pub struct RustCorrectionLog {
-    log: CorrectionLog,
-}
-
-// A pointer to the thread-pinned (`unsendable`) engine. detach runs the closure
-// synchronously on the calling thread, so this Send wrapper never actually crosses threads.
-struct Pinned(*const CorrectionLog);
-unsafe impl Send for Pinned {}
-
-impl Pinned {
-    fn log(&self) -> &CorrectionLog {
-        unsafe { &*self.0 }
-    }
-}
-
-// Runs a core call with the GIL released so a blocked writer never convoys other threads.
-fn detached<T: Send>(
-    py: Python<'_>,
-    log: &CorrectionLog,
-    call: impl FnOnce(&CorrectionLog) -> T + Send,
-) -> T {
-    let pinned = Pinned(log);
-    py.detach(move || call(pinned.log()))
+enum State {
+    Unopened(PathBuf),
+    Open(Actor<CorrectionLog>),
+    Closed,
 }
 
 // Mirror row_to_record: drop the DB `id` (asdict omits it) and read detail as
@@ -69,14 +55,76 @@ fn corrections_project<'py>(
         .collect()
 }
 
+fn corrections_to_py(py: Python<'_>, rows: Vec<SqlRow>) -> PyResult<Py<PyAny>> {
+    corrections_project(py, rows)?.into_py_any(py)
+}
+
+fn sql_rows_to_py(py: Python<'_>, rows: Vec<SqlRow>) -> PyResult<Py<PyAny>> {
+    rows_to_dicts(py, rows)?.into_py_any(py)
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass]
+pub struct RustCorrectionLog {
+    state: Mutex<State>,
+}
+
+impl RustCorrectionLog {
+    fn with_actor(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&Actor<CorrectionLog>) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        match &*self.state.lock().unwrap() {
+            State::Open(actor) => f(actor),
+            State::Closed => Err(closed_error(py)),
+            State::Unopened(_) => unreachable!("operation on an unopened correction log"),
+        }
+    }
+}
+
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl RustCorrectionLog {
     #[new]
-    fn new(py: Python<'_>, path: &str) -> PyResult<Self> {
-        py.detach(|| CorrectionLog::open(Path::new(path)))
-            .map(|log| Self { log })
-            .map_err(|e| ledger_err(py, e))
+    fn new(path: String) -> Self {
+        Self {
+            state: Mutex::new(State::Unopened(PathBuf::from(path))),
+        }
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn open(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let event_loop = running_loop(py)?;
+        let future = event_loop.call_method0("create_future")?.unbind();
+        let event_loop = event_loop.unbind();
+        let mut guard = self.state.lock().unwrap();
+        let State::Unopened(path) = std::mem::replace(&mut *guard, State::Closed) else {
+            unreachable!("open() on an already-opened correction log");
+        };
+        let actor = Actor::spawn(
+            move || CorrectionLog::open(&path),
+            on_open_callback(event_loop, future.clone_ref(py)),
+        );
+        *guard = State::Open(actor);
+        Ok(future)
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn close(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let event_loop = running_loop(py)?;
+        let future = event_loop.call_method0("create_future")?.unbind();
+        let event_loop = event_loop.unbind();
+        let mut guard = self.state.lock().unwrap();
+        match std::mem::replace(&mut *guard, State::Closed) {
+            State::Open(actor) => {
+                actor.stop(done_callback(event_loop, future.clone_ref(py)));
+            }
+            _ => {
+                future.bind(py).call_method1("set_result", (py.None(),))?;
+            }
+        }
+        Ok(future)
     }
 
     #[pyo3(signature = (
@@ -85,6 +133,7 @@ impl RustCorrectionLog {
         correction_new, correction_commit, correction_text, overlap, detail,
     ))]
     #[allow(clippy::too_many_arguments)]
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
     fn append(
         &self,
         py: Python<'_>,
@@ -104,9 +153,9 @@ impl RustCorrectionLog {
         correction_text: Option<String>,
         overlap: f64,
         detail: Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        // Mirror CorrectionLog.append: dict(detail) normalizes or raises (non-mapping),
-        // json.dumps emits NaN/Infinity/lone-surrogates like the Python reference writer.
+    ) -> PyResult<Py<PyAny>> {
+        // Convert before the lock: dict(detail)/json.dumps run arbitrary Python (a re-entrant
+        // mapping could call close() and deadlock on the state Mutex). Mirror CorrectionLog.
         let normalized = py.import("builtins")?.getattr("dict")?.call1((detail,))?;
         let detail_json: String = py
             .import("json")?
@@ -131,70 +180,81 @@ impl RustCorrectionLog {
             overlap,
             detail_json,
         };
-        detached(py, &self.log, |log| log.append(&record)).map_err(|e| ledger_err(py, e))
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |log| log.append(&record), none)
+        })
     }
 
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn for_session<'py>(
-        &self,
-        py: Python<'py>,
-        session_id: &str,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = detached(py, &self.log, |log| log.for_session(session_id))
-            .map_err(|e| ledger_err(py, e))?;
-        corrections_project(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn for_session(&self, py: Python<'_>, session_id: String) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |log| log.for_session(&session_id),
+                corrections_to_py,
+            )
+        })
     }
 
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn for_repo<'py>(&self, py: Python<'py>, repo: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows =
-            detached(py, &self.log, |log| log.for_repo(repo)).map_err(|e| ledger_err(py, e))?;
-        corrections_project(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn for_repo(&self, py: Python<'_>, repo: String) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |log| log.for_repo(&repo), corrections_to_py)
+        })
     }
 
     #[pyo3(signature = (ts_ms, source=None))]
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn since<'py>(
-        &self,
-        py: Python<'py>,
-        ts_ms: i64,
-        source: Option<&str>,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = detached(py, &self.log, |log| log.since(ts_ms, source))
-            .map_err(|e| ledger_err(py, e))?;
-        corrections_project(py, rows)
-    }
-
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn for_anchor<'py>(
-        &self,
-        py: Python<'py>,
-        session_id: &str,
-        anchor_uuid: &str,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = detached(py, &self.log, |log| log.for_anchor(session_id, anchor_uuid))
-            .map_err(|e| ledger_err(py, e))?;
-        corrections_project(py, rows)
-    }
-
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn by_digest<'py>(
-        &self,
-        py: Python<'py>,
-        session_id: &str,
-        incorrect_digest: &str,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = detached(py, &self.log, |log| {
-            log.by_digest(session_id, incorrect_digest)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn since(&self, py: Python<'_>, ts_ms: i64, source: Option<String>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |log| log.since(ts_ms, source.as_deref()),
+                corrections_to_py,
+            )
         })
-        .map_err(|e| ledger_err(py, e))?;
-        corrections_project(py, rows)
     }
 
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn sql<'py>(&self, py: Python<'py>, statement: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows =
-            detached(py, &self.log, |log| log.sql(statement)).map_err(|e| ledger_err(py, e))?;
-        rows_to_dicts(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn for_anchor(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        anchor_uuid: String,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |log| log.for_anchor(&session_id, &anchor_uuid),
+                corrections_to_py,
+            )
+        })
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn by_digest(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        incorrect_digest: String,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |log| log.by_digest(&session_id, &incorrect_digest),
+                corrections_to_py,
+            )
+        })
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn sql(&self, py: Python<'_>, statement: String) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |log| log.sql(&statement), sql_rows_to_py)
+        })
     }
 }

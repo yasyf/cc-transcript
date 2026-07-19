@@ -1,77 +1,55 @@
 //! pyo3 exposure of the native feedback-store engine (`cc_transcript_core::feedback`): the
-//! `RustFeedbackStore` handle the `mining.store.FeedbackStore` facade composes over. Every
-//! call releases the GIL (`py.detach`); errors raise the faithful `sqlite3` types via
-//! `crate::sqlite`, and the open-time v8/v9 guard raises `VerdictSchemaError`. The handle
-//! mirrors `sqlite3.Connection`'s lifecycle discipline: `close()` drops the connection
-//! (idempotently), a closed handle raises `ProgrammingError`, and cross-thread use raises
-//! the same-thread `ProgrammingError` CPython's `check_same_thread` produces.
+//! `RustFeedbackStore` handle the `mining.store.FeedbackStore` facade composes over. `__new__`
+//! is cheap and stores config; `open()` spawns the actor thread that owns the connection, and
+//! every op returns an `asyncio.Future` resolved from that thread. The state machine mirrors
+//! `sqlite3.Connection`'s lifecycle: a closed handle raises `ProgrammingError` synchronously,
+//! open failure (incl. the v8/v9 `VerdictSchemaError` guard) arrives through `await open()`,
+//! and errors raise the faithful `sqlite3` types via `crate::sqlite`.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::IntoPyObjectExt;
 
+use cc_transcript_core::actor::Actor;
 use cc_transcript_core::feedback::{FeedbackConfig, FeedbackEngine, Migration};
-use cc_transcript_core::sqlite::{LedgerError, SqlCell};
+use cc_transcript_core::sqlite::{SqlCell, SqlRow};
 
-use crate::sqlite::{cells, ledger_err, rows_to_dicts, sqlite3_error};
+use crate::actor_bridge::{
+    closed_error, done_callback, none, on_open_callback, running_loop, submit,
+};
+use crate::sqlite::{cells, rows_to_dicts};
+
+enum State {
+    Unopened {
+        path: PathBuf,
+        config: FeedbackConfig,
+    },
+    Open(Actor<FeedbackEngine>),
+    Closed,
+}
+
+fn rows_to_py(py: Python<'_>, rows: Vec<SqlRow>) -> PyResult<Py<PyAny>> {
+    rows_to_dicts(py, rows)?.into_py_any(py)
+}
 
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass]
 pub struct RustFeedbackStore {
-    engine: Mutex<Option<FeedbackEngine>>,
-    thread_ident: u64,
-}
-
-// Parity: threading.get_ident() — the ident CPython's check_same_thread message prints.
-fn thread_ident(py: Python<'_>) -> PyResult<u64> {
-    py.import("threading")?
-        .getattr("get_ident")?
-        .call0()?
-        .extract()
-}
-
-fn closed_err(py: Python<'_>) -> PyErr {
-    sqlite3_error(
-        py,
-        "ProgrammingError",
-        "Cannot operate on a closed database.",
-        None,
-        None,
-    )
+    state: Mutex<State>,
 }
 
 impl RustFeedbackStore {
-    // Parity: pysqlite_check_thread — same exception type and message shape.
-    fn check_thread(&self, py: Python<'_>) -> PyResult<()> {
-        let current = thread_ident(py)?;
-        if current != self.thread_ident {
-            return Err(sqlite3_error(
-                py,
-                "ProgrammingError",
-                &format!(
-                    "SQLite objects created in a thread can only be used in that same thread. \
-                     The object was created in thread id {} and this is thread id {}.",
-                    self.thread_ident, current
-                ),
-                None,
-                None,
-            ));
-        }
-        Ok(())
-    }
-
-    fn call<T: Send>(
+    fn with_actor(
         &self,
         py: Python<'_>,
-        call: impl FnOnce(&FeedbackEngine) -> Result<T, LedgerError> + Send,
-    ) -> PyResult<T> {
-        self.check_thread(py)?;
-        let engine = &self.engine;
-        match py.detach(move || engine.lock().unwrap().as_ref().map(call)) {
-            Some(result) => result.map_err(|e| ledger_err(py, e)),
-            None => Err(closed_err(py)),
+        f: impl FnOnce(&Actor<FeedbackEngine>) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        match &*self.state.lock().unwrap() {
+            State::Open(actor) => f(actor),
+            State::Closed => Err(closed_error(py)),
+            State::Unopened { .. } => unreachable!("operation on an unopened feedback store"),
         }
     }
 }
@@ -86,8 +64,7 @@ impl RustFeedbackStore {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        py: Python<'_>,
-        path: &str,
+        path: String,
         extra_ddl: Vec<String>,
         event_columns: Vec<String>,
         migrations: Vec<(String, String, String, Option<String>)>,
@@ -97,7 +74,7 @@ impl RustFeedbackStore {
         event_filter: Option<String>,
         readonly: bool,
         busy_timeout_ms: Option<i64>,
-    ) -> PyResult<Self> {
+    ) -> Self {
         let config = FeedbackConfig {
             extra_ddl,
             event_columns,
@@ -117,139 +94,233 @@ impl RustFeedbackStore {
             readonly,
             busy_timeout_ms: busy_timeout_ms.unwrap_or(5000),
         };
-        let thread_ident = thread_ident(py)?;
-        py.detach(|| FeedbackEngine::open(Path::new(path), config))
-            .map(|engine| Self {
-                engine: Mutex::new(Some(engine)),
-                thread_ident,
-            })
-            .map_err(|e| ledger_err(py, e))
+        Self {
+            state: Mutex::new(State::Unopened {
+                path: PathBuf::from(path),
+                config,
+            }),
+        }
     }
 
-    fn close(&self, py: Python<'_>) -> PyResult<()> {
-        self.check_thread(py)?;
-        let engine = &self.engine;
-        py.detach(move || drop(engine.lock().unwrap().take()));
-        Ok(())
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn open(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let event_loop = running_loop(py)?;
+        let future = event_loop.call_method0("create_future")?.unbind();
+        let event_loop = event_loop.unbind();
+        let mut guard = self.state.lock().unwrap();
+        let State::Unopened { path, config } = std::mem::replace(&mut *guard, State::Closed) else {
+            unreachable!("open() on an already-opened feedback store");
+        };
+        let actor = Actor::spawn(
+            move || FeedbackEngine::open(&path, config),
+            on_open_callback(event_loop, future.clone_ref(py)),
+        );
+        *guard = State::Open(actor);
+        Ok(future)
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn close(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let event_loop = running_loop(py)?;
+        let future = event_loop.call_method0("create_future")?.unbind();
+        let event_loop = event_loop.unbind();
+        let mut guard = self.state.lock().unwrap();
+        match std::mem::replace(&mut *guard, State::Closed) {
+            State::Open(actor) => {
+                actor.stop(done_callback(event_loop, future.clone_ref(py)));
+            }
+            _ => {
+                future.bind(py).call_method1("set_result", (py.None(),))?;
+            }
+        }
+        Ok(future)
     }
 
     #[pyo3(signature = (statement, params=None))]
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn sql<'py>(
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn sql(
         &self,
-        py: Python<'py>,
-        statement: &str,
+        py: Python<'_>,
+        statement: String,
         params: Option<Vec<Bound<'_, PyAny>>>,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    ) -> PyResult<Py<PyAny>> {
         let cells = cells(&params.unwrap_or_default())?;
-        let rows = self.call(py, |e| e.sql(statement, &cells))?;
-        rows_to_dicts(py, rows)
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |e| e.sql(&statement, &cells), rows_to_py)
+        })
     }
 
     #[pyo3(signature = (statement, params=None))]
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[int]", imports = ("asyncio",)))]
     fn execute(
         &self,
         py: Python<'_>,
-        statement: &str,
+        statement: String,
         params: Option<Vec<Bound<'_, PyAny>>>,
-    ) -> PyResult<i64> {
+    ) -> PyResult<Py<PyAny>> {
         let cells = cells(&params.unwrap_or_default())?;
-        self.call(py, |e| e.execute(statement, &cells))
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.execute(&statement, &cells),
+                |py, n| n.into_py_any(py),
+            )
+        })
     }
 
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[int]", imports = ("asyncio",)))]
     fn executemany(
         &self,
         py: Python<'_>,
-        statement: &str,
+        statement: String,
         seq: Vec<Vec<Bound<'_, PyAny>>>,
-    ) -> PyResult<i64> {
+    ) -> PyResult<Py<PyAny>> {
         let rows: Vec<Vec<SqlCell>> = seq.iter().map(|r| cells(r)).collect::<PyResult<_>>()?;
-        self.call(py, |e| e.executemany(statement, &rows))
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.executemany(&statement, &rows),
+                |py, n| n.into_py_any(py),
+            )
+        })
     }
 
-    fn executescript(&self, py: Python<'_>, script: &str) -> PyResult<()> {
-        self.call(py, |e| e.executescript(script))
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn executescript(&self, py: Python<'_>, script: String) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |e| e.executescript(&script), none)
+        })
     }
 
-    fn last_insert_rowid(&self, py: Python<'_>) -> PyResult<i64> {
-        self.call(py, |e| Ok(e.last_insert_rowid()))
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[int]", imports = ("asyncio",)))]
+    fn last_insert_rowid(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                |e| Ok(e.last_insert_rowid()),
+                |py, n| n.into_py_any(py),
+            )
+        })
     }
 
-    fn load_extension(&self, py: Python<'_>, path: &str) -> PyResult<()> {
-        self.call(py, |e| e.load_extension(path))
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn load_extension(&self, py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |e| e.load_extension(&path), none)
+        })
     }
 
-    fn begin_immediate(&self, py: Python<'_>) -> PyResult<()> {
-        self.call(py, |e| e.begin_immediate())
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn begin_immediate(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| submit(py, actor, |e| e.begin_immediate(), none))
     }
 
-    fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        self.call(py, |e| e.commit())
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn commit(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| submit(py, actor, |e| e.commit(), none))
     }
 
-    fn rollback(&self, py: Python<'_>) -> PyResult<()> {
-        self.call(py, |e| e.rollback())
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn rollback(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| submit(py, actor, |e| e.rollback(), none))
     }
 
     #[pyo3(signature = (rows, extras=None))]
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[str]]", imports = ("asyncio",)))]
     fn insert_candidates(
         &self,
         py: Python<'_>,
         rows: Vec<Vec<Bound<'_, PyAny>>>,
         extras: Option<Vec<Vec<Bound<'_, PyAny>>>>,
-    ) -> PyResult<Vec<String>> {
+    ) -> PyResult<Py<PyAny>> {
         let row_cells: Vec<Vec<SqlCell>> =
             rows.iter().map(|r| cells(r)).collect::<PyResult<_>>()?;
         let extra_cells: Option<Vec<Vec<SqlCell>>> = match extras {
             Some(ex) => Some(ex.iter().map(|r| cells(r)).collect::<PyResult<_>>()?),
             None => None,
         };
-        self.call(py, |e| {
-            e.insert_candidates(&row_cells, extra_cells.as_deref())
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.insert_candidates(&row_cells, extra_cells.as_deref()),
+                |py, keys| keys.into_py_any(py),
+            )
         })
     }
 
-    fn record_file(&self, py: Python<'_>, path: &str, mtime: f64) -> PyResult<()> {
-        self.call(py, |e| e.record_file(path, mtime))
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
+    fn record_file(&self, py: Python<'_>, path: String, mtime: f64) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, move |e| e.record_file(&path, mtime), none)
+        })
     }
 
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn file_mtimes<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = self.call(py, |e| e.file_mtimes())?;
-        rows_to_dicts(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn file_mtimes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(py, actor, |e| e.file_mtimes(), rows_to_py)
+        })
     }
 
-    #[gen_stub(override_return_type(type_repr = "tuple[int, int, list[dict[str, typing.Any]]]", imports = ("typing",)))]
-    fn stats<'py>(&self, py: Python<'py>) -> PyResult<(i64, i64, Vec<Bound<'py, PyDict>>)> {
-        let (total, files, by_source) = self.call(py, |e| e.stats())?;
-        Ok((total, files, rows_to_dicts(py, by_source)?))
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[tuple[int, int, list[dict[str, typing.Any]]]]", imports = ("asyncio", "typing")))]
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                |e| e.stats(),
+                |py, (total, files, by_source)| {
+                    (total, files, rows_to_dicts(py, by_source)?).into_py_any(py)
+                },
+            )
+        })
     }
 
     #[pyo3(signature = (source_kind=None, limit=20))]
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn recent<'py>(
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn recent(
         &self,
-        py: Python<'py>,
-        source_kind: Option<&str>,
+        py: Python<'_>,
+        source_kind: Option<String>,
         limit: i64,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = self.call(py, |e| e.recent(source_kind, limit))?;
-        rows_to_dicts(py, rows)
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.recent(source_kind.as_deref(), limit),
+                rows_to_py,
+            )
+        })
     }
 
     #[pyo3(signature = (source_kind=None))]
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn events<'py>(
-        &self,
-        py: Python<'py>,
-        source_kind: Option<&str>,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = self.call(py, |e| e.events(source_kind))?;
-        rows_to_dicts(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn events(&self, py: Python<'_>, source_kind: Option<String>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.events(source_kind.as_deref()),
+                rows_to_py,
+            )
+        })
     }
 
-    fn dedup_keys(&self, py: Python<'_>) -> PyResult<Vec<String>> {
-        self.call(py, |e| e.dedup_keys())
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[str]]", imports = ("asyncio",)))]
+    fn dedup_keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                |e| e.dedup_keys(),
+                |py, keys| keys.into_py_any(py),
+            )
+        })
     }
 
     #[pyo3(signature = (
@@ -257,65 +328,78 @@ impl RustFeedbackStore {
         rationale, canonical_key, fidelity, judged_at,
     ))]
     #[allow(clippy::too_many_arguments)]
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[bool]", imports = ("asyncio",)))]
     fn record_verdict(
         &self,
         py: Python<'_>,
-        dedup_key: &str,
-        role: &str,
+        dedup_key: String,
+        role: String,
         prompt_version: i64,
-        model: &str,
-        category: &str,
+        model: String,
+        category: String,
         accepted: bool,
-        summary: &str,
+        summary: String,
         confidence: f64,
-        rationale: &str,
-        canonical_key: Option<&str>,
-        fidelity: &str,
-        judged_at: &str,
-    ) -> PyResult<bool> {
-        self.call(py, |e| {
-            e.record_verdict(
-                dedup_key,
-                role,
-                prompt_version,
-                model,
-                category,
-                accepted,
-                summary,
-                confidence,
-                rationale,
-                canonical_key,
-                fidelity,
-                judged_at,
+        rationale: String,
+        canonical_key: Option<String>,
+        fidelity: String,
+        judged_at: String,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| {
+                    e.record_verdict(
+                        &dedup_key,
+                        &role,
+                        prompt_version,
+                        &model,
+                        &category,
+                        accepted,
+                        &summary,
+                        confidence,
+                        &rationale,
+                        canonical_key.as_deref(),
+                        &fidelity,
+                        &judged_at,
+                    )
+                },
+                |py, changed| changed.into_py_any(py),
             )
         })
     }
 
     #[pyo3(signature = (role, prompt_version, refresh_summary=false, limit=None, offset=None))]
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn unjudged<'py>(
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn unjudged(
         &self,
-        py: Python<'py>,
-        role: &str,
+        py: Python<'_>,
+        role: String,
         prompt_version: i64,
         refresh_summary: bool,
         limit: Option<i64>,
         offset: Option<i64>,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = self.call(py, |e| {
-            e.unjudged(role, prompt_version, refresh_summary, limit, offset)
-        })?;
-        rows_to_dicts(py, rows)
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.unjudged(&role, prompt_version, refresh_summary, limit, offset),
+                rows_to_py,
+            )
+        })
     }
 
-    #[gen_stub(override_return_type(type_repr = "list[dict[str, typing.Any]]", imports = ("typing",)))]
-    fn judged<'py>(
-        &self,
-        py: Python<'py>,
-        role: &str,
-        prompt_version: i64,
-    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let rows = self.call(py, |e| e.judged(role, prompt_version))?;
-        rows_to_dicts(py, rows)
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[dict[str, typing.Any]]]", imports = ("asyncio", "typing")))]
+    fn judged(&self, py: Python<'_>, role: String, prompt_version: i64) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.judged(&role, prompt_version),
+                rows_to_py,
+            )
+        })
     }
 }

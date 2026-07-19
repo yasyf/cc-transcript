@@ -3,6 +3,7 @@ pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
     pyo3_stub_gen::StubInfo::from_pyproject_toml(manifest_dir.join("../../../pyproject.toml"))
 }
 
+mod actor_bridge;
 mod command;
 mod context;
 mod corrections;
