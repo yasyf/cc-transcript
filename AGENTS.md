@@ -141,18 +141,33 @@ Reach for your **LSP** when the answer must be exhaustive/structural (findRefere
 - **One owner module per concept.** Before writing a detector, predicate, or projection,
   find the existing implementation (`ccx code search`, LSP) and extend it. Two implementations of
   one semantic are a bug even while both are correct.
-- **The Rust core is the implementation.** A semantic change to a native-owned domain
-  (parsing, filterspec, mining, score, lexicon, command) lands in `rust/crates/core`
-  with its re-pinned goldens and the regenerated `_native.pyi` stub in the same
-  commit; the Python facades only rehydrate what the core computes. Shared literals
-  (protocol markers, mining ids/separators/floors, command tables, the corrections
-  DDL) are hand-owned Rust source in `rust/crates/core/src/literals/`: to change one,
-  edit the Rust source and rebuild. Python binds each value through
-  `_native.embedded_literals()` via the typed accessors in `cc_transcript/literals.py`
-  and never re-declares it. `tests/test_literals_parity.py` is the drift gate — mirror
-  equality, full manifest coverage, and no re-declaration. Hand-written `// Parity:`
-  comments cite the Python reference a port reproduces by symbol name
+- **The Rust core is the implementation — new domains included.** Semantic
+  computation (parsing, detection, scoring, selection, sampling, transformation —
+  anything that decides, ranks, matches, or derives) lands in the Rust workspace:
+  `rust/crates/core` for a new domain, or whichever crate already owns the domain
+  it extends (`score` and `lexicon` live in `rust/crates/py`). This binds the
+  *first* implementation, not just changes to existing domains: a new capability is
+  Rust-first from birth, never staged in Python "to port later" — the port is the
+  implementation. Each change lands with its re-pinned goldens and the regenerated
+  `_native.pyi` stub in the same commit; the Python facades only rehydrate what the
+  core computes. Shared literals (protocol markers, mining ids/separators/floors,
+  command tables, the corrections DDL) are hand-owned Rust source in
+  `rust/crates/core/src/literals/`: to change one, edit the Rust source and
+  rebuild. Python binds each value through `_native.embedded_literals()` via the
+  typed accessors in `cc_transcript/literals.py` and never re-declares it.
+  `tests/test_literals_parity.py` is the drift gate — mirror equality, full
+  manifest coverage, and no re-declaration. Hand-written `// Parity:` comments cite
+  the Python reference a port reproduces by symbol name
   (`command.py CommandLine.splice`), never line numbers.
+- **Python keeps exactly four shapes.** (1) LLM orchestration via spawnllm;
+  (2) policy declared as frozen spec dataclasses with a JSON contract; (3) FFI
+  marshalling and rehydration around `_native` calls; (4) I/O composition —
+  filesystem, subprocess, and ML-library inference calls (model2vec, UDPipe): the
+  call itself, never the math over its results. Anything else under
+  `cc_transcript/` is misplaced; when unsure which side owns a computation, it is
+  Rust's. Before writing a helper, check `_native.pyi` — recomputing anything the
+  native surface already computes (or composes internally without a binding) is
+  the bug; expose the binding instead.
 - **The store tier is native.** `feedback.db` and the corrections ledger are owned by
   Rust engines (`rust/crates/core/src/{feedback,corrections}.rs`) — one SQLite library
   per file per process. Python composes, never subclasses: a consumer holds a
