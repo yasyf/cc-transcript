@@ -30,11 +30,14 @@ from cc_transcript.tools import (
     MultiEditCall,
     OtherCall,
     ReadCall,
+    SpanEditCall,
     TaskCall,
     TextResult,
     WriteCall,
     parse_tool_call,
     parse_tool_result,
+    register_mcp_tool,
+    unregister_mcp_tool,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -185,3 +188,14 @@ def test_positional_match_rejected_on_kw_only_tools() -> None:
         match parse_tool_call("Bash", {"command": "x"}):
             case BashCall(_):
                 pass
+    # The registry-backed SpanEditCall view joins the same kw_only contract.
+    register_mcp_tool("syn_span_edit", "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    try:
+        span = parse_tool_call("mcp__cc-context__syn_span_edit", {"path": "/a.py", "content": "body"})
+        assert isinstance(span, SpanEditCall)
+        with pytest.raises(TypeError):
+            match span:
+                case SpanEditCall(_):
+                    pass
+    finally:
+        unregister_mcp_tool("syn_span_edit")

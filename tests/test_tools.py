@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -25,6 +26,7 @@ from cc_transcript.tools import (
     QuestionAnnotation,
     ReadResult,
     SkillResult,
+    SpanEditCall,
     TaskCall,
     TaskLaunchResult,
     TaskResult,
@@ -42,8 +44,25 @@ from cc_transcript.tools import (
     mcp_parts,
     parse_tool_call,
     parse_tool_result,
+    register_mcp_tool,
     tool_name_matches,
+    unregister_mcp_tool,
 )
+
+SYN_SPAN_EDIT = "syn_span_edit"
+SYN_GATE_WRITE = "syn_gate_write"
+
+
+@pytest.fixture
+def registered_syn_specs() -> Iterator[None]:
+    """Registers a span-edit and a behaves-like-only MCP spec, then cleans up."""
+    register_mcp_tool(SYN_SPAN_EDIT, "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    register_mcp_tool(SYN_GATE_WRITE, "Write")
+    try:
+        yield
+    finally:
+        unregister_mcp_tool(SYN_SPAN_EDIT)
+        unregister_mcp_tool(SYN_GATE_WRITE)
 
 
 def test_edit_parses_typed_fields() -> None:
@@ -345,14 +364,19 @@ def test_file_path_of_covers_file_shaped_calls() -> None:
     assert file_path_of(parse_tool_call("Bash", {"command": "ls"})) is None
 
 
-def test_expand_tool_names_includes_both_alias_spellings() -> None:
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_expand_tool_names_includes_registered_and_alias_spellings() -> None:
     assert expand_tool_names("Bash|Write") == frozenset(
-        {"Bash", "Execute", "Write", "Create", "ccx_code_replace"}
+        {"Bash", "Execute", "Write", "Create", SYN_GATE_WRITE}
     )
     assert expand_tool_names("Edit|Write") == frozenset(
-        {"Edit", "Write", "Create", "ccx_code_edit", "ccx_code_replace"}
+        {"Edit", "Write", "Create", SYN_SPAN_EDIT, SYN_GATE_WRITE}
     )
     assert expand_tool_names("Grep") == frozenset({"Grep"})
+
+
+def test_expand_tool_names_omits_unregistered_names() -> None:
+    assert expand_tool_names("Edit|Write") == frozenset({"Edit", "Write", "Create"})
 
 
 @pytest.mark.parametrize(
@@ -365,9 +389,9 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
         ("mcp__github__Grep", "Bash", False),
         ("mcp__server", "server", False),
         ("Read", "Bash|Grep", False),
-        ("mcp__cc-context__ccx_code_edit", "Edit|Write|MultiEdit", True),
-        ("mcp__cc-context__ccx_code_replace", "Write", True),
-        ("mcp__cc-context__ccx_code_read", "Edit|Write|MultiEdit", False),
+        ("mcp__cc-context__syn_span_edit", "Edit|Write|MultiEdit", True),
+        ("mcp__cc-context__syn_gate_write", "Write", True),
+        ("mcp__cc-context__syn_unregistered", "Edit|Write|MultiEdit", False),
     ],
     ids=[
         "alias-forward",
@@ -377,11 +401,12 @@ def test_expand_tool_names_includes_both_alias_spellings() -> None:
         "mcp-miss",
         "mcp-too-few-parts",
         "plain-miss",
-        "ccx-edit-aliases-edit-gate",
-        "ccx-replace-aliases-write",
-        "ccx-read-not-edit-gate",
+        "registered-span-edit-aliases-edit-gate",
+        "registered-write-aliases-write",
+        "unregistered-not-edit-gate",
     ],
 )
+@pytest.mark.usefixtures("registered_syn_specs")
 def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
     assert tool_name_matches(actual, spec) is expected
 
@@ -394,10 +419,10 @@ def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
         ("mcp__conductor__ExitPlanMode", frozenset({"ExitPlanMode"}), True),
         ("mcp__ExitPlanMode", frozenset({"ExitPlanMode"}), False),
         ("Execute", frozenset({"Bash"}), False),
-        ("mcp__cc-context__ccx_code_edit", frozenset({"Edit"}), True),
-        ("mcp__cc-context__ccx_code_replace", frozenset({"Write"}), True),
-        ("mcp__cc-context__ccx_code_read", frozenset({"Edit", "Write", "MultiEdit"}), False),
-        ("mcp__cc-context__ccx_code_grep", frozenset({"Edit", "Write", "MultiEdit"}), False),
+        ("mcp__cc-context__syn_span_edit", frozenset({"Edit"}), True),
+        ("mcp__cc-context__syn_gate_write", frozenset({"Write"}), True),
+        ("mcp__cc-context__syn_span_edit", frozenset({"Write", "MultiEdit"}), False),
+        ("mcp__cc-context__syn_unregistered", frozenset({"Edit", "Write", "MultiEdit"}), False),
     ],
     ids=[
         "exact",
@@ -405,12 +430,13 @@ def test_tool_name_matches(actual: str, spec: str, expected: bool) -> None:
         "mcp-suffix",
         "mcp-too-few-parts",
         "no-alias-closure",
-        "ccx-edit-aliases-edit",
-        "ccx-replace-aliases-write",
-        "ccx-read-not-edit",
-        "ccx-grep-not-edit",
+        "registered-span-edit-aliases-edit",
+        "registered-write-aliases-write",
+        "registered-edit-not-in-write-set",
+        "unregistered-not-edit",
     ],
 )
+@pytest.mark.usefixtures("registered_syn_specs")
 def test_matches_names(actual: str, names: frozenset[str], expected: bool) -> None:
     assert matches_names(actual, names) is expected
 
@@ -457,6 +483,58 @@ def test_mcp_parts(name: str, expected: tuple[str, str] | None) -> None:
 )
 def test_mcp_access(tool: str, expected: str) -> None:
     assert mcp_access(tool) == expected
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_unregistered_mcp_name_neither_matches_nor_lowers() -> None:
+    call = parse_tool_call("mcp__cc-context__syn_unregistered", {"path": "/a", "content": "x"})
+    assert isinstance(call, OtherCall)
+    assert matches_names("mcp__cc-context__syn_unregistered", frozenset({"Edit", "Write"})) is False
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_behaves_like_only_spec_gates_but_lowers_to_other() -> None:
+    call = parse_tool_call("mcp__cc-context__syn_gate_write", {"content": "x"})
+    assert isinstance(call, OtherCall)
+    assert matches_names("mcp__cc-context__syn_gate_write", frozenset({"Write"})) is True
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_span_edit_lowers_path_and_content_to_span_edit_call() -> None:
+    call = parse_tool_call("mcp__cc-context__syn_span_edit", {"path": "/a.py", "content": "body"})
+    assert isinstance(call, SpanEditCall)
+    assert (call.name, call.file_path, call.new) == ("mcp__cc-context__syn_span_edit", "/a.py", "body")
+    assert hunks_of(call) == ()
+    assert file_path_of(call) == "/a.py"
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_span_edit_delete_key_truthy_yields_new_none() -> None:
+    call = parse_tool_call("mcp__cc-context__syn_span_edit", {"path": "/a.py", "delete": True})
+    assert isinstance(call, SpanEditCall)
+    assert call.new is None
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+def test_span_edit_supports_keyword_pattern_matching() -> None:
+    call = parse_tool_call("mcp__cc-context__syn_span_edit", {"path": "/a.py", "content": "body"})
+    match call:
+        case SpanEditCall(file_path=path, new=new):
+            assert (path, new) == ("/a.py", "body")
+        case _:  # pragma: no cover
+            pytest.fail("expected a SpanEditCall pattern match")
+
+
+@pytest.mark.usefixtures("registered_syn_specs")
+@pytest.mark.parametrize(
+    "payload",
+    [{"content": "body"}, {"path": "/a.py"}],
+    ids=["missing-path", "missing-content"],
+)
+def test_span_edit_missing_required_key_raises_and_degrades(payload: dict[str, object]) -> None:
+    with pytest.raises(ToolInputError, match="input missing or malformed"):
+        parse_tool_call("mcp__cc-context__syn_span_edit", payload, on_error="raise")
+    assert isinstance(parse_tool_call("mcp__cc-context__syn_span_edit", payload, on_error="other"), OtherCall)
 
 
 def test_bash_result_parses_typed_fields() -> None:

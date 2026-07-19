@@ -13,7 +13,7 @@ EDGE_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("ExitSpecMode", {"plan": "the plan"}),
     ("ExitPlanMode", {"plan": "another plan"}),
     ("mcp__github__create_issue", {"title": "bug", "body": "boom"}),
-    ("ccx_code_edit", {"file": "/a", "at": "1-2"}),
+    ("syn_span_edit", {"file": "/a", "at": "1-2"}),
     ("Bash", {"command": "echo hi", "description": "greet", "extra_key": "ignored"}),
     # Loose optional fields keep their verbatim value (wrong types and all).
     ("Bash", {"command": "ls", "timeout": 1.5, "description": 5, "run_in_background": "yes"}),

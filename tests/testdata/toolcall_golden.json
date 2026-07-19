@@ -256,14 +256,14 @@
       }
     },
     {
-      "tool": "ccx_code_edit",
+      "tool": "syn_span_edit",
       "input": {
         "file": "/a",
         "at": "1-2"
       },
       "expected": {
         "cls": "OtherCall",
-        "name": "ccx_code_edit",
+        "name": "syn_span_edit",
         "raw": {
           "file": "/a",
           "at": "1-2"

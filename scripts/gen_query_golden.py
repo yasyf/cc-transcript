@@ -27,6 +27,7 @@ from cc_transcript import _native
 from cc_transcript.activity import SessionActivity
 from cc_transcript.ids import SessionId
 from cc_transcript.query import Session
+from cc_transcript.tools import register_mcp_tool, unregister_mcp_tool
 from scripts.gen_corpus import DEFAULT_OUT as CORPUS
 from scripts.gen_corpus import REPO_ROOT
 
@@ -139,7 +140,7 @@ SYNTHETIC_CASES: dict[str, str] = {
     "dup_key_input": jsonl(usr("u0", whole(0), "edit and run"), DUP_KEY_ASSISTANT),
     "mcp_edit": jsonl(
         usr("u0", whole(0), "use the mcp editor"),
-        asst("a0", whole(1), use("t1", "mcp__server__ccx_code_edit", file="/z.py", content="q")),
+        asst("a0", whole(1), use("t1", "mcp__server__syn_span_edit", path="/z.py", content="q")),
     ),
     "fileref_variety": jsonl(
         usr("u0", whole(0), "touch files"),
@@ -226,11 +227,16 @@ def corpus_files() -> list[Path]:
 
 def main() -> None:
     subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "gen_corpus.py")], check=True, cwd=REPO_ROOT)
-    data = {
-        "max_events": MAX_EVENTS,
-        "queries": {str(path.relative_to(CORPUS)): project_file(path) for path in corpus_files()},
-        "synthetic": {name: project_jsonl(text) for name, text in SYNTHETIC_CASES.items()},
-    }
+    # The mcp_edit synthetic exercises an MCP tool that gates as Edit via the registry.
+    register_mcp_tool("syn_span_edit", "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    try:
+        data = {
+            "max_events": MAX_EVENTS,
+            "queries": {str(path.relative_to(CORPUS)): project_file(path) for path in corpus_files()},
+            "synthetic": {name: project_jsonl(text) for name, text in SYNTHETIC_CASES.items()},
+        }
+    finally:
+        unregister_mcp_tool("syn_span_edit")
     GOLDEN.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {len(data['queries'])} query + {len(SYNTHETIC_CASES)} synthetic projections to {GOLDEN.relative_to(REPO_ROOT)}")
 

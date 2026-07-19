@@ -243,6 +243,7 @@ from cc_transcript.tools import (
     ReadResult as ReadResult,
     SkillCall as SkillCall,
     SkillResult as SkillResult,
+    SpanEditCall as SpanEditCall,
     TOOL_ALIASES as TOOL_ALIASES,
     TaskCall as TaskCall,
     TaskCreateCall as TaskCreateCall,
@@ -267,7 +268,9 @@ from cc_transcript.tools import (
     mcp_parts as mcp_parts,
     parse_tool_call as parse_tool_call,
     parse_tool_result as parse_tool_result,
+    register_mcp_tool as register_mcp_tool,
     tool_name_matches as tool_name_matches,
+    unregister_mcp_tool as unregister_mcp_tool,
 )
 
 from cc_transcript.watch import (
@@ -376,6 +379,7 @@ __all__ = [
     "SessionId",
     "SkillCall",
     "SkillResult",
+    "SpanEditCall",
     "StopHookSummary",
     "SubagentIndex",
     "SubagentSession",
@@ -470,6 +474,7 @@ __all__ = [
     "parse_tool_call",
     "parse_tool_result",
     "record_harvest",
+    "register_mcp_tool",
     "render_session",
     "render_tool_call",
     "render_turn",
@@ -490,5 +495,6 @@ __all__ = [
     "tool_result",
     "tool_use",
     "tool_uses",
+    "unregister_mcp_tool",
     "user_line",
 ]

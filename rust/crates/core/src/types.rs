@@ -449,14 +449,14 @@ pub fn tool_use_index<'a>(
 
 /// matches_names (tools.py matches_names): exact membership, or the ``<tool>``
 /// segment of an ``mcp__<server>__<tool>`` name (via toolcall::mcp_parts) — or that
-/// segment's native built-in edit-gate alias. The alias closure is load-bearing: the probe
-/// path (session_activity_probe waiting_tools) passes raw, un-expanded names, so
-/// ``mcp__…__ccx_code_edit`` must still match ``{"Edit"}``.
+/// segment's registered ``behaves_like`` gate. The alias closure is load-bearing: the probe
+/// path (session_activity_probe waiting_tools) passes raw, un-expanded names, so a registered
+/// MCP tool whose spec behaves_like ``Edit`` must still match ``{"Edit"}``.
 pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
     names.contains(actual)
         || crate::toolcall::mcp_parts(actual).is_some_and(|(_, tool)| {
             names.contains(tool)
-                || crate::toolcall::mcp_tool_alias(tool).is_some_and(|b| names.contains(b))
+                || crate::toolcall::mcp_tool_alias(tool).is_some_and(|b| names.contains(&b))
         })
 }
 

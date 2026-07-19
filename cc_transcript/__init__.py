@@ -53,6 +53,7 @@ EXPORTS: dict[str, str] = {
             "ReadResult",
             "SkillCall",
             "SkillResult",
+            "SpanEditCall",
             "TaskCall",
             "TaskCreateCall",
             "TaskLaunchResult",
@@ -76,7 +77,9 @@ EXPORTS: dict[str, str] = {
             "mcp_parts",
             "parse_tool_call",
             "parse_tool_result",
+            "register_mcp_tool",
             "tool_name_matches",
+            "unregister_mcp_tool",
         ),
         "cc_transcript.command": (
             "Command",

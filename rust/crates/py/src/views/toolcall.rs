@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyFrozenSet, PyTuple};
+use pyo3::types::{PyFrozenSet, PyMapping, PyTuple};
 use sonic_rs::Value;
 
 use cc_transcript_core::ids;
-use cc_transcript_core::toolcall::{self, EditSpan, ToolCall};
+use cc_transcript_core::toolcall::{self, EditSpan, McpToolSpec, SpanEditMap, ToolCall};
 use cc_transcript_core::value::normalize_last_wins;
 
 use crate::toolcall::tool_input_error;
@@ -781,6 +781,49 @@ impl OtherCallView {
 
 view_dunders!(OtherCallView, "OtherCall", fields = [name], match_args = []);
 
+/// An in-place file edit addressed by an opaque locator.
+///
+/// A registered MCP tool whose spec carries a span-edit lowering. The payload
+/// carries no pre-image, so :func:`hunks_of` yields no hunk; ``new`` is ``None``
+/// when the call deletes rather than writes. Registrations are process-local.
+///
+/// Attributes:
+///     file_path: The file the edit targets.
+///     new: The written content, or ``None`` when the call is a deletion.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "SpanEditCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
+pub(crate) struct SpanEditCallView {
+    pub call: Arc<ToolCall>,
+}
+
+call_variant!(SpanEditCallView, SpanEdit, SpanEditCall);
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl SpanEditCallView {
+    #[getter]
+    fn name(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().name.clone())
+    }
+
+    #[getter]
+    fn file_path(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().file_path.clone())
+    }
+
+    #[getter]
+    fn new(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.c().new.clone())
+    }
+}
+
+view_dunders!(
+    SpanEditCallView,
+    "SpanEditCall",
+    fields = [name, file_path, new],
+    match_args = []
+);
+
 /// A before/after content pair lowered from an edit-shaped tool call.
 ///
 /// Attributes:
@@ -862,6 +905,9 @@ pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<B
         ToolCall::ExitPlanMode(_) => {
             Ok(Bound::new(py, init.add_subclass(ExitPlanModeCallView { call }))?.into_any())
         }
+        ToolCall::SpanEdit(_) => {
+            Ok(Bound::new(py, init.add_subclass(SpanEditCallView { call }))?.into_any())
+        }
         ToolCall::Other(_) => {
             Ok(Bound::new(py, init.add_subclass(OtherCallView { call }))?.into_any())
         }
@@ -903,6 +949,8 @@ pub(crate) fn toolcall_parse_view<'py>(
 ///
 /// MultiEdit yields one hunk per span in application order — never just the
 /// first. Write and NotebookEdit are pure additions with an empty old side.
+/// :class:`~cc_transcript.tools.SpanEditCall` yields none: its payload carries no
+/// pre-image, so no honest hunk can be derived.
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.tools.Hunk, ...]", imports = ("cc_transcript.tools",)))]
@@ -959,18 +1007,15 @@ pub(crate) fn expand_tool_names<'py>(
 /// Whether ``actual`` is one of ``names``, exactly or as an MCP tool suffix.
 ///
 /// True when ``actual`` is in ``names``, or when it splits as
-/// ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
-/// native built-in edit-gate equivalent — is in ``names``. That alias closes
-/// the edit-gate bypass where cc-context's ``ccx_code_edit`` /
-/// ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
-/// gate would catch. Display-name aliases from
-/// :data:`~cc_transcript.tools.TOOL_ALIASES` are not closed over — ``names`` is
-/// taken verbatim; pre-expand with :func:`expand_tool_names` for those.
+/// ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or the
+/// built-in gate its registered spec ``behaves_like`` — is in ``names``. That
+/// closure lets a registered MCP tool (e.g. one that gates as ``Edit``) match an
+/// ``Edit`` gate even under a name no built-in gate would catch. Display-name
+/// aliases from :data:`~cc_transcript.tools.TOOL_ALIASES` are not closed over —
+/// ``names`` is taken verbatim; pre-expand with :func:`expand_tool_names` for those.
 ///
 /// Example:
 ///     >>> matches_names("mcp__github__Grep", {"Grep"})
-///     True
-///     >>> matches_names("mcp__cc-context__ccx_code_edit", {"Edit"})
 ///     True
 ///     >>> matches_names("Execute", {"Bash"})
 ///     False
@@ -1041,6 +1086,51 @@ pub(crate) fn mcp_access(tool: &str) -> PyResult<&'static str> {
     Ok(toolcall::mcp_access(tool))
 }
 
+fn span_edit_map(mapping: &Bound<'_, PyMapping>) -> PyResult<SpanEditMap> {
+    Ok(SpanEditMap {
+        path: mapping.get_item("path")?.extract()?,
+        content: mapping.get_item("content")?.extract()?,
+        delete: if mapping.contains("delete")? {
+            mapping.get_item("delete")?.extract()?
+        } else {
+            None
+        },
+    })
+}
+
+/// Register an MCP tool spec, keyed by its bare segment; last write wins.
+///
+/// ``behaves_like`` names the built-in gate the tool matches. ``span_edit``, when
+/// given, maps the payload key names — ``path``, ``content``, and optionally
+/// ``delete`` — the tool's :class:`~cc_transcript.tools.SpanEditCall` lowering
+/// reads. Registrations are process-local.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (tool, behaves_like, span_edit=None))]
+pub(crate) fn register_mcp_tool(
+    tool: String,
+    behaves_like: String,
+    #[gen_stub(override_type(type_repr = "collections.abc.Mapping[str, str] | None", imports = ("collections.abc",)))]
+    span_edit: Option<&Bound<'_, PyMapping>>,
+) -> PyResult<()> {
+    let span_edit = span_edit.map(span_edit_map).transpose()?;
+    toolcall::register_mcp_tool(
+        tool,
+        McpToolSpec {
+            behaves_like,
+            span_edit,
+        },
+    );
+    Ok(())
+}
+
+/// Unregister an MCP tool by its bare segment; returns whether it was registered.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+pub(crate) fn unregister_mcp_tool(tool: &str) -> PyResult<bool> {
+    Ok(toolcall::unregister_mcp_tool(tool))
+}
+
 pub(crate) fn add_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ToolCallBaseView>()?;
     m.add_class::<BashCallView>()?;
@@ -1057,10 +1147,13 @@ pub(crate) fn add_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TaskCreateCallView>()?;
     m.add_class::<TaskUpdateCallView>()?;
     m.add_class::<ExitPlanModeCallView>()?;
+    m.add_class::<SpanEditCallView>()?;
     m.add_class::<OtherCallView>()?;
     m.add_class::<EditSpanView>()?;
     m.add_class::<HunkView>()?;
     m.add_function(pyo3::wrap_pyfunction!(toolcall_parse_view, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(register_mcp_tool, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(unregister_mcp_tool, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(hunks_of, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(file_path_of, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(expand_tool_names, m)?)?;

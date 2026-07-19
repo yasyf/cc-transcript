@@ -6,6 +6,7 @@ import orjson
 import pytest
 
 from cc_transcript.activity_probe import PendingItem, session_activity_probe
+from cc_transcript.tools import register_mcp_tool, unregister_mcp_tool
 from tests.support import requires_rust
 
 if TYPE_CHECKING:
@@ -399,3 +400,20 @@ def test_mcp_prefixed_human_facing_tool_is_not_mid_tool(tmp_path: Path) -> None:
     assert probe.mid_tool is False
     assert probe.is_waiting is False
     assert probe.pending == ()
+
+
+@requires_rust
+def test_registered_human_facing_mcp_tool_is_not_mid_tool(tmp_path: Path) -> None:
+    """A registered MCP tool that gates as a human-facing built-in is the user's move, never mid-tool."""
+    register_mcp_tool("syn_gate_planmode", "ExitPlanMode")
+    try:
+        path = write(
+            tmp_path,
+            [user("plan"), tool_use("mcp__someserver__syn_gate_planmode", "q1", {"plan": "the plan"})],
+        )
+        probe = session_activity_probe(path)
+        assert probe.mid_tool is False
+        assert probe.is_waiting is False
+        assert probe.pending == ()
+    finally:
+        unregister_mcp_tool("syn_gate_planmode")

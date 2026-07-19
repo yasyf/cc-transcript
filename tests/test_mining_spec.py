@@ -69,8 +69,6 @@ def test_default_spec_to_json_shape() -> None:
         "MultiEdit",
         "NotebookEdit",
         "Write",
-        "ccx_code_edit",
-        "ccx_code_replace",
     ]
     assert payload["plan_tools"] == ["ExitPlanMode", "ExitSpecMode"]
     assert payload["denial_excluded_tools"] == ["AskUserQuestion", "ExitPlanMode", "ExitSpecMode"]
@@ -80,6 +78,20 @@ def test_default_spec_to_json_shape() -> None:
         "regex_formats": [],
         "structured_formats": [],
     }
+
+
+def test_registration_before_spec_build_lands_in_edit_tools() -> None:
+    # Pins the deferral: tool sets expand at build time, so a post-import
+    # registration reaches the serialized set. Import-frozen constants fail this.
+    from cc_transcript.tools import register_mcp_tool, unregister_mcp_tool
+
+    register_mcp_tool("syn_span_edit", "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    try:
+        payload = json.loads(mining_spec_to_json(MiningSpec()))
+        assert "syn_span_edit" in payload["edit_tools"]
+    finally:
+        unregister_mcp_tool("syn_span_edit")
+    assert "syn_span_edit" not in json.loads(mining_spec_to_json(MiningSpec()))["edit_tools"]
 
 
 def test_default_user_message_stages_serialize_in_fold_order() -> None:

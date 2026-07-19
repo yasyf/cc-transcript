@@ -11,11 +11,13 @@ reproduces each projection, and the Python reference still projects to the froze
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from cc_transcript import _native
+from cc_transcript.tools import register_mcp_tool, unregister_mcp_tool
 from scripts.gen_query_golden import CORPUS, MAX_EVENTS, SYNTHETIC_CASES, project_file
 from tests.support import requires_rust
 
@@ -24,6 +26,16 @@ GOLDEN = json.loads(
 )
 QUERY_CASES = [pytest.param(rel, id=rel) for rel in GOLDEN["queries"]]
 SYNTHETIC = [pytest.param(name, id=name) for name in GOLDEN["synthetic"]]
+
+
+@pytest.fixture(autouse=True)
+def _register_syn_span_edit() -> Iterator[None]:
+    """Registers the MCP edit tool the mcp_edit synthetic gates through."""
+    register_mcp_tool("syn_span_edit", "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    try:
+        yield
+    finally:
+        unregister_mcp_tool("syn_span_edit")
 
 
 @requires_rust

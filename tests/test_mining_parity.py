@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,6 +49,7 @@ from cc_transcript.mining.spec import (
     signal_to_dict,
 )
 from cc_transcript.parser import parse, parse_events_from_bytes
+from cc_transcript.tools import register_mcp_tool, unregister_mcp_tool
 from tests.support import (
     MATCHER_LABELS,
     MATCHER_QUESTION,
@@ -71,6 +73,16 @@ SPEC = MiningSpec()
 GOLDEN: dict[str, Any] = json.loads(
     (Path(__file__).resolve().parent / "testdata" / "mining_golden.json").read_text(encoding="utf-8")
 )
+
+
+@pytest.fixture(autouse=True)
+def _register_syn_span_edit() -> Iterator[None]:
+    """Registers the synthetic MCP edit tool the reentry battery case relies on."""
+    register_mcp_tool("syn_span_edit", "Edit", {"path": "path", "content": "content", "delete": "delete"})
+    try:
+        yield
+    finally:
+        unregister_mcp_tool("syn_span_edit")
 
 # A portable review spec: an inline ``file:line: comment`` regex plus a JSON
 # structured format exercising int / "96" / "24-51" line forms and a fix-key append.
@@ -313,9 +325,9 @@ def battery() -> dict[str, tuple[list[dict[str, Any]], MiningSpec]]:
             ],
             SPEC,
         ),
-        "plan_reentry_after_ccx_mcp_edit": (
+        "plan_reentry_after_syn_mcp_edit": (
             [
-                assistant("a1", tool_use("e1", "mcp__cc-context__ccx_code_edit", file_path="/x.py")),
+                assistant("a1", tool_use("e1", "mcp__cc-context__syn_span_edit", file_path="/x.py")),
                 plan_mode(),
                 user_text("u1", "the edit was wrong, reconsider the plan from scratch"),
             ],

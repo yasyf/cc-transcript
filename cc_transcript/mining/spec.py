@@ -65,10 +65,23 @@ ALL_DETECTORS: frozenset[DetectorName] = frozenset(
     }
 )
 
-EDIT_TOOLS: frozenset[str] = expand_tool_names("Edit|Write|MultiEdit|NotebookEdit")
-SUBAGENT_TOOLS: frozenset[str] = expand_tool_names("Agent|Task")
-PLAN_TOOLS: frozenset[str] = expand_tool_names("ExitPlanMode")
-DENIAL_EXCLUDED_TOOLS: frozenset[str] = expand_tool_names("ExitPlanMode|AskUserQuestion")
+# Expanded lazily (module __getattr__ and the spec fields' default_factory), so an
+# MCP tool registered after import but before spec build lands in the name sets.
+_TOOL_SETS: dict[str, str] = {
+    "EDIT_TOOLS": "Edit|Write|MultiEdit|NotebookEdit",
+    "SUBAGENT_TOOLS": "Agent|Task",
+    "PLAN_TOOLS": "ExitPlanMode",
+    "DENIAL_EXCLUDED_TOOLS": "ExitPlanMode|AskUserQuestion",
+}
+
+
+def __getattr__(name: str) -> frozenset[str]:
+    try:
+        return expand_tool_names(_TOOL_SETS[name])
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+
 REENTRY_LOOKBACK = 40
 CONFIDENCE_STEP = 0.25
 SHORT_FOLLOWUP_MAX_WORDS = 2
@@ -168,7 +181,7 @@ USER_MESSAGE_SPEC = ConfidenceSpec(
 class ProvenanceSpec:
     """Names the subagent tools whose tool results classify as ``claude`` provenance."""
 
-    subagent_tools: frozenset[str] = SUBAGENT_TOOLS
+    subagent_tools: frozenset[str] = field(default_factory=lambda: expand_tool_names(_TOOL_SETS["SUBAGENT_TOOLS"]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,9 +272,11 @@ class MiningSpec:
     provenance: ProvenanceSpec = field(default_factory=ProvenanceSpec)
     review: ReviewSpec = field(default_factory=ReviewSpec)
     reentry_lookback: int = REENTRY_LOOKBACK
-    edit_tools: frozenset[str] = EDIT_TOOLS
-    plan_tools: frozenset[str] = PLAN_TOOLS
-    denial_excluded_tools: frozenset[str] = DENIAL_EXCLUDED_TOOLS
+    edit_tools: frozenset[str] = field(default_factory=lambda: expand_tool_names(_TOOL_SETS["EDIT_TOOLS"]))
+    plan_tools: frozenset[str] = field(default_factory=lambda: expand_tool_names(_TOOL_SETS["PLAN_TOOLS"]))
+    denial_excluded_tools: frozenset[str] = field(
+        default_factory=lambda: expand_tool_names(_TOOL_SETS["DENIAL_EXCLUDED_TOOLS"])
+    )
 
 
 def bump(signal: CandidateSignal, delta: float, reason: str) -> CandidateSignal:

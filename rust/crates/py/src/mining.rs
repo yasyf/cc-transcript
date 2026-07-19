@@ -1563,10 +1563,10 @@ mod tests {
         assert!(!matches_names("mcp__ExitPlanMode", &names));
         assert!(!matches_names("AskUserQuestion", &names));
 
-        let edit_names: HashSet<String> = ["Edit".to_string(), "ccx_code_edit".to_string()].into();
-        assert!(matches_names("mcp__cc-context__ccx_code_edit", &edit_names));
+        let edit_names: HashSet<String> = ["Edit".to_string(), "syn_span_edit".to_string()].into();
+        assert!(matches_names("mcp__cc-context__syn_span_edit", &edit_names));
         assert!(!matches_names(
-            "mcp__cc-context__ccx_code_read",
+            "mcp__cc-context__syn_span_read",
             &edit_names
         ));
     }

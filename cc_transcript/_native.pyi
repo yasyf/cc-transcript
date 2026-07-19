@@ -72,6 +72,7 @@ __all__ = [
     "ServerToolUse",
     "SkillCall",
     "SkillResult",
+    "SpanEditCall",
     "SpecMatcher",
     "StopHookSummary",
     "SystemEvent",
@@ -133,6 +134,7 @@ __all__ = [
     "parse_bytes",
     "parse_print_result",
     "query_session",
+    "register_mcp_tool",
     "render_compact_lines",
     "render_haystacks",
     "render_stats",
@@ -147,6 +149,7 @@ __all__ = [
     "tool_name_matches",
     "toolcall_parse_view",
     "toolresult_parse_view",
+    "unregister_mcp_tool",
 ]
 
 @typing.final
@@ -1520,6 +1523,27 @@ class SkillResult(ToolResultBase):
     def allowed_tools(self) -> tuple[str, ...] | None: ...
 
 @typing.final
+class SpanEditCall(ToolCallBase):
+    r"""
+    An in-place file edit addressed by an opaque locator.
+
+    A registered MCP tool whose spec carries a span-edit lowering. The payload
+    carries no pre-image, so :func:`hunks_of` yields no hunk; ``new`` is ``None``
+    when the call deletes rather than writes. Registrations are process-local.
+
+    Attributes:
+        file_path: The file the edit targets.
+        new: The written content, or ``None`` when the call is a deletion.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def name(self) -> builtins.str: ...
+    @property
+    def file_path(self) -> builtins.str: ...
+    @property
+    def new(self) -> typing.Optional[builtins.str]: ...
+
+@typing.final
 class SpecMatcher:
     def __new__(cls, spec_json: builtins.str) -> SpecMatcher: ...
     def keep(self, event: models.TranscriptEvent) -> builtins.bool: ...
@@ -2152,6 +2176,8 @@ def hunks_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[Hunk, ...]:
 
     MultiEdit yields one hunk per span in application order — never just the
     first. Write and NotebookEdit are pure additions with an empty old side.
+    :class:`~SpanEditCall` yields none: its payload carries no
+    pre-image, so no honest hunk can be derived.
     """
 
 def ids_canonical_json(value_json: builtins.str) -> builtins.str: ...
@@ -2171,18 +2197,15 @@ def matches_names(actual: builtins.str, names: collections.abc.Container[str]) -
     Whether ``actual`` is one of ``names``, exactly or as an MCP tool suffix.
 
     True when ``actual`` is in ``names``, or when it splits as
-    ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or its
-    native built-in edit-gate equivalent — is in ``names``. That alias closes
-    the edit-gate bypass where cc-context's ``ccx_code_edit`` /
-    ``ccx_code_replace`` write through the MCP under names no ``Edit``/``Write``
-    gate would catch. Display-name aliases from
-    :data:`~tools.TOOL_ALIASES` are not closed over — ``names`` is
-    taken verbatim; pre-expand with :func:`expand_tool_names` for those.
+    ``mcp__<server>__<tool>`` on the first two ``__`` and ``<tool>`` — or the
+    built-in gate its registered spec ``behaves_like`` — is in ``names``. That
+    closure lets a registered MCP tool (e.g. one that gates as ``Edit``) match an
+    ``Edit`` gate even under a name no built-in gate would catch. Display-name
+    aliases from :data:`~tools.TOOL_ALIASES` are not closed over —
+    ``names`` is taken verbatim; pre-expand with :func:`expand_tool_names` for those.
 
     Example:
         >>> matches_names("mcp__github__Grep", {"Grep"})
-        True
-        >>> matches_names("mcp__cc-context__ccx_code_edit", {"Edit"})
         True
         >>> matches_names("Execute", {"Bash"})
         False
@@ -2235,6 +2258,16 @@ def parse_print_result(raw: bytes) -> PrintResult: ...
 
 def query_session(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
+def register_mcp_tool(tool: builtins.str, behaves_like: builtins.str, span_edit: collections.abc.Mapping[str, str] | None = None) -> None:
+    r"""
+    Register an MCP tool spec, keyed by its bare segment; last write wins.
+
+    ``behaves_like`` names the built-in gate the tool matches. ``span_edit``, when
+    given, maps the payload key names — ``path``, ``content``, and optionally
+    ``delete`` — the tool's :class:`~SpanEditCall` lowering
+    reads. Registrations are process-local.
+    """
+
 def render_compact_lines(raw: bytes, width: builtins.int, thinking: builtins.bool, uuids: builtins.bool) -> builtins.list[builtins.str]: ...
 
 def render_haystacks(raw: bytes, wheres: typing.Sequence[builtins.str]) -> builtins.list[builtins.str]: ...
@@ -2279,4 +2312,9 @@ def toolresult_parse_view(name: builtins.str, payload_json: builtins.str) -> too
     Parse a tool's name and ``toolUseResult`` payload (as a JSON document) into
     the typed view hierarchy; the ``cc_transcript.tools`` facade owns the public
     signature.
+    """
+
+def unregister_mcp_tool(tool: builtins.str) -> builtins.bool:
+    r"""
+    Unregister an MCP tool by its bare segment; returns whether it was registered.
     """

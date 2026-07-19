@@ -36,6 +36,7 @@ from cc_transcript._native import ReadCall as ReadCall
 from cc_transcript._native import ReadResult as ReadResult
 from cc_transcript._native import SkillCall as SkillCall
 from cc_transcript._native import SkillResult as SkillResult
+from cc_transcript._native import SpanEditCall as SpanEditCall
 from cc_transcript._native import TaskCall as TaskCall
 from cc_transcript._native import TaskCreateCall as TaskCreateCall
 from cc_transcript._native import TaskLaunchResult as TaskLaunchResult
@@ -54,7 +55,9 @@ from cc_transcript._native import hunks_of as hunks_of
 from cc_transcript._native import matches_names as matches_names
 from cc_transcript._native import mcp_access as mcp_access
 from cc_transcript._native import mcp_parts as mcp_parts
+from cc_transcript._native import register_mcp_tool as register_mcp_tool
 from cc_transcript._native import tool_name_matches as tool_name_matches
+from cc_transcript._native import unregister_mcp_tool as unregister_mcp_tool
 from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
@@ -94,6 +97,7 @@ ToolCall = (
     | TaskCreateCall
     | TaskUpdateCall
     | ExitPlanModeCall
+    | SpanEditCall
     | OtherCall
 )
 

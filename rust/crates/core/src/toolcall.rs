@@ -7,6 +7,9 @@
 //! queries, and AskUserQuestionResult.questions all read it); it is `compare=False`
 //! Python-side, and the content digest lives in `ids`, not here.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
+
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::parse::parse_questions;
@@ -37,15 +40,60 @@ fn tool_alias_reverse(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Bare MCP write-tool aliases used by built-in edit-gate matching.
-pub const MCP_TOOL_ALIASES: [(&str, &str); 2] =
-    [("ccx_code_edit", "Edit"), ("ccx_code_replace", "Write")];
+/// The payload key names an MCP tool's span-edit lowering reads — never values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanEditMap {
+    pub path: String,
+    pub content: String,
+    pub delete: Option<String>,
+}
 
-/// Resolves a bare MCP write tool to its built-in edit gate.
-pub fn mcp_tool_alias(tool: &str) -> Option<&'static str> {
-    MCP_TOOL_ALIASES
-        .iter()
-        .find_map(|(bare, builtin)| (*bare == tool).then_some(*builtin))
+/// A registered MCP tool's behavior: the built-in gate it aliases, plus an
+/// optional span-edit lowering addressed by payload key names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolSpec {
+    pub behaves_like: String,
+    pub span_edit: Option<SpanEditMap>,
+}
+
+// Process-local: the standalone Rust CLI never populates it (an embedding-driven
+// registry), so parsing there keeps the pre-registry OtherCall behavior.
+static MCP_REGISTRY: LazyLock<RwLock<HashMap<String, McpToolSpec>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Registers `tool` (a bare MCP segment) with `spec`; last write wins.
+pub fn register_mcp_tool(tool: String, spec: McpToolSpec) {
+    MCP_REGISTRY
+        .write()
+        .expect("mcp registry lock")
+        .insert(tool, spec);
+}
+
+/// Unregisters `tool`, returning whether it was registered.
+pub fn unregister_mcp_tool(tool: &str) -> bool {
+    MCP_REGISTRY
+        .write()
+        .expect("mcp registry lock")
+        .remove(tool)
+        .is_some()
+}
+
+/// Resolves a bare MCP tool segment to the built-in edit gate it behaves like.
+pub fn mcp_tool_alias(tool: &str) -> Option<String> {
+    MCP_REGISTRY
+        .read()
+        .expect("mcp registry lock")
+        .get(tool)
+        .map(|spec| spec.behaves_like.clone())
+}
+
+// The span-edit lowering registered for a bare MCP tool segment, if any.
+fn registered_span_edit(tool: &str) -> Option<SpanEditMap> {
+    MCP_REGISTRY
+        .read()
+        .expect("mcp registry lock")
+        .get(tool)
+        .and_then(|spec| spec.span_edit.clone())
 }
 
 // Parity: tools.py READ_VERBS.
@@ -383,6 +431,18 @@ pub struct ExitPlanModeCall {
     pub plan: String,
 }
 
+/// An in-place file edit addressed by an opaque locator — a registered MCP tool
+/// whose spec carries a span-edit lowering. The payload carries no pre-image;
+/// registrations are process-local (the standalone Rust CLI never sees them — the
+/// intended semantic for an embedding-driven registry).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpanEditCall {
+    pub name: String,
+    pub raw: Value,
+    pub file_path: String,
+    pub new: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OtherCall {
     pub name: String,
@@ -407,6 +467,7 @@ pub enum ToolCall {
     TaskCreate(TaskCreateCall),
     TaskUpdate(TaskUpdateCall),
     ExitPlanMode(ExitPlanModeCall),
+    SpanEdit(SpanEditCall),
     Other(OtherCall),
 }
 
@@ -428,6 +489,7 @@ impl ToolCall {
             ToolCall::TaskCreate(_) => "TaskCreateCall",
             ToolCall::TaskUpdate(_) => "TaskUpdateCall",
             ToolCall::ExitPlanMode(_) => "ExitPlanModeCall",
+            ToolCall::SpanEdit(_) => "SpanEditCall",
             ToolCall::Other(_) => "OtherCall",
         }
     }
@@ -449,6 +511,7 @@ impl ToolCall {
             ToolCall::TaskCreate(c) => &c.name,
             ToolCall::TaskUpdate(c) => &c.name,
             ToolCall::ExitPlanMode(c) => &c.name,
+            ToolCall::SpanEdit(c) => &c.name,
             ToolCall::Other(c) => &c.name,
         }
     }
@@ -470,6 +533,7 @@ impl ToolCall {
             ToolCall::TaskCreate(c) => &c.raw,
             ToolCall::TaskUpdate(c) => &c.raw,
             ToolCall::ExitPlanMode(c) => &c.raw,
+            ToolCall::SpanEdit(c) => &c.raw,
             ToolCall::Other(c) => &c.raw,
         }
     }
@@ -509,6 +573,7 @@ impl ToolCall {
             ToolCall::Write(c) => Some(&c.file_path),
             ToolCall::Read(c) => Some(&c.file_path),
             ToolCall::NotebookEdit(c) => Some(&c.notebook_path),
+            ToolCall::SpanEdit(c) => Some(&c.file_path),
             _ => None,
         }
     }
@@ -670,6 +735,28 @@ fn other_call(name: &str, raw: Value, error: Option<String>) -> ToolCall {
     })
 }
 
+// A registered MCP span-edit tool lowers to SpanEditCall; else OtherCall. A
+// mapped-and-truthy delete key means deletion (new=None); else content is required.
+fn span_edit_or_other(name: &str, input: &Value) -> Result<ToolCall, ToolInputError> {
+    let Some((_, tool)) = mcp_parts(name) else {
+        return Ok(other_call(name, input.clone(), None));
+    };
+    let Some(map) = registered_span_edit(tool) else {
+        return Ok(other_call(name, input.clone(), None));
+    };
+    let file_path = req_str(input, &map.path)?;
+    let new = match &map.delete {
+        Some(delete) if field(input, delete).is_some_and(truthy) => None,
+        _ => Some(req_str(input, &map.content)?),
+    };
+    Ok(ToolCall::SpanEdit(SpanEditCall {
+        name: name.to_string(),
+        raw: input.clone(),
+        file_path,
+        new,
+    }))
+}
+
 /// Parity: tools.py parse_tool_call, on_error='raise'.
 pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, ToolInputError> {
     if input.as_object().is_none() {
@@ -690,7 +777,7 @@ pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, Too
         "TaskCreate" => task_create_from_raw(name, input),
         "TaskUpdate" => task_update_from_raw(name, input),
         "ExitPlanMode" => exit_plan_mode_from_raw(name, input),
-        _ => Ok(other_call(name, input.clone(), None)),
+        _ => span_edit_or_other(name, input),
     }
 }
 
@@ -1074,12 +1161,14 @@ pub fn expand_tool_names(spec: &str) -> std::collections::HashSet<String> {
         .map(str::to_string)
         .collect();
     set.extend(aliases);
-    let bares: Vec<String> = MCP_TOOL_ALIASES
+    let registered: Vec<String> = MCP_REGISTRY
+        .read()
+        .expect("mcp registry lock")
         .iter()
-        .filter(|(_, builtin)| set.contains(*builtin))
-        .map(|(bare, _)| (*bare).to_string())
+        .filter(|(_, spec)| set.contains(&spec.behaves_like))
+        .map(|(name, _)| name.clone())
         .collect();
-    set.extend(bares);
+    set.extend(registered);
     set
 }
 
@@ -1210,9 +1299,104 @@ mod tests {
     fn name_helpers() {
         assert_eq!(mcp_parts("mcp__semble__search"), Some(("semble", "search")));
         assert!(tool_name_matches("Execute", "Bash|Grep"));
-        assert!(tool_name_matches("mcp__cc-context__ccx_code_edit", "Edit"));
-        assert_eq!(mcp_tool_alias("ccx_code_edit"), Some("Edit"));
         assert_eq!(mcp_access("ccx_read"), "read");
         assert_eq!(mcp_access("deploy"), "write");
+
+        register_mcp_tool(
+            "syn_helper_edit".to_string(),
+            McpToolSpec {
+                behaves_like: "Edit".to_string(),
+                span_edit: None,
+            },
+        );
+        assert_eq!(mcp_tool_alias("syn_helper_edit"), Some("Edit".to_string()));
+        assert!(tool_name_matches(
+            "mcp__cc-context__syn_helper_edit",
+            "Edit"
+        ));
+        assert!(unregister_mcp_tool("syn_helper_edit"));
+        assert_eq!(mcp_tool_alias("syn_helper_edit"), None);
+        assert!(!tool_name_matches(
+            "mcp__cc-context__syn_helper_edit",
+            "Edit"
+        ));
+    }
+
+    #[test]
+    fn registered_span_edit_lowers_from_mapped_keys() {
+        register_mcp_tool(
+            "syn_lower_edit".to_string(),
+            McpToolSpec {
+                behaves_like: "Edit".to_string(),
+                span_edit: Some(SpanEditMap {
+                    path: "path".to_string(),
+                    content: "content".to_string(),
+                    delete: Some("delete".to_string()),
+                }),
+            },
+        );
+        match parse_tool_call(
+            "mcp__cc-context__syn_lower_edit",
+            &obj(r#"{"path":"/x.py","content":"body"}"#),
+        ) {
+            ToolCall::SpanEdit(c) => {
+                assert_eq!(c.file_path, "/x.py");
+                assert_eq!(c.new, Some("body".to_string()));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_tool_call(
+            "mcp__cc-context__syn_lower_edit",
+            &obj(r#"{"path":"/x.py","content":"body","delete":true}"#),
+        ) {
+            ToolCall::SpanEdit(c) => assert_eq!(c.new, None),
+            other => panic!("{other:?}"),
+        }
+        // Missing path degrades to OtherCall; content required when not deleting.
+        assert!(matches!(
+            parse_tool_call(
+                "mcp__cc-context__syn_lower_edit",
+                &obj(r#"{"content":"body"}"#)
+            ),
+            ToolCall::Other(_)
+        ));
+        assert!(matches!(
+            parse_tool_call(
+                "mcp__cc-context__syn_lower_edit",
+                &obj(r#"{"path":"/x.py"}"#)
+            ),
+            ToolCall::Other(_)
+        ));
+        assert!(unregister_mcp_tool("syn_lower_edit"));
+    }
+
+    #[test]
+    fn registered_behaves_like_gates_but_lowers_to_other() {
+        register_mcp_tool(
+            "syn_gate_only".to_string(),
+            McpToolSpec {
+                behaves_like: "Write".to_string(),
+                span_edit: None,
+            },
+        );
+        assert!(expand_tool_names("Write").contains("syn_gate_only"));
+        assert!(matches!(
+            parse_tool_call("mcp__cc-context__syn_gate_only", &obj(r#"{"path":"/x"}"#)),
+            ToolCall::Other(_)
+        ));
+        assert!(unregister_mcp_tool("syn_gate_only"));
+        assert!(!expand_tool_names("Write").contains("syn_gate_only"));
+    }
+
+    #[test]
+    fn unregistered_mcp_name_neither_matches_nor_lowers() {
+        assert!(!tool_name_matches(
+            "mcp__cc-context__syn_unknown",
+            "Edit|Write"
+        ));
+        assert!(matches!(
+            parse_tool_call("mcp__cc-context__syn_unknown", &obj(r#"{"path":"/x"}"#)),
+            ToolCall::Other(_)
+        ));
     }
 }

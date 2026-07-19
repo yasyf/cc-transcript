@@ -557,7 +557,7 @@
     "evidence": {}
    }
   ],
-  "plan_reentry_after_ccx_mcp_edit": [
+  "plan_reentry_after_syn_mcp_edit": [
    {
     "kind": "transcript_message",
     "detector": "transcript_message",
