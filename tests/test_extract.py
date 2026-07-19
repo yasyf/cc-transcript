@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +16,8 @@ from tests.support import SESSION, assistant, user  # noqa: E402
 
 if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
+
+pytestmark = pytest.mark.anyio
 
 
 def edit(id: str, path: str, old: str, new: str) -> dict[str, Any]:
@@ -36,76 +37,76 @@ def ladder() -> SessionActivity:
     return SessionActivity.from_events(SESSION, events)
 
 
-def open_log(tmp_path: Path) -> CorrectionLog:
-    return CorrectionLog.open(tmp_path / "corrections.db")
+async def open_log(tmp_path: Path) -> CorrectionLog:
+    return await CorrectionLog.open(tmp_path / "corrections.db")
 
 
 def anchor() -> EventRef:
     return EventRef(SESSION, EventUuid("u3"), None)
 
 
-def test_deterministic_picks_best_overlap(tmp_path: Path) -> None:
-    log = open_log(tmp_path)
+async def test_deterministic_picks_best_overlap(tmp_path: Path) -> None:
+    log = await open_log(tmp_path)
 
     async def go() -> object:
         return await extract_correction(
             log, ladder(), anchor(), source="captain-hook", feedback="wrong", repo=Path("/repo"), backend=None
         )
 
-    row = asyncio.run(go())
+    row = await go()
     assert row is not None
     assert (row.incorrect_file, row.incorrect_new, row.overlap) == ("/a.py", "alpha = 1", 1.0)
     assert (row.correction_origin, row.correction_new) == ("session", "alpha = 2")
     assert row.detail == {"repo": "/repo"} and row.source == "captain-hook"
-    assert len(log.for_session(SESSION)) == 1
+    assert len(await log.for_session(SESSION)) == 1
 
 
-def test_idempotent_per_anchor(tmp_path: Path) -> None:
-    log = open_log(tmp_path)
+async def test_idempotent_per_anchor(tmp_path: Path) -> None:
+    log = await open_log(tmp_path)
 
     async def go() -> tuple[object, object]:
         first = await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=None)
         second = await extract_correction(log, ladder(), anchor(), source="captain-hook", feedback="x", backend=None)
         return first, second
 
-    first, second = asyncio.run(go())
+    first, second = await go()
     assert first is not None and second is None
-    assert len(log.for_session(SESSION)) == 1
+    assert len(await log.for_session(SESSION)) == 1
 
 
-def test_llm_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_llm_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import spawnllm
 
     async def fake(prompt: str, response_model: object, **_: object) -> CorrectionPick:
         return CorrectionPick(candidate=2, note="the /b.py edit")
 
     monkeypatch.setattr(spawnllm, "extract", fake)
-    log = open_log(tmp_path)
+    log = await open_log(tmp_path)
 
     async def go() -> object:
         return await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
 
-    row = asyncio.run(go())
+    row = await go()
     assert row is not None and row.incorrect_file == "/b.py"
 
 
-def test_llm_no_pick_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_llm_no_pick_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import spawnllm
 
     async def fake(prompt: str, response_model: object, **_: object) -> CorrectionPick:
         return CorrectionPick(candidate=None, note="not about a harvested edit")
 
     monkeypatch.setattr(spawnllm, "extract", fake)
-    log = open_log(tmp_path)
+    log = await open_log(tmp_path)
 
     async def go() -> object:
         return await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
 
-    assert asyncio.run(go()) is None
-    assert log.for_session(SESSION) == ()
+    assert await go() is None
+    assert await log.for_session(SESSION) == ()
 
 
-def test_faked_codex_backend_picks_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_faked_codex_backend_picks_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from spawnllm.backends.codex import CodexCliBackend
     from spawnllm.proc import RunResult
 
@@ -116,18 +117,18 @@ def test_faked_codex_backend_picks_candidate(tmp_path: Path, monkeypatch: pytest
         return RunResult("log", "", 0)
 
     monkeypatch.setattr("spawnllm.backends.base.acapture_cli", fake_capture)
-    log = open_log(tmp_path)
+    log = await open_log(tmp_path)
 
     async def go() -> object:
         return await extract_correction(
             log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=CodexCliBackend()
         )
 
-    row = asyncio.run(go())
+    row = await go()
     assert row is not None and row.incorrect_file == "/b.py"
 
 
-def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import spawnllm
     from spawnllm.backends.codex import CodexCliBackend
     from spawnllm.proc import RunResult
@@ -138,7 +139,7 @@ def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.
         return RunResult("", "codex: not found", 127)
 
     monkeypatch.setattr("spawnllm.backends.base.acapture_cli", fake_capture)
-    log = open_log(tmp_path)
+    log = await open_log(tmp_path)
 
     async def go() -> object:
         return await extract_correction(
@@ -146,7 +147,7 @@ def test_faked_codex_backend_failure_raises(tmp_path: Path, monkeypatch: pytest.
         )
 
     with pytest.raises(spawnllm.BackendCallError):
-        asyncio.run(go())
+        await go()
 
 
 def test_usable_backend_none_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

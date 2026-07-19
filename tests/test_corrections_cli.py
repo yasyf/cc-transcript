@@ -136,9 +136,13 @@ def test_python_facade_reads_what_the_cli_wrote(tmp_path: pathlib.Path) -> None:
     # writes in one process, the Python facade's native engine reads in another.
     add_review(tmp_path)
     probe = (
-        "from cc_transcript.corrections import CorrectionLog; "
-        f"rows = CorrectionLog.open().for_session('{SESSION}'); "
-        "print(len(rows), rows[0].correction_text)"
+        "import asyncio\n"
+        "from cc_transcript.corrections import CorrectionLog\n"
+        "async def main():\n"
+        f"    log = await CorrectionLog.open()\n"
+        f"    rows = await log.for_session('{SESSION}')\n"
+        "    print(len(rows), rows[0].correction_text)\n"
+        "asyncio.run(main())\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],

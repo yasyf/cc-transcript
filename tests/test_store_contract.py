@@ -58,6 +58,8 @@ store_clock = fx.store_clock
 TESTDATA = Path(__file__).parent / "testdata"
 CONFIG_PARAMS = [pytest.param(name, id=name) for name in CONFIG_NAMES]
 
+pytestmark = pytest.mark.anyio
+
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
@@ -84,11 +86,11 @@ class VerdictWrite:
     canonical_key: str | None = None
 
 
-def seed_events(store: object, keys: Sequence[str]) -> int:
-    return store.record_file_scan("/scan/session.jsonl", 1.0, [candidate(k) for k in keys])  # type: ignore[attr-defined]
+async def seed_events(store: object, keys: Sequence[str]) -> int:
+    return await store.record_file_scan("/scan/session.jsonl", 1.0, [candidate(k) for k in keys])  # type: ignore[attr-defined]
 
 
-def record_verdict(
+async def record_verdict(
     store: object,
     key: str,
     *,
@@ -103,22 +105,20 @@ def record_verdict(
     role: str = "judge",
     prompt_version: int = 1,
 ) -> None:
-    asyncio.run(
-        store.record_verdict(  # type: ignore[attr-defined]
-            DedupKey(key),
-            Verdict(
-                category=category,
-                summary=summary,
-                confidence=confidence,
-                rationale=rationale,
-                accepted=accepted,
-                canonical_key=canonical_key,
-            ),
-            role=role,
-            prompt_version=prompt_version,
-            model=model,
-            fidelity=fidelity,
-        )
+    await store.record_verdict(  # type: ignore[attr-defined]
+        DedupKey(key),
+        Verdict(
+            category=category,
+            summary=summary,
+            confidence=confidence,
+            rationale=rationale,
+            accepted=accepted,
+            canonical_key=canonical_key,
+        ),
+        role=role,
+        prompt_version=prompt_version,
+        model=model,
+        fidelity=fidelity,
     )
 
 
@@ -197,32 +197,33 @@ def dead_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # --- Schema goldens + committed-fixture drift -------------------------------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_fresh_open_matches_schema_golden(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "fresh.db")
-    store.close()  # type: ignore[attr-defined]
+async def test_fresh_open_matches_schema_golden(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "fresh.db")
+    await store.close()  # type: ignore[attr-defined]
     golden = (TESTDATA / CONFIGS[name].schema_golden()).read_text()
     assert raw_schema_dump(tmp_path / "fresh.db") == golden
 
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_committed_fixture_opens_without_schema_drift(name: str, tmp_path: Path) -> None:
+async def test_committed_fixture_opens_without_schema_drift(name: str, tmp_path: Path) -> None:
     config = CONFIGS[name]
     dst = tmp_path / config.fixture_db
     shutil.copy(TESTDATA / config.fixture_db, dst)
     golden = (TESTDATA / config.schema_golden()).read_text()
     before = raw_schema_dump(dst)
-    open_config(name, dst).close()  # type: ignore[attr-defined]
+    store = await open_config(name, dst)
+    await store.close()  # type: ignore[attr-defined]
     after = raw_schema_dump(dst)
     assert before == golden
     assert after == golden
 
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_committed_fixture_reads_seeded_rows_through_store_api(name: str, tmp_path: Path) -> None:
+async def test_committed_fixture_reads_seeded_rows_through_store_api(name: str, tmp_path: Path) -> None:
     config = CONFIGS[name]
     dst = tmp_path / config.fixture_db
     shutil.copy(TESTDATA / config.fixture_db, dst)
-    store = open_config(name, dst)
+    store = await open_config(name, dst)
     seeded = {
         "k1": candidate("k1"),
         "k2": candidate("k2"),
@@ -293,16 +294,16 @@ def test_committed_fixture_reads_seeded_rows_through_store_api(name: str, tmp_pa
             ],
             "repos": [{"repo_key": "github.com/acme/repo", "watching": 1}],
         }
-    assert committed_fixture_state(store, name) == expected
-    store.close()  # type: ignore[attr-defined]
+    assert await committed_fixture_state(store, name) == expected
+    await store.close()  # type: ignore[attr-defined]
 
 
 # --- INSERT OR IGNORE dedup counts ------------------------------------------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_record_file_scan_dedups_without_replacing_original_rows(
+async def test_record_file_scan_dedups_without_replacing_original_rows(
     name: str, tmp_path: Path, store_clock: fx.StoreClock
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db")
     original = candidate(
         "k1", text="original text", occurred_at="2026-01-01T00:00:01+00:00", payload={"version": "original"}
     )
@@ -313,7 +314,7 @@ def test_record_file_scan_dedups_without_replacing_original_rows(
         occurred_at="2026-01-01T00:00:02+00:00",
         payload={"version": "same-batch replacement"},
     )
-    assert store.record_file_scan(  # type: ignore[attr-defined]
+    assert await store.record_file_scan(  # type: ignore[attr-defined]
         "/original.jsonl", 1_700_000_000.125, [original, sibling, same_batch_replacement]
     ) == 2
     expected = [
@@ -324,7 +325,7 @@ def test_record_file_scan_dedups_without_replacing_original_rows(
             sibling, event_id=2, name=name, ingested_at=fx.FIXED_NOW, origin_path="/original.jsonl"
         ),
     ]
-    assert event_rows(store, name) == expected
+    assert await event_rows(store, name) == expected
 
     store_clock.value = "2026-01-01T00:01:00+00:00"
     later_replacement = candidate(
@@ -333,11 +334,11 @@ def test_record_file_scan_dedups_without_replacing_original_rows(
         occurred_at="2026-01-01T00:00:03+00:00",
         payload={"version": "later replacement"},
     )
-    assert store.record_file_scan(  # type: ignore[attr-defined]
+    assert await store.record_file_scan(  # type: ignore[attr-defined]
         "/replacement.jsonl", 1_700_000_000.875, [later_replacement]
     ) == 0
-    assert event_rows(store, name) == expected
-    assert store.file_mtimes() == {  # type: ignore[attr-defined]
+    assert await event_rows(store, name) == expected
+    assert await store.file_mtimes() == {  # type: ignore[attr-defined]
         "/original.jsonl": 1_700_000_000.125,
         "/replacement.jsonl": 1_700_000_000.875,
     }
@@ -515,18 +516,18 @@ FIDELITY_CASES = [
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
 @pytest.mark.parametrize(("ops", "expected"), FIDELITY_CASES)
-def test_record_verdict_fidelity_matrix(
+async def test_record_verdict_fidelity_matrix(
     name: str,
     ops: list[VerdictWrite],
     expected: VerdictWrite,
     tmp_path: Path,
     store_clock: fx.StoreClock,
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
     for write in ops:
         store_clock.value = write.judged_at
-        record_verdict(
+        await record_verdict(
             store,
             "k1",
             summary=write.summary,
@@ -538,20 +539,20 @@ def test_record_verdict_fidelity_matrix(
             confidence=write.confidence,
             rationale=write.rationale,
         )
-    assert verdict_rows(store, name) == [expected_verdict_row(expected)]
+    assert await verdict_rows(store, name) == [expected_verdict_row(expected)]
 
 
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_summary_to_full_upgrade_carries_the_new_canonical_key(
+async def test_summary_to_full_upgrade_carries_the_new_canonical_key(
     name: str, tmp_path: Path, fake_embedder: None, store_clock: fx.StoreClock
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
     store_clock.value = "2026-01-01T00:01:01+00:00"
-    record_verdict(store, "k1", summary="preview", model="sonnet", fidelity="summary", canonical_key="old-rule")
+    await record_verdict(store, "k1", summary="preview", model="sonnet", fidelity="summary", canonical_key="old-rule")
     store_clock.value = "2026-01-01T00:01:02+00:00"
-    record_verdict(store, "k1", summary="hydrated", model="opus", fidelity="full", canonical_key="new-rule")
+    await record_verdict(store, "k1", summary="hydrated", model="opus", fidelity="full", canonical_key="new-rule")
     expected = VerdictWrite(
         "hydrated",
         "opus",
@@ -563,8 +564,8 @@ def test_summary_to_full_upgrade_carries_the_new_canonical_key(
         "2026-01-01T00:01:02+00:00",
         "new-rule",
     )
-    assert verdict_rows(store, name) == [expected_verdict_row(expected)]
-    assert evidence_rows(store) == [
+    assert await verdict_rows(store, name) == [expected_verdict_row(expected)]
+    assert await evidence_rows(store) == [
         {
             "dedup_key": "k1",
             "role": "judge",
@@ -573,19 +574,19 @@ def test_summary_to_full_upgrade_carries_the_new_canonical_key(
             "evidence_text": "always use uv not pip",
         }
     ]
-    assert count(store, "verdict_vectors") == 1
+    assert await count(store, "verdict_vectors") == 1
 
 
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_summary_to_full_upgrade_without_canonical_key_clears_evidence(
+async def test_summary_to_full_upgrade_without_canonical_key_clears_evidence(
     name: str, tmp_path: Path, fake_embedder: None, store_clock: fx.StoreClock
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
     store_clock.value = "2026-01-01T00:02:01+00:00"
-    record_verdict(store, "k1", summary="preview", fidelity="summary", canonical_key="old-rule")
-    assert evidence_rows(store) == [
+    await record_verdict(store, "k1", summary="preview", fidelity="summary", canonical_key="old-rule")
+    assert await evidence_rows(store) == [
         {
             "dedup_key": "k1",
             "role": "judge",
@@ -594,10 +595,10 @@ def test_summary_to_full_upgrade_without_canonical_key_clears_evidence(
             "evidence_text": "always use uv not pip",
         }
     ]
-    assert count(store, "verdict_vectors") == 1
+    assert await count(store, "verdict_vectors") == 1
 
     store_clock.value = "2026-01-01T00:02:02+00:00"
-    record_verdict(store, "k1", summary="hydrated", model="opus", fidelity="full", canonical_key=None)
+    await record_verdict(store, "k1", summary="hydrated", model="opus", fidelity="full", canonical_key=None)
     expected = VerdictWrite(
         "hydrated",
         "opus",
@@ -608,24 +609,24 @@ def test_summary_to_full_upgrade_without_canonical_key_clears_evidence(
         "r",
         "2026-01-01T00:02:02+00:00",
     )
-    assert verdict_rows(store, name) == [expected_verdict_row(expected)]
-    assert evidence_rows(store) == []
-    assert count(store, "verdict_vectors") == 0
+    assert await verdict_rows(store, name) == [expected_verdict_row(expected)]
+    assert await evidence_rows(store) == []
+    assert await count(store, "verdict_vectors") == 0
 
 
 # --- verdict ↔ sqlite-vec evidence: the single-transaction property ----------
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_verdict_and_evidence_commit_together(
+async def test_verdict_and_evidence_commit_together(
     name: str, tmp_path: Path, fake_embedder: None
 ) -> None:
     config = CONFIGS[name]
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
-    record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
-    assert count(store, config.verdict_table) == 1
-    assert count(store, "verdict_vectors") == 1
-    assert evidence_rows(store) == [
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
+    await record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
+    assert await count(store, config.verdict_table) == 1
+    assert await count(store, "verdict_vectors") == 1
+    assert await evidence_rows(store) == [
         {
             "dedup_key": "k1",
             "role": "judge",
@@ -638,30 +639,30 @@ def test_verdict_and_evidence_commit_together(
 
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_verdict_vector_and_evidence_roll_back_when_metadata_write_fails(
+async def test_verdict_vector_and_evidence_roll_back_when_metadata_write_fails(
     name: str, tmp_path: Path, fake_embedder: None
 ) -> None:
     config = CONFIGS[name]
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
-    reject_evidence_metadata_writes(store)
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
+    await reject_evidence_metadata_writes(store)
     with pytest.raises(sqlite3.IntegrityError, match="evidence metadata write failed"):
-        record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
-    assert count(store, config.verdict_table) == 0
-    assert count(store, "verdict_evidence") == 0
-    assert count(store, "verdict_vectors") == 0
+        await record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
+    assert await count(store, config.verdict_table) == 0
+    assert await count(store, "verdict_evidence") == 0
+    assert await count(store, "verdict_vectors") == 0
 
 
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_full_to_full_noop_does_not_re_upsert_evidence(
+async def test_full_to_full_noop_does_not_re_upsert_evidence(
     name: str, tmp_path: Path, fake_embedder: None
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
-    record_verdict(store, "k1", model="sonnet", canonical_key="first-rule", fidelity="full")
-    record_verdict(store, "k1", model="opus", canonical_key="second-rule", fidelity="full")
-    assert evidence_rows(store) == [
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
+    await record_verdict(store, "k1", model="sonnet", canonical_key="first-rule", fidelity="full")
+    await record_verdict(store, "k1", model="opus", canonical_key="second-rule", fidelity="full")
+    assert await evidence_rows(store) == [
         {
             "dedup_key": "k1",
             "role": "judge",
@@ -674,24 +675,24 @@ def test_full_to_full_noop_does_not_re_upsert_evidence(
 
 # --- unjudged ordering + cc-steer's paged OFFSET probe loop ------------------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_unjudged_orders_truly_unjudged_before_summary_refresh(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1", "k2", "k3"])
-    record_verdict(store, "k2", summary="preview", fidelity="summary")
-    rows = store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)  # type: ignore[attr-defined]
+async def test_unjudged_orders_truly_unjudged_before_summary_refresh(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1", "k2", "k3"])
+    await record_verdict(store, "k2", summary="preview", fidelity="summary")
+    rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)  # type: ignore[attr-defined]
     assert [row["dedup_key"] for row in rows] == ["k1", "k3", "k2"]
 
 
-def test_steer_paged_offset_loop_pages_past_dead_summary_rows(tmp_path: Path, dead_transcript: None) -> None:
-    store = open_config("steer", tmp_path / "s.db")
-    seed_events(store, ["f1", "f2"])
-    seed_events(store, ["s1", "s2", "s3"])
+async def test_steer_paged_offset_loop_pages_past_dead_summary_rows(tmp_path: Path, dead_transcript: None) -> None:
+    store = await open_config("steer", tmp_path / "s.db")
+    await seed_events(store, ["f1", "f2"])
+    await seed_events(store, ["s1", "s2", "s3"])
     for key in ("s1", "s2", "s3"):
-        record_verdict(store, key, summary="preview", fidelity="summary")
-    paged = store.unjudged(  # type: ignore[attr-defined]
+        await record_verdict(store, key, summary="preview", fidelity="summary")
+    paged = await store.unjudged(  # type: ignore[attr-defined]
         role="judge", prompt_version=1, refresh_summary=True, probe_hydration=True, limit=3
     )
-    unpaged = store.unjudged(  # type: ignore[attr-defined]
+    unpaged = await store.unjudged(  # type: ignore[attr-defined]
         role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False, limit=3
     )
     assert [row["dedup_key"] for row in paged] == ["f1", "f2"]
@@ -706,27 +707,27 @@ def test_steer_paged_offset_loop_pages_past_dead_summary_rows(tmp_path: Path, de
         pytest.param("hook", ["k1"], id="hook-currently-returns-one"),
     ],
 )
-def test_refresh_summary_limit_zero_observable_contract(
+async def test_refresh_summary_limit_zero_observable_contract(
     name: str, expected_keys: list[str], tmp_path: Path
 ) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1", "k2"])
-    rows = store.unjudged(  # type: ignore[attr-defined]
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1", "k2"])
+    rows = await store.unjudged(  # type: ignore[attr-defined]
         role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False, limit=0
     )
     assert [row["dedup_key"] for row in rows] == expected_keys
 
 
-def test_steer_event_filter_excludes_quarantined_from_unjudged_and_judged(tmp_path: Path) -> None:
-    store = open_config("steer", tmp_path / "s.db")
-    store.record_file_scan("/scan.jsonl", 1.0, [candidate("live"), candidate("dead", empty_window=True)])  # type: ignore[attr-defined]
-    unjudged = store.unjudged(role="judge", prompt_version=1)  # type: ignore[attr-defined]
+async def test_steer_event_filter_excludes_quarantined_from_unjudged_and_judged(tmp_path: Path) -> None:
+    store = await open_config("steer", tmp_path / "s.db")
+    await store.record_file_scan("/scan.jsonl", 1.0, [candidate("live"), candidate("dead", empty_window=True)])  # type: ignore[attr-defined]
+    unjudged = await store.unjudged(role="judge", prompt_version=1)  # type: ignore[attr-defined]
     assert [row["dedup_key"] for row in unjudged] == ["live"]
-    record_verdict(store, "live")
-    record_verdict(store, "dead")
-    judged = store.judged(role="judge", prompt_version=1)  # type: ignore[attr-defined]
+    await record_verdict(store, "live")
+    await record_verdict(store, "dead")
+    judged = await store.judged(role="judge", prompt_version=1)  # type: ignore[attr-defined]
     assert [row["dedup_key"] for row in judged] == ["live"]
-    assert count(store, "feedback_events", "quarantined_reason IS NOT NULL") == 1
+    assert await count(store, "feedback_events", "quarantined_reason IS NOT NULL") == 1
 
 
 # --- captain-hook guarded-ALTER migration runner ----------------------------
@@ -740,84 +741,82 @@ CREATE TABLE candidates (
 """
 
 
-def test_hook_migrate_columns_adds_and_backfills_once(tmp_path: Path) -> None:
+async def test_hook_migrate_columns_adds_and_backfills_once(tmp_path: Path) -> None:
     from tests.store_contract_fixtures import HOOK_CANDIDATE_MIGRATIONS, HookStore
 
     db = tmp_path / "hook.db"
-    store = HookStore(fx.FileStateStore.open(db, extra_schema=BASE_CANDIDATES_DDL))
-    execute(
+    store = HookStore(await fx.FileStateStore.open(db, extra_schema=BASE_CANDIDATES_DDL))
+    await execute(
         store,
         "INSERT INTO candidates (repo_key, status, updated_at) VALUES ('r', 'accepted', '2026-01-01T00:00:00+00:00')",
     )
-    store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)
-    columns = {row["name"] for row in query(store, "PRAGMA table_info(candidates)")}
+    await store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)
+    columns = {row["name"] for row in await query(store, "PRAGMA table_info(candidates)")}
     assert {"generation", "resolved_at", "origin_repo_key", "pack_name", "announced_status"} <= columns
-    row = query(store, "SELECT generation, resolved_at, announced_status FROM candidates")[0]
+    row = (await query(store, "SELECT generation, resolved_at, announced_status FROM candidates"))[0]
     assert row["generation"] == 1
     assert row["resolved_at"] == "2026-01-01T00:00:00+00:00"
     assert row["announced_status"] == "accepted"
 
 
-def test_hook_migrate_columns_is_a_noop_when_current(tmp_path: Path) -> None:
+async def test_hook_migrate_columns_is_a_noop_when_current(tmp_path: Path) -> None:
     from tests.store_contract_fixtures import HOOK_CANDIDATE_MIGRATIONS
 
-    store = open_config("hook", tmp_path / "hook.db")
+    store = await open_config("hook", tmp_path / "hook.db")
     before = raw_schema_dump(tmp_path / "hook.db")
-    store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)  # type: ignore[attr-defined]
+    await store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)  # type: ignore[attr-defined]
     assert raw_schema_dump(tmp_path / "hook.db") == before
 
 
 # --- transaction-conflict discipline ----------------------------------------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_standalone_write_never_joins_a_foreign_transaction(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
+async def test_standalone_write_never_joins_a_foreign_transaction(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
+    in_transaction = asyncio.Event()
 
-    async def scenario() -> None:
-        in_transaction = asyncio.Event()
+    async def owner() -> None:
+        with pytest.raises(RuntimeError, match="owner rolls back"):
+            async with store_transaction(store):
+                await record_file(store, "/owned.jsonl", 1.0)
+                in_transaction.set()
+                await asyncio.sleep(0.01)
+                raise RuntimeError("owner rolls back")
 
-        async def owner() -> None:
-            with pytest.raises(RuntimeError, match="owner rolls back"):
-                with store_transaction(store):
-                    record_file(store, "/owned.jsonl", 1.0)
-                    in_transaction.set()
-                    await asyncio.sleep(0.01)
-                    raise RuntimeError("owner rolls back")
+    async def outsider() -> None:
+        await in_transaction.wait()
+        with pytest.raises(TransactionConflictError):
+            await record_file(store, "/outsider.jsonl", 2.0)
 
-        async def outsider() -> None:
-            await in_transaction.wait()
-            with pytest.raises(TransactionConflictError):
-                record_file(store, "/outsider.jsonl", 2.0)
-
-        await asyncio.gather(owner(), outsider())
-
-    asyncio.run(scenario())
-    assert store.file_mtimes() == {}  # type: ignore[attr-defined]
+    await asyncio.gather(owner(), outsider())
+    assert await store.file_mtimes() == {}  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_nested_transaction_raises_conflict(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    with store_transaction(store), pytest.raises(TransactionConflictError), store_transaction(store):
-        raise AssertionError("unreachable")
+async def test_nested_transaction_raises_conflict(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
+    async with store_transaction(store):
+        with pytest.raises(TransactionConflictError):
+            async with store_transaction(store):
+                raise AssertionError("unreachable")
 
 
 # --- sqlite3 exception parity — the exception types callers observe ----------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_unique_violation_raises_integrity_error(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    seed_events(store, ["k1"])
+async def test_unique_violation_raises_integrity_error(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
+    await seed_events(store, ["k1"])
     insert = (
         "INSERT INTO feedback_events (dedup_key, source_kind, occurred_at, text, context_json, ingested_at) "
         "VALUES ('k1', 'transcript_message', '2026-01-01T00:00:00+00:00', 't', '{}', '2026-01-01T00:00:00+00:00')"
     )
     with pytest.raises(sqlite3.IntegrityError):
-        execute(store, insert)
+        await execute(store, insert)
 
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_foreign_key_violation_raises_integrity_error(name: str, tmp_path: Path) -> None:
+async def test_foreign_key_violation_raises_integrity_error(name: str, tmp_path: Path) -> None:
     config = CONFIGS[name]
-    store = open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db")
     insert = (
         f"INSERT INTO {config.verdict_table} "
         f"(dedup_key, role, prompt_version, model, category, {config.accepted_column}, {config.summary_column}, "
@@ -825,24 +824,24 @@ def test_foreign_key_violation_raises_integrity_error(name: str, tmp_path: Path)
         "VALUES ('missing', 'judge', 1, 'sonnet', 'c', 1, 's', 0.9, 'r', 'full', '2026-01-01T00:00:00+00:00')"
     )
     with pytest.raises(sqlite3.IntegrityError):
-        execute(store, insert)
+        await execute(store, insert)
 
 
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_unknown_table_raises_operational_error(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
+async def test_unknown_table_raises_operational_error(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
     with pytest.raises(sqlite3.OperationalError):
-        query(store, "SELECT * FROM no_such_table")
+        await query(store, "SELECT * FROM no_such_table")
 
 
 # --- FileStateStore file-mtime ledger ---------------------------------------
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-def test_record_file_upserts_and_file_mtimes_reads_back(name: str, tmp_path: Path) -> None:
-    store = open_config(name, tmp_path / "s.db")
-    record_file(store, "/a.jsonl", 1_700_000_000.125)
-    record_file(store, "/b.jsonl", 1_700_000_000.5)
-    record_file(store, "/a.jsonl", 1_700_000_000.875)
-    assert store.file_mtimes() == {  # type: ignore[attr-defined]
+async def test_record_file_upserts_and_file_mtimes_reads_back(name: str, tmp_path: Path) -> None:
+    store = await open_config(name, tmp_path / "s.db")
+    await record_file(store, "/a.jsonl", 1_700_000_000.125)
+    await record_file(store, "/b.jsonl", 1_700_000_000.5)
+    await record_file(store, "/a.jsonl", 1_700_000_000.875)
+    assert await store.file_mtimes() == {  # type: ignore[attr-defined]
         "/a.jsonl": 1_700_000_000.875,
         "/b.jsonl": 1_700_000_000.5,
     }

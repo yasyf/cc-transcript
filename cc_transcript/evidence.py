@@ -199,7 +199,7 @@ def run_git(repo: Path, *args: str) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
-def record_harvest(
+async def record_harvest(
     log: CorrectionLog,
     activity: SessionActivity,
     anchor: EventRef,
@@ -219,7 +219,7 @@ def record_harvest(
     """
     rows = [correction for pair in pairs if (correction := lower_pair(activity, anchor, pair, source=source))]
     for row in rows:
-        log.append(row)
+        await log.append(row)
     return len(rows)
 
 

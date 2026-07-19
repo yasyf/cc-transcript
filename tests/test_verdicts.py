@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+pytestmark = pytest.mark.anyio
+
 CC_PUSHBACK_TRIAGE_DDL = """
 CREATE TABLE IF NOT EXISTS triage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,12 +154,12 @@ class AliasedVerdict:
 LEGACY_SCHEMA = StoreSchema(verdict_table="triage", accepted_column="is_pushback", summary_column="what_claude_did")
 
 
-def open_generic(tmp_path: Path) -> FeedbackStore:
-    return FeedbackStore.open(tmp_path / "feedback.db")
+async def open_generic(tmp_path: Path) -> FeedbackStore:
+    return await FeedbackStore.open(tmp_path / "feedback.db")
 
 
-def open_legacy(tmp_path: Path) -> FeedbackStore:
-    return FeedbackStore.open(tmp_path / "feedback.db", LEGACY_SCHEMA)
+async def open_legacy(tmp_path: Path) -> FeedbackStore:
+    return await FeedbackStore.open(tmp_path / "feedback.db", LEGACY_SCHEMA)
 
 
 def judged_row(
@@ -220,7 +222,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
         ),
     ],
 )
-def test_verdict_store_roundtrip(
+async def test_verdict_store_roundtrip(
     tmp_path: Path,
     schema: StoreSchema,
     verdict_table: str,
@@ -228,22 +230,22 @@ def test_verdict_store_roundtrip(
     summary_col: str,
     verdict: PlainVerdict | AliasedVerdict,
 ) -> None:
-    with FeedbackStore.open(tmp_path / "feedback.db", schema) as store:
+    async with await FeedbackStore.open(tmp_path / "feedback.db", schema) as store:
         for i, key in enumerate(("k1", "k2")):
-            store.execute(INSERT_EVENT, [key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", f"text {key}"])
-        before = [row["dedup_key"] for row in store.unjudged(role="judge", prompt_version=1)]
+            await store.execute(INSERT_EVENT, [key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", f"text {key}"])
+        before = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
         for _ in range(2):
-            store.record_verdict(DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity="full")
-        rows = store.sql(f"SELECT COUNT(*) AS n FROM {verdict_table}")[0]["n"]
+            await store.record_verdict(DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity="full")
+        rows = (await store.sql(f"SELECT COUNT(*) AS n FROM {verdict_table}"))[0]["n"]
         physical = [
             (row["a"], row["s"], row["ck"], row["fidelity"])
-            for row in store.sql(
+            for row in await store.sql(
                 f"SELECT {accepted_col} AS a, {summary_col} AS s, canonical_key AS ck, fidelity FROM {verdict_table}"
             )
         ]
-        after = [row["dedup_key"] for row in store.unjudged(role="judge", prompt_version=1)]
-        judged = store.judged(role="judge", prompt_version=1)
-        keys = store.dedup_keys()
+        after = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
+        judged = await store.judged(role="judge", prompt_version=1)
+        keys = await store.dedup_keys()
     assert before == ["k1", "k2"]
     assert rows == 1
     assert physical == [(1, "Force-pushed", "never-force-push", "full")]
@@ -270,35 +272,37 @@ def plain(
     )
 
 
-def one_verdict(store: FeedbackStore) -> dict[str, object]:
-    return store.sql(
-        "SELECT COUNT(*) AS n, MAX(model) AS model, MAX(summary) AS summary, MAX(canonical_key) AS ck, "
-        "MAX(fidelity) AS fidelity FROM verdicts"
+async def one_verdict(store: FeedbackStore) -> dict[str, object]:
+    return (
+        await store.sql(
+            "SELECT COUNT(*) AS n, MAX(model) AS model, MAX(summary) AS summary, MAX(canonical_key) AS ck, "
+            "MAX(fidelity) AS fidelity FROM verdicts"
+        )
     )[0]
 
 
-def test_same_key_different_model_never_holds_two_rows(tmp_path: Path) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
-        store.record_verdict(
+async def test_same_key_different_model_never_holds_two_rows(tmp_path: Path) -> None:
+    async with await open_generic(tmp_path) as store:
+        await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
+        await store.record_verdict(
             DedupKey("k1"), plain(summary="a"), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("k1"), plain(summary="b"), role="judge", prompt_version=1, model="opus", fidelity="summary"
         )
-        after_summary = one_verdict(store)
-        store.record_verdict(
+        after_summary = await one_verdict(store)
+        await store.record_verdict(
             DedupKey("k1"), plain(summary="c"), role="judge", prompt_version=1, model="haiku", fidelity="full"
         )
-        after_full = one_verdict(store)
+        after_full = await one_verdict(store)
     assert after_summary == {"n": 1, "model": "sonnet", "summary": "a", "ck": None, "fidelity": "summary"}
     assert after_full == {"n": 1, "model": "haiku", "summary": "c", "ck": None, "fidelity": "full"}
 
 
-def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp_path: Path) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
-        store.record_verdict(
+async def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp_path: Path) -> None:
+    async with await open_generic(tmp_path) as store:
+        await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
+        await store.record_verdict(
             DedupKey("k1"),
             plain(summary="preview", canonical_key="old-rule"),
             role="judge",
@@ -306,7 +310,7 @@ def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp
             model="sonnet",
             fidelity="summary",
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("k1"),
             plain(summary="hydrated", canonical_key="new-rule"),
             role="judge",
@@ -314,14 +318,14 @@ def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp
             model="opus",
             fidelity="full",
         )
-        result = one_verdict(store)
+        result = await one_verdict(store)
     assert result == {"n": 1, "model": "opus", "summary": "hydrated", "ck": "new-rule", "fidelity": "full"}
 
 
-def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
-        store.record_verdict(
+async def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
+    async with await open_generic(tmp_path) as store:
+        await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
+        await store.record_verdict(
             DedupKey("k1"),
             plain(summary="first", canonical_key="first-rule"),
             role="judge",
@@ -329,7 +333,7 @@ def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
             model="sonnet",
             fidelity="full",
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("k1"),
             plain(summary="second", canonical_key="second-rule"),
             role="judge",
@@ -337,15 +341,15 @@ def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
             model="opus",
             fidelity="full",
         )
-        result = one_verdict(store)
+        result = await one_verdict(store)
     assert result == {"n": 1, "model": "sonnet", "summary": "first", "ck": "first-rule", "fidelity": "full"}
 
 
-def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
-    with open_generic(tmp_path) as store:
+async def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
+    async with await open_generic(tmp_path) as store:
         for key in ("k1", "k2"):
-            store.execute(INSERT_EVENT, [key, "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
-        store.record_verdict(
+            await store.execute(INSERT_EVENT, [key, "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
+        await store.record_verdict(
             DedupKey("k1"),
             plain(canonical_key="use-uv-not-pip"),
             role="judge",
@@ -353,7 +357,7 @@ def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
             model="sonnet",
             fidelity="full",
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("k2"),
             plain(canonical_key=None),
             role="judge",
@@ -363,133 +367,134 @@ def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
         )
         result = [
             (row["dedup_key"], row["canonical_key"])
-            for row in store.sql("SELECT dedup_key, canonical_key FROM verdicts ORDER BY dedup_key")
+            for row in await store.sql("SELECT dedup_key, canonical_key FROM verdicts ORDER BY dedup_key")
         ]
     assert result == [("k1", "use-uv-not-pip"), ("k2", None)]
 
 
-def test_unmigrated_v8_verdict_table_fails_loud_at_open(tmp_path: Path) -> None:
+async def test_unmigrated_v8_verdict_table_fails_loud_at_open(tmp_path: Path) -> None:
     path = tmp_path / "feedback.db"
     conn = sqlite3.connect(path)
     conn.executescript(literal_str("feedback.FEEDBACK_DDL") + V8_VERDICT_DDL)
     conn.close()
     with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
-        FeedbackStore.open(path)
+        await FeedbackStore.open(path)
 
 
-def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
-        unjudged = [row["dedup_key"] for row in store.unjudged(role="judge", prompt_version=1)]
-        store.record_verdict(DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full")
-        judged = [row["dedup_key"] for row in store.judged(role="judge", prompt_version=1)]
+async def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
+    async with await open_generic(tmp_path) as store:
+        await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
+        unjudged = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
+        await store.record_verdict(DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="full")
+        judged = [row["dedup_key"] for row in await store.judged(role="judge", prompt_version=1)]
     assert unjudged == ["k1"]
     assert judged == ["k1"]
 
 
-def test_legacy_aliased_v9_table_passes_schema_validation(tmp_path: Path) -> None:
-    open_legacy(tmp_path).close()
+async def test_legacy_aliased_v9_table_passes_schema_validation(tmp_path: Path) -> None:
+    store = await open_legacy(tmp_path)
+    await store.close()
 
 
-def test_unjudged_orders_truly_unjudged_before_summary_refresh(tmp_path: Path, live_transcript: None) -> None:
-    with open_generic(tmp_path) as store:
+async def test_unjudged_orders_truly_unjudged_before_summary_refresh(tmp_path: Path, live_transcript: None) -> None:
+    async with await open_generic(tmp_path) as store:
         for i, key in enumerate(("k1", "k2", "k3")):
-            store.execute(
+            await store.execute(
                 INSERT_EVENT_CONTEXT,
                 [key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", "t", window_json()],
             )
-        store.record_verdict(DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary")
-        result = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        await store.record_verdict(DedupKey("k1"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary")
+        result = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
     assert result == ["k2", "k3", "k1"]
 
 
-def test_unjudged_keeps_a_summary_row_while_its_transcript_lives(tmp_path: Path, live_transcript: None) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(
+async def test_unjudged_keeps_a_summary_row_while_its_transcript_lives(tmp_path: Path, live_transcript: None) -> None:
+    async with await open_generic(tmp_path) as store:
+        await store.execute(
             INSERT_EVENT_CONTEXT, ["live", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json()]
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("live"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        result = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        result = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
     assert result == ["live"]
 
 
-def test_unjudged_drops_a_summary_row_whose_transcript_expired(tmp_path: Path, dead_transcript: None) -> None:
+async def test_unjudged_drops_a_summary_row_whose_transcript_expired(tmp_path: Path, dead_transcript: None) -> None:
     # The row carries the populated refs capture_window always produces; only the
     # transcript is gone. The fence must hydrate to notice — refs alone never do.
-    with open_generic(tmp_path) as store:
-        store.execute(
+    async with await open_generic(tmp_path) as store:
+        await store.execute(
             INSERT_EVENT_CONTEXT, ["dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json()]
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        refresh = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
-        plain_rows = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1)]
+        refresh = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        plain_rows = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1)]
     assert refresh == []
     assert plain_rows == []
 
 
-def test_unjudged_keeps_an_unjudged_event_then_drops_it_once_its_dead_transcript_is_verdicted(
+async def test_unjudged_keeps_an_unjudged_event_then_drops_it_once_its_dead_transcript_is_verdicted(
     tmp_path: Path, dead_transcript: None
 ) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(
+    async with await open_generic(tmp_path) as store:
+        await store.execute(
             INSERT_EVENT_CONTEXT, ["dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json()]
         )
-        before = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
-        store.record_verdict(
+        before = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        await store.record_verdict(
             DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        after = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        after = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
     assert before == ["dead"]
     assert after == []
 
 
-def test_unjudged_probe_hydration_false_skips_the_transcript_scan(
+async def test_unjudged_probe_hydration_false_skips_the_transcript_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def boom(*_: object, **__: object) -> None:
         raise AssertionError("probe_hydration=False must not scan for transcripts")
 
     monkeypatch.setattr("cc_transcript.activity.resolve", boom)
-    with open_generic(tmp_path) as store:
+    async with await open_generic(tmp_path) as store:
         for i, key in enumerate(("fresh", "summ")):
-            store.execute(
+            await store.execute(
                 INSERT_EVENT_CONTEXT,
                 [key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", "t", window_json()],
             )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("summ"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        rows = store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)
+        rows = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)
         keys = [str(row["dedup_key"]) for row in rows]
         has_verdict_id = any("verdict_id" in row for row in rows)
     assert keys == ["fresh", "summ"]
     assert has_verdict_id is False
 
 
-def test_unjudged_probe_hydration_false_keeps_a_dead_transcript_row(
+async def test_unjudged_probe_hydration_false_keeps_a_dead_transcript_row(
     tmp_path: Path, dead_transcript: None
 ) -> None:
-    with open_generic(tmp_path) as store:
-        store.execute(
+    async with await open_generic(tmp_path) as store:
+        await store.execute(
             INSERT_EVENT_CONTEXT, ["dead", "transcript_message", "2026-01-01T00:00:00+00:00", "t", window_json()]
         )
-        store.record_verdict(
+        await store.record_verdict(
             DedupKey("dead"), plain(), role="judge", prompt_version=1, model="sonnet", fidelity="summary"
         )
-        probed = [str(row["dedup_key"]) for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
+        probed = [str(row["dedup_key"]) for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)]
         unprobed = [
             str(row["dedup_key"])
-            for row in store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)
+            for row in await store.unjudged(role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False)
         ]
     assert probed == []
     assert unprobed == ["dead"]
 
 
-def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
+async def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
     rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(4)]
     persisted: list[tuple[str, str]] = []
 
@@ -507,11 +512,11 @@ def test_run_verdicts_persists_each_verdict_and_skips_failed_rows() -> None:
     async def go() -> tuple[int, int]:
         return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
-    assert asyncio.run(go()) == (3, 1)
+    assert await go() == (3, 1)
     assert sorted(persisted) == [("k0", "PROMPT:T0"), ("k1", "PROMPT:T1"), ("k3", "PROMPT:T3")]
 
 
-def test_run_verdicts_propagates_programming_errors() -> None:
+async def test_run_verdicts_propagates_programming_errors() -> None:
     rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(3)]
 
     async def judge(prompt: str) -> str:
@@ -529,11 +534,11 @@ def test_run_verdicts_propagates_programming_errors() -> None:
         return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
     with pytest.raises(ExceptionGroup) as excinfo:
-        asyncio.run(go())
+        await go()
     assert excinfo.group_contains(TypeError, match="bug in the worker body")
 
 
-def test_structured_judge_wraps_a_non_json_response_as_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_structured_judge_wraps_a_non_json_response_as_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("spawnllm")
 
     from pydantic import BaseModel
@@ -557,10 +562,10 @@ def test_structured_judge_wraps_a_non_json_response_as_judge_error(monkeypatch: 
         with pytest.raises(JudgeError):
             await judge("prompt")
 
-    asyncio.run(go())
+    await go()
 
 
-def test_run_verdicts_respects_concurrency() -> None:
+async def test_run_verdicts_respects_concurrency() -> None:
     state = {"active": 0, "peak": 0}
 
     async def judge(prompt: str) -> str:
@@ -580,7 +585,7 @@ def test_run_verdicts_respects_concurrency() -> None:
         rows = [{"dedup_key": str(i)} for i in range(8)]
         return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
-    assert asyncio.run(go()) == (8, 0)
+    assert await go() == (8, 0)
     assert state["peak"] == 2
 
 
@@ -719,7 +724,7 @@ def test_flip_pairs_reports_only_side_changes_over_the_overlap() -> None:
     assert flip_pairs([], []).rate is None
 
 
-def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
+async def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
     tmp_path: Path, live_transcript: None
 ) -> None:
     summary_verdict = PlainVerdict(
@@ -729,21 +734,21 @@ def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
         category="wrong_approach", summary="from transcript", confidence=0.9, rationale="hydrated", accepted=True
     )
 
-    def record(store: FeedbackStore, verdict: PlainVerdict, fidelity: str) -> None:
-        store.record_verdict(DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity=fidelity)
+    async def record(store: FeedbackStore, verdict: PlainVerdict, fidelity: str) -> None:
+        await store.record_verdict(DedupKey("k1"), verdict, role="judge", prompt_version=1, model="sonnet", fidelity=fidelity)
 
-    with open_generic(tmp_path) as store:
-        store.execute(
+    async with await open_generic(tmp_path) as store:
+        await store.execute(
             INSERT_EVENT_CONTEXT,
             ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "text k1", window_json()],
         )
-        record(store, summary_verdict, "summary")
-        plain_rows = store.unjudged(role="judge", prompt_version=1)
-        refresh = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
-        record(store, full_verdict, "full")
-        after_full = store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
-        record(store, summary_verdict, "summary")
-        judged = store.judged(role="judge", prompt_version=1)
+        await record(store, summary_verdict, "summary")
+        plain_rows = await store.unjudged(role="judge", prompt_version=1)
+        refresh = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+        await record(store, full_verdict, "full")
+        after_full = await store.unjudged(role="judge", prompt_version=1, refresh_summary=True)
+        await record(store, summary_verdict, "summary")
+        judged = await store.judged(role="judge", prompt_version=1)
     assert plain_rows == []
     assert [row["dedup_key"] for row in refresh] == ["k1"]
     assert after_full == []
@@ -751,7 +756,7 @@ def test_refresh_summary_re_yields_summary_rows_until_a_full_verdict_replaces(
     assert (judged[0]["summary"], judged[0]["accepted"]) == ("from transcript", 1)
 
 
-def test_run_verdicts_awaits_an_async_prompt_for() -> None:
+async def test_run_verdicts_awaits_an_async_prompt_for() -> None:
     rows = [{"dedup_key": f"k{i}", "text": f"t{i}"} for i in range(3)]
     persisted: list[tuple[str, str]] = []
 
@@ -768,7 +773,7 @@ def test_run_verdicts_awaits_an_async_prompt_for() -> None:
     async def go() -> tuple[int, int]:
         return await run_verdicts(rows, prompt_for, judge, persist, concurrency=2)
 
-    assert asyncio.run(go()) == (3, 0)
+    assert await go() == (3, 0)
     assert sorted(persisted) == [("k0", "PROMPT:T0"), ("k1", "PROMPT:T1"), ("k2", "PROMPT:T2")]
 
 
@@ -803,7 +808,7 @@ def test_structured_judge_defers_the_structured_call() -> None:
     coroutine.close()
 
 
-def test_structured_judge_converts_provider_errors_to_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_structured_judge_converts_provider_errors_to_judge_error(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("spawnllm", reason="[llm] extra not installed")
     from pydantic import BaseModel
     from spawnllm import BackendCallError
@@ -820,7 +825,7 @@ def test_structured_judge_converts_provider_errors_to_judge_error(monkeypatch: p
     monkeypatch.setattr("cc_transcript.judge.llm.default_backend", lambda: object())
     judge = structured_judge(Toy, tier="medium", timeout=1)
     with pytest.raises(JudgeError, match="overloaded"):
-        asyncio.run(judge("prompt"))
+        await judge("prompt")
 
 
 @pytest.mark.parametrize(

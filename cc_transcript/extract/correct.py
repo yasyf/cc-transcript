@@ -163,7 +163,7 @@ async def extract_correction(
     already has a row, so re-runs and overlapping producers never duplicate.
     Returns the appended correction, or None when nothing is harvested or picked.
     """
-    if log.for_anchor(anchor.session_id, anchor.event_uuid):
+    if await log.for_anchor(anchor.session_id, anchor.event_uuid):
         return None
     pairs = await asyncio.to_thread(harvest_pairs, activity, anchor, repo=repo)
     if not pairs or (turn := activity.turn_of(anchor)) is None:
@@ -173,5 +173,5 @@ async def extract_correction(
         return None
     if repo is not None:
         row = replace(row, detail={"repo": str(repo)})
-    log.append(row)
+    await log.append(row)
     return row

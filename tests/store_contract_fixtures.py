@@ -362,20 +362,20 @@ def candidate(
     )
 
 
-def query(store: object, sql: str, params: Sequence[object] = ()) -> list[dict[str, object]]:
+async def query(store: object, sql: str, params: Sequence[object] = ()) -> list[dict[str, object]]:
     """Runs a read statement, returning rows as dicts (flip-safe)."""
-    return store.store.sql(sql, tuple(params))  # type: ignore[attr-defined]
+    return await store.store.sql(sql, tuple(params))  # type: ignore[attr-defined]
 
 
-def execute(store: object, sql: str, params: Sequence[object] = ()) -> None:
+async def execute(store: object, sql: str, params: Sequence[object] = ()) -> None:
     """Runs one write statement, autocommitting or joining the open transaction (flip-safe)."""
-    store.store.execute(sql, tuple(params))  # type: ignore[attr-defined]
+    await store.store.execute(sql, tuple(params))  # type: ignore[attr-defined]
 
 
-def count(store: object, table: str, where: str = "", params: Sequence[object] = ()) -> int:
+async def count(store: object, table: str, where: str = "", params: Sequence[object] = ()) -> int:
     """Counts rows in ``table``, optionally filtered by a ``WHERE`` clause."""
     clause = f" WHERE {where}" if where else ""
-    return query(store, f"SELECT COUNT(*) AS n FROM {table}{clause}", params)[0]["n"]  # type: ignore[return-value]
+    return (await query(store, f"SELECT COUNT(*) AS n FROM {table}{clause}", params))[0]["n"]  # type: ignore[return-value]
 
 
 def store_transaction(store: object):  # noqa: ANN201 — context manager, type varies at the flip
@@ -383,34 +383,34 @@ def store_transaction(store: object):  # noqa: ANN201 — context manager, type 
     return store.store.transaction()  # type: ignore[attr-defined]
 
 
-def record_file(store: object, path: str, mtime: float) -> None:
+async def record_file(store: object, path: str, mtime: float) -> None:
     """Upserts a scanned file's mtime through the store (flip-safe)."""
-    store.store.record_file(path, mtime)  # type: ignore[attr-defined]
+    await store.store.record_file(path, mtime)  # type: ignore[attr-defined]
 
 
-def event_rows(store: object, name: str) -> list[dict[str, object]]:
+async def event_rows(store: object, name: str) -> list[dict[str, object]]:
     """Reads every persisted event field in insertion order (flip-safe)."""
     extra = ", origin_path, quarantined_reason" if name == "steer" else ""
-    return query(
+    return await query(
         store,
         "SELECT id, dedup_key, source_kind, session_id, event_uuid, occurred_at, text, payload_json, "
         f"context_json, cc_version, ingested_at{extra} FROM feedback_events ORDER BY id",
     )
 
 
-def evidence_rows(store: object) -> list[dict[str, object]]:
+async def evidence_rows(store: object) -> list[dict[str, object]]:
     """Reads persisted verdict evidence by verdict identity (flip-safe)."""
-    return query(
+    return await query(
         store,
         "SELECT dedup_key, role, prompt_version, canonical_key, evidence_text "
         "FROM verdict_evidence ORDER BY dedup_key, role, prompt_version",
     )
 
 
-def reject_evidence_metadata_writes(store: object) -> None:
+async def reject_evidence_metadata_writes(store: object) -> None:
     """Makes the metadata insert fail after the real sqlite-vec insert runs."""
-    similar.prepare_connection(store.store)  # type: ignore[attr-defined]
-    execute(
+    await similar.prepare_connection(store.store)  # type: ignore[attr-defined]
+    await execute(
         store,
         "CREATE TRIGGER reject_evidence_metadata BEFORE INSERT ON verdict_evidence "
         "BEGIN SELECT RAISE(ABORT, 'evidence metadata write failed'); END",
@@ -423,9 +423,9 @@ def _format_schema(rows: Sequence[Mapping[str, object]]) -> str:
     )
 
 
-def schema_dump(store: object) -> str:
+async def schema_dump(store: object) -> str:
     """The store's live schema as a deterministic dump, read through the store."""
-    return _format_schema(query(store, SCHEMA_QUERY))
+    return _format_schema(await query(store, SCHEMA_QUERY))
 
 
 def raw_schema_dump(path: Path) -> str:
@@ -446,8 +446,8 @@ class FileStateStore:
     """
 
     @staticmethod
-    def open(path: Path, *, extra_schema: str = "") -> FeedbackStore:
-        return FeedbackStore.open(path, StoreSchema(extra_ddl=(extra_schema,) if extra_schema else ()))
+    async def open(path: Path, *, extra_schema: str = "") -> FeedbackStore:
+        return await FeedbackStore.open(path, StoreSchema(extra_ddl=(extra_schema,) if extra_schema else ()))
 
 
 class ContractStore:
@@ -456,19 +456,19 @@ class ContractStore:
     def __init__(self, store: FeedbackStore) -> None:
         self.store = store
 
-    def close(self) -> None:
-        self.store.close()
+    async def close(self) -> None:
+        await self.store.close()
 
-    def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
-        return self.store.record_file_scan(path, mtime, candidates)
+    async def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
+        return await self.store.record_file_scan(path, mtime, candidates)
 
-    def file_mtimes(self) -> dict[str, float]:
-        return self.store.file_mtimes()
+    async def file_mtimes(self) -> dict[str, float]:
+        return await self.store.file_mtimes()
 
-    def events(self) -> list[dict[str, object]]:
-        return self.store.events()
+    async def events(self) -> list[dict[str, object]]:
+        return await self.store.events()
 
-    def unjudged(
+    async def unjudged(
         self,
         *,
         role: str,
@@ -477,7 +477,7 @@ class ContractStore:
         refresh_summary: bool = False,
         probe_hydration: bool = True,
     ) -> list[dict[str, object]]:
-        return self.store.unjudged(
+        return await self.store.unjudged(
             role=role,
             prompt_version=prompt_version,
             limit=limit,
@@ -485,13 +485,13 @@ class ContractStore:
             probe_hydration=probe_hydration,
         )
 
-    def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
-        return self.store.judged(role=role, prompt_version=prompt_version)
+    async def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
+        return await self.store.judged(role=role, prompt_version=prompt_version)
 
     async def record_verdict(
         self, key: DedupKey, verdict: object, *, role: str, prompt_version: int, model: str, fidelity: str
     ) -> None:
-        self.store.record_verdict(
+        await self.store.record_verdict(
             key, verdict, role=role, prompt_version=prompt_version, model=model, fidelity=fidelity  # type: ignore[arg-type]
         )
 
@@ -500,17 +500,17 @@ class PlatformStore(ContractStore):
     """Config (a): platform default — generic ``verdicts`` / ``accepted`` / ``summary`` naming."""
 
     @classmethod
-    def open(cls, path: Path) -> Self:
-        return cls(FeedbackStore.open(path, StoreSchema()))
+    async def open(cls, path: Path) -> Self:
+        return cls(await FeedbackStore.open(path, StoreSchema()))
 
 
 class SteerStore(ContractStore):
     """Config (b): cc-steer shape (sync) — ``triage`` naming, quarantine column + event filter."""
 
     @classmethod
-    def open(cls, path: Path) -> Self:
+    async def open(cls, path: Path) -> Self:
         return cls(
-            FeedbackStore.open(
+            await FeedbackStore.open(
                 path,
                 StoreSchema(
                     extra_ddl=(STEER_TRIAGE_VIEWS_DDL, STEER_REFINE_DDL, STEER_GATE_DDL),
@@ -523,19 +523,19 @@ class SteerStore(ContractStore):
             )
         )
 
-    def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
+    async def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
         ingested_at = now()
         by_key = {str(cand.dedup_key): cand for cand in candidates}
-        with self.store.transaction() as db:
-            inserted = db.insert_candidates(
+        async with self.store.transaction() as db:
+            inserted = await db.insert_candidates(
                 [list(event_row(cand, ingested_at)) for cand in candidates],
                 extras=[[path, None] for _ in candidates],
             )
-            db.executemany(
+            await db.executemany(
                 STEER_QUARANTINE_CONTEXT,
                 [(STEER_ACCRUED_EMPTY_REASON, key) for key in inserted if not by_key[key].window.before],
             )
-            db.record_file(path, mtime)
+            await db.record_file(path, mtime)
             return len(inserted)
 
 
@@ -543,9 +543,9 @@ class HookStore(ContractStore):
     """Config (c): captain-hook shape — generic naming + review tables + guarded-ALTER migrations."""
 
     @classmethod
-    def open(cls, path: Path) -> Self:
+    async def open(cls, path: Path) -> Self:
         return cls(
-            FeedbackStore.open(
+            await FeedbackStore.open(
                 path,
                 StoreSchema(
                     extra_ddl=(HOOK_REVIEW_DDL,),
@@ -554,19 +554,19 @@ class HookStore(ContractStore):
             )
         )
 
-    def migrate_columns(self, table: str, migrations: tuple[ColumnMigration, ...]) -> None:
+    async def migrate_columns(self, table: str, migrations: tuple[ColumnMigration, ...]) -> None:
         def pending(columns: set[str]) -> list[ColumnMigration]:
             return [migration for migration in migrations if migration.column not in columns]
 
-        columns = {str(row["name"]) for row in query(self, f"PRAGMA table_info({table})")}
+        columns = {str(row["name"]) for row in await query(self, f"PRAGMA table_info({table})")}
         if not pending(columns):
             return
-        with self.store.transaction() as db:
-            columns = {str(row["name"]) for row in db.sql(f"PRAGMA table_info({table})")}
+        async with self.store.transaction() as db:
+            columns = {str(row["name"]) for row in await db.sql(f"PRAGMA table_info({table})")}
             for migration in pending(columns):
-                db.execute(f"ALTER TABLE {table} ADD COLUMN {migration.ddl}")
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {migration.ddl}")
                 if migration.backfill is not None:
-                    db.execute(migration.backfill)
+                    await db.execute(migration.backfill)
 
 
 @dataclass(frozen=True, slots=True)
@@ -615,10 +615,10 @@ CONFIGS: dict[str, StoreConfig] = {
 CONFIG_NAMES: tuple[str, ...] = tuple(CONFIGS)
 
 
-def verdict_rows(store: object, name: str) -> list[dict[str, object]]:
+async def verdict_rows(store: object, name: str) -> list[dict[str, object]]:
     """Reads every persisted verdict field under normalized column names."""
     config = CONFIGS[name]
-    rows = query(
+    rows = await query(
         store,
         f"SELECT id, dedup_key, role, prompt_version, model, category, "
         f"{config.accepted_column} AS accepted, {config.summary_column} AS summary, "
@@ -629,36 +629,36 @@ def verdict_rows(store: object, name: str) -> list[dict[str, object]]:
     return rows
 
 
-def committed_fixture_state(store: object, name: str) -> dict[str, object]:
+async def committed_fixture_state(store: object, name: str) -> dict[str, object]:
     """Reads a committed fixture through store APIs plus downstream seed projections."""
     state: dict[str, object] = {
-        "events": store.events(),  # type: ignore[attr-defined]
-        "unjudged": store.unjudged(  # type: ignore[attr-defined]
+        "events": await store.events(),  # type: ignore[attr-defined]
+        "unjudged": await store.unjudged(  # type: ignore[attr-defined]
             role="judge", prompt_version=1, refresh_summary=True, probe_hydration=False
         ),
-        "judged": store.judged(role="judge", prompt_version=1),  # type: ignore[attr-defined]
-        "file_mtimes": store.file_mtimes(),  # type: ignore[attr-defined]
+        "judged": await store.judged(role="judge", prompt_version=1),  # type: ignore[attr-defined]
+        "file_mtimes": await store.file_mtimes(),  # type: ignore[attr-defined]
     }
     if name == "steer":
-        state["quarantine"] = query(
+        state["quarantine"] = await query(
             store,
             "SELECT dedup_key, origin_path, quarantined_reason FROM feedback_events ORDER BY id",
         )
     if name == "hook":
-        state["candidates"] = query(
+        state["candidates"] = await query(
             store,
             "SELECT id, repo_key, candidate_kind, rule, source_kind, status, created_at, updated_at, "
             "generation, resolved_at, origin_repo_key, pack_name, announced_status FROM candidates ORDER BY id",
         )
-        state["observations"] = query(
+        state["observations"] = await query(
             store,
             "SELECT id, candidate_id, dedup_key, session_id, occurred_at "
             "FROM candidate_observations ORDER BY id",
         )
-        state["repos"] = query(store, "SELECT repo_key, watching FROM repos ORDER BY repo_key")
+        state["repos"] = await query(store, "SELECT repo_key, watching FROM repos ORDER BY repo_key")
     return state
 
 
-def open_config(name: str, path: Path) -> object:
+async def open_config(name: str, path: Path) -> object:
     """Opens the named configuration's store at ``path`` (the flip-point factory)."""
-    return CONFIGS[name].open(path)
+    return await CONFIGS[name].open(path)

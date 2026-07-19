@@ -45,35 +45,33 @@ class StubVerdict:
         self.canonical_key = None
 
 
-def seed(store: object, name: str) -> None:
+async def seed(store: object, name: str) -> None:
     candidates = [fx.candidate("k1"), fx.candidate("k2"), fx.candidate("k3", empty_window=True)]
-    store.record_file_scan(SCAN_PATH, SCAN_MTIME, candidates)
-    asyncio.run(
-        store.record_verdict(
-            DedupKey("k1"), StubVerdict(summary="seed summary"), role="judge", prompt_version=1, model="sonnet",
-            fidelity="full",
-        )
+    await store.record_file_scan(SCAN_PATH, SCAN_MTIME, candidates)
+    await store.record_verdict(
+        DedupKey("k1"), StubVerdict(summary="seed summary"), role="judge", prompt_version=1, model="sonnet",
+        fidelity="full",
     )
     if name == "hook":
-        fx.execute(
+        await fx.execute(
             store,
             "INSERT INTO candidates (repo_key, candidate_kind, rule, source_kind, status, created_at, updated_at) "
             "VALUES (?, 'create', ?, ?, 'watching', ?, ?)",
             ("github.com/acme/repo", "always-use-uv", str(fx.SOURCE_KIND), fx.FIXED_NOW, fx.FIXED_NOW),
         )
-        fx.execute(
+        await fx.execute(
             store,
             "INSERT INTO candidate_observations (candidate_id, dedup_key, session_id, occurred_at) VALUES (1, ?, ?, ?)",
             ("k1", str(fx.SESSION), fx.FIXED_NOW),
         )
-        fx.execute(store, "INSERT INTO repos (repo_key, watching) VALUES (?, 1)", ("github.com/acme/repo",))
+        await fx.execute(store, "INSERT INTO repos (repo_key, watching) VALUES (?, 1)", ("github.com/acme/repo",))
 
 
-def finalize(store: object) -> None:
+async def finalize(store: object) -> None:
     facade = store.store
-    facade.execute("VACUUM")
-    facade.sql("PRAGMA journal_mode = DELETE")
-    store.close()
+    await facade.execute("VACUUM")
+    await facade.sql("PRAGMA journal_mode = DELETE")
+    await store.close()
 
 
 def clear(path: Path) -> None:
@@ -81,7 +79,7 @@ def clear(path: Path) -> None:
         path.with_name(path.name + suffix).unlink(missing_ok=True)
 
 
-def generate() -> None:
+async def generate() -> None:
     TESTDATA.mkdir(parents=True, exist_ok=True)
     with mock.patch.object(fx, "now", lambda: fx.FIXED_NOW), \
         mock.patch("cc_transcript.mining.store.now", lambda: fx.FIXED_NOW):
@@ -89,9 +87,9 @@ def generate() -> None:
             config = fx.CONFIGS[name]
             db_path = TESTDATA / config.fixture_db
             clear(db_path)
-            store = fx.open_config(name, db_path)
-            seed(store, name)
-            finalize(store)
+            store = await fx.open_config(name, db_path)
+            await seed(store, name)
+            await finalize(store)
             for suffix in ("-wal", "-shm"):
                 db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
             golden = TESTDATA / config.schema_golden()
@@ -100,4 +98,4 @@ def generate() -> None:
 
 
 if __name__ == "__main__":
-    generate()
+    asyncio.run(generate())

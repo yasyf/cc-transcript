@@ -27,8 +27,9 @@ from tests.support import SESSION, assistant, user
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
     from cc_transcript.models import TranscriptEvent
+
+pytestmark = pytest.mark.anyio
 
 INCORRECT_LINE = "total = compute_total(rows)"
 FIXED_LINE = "total = compute_grand_total(rows)"
@@ -253,15 +254,15 @@ def session_with_correction() -> SessionActivity:
     )
 
 
-def test_record_harvest_lowers_session_pairs_with_the_cross_language_digest(tmp_path: Path) -> None:
+async def test_record_harvest_lowers_session_pairs_with_the_cross_language_digest(tmp_path: Path) -> None:
     act = session_with_correction()
     pairs = harvest_pairs(act, ref("u3"))
-    log = CorrectionLog.open(tmp_path / "corrections.db")
-    assert record_harvest(log, act, ref("u3"), pairs, source="cc-pushback") == 3
-    assert len(log.for_session(SESSION)) == 3
+    log = await CorrectionLog.open(tmp_path / "corrections.db")
+    assert await record_harvest(log, act, ref("u3"), pairs, source="cc-pushback") == 3
+    assert len(await log.for_session(SESSION)) == 3
 
     digest = tool_digest("Edit", {"file_path": "/a.py", "old_string": "", "new_string": "alpha = 1"})
-    (row,) = log.by_digest(SESSION, incorrect_digest=digest)
+    (row,) = await log.by_digest(SESSION, incorrect_digest=digest)
     assert row.incorrect_digest == digest  # parity with what a hook would digest from raw stdin
     assert row.anchor_uuid == EventUuid("u3")
     assert (row.incorrect_file, row.incorrect_old, row.incorrect_new) == ("/a.py", "", "alpha = 1")
@@ -271,26 +272,26 @@ def test_record_harvest_lowers_session_pairs_with_the_cross_language_digest(tmp_
     assert row.source == "cc-pushback"
 
 
-def test_record_harvest_is_idempotent(tmp_path: Path) -> None:
+async def test_record_harvest_is_idempotent(tmp_path: Path) -> None:
     act = session_with_correction()
     pairs = harvest_pairs(act, ref("u3"))
-    log = CorrectionLog.open(tmp_path / "corrections.db")
-    record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
-    record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
-    assert len(log.for_session(SESSION)) == 3
+    log = await CorrectionLog.open(tmp_path / "corrections.db")
+    await record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
+    await record_harvest(log, act, ref("u3"), pairs, source="cc-pushback")
+    assert len(await log.for_session(SESSION)) == 3
 
 
 @needs_git
-def test_record_harvest_lowers_git_corrections(tmp_path: Path) -> None:
+async def test_record_harvest_lowers_git_corrections(tmp_path: Path) -> None:
     repo, source = fixed_repo(tmp_path)
     act = activity(
         user("u0", "write it"),
         assistant("a0", blocks=(edit("t1", str(source), "", f"    {INCORRECT_LINE}"),), secs=1),
         user("u1", "anchor", secs=2),
     )
-    log = CorrectionLog.open(tmp_path / "corrections.db")
-    assert record_harvest(log, act, ref("u1"), harvest_pairs(act, ref("u1"), repo=repo), source="cc-pushback") == 1
-    (row,) = log.for_session(SESSION)
+    log = await CorrectionLog.open(tmp_path / "corrections.db")
+    assert await record_harvest(log, act, ref("u1"), harvest_pairs(act, ref("u1"), repo=repo), source="cc-pushback") == 1
+    (row,) = await log.for_session(SESSION)
     assert row.correction_origin == "git"
     assert row.correction_commit is not None and len(row.correction_commit) == 40
     assert FIXED_LINE in (row.correction_new or "")

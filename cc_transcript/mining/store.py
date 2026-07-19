@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Self
@@ -20,7 +21,7 @@ from cc_transcript.literals import literal_str
 from cc_transcript.mining.confidence import to_payload
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -142,18 +143,19 @@ class FeedbackStore:
     :meth:`transaction`.
 
     Example:
-        >>> with FeedbackStore.open(Path("feedback.db")) as store:
-        ...     store.record_file_scan(str(path), mtime, candidates)
+        >>> async with await FeedbackStore.open(Path("feedback.db")) as store:
+        ...     await store.record_file_scan(str(path), mtime, candidates)
     """
 
     def __init__(self, engine: _native.RustFeedbackStore, schema: StoreSchema) -> None:
         self.engine = engine
         self.schema = schema
         self._txn_owner: tuple[int, int | None] | None = None
+        self._txn_lock = threading.Lock()
         self._vec_prepared = False
 
     @classmethod
-    def open(
+    async def open(
         cls,
         path: Path,
         schema: StoreSchema | None = None,
@@ -185,55 +187,60 @@ class FeedbackStore:
             readonly=readonly,
             busy_timeout_ms=busy_timeout_ms,
         )
+        try:
+            await engine.open()
+        except BaseException:
+            await engine.close()
+            raise
         return cls(engine, schema)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Closes the underlying connection; a second close is a no-op.
 
         Any later use of the store — or of a retained ``engine`` reference —
         raises ``sqlite3.ProgrammingError``, exactly like a closed
         ``sqlite3.Connection``.
         """
-        self.engine.close()
+        await self.engine.close()
 
-    def __enter__(self) -> Self:
+    async def __aenter__(self) -> Self:
         return self
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        await self.close()
 
     # --- primitive surface ---------------------------------------------------
-    def sql(self, statement: str, params: Sequence[object] = ()) -> list[dict[str, object]]:
+    async def sql(self, statement: str, params: Sequence[object] = ()) -> list[dict[str, object]]:
         """Runs one parameterized statement, returning rows as dicts."""
-        return self.engine.sql(statement, list(params))
+        return await self.engine.sql(statement, list(params))
 
-    def execute(self, statement: str, params: Sequence[object] = ()) -> int:
+    async def execute(self, statement: str, params: Sequence[object] = ()) -> int:
         """Runs one parameterized write statement, returning the modified-row count."""
-        return self.engine.execute(statement, list(params))
+        return await self.engine.execute(statement, list(params))
 
-    def executemany(self, statement: str, seq: Sequence[Sequence[object]]) -> int:
+    async def executemany(self, statement: str, seq: Sequence[Sequence[object]]) -> int:
         """Runs ``statement`` once per parameter set, returning the total modified-row count."""
-        return self.engine.executemany(statement, [list(params) for params in seq])
+        return await self.engine.executemany(statement, [list(params) for params in seq])
 
-    def executescript(self, script: str) -> None:
+    async def executescript(self, script: str) -> None:
         """Runs a multi-statement script — refused while a transaction is open."""
-        self.engine.executescript(script)
+        await self.engine.executescript(script)
 
-    def last_insert_rowid(self) -> int:
+    async def last_insert_rowid(self) -> int:
         """Returns the rowid of the last inserted row on this connection."""
-        return self.engine.last_insert_rowid()
+        return await self.engine.last_insert_rowid()
 
-    def load_extension(self, path: str) -> None:
+    async def load_extension(self, path: str) -> None:
         """Loads a loadable SQLite extension (sqlite-vec's dylib) onto the connection."""
-        self.engine.load_extension(path)
+        await self.engine.load_extension(path)
 
-    @contextmanager
-    def transaction(self) -> Iterator[Self]:
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Self]:
         """Yields the store inside a single committed transaction.
 
         Composes consumer writes with :meth:`record_file` so they commit or roll
@@ -247,26 +254,38 @@ class FeedbackStore:
         Raises:
             TransactionConflictError: A transaction is already open.
         """
-        if self._txn_owner is not None:
-            raise TransactionConflictError(f"a transaction opened by {self._txn_owner} is already in flight")
-        self._txn_owner = current_owner()
-        self.engine.begin_immediate()
+        with self._txn_lock:
+            if self._txn_owner is not None:
+                raise TransactionConflictError(f"a transaction opened by {self._txn_owner} is already in flight")
+            self._txn_owner = current_owner()
         try:
-            yield self
-        except BaseException:
-            self.engine.rollback()
-            raise
-        else:
-            self.engine.commit()
+            try:
+                await self.engine.begin_immediate()
+                yield self
+            except BaseException:
+                await self._rollback_dispatched()
+                raise
+            else:
+                await self.engine.commit()
         finally:
-            self._txn_owner = None
+            with self._txn_lock:
+                self._txn_owner = None
+
+    async def _rollback_dispatched(self) -> None:
+        # A begin that never took effect, or a cancellation racing the dispatched begin,
+        # leaves no active transaction; rolling one back is a benign no-op (native design §4).
+        try:
+            await self.engine.rollback()
+        except sqlite3.OperationalError as error:
+            if "cannot rollback - no transaction is active" not in str(error):
+                raise
 
     # --- file-scan ledger ----------------------------------------------------
-    def file_mtimes(self) -> dict[str, float]:
+    async def file_mtimes(self) -> dict[str, float]:
         """Returns the recorded ``path`` to ``mtime`` map for incremental scans."""
-        return {row["path"]: row["mtime"] for row in self.engine.file_mtimes()}
+        return {row["path"]: row["mtime"] for row in await self.engine.file_mtimes()}
 
-    def record_file(self, path: str, mtime: float) -> None:
+    async def record_file(self, path: str, mtime: float) -> None:
         """Upserts the recorded mtime for ``path``.
 
         Called inside :meth:`transaction` by the owning task it joins that
@@ -277,21 +296,21 @@ class FeedbackStore:
             TransactionConflictError: Another task's transaction is open.
         """
         if self._txn_owner == current_owner():
-            self.engine.record_file(path, mtime)
+            await self.engine.record_file(path, mtime)
             return
-        with self.transaction():
-            self.engine.record_file(path, mtime)
+        async with self.transaction():
+            await self.engine.record_file(path, mtime)
 
-    def insert_candidates(
+    async def insert_candidates(
         self, rows: Sequence[Sequence[object]], extras: Sequence[Sequence[object]] | None = None
     ) -> list[str]:
         """``INSERT OR IGNORE``s candidate rows, returning the newly inserted dedup keys."""
-        return self.engine.insert_candidates(
+        return await self.engine.insert_candidates(
             [list(row) for row in rows],
             [list(extra) for extra in extras] if extras is not None else None,
         )
 
-    def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
+    async def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
         """Records a scanned file and its candidates in one transaction.
 
         Inserts every candidate with ``INSERT OR IGNORE`` keyed by its dedup key
@@ -306,18 +325,20 @@ class FeedbackStore:
             The number of newly inserted feedback events.
         """
         ingested_at = now()
-        with self.transaction():
-            inserted = self.engine.insert_candidates([list(event_row(candidate, ingested_at)) for candidate in candidates])
-            self.record_file(path, mtime)
+        async with self.transaction():
+            inserted = await self.engine.insert_candidates(
+                [list(event_row(candidate, ingested_at)) for candidate in candidates]
+            )
+            await self.record_file(path, mtime)
             return len(inserted)
 
     # --- corpus reads --------------------------------------------------------
-    def stats(self) -> Stats:
+    async def stats(self) -> Stats:
         """Returns ingestion counts by source kind and the scanned-file count."""
-        total, files, by_source = self.engine.stats()
+        total, files, by_source = await self.engine.stats()
         return Stats(total=total, files=files, by_source={row["source_kind"]: row["n"] for row in by_source})
 
-    def recent(self, *, source_kind: SourceKind | None = None, limit: int = 20) -> list[dict[str, object]]:
+    async def recent(self, *, source_kind: SourceKind | None = None, limit: int = 20) -> list[dict[str, object]]:
         """Returns the most recent feedback events, newest first.
 
         Args:
@@ -327,9 +348,9 @@ class FeedbackStore:
         Returns:
             One dict per event with its ``source_kind``, ``occurred_at``, and ``text``.
         """
-        return self.engine.recent(str(source_kind) if source_kind is not None else None, limit)
+        return await self.engine.recent(str(source_kind) if source_kind is not None else None, limit)
 
-    def events(self, *, source_kind: SourceKind | None = None) -> list[dict[str, object]]:
+    async def events(self, *, source_kind: SourceKind | None = None) -> list[dict[str, object]]:
         """Returns every feedback event, newest first, with the columns needed to render it.
 
         Args:
@@ -340,14 +361,14 @@ class FeedbackStore:
             ``text``, ``payload_json``, ``context_json``, ``event_uuid``, and
             ``session_id``.
         """
-        return self.engine.events(str(source_kind) if source_kind is not None else None)
+        return await self.engine.events(str(source_kind) if source_kind is not None else None)
 
-    def dedup_keys(self) -> set[str]:
+    async def dedup_keys(self) -> set[str]:
         """Returns every stored event's dedup key."""
-        return set(self.engine.dedup_keys())
+        return set(await self.engine.dedup_keys())
 
     # --- verdict tier --------------------------------------------------------
-    def record_verdict(
+    async def record_verdict(
         self, key: DedupKey, verdict: VerdictLike, *, role: str, prompt_version: int, model: str, fidelity: Fidelity
     ) -> None:
         """Records one verdict, idempotently, keyed by ``(dedup_key, role, prompt_version)``.
@@ -371,13 +392,13 @@ class FeedbackStore:
         from cc_transcript.judge import similar
 
         evidence = (
-            similar.embed_evidence(self, dedup_key=key, canonical_key=verdict.canonical_key, summary=verdict.summary)
+            await similar.embed_evidence(self, dedup_key=key, canonical_key=verdict.canonical_key, summary=verdict.summary)
             if verdict.canonical_key is not None
             else None
         )
-        removable = evidence is None and similar.prepare_evidence_removal(self)
-        with self.transaction():
-            changed = self.engine.record_verdict(
+        removable = evidence is None and await similar.prepare_evidence_removal(self)
+        async with self.transaction():
+            changed = await self.engine.record_verdict(
                 str(key),
                 role,
                 prompt_version,
@@ -393,11 +414,11 @@ class FeedbackStore:
             )
             if changed:
                 if evidence is not None:
-                    similar.record_evidence(self, dedup_key=key, role=role, prompt_version=prompt_version, evidence=evidence)
+                    await similar.record_evidence(self, dedup_key=key, role=role, prompt_version=prompt_version, evidence=evidence)
                 elif removable:
-                    similar.clear_evidence(self, dedup_key=key, role=role, prompt_version=prompt_version)
+                    await similar.clear_evidence(self, dedup_key=key, role=role, prompt_version=prompt_version)
 
-    def unjudged(
+    async def unjudged(
         self,
         *,
         role: str,
@@ -429,26 +450,26 @@ class FeedbackStore:
             One dict per event with the columns needed to build its prompt.
         """
         if not refresh_summary:
-            return self.engine.unjudged(role, prompt_version, False, limit, None)
+            return await self.engine.unjudged(role, prompt_version, False, limit, None)
         if self.schema.event_filter is not None:
-            return self._paged_refresh(role, prompt_version, limit, probe_hydration)
-        return self._loadall_refresh(role, prompt_version, limit, probe_hydration)
+            return await self._paged_refresh(role, prompt_version, limit, probe_hydration)
+        return await self._loadall_refresh(role, prompt_version, limit, probe_hydration)
 
-    def _loadall_refresh(
+    async def _loadall_refresh(
         self, role: str, prompt_version: int, limit: int | None, probe_hydration: bool
     ) -> list[dict[str, object]]:
         from cc_transcript.judge.verdicts import hydratable
 
         kept: list[dict[str, object]] = []
-        for row in self.engine.unjudged(role, prompt_version, True, None, None):
+        for row in await self.engine.unjudged(role, prompt_version, True, None, None):
             fresh = row.pop("verdict_id") is None
-            if not probe_hydration or fresh or hydratable(str(row["context_json"])):
+            if not probe_hydration or fresh or await asyncio.to_thread(hydratable, str(row["context_json"])):
                 kept.append(row)
                 if limit is not None and len(kept) >= limit:
                     break
         return kept
 
-    def _paged_refresh(
+    async def _paged_refresh(
         self, role: str, prompt_version: int, limit: int | None, probe_hydration: bool
     ) -> list[dict[str, object]]:
         from cc_transcript.judge.verdicts import hydratable
@@ -459,19 +480,19 @@ class FeedbackStore:
         kept: list[dict[str, object]] = []
         offset = 0
         while limit is None or len(kept) < limit:
-            page = self.engine.unjudged(role, prompt_version, True, page_size, offset)
+            page = await self.engine.unjudged(role, prompt_version, True, page_size, offset)
             if not page:
                 break
             offset += len(page)
             for row in page:
                 fresh = row.pop("verdict_id") is None
-                if not probe_hydration or fresh or hydratable(str(row["context_json"])):
+                if not probe_hydration or fresh or await asyncio.to_thread(hydratable, str(row["context_json"])):
                     kept.append(row)
                     if limit is not None and len(kept) >= limit:
                         break
         return kept
 
-    def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
+    async def judged(self, *, role: str, prompt_version: int) -> list[dict[str, object]]:
         """Returns events joined with their ``(role, prompt_version)`` verdicts, oldest first.
 
         The physical accepted/summary columns are aliased to the generic
@@ -486,4 +507,4 @@ class FeedbackStore:
             verdict's ``category``, ``accepted``, ``confidence``, ``summary``,
             ``rationale``, and ``model``.
         """
-        return self.engine.judged(role, prompt_version)
+        return await self.engine.judged(role, prompt_version)

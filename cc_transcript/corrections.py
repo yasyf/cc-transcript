@@ -26,6 +26,7 @@ from cc_transcript.literals import literal_str
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from types import TracebackType
     from typing import Any
 
     from cc_transcript.ids import EventUuid, SessionId, ToolDigest
@@ -93,16 +94,16 @@ class CorrectionLog:
     the module docstring).
 
     Example:
-        >>> log = CorrectionLog.open()
-        >>> log.append(correction)
-        >>> log.by_digest(session_id, incorrect_digest=digest)
+        >>> async with await CorrectionLog.open() as log:
+        ...     await log.append(correction)
+        ...     await log.by_digest(session_id, incorrect_digest=digest)
     """
 
     def __init__(self, engine: _native.RustCorrectionLog) -> None:
         self._engine = engine
 
     @classmethod
-    def open(cls, path: Path | None = None) -> Self:
+    async def open(cls, path: Path | None = None) -> Self:
         """Opens (creating if needed) the ledger at ``path``.
 
         Args:
@@ -113,17 +114,37 @@ class CorrectionLog:
             The opened log.
         """
         path = path or Path.home() / ".cc-transcript" / "corrections.db"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return cls(_native.RustCorrectionLog(str(path)))
+        engine = _native.RustCorrectionLog(str(path))
+        try:
+            await engine.open()
+        except BaseException:
+            await engine.close()
+            raise
+        return cls(engine)
 
-    def append(self, record: Correction) -> None:
+    async def close(self) -> None:
+        """Closes the underlying connection; a second close is a no-op."""
+        await self._engine.close()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.close()
+
+    async def append(self, record: Correction) -> None:
         """Appends ``record`` as a single ``INSERT OR IGNORE``.
 
         Idempotent on the table's UNIQUE key, so re-running a writer writes one
         row; SQLite treats NULL key columns as distinct, so rows whose key
         carries a NULL rely on the writer not repeating the same values.
         """
-        self._engine.append(
+        await self._engine.append(
             record.ts_ms,
             record.session_id,
             record.source,
@@ -142,39 +163,39 @@ class CorrectionLog:
             record.detail,
         )
 
-    def for_session(self, session_id: SessionId) -> tuple[Correction, ...]:
+    async def for_session(self, session_id: SessionId) -> tuple[Correction, ...]:
         """All records for ``session_id``, ordered by timestamp."""
-        return tuple(Correction(**row) for row in self._engine.for_session(session_id))
+        return tuple(Correction(**row) for row in await self._engine.for_session(session_id))
 
-    def for_repo(self, repo: str) -> tuple[Correction, ...]:
+    async def for_repo(self, repo: str) -> tuple[Correction, ...]:
         """All corrections whose ``detail.repo`` is ``repo``, ordered by timestamp.
 
         The repo key producers stamp into ``detail`` so a per-repo consumer (the
         captain-hook reviewer) can pull every correction for its repo at once.
         """
-        return tuple(Correction(**row) for row in self._engine.for_repo(repo))
+        return tuple(Correction(**row) for row in await self._engine.for_repo(repo))
 
-    def since(self, ts_ms: int, *, source: str | None = None) -> tuple[Correction, ...]:
+    async def since(self, ts_ms: int, *, source: str | None = None) -> tuple[Correction, ...]:
         """Corrections with ``ts_ms`` strictly greater than ``ts_ms``, oldest first.
 
         A cursor read for incremental consumers; pass ``source`` to scope to one
         producer.
         """
-        return tuple(Correction(**row) for row in self._engine.since(ts_ms, source))
+        return tuple(Correction(**row) for row in await self._engine.since(ts_ms, source))
 
-    def for_anchor(self, session_id: SessionId, anchor_uuid: EventUuid) -> tuple[Correction, ...]:
+    async def for_anchor(self, session_id: SessionId, anchor_uuid: EventUuid) -> tuple[Correction, ...]:
         """The corrections harvested around one feedback ``anchor_uuid``."""
-        return tuple(Correction(**row) for row in self._engine.for_anchor(session_id, anchor_uuid))
+        return tuple(Correction(**row) for row in await self._engine.for_anchor(session_id, anchor_uuid))
 
-    def by_digest(self, session_id: SessionId, *, incorrect_digest: ToolDigest) -> tuple[Correction, ...]:
+    async def by_digest(self, session_id: SessionId, *, incorrect_digest: ToolDigest) -> tuple[Correction, ...]:
         """Corrections of the tool call with ``incorrect_digest`` in ``session_id``.
 
         The cross-consumer join: pass the ``tool_digest`` a hook recorded in
         the ``decisions`` ledger to learn whether that exact edit was later
         corrected.
         """
-        return tuple(Correction(**row) for row in self._engine.by_digest(session_id, incorrect_digest))
+        return tuple(Correction(**row) for row in await self._engine.by_digest(session_id, incorrect_digest))
 
-    def sql(self, statement: str) -> list[dict[str, Any]]:
+    async def sql(self, statement: str) -> list[dict[str, Any]]:
         """Runs one raw SQL ``statement`` — the escape hatch behind ``corrections sql``."""
-        return self._engine.sql(statement)
+        return await self._engine.sql(statement)
