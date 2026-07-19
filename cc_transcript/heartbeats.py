@@ -12,15 +12,15 @@ most one row per ``(session, event)``, so the table stays small however hot the 
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 from cc_transcript.decisions import DecisionLog
-from cc_transcript.ledger import open_sqlite
+from cc_transcript.ledger import ConnectionActor, open_sqlite
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from cc_transcript.ids import SessionId
 
 HEARTBEATS_DDL = """\
@@ -63,30 +63,42 @@ class HeartbeatLog:
     most one row per event. Requires a local disk — WAL does not work over NFS.
 
     Example:
-        >>> log = HeartbeatLog.open()
-        >>> log.beat(session_id, "PreToolUse", ts_ms)
-        >>> log.for_session(session_id)
+        >>> log = await HeartbeatLog.open()
+        >>> async with log:
+        ...     await log.beat(session_id, "PreToolUse", ts_ms)
+        ...     await log.for_session(session_id)
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+    def __init__(self, actor: ConnectionActor) -> None:
+        self._actor = actor
 
     @classmethod
-    def open(cls, path: Path | None = None) -> Self:
+    async def open(cls, path: Path | None = None) -> Self:
         """Opens (creating if needed) the heartbeat table at ``path`` (defaults to ``decisions.db``)."""
-        return cls(open_sqlite(path, filename=DecisionLog.FILENAME, ddl=HEARTBEATS_DDL))
+        actor = ConnectionActor()
+        await actor.start(lambda: open_sqlite(path, filename=DecisionLog.FILENAME, ddl=HEARTBEATS_DDL))
+        return cls(actor)
 
-    def beat(self, session_id: SessionId, event: str, ts_ms: int) -> None:
+    async def beat(self, session_id: SessionId, event: str, ts_ms: int) -> None:
         """Records one dispatch of ``event`` in ``session_id`` at ``ts_ms`` (upsert; ``count += 1``)."""
-        self.conn.execute(
-            "INSERT INTO dispatch_heartbeats (session_id, event, first_ts_ms, last_ts_ms, count) "
-            "VALUES (?, ?, ?, ?, 1) "
-            "ON CONFLICT (session_id, event) DO UPDATE SET last_ts_ms = excluded.last_ts_ms, count = count + 1",
-            (session_id, event, ts_ms, ts_ms),
+        conn = self._actor.conn
+        await self._actor.run(
+            lambda: conn.execute(
+                "INSERT INTO dispatch_heartbeats (session_id, event, first_ts_ms, last_ts_ms, count) "
+                "VALUES (?, ?, ?, ?, 1) "
+                "ON CONFLICT (session_id, event) DO UPDATE SET last_ts_ms = excluded.last_ts_ms, count = count + 1",
+                (session_id, event, ts_ms, ts_ms),
+            )
         )
 
-    def for_session(self, session_id: SessionId) -> tuple[Heartbeat, ...]:
+    async def for_session(self, session_id: SessionId) -> tuple[Heartbeat, ...]:
         """Every ``(session, event)`` beat for ``session_id``, ordered by first dispatch."""
+        conn = self._actor.conn
+        rows = await self._actor.run(
+            lambda: conn.execute(
+                "SELECT * FROM dispatch_heartbeats WHERE session_id = ? ORDER BY first_ts_ms, event", (session_id,)
+            ).fetchall()
+        )
         return tuple(
             Heartbeat(
                 session_id=row["session_id"],
@@ -95,7 +107,15 @@ class HeartbeatLog:
                 last_ts_ms=row["last_ts_ms"],
                 count=row["count"],
             )
-            for row in self.conn.execute(
-                "SELECT * FROM dispatch_heartbeats WHERE session_id = ? ORDER BY first_ts_ms, event", (session_id,)
-            )
+            for row in rows
         )
+
+    async def close(self) -> None:
+        """Closes the underlying connection; a second call is a no-op."""
+        await self._actor.close()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()

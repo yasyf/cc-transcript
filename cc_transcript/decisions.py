@@ -14,7 +14,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from cc_transcript.ledger import SyncLedger
+from cc_transcript.ledger import AsyncLedger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -87,7 +87,7 @@ class Decision:
     detail: Mapping[str, Any] = field(default_factory=dict)
 
 
-class DecisionLog(SyncLedger[Decision]):
+class DecisionLog(AsyncLedger[Decision]):
     """The ``decisions`` ledger at ``~/.cc-transcript/decisions.db``.
 
     Opened in WAL mode with a busy timeout because cc-review's Go daemon
@@ -95,9 +95,10 @@ class DecisionLog(SyncLedger[Decision]):
     auto-dropped. Requires a local disk — WAL does not work over NFS.
 
     Example:
-        >>> log = DecisionLog.open()
-        >>> log.append(decision)
-        >>> log.attribute_tool(session_id, tool_digest=digest, near_ts_ms=ts)
+        >>> log = await DecisionLog.open()
+        >>> async with log:
+        ...     await log.append(decision)
+        ...     await log.attribute_tool(session_id, tool_digest=digest, near_ts_ms=ts)
     """
 
     DDL = DECISIONS_DDL
@@ -134,7 +135,7 @@ class DecisionLog(SyncLedger[Decision]):
             detail=json.loads(row["detail_json"]),
         )
 
-    def attribute_tool(
+    async def attribute_tool(
         self, session_id: SessionId, *, tool_digest: ToolDigest, near_ts_ms: int, window_ms: int = 300_000
     ) -> Decision | None:
         """The nearest decision preceding ``near_ts_ms`` with this digest.
@@ -148,14 +149,17 @@ class DecisionLog(SyncLedger[Decision]):
             The matching decision, or None when no digest-equal row lies in
             ``[near_ts_ms - window_ms, near_ts_ms]``.
         """
-        row = self.conn.execute(
-            "SELECT * FROM decisions WHERE session_id = ? AND tool_digest = ? AND ts_ms BETWEEN ? AND ?"
-            " ORDER BY ts_ms DESC, id DESC LIMIT 1",
-            (session_id, tool_digest, near_ts_ms - window_ms, near_ts_ms),
-        ).fetchone()
+        conn = self._actor.conn
+        row = await self._actor.run(
+            lambda: conn.execute(
+                "SELECT * FROM decisions WHERE session_id = ? AND tool_digest = ? AND ts_ms BETWEEN ? AND ?"
+                " ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                (session_id, tool_digest, near_ts_ms - window_ms, near_ts_ms),
+            ).fetchone()
+        )
         return self.row_to_record(row) if row else None
 
-    def attribute_nearest(
+    async def attribute_nearest(
         self,
         session_id: SessionId,
         *,
@@ -175,10 +179,13 @@ class DecisionLog(SyncLedger[Decision]):
             The nearest matching decision, or None when none lies in
             ``[near_ts_ms - window_ms, near_ts_ms + window_ms]``.
         """
+        conn = self._actor.conn
         kind_clause, kind_params = ("AND kind = ? ", (kind,)) if kind is not None else ("", ())
-        row = self.conn.execute(
-            f"SELECT * FROM decisions WHERE session_id = ? AND event = ? {kind_clause}AND ts_ms BETWEEN ? AND ?"
-            " ORDER BY ABS(ts_ms - ?), id DESC LIMIT 1",
-            (session_id, event, *kind_params, near_ts_ms - window_ms, near_ts_ms + window_ms, near_ts_ms),
-        ).fetchone()
+        row = await self._actor.run(
+            lambda: conn.execute(
+                f"SELECT * FROM decisions WHERE session_id = ? AND event = ? {kind_clause}AND ts_ms BETWEEN ? AND ?"
+                " ORDER BY ABS(ts_ms - ?), id DESC LIMIT 1",
+                (session_id, event, *kind_params, near_ts_ms - window_ms, near_ts_ms + window_ms, near_ts_ms),
+            ).fetchone()
+        )
         return self.row_to_record(row) if row else None

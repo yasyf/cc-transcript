@@ -6,6 +6,11 @@ from scripts.gen_corpus import DEFAULT_OUT, DEFAULT_SEED, generate
 from tests.corpus import corpus_current
 
 
+@pytest.fixture(scope="session")
+def anyio_backend() -> str:
+    return "asyncio"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def bench_corpus() -> None:
     if not corpus_current(DEFAULT_OUT):
