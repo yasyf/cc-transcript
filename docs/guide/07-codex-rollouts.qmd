@@ -1,0 +1,288 @@
+---
+title: Codex rollouts
+description: "Parse OpenAI Codex CLI sessions with the same API — provider-transparent parsing, rollout discovery, subagent joins, per-rollout session info, and the activity probe."
+---
+
+Claude Code is not the only agent writing JSONL to your disk. The OpenAI Codex
+CLI records every session as a *rollout* —
+`rollout-<timestamp>-<session-id>.jsonl` under the date-sharded
+`~/.codex/sessions/YYYY/MM/DD` tree — and cc-transcript parses those too, as a
+second provider beside Claude Code transcripts. The design is a faithful typed
+Rust model of the rollout format plus a documented lowering into the same
+`Entry` event model every other layer consumes. The consequence for you:
+`parse`, `stream`, `Session.from_id`, `SessionActivity`, and
+`session_activity_probe` take a rollout path exactly as they take a Claude
+transcript. A content sniff on the first line picks the provider, and the same
+typed events come out. What the lowered event stream drops — codex identity,
+turn lifecycle, token totals — the `cc_transcript.codex` module adds back.
+
+## A rollout tree to work on
+
+Codex shards rollouts by date, and each rollout opens with a `session_meta`
+line carrying the session's identity. The fixture mirrors that shape: a
+completed main session, a subagent child pointing back at it via
+`parent_thread_id`, a session interrupted mid-tool-call, and a compressed
+`.jsonl.zst` rollout:
+
+```{python}
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(tempfile.mkdtemp()) / "sessions"
+DAY = ROOT / "2026" / "07" / "16"
+DAY.mkdir(parents=True)
+
+MAIN_ID = "019f67f0-2a3b-7c4d-8e5f-000000000303"
+CHILD_ID = "019f6800-3b4c-7d5e-9f60-000000000404"
+OPEN_ID = "019f6820-4c5d-7e6f-9071-00000000050a"
+ZST_ID = "019f6824-8091-72b3-84b5-000000000505"
+TURN = "019f67f0-0aa1-7000-8000-0000000000c1"
+
+def line(ts, kind, payload):
+    return json.dumps({"timestamp": f"2026-07-16T{ts}Z", "type": kind, "payload": payload})
+
+def meta(session_id, parent=None):
+    payload = {"session_id": session_id, "id": session_id, "cwd": "/Users/dev/webapp",
+               "originator": "codex_exec", "cli_version": "0.144.5", "model_provider": "openai"}
+    return line("16:20:00.100", "session_meta",
+                payload | {"parent_thread_id": parent} if parent else payload)
+
+def event(ts, payload):
+    return line(ts, "event_msg", payload)
+
+def response(ts, payload, turn_id):
+    passthrough = {"internal_chat_message_metadata_passthrough": {"turn_id": turn_id}}
+    return line(ts, "response_item", payload | passthrough)
+
+fix_login = [
+    meta(MAIN_ID),
+    event("16:20:00.200", {"type": "task_started", "turn_id": TURN}),
+    line("16:20:00.500", "turn_context",
+         {"turn_id": TURN, "cwd": "/Users/dev/webapp", "model": "gpt-5.2-codex"}),
+    response("16:20:00.600", {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": "why does the login test fail?"}]}, TURN),
+    response("16:20:01.400", {"type": "function_call", "name": "exec", "call_id": "call_0001",
+             "arguments": json.dumps({"command": ["pytest", "tests/test_login.py"]})}, TURN),
+    response("16:20:01.900", {"type": "function_call_output", "call_id": "call_0001",
+                              "output": "1 failed: TypeError"}, TURN),
+    response("16:20:02.100", {"type": "message", "role": "assistant", "content": [
+        {"type": "output_text", "text": "The call site is missing the new password argument."}]}, TURN),
+    event("16:20:02.200", {"type": "token_count", "info": {
+        "total_token_usage": {"input_tokens": 1200, "cached_input_tokens": 800,
+                              "output_tokens": 240, "reasoning_output_tokens": 128,
+                              "total_tokens": 1440},
+        "model_context_window": 272000}}),
+    event("16:22:15.000", {"type": "task_complete", "turn_id": TURN}),
+]
+subagent = [
+    meta(CHILD_ID, parent=MAIN_ID),
+    event("16:21:00.000", {"type": "task_started", "turn_id": "019f6800-0bb2-7000-8000-0000000000d2"}),
+    event("16:21:30.000", {"type": "task_complete", "turn_id": "019f6800-0bb2-7000-8000-0000000000d2"}),
+]
+interrupted = [
+    meta(OPEN_ID),
+    event("16:41:30.000", {"type": "task_started", "turn_id": "019f6820-0aa1-7000-8000-0000000000e1"}),
+    response("16:41:31.000", {"type": "function_call", "name": "exec", "call_id": "call_dangling",
+             "arguments": json.dumps({"command": ["cargo", "build"]})},
+             "019f6820-0aa1-7000-8000-0000000000e1"),
+]
+
+def write(stamp, session_id, lines):
+    path = DAY / f"rollout-2026-07-16T{stamp}-{session_id}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+MAIN = write("16-20-00", MAIN_ID, fix_login)
+CHILD = write("16-22-15", CHILD_ID, subagent)
+OPEN = write("16-41-30", OPEN_ID, interrupted)
+(DAY / f"rollout-2026-07-16T17-00-00-{ZST_ID}.jsonl.zst").write_bytes(b"")
+sorted(path.name for path in DAY.iterdir())
+```
+
+## Parse it like any transcript
+
+`parse` needs no flag, no mode, no codex-specific entry point. Hand it the
+rollout path; the gateway sniffs the content and reports which provider it
+found on `Transcript.provider`:
+
+```{python}
+from cc_transcript import parse
+
+transcript = parse(MAIN)
+transcript.provider
+```
+
+The events are the same typed views a Claude transcript produces. User and
+assistant messages lower to `UserEvent` and `AssistantEvent`, a `function_call`
+becomes a tool-use block, its `function_call_output` the matching tool result,
+and every rollout line that has no Claude analogue — `session_meta`,
+`turn_context`, the `task_started`/`task_complete` brackets, `token_count` —
+surfaces as an `OtherEvent` instead of vanishing. One line, one event, order
+preserved:
+
+```{python}
+[type(event).__name__ for event in transcript.events]
+```
+
+Assistant events carry the model that `turn_context` declared for their turn.
+Their `usage` is None, a codex-specific gap the [limitations](#the-limits-plainly)
+section explains:
+
+```{python}
+from cc_transcript import AssistantEvent
+
+[(event.model, event.usage) for event in transcript.events if isinstance(event, AssistantEvent)]
+```
+
+Because the lowering lands in the standard event model, the lifted layers work
+unchanged. `SessionActivity` materializes codex turns with their prompts, tool
+uses, and results, exactly as it does for Claude sessions:
+
+```{python}
+from cc_transcript import SessionActivity
+
+turn = SessionActivity.from_events(MAIN_ID, transcript.events).turns[-1]
+turn.prompt, [(use.call.name, use.result is not None) for use in turn.tool_uses]
+```
+
+## Find rollouts on disk
+
+`cc_transcript.codex` mirrors the discovery module for the codex tree.
+`discover` walks the date shards under `~/.codex/sessions` (or an explicit
+root) and returns `CodexRollout` records newest first: path, the session id
+from the filename, and whether the file is `.jsonl.zst`-compressed:
+
+```{python}
+from cc_transcript import codex
+
+for rollout in codex.discover(ROOT):
+    print(rollout.session_id, f"compressed={rollout.compressed}")
+```
+
+`find_transcript` resolves one session id to its rollout path. Only
+uncompressed rollouts resolve, so a session that exists only as `.jsonl.zst`
+returns None:
+
+```{python}
+codex.find_transcript(MAIN_ID, ROOT).name, codex.find_transcript(ZST_ID, ROOT)
+```
+
+The top-level `resolve` — and `Session.from_id` on top of it — falls back to
+the codex tree when the Claude projects tree yields nothing, so a codex
+session id resolves through the provider-agnostic entry point too.
+
+## Join subagent rollouts
+
+A codex subagent writes its own rollout file; the join key is the
+`parent_thread_id` its `session_meta` line records. `children_of` runs that
+join across the tree, returning the rollouts spawned by a session:
+
+```{python}
+[child.session_id for child in codex.children_of(MAIN_ID, root=ROOT)]
+```
+
+The key itself sits on `session_info`, so one child rollout links back without
+a tree scan:
+
+```{python}
+codex.session_info(CHILD).parent_thread_id == MAIN_ID
+```
+
+## Session info and the lifecycle
+
+`session_info` folds one rollout into a `CodexSessionInfo`: the identity from
+`session_meta`, the turn lifecycle, any dangling tool calls, the last envelope
+timestamp, and the session's token totals:
+
+```{python}
+info = codex.session_info(MAIN)
+info.lifecycle, info.originator, info.cli_version
+```
+
+```{python}
+info.usage
+```
+
+The `lifecycle` field lands in one of five states, folded from the
+`task_started`/`task_complete`/`turn_aborted` brackets:
+
+| State | Meaning |
+|---|---|
+| `uninitialized` | No content at all — a rollout that never got past its header. |
+| `no_instrumentation` | Content, but no turn brackets — rollouts written before codex shipped lifecycle events. |
+| `open` | The latest turn is still running. |
+| `completed` | The latest turn finished. |
+| `aborted` | The latest turn was interrupted. |
+
+The interrupted fixture stopped mid-`exec`, so its latest turn never closed:
+
+```{python}
+codex.session_info(OPEN).lifecycle, codex.session_info(OPEN).pending
+```
+
+## Is the session still working?
+
+`session_activity_probe` — the disk-only `is_waiting` oracle captain-hook
+consumes — sniffs providers the same way `parse` does. On a codex rollout the
+verdict comes from the turn lifecycle: an unanswered tool call in an open turn
+is `mid_tool`, an aborted or completed turn clears the pending set, and
+`is_waiting` flips only when the dangling call is one of codex's own wait
+tools (`wait`, `wait_agent`):
+
+```{python}
+from cc_transcript.activity_probe import session_activity_probe
+
+probe = session_activity_probe(OPEN)
+probe.is_waiting, probe.mid_tool, probe.pending
+```
+
+## From the shell
+
+The CLI's `list` grows a `--provider` flag: `claude` (the default), `codex`,
+or `all`, which merges both trees into one newest-first listing. `--codex-root`
+overrides `~/.codex/sessions` the way `--root` overrides the projects tree:
+
+```bash
+uvx cc-transcript list --provider codex
+```
+
+```{python}
+cli = Path(sys.executable).parent / "cc-transcript"
+
+def cc(*args):
+    return subprocess.run([str(cli), *args], capture_output=True, text=True).stdout
+
+print(cc("list", "--provider", "codex", "--codex-root", str(ROOT)))
+```
+
+The rest of the [investigation funnel](06-transcript-cli.qmd) works on
+explicit rollout paths, because the sniffing gateway sits under the parser
+every command shares. `show`, `stats`, and `grep` render lowered codex events
+like any others:
+
+```{python}
+print(cc("show", str(MAIN), "--tail", "5"))
+```
+
+## The limits, plainly
+
+- No per-event token usage. Codex `token_count` events record running totals,
+  not per-message deltas, so every lowered assistant event carries `usage=None`
+  and there is nothing to sum. `session_info(path).usage` holds the
+  session-level aggregate instead: the last observed totals, as a `CodexUsage`.
+- Compressed rollouts don't parse yet. `.jsonl.zst` files show up in
+  `discover` with `compressed=True`, but `find_transcript` returns None for a
+  session that exists only compressed, and `parse` can't read one until zstd
+  support lands.
+- Live tailing stays Claude-only. `Watcher` drains the `~/.claude/projects`
+  tree; there is no codex equivalent yet.
+- Model names depend on `turn_context`. An assistant event's `model` comes
+  from its turn's `turn_context` line; a rollout without one reports `unknown`.
+  Old rollouts predate the turn brackets entirely; those report the honest
+  lifecycle `no_instrumentation` instead of guessing.
+
+For every field on `CodexRollout`, `CodexSessionInfo`, `CodexUsage`, and
+`CodexPendingItem`, see the [API reference](../../reference/index.qmd).

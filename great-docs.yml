@@ -242,6 +242,18 @@ reference:
       - subagent_paths
       - TranscriptExpiredError
       - CLAUDE_PROJECTS_DIR
+  - title: Codex sessions
+    desc: The OpenAI Codex CLI provider — rollout discovery, subagent joins, and per-rollout session info over the ~/.codex/sessions tree.
+    contents:
+      - CodexRollout
+      - CodexSessionInfo
+      - CodexUsage
+      - CodexPendingItem
+      - codex.sessions_root
+      - codex.discover
+      - codex.find_transcript
+      - codex.children_of
+      - codex.session_info
   - title: Watch
     desc: Live transcript tailing — byte-offset polling that yields each appended event exactly once.
     contents:

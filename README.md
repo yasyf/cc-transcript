@@ -82,7 +82,7 @@ transcript = parse(discover()[0], drop=NOISE_SPEC)
 print(len(transcript.events), "events after the noise drop")
 ```
 
-`discover()` lists every transcript on disk newest first, `stream` fans a whole corpus across the parse pool, and `resolve` finds one session by UUID. The [getting-started guide](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) builds this out to a composed filter and a sentiment score.
+`discover()` lists every transcript on disk newest first, `stream` fans a whole corpus across the parse pool, and `resolve` finds one session by UUID. `parse` also reads OpenAI Codex CLI rollouts — hand it a path from `~/.codex/sessions` and the same typed events come back. The [getting-started guide](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) builds this out to a composed filter and a sentiment score.
 
 ## More in the docs
 
@@ -91,6 +91,7 @@ print(len(transcript.events), "events after the noise drop")
 - [Sentiment scoring](https://yasyf.github.io/cc-transcript/docs/guide/scoring-sentiment.html) buckets conversations and scores them around any inference engine.
 - [Feedback mining](https://yasyf.github.io/cc-transcript/docs/guide/mining-feedback.html) runs detectors, confidence calibration, and LLM verdict passes over your corpus.
 - [The Rust engine](https://yasyf.github.io/cc-transcript/docs/guide/rust-engine.html) is the implementation — parsing, filtering, scoring, and mining — its correctness pinned by hand-owned literals and golden fixtures.
+- [Codex rollouts](https://yasyf.github.io/cc-transcript/docs/guide/codex-rollouts.html) make the parser two-provider: OpenAI Codex CLI sessions lower into the same typed events, with rollout discovery, subagent joins, and per-session lifecycle and token totals. `list --provider codex` finds them from the shell.
 - [API reference](https://yasyf.github.io/cc-transcript/reference/index.html) documents the complete typed surface, from `TranscriptEvent` to `SessionActivity`.
 
 Read the [docs](https://yasyf.github.io/cc-transcript/) for the full guide. Licensed under [PolyForm Noncommercial 1.0.0](https://github.com/yasyf/cc-transcript/blob/main/LICENSE).
