@@ -24,12 +24,17 @@ pypi: true
 # concentrates rendering into much heavier class pages — a ~220s net regression.)
 markdown_pages: false
 
-# Conservative defaults: a solid navbar and a single accent, no gradient
-# presets or hero starfield. The gradient/starfield extras read as busy and the
-# starfield canvas intercepts homepage clicks; keep them off unless asked.
-# TODO(bootstrap): pick a navbar color and accent that fit the project.
-navbar_color: "#1e293b"
-accent_color: "#3b82f6"
+# Mascot-derived palette: solid navbar, per-mode accent. Gradient presets and
+# hero starfield stay off (busy; the starfield intercepts homepage clicks).
+navbar_color: "#191333"
+accent_color:
+  light: "#337a36"
+  dark: "#7fce6a"
+
+social_cards:
+  enabled: true
+  image: docs/assets/social-preview.jpg
+  twitter_site: "@yasyf"
 
 hero:
   name: cc-transcript
