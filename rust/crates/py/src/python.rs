@@ -15,8 +15,8 @@ use crate::views::print::print_result_view;
 use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
-    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index, ActivityOpts,
-    Hunk, SessionActivity,
+    hunk_overlap, lift_session, lift_session_index, overlap_between, parse_show_hunks,
+    result_index, ActivityOpts, Hunk, SessionActivity,
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
@@ -863,6 +863,15 @@ fn activity_overlap_between(
     overlap_between(&incorrect, &correction)
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+fn activity_parse_show_hunks(diff: &str) -> Vec<(String, String)> {
+    parse_show_hunks(diff)
+        .into_iter()
+        .map(|hunk| (hunk.old, hunk.new))
+        .collect()
+}
+
 fn pairs_list<'py>(
     py: Python<'py>,
     pairs: &[(String, usize)],
@@ -1011,6 +1020,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(activity_lift_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
     m.add_function(wrap_pyfunction!(activity_overlap_between, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_parse_show_hunks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;

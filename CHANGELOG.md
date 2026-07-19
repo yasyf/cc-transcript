@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - The native module exposes `activity_overlap_between`, and
   `evidence.overlap_between` rehydrates its result through the typed Python facade.
+- Native activity exposes `activity_parse_show_hunks`, and
+  `evidence.parse_show_hunks` rehydrates its typed hunk tuples.
 
 ### Changed
 - **BREAKING (next major): activity tool-use edits are plural.** The lowered

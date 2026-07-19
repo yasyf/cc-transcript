@@ -287,14 +287,4 @@ def correction_columns(
 
 
 def parse_show_hunks(diff: str) -> tuple[Hunk, ...]:
-    sections: list[tuple[list[str], list[str]]] = []
-    for line in diff.splitlines():
-        if line.startswith("@@"):
-            sections.append(([], []))
-        elif not sections or line.startswith(("---", "+++")):
-            continue
-        elif line.startswith("-"):
-            sections[-1][0].append(line[1:])
-        elif line.startswith("+"):
-            sections[-1][1].append(line[1:])
-    return tuple(Hunk("\n".join(old), "\n".join(new)) for old, new in sections)
+    return tuple(Hunk(old, new) for old, new in _native.activity_parse_show_hunks(diff))

@@ -449,6 +449,30 @@ pub fn overlap_between(incorrect: &[Hunk], correction: &[Hunk]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+// Parity: evidence.py parse_show_hunks
+pub fn parse_show_hunks(diff: &str) -> Vec<Hunk> {
+    let mut sections: Vec<(Vec<&str>, Vec<&str>)> = Vec::new();
+    // CRLF yields an extra empty slice unlike splitlines(); ignoring unmatched lines preserves parity.
+    for line in diff.split(|c| LINE_BREAKS.contains(&c)) {
+        if line.starts_with("@@") {
+            sections.push((Vec::new(), Vec::new()));
+        } else if sections.is_empty() || line.starts_with("---") || line.starts_with("+++") {
+            continue;
+        } else if let Some(old) = line.strip_prefix('-') {
+            sections.last_mut().unwrap().0.push(old);
+        } else if let Some(new) = line.strip_prefix('+') {
+            sections.last_mut().unwrap().1.push(new);
+        }
+    }
+    sections
+        .into_iter()
+        .map(|(old, new)| Hunk {
+            old: old.join("\n"),
+            new: new.join("\n"),
+        })
+        .collect()
+}
+
 fn lower_edit(call: &ToolCall) -> Vec<(String, Vec<Hunk>)> {
     call.edits()
         .into_iter()
@@ -1494,6 +1518,44 @@ mod tests {
             ),
             1.0
         );
+    }
+
+    #[test]
+    fn parse_show_hunks_ignores_junk_before_first_section() {
+        assert_eq!(
+            parse_show_hunks("junk\n-old before\n+new before\n@@ -1 +1 @@\n-old\n+new\n"),
+            vec![Hunk {
+                old: "old".into(),
+                new: "new".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_show_hunks_skips_body_line_that_looks_like_old_header() {
+        assert_eq!(
+            parse_show_hunks("@@ -1 +1 @@\n---content\n+kept\n"),
+            vec![Hunk {
+                old: "".into(),
+                new: "kept".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_show_hunks_accepts_crlf() {
+        assert_eq!(
+            parse_show_hunks("junk\r\n@@ -1 +1 @@\r\n-old\r\n+new\r\n"),
+            vec![Hunk {
+                old: "old".into(),
+                new: "new".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_show_hunks_empty_input_is_empty() {
+        assert!(parse_show_hunks("").is_empty());
     }
 
     #[test]

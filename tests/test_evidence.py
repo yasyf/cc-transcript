@@ -133,6 +133,16 @@ def test_parse_show_hunks_splits_sections_and_skips_headers() -> None:
     assert parse_show_hunks(diff) == (Hunk(INCORRECT_LINE, FIXED_LINE), Hunk("", "added = True"))
 
 
+def test_parse_show_hunks_ignores_pre_section_junk() -> None:
+    diff = "junk\n-old before\n+new before\n@@ -1 +1 @@\n-old\n+new\n"
+    assert parse_show_hunks(diff) == (Hunk("old", "new"),)
+
+
+def test_parse_show_hunks_accepts_crlf() -> None:
+    diff = "junk\r\n@@ -1 +1 @@\r\n-old\r\n+new\r\n"
+    assert parse_show_hunks(diff) == (Hunk("old", "new"),)
+
+
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
