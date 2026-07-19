@@ -4,6 +4,69 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.5.0] - 2026-07-19
+
+### Changed
+- **The persistence tier is natively async, reversing 14.2's sync ruling.** 14.2
+  called the async signatures v13 leftovers; with the native actor engine they are
+  the design. Each engine owns its SQLite connection on a dedicated actor thread,
+  every binding op returns an `asyncio.Future` resolved from that thread
+  (aiosqlite's mechanism, in Rust), and SQL executes with the GIL released — a
+  slow query no longer blocks the event loop or any Python thread. One idiom
+  family across every surface: `x = await X.open(...)`, `async with x:`, and
+  `async with store.transaction():`.
+- **`mining.FeedbackStore` is fully async.** Every method awaits the engine;
+  `transaction()` is an async context manager keeping the raise-on-conflict
+  contract (`TransactionConflictError`, never lock-and-wait), with the owner
+  check-and-set made atomic across OS threads and a failed or cancelled `BEGIN`
+  guaranteed to release ownership. A failed `open()` closes the engine instead of
+  leaking its actor thread. The paged `unjudged` refresh probes hydration
+  off-loop, serially.
+- **The judge evidence tier is async.** The seven store-touching functions in
+  `judge.similar` await the store, and embedding — the model load and the
+  inference call — runs off-loop via `asyncio.to_thread` on every path.
+  `record_verdict` still embeds before the transaction opens and commits the
+  verdict row and evidence vector atomically.
+- **`CorrectionLog` is async** and gains `close()` plus an async context manager.
+- **`DecisionLog` and `HeartbeatLog` are async** over a stdlib `ConnectionActor`
+  (a daemon worker thread owning the `sqlite3` connection, completions via
+  `call_soon_threadsafe`, closed-loop delivery swallowed); `SyncLedger` is now
+  `AsyncLedger`. The DDL bytes are unchanged — the Go co-writer contract on
+  `decisions.db` is untouched.
+- **`Watcher.tick()` is async** (the native poll runs in a worker thread) and
+  `Watcher.stream(*, interval=1.0)` is a new cancellable async iterator.
+  `evidence.record_harvest` and the extract correction flow await the ledger.
+- Exception fidelity carries through the futures unchanged (bind arity,
+  `IntegrityError` with `sqlite_errorcode`/`sqlite_errorname`, `DataError`,
+  `MemoryError`, the single-statement rule); open-time errors — `CantOpen`,
+  not-a-database, `VerdictSchemaError`, `OSError` with errno — now surface from
+  `await open()`. Parameter-conversion errors (`OverflowError`, unsupported
+  types) still raise synchronously, before any future exists.
+
+### Added
+- **The core actor** (`rust/crates/core/src/actor.rs`): one generic, std-only
+  worker-thread actor shared by both engines, with total delivery — every
+  submitted future resolves, through failed opens, drains, and close.
+- **The asyncio bridge** (`rust/crates/py/src/actor_bridge.rs`): loop capture at
+  call time, worker-side result materialization, cancellation-safe completion
+  (a cancelled future's payload is dropped; the op still runs), and two-phase
+  close that drains queued work first. The corrections binding lost its last
+  `unsafe` block in the rewrite.
+- `RustFeedbackStore.open()`/`close()` and `RustCorrectionLog.open()`/`close()` —
+  construction is cheap and sync; the engine opens on the actor thread and open
+  failures arrive by awaiting.
+- `tests/test_async_engine.py`: drain-on-close, cancellation, cross-loop use,
+  FIFO ordering, GIL availability under a slow query, and the full exception
+  routing table; the suite's async tests run on anyio.
+
+### Removed
+- The synchronous persistence call surface, wholesale: sync store, corrections,
+  decisions, heartbeats, and watch calls; the sync `with` protocol on all of
+  them; `SyncLedger`.
+- The cross-thread affinity check (`ProgrammingError` on cross-thread use) — the
+  actor thread owns the connection, so any thread with a running loop may call;
+  cross-connection locking is still pinned by the parity suite.
+
 ## [14.4.0] - 2026-07-19
 
 ### Added

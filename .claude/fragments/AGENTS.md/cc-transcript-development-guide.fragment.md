@@ -25,7 +25,7 @@ cc-transcript/
 │   ├── query.py        # Session-level queries over lifted activity
 │   ├── context.py      # Durable context windows: refs plus previews that re-hydrate
 │   ├── evidence.py     # Evidence harvest around a feedback anchor
-│   ├── ledger.py       # SyncLedger + the shared sqlite open ritual under decisions.py and heartbeats.py
+│   ├── ledger.py       # ConnectionActor + AsyncLedger: the async sqlite actor tier under decisions.py and heartbeats.py
 │   ├── decisions.py    # The unified decision ledger shared by hook and gate writers
 │   ├── heartbeats.py   # HeartbeatLog — dispatch-heartbeat upserts in decisions.db
 │   ├── corrections.py  # The shared code-correction ledger every consumer reads and writes

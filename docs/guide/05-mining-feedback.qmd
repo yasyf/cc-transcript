@@ -301,8 +301,9 @@ and a derived recall estimate, gated by a frozen golden fixture.
 
 Persistence runs through `FeedbackStore`, which layers a `feedback_events` table
 on the file-mtime ledger so a scan is atomic and re-scanning an unchanged file is
-a no-op. It rides stdlib `sqlite3` — plain calls, no event loop — so it runs
-right here, against a throwaway database:
+a no-op. The store is async: a native engine owns the database on its own worker
+thread, every call is an `await`, and these cells run on Jupyter's event loop —
+so it runs right here, against a throwaway database:
 
 ```{python}
 import tempfile
@@ -310,9 +311,9 @@ from pathlib import Path
 
 from cc_transcript.mining import FeedbackStore
 
-with FeedbackStore.open(Path(tempfile.mkdtemp()) / "feedback.db") as store:
-    inserted = store.record_file_scan("sess-1.jsonl", 1.0, [candidate])
-    stats = store.stats()
+async with await FeedbackStore.open(Path(tempfile.mkdtemp()) / "feedback.db") as store:
+    inserted = await store.record_file_scan("sess-1.jsonl", 1.0, [candidate])
+    stats = await store.stats()
 (inserted, stats)
 # -> (1, Stats(total=1, files=1, by_source={'interrupt_rejection': 1}))
 ```
