@@ -1131,6 +1131,11 @@ class OtherCall(ToolCallBase):
     __match_args__: typing.ClassVar[tuple[str, ...]]
     @property
     def name(self) -> builtins.str: ...
+    @property
+    def error(self) -> typing.Optional[builtins.str]:
+        r"""
+        The strict-parse failure this call degraded from; None when the payload was well-formed but the tool has no typed model.
+        """
 
 @typing.final
 class OtherEvent:

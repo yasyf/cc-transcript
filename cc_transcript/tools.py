@@ -13,7 +13,7 @@ parsing a command pulls in no Python module or bash grammar on the hook hot path
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _native
@@ -126,10 +126,14 @@ class FallbackCall:
     Attributes:
         name: The tool name exactly as invoked.
         raw: The original input mapping, verbatim.
+        error: The JSON-serialization failure this call degraded from. A
+            :class:`FallbackCall` the parse functions build always carries a
+            non-None error; excluded from equality and repr.
     """
 
     name: str
     raw: Mapping[str, Any]
+    error: str | None = field(default=None, compare=False, repr=False)
 
     @property
     def digest(self) -> ToolDigest:
@@ -148,10 +152,14 @@ class FallbackResult:
     Attributes:
         name: The tool name exactly as invoked.
         raw: The original ``toolUseResult`` payload, verbatim.
+        error: The JSON-serialization failure this result degraded from. A
+            :class:`FallbackResult` the parse functions build always carries a
+            non-None error; excluded from equality and repr.
     """
 
     name: str
     raw: Mapping[str, Any] | str | None
+    error: str | None = field(default=None, compare=False, repr=False)
 
 
 def parse_tool_call(
@@ -169,8 +177,12 @@ def parse_tool_call(
     :class:`OtherCall` — with a still-correct digest, since the raw mapping is
     the substrate — instead of crashing every hook fire or session lift. A
     non-mapping ``input`` raises under strict mode; under ``on_error='other'``
-    it degrades to an :class:`OtherCall` over an empty mapping, whose digest is
-    the empty-input digest.
+    it degrades to an :class:`OtherCall` over an empty mapping, carrying the
+    non-mapping strict-failure message, whose digest is the empty-input digest.
+    On a degraded :class:`OtherCall`, ``error`` is None if and only if the input
+    parsed as a mapping but no typed model exists for the tool; any malformed
+    payload — a missing, null, or wrong-typed field, or a non-mapping input —
+    carries the strict failure message instead.
 
     v14 contract: ``input`` is decoded-JSON values. It is serialized to a JSON
     document for the native parser, so tuples normalize to lists and non-string
@@ -187,15 +199,18 @@ def parse_tool_call(
     if not isinstance(input, dict):
         if on_error == "raise":
             raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
-        return _native.toolcall_parse_view(name, "{}", "other")
+        try:
+            return _native.toolcall_parse_view(name, json.dumps(input), "other")
+        except (TypeError, ValueError):
+            return _native.toolcall_parse_view(name, "null", "other")
     # Spans serialization and the native parse: json.dumps emits text (NaN, Infinity,
     # unpaired surrogates) the native JSON parser then rejects, so 'other' catches both.
     try:
         return _native.toolcall_parse_view(name, json.dumps(input), on_error)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
         if on_error == "raise":
             raise
-        return FallbackCall(name=name, raw=input)
+        return FallbackCall(name=name, raw=input, error=str(exc))
 
 
 def parse_tool_result(
@@ -217,7 +232,7 @@ def parse_tool_result(
     """
     try:
         return _native.toolresult_parse_view(name, json.dumps(payload))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
         if on_error == "raise":
             raise
-        return FallbackResult(name=name, raw=payload)
+        return FallbackResult(name=name, raw=payload, error=str(exc))

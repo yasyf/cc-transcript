@@ -151,6 +151,24 @@ pub enum ToolInputError {
     Malformed(String),
 }
 
+impl std::fmt::Display for ToolInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolInputError::NonMapping(py_type) => {
+                write!(f, "input must be a mapping, got {py_type}")
+            }
+            ToolInputError::MissingKey(key) => write!(f, "input missing or malformed: '{key}'"),
+            ToolInputError::WrongType { key, py_type } => {
+                write!(
+                    f,
+                    "input missing or malformed: {key} must be a str, got {py_type}"
+                )
+            }
+            ToolInputError::Malformed(detail) => write!(f, "input missing or malformed: {detail}"),
+        }
+    }
+}
+
 // Parity: tools.py required_str over a single key.
 fn req_str(input: &Value, key: &str) -> Result<String, ToolInputError> {
     match field(input, key) {
@@ -369,6 +387,7 @@ pub struct ExitPlanModeCall {
 pub struct OtherCall {
     pub name: String,
     pub raw: Value,
+    pub error: Option<String>,
 }
 
 /// The typed tool-call hierarchy (tools.py ToolCall union).
@@ -643,10 +662,11 @@ fn exit_plan_mode_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInpu
     }))
 }
 
-fn other_call(name: &str, raw: Value) -> ToolCall {
+fn other_call(name: &str, raw: Value, error: Option<String>) -> ToolCall {
     ToolCall::Other(OtherCall {
         name: name.to_string(),
         raw,
+        error,
     })
 }
 
@@ -670,7 +690,7 @@ pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, Too
         "TaskCreate" => task_create_from_raw(name, input),
         "TaskUpdate" => task_update_from_raw(name, input),
         "ExitPlanMode" => exit_plan_mode_from_raw(name, input),
-        _ => Ok(other_call(name, input.clone())),
+        _ => Ok(other_call(name, input.clone(), None)),
     }
 }
 
@@ -678,9 +698,14 @@ pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, Too
 /// OtherCall over an empty mapping; a malformed known tool to OtherCall over the input.
 pub fn parse_tool_call(name: &str, input: &Value) -> ToolCall {
     if input.as_object().is_none() {
-        return other_call(name, empty_object());
+        return other_call(
+            name,
+            empty_object(),
+            Some(ToolInputError::NonMapping(py_type_name(input)).to_string()),
+        );
     }
-    parse_tool_call_strict(name, input).unwrap_or_else(|_| other_call(name, input.clone()))
+    parse_tool_call_strict(name, input)
+        .unwrap_or_else(|err| other_call(name, input.clone(), Some(err.to_string())))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

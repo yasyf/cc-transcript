@@ -257,6 +257,72 @@ def test_on_error_other_degrades_with_correct_digest() -> None:
     assert call.digest == tool_digest("Edit", raw)
 
 
+def test_unknown_tool_degrades_with_no_error() -> None:
+    call = parse_tool_call("mcp__github__search", {"q": "x"})
+    assert isinstance(call, OtherCall)
+    assert call.error is None
+
+
+@pytest.mark.parametrize(
+    ("name", "raw", "field_name"),
+    [
+        pytest.param("Edit", {"file_path": "a.py", "old_string": "x"}, "new_string", id="edit-missing-new-string"),
+        pytest.param("Bash", {"description": "hi"}, "command", id="bash-missing-command"),
+    ],
+)
+def test_malformed_known_tool_records_strict_parse_failure(name: str, raw: dict[str, object], field_name: str) -> None:
+    call = parse_tool_call(name, raw, on_error="other")
+    assert isinstance(call, OtherCall)
+    assert call.error is not None and field_name in call.error
+
+
+def test_non_mapping_known_tool_degrade_records_error() -> None:
+    call = parse_tool_call("Bash", ["not", "a", "mapping"], on_error="other")  # type: ignore[arg-type]
+    assert isinstance(call, OtherCall)
+    assert call.error == "input must be a mapping, got list"
+
+
+def test_non_mapping_unknown_tool_degrade_records_error() -> None:
+    call = parse_tool_call("mcp__github__search", ["not", "a", "mapping"], on_error="other")  # type: ignore[arg-type]
+    assert isinstance(call, OtherCall)
+    assert call.error == "input must be a mapping, got list"
+
+
+def test_non_mapping_unserializable_degrade_records_error() -> None:
+    call = parse_tool_call("Bash", [float("nan")], on_error="other")  # type: ignore[arg-type]
+    assert isinstance(call, OtherCall)
+    assert call.error is not None
+
+
+def test_fallback_call_records_serialization_failure() -> None:
+    call = parse_tool_call("X", {"t": datetime(2026, 1, 1, tzinfo=UTC)}, on_error="other")
+    assert isinstance(call, FallbackCall)
+    assert call.error is not None
+
+
+def test_fallback_result_records_serialization_failure() -> None:
+    result = parse_tool_result("Bash", {"when": datetime(2026, 1, 1, tzinfo=UTC)}, on_error="other")
+    assert isinstance(result, FallbackResult)
+    assert result.error is not None
+
+
+def test_other_call_error_excluded_from_repr_and_equality() -> None:
+    missing = parse_tool_call("Edit", {"file_path": "a.py", "old_string": "x"}, on_error="other")
+    wrong_type = parse_tool_call("Edit", {"file_path": 42}, on_error="other")
+    assert isinstance(missing, OtherCall) and isinstance(wrong_type, OtherCall)
+    assert missing.error != wrong_type.error
+    assert "error" not in repr(missing)
+    assert repr(missing) == repr(wrong_type)
+    assert missing == wrong_type
+
+
+def test_fallback_call_error_excluded_from_repr_and_equality() -> None:
+    fallback = FallbackCall(name="X", raw={"k": "v"}, error="boom")
+    assert "error" not in repr(fallback) and "boom" not in repr(fallback)
+    assert fallback == FallbackCall(name="X", raw={"k": "v"}, error="different")
+    assert fallback == FallbackCall(name="X", raw={"k": "v"})
+
+
 def test_digest_matches_raw_substrate_for_typed_calls() -> None:
     raw = {"file_path": "a.py", "old_string": "x", "new_string": "y", "extra_field": 1}
     call = parse_tool_call("Edit", raw)

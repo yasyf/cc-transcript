@@ -771,6 +771,12 @@ impl OtherCallView {
     fn name(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.c().name.clone())
     }
+
+    /// The strict-parse failure this call degraded from; None when the payload was well-formed but the tool has no typed model.
+    #[getter]
+    fn error(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.c().error.clone())
+    }
 }
 
 view_dunders!(OtherCallView, "OtherCall", fields = [name], match_args = []);
