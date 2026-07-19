@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"session":"9e69c84d-e73c-4cde-9c71-b2760463906c","ops":[{"kind":"remove_criterion","id":"a4104f4cb5e129abf42661c630a4468f"}]}
+{"v":1,"lamport":6,"session":"9e69c84d-e73c-4cde-9c71-b2760463906c","ops":[{"kind":"add_criterion","id":"c679c05a9ed41fff4f3da6d0dd9336db","text":"cc-steer: PyPI pin \u003e=14.5,\u003c15; store.py on StoreSchema composition over the ASYNC API, aiosqlite dropped, raw .store.conn access gone; ty + pytest green; CI green on main","script":""}]}
