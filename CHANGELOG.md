@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `evidence.overlap_between` rehydrates its result through the typed Python facade.
 - Native activity exposes `activity_parse_show_hunks`, and
   `evidence.parse_show_hunks` rehydrates its typed hunk tuples.
+- **A deterministic seeded RNG in the core** (`rng.rs`). A splitmix64 PRNG seeded
+  from the SHA-256 of a string key, a partial Fisher-Yates `sample_indexes` draw
+  (uniform, without replacement, in draw order), and `round_half_even` matching
+  Python's `round()`. Feature-free and dependency-free beyond the core's existing
+  `sha2`, so the python-free Swift build path stays green.
 
 ### Changed
 - **BREAKING (next major): activity tool-use edits are plural.** The lowered

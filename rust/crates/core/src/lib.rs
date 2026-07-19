@@ -25,6 +25,7 @@ pub mod protocol;
 pub mod pystr;
 pub mod query;
 pub mod render;
+pub mod rng;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod toolcall;
