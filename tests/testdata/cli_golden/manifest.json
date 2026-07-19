@@ -76,6 +76,20 @@
     "stderr_bytes": 0,
     "stdout_bytes": 0
   },
+  "grep_codex": {
+    "argv": [
+      "grep",
+      "python3",
+      "tests/testdata/codex/rollout-2026-07-16T16-20-00-019f67f0-2a3b-7c4d-8e5f-000000000303.jsonl",
+      "--width",
+      "100",
+      "--max-matches",
+      "10"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 158
+  },
   "grep_match": {
     "argv": [
       "grep",
@@ -111,6 +125,105 @@
     "exit_code": 0,
     "stderr_bytes": 0,
     "stdout_bytes": 2360
+  },
+  "list_all": {
+    "argv": [
+      "list",
+      "--provider",
+      "all",
+      "--root",
+      ".fixtures/corpus",
+      "--codex-root",
+      ".fixtures/codex-sessions",
+      "--limit",
+      "1"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 259
+  },
+  "list_all_invalid_claude_root": {
+    "argv": [
+      "list",
+      "--provider",
+      "all",
+      "--root",
+      "tests/testdata/digest_fixtures.json",
+      "--codex-root",
+      ".fixtures/codex-sessions"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 173,
+    "stdout_bytes": 0
+  },
+  "list_all_invalid_codex_root": {
+    "argv": [
+      "list",
+      "--provider",
+      "all",
+      "--root",
+      ".fixtures/corpus",
+      "--codex-root",
+      "tests/testdata/digest_fixtures.json"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 179,
+    "stdout_bytes": 0
+  },
+  "list_all_json": {
+    "argv": [
+      "list",
+      "--provider",
+      "all",
+      "--root",
+      ".fixtures/corpus",
+      "--codex-root",
+      ".fixtures/codex-sessions",
+      "--limit",
+      "1",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 225
+  },
+  "list_codex": {
+    "argv": [
+      "list",
+      "--provider",
+      "codex",
+      "--codex-root",
+      ".fixtures/codex-sessions"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 402
+  },
+  "list_codex_contains": {
+    "argv": [
+      "list",
+      "--provider",
+      "codex",
+      "--codex-root",
+      ".fixtures/codex-sessions",
+      "--contains",
+      "000000000303"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 215
+  },
+  "list_codex_invalid_root": {
+    "argv": [
+      "list",
+      "--provider",
+      "codex",
+      "--codex-root",
+      "tests/testdata/digest_fixtures.json"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 179,
+    "stdout_bytes": 0
   },
   "list_json": {
     "argv": [
@@ -200,6 +313,17 @@
     "stderr_bytes": 0,
     "stdout_bytes": 991
   },
+  "show_codex": {
+    "argv": [
+      "show",
+      "tests/testdata/codex/rollout-2026-07-16T16-20-00-019f67f0-2a3b-7c4d-8e5f-000000000303.jsonl",
+      "--width",
+      "100"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 656
+  },
   "show_head5": {
     "argv": [
       "show",
@@ -249,6 +373,15 @@
     "exit_code": 0,
     "stderr_bytes": 0,
     "stdout_bytes": 463
+  },
+  "stats_codex": {
+    "argv": [
+      "stats",
+      "tests/testdata/codex/rollout-2026-07-16T16-20-00-019f67f0-2a3b-7c4d-8e5f-000000000303.jsonl"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 294
   },
   "stats_json": {
     "argv": [

@@ -1,0 +1,4 @@
+Usage: cc-transcript list [OPTIONS]
+Try 'cc-transcript list --help' for help.
+
+Error: Invalid value for '--root': Directory 'tests/testdata/digest_fixtures.json' is a file.

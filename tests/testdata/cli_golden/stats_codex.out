@@ -1,0 +1,13 @@
+files        1
+events       15
+kinds        other 10 · user 3 · assistant 2
+models       gpt-5.6-codex 2
+tools        exec 1
+text         89B
+thinking     0B
+tool io      40B
+sessions     1
+span         2026-07-16 16:20:00 → 2026-07-16 16:20:01
+interrupts   0
+tool errors  0
+sidechain    0

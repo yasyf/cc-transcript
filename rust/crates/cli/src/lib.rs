@@ -42,6 +42,7 @@ fn pkg_version() -> String {
 
 const KIND_CHOICES: [&str; 6] = ["user", "assistant", "system", "mode", "other", "attachment"];
 const WHERE_CHOICES: [&str; 3] = ["text", "thinking", "tools"];
+const LIST_PROVIDER_CHOICES: [&str; 3] = ["claude", "codex", "all"];
 
 #[derive(Parser)]
 #[command(
@@ -102,6 +103,18 @@ pub enum Cmd {
     List {
         #[command(flatten)]
         discovery: DiscoveryOpts,
+        #[arg(
+            long,
+            value_parser = LIST_PROVIDER_CHOICES,
+            default_value = "claude",
+            help = "Transcript provider to list"
+        )]
+        provider: String,
+        #[arg(
+            long,
+            help = "Codex sessions directory to search [default: ~/.codex/sessions]"
+        )]
+        codex_root: Option<PathBuf>,
         /// Emit one JSON object per transcript.
         #[arg(long)]
         json: bool,
@@ -390,7 +403,12 @@ pub fn run(argv: Vec<String>) -> i32 {
 
 fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
     match cmd {
-        Cmd::List { discovery, json } => commands::list::run(&discovery, json),
+        Cmd::List {
+            discovery,
+            provider,
+            codex_root,
+            json,
+        } => commands::list::run(&discovery, &provider, codex_root.as_deref(), json),
         Cmd::Show {
             path,
             head,
