@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.3.0] - 2026-07-19
+
+### Added
+- **A public synthetic-transcript module.** `cc_transcript.synthetic` promotes the
+  test kit's JSONL-synthesis builders (`user_line`, `assistant_line`, `tool_use`,
+  `tool_result`, `meta_fields`, and the block builders) to the public API, plus
+  `synthetic_user_event`/`synthetic_assistant_event`, which mint real native views
+  through the parser — the supported way to materialize an event from hand-built
+  content under the events-in contract. `parser.parse_events(*lines)` joins line
+  mappings and parses them in one call; `tests/testkit.py` is now a re-export shim.
+- **`error` on degraded tool parses.** `OtherCall.error`, `FallbackCall.error`, and
+  `FallbackResult.error` carry the strict-parse failure the value degraded from;
+  `error is None` means the payload parsed as a mapping but the tool has no typed
+  model. The field sits outside `__eq__`/`__repr__`, so pinned reprs and goldens
+  are unchanged, and the lenient non-mapping path now reports the true
+  must-be-a-mapping failure instead of parsing an empty substitute.
+- **The parse-compositionality contract.** `parse_events_from_bytes` documents that
+  parses split on line boundaries compose exactly —
+  `parse(prefix) + parse(suffix) == parse(whole)` — and a line-boundary sweep in
+  `tests/test_parser.py` pins it across every modeled event and block shape.
+  Incremental tail parsers may rely on it.
+
 ## [14.2.0] - 2026-07-19
 
 ### Added
