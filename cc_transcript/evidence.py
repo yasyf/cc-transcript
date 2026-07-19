@@ -171,16 +171,21 @@ def overlap_between(incorrect: tuple[Hunk, ...], correction: tuple[Hunk, ...]) -
 def harvest_one(activity: SessionActivity, edit: Edit, *, lookahead_turns: int, repo: Path | None) -> CandidatePair:
     if matches := match_corrections(activity, edit, lookahead_turns=lookahead_turns):
         return matches[0]
-    if repo is not None and (fixes := git_corrections(repo, pickaxe_hunk(edit), path=edit.file_path, since=edit.ts)):
+    if (
+        repo is not None
+        and (hunk := pickaxe_hunk(edit)) is not None
+        and (fixes := git_corrections(repo, hunk, path=edit.file_path, since=edit.ts))
+    ):
         overlap, fix = max(((overlap_between(edit.hunks, fix.hunks), fix) for fix in fixes), key=lambda s: s[0])
         return CandidatePair(incorrect=edit, correction=fix, overlap=overlap)
     return CandidatePair(incorrect=edit, correction=None, overlap=0.0)
 
 
-def pickaxe_hunk(edit: Edit) -> Hunk:
+def pickaxe_hunk(edit: Edit) -> Hunk | None:
     return max(
         edit.hunks,
         key=lambda hunk: max((len(line.strip()) for line in hunk.new.splitlines() if line.strip()), default=0),
+        default=None,
     )
 
 

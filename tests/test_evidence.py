@@ -242,6 +242,26 @@ def test_harvest_pairs_without_repo_leaves_correction_none(tmp_path: Path) -> No
     assert pair == CandidatePair(incorrect=edit_of(act, "t1"), correction=None, overlap=0.0)
 
 
+def test_harvest_pairs_skips_git_pickaxe_for_delete_only_patch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    delete = {
+        "type": "tool_use",
+        "id": "t1",
+        "name": "apply_patch",
+        "input": "*** Begin Patch\n*** Delete File: /a.py\n*** End Patch\n",
+    }
+    act = activity(
+        user("u0", "delete it"),
+        assistant("a0", blocks=(delete,), secs=1),
+        user("u1", "anchor", secs=2),
+    )
+    monkeypatch.setattr(evidence, "git_corrections", lambda *args, **kwargs: pytest.fail("git pickaxe ran"))
+    (pair,) = harvest_pairs(act, ref("u1"), repo=tmp_path)
+    assert pair == CandidatePair(incorrect=edit_of(act, "t1"), correction=None, overlap=0.0)
+    assert pair.incorrect.hunks == ()
+
+
 def session_with_correction() -> SessionActivity:
     return activity(
         user("u0", "one"),

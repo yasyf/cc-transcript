@@ -16,28 +16,63 @@ use crate::parse::parse_questions;
 use crate::types::Question;
 use crate::value::{field, field_str, normalized_owned};
 
-// Parity: tools.py TOOL_ALIASES (name -> harness display alias).
-fn tool_alias(name: &str) -> Option<&'static str> {
+// Parity: tools.py TOOL_ALIASES (canonical -> the harness display aliases). Bash also
+// carries `exec_command`, codex's shell-call spelling, so a spec naming Bash matches a
+// lowered codex shell call. Multi-valued so one canonical tool expands to several names.
+fn tool_aliases(name: &str) -> &'static [&'static str] {
     match name {
-        "Bash" => Some("Execute"),
-        "Write" => Some("Create"),
-        "Agent" => Some("Task"),
-        "WebFetch" => Some("FetchUrl"),
-        "ExitPlanMode" => Some("ExitSpecMode"),
-        _ => None,
+        "Bash" => &["Execute", "exec_command"],
+        "Write" => &["Create"],
+        "Agent" => &["Task"],
+        "WebFetch" => &["FetchUrl"],
+        "ExitPlanMode" => &["ExitSpecMode"],
+        _ => &[],
     }
 }
 
-// Parity: tools.py TOOL_ALIASES_REVERSE (alias -> canonical name).
+// Parity: tools.py TOOL_ALIASES_REVERSE (alias -> canonical name); `exec_command`
+// reverse-resolves to Bash so a lowered codex shell call drives the Bash dispatch arm.
 fn tool_alias_reverse(name: &str) -> Option<&'static str> {
     match name {
-        "Execute" => Some("Bash"),
+        "Execute" | "exec_command" => Some("Bash"),
         "Create" => Some("Write"),
         "Task" => Some("Agent"),
         "FetchUrl" => Some("WebFetch"),
         "ExitSpecMode" => Some("ExitPlanMode"),
         _ => None,
     }
+}
+
+// The codex tools whose ToolUse input is a verbatim string (JSON args, free-form code,
+// or a patch envelope) rather than a decoded object mapping; their arms read it directly.
+const CODEX_VERBATIM_TOOLS: [&str; 5] = [
+    "exec_command",
+    "exec",
+    "apply_patch",
+    "update_plan",
+    "write_stdin",
+];
+
+// The built-in tools whose parse arms require an object input; a non-object raises
+// NonMapping. Mirrors the canonical arms of `parse_tool_call_strict`.
+fn requires_object_input(canonical: &str) -> bool {
+    matches!(
+        canonical,
+        "Bash"
+            | "Edit"
+            | "MultiEdit"
+            | "Write"
+            | "Read"
+            | "NotebookEdit"
+            | "Grep"
+            | "Glob"
+            | "Agent"
+            | "Workflow"
+            | "Skill"
+            | "TaskCreate"
+            | "TaskUpdate"
+            | "ExitPlanMode"
+    )
 }
 
 /// The payload key names an MCP tool's span-edit lowering reads — never values.
@@ -103,10 +138,6 @@ const READ_VERBS: [&str; 10] = [
 
 fn json_false() -> Value {
     sonic_rs::from_str("false").expect("literal false parses")
-}
-
-fn empty_object() -> Value {
-    sonic_rs::from_str("{}").expect("literal empty object parses")
 }
 
 // Parity: tools.py `raw.get(key)` — absent/null -> None, else the value verbatim.
@@ -431,6 +462,76 @@ pub struct ExitPlanModeCall {
     pub plan: String,
 }
 
+/// A codex code-mode `exec` call: `source` is its free-form program, kept verbatim
+/// and never JSON-decoded; `raw` is the original string input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeModeCall {
+    pub name: String,
+    pub raw: Value,
+    pub source: String,
+}
+
+/// How one file of an apply_patch envelope is edited (tools.py PatchEdit.kind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchEditKind {
+    Add,
+    Update,
+    Delete,
+}
+
+impl PatchEditKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PatchEditKind::Add => "add",
+            PatchEditKind::Update => "update",
+            PatchEditKind::Delete => "delete",
+        }
+    }
+}
+
+/// One file's edit within a codex apply_patch envelope. `hunks` is empty for a
+/// deletion and holds one addition hunk for an added file; `move_path` is the
+/// rename target when the file is moved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatchEdit {
+    pub file_path: String,
+    pub kind: PatchEditKind,
+    pub move_path: Option<String>,
+    pub hunks: Vec<Hunk>,
+}
+
+/// A codex apply_patch call: one `PatchEdit` per file in the envelope. A malformed
+/// envelope yields no edits (never an error); `raw` is the original envelope string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplyPatchCall {
+    pub name: String,
+    pub raw: Value,
+    pub edits: Vec<PatchEdit>,
+}
+
+/// A codex update_plan call: `plan` is the plan-step array and `explanation` the
+/// optional narration, decoded from the JSON-string arguments; `raw` is that string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdatePlanCall {
+    pub name: String,
+    pub raw: Value,
+    pub plan: Option<Value>,
+    pub explanation: Option<String>,
+}
+
+/// A codex write_stdin call: `chars` is the text written to the target session's
+/// stdin and `session_id` its identifier, decoded from the JSON-string arguments;
+/// `raw` is that string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteStdinCall {
+    pub name: String,
+    pub raw: Value,
+    pub chars: Option<Value>,
+    pub session_id: i64,
+    pub yield_time_ms: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+}
+
 /// An in-place file edit addressed by an opaque locator — a registered MCP tool
 /// whose spec carries a span-edit lowering. The payload carries no pre-image;
 /// registrations are process-local (the standalone Rust CLI never sees them — the
@@ -467,6 +568,10 @@ pub enum ToolCall {
     TaskCreate(TaskCreateCall),
     TaskUpdate(TaskUpdateCall),
     ExitPlanMode(ExitPlanModeCall),
+    CodeMode(CodeModeCall),
+    ApplyPatch(ApplyPatchCall),
+    UpdatePlan(UpdatePlanCall),
+    WriteStdin(WriteStdinCall),
     SpanEdit(SpanEditCall),
     Other(OtherCall),
 }
@@ -489,6 +594,10 @@ impl ToolCall {
             ToolCall::TaskCreate(_) => "TaskCreateCall",
             ToolCall::TaskUpdate(_) => "TaskUpdateCall",
             ToolCall::ExitPlanMode(_) => "ExitPlanModeCall",
+            ToolCall::CodeMode(_) => "CodeModeCall",
+            ToolCall::ApplyPatch(_) => "ApplyPatchCall",
+            ToolCall::UpdatePlan(_) => "UpdatePlanCall",
+            ToolCall::WriteStdin(_) => "WriteStdinCall",
             ToolCall::SpanEdit(_) => "SpanEditCall",
             ToolCall::Other(_) => "OtherCall",
         }
@@ -511,6 +620,10 @@ impl ToolCall {
             ToolCall::TaskCreate(c) => &c.name,
             ToolCall::TaskUpdate(c) => &c.name,
             ToolCall::ExitPlanMode(c) => &c.name,
+            ToolCall::CodeMode(c) => &c.name,
+            ToolCall::ApplyPatch(c) => &c.name,
+            ToolCall::UpdatePlan(c) => &c.name,
+            ToolCall::WriteStdin(c) => &c.name,
             ToolCall::SpanEdit(c) => &c.name,
             ToolCall::Other(c) => &c.name,
         }
@@ -533,6 +646,10 @@ impl ToolCall {
             ToolCall::TaskCreate(c) => &c.raw,
             ToolCall::TaskUpdate(c) => &c.raw,
             ToolCall::ExitPlanMode(c) => &c.raw,
+            ToolCall::CodeMode(c) => &c.raw,
+            ToolCall::ApplyPatch(c) => &c.raw,
+            ToolCall::UpdatePlan(c) => &c.raw,
+            ToolCall::WriteStdin(c) => &c.raw,
             ToolCall::SpanEdit(c) => &c.raw,
             ToolCall::Other(c) => &c.raw,
         }
@@ -577,17 +694,304 @@ impl ToolCall {
             _ => None,
         }
     }
+
+    /// Parity: tools.py file_paths_of. Every file a call targets: one entry per
+    /// patched file for apply_patch, else the singular projection as a 0/1-element vec.
+    pub fn file_paths(&self) -> Vec<&str> {
+        match self {
+            ToolCall::ApplyPatch(c) => c.edits.iter().map(|e| e.file_path.as_str()).collect(),
+            _ => self.file_path().into_iter().collect(),
+        }
+    }
+
+    /// Parity: tools.py edits_of. Every `(file_path, hunks)` a call lowers to: one
+    /// entry per patched file for apply_patch (empty hunks for a deletion), else the
+    /// singular `(file_path, hunks)` when both are non-empty, as a 0/1-element vec.
+    pub fn edits(&self) -> Vec<(&str, Vec<Hunk>)> {
+        match self {
+            ToolCall::ApplyPatch(c) => c
+                .edits
+                .iter()
+                .map(|e| (e.file_path.as_str(), e.hunks.clone()))
+                .collect(),
+            _ => match (self.file_path(), self.hunks()) {
+                (Some(path), hunks) if !hunks.is_empty() => vec![(path, hunks)],
+                _ => Vec::new(),
+            },
+        }
+    }
 }
 
 fn bash_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
+    // A string input is codex exec_command `{"cmd": ...}`: decode and read `cmd` (workdir
+    // et al. stay only in `raw`). An object is a native Bash reading `command`.
+    let command = match raw.as_str() {
+        Some(text) => req_str(
+            &sonic_rs::from_str(text)
+                .map_err(|_| ToolInputError::Malformed("exec_command arguments".to_string()))?,
+            "cmd",
+        )?,
+        None if raw.as_object().is_some() => req_str(raw, "command")?,
+        None => return Err(ToolInputError::NonMapping(py_type_name(raw))),
+    };
     Ok(ToolCall::Bash(BashCall {
         name: name.to_string(),
         raw: raw.clone(),
-        command: req_str(raw, "command")?,
+        command,
         timeout: opt(raw, "timeout"),
         description: opt(raw, "description"),
         run_in_background: opt(raw, "run_in_background"),
     }))
+}
+
+// codex `exec` code-mode input is free-form program text, kept verbatim (never decoded).
+fn code_mode_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
+    Ok(ToolCall::CodeMode(CodeModeCall {
+        name: name.to_string(),
+        raw: raw.clone(),
+        source: raw
+            .as_str()
+            .ok_or_else(|| ToolInputError::NonMapping(py_type_name(raw)))?
+            .to_string(),
+    }))
+}
+
+// codex apply_patch input is a patch-envelope string; a malformed envelope yields no edits.
+fn apply_patch_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
+    let text = raw
+        .as_str()
+        .ok_or_else(|| ToolInputError::NonMapping(py_type_name(raw)))?;
+    Ok(ToolCall::ApplyPatch(ApplyPatchCall {
+        name: name.to_string(),
+        raw: raw.clone(),
+        edits: parse_patch_envelope(text).unwrap_or_default(),
+    }))
+}
+
+// codex update_plan carries JSON-string arguments `{"plan": [...], "explanation": ...}`.
+fn update_plan_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
+    let decoded = decode_string_arguments(raw)?;
+    Ok(ToolCall::UpdatePlan(UpdatePlanCall {
+        name: name.to_string(),
+        raw: raw.clone(),
+        plan: opt_list(&decoded, "plan")?,
+        explanation: opt_str(&decoded, "explanation")?,
+    }))
+}
+
+// codex write_stdin carries JSON-string arguments `{"chars": ..., "session_id": ...}`.
+fn write_stdin_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
+    let decoded = decode_string_arguments(raw)?;
+    Ok(ToolCall::WriteStdin(WriteStdinCall {
+        name: name.to_string(),
+        raw: raw.clone(),
+        chars: opt(&decoded, "chars"),
+        session_id: req_i64(&decoded, "session_id")?,
+        yield_time_ms: opt_i64(&decoded, "yield_time_ms")?,
+        max_output_tokens: opt_i64(&decoded, "max_output_tokens")?,
+    }))
+}
+
+// Decode a codex tool's JSON-string arguments into their object form.
+fn decode_string_arguments(raw: &Value) -> Result<Value, ToolInputError> {
+    let text = raw
+        .as_str()
+        .ok_or_else(|| ToolInputError::NonMapping(py_type_name(raw)))?;
+    let decoded: Value = sonic_rs::from_str(text)
+        .map_err(|_| ToolInputError::Malformed("json arguments".to_string()))?;
+    if decoded.as_object().is_none() {
+        return Err(ToolInputError::NonMapping(py_type_name(&decoded)));
+    }
+    Ok(decoded)
+}
+
+fn opt_list(input: &Value, key: &str) -> Result<Option<Value>, ToolInputError> {
+    match field(input, key) {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) if value.as_array().is_some() => Ok(Some(value.clone())),
+        Some(value) => Err(ToolInputError::Malformed(format!(
+            "{key} must be a list, got {}",
+            py_type_name(value)
+        ))),
+    }
+}
+
+fn opt_str(input: &Value, key: &str) -> Result<Option<String>, ToolInputError> {
+    match field(input, key) {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) => value.as_str().map(str::to_string).map(Some).ok_or_else(|| {
+            ToolInputError::Malformed(format!("{key} must be a str, got {}", py_type_name(value)))
+        }),
+    }
+}
+
+fn req_i64(input: &Value, key: &str) -> Result<i64, ToolInputError> {
+    match field(input, key) {
+        Some(value) if !value.is_null() => value.as_i64().ok_or_else(|| {
+            ToolInputError::Malformed(format!("{key} must be an int, got {}", py_type_name(value)))
+        }),
+        _ => Err(ToolInputError::MissingKey(key.to_string())),
+    }
+}
+
+fn opt_i64(input: &Value, key: &str) -> Result<Option<i64>, ToolInputError> {
+    match field(input, key) {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+            ToolInputError::Malformed(format!("{key} must be an int, got {}", py_type_name(value)))
+        }),
+    }
+}
+
+// One file's edit accumulated while walking a patch envelope; body lines group by `@@`.
+struct PendingEdit {
+    file_path: String,
+    kind: PatchEditKind,
+    move_path: Option<String>,
+    groups: Vec<Vec<String>>,
+}
+
+impl PendingEdit {
+    fn new(file_path: String, kind: PatchEditKind) -> PendingEdit {
+        PendingEdit {
+            file_path,
+            kind,
+            move_path: None,
+            groups: vec![Vec::new()],
+        }
+    }
+
+    fn push_body(&mut self, line: &str) {
+        if self.kind == PatchEditKind::Update && line.starts_with("@@") {
+            self.groups.push(Vec::new());
+        } else {
+            self.groups.last_mut().unwrap().push(line.to_string());
+        }
+    }
+
+    fn finish(self) -> PatchEdit {
+        let build = match self.kind {
+            PatchEditKind::Delete => Vec::new(),
+            PatchEditKind::Add => self.groups.iter().filter_map(|g| add_hunk(g)).collect(),
+            PatchEditKind::Update => self
+                .groups
+                .iter()
+                .filter(|g| !g.is_empty())
+                .map(|g| update_hunk(g))
+                .collect(),
+        };
+        PatchEdit {
+            file_path: self.file_path,
+            kind: self.kind,
+            move_path: self.move_path,
+            hunks: build,
+        }
+    }
+}
+
+// A Update hunk's before/after: context lines (space prefix) join both sides, `-` the
+// old, `+` the new; a bare/blank line is shared context.
+fn update_hunk(group: &[String]) -> Hunk {
+    let (mut old, mut new): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    for line in group {
+        match line.as_bytes().first() {
+            Some(b'-') => old.push(&line[1..]),
+            Some(b'+') => new.push(&line[1..]),
+            Some(b' ') => {
+                old.push(&line[1..]);
+                new.push(&line[1..]);
+            }
+            _ => {
+                old.push(line);
+                new.push(line);
+            }
+        }
+    }
+    Hunk {
+        old: old.join("\n"),
+        new: new.join("\n"),
+    }
+}
+
+// An Add file's one addition hunk: empty old side, `+`-stripped lines as the new side.
+fn add_hunk(group: &[String]) -> Option<Hunk> {
+    (!group.is_empty()).then(|| Hunk {
+        old: String::new(),
+        new: group
+            .iter()
+            .map(|l| l.strip_prefix('+').unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
+}
+
+fn parse_patch_envelope(text: &str) -> Result<Vec<PatchEdit>, ()> {
+    let mut lines = text.lines();
+    if lines.next() != Some("*** Begin Patch") {
+        return Err(());
+    }
+    let mut edits: Vec<PatchEdit> = Vec::new();
+    let mut current: Option<PendingEdit> = None;
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.strip_prefix("*** ") else {
+            match current.as_mut() {
+                Some(edit) if edit.kind != PatchEditKind::Delete => edit.push_body(line),
+                _ => return Err(()),
+            }
+            continue;
+        };
+        if let Some(path) = rest.strip_prefix("Move to:") {
+            let path = path.trim();
+            match current.as_mut() {
+                Some(edit) if edit.kind == PatchEditKind::Update && !path.is_empty() => {
+                    edit.move_path = Some(path.to_string());
+                }
+                _ => return Err(()),
+            }
+            continue;
+        }
+        if let Some(edit) = current.take() {
+            edits.push(edit.finish());
+        }
+        match rest {
+            "End Patch" => {
+                if lines.any(|line| !line.is_empty()) {
+                    return Err(());
+                }
+                return Ok(edits);
+            }
+            _ if rest.starts_with("Update File:") => {
+                current = Some(PendingEdit::new(
+                    marker_path(rest).ok_or(())?,
+                    PatchEditKind::Update,
+                ));
+            }
+            _ if rest.starts_with("Add File:") => {
+                current = Some(PendingEdit::new(
+                    marker_path(rest).ok_or(())?,
+                    PatchEditKind::Add,
+                ));
+            }
+            _ if rest.starts_with("Delete File:") => {
+                current = Some(PendingEdit::new(
+                    marker_path(rest).ok_or(())?,
+                    PatchEditKind::Delete,
+                ));
+            }
+            _ => return Err(()),
+        }
+    }
+    Err(())
+}
+
+fn marker_path(rest: &str) -> Option<String> {
+    rest.split_once(':')
+        .map(|(_, p)| p.trim())
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
 }
 
 fn edit_from_raw(name: &str, raw: &Value) -> Result<ToolCall, ToolInputError> {
@@ -759,10 +1163,19 @@ fn span_edit_or_other(name: &str, input: &Value) -> Result<ToolCall, ToolInputEr
 
 /// Parity: tools.py parse_tool_call, on_error='raise'.
 pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, ToolInputError> {
-    if input.as_object().is_none() {
-        return Err(ToolInputError::NonMapping(py_type_name(input)));
+    let canonical = tool_alias_reverse(name).unwrap_or(name);
+    // Non-object input: a built-in requires an object (NonMapping); an untyped name with a
+    // verbatim string is a codex-style call (Other); a list/scalar stays NonMapping.
+    if input.as_object().is_none() && !CODEX_VERBATIM_TOOLS.contains(&name) {
+        return match () {
+            _ if requires_object_input(canonical) => {
+                Err(ToolInputError::NonMapping(py_type_name(input)))
+            }
+            _ if input.as_str().is_some() => Ok(other_call(name, input.clone(), None)),
+            _ => Err(ToolInputError::NonMapping(py_type_name(input))),
+        };
     }
-    match tool_alias_reverse(name).unwrap_or(name) {
+    match canonical {
         "Bash" => bash_from_raw(name, input),
         "Edit" => edit_from_raw(name, input),
         "MultiEdit" => multiedit_from_raw(name, input),
@@ -777,20 +1190,17 @@ pub fn parse_tool_call_strict(name: &str, input: &Value) -> Result<ToolCall, Too
         "TaskCreate" => task_create_from_raw(name, input),
         "TaskUpdate" => task_update_from_raw(name, input),
         "ExitPlanMode" => exit_plan_mode_from_raw(name, input),
+        "exec" => code_mode_from_raw(name, input),
+        "apply_patch" => apply_patch_from_raw(name, input),
+        "update_plan" => update_plan_from_raw(name, input),
+        "write_stdin" => write_stdin_from_raw(name, input),
         _ => span_edit_or_other(name, input),
     }
 }
 
-/// Parity: tools.py parse_tool_call, on_error='other'. A non-mapping input degrades to
-/// OtherCall over an empty mapping; a malformed known tool to OtherCall over the input.
+/// Parity: tools.py parse_tool_call, on_error='other'. A malformed call degrades to an
+/// OtherCall over the original input verbatim (raw is the digest substrate).
 pub fn parse_tool_call(name: &str, input: &Value) -> ToolCall {
-    if input.as_object().is_none() {
-        return other_call(
-            name,
-            empty_object(),
-            Some(ToolInputError::NonMapping(py_type_name(input)).to_string()),
-        );
-    }
     parse_tool_call_strict(name, input)
         .unwrap_or_else(|err| other_call(name, input.clone(), Some(err.to_string())))
 }
@@ -1153,14 +1563,17 @@ pub fn mcp_parts(name: &str) -> Option<(&str, &str)> {
 
 /// Parity: tools.py expand_tool_names.
 pub fn expand_tool_names(spec: &str) -> std::collections::HashSet<String> {
-    let mut set: std::collections::HashSet<String> = spec.split('|').map(str::to_string).collect();
-    let aliases: Vec<String> = set
-        .iter()
-        .flat_map(|n| [tool_alias(n), tool_alias_reverse(n)])
-        .flatten()
-        .map(str::to_string)
-        .collect();
-    set.extend(aliases);
+    let mut set = std::collections::HashSet::new();
+    for name in spec.split('|') {
+        let canonical = tool_alias_reverse(name).unwrap_or(name);
+        set.insert(name.to_string());
+        set.insert(canonical.to_string());
+        set.extend(
+            tool_aliases(canonical)
+                .iter()
+                .map(|alias| alias.to_string()),
+        );
+    }
     let registered: Vec<String> = MCP_REGISTRY
         .read()
         .expect("mcp registry lock")
@@ -1398,5 +1811,266 @@ mod tests {
             parse_tool_call("mcp__cc-context__syn_unknown", &obj(r#"{"path":"/x"}"#)),
             ToolCall::Other(_)
         ));
+    }
+
+    fn str_val(s: &str) -> Value {
+        Value::from(s)
+    }
+
+    #[test]
+    fn exec_command_string_parses_as_bash() {
+        let raw = str_val(r#"{"cmd":"ls /tmp","workdir":"/tmp"}"#);
+        match parse_tool_call("exec_command", &raw) {
+            ToolCall::Bash(c) => {
+                assert_eq!(c.command, "ls /tmp");
+                assert_eq!(c.name, "exec_command");
+                assert_eq!(
+                    c.raw.as_str(),
+                    Some(r#"{"cmd":"ls /tmp","workdir":"/tmp"}"#)
+                );
+                assert_eq!(c.timeout, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_command_reverse_aliases_to_bash_and_expands() {
+        let set = expand_tool_names("Bash");
+        assert!(set.contains("Bash") && set.contains("Execute") && set.contains("exec_command"));
+        assert!(tool_name_matches("exec_command", "Bash"));
+        assert_eq!(
+            expand_tool_names("Execute"),
+            std::collections::HashSet::from([
+                "Bash".to_string(),
+                "Execute".to_string(),
+                "exec_command".to_string(),
+            ])
+        );
+        assert!(tool_name_matches("exec_command", "Execute"));
+    }
+
+    #[test]
+    fn exec_string_parses_as_code_mode() {
+        let src = "python3 -c 'print(1)'";
+        match parse_tool_call("exec", &str_val(src)) {
+            ToolCall::CodeMode(c) => {
+                assert_eq!(c.source, src);
+                assert_eq!(c.raw.as_str(), Some(src));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_patch_multi_file_envelope_lowers_every_edit() {
+        let envelope = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: src/a.py\n",
+            "*** Move to: src/b.py\n",
+            "@@ def f():\n",
+            " ctx\n",
+            "-old\n",
+            "+new\n",
+            "*** Add File: src/c.py\n",
+            "+line1\n",
+            "+line2\n",
+            "*** Delete File: src/d.py\n",
+            "*** End Patch\n",
+        );
+        match parse_tool_call("apply_patch", &str_val(envelope)) {
+            ToolCall::ApplyPatch(c) => {
+                assert_eq!(c.edits.len(), 3);
+                assert_eq!(c.edits[0].file_path, "src/a.py");
+                assert_eq!(c.edits[0].kind, PatchEditKind::Update);
+                assert_eq!(c.edits[0].move_path.as_deref(), Some("src/b.py"));
+                assert_eq!(
+                    c.edits[0].hunks,
+                    vec![Hunk {
+                        old: "ctx\nold".into(),
+                        new: "ctx\nnew".into()
+                    }]
+                );
+                assert_eq!(c.edits[1].file_path, "src/c.py");
+                assert_eq!(c.edits[1].kind, PatchEditKind::Add);
+                assert_eq!(
+                    c.edits[1].hunks,
+                    vec![Hunk {
+                        old: String::new(),
+                        new: "line1\nline2".into()
+                    }]
+                );
+                assert_eq!(c.edits[2].file_path, "src/d.py");
+                assert_eq!(c.edits[2].kind, PatchEditKind::Delete);
+                assert!(c.edits[2].hunks.is_empty());
+                assert_eq!(c.raw.as_str(), Some(envelope));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_patch_malformed_envelope_yields_no_edits_with_raw() {
+        let junk = "not a patch at all";
+        match parse_tool_call("apply_patch", &str_val(junk)) {
+            ToolCall::ApplyPatch(c) => {
+                assert!(c.edits.is_empty());
+                assert_eq!(c.raw.as_str(), Some(junk));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_patch_rejects_partial_malformed_envelopes() {
+        for envelope in [
+            concat!(
+                "*** Begin Patch\n",
+                "*** Update File: src/a.py\n",
+                "@@\n",
+                "-old\n",
+                "+new\n",
+                "*** Bogus Directive\n",
+                "*** End Patch\n",
+            ),
+            concat!(
+                "*** Begin Patch\n",
+                "*** Update File: src/a.py\n",
+                "@@\n",
+                "-old\n",
+                "+new\n",
+            ),
+        ] {
+            match parse_tool_call("apply_patch", &str_val(envelope)) {
+                ToolCall::ApplyPatch(c) => {
+                    assert!(c.edits.is_empty());
+                    assert_eq!(c.raw.as_str(), Some(envelope));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn apply_patch_file_paths_and_edits_cover_every_file() {
+        let envelope = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: a.py\n",
+            "@@\n",
+            "-x\n",
+            "+y\n",
+            "*** Delete File: gone.py\n",
+            "*** End Patch\n",
+        );
+        let call = parse_tool_call("apply_patch", &str_val(envelope));
+        assert_eq!(call.file_paths(), vec!["a.py", "gone.py"]);
+        let edits = call.edits();
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].0, "a.py");
+        assert_eq!(edits[1].0, "gone.py");
+        assert!(edits[1].1.is_empty());
+        assert_eq!(call.file_path(), None);
+        assert!(call.hunks().is_empty());
+    }
+
+    #[test]
+    fn update_plan_and_write_stdin_decode_arguments() {
+        match parse_tool_call(
+            "update_plan",
+            &str_val(r#"{"plan":[{"step":"a","status":"pending"}],"explanation":"why"}"#),
+        ) {
+            ToolCall::UpdatePlan(c) => {
+                assert!(c.plan.as_ref().and_then(|v| v.as_array()).is_some());
+                assert_eq!(c.explanation.as_deref(), Some("why"));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_tool_call(
+            "write_stdin",
+            &str_val(
+                r#"{"chars":"y\n","session_id":42,"yield_time_ms":1000,"max_output_tokens":2000}"#,
+            ),
+        ) {
+            ToolCall::WriteStdin(c) => {
+                assert_eq!(c.chars.as_ref().and_then(|v| v.as_str()), Some("y\n"));
+                assert_eq!(c.session_id, 42);
+                assert_eq!(c.yield_time_ms, Some(1000));
+                assert_eq!(c.max_output_tokens, Some(2000));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_codex_calls_reject_wrong_input_types() {
+        for name in ["apply_patch", "exec"] {
+            for input in [obj("[]"), obj("{}"), obj("null"), obj("7")] {
+                assert_eq!(
+                    parse_tool_call_strict(name, &input),
+                    Err(ToolInputError::NonMapping(py_type_name(&input)))
+                );
+            }
+        }
+        assert_eq!(
+            parse_tool_call_strict("exec_command", &obj("[]")),
+            Err(ToolInputError::NonMapping("list"))
+        );
+    }
+
+    #[test]
+    fn typed_codex_argument_fields_are_strict() {
+        assert!(matches!(
+            parse_tool_call_strict("update_plan", &str_val(r#"{"plan":{}}"#)),
+            Err(ToolInputError::Malformed(detail)) if detail.contains("plan must be a list")
+        ));
+        assert!(matches!(
+            parse_tool_call_strict("update_plan", &str_val(r#"{"explanation":7}"#)),
+            Err(ToolInputError::Malformed(detail)) if detail.contains("explanation must be a str")
+        ));
+        for raw in [
+            r#"{"chars":"y\n"}"#,
+            r#"{"chars":"y\n","session_id":"42"}"#,
+            r#"{"chars":"y\n","session_id":42,"yield_time_ms":"1000"}"#,
+            r#"{"chars":"y\n","session_id":42,"max_output_tokens":"2000"}"#,
+        ] {
+            assert!(parse_tool_call_strict("write_stdin", &str_val(raw)).is_err());
+        }
+    }
+
+    #[test]
+    fn non_codex_name_with_string_input_raises_non_mapping() {
+        assert_eq!(
+            parse_tool_call_strict("Read", &str_val("/etc/hosts")),
+            Err(ToolInputError::NonMapping("str"))
+        );
+        match parse_tool_call("Read", &str_val("/etc/hosts")) {
+            ToolCall::Other(c) => {
+                assert_eq!(c.raw.as_str(), Some("/etc/hosts"));
+                assert!(c.error.as_deref().unwrap().contains("must be a mapping"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn untyped_codex_string_call_degrades_to_other_without_error() {
+        match parse_tool_call("send_message", &str_val(r#"{"message":"hi"}"#)) {
+            ToolCall::Other(c) => {
+                assert!(c.error.is_none());
+                assert_eq!(c.raw.as_str(), Some(r#"{"message":"hi"}"#));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn lenient_non_mapping_preserves_raw_value() {
+        match parse_tool_call("Edit", &obj("[1,2,3]")) {
+            ToolCall::Other(c) => {
+                assert_eq!(c.raw, obj("[1,2,3]"));
+                assert!(c.error.as_deref().unwrap().contains("must be a mapping"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

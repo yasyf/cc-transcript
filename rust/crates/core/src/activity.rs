@@ -15,8 +15,9 @@ const NOTIFICATION_MARKER: &str = "<task-notification>";
 
 // tools.py expand_tool_names("Agent|Task|Bash") / ("Agent|Task"), pre-expanded
 // here because the alias table never crosses the language boundary.
-static BACKGROUND_TOOLS: Lazy<HashSet<String>> =
-    Lazy::new(|| HashSet::from(["Agent", "Task", "Bash", "Execute"].map(String::from)));
+static BACKGROUND_TOOLS: Lazy<HashSet<String>> = Lazy::new(|| {
+    HashSet::from(["Agent", "Task", "Bash", "Execute", "exec_command"].map(String::from))
+});
 static TASK_TOOLS: Lazy<HashSet<String>> =
     Lazy::new(|| HashSet::from(["Agent", "Task"].map(String::from)));
 
@@ -284,8 +285,8 @@ pub struct Hunk {
 }
 
 /// One tool invocation lifted from a turn's assistant events (activity.py ToolUse);
-/// `call` is the typed tool call parsed once at lift time, `edit` its lowered
-/// `(file_path, hunks)` when edit-shaped, else None.
+/// `call` is the typed tool call parsed once at lift time, `edits` its lowered
+/// `(file_path, hunks)` entries — one per patched file for apply_patch, else 0 or 1.
 #[derive(Debug)]
 pub struct ToolUse<'a> {
     pub event_uuid: &'a str,
@@ -296,7 +297,7 @@ pub struct ToolUse<'a> {
     pub result_ts: Option<DateTime<FixedOffset>>,
     pub turn_index: usize,
     pub call: ToolCall,
-    pub edit: Option<(String, Vec<Hunk>)>,
+    pub edits: Vec<(String, Vec<Hunk>)>,
 }
 
 impl ToolUse<'_> {
@@ -343,8 +344,8 @@ impl<'a> Turn<'a> {
     pub fn edits(&self) -> Vec<Edit<'a>> {
         self.tool_uses
             .iter()
-            .filter_map(|use_| {
-                use_.edit.as_ref().map(|(path, hunks)| Edit {
+            .flat_map(|use_| {
+                use_.edits.iter().map(move |(path, hunks)| Edit {
                     file_path: path.clone(),
                     hunks: hunks.clone(),
                     tool: use_.name,
@@ -448,23 +449,22 @@ pub fn overlap_between(incorrect: &[Hunk], correction: &[Hunk]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-// activity.py Turn.edits: an edit-shaped call lowers to (file_path, hunks) when both
-// file_path_of and hunks_of are non-empty; parse_tool_call is the one typed source.
-fn lower_edit(call: &ToolCall) -> Option<(String, Vec<Hunk>)> {
-    let hunks = call.hunks();
-    match call.file_path() {
-        Some(path) if !hunks.is_empty() => Some((
-            path.to_string(),
-            hunks
-                .into_iter()
-                .map(|h| Hunk {
-                    old: h.old,
-                    new: h.new,
-                })
-                .collect(),
-        )),
-        _ => None,
-    }
+fn lower_edit(call: &ToolCall) -> Vec<(String, Vec<Hunk>)> {
+    call.edits()
+        .into_iter()
+        .map(|(path, hunks)| {
+            (
+                path.to_string(),
+                hunks
+                    .into_iter()
+                    .map(|h| Hunk {
+                        old: h.old,
+                        new: h.new,
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 struct Segment {
@@ -550,7 +550,7 @@ fn lift_turn<'a>(
                 result: pair.map(|(block, _)| *block),
                 result_ts: pair.and_then(|(_, ts)| *ts),
                 turn_index: index,
-                edit: lower_edit(&call),
+                edits: lower_edit(&call),
                 call,
             }
         })
@@ -1406,7 +1406,7 @@ mod tests {
                                         u.name.to_owned(),
                                         u.result.map(|r| r.is_error),
                                         u.duration_ms(),
-                                        u.edit.clone(),
+                                        u.edits.clone(),
                                     )
                                 })
                                 .collect::<Vec<_>>(),

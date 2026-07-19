@@ -6,7 +6,7 @@ use pyo3::types::{PyFrozenSet, PyMapping, PyTuple};
 use sonic_rs::Value;
 
 use cc_transcript_core::ids;
-use cc_transcript_core::toolcall::{self, EditSpan, McpToolSpec, SpanEditMap, ToolCall};
+use cc_transcript_core::toolcall::{self, EditSpan, McpToolSpec, PatchEdit, SpanEditMap, ToolCall};
 use cc_transcript_core::value::normalize_last_wins;
 
 use crate::toolcall::tool_input_error;
@@ -18,7 +18,8 @@ use crate::views::dunder::view_dunders;
 /// Attributes:
 ///     name: The tool name exactly as invoked (aliases are not normalized —
 ///         the digest must match what the hook saw).
-///     raw: The verbatim input mapping; the only digest substrate.
+///     raw: The verbatim input value — a mapping for structured calls, a plain
+///         string for Codex calls, or None when absent. The only digest substrate.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(
     name = "ToolCallBase",
@@ -39,7 +40,7 @@ impl ToolCallBaseView {
     }
 
     #[getter]
-    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any]", imports = ("collections.abc", "typing")))]
+    #[gen_stub(override_return_type(type_repr = "collections.abc.Mapping[str, typing.Any] | str | None", imports = ("collections.abc", "typing")))]
     fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, self.call.raw())
     }
@@ -857,6 +858,213 @@ impl HunkView {
 
 view_dunders!(HunkView, "Hunk", fields = [old, new]);
 
+/// A codex code-mode ``exec`` call whose ``source`` is a free-form program, kept
+/// verbatim — never JSON-decoded.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "CodeModeCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
+pub(crate) struct CodeModeCallView {
+    pub call: Arc<ToolCall>,
+}
+
+call_variant!(CodeModeCallView, CodeMode, CodeModeCall);
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl CodeModeCallView {
+    #[getter]
+    fn name(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().name.clone())
+    }
+
+    #[getter]
+    fn source(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().source.clone())
+    }
+}
+
+view_dunders!(
+    CodeModeCallView,
+    "CodeModeCall",
+    fields = [name, source],
+    match_args = []
+);
+
+/// One file's edit within a codex apply_patch envelope: its ``file_path``, ``kind``
+/// (``"add"``/``"update"``/``"delete"``), rename ``move_path``, and before/after
+/// ``hunks`` (empty for a deletion, one addition hunk for an add).
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "PatchEdit", module = "cc_transcript.tools", frozen)]
+pub(crate) struct PatchEditView {
+    pub edit: PatchEdit,
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl PatchEditView {
+    #[getter]
+    fn file_path(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.edit.file_path.clone())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Literal[\"add\", \"update\", \"delete\"]", imports = ("typing",)))]
+    fn kind(&self, _py: Python<'_>) -> PyResult<&'static str> {
+        Ok(self.edit.kind.as_str())
+    }
+
+    #[getter]
+    fn move_path(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.edit.move_path.clone())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.tools.Hunk, ...]", imports = ("cc_transcript.tools",)))]
+    fn hunks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(
+            py,
+            self.edit
+                .hunks
+                .iter()
+                .map(|h| {
+                    Bound::new(
+                        py,
+                        HunkView {
+                            old: h.old.clone(),
+                            new: h.new.clone(),
+                        },
+                    )
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+        )
+    }
+}
+
+view_dunders!(
+    PatchEditView,
+    "PatchEdit",
+    fields = [file_path, kind, move_path, hunks]
+);
+
+/// A codex apply_patch call: one :class:`PatchEdit` per file in the envelope.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "ApplyPatchCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
+pub(crate) struct ApplyPatchCallView {
+    pub call: Arc<ToolCall>,
+}
+
+call_variant!(ApplyPatchCallView, ApplyPatch, ApplyPatchCall);
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl ApplyPatchCallView {
+    #[getter]
+    fn name(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().name.clone())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.tools.PatchEdit, ...]", imports = ("cc_transcript.tools",)))]
+    fn edits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(
+            py,
+            self.c()
+                .edits
+                .iter()
+                .map(|edit| Bound::new(py, PatchEditView { edit: edit.clone() }))
+                .collect::<PyResult<Vec<_>>>()?,
+        )
+    }
+}
+
+view_dunders!(
+    ApplyPatchCallView,
+    "ApplyPatchCall",
+    fields = [name, edits],
+    match_args = []
+);
+
+/// A codex update_plan call: the plan-step array and its optional narration.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "UpdatePlanCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
+pub(crate) struct UpdatePlanCallView {
+    pub call: Arc<ToolCall>,
+}
+
+call_variant!(UpdatePlanCallView, UpdatePlan, UpdatePlanCall);
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl UpdatePlanCallView {
+    #[getter]
+    fn name(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().name.clone())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "list[typing.Any] | None", imports = ("typing",)))]
+    fn plan<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        opt_json(py, self.c().plan.as_ref())
+    }
+
+    #[getter]
+    fn explanation(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.c().explanation.clone())
+    }
+}
+
+view_dunders!(
+    UpdatePlanCallView,
+    "UpdatePlanCall",
+    fields = [name, plan, explanation],
+    match_args = []
+);
+
+/// A codex write_stdin call: the text written to a session's stdin and its target.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(name = "WriteStdinCall", module = "cc_transcript.tools", extends = ToolCallBaseView, frozen)]
+pub(crate) struct WriteStdinCallView {
+    pub call: Arc<ToolCall>,
+}
+
+call_variant!(WriteStdinCallView, WriteStdin, WriteStdinCall);
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl WriteStdinCallView {
+    #[getter]
+    fn name(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.c().name.clone())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Any | None", imports = ("typing",)))]
+    fn chars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        opt_json(py, self.c().chars.as_ref())
+    }
+
+    #[getter]
+    fn session_id(&self, _py: Python<'_>) -> PyResult<i64> {
+        Ok(self.c().session_id)
+    }
+
+    #[getter]
+    fn yield_time_ms(&self, _py: Python<'_>) -> PyResult<Option<i64>> {
+        Ok(self.c().yield_time_ms)
+    }
+
+    #[getter]
+    fn max_output_tokens(&self, _py: Python<'_>) -> PyResult<Option<i64>> {
+        Ok(self.c().max_output_tokens)
+    }
+}
+
+view_dunders!(
+    WriteStdinCallView,
+    "WriteStdinCall",
+    fields = [name, chars, session_id, yield_time_ms, max_output_tokens],
+    match_args = []
+);
+
 pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<Bound<'py, PyAny>> {
     let base = ToolCallBaseView {
         call: Arc::clone(&call),
@@ -904,6 +1112,18 @@ pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<B
         }
         ToolCall::ExitPlanMode(_) => {
             Ok(Bound::new(py, init.add_subclass(ExitPlanModeCallView { call }))?.into_any())
+        }
+        ToolCall::CodeMode(_) => {
+            Ok(Bound::new(py, init.add_subclass(CodeModeCallView { call }))?.into_any())
+        }
+        ToolCall::ApplyPatch(_) => {
+            Ok(Bound::new(py, init.add_subclass(ApplyPatchCallView { call }))?.into_any())
+        }
+        ToolCall::UpdatePlan(_) => {
+            Ok(Bound::new(py, init.add_subclass(UpdatePlanCallView { call }))?.into_any())
+        }
+        ToolCall::WriteStdin(_) => {
+            Ok(Bound::new(py, init.add_subclass(WriteStdinCallView { call }))?.into_any())
         }
         ToolCall::SpanEdit(_) => {
             Ok(Bound::new(py, init.add_subclass(SpanEditCallView { call }))?.into_any())
@@ -991,6 +1211,76 @@ pub(crate) fn file_path_of(
         .call
         .file_path()
         .map(str::to_string))
+}
+
+/// Every file a call targets: one entry per patched file for apply_patch, else the
+/// singular projection as a 0/1-element tuple.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[gen_stub(override_return_type(type_repr = "tuple[str, ...]", imports = ()))]
+pub(crate) fn file_paths_of<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "cc_transcript.tools.ToolCall | cc_transcript.tools.FallbackCall", imports = ("cc_transcript.tools",)))]
+    call: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyTuple>> {
+    let base = match call.cast::<ToolCallBaseView>() {
+        Ok(base) => base.get(),
+        Err(err) => {
+            let fallback = py.import("cc_transcript.tools")?.getattr("FallbackCall")?;
+            if call.is_instance(&fallback)? {
+                return Ok(PyTuple::empty(py));
+            }
+            return Err(err.into());
+        }
+    };
+    PyTuple::new(py, base.call.file_paths())
+}
+
+/// Every ``(file_path, hunks)`` a call lowers to: one entry per patched file for
+/// apply_patch (empty hunks for a deletion), else the singular 0/1-element projection.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[gen_stub(override_return_type(type_repr = "tuple[tuple[str, tuple[cc_transcript.tools.Hunk, ...]], ...]", imports = ("cc_transcript.tools",)))]
+pub(crate) fn edits_of<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "cc_transcript.tools.ToolCall | cc_transcript.tools.FallbackCall", imports = ("cc_transcript.tools",)))]
+    call: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyTuple>> {
+    let base = match call.cast::<ToolCallBaseView>() {
+        Ok(base) => base.get(),
+        Err(err) => {
+            let fallback = py.import("cc_transcript.tools")?.getattr("FallbackCall")?;
+            if call.is_instance(&fallback)? {
+                return Ok(PyTuple::empty(py));
+            }
+            return Err(err.into());
+        }
+    };
+    PyTuple::new(
+        py,
+        base.call
+            .edits()
+            .into_iter()
+            .map(|(path, hunks)| {
+                let hunks = PyTuple::new(
+                    py,
+                    hunks
+                        .into_iter()
+                        .map(|h| {
+                            Bound::new(
+                                py,
+                                HunkView {
+                                    old: h.old,
+                                    new: h.new,
+                                },
+                            )
+                        })
+                        .collect::<PyResult<Vec<_>>>()?,
+                )?;
+                (path, hunks).into_pyobject(py)
+            })
+            .collect::<PyResult<Vec<_>>>()?,
+    )
 }
 
 /// Expand a pipe-separated tool spec to include alias and MCP bare spellings.
@@ -1147,6 +1437,11 @@ pub(crate) fn add_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TaskCreateCallView>()?;
     m.add_class::<TaskUpdateCallView>()?;
     m.add_class::<ExitPlanModeCallView>()?;
+    m.add_class::<CodeModeCallView>()?;
+    m.add_class::<ApplyPatchCallView>()?;
+    m.add_class::<PatchEditView>()?;
+    m.add_class::<UpdatePlanCallView>()?;
+    m.add_class::<WriteStdinCallView>()?;
     m.add_class::<SpanEditCallView>()?;
     m.add_class::<OtherCallView>()?;
     m.add_class::<EditSpanView>()?;
@@ -1156,6 +1451,8 @@ pub(crate) fn add_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(unregister_mcp_tool, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(hunks_of, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(file_path_of, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(file_paths_of, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(edits_of, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(expand_tool_names, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(matches_names, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(tool_name_matches, m)?)?;

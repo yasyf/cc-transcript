@@ -197,3 +197,119 @@ def test_session_activity_from_session_lifts_codex_rollout(tmp_path: Path, fake_
     activity = SessionActivity.from_session(SESSION_303, root=cc_root)
     assert len(activity.turns) == 2
     assert [use.call.name for turn in activity.turns for use in turn.tool_uses] == ["exec"]
+
+
+def _codex_meta(sid: str) -> dict:
+    return {
+        "timestamp": "2026-05-05T00:09:30.100Z",
+        "type": "session_meta",
+        "payload": {
+            "id": sid,
+            "timestamp": "2026-05-05T00:09:30.000Z",
+            "cwd": "/tmp/demo",
+            "originator": "codex_exec",
+            "cli_version": "0.144.5",
+            "source": "exec",
+            "model_provider": "openai",
+        },
+    }
+
+
+def _user(text: str) -> dict:
+    payload = {"type": "user_message", "message": text}
+    return {"timestamp": "2026-05-05T00:09:30.550Z", "type": "event_msg", "payload": payload}
+
+
+def _func_call(name: str, arguments: str, call_id: str) -> dict:
+    return {
+        "timestamp": "2026-05-05T00:09:31.400Z",
+        "type": "response_item",
+        "payload": {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id},
+    }
+
+
+def _custom_call(name: str, body: str, call_id: str) -> dict:
+    return {
+        "timestamp": "2026-05-05T00:09:31.400Z",
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call", "name": name, "input": body, "call_id": call_id},
+    }
+
+
+def _write_rollout(tmp_path: Path, sid: str, *lines: dict) -> Path:
+    import json
+
+    path = tmp_path / f"rollout-2026-05-05T00-09-30-{sid}.jsonl"
+    path.write_text("".join(f"{json.dumps(line)}\n" for line in (_codex_meta(sid), *lines)))
+    return path
+
+
+def test_codex_exec_command_surfaces_as_a_bash_command(tmp_path: Path) -> None:
+    import json
+
+    from cc_transcript.query import Session
+
+    sid = "019dabc0-1234-7abc-9def-000000000901"
+    path = _write_rollout(
+        tmp_path,
+        sid,
+        _user("list files"),
+        _func_call("exec_command", json.dumps({"cmd": "ls /tmp/demo", "workdir": "/tmp/demo"}), "call-1"),
+    )
+    assert parse(path).provider == "codex"
+    session = Session.from_path(path)
+    assert "ls /tmp/demo" in session.commands()
+    assert session.has_tool("Bash")
+    assert session.tool_calls.named("exec_command").where_input(cmd="ls /tmp/demo").count() == 0
+
+
+def test_codex_custom_exec_is_code_mode_not_a_bash_command() -> None:
+    from cc_transcript.query import Session
+    from cc_transcript.tools import CodeModeCall
+
+    session = Session.from_path(codex_fixture("303"))
+    assert session.commands() == ()
+    code_calls = [use.call for use in session.tool_calls if isinstance(use.call, CodeModeCall)]
+    assert code_calls, "303 must carry a code-mode exec call"
+    assert all(call.source not in session.commands() for call in code_calls)
+
+
+def test_codex_apply_patch_surfaces_every_patched_file(tmp_path: Path) -> None:
+    from cc_transcript.ids import SessionId
+    from cc_transcript.query import Session, SessionActivity
+
+    sid = "019dabc0-1234-7abc-9def-000000000902"
+    envelope = (
+        "*** Begin Patch\n"
+        "*** Update File: src/a.py\n"
+        "@@\n"
+        "-x\n"
+        "+y\n"
+        "*** Add File: src/b.py\n"
+        "+created\n"
+        "*** Delete File: src/c.py\n"
+        "*** End Patch\n"
+    )
+    path = _write_rollout(
+        tmp_path,
+        sid,
+        _user("apply the patch"),
+        _custom_call("apply_patch", envelope, "call-2"),
+        _func_call("exec_command", '{"cmd":"echo done"}', "call-3"),
+    )
+    session = Session.from_path(path)
+    assert {str(f) for f in session.files_touched} == {"src/a.py", "src/b.py", "src/c.py"}
+    assert {str(f) for f in session.edited_files} == {"src/a.py", "src/b.py", "src/c.py"}
+    assert session.has_edit_to("src/a.py", subagents=False)
+    assert session.has_edit_to("src/c.py", subagents=False)
+    assert session.tool_calls.touching("src/c.py").count() == 1
+    assert session.tool_calls.under("src/").count() == 1
+    assert session.after(tool="apply_patch", file="src/c.py").has_tool("exec_command")
+
+    activity = SessionActivity.from_events(SessionId(sid), parse(path).events)
+    edits = activity.edits
+    assert {e.file_path for e in edits} == {"src/a.py", "src/b.py", "src/c.py"}
+    patch_use = next(use for turn in activity.turns for use in turn.tool_uses if use.call.name == "apply_patch")
+    assert {path for path, _ in patch_use.edits} == {"src/a.py", "src/b.py", "src/c.py"}
+    by_file = {e.file_path: e.hunks for e in edits}
+    assert by_file["src/c.py"] == ()

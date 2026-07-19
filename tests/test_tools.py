@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -9,9 +10,11 @@ from cc_transcript.command import CommandLine
 from cc_transcript.ids import tool_digest
 from cc_transcript.models import Question
 from cc_transcript.tools import (
+    ApplyPatchCall,
     AskUserQuestionResult,
     BashCall,
     BashResult,
+    CodeModeCall,
     EditCall,
     EditResult,
     EditSpan,
@@ -23,6 +26,7 @@ from cc_transcript.tools import (
     NotebookEditCall,
     OtherCall,
     OtherResult,
+    PatchEdit,
     QuestionAnnotation,
     ReadResult,
     SkillResult,
@@ -33,11 +37,15 @@ from cc_transcript.tools import (
     TaskUpdateCall,
     TextResult,
     ToolInputError,
+    UpdatePlanCall,
     WorkflowCall,
     WriteCall,
     WriteResult,
+    WriteStdinCall,
+    edits_of,
     expand_tool_names,
     file_path_of,
+    file_paths_of,
     hunks_of,
     matches_names,
     mcp_access,
@@ -258,15 +266,16 @@ def test_non_mapping_input_raises_under_strict(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["Edit", "mcp__github__search"], ids=["known-tool", "mcp-tool"])
-def test_non_mapping_input_degrades_to_empty_other_under_other(name: str) -> None:
+def test_non_mapping_input_degrades_to_other_preserving_raw(name: str) -> None:
     call = parse_tool_call(name, ["not", "a", "mapping"], on_error="other")  # type: ignore[arg-type]
     assert isinstance(call, OtherCall)
-    assert (call.name, dict(call.raw)) == (name, {})
+    assert (call.name, list(call.raw)) == (name, ["not", "a", "mapping"])
 
 
-def test_non_mapping_degrade_digest_is_the_empty_input_digest() -> None:
+def test_non_mapping_degrade_digest_reflects_the_preserved_raw() -> None:
     call = parse_tool_call("Bash", None, on_error="other")  # type: ignore[arg-type]
-    assert call.digest == tool_digest("Bash", {})
+    assert call.raw is None
+    assert call.digest == tool_digest("Bash", None)
 
 
 def test_on_error_other_degrades_with_correct_digest() -> None:
@@ -307,9 +316,9 @@ def test_non_mapping_unknown_tool_degrade_records_error() -> None:
     assert call.error == "input must be a mapping, got list"
 
 
-def test_non_mapping_unserializable_degrade_records_error() -> None:
+def test_non_mapping_unserializable_degrades_to_fallback() -> None:
     call = parse_tool_call("Bash", [float("nan")], on_error="other")  # type: ignore[arg-type]
-    assert isinstance(call, OtherCall)
+    assert isinstance(call, FallbackCall)
     assert call.error is not None
 
 
@@ -367,8 +376,9 @@ def test_file_path_of_covers_file_shaped_calls() -> None:
 @pytest.mark.usefixtures("registered_syn_specs")
 def test_expand_tool_names_includes_registered_and_alias_spellings() -> None:
     assert expand_tool_names("Bash|Write") == frozenset(
-        {"Bash", "Execute", "Write", "Create", SYN_GATE_WRITE}
+        {"Bash", "Execute", "exec_command", "Write", "Create", SYN_GATE_WRITE}
     )
+    assert expand_tool_names("Execute") == frozenset({"Bash", "Execute", "exec_command"})
     assert expand_tool_names("Edit|Write") == frozenset(
         {"Edit", "Write", "Create", SYN_SPAN_EDIT, SYN_GATE_WRITE}
     )
@@ -384,6 +394,7 @@ def test_expand_tool_names_omits_unregistered_names() -> None:
     [
         ("Execute", "Bash", True),
         ("Bash", "Execute", True),
+        ("exec_command", "Execute", True),
         ("mcp__github__Grep", "Grep", True),
         ("mcp__semble__search", "search", True),
         ("mcp__github__Grep", "Bash", False),
@@ -396,6 +407,7 @@ def test_expand_tool_names_omits_unregistered_names() -> None:
     ids=[
         "alias-forward",
         "alias-reverse",
+        "alias-sibling",
         "mcp-suffix",
         "mcp-suffix-server-tool",
         "mcp-miss",
@@ -811,3 +823,135 @@ def test_parse_tool_result_json_serializable_but_unparseable_falls_back() -> Non
     result = parse_tool_result("Bash", payload, on_error="other")
     assert isinstance(result, FallbackResult)
     assert result.raw is payload
+
+
+PATCH_ENVELOPE = (
+    "*** Begin Patch\n"
+    "*** Update File: src/a.py\n"
+    "*** Move to: src/b.py\n"
+    "@@ def f():\n"
+    " ctx\n"
+    "-old\n"
+    "+new\n"
+    "*** Add File: src/c.py\n"
+    "+line1\n"
+    "+line2\n"
+    "*** Delete File: src/d.py\n"
+    "*** End Patch\n"
+)
+
+
+def test_exec_command_string_parses_to_bash_shape() -> None:
+    call = parse_tool_call("exec_command", '{"cmd": "ls /tmp", "workdir": "/tmp"}')
+    native = parse_tool_call("Bash", {"command": "ls /tmp"})
+    assert isinstance(call, BashCall) and isinstance(native, BashCall)
+    assert (call.name, call.command) == ("exec_command", "ls /tmp")
+    assert call.command == native.command
+    assert isinstance(call.command_line, CommandLine)
+    assert call.command_line.prefixes == ("ls",)
+    assert call.raw == '{"cmd": "ls /tmp", "workdir": "/tmp"}'
+
+
+def test_exec_string_parses_to_code_mode_verbatim() -> None:
+    source = "python3 -c 'print(1)'"
+    call = parse_tool_call("exec", source)
+    assert isinstance(call, CodeModeCall)
+    assert call.source == source
+    assert call.raw == source
+
+
+def test_apply_patch_multi_file_envelope_lists_every_edit() -> None:
+    call = parse_tool_call("apply_patch", PATCH_ENVELOPE)
+    assert isinstance(call, ApplyPatchCall)
+    assert len(call.edits) == 3
+    a, c, d = call.edits
+    assert isinstance(a, PatchEdit)
+    assert (a.file_path, a.kind, a.move_path) == ("src/a.py", "update", "src/b.py")
+    assert a.hunks == (Hunk("ctx\nold", "ctx\nnew"),)
+    assert (c.file_path, c.kind) == ("src/c.py", "add")
+    assert c.hunks == (Hunk("", "line1\nline2"),)
+    assert (d.file_path, d.kind, d.hunks) == ("src/d.py", "delete", ())
+    assert call.raw == PATCH_ENVELOPE
+
+
+def test_apply_patch_malformed_envelope_yields_no_edits_preserving_raw() -> None:
+    call = parse_tool_call("apply_patch", "not a patch at all")
+    assert isinstance(call, ApplyPatchCall)
+    assert call.edits == ()
+    assert call.raw == "not a patch at all"
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "*** Begin Patch\n*** Update File: src/a.py\n@@\n-old\n+new\n*** Bogus Directive\n*** End Patch\n",
+        "*** Begin Patch\n*** Update File: src/a.py\n@@\n-old\n+new\n",
+    ],
+    ids=["bogus-directive", "truncated"],
+)
+def test_apply_patch_partial_malformed_envelope_discards_every_edit(envelope: str) -> None:
+    call = parse_tool_call("apply_patch", envelope)
+    assert isinstance(call, ApplyPatchCall)
+    assert call.edits == ()
+    assert call.raw == envelope
+
+
+def test_apply_patch_file_paths_and_edits_cover_every_file() -> None:
+    call = parse_tool_call("apply_patch", PATCH_ENVELOPE)
+    assert file_paths_of(call) == ("src/a.py", "src/c.py", "src/d.py")
+    projected = edits_of(call)
+    assert [path for path, _ in projected] == ["src/a.py", "src/c.py", "src/d.py"]
+    assert projected[2] == ("src/d.py", ())
+    assert file_path_of(call) is None
+    assert hunks_of(call) == ()
+
+
+def test_plural_edit_projections_accept_fallback_calls() -> None:
+    call = FallbackCall(name="apply_patch", raw=PATCH_ENVELOPE, error="unserializable")
+    assert file_paths_of(call) == ()
+    assert edits_of(call) == ()
+
+
+def test_update_plan_and_write_stdin_decode_arguments() -> None:
+    plan = parse_tool_call(
+        "update_plan", '{"plan": [{"step": "a", "status": "pending"}], "explanation": "why"}'
+    )
+    assert isinstance(plan, UpdatePlanCall)
+    assert plan.plan == [{"step": "a", "status": "pending"}]
+    assert plan.explanation == "why"
+    stdin = parse_tool_call(
+        "write_stdin",
+        '{"chars": "y\\n", "session_id": 7, "yield_time_ms": 1000, "max_output_tokens": 2000}',
+    )
+    assert isinstance(stdin, WriteStdinCall)
+    assert (stdin.chars, stdin.session_id, stdin.yield_time_ms, stdin.max_output_tokens) == ("y\n", 7, 1000, 2000)
+
+
+def test_update_plan_rejects_non_list_plan() -> None:
+    with pytest.raises(ToolInputError, match="plan must be a list"):
+        parse_tool_call("update_plan", '{"plan": {}}')
+
+
+@pytest.mark.parametrize("name", ["apply_patch", "exec"])
+@pytest.mark.parametrize("input", [[], {}, None, 7], ids=["list", "mapping", "null", "number"])
+def test_string_typed_codex_calls_reject_non_string_input(name: str, input: Any) -> None:
+    with pytest.raises(ToolInputError, match="must be a mapping"):
+        parse_tool_call(name, input)
+
+
+def test_exec_command_list_input_raises_input_type_error() -> None:
+    input: Any = []
+    with pytest.raises(ToolInputError, match="must be a mapping"):
+        parse_tool_call("exec_command", input)
+
+
+def test_untyped_codex_string_call_degrades_to_other_without_error() -> None:
+    call = parse_tool_call("send_message", '{"message": "hi"}')
+    assert isinstance(call, OtherCall)
+    assert call.error is None
+    assert call.raw == '{"message": "hi"}'
+
+
+def test_non_codex_name_with_string_input_raises_non_mapping() -> None:
+    with pytest.raises(ToolInputError, match="must be a mapping"):
+        parse_tool_call("Read", "/etc/hosts")

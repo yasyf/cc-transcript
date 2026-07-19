@@ -14,6 +14,7 @@ import pathlib
 import typing
 __all__ = [
     "ApiError",
+    "ApplyPatchCall",
     "AskUserQuestionResult",
     "AssistantEvent",
     "AsyncHookResponse",
@@ -22,6 +23,7 @@ __all__ = [
     "BashCall",
     "BashResult",
     "CacheCreation",
+    "CodeModeCall",
     "Command",
     "CommandLine",
     "CommandLineQuery",
@@ -57,6 +59,7 @@ __all__ = [
     "OtherResult",
     "OtherSystemDetail",
     "ParseStream",
+    "PatchEdit",
     "Plugin",
     "PreservedMessages",
     "PreservedSegment",
@@ -92,6 +95,7 @@ __all__ = [
     "ToolUseBlock",
     "Transcript",
     "TurnDuration",
+    "UpdatePlanCall",
     "Usage",
     "UserEvent",
     "WatchTailer",
@@ -99,6 +103,7 @@ __all__ = [
     "WorkflowCall",
     "WriteCall",
     "WriteResult",
+    "WriteStdinCall",
     "activity_hunk_overlap",
     "activity_lift",
     "activity_lift_from_events",
@@ -120,9 +125,11 @@ __all__ = [
     "discovery_is_subagent_path",
     "discovery_subagent_paths",
     "discovery_subagent_transcripts",
+    "edits_of",
     "embedded_literals",
     "expand_tool_names",
     "file_path_of",
+    "file_paths_of",
     "hunks_of",
     "ids_canonical_json",
     "ids_tool_digest",
@@ -178,6 +185,17 @@ class ApiError:
     def status(self) -> typing.Optional[builtins.int]: ...
     @property
     def details(self) -> typing.Optional[builtins.str]: ...
+
+@typing.final
+class ApplyPatchCall(ToolCallBase):
+    r"""
+    A codex apply_patch call: one :class:`PatchEdit` per file in the envelope.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def name(self) -> builtins.str: ...
+    @property
+    def edits(self) -> tuple[PatchEdit, ...]: ...
 
 @typing.final
 class AskUserQuestionResult(ToolResultBase):
@@ -385,6 +403,18 @@ class CacheCreation:
     def ephemeral_5m_input_tokens(self) -> builtins.int: ...
     @property
     def ephemeral_1h_input_tokens(self) -> builtins.int: ...
+
+@typing.final
+class CodeModeCall(ToolCallBase):
+    r"""
+    A codex code-mode ``exec`` call whose ``source`` is a free-form program, kept
+    verbatim — never JSON-decoded.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def name(self) -> builtins.str: ...
+    @property
+    def source(self) -> builtins.str: ...
 
 @typing.final
 class Command:
@@ -1233,6 +1263,23 @@ class ParseStream:
     def recv_many(self, max: builtins.int) -> list[Transcript]: ...
 
 @typing.final
+class PatchEdit:
+    r"""
+    One file's edit within a codex apply_patch envelope: its ``file_path``, ``kind``
+    (``"add"``/``"update"``/``"delete"``), rename ``move_path``, and before/after
+    ``hunks`` (empty for a deletion, one addition hunk for an add).
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def file_path(self) -> builtins.str: ...
+    @property
+    def kind(self) -> typing.Literal["add", "update", "delete"]: ...
+    @property
+    def move_path(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def hunks(self) -> tuple[Hunk, ...]: ...
+
+@typing.final
 class Plugin:
     r"""
     A plugin entry from the -p init element.
@@ -1814,13 +1861,14 @@ class ToolCallBase:
     Attributes:
         name: The tool name exactly as invoked (aliases are not normalized —
             the digest must match what the hook saw).
-        raw: The verbatim input mapping; the only digest substrate.
+        raw: The verbatim input value — a mapping for structured calls, a plain
+            string for Codex calls, or None when absent. The only digest substrate.
     """
     __match_args__: typing.ClassVar[tuple[str, ...]]
     @property
     def name(self) -> builtins.str: ...
     @property
-    def raw(self) -> collections.abc.Mapping[str, typing.Any]: ...
+    def raw(self) -> collections.abc.Mapping[str, typing.Any] | str | None: ...
     @property
     def digest(self) -> ids.ToolDigest:
         r"""
@@ -1985,6 +2033,19 @@ class TurnDuration:
     def pending_workflow_count(self) -> typing.Optional[builtins.int]: ...
     @property
     def pending_background_agent_count(self) -> typing.Optional[builtins.int]: ...
+
+@typing.final
+class UpdatePlanCall(ToolCallBase):
+    r"""
+    A codex update_plan call: the plan-step array and its optional narration.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def name(self) -> builtins.str: ...
+    @property
+    def plan(self) -> list[typing.Any] | None: ...
+    @property
+    def explanation(self) -> typing.Optional[builtins.str]: ...
 
 @typing.final
 class Usage:
@@ -2183,6 +2244,23 @@ class WriteResult(ToolResultBase):
     @property
     def user_modified(self) -> bool: ...
 
+@typing.final
+class WriteStdinCall(ToolCallBase):
+    r"""
+    A codex write_stdin call: the text written to a session's stdin and its target.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def name(self) -> builtins.str: ...
+    @property
+    def chars(self) -> typing.Any | None: ...
+    @property
+    def session_id(self) -> builtins.int: ...
+    @property
+    def yield_time_ms(self) -> typing.Optional[builtins.int]: ...
+    @property
+    def max_output_tokens(self) -> typing.Optional[builtins.int]: ...
+
 def activity_hunk_overlap(a_old: builtins.str, a_new: builtins.str, b_old: builtins.str, b_new: builtins.str) -> builtins.float: ...
 
 def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
@@ -2230,6 +2308,12 @@ def discovery_subagent_paths(path: builtins.str | os.PathLike | pathlib.Path) ->
 
 def discovery_subagent_transcripts(path: builtins.str | os.PathLike | pathlib.Path) -> dict[str, pathlib.Path]: ...
 
+def edits_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[tuple[str, tuple[Hunk, ...]], ...]:
+    r"""
+    Every ``(file_path, hunks)`` a call lowers to: one entry per patched file for
+    apply_patch (empty hunks for a deletion), else the singular 0/1-element projection.
+    """
+
 def embedded_literals() -> dict[str, str | float | int | list[str]]: ...
 
 def expand_tool_names(spec: builtins.str) -> frozenset[str]:
@@ -2240,6 +2324,12 @@ def expand_tool_names(spec: builtins.str) -> frozenset[str]:
 def file_path_of(call: tools.ToolCall | tools.FallbackCall) -> typing.Optional[builtins.str]:
     r"""
     The file a call targets, when it targets one.
+    """
+
+def file_paths_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[str, ...]:
+    r"""
+    Every file a call targets: one entry per patched file for apply_patch, else the
+    singular projection as a 0/1-element tuple.
     """
 
 def hunks_of(call: tools.ToolCall | tools.FallbackCall) -> tuple[Hunk, ...]:

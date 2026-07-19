@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use cc_transcript_core::discovery::find_transcript;
 use cc_transcript_core::ids::tool_digest;
 use cc_transcript_core::render::{render_tool_call, Budget, Json};
-use cc_transcript_core::toolcall::parse_tool_call;
+use cc_transcript_core::toolcall::{parse_tool_call, ToolCall};
 use cc_transcript_core::types::{epoch_ms, ContentBlock, Entry, ToolUseBlock};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 
@@ -51,7 +51,8 @@ fn slice_line(
 ) -> Result<Json, CliExit> {
     let call = parse_tool_call(&block.name, &block.input);
     let digest = tool_digest(&block.name, &block.input).map_err(|e| click_error(&e))?;
-    Ok(Json::Obj(vec![
+    let file_paths = call.file_paths();
+    let mut fields = vec![
         ("schema".into(), Json::Str(SLICE_SCHEMA.into())),
         ("event_uuid".into(), Json::Str(meta_uuid.into())),
         ("tool_use_id".into(), Json::Str(block.id.clone())),
@@ -60,14 +61,27 @@ fn slice_line(
         ("tool_digest".into(), Json::Str(digest)),
         (
             "file_path".into(),
-            call.file_path()
+            file_paths
+                .first()
                 .map_or(Json::Null, |p| Json::Str(p.to_string())),
         ),
-        (
-            "summary".into(),
-            Json::Str(render_tool_call(&call, &Budget::default())),
-        ),
-    ]))
+    ];
+    if matches!(call, ToolCall::ApplyPatch(_)) {
+        fields.push((
+            "file_paths".into(),
+            Json::Arr(
+                file_paths
+                    .into_iter()
+                    .map(|path| Json::Str(path.to_string()))
+                    .collect(),
+            ),
+        ));
+    }
+    fields.push((
+        "summary".into(),
+        Json::Str(render_tool_call(&call, &Budget::default())),
+    ));
+    Ok(Json::Obj(fields))
 }
 
 pub fn run(session: &str, since: &str, until: &str, root: Option<PathBuf>) -> Result<(), CliExit> {
@@ -98,4 +112,45 @@ pub fn run(session: &str, since: &str, until: &str, root: Option<PathBuf>) -> Re
         }
     }
     out.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_patch_emits_legacy_and_plural_file_paths() {
+        let block = ToolUseBlock {
+            id: "call-1".into(),
+            name: "apply_patch".into(),
+            run_in_background: None,
+            subagent_type: None,
+            file_path: None,
+            questions: None,
+            input: sonic_rs::Value::from(
+                "*** Begin Patch\n*** Delete File: a.py\n*** Add File: b.py\n+body\n*** End Patch\n",
+            ),
+        };
+        let ts = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        let Json::Obj(fields) = slice_line("event-1", ts, &block).unwrap() else {
+            panic!()
+        };
+        let file_path = fields
+            .iter()
+            .find(|(key, _)| key == "file_path")
+            .map(|(_, value)| value)
+            .unwrap();
+        assert!(matches!(file_path, Json::Str(path) if path == "a.py"));
+        let file_paths = fields
+            .iter()
+            .find(|(key, _)| key == "file_paths")
+            .map(|(_, value)| value)
+            .unwrap();
+        let Json::Arr(file_paths) = file_paths else {
+            panic!()
+        };
+        assert!(
+            matches!(&file_paths[..], [Json::Str(a), Json::Str(b)] if a == "a.py" && b == "b.py")
+        );
+    }
 }

@@ -11,6 +11,7 @@ predicates compose over progressively narrower windows.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import PurePath
@@ -27,9 +28,9 @@ from cc_transcript.tools import (
     BashCall,
     SkillCall,
     TaskCall,
+    edits_of,
     expand_tool_names,
-    file_path_of,
-    hunks_of,
+    file_paths_of,
     matches_names,
     tool_name_matches,
 )
@@ -169,11 +170,11 @@ class ToolCallQuery:
 
     def touching(self, *globs: str) -> ToolCallQuery:
         """Calls targeting a file that matches any glob."""
-        return self.where(lambda use: (path := file_path_of(use.call)) is not None and FileRef(path).matches(*globs))
+        return self.where(lambda use: any(FileRef(path).matches(*globs) for path in file_paths_of(use.call)))
 
     def under(self, *prefixes: str) -> ToolCallQuery:
         """Calls targeting a file under any prefix."""
-        return self.where(lambda use: (path := file_path_of(use.call)) is not None and FileRef(path).under(*prefixes))
+        return self.where(lambda use: any(FileRef(path).under(*prefixes) for path in file_paths_of(use.call)))
 
     def failed(self) -> ToolCallQuery:
         """Only the calls whose result errored."""
@@ -194,9 +195,8 @@ class ToolCallQuery:
         callable predicate, or a value compared for equality.
         """
         return self.where(
-            lambda use: all(
-                key in use.call.raw and input_rule_matches(rule, use.call.raw[key]) for key, rule in rules.items()
-            )
+            lambda use: isinstance(use.call.raw, Mapping)
+            and all(key in use.call.raw and input_rule_matches(rule, use.call.raw[key]) for key, rule in rules.items())
         )
 
     def count(self) -> int:
@@ -216,8 +216,14 @@ class ToolCallQuery:
         return items[-1] if (items := self.items) else None
 
     def files(self) -> tuple[FileRef, ...]:
-        """The files the matching calls target, one entry per call, in order."""
-        return tuple(FileRef(path) for use in self.items if (path := file_path_of(use.call)) is not None)
+        """The files the matching calls target, one entry per targeted file (every file
+        of an apply_patch), in order."""
+        return tuple(FileRef(path) for use in self.items for path in file_paths_of(use.call))
+
+    def edited_files(self) -> tuple[FileRef, ...]:
+        """The files edited by the matching calls, one entry per edited file (every file
+        of an apply_patch), in order."""
+        return tuple(FileRef(path) for use in self.items for path, _ in edits_of(use.call))
 
     def __iter__(self) -> Iterator[ToolUse]:
         return iter(self.items)
@@ -331,7 +337,7 @@ class Session:
             positions[use.ref.event_uuid]
             for use in self.tool_calls.with_errors
             if tool_name_matches(use.call.name, tool)
-            and (file is None or ((path := file_path_of(use.call)) is not None and file in path))
+            and (file is None or any(file in path for path in file_paths_of(use.call)))
         ]
         return windowed(self, max(matches) + 1, len(self)) if matches else windowed(self, 0, 0)
 
@@ -382,8 +388,8 @@ class Session:
 
     @property
     def edited_files(self) -> tuple[FileRef, ...]:
-        """The files modified by edit-shaped calls in the window, one entry per call."""
-        return self.tool_calls.where(lambda use: bool(hunks_of(use.call))).files()
+        """The files modified by edit-shaped calls in the window, one entry per edited file."""
+        return self.tool_calls.edited_files()
 
     def has_tool(self, name: str, *, subagents: bool = True) -> bool:
         """Whether any call in the window matches the pipe spec ``name``."""

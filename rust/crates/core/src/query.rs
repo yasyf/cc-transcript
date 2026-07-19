@@ -232,8 +232,9 @@ impl<'a> ToolCallQuery<'a> {
     pub fn touching(&self, globs: &[&str]) -> ToolCallQuery<'a> {
         self.filtered(|use_| {
             use_.call
-                .file_path()
-                .is_some_and(|p| FileRef::new(p).matches(globs))
+                .file_paths()
+                .into_iter()
+                .any(|p| FileRef::new(p).matches(globs))
         })
     }
 
@@ -241,8 +242,9 @@ impl<'a> ToolCallQuery<'a> {
     pub fn under(&self, prefixes: &[&str]) -> ToolCallQuery<'a> {
         self.filtered(|use_| {
             use_.call
-                .file_path()
-                .is_some_and(|p| FileRef::new(p).under(prefixes))
+                .file_paths()
+                .into_iter()
+                .any(|p| FileRef::new(p).under(prefixes))
         })
     }
 
@@ -303,11 +305,26 @@ impl<'a> ToolCallQuery<'a> {
         self.items()
     }
 
-    /// The files the matching calls target, one entry per call, in order.
+    /// The files the matching calls target, one entry per targeted file (every file
+    /// of an apply_patch), in order.
     pub fn files(&self) -> Vec<FileRef> {
         self.items()
             .into_iter()
-            .filter_map(|use_| use_.call.file_path().map(FileRef::new))
+            .flat_map(|use_| use_.call.file_paths().into_iter().map(FileRef::new))
+            .collect()
+    }
+
+    /// The files edited by the matching calls, one entry per edited file (every file
+    /// of an apply_patch), in order.
+    pub fn edited_files(&self) -> Vec<FileRef> {
+        self.items()
+            .into_iter()
+            .flat_map(|use_| {
+                use_.call
+                    .edits()
+                    .into_iter()
+                    .map(|(path, _)| FileRef::new(path))
+            })
             .collect()
     }
 }
@@ -450,7 +467,8 @@ impl<'a> Session<'a> {
             .iter()
             .filter(|use_| {
                 tool_name_matches(use_.call.name(), tool)
-                    && file.is_none_or(|f| use_.call.file_path().is_some_and(|p| p.contains(f)))
+                    && file
+                        .is_none_or(|f| use_.call.file_paths().into_iter().any(|p| p.contains(f)))
             })
             .map(|use_| positions[use_.event_uuid])
             .max();
@@ -521,11 +539,9 @@ impl<'a> Session<'a> {
         self.tool_calls().files()
     }
 
-    /// The files modified by edit-shaped calls in the window, one entry per call.
+    /// The files modified by edit-shaped calls in the window, one entry per edited file.
     pub fn edited_files(&self) -> Vec<FileRef> {
-        self.tool_calls()
-            .where_(|use_| !use_.call.hunks().is_empty())
-            .files()
+        self.tool_calls().edited_files()
     }
 
     /// Whether any call in the window matches the pipe spec `name` (self-session only).
@@ -716,5 +732,32 @@ mod tests {
             assert!(session.has_command(&["git", "push"]));
             assert!(!session.has_command(&["git", "commit"]));
         }
+    }
+
+    #[test]
+    fn apply_patch_queries_match_every_target_file() {
+        let entries = parse(concat!(
+            r#"{"type":"user","uuid":"u0","sessionId":"s","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a0","sessionId":"s","timestamp":"2026-01-01T00:00:01.000Z","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/a.py\n@@\n-x\n+y\n*** Delete File: src/b.py\n*** End Patch\n"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","sessionId":"s","timestamp":"2026-01-01T00:00:02.000Z","message":{"model":"m","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"echo done"}}]}}"#,
+            "\n",
+        ));
+        let lift = lift_session("s", &entries);
+        let session = Session::from_lift(&lift);
+        assert_eq!(session.tool_calls().touching(&["src/b.py"]).count(), 1);
+        assert_eq!(session.tool_calls().under(&["src/"]).count(), 1);
+        assert!(session
+            .after("apply_patch", Some("src/b.py"))
+            .has_tool("Bash"));
+        assert_eq!(
+            session
+                .edited_files()
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/a.py", "src/b.py"]
+        );
     }
 }

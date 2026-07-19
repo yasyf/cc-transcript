@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **BREAKING (next major): activity tool-use edits are plural.** The lowered
+  `ToolUse.edit` projection is now `ToolUse.edits`, changing from an optional
+  `(file_path, hunks)` pair to an ordered collection with one pair per edited
+  file so multi-file `apply_patch` calls preserve every target.
+
 ## [14.6.1] - 2026-07-20
 
 ### Fixed

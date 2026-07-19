@@ -3,7 +3,7 @@
 A hook author inspecting live stdin, a miner walking a parsed transcript, and
 the review gate all see the same object for the same tool call. The classes are
 native frozen views re-exported at the stable import path; each call retains
-its raw input mapping (excluded from equality and repr), and the digest is
+its raw input value (excluded from equality and repr), and the digest is
 always derived from that raw substrate — a typed-vs-raw digest fork is
 impossible by construction. Import-light by contract: standard library plus the
 native extension only; :attr:`BashCall.command_line` is a native property, so
@@ -17,9 +17,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _native
+from cc_transcript._native import ApplyPatchCall as ApplyPatchCall
 from cc_transcript._native import AskUserQuestionResult as AskUserQuestionResult
 from cc_transcript._native import BashCall as BashCall
 from cc_transcript._native import BashResult as BashResult
+from cc_transcript._native import CodeModeCall as CodeModeCall
 from cc_transcript._native import EditCall as EditCall
 from cc_transcript._native import EditResult as EditResult
 from cc_transcript._native import EditSpan as EditSpan
@@ -31,6 +33,7 @@ from cc_transcript._native import MultiEditCall as MultiEditCall
 from cc_transcript._native import NotebookEditCall as NotebookEditCall
 from cc_transcript._native import OtherCall as OtherCall
 from cc_transcript._native import OtherResult as OtherResult
+from cc_transcript._native import PatchEdit as PatchEdit
 from cc_transcript._native import QuestionAnnotation as QuestionAnnotation
 from cc_transcript._native import ReadCall as ReadCall
 from cc_transcript._native import ReadResult as ReadResult
@@ -46,11 +49,15 @@ from cc_transcript._native import TaskUpdateCall as TaskUpdateCall
 from cc_transcript._native import TextResult as TextResult
 from cc_transcript._native import ToolCallBase as ToolCallBase
 from cc_transcript._native import ToolResultBase as ToolResultBase
+from cc_transcript._native import UpdatePlanCall as UpdatePlanCall
 from cc_transcript._native import WorkflowCall as WorkflowCall
 from cc_transcript._native import WriteCall as WriteCall
 from cc_transcript._native import WriteResult as WriteResult
+from cc_transcript._native import WriteStdinCall as WriteStdinCall
+from cc_transcript._native import edits_of as edits_of
 from cc_transcript._native import expand_tool_names as expand_tool_names
 from cc_transcript._native import file_path_of as file_path_of
+from cc_transcript._native import file_paths_of as file_paths_of
 from cc_transcript._native import hunks_of as hunks_of
 from cc_transcript._native import matches_names as matches_names
 from cc_transcript._native import mcp_access as mcp_access
@@ -97,6 +104,10 @@ ToolCall = (
     | TaskCreateCall
     | TaskUpdateCall
     | ExitPlanModeCall
+    | CodeModeCall
+    | ApplyPatchCall
+    | UpdatePlanCall
+    | WriteStdinCall
     | SpanEditCall
     | OtherCall
 )
@@ -167,7 +178,10 @@ class FallbackResult:
 
 
 def parse_tool_call(
-    name: str, input: Mapping[str, Any], *, on_error: Literal["raise", "other"] = "raise"
+    name: str,
+    input: Mapping[str, Any] | str | None,
+    *,
+    on_error: Literal["raise", "other"] = "raise",
 ) -> ToolCall | FallbackCall:
     """Parse a tool's name and raw input into the typed hierarchy.
 
@@ -178,15 +192,18 @@ def parse_tool_call(
     typed field. The wild-data boundaries
     — the hook runtime and the activity lift — pass ``on_error='other'`` so a
     Claude Code shape change or a model-emitted invalid call degrades to
-    :class:`OtherCall` — with a still-correct digest, since the raw mapping is
+    :class:`OtherCall` — with a still-correct digest, since the raw input is
     the substrate — instead of crashing every hook fire or session lift. A
     non-mapping ``input`` raises under strict mode; under ``on_error='other'``
-    it degrades to an :class:`OtherCall` over an empty mapping, carrying the
-    non-mapping strict-failure message, whose digest is the empty-input digest.
-    On a degraded :class:`OtherCall`, ``error`` is None if and only if the input
-    parsed as a mapping but no typed model exists for the tool; any malformed
-    payload — a missing, null, or wrong-typed field, or a non-mapping input —
-    carries the strict failure message instead.
+    it degrades to an :class:`OtherCall` over the original input verbatim, so its
+    digest reflects that input rather than an empty mapping. On a degraded
+    :class:`OtherCall`, ``error`` is None when the strict pass found no
+    malformation — an untyped tool over a well-formed mapping, or a codex-style
+    verbatim string — and otherwise carries the strict failure message (a missing,
+    null, or wrong-typed field, or a non-mapping input to a built-in tool).
+    Under strict mode, an unknown tool name with a string input remains an
+    :class:`OtherCall` with ``error=None`` because unknown names are the
+    tolerance zone for untyped Codex tools.
 
     v14 contract: ``input`` is decoded-JSON values. It is serialized to a JSON
     document for the native parser, so tuples normalize to lists and non-string
@@ -200,15 +217,6 @@ def parse_tool_call(
         >>> call.new
         'y'
     """
-    if not isinstance(input, dict):
-        if on_error == "raise":
-            raise ToolInputError(f"{name} input must be a mapping, got {type(input).__name__}")
-        try:
-            return _native.toolcall_parse_view(name, json.dumps(input), "other")
-        except (TypeError, ValueError):
-            return _native.toolcall_parse_view(name, "null", "other")
-    # Spans serialization and the native parse: json.dumps emits text (NaN, Infinity,
-    # unpaired surrogates) the native JSON parser then rejects, so 'other' catches both.
     try:
         return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     except (TypeError, ValueError) as exc:

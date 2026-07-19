@@ -89,7 +89,7 @@ fn fact_of(use_: &ToolUse, session_id: &str, path: &str) -> ToolFact {
         mcp_server,
         mcp_tool,
         mcp_access,
-        file_path: call.file_path().map(str::to_string),
+        file_path: call.file_paths().first().map(|path| (*path).to_string()),
         is_error: use_.result.is_some_and(|r| r.is_error),
         denied,
         denial_kind: use_.result.and_then(|r| r.denial_kind.clone()),

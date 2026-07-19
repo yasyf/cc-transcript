@@ -30,12 +30,15 @@ MODELS_SURFACE = frozenset(
 
 TOOLS_SURFACE = frozenset(
     {
-        "AskUserQuestionResult", "BashCall", "BashResult", "EditCall", "EditResult", "EditSpan",
+        "ApplyPatchCall", "AskUserQuestionResult", "BashCall", "BashResult", "CodeModeCall",
+        "EditCall", "EditResult", "EditSpan",
         "ExitPlanModeCall", "GlobCall", "GrepCall", "Hunk", "MultiEditCall", "NotebookEditCall",
-        "OtherCall", "OtherResult", "QuestionAnnotation", "ReadCall", "ReadResult", "SkillCall",
+        "OtherCall", "OtherResult", "PatchEdit", "QuestionAnnotation", "ReadCall", "ReadResult",
+        "SkillCall",
         "SkillResult", "TOOL_ALIASES", "TaskCall", "TaskCreateCall", "TaskLaunchResult",
         "TaskResult", "TaskResultBase", "TaskUpdateCall", "TextResult", "ToolCall", "ToolCallBase",
         "ToolDigest", "ToolInputError", "ToolResult", "ToolResultBase", "ToolResultError",
+        "UpdatePlanCall", "WriteStdinCall", "edits_of", "file_paths_of",
         "WorkflowCall", "WriteCall", "WriteResult", "expand_tool_names", "file_path_of", "hunks_of",
         "matches_names", "mcp_access", "mcp_parts", "parse_tool_call", "parse_tool_result",
         "tool_digest", "tool_name_matches",

@@ -22,7 +22,7 @@ from cc_transcript.filterspec import event_meta
 from cc_transcript.ids import EventRef
 from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, UserEvent
 from cc_transcript.parser import parse
-from cc_transcript.tools import file_path_of, hunks_of, parse_tool_call, parse_tool_result
+from cc_transcript.tools import edits_of, parse_tool_call, parse_tool_result
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -63,6 +63,8 @@ class ToolUse:
         result: The matching result block, or None when none ever arrived.
         result_ts: The timestamp of the user entry carrying the result, or
             None when no result ever arrived.
+        edits: The call's lowered ``(file_path, hunks)`` entries, one per
+            edited file.
         turn_index: The index of the turn the call fired in.
         ts: The timestamp of the assistant entry carrying the call.
     """
@@ -71,6 +73,7 @@ class ToolUse:
     call: ToolCall | FallbackCall
     result: ToolResultBlock | None
     result_ts: datetime | None
+    edits: tuple[tuple[str, tuple[Hunk, ...]], ...]
     turn_index: int
     ts: datetime
 
@@ -139,11 +142,12 @@ class Turn:
 
     @property
     def edits(self) -> tuple[Edit, ...]:
-        """The turn's file modifications: tool uses with hunks and a file path."""
+        """The turn's file modifications: one entry per edited file (every file of an
+        apply_patch), in order."""
         return tuple(
             Edit(file_path=path, hunks=hunks, tool=use.call.name, ref=use.ref, turn_index=use.turn_index, ts=use.ts)
             for use in self.tool_uses
-            if (hunks := hunks_of(use.call)) and (path := file_path_of(use.call)) is not None
+            for path, hunks in use.edits
         )
 
 
@@ -210,12 +214,14 @@ class SessionActivity:
                         if isinstance(candidate, ToolResultBlock) and candidate.tool_use_id == use["tool_use_id"]
                     )
                     result_ts = result_event.meta.timestamp
+                call = parse_tool_call(block.name, block.input, on_error="other")
                 tool_uses.append(
                     ToolUse(
                         ref=EventRef(session_id, event.meta.uuid, block.id),
-                        call=parse_tool_call(block.name, block.input, on_error="other"),
+                        call=call,
                         result=result,
                         result_ts=result_ts,
+                        edits=edits_of(call),
                         turn_index=index,
                         ts=event.meta.timestamp,
                     )
