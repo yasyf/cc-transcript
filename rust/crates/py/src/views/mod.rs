@@ -61,6 +61,7 @@ pub(crate) fn add_view_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<transcript::TranscriptView>()?;
     m.add_class::<transcript::EventListView>()?;
     m.add_class::<command::RedirectView>()?;
+    m.add_class::<command::WordView>()?;
     m.add_class::<command::CommandView>()?;
     m.add_class::<command::OccurrenceView>()?;
     m.add_class::<command::CommandLineQueryView>()?;

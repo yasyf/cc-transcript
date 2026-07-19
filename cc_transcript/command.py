@@ -18,6 +18,10 @@ from cc_transcript._native import CommandLine as CommandLine
 from cc_transcript._native import CommandLineQuery as CommandLineQuery
 from cc_transcript._native import Occurrence as Occurrence
 from cc_transcript._native import Redirect as Redirect
+from cc_transcript._native import Word as Word
+from cc_transcript.literals import literal_int
+
+PAYLOAD_DEPTH_LIMIT: int = literal_int("command.PAYLOAD_DEPTH_LIMIT")
 
 parse_command_line = lru_cache(maxsize=4096)(CommandLine.parse)
 

@@ -369,7 +369,7 @@ fn lexicon_overrides() -> Vec<(String, i32)> {
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
-#[gen_stub(override_return_type(type_repr = "dict[str, str | float | list[str]]", imports = ()))]
+#[gen_stub(override_return_type(type_repr = "dict[str, str | float | int | list[str]]", imports = ()))]
 fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     use cc_transcript_core::literals::{command, corrections, feedback, mining, protocol};
 
@@ -441,6 +441,12 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("command.MULTI_LEVEL_TOOLS", command::MULTI_LEVEL_TOOLS)?;
     dict.set_item("command.COMPOUND_OPS", command::COMPOUND_OPS)?;
     dict.set_item("command.ASSIGNMENT_PATTERN", command::ASSIGNMENT_PATTERN)?;
+    dict.set_item("command.SHELL_COMMANDS", command::SHELL_COMMANDS)?;
+    dict.set_item(
+        "command.POSIX_QUOTING_SHELLS",
+        command::POSIX_QUOTING_SHELLS,
+    )?;
+    dict.set_item("command.PAYLOAD_DEPTH_LIMIT", command::PAYLOAD_DEPTH_LIMIT)?;
     dict.set_item("corrections.DDL", corrections::DDL)?;
     dict.set_item("feedback.FILE_SCHEMA", feedback::FILE_SCHEMA)?;
     dict.set_item("feedback.FEEDBACK_DDL", feedback::FEEDBACK_DDL)?;

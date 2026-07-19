@@ -33,7 +33,7 @@ PACKAGE = ROOT / "cc_transcript"
 
 @requires_rust
 def test_python_mirrors_read_from_native() -> None:
-    from cc_transcript import _native, filterspec
+    from cc_transcript import _native, command, filterspec
     from cc_transcript.corrections import CORRECTIONS_DDL
     from cc_transcript.filterspec import AGENT_INJECTION_GROUPS, INTERRUPT_MARKER_GROUPS, SENTIMENT_JUNK_GROUPS, group_pattern
     from cc_transcript.mining import confidence, signals, sourcekind, spec
@@ -69,6 +69,7 @@ def test_python_mirrors_read_from_native() -> None:
         "mining.NO_OPTION_SELECTED": signals.NO_OPTION_SELECTED,
         "mining.NONE": confidence.NONE,
         "mining.LOW": confidence.LOW,
+        "command.PAYLOAD_DEPTH_LIMIT": command.PAYLOAD_DEPTH_LIMIT,
         "corrections.DDL": CORRECTIONS_DDL,
         "feedback.FEEDBACK_DDL": FEEDBACK_DDL,
     }
@@ -92,6 +93,8 @@ def test_python_mirrors_read_from_native() -> None:
         "command.MULTI_LEVEL_TOOLS",
         "command.COMPOUND_OPS",
         "command.ASSIGNMENT_PATTERN",
+        "command.SHELL_COMMANDS",
+        "command.POSIX_QUOTING_SHELLS",
         "feedback.FILE_SCHEMA",
         "feedback.VERDICT_DDL_TEMPLATE",
         "feedback.EVENT_COLUMNS",

@@ -7,7 +7,8 @@ use regex::Regex;
 use tree_sitter::{Node, Parser};
 
 use crate::literals::command::{
-    ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, WRAPPER_COMMANDS,
+    ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS,
+    SHELL_COMMANDS, WRAPPER_COMMANDS,
 };
 use crate::pystr;
 
@@ -36,6 +37,60 @@ pub struct Redirect {
     pub fd: Option<i64>,
 }
 
+// A quote layer enclosing an occurrence's bytes in the outer raw, stacked outermost-first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteLayer {
+    Bare,
+    Single,
+    Double,
+}
+
+impl QuoteLayer {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            QuoteLayer::Bare => "",
+            QuoteLayer::Single => "'",
+            QuoteLayer::Double => "\"",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Word {
+    pub raw: String,
+    pub value: Option<String>,
+    pub span: Option<(usize, usize)>,
+    pub expandable: bool,
+    // Native-only: quote shape + the offset where `value` sits verbatim in the owning raw
+    // (None when quoting or escapes reshape it); excluded from PartialEq, Debug, and PyO3.
+    #[doc(hidden)]
+    pub layer: QuoteLayer,
+    #[doc(hidden)]
+    pub content_offset: Option<usize>,
+}
+
+impl PartialEq for Word {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+            && self.value == other.value
+            && self.span == other.span
+            && self.expandable == other.expandable
+    }
+}
+
+impl Eq for Word {}
+
+impl fmt::Debug for Word {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Word")
+            .field("raw", &self.raw)
+            .field("value", &self.value)
+            .field("span", &self.span)
+            .field("expandable", &self.expandable)
+            .finish()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Command {
     pub raw: String,
@@ -46,10 +101,18 @@ pub struct Command {
     // Parity: command.py Command.span — byte offsets (start, end), None when a redirect absorbs a
     // trailing word; carries compare=False, repr=False, so it is excluded from PartialEq and Debug.
     pub span: Option<(usize, usize)>,
-    // Native-only provenance for top-level selectors. Substitution commands remain visible in
-    // occurrence APIs; this flag is excluded from PartialEq, Debug, and the PyO3 command surface.
+    // words[0] is the executable word, words[1..] parallel args; empty for synthetic commands.
+    // Excluded from PartialEq and Debug, like span.
+    pub words: Vec<Word>,
+    // Substitution/payload hops from top level; top-level selectors filter on 0.
     #[doc(hidden)]
-    pub substitution: bool,
+    pub nesting: u8,
+    // Parts-vec back-offset to the hosting command; survives parts concatenation.
+    #[doc(hidden)]
+    pub host_delta: Option<usize>,
+    // Enclosing payload quote layers, outermost-first; empty at top level.
+    #[doc(hidden)]
+    pub contexts: Vec<QuoteLayer>,
 }
 
 impl PartialEq for Command {
@@ -88,6 +151,9 @@ pub enum SpliceError {
         index: isize,
         cursor: usize,
     },
+    NotEmbeddable {
+        index: isize,
+    },
     IndexOutOfRange,
 }
 
@@ -103,6 +169,10 @@ impl fmt::Display for SpliceError {
                 f,
                 "span ({}, {}) at index {index} overlaps or precedes cursor {cursor}",
                 span.0, span.1
+            ),
+            SpliceError::NotEmbeddable { index } => write!(
+                f,
+                "replacement at index {index} does not survive its enclosing quote layers"
             ),
             SpliceError::IndexOutOfRange => write!(f, "tuple index out of range"),
         }
@@ -149,7 +219,14 @@ impl Command {
             env: self.env.clone(),
             redirects: self.redirects.clone(),
             span: self.span,
-            substitution: self.substitution,
+            words: if self.words.is_empty() {
+                Vec::new()
+            } else {
+                self.words[argv.len() - stripped.len()..].to_vec()
+            },
+            nesting: self.nesting,
+            host_delta: self.host_delta,
+            contexts: self.contexts.clone(),
         }
     }
 
@@ -188,13 +265,23 @@ pub struct CommandLine {
 impl CommandLine {
     // Parity: command.py CommandLine.parse — blank/comment-only input yields empty parts.
     pub fn parse(raw: &str) -> CommandLine {
-        let mut parts = BASH_PARSER.with(|parser| match parser.borrow_mut().parse(raw, None) {
-            Some(tree) => walk_node(tree.root_node(), raw.as_bytes()),
+        CommandLine::parse_at_depth(raw, 0)
+    }
+
+    fn parse_at_depth(raw: &str, depth: u8) -> CommandLine {
+        // The borrow must drop before walking: payload enumeration re-enters parse_at_depth.
+        let tree = BASH_PARSER.with(|parser| parser.borrow_mut().parse(raw, None));
+        let mut parts = match tree {
+            Some(tree) => walk_node(tree.root_node(), raw.as_bytes(), depth),
             None => Vec::new(),
-        });
+        };
         // Nested inside an enumerated host's span: visible but span-less, like an absorbed word.
+        // Payload parts (non-empty contexts) keep mapped spans; splice guards them by embeddability.
         let spans: Vec<Option<(usize, usize)>> = parts.iter().map(|(cmd, _)| cmd.span).collect();
         for (i, (cmd, _)) in parts.iter_mut().enumerate() {
+            if !cmd.contexts.is_empty() {
+                continue;
+            }
             let Some((start, end)) = cmd.span else {
                 continue;
             };
@@ -221,14 +308,14 @@ impl CommandLine {
         self.parts
             .iter()
             .rev()
-            .find_map(|(cmd, _)| (!cmd.substitution).then_some(cmd))
+            .find_map(|(cmd, _)| (cmd.nesting == 0).then_some(cmd))
     }
 
     // Parity: command.py CommandLine.head — the first top-level command, or None.
     pub fn head(&self) -> Option<&Command> {
         self.parts
             .iter()
-            .find_map(|(cmd, _)| (!cmd.substitution).then_some(cmd))
+            .find_map(|(cmd, _)| (cmd.nesting == 0).then_some(cmd))
     }
 
     // Parity: command.py CommandLine.prefixes — each command's prefix, None dropped.
@@ -296,10 +383,11 @@ impl CommandLine {
             if index < 0 || index >= len {
                 return Err(SpliceError::IndexOutOfRange);
             }
-            let span = self.parts[index as usize]
-                .0
-                .span
-                .ok_or(SpliceError::NoSpan { index: key })?;
+            let part = &self.parts[index as usize].0;
+            let span = part.span.ok_or(SpliceError::NoSpan { index: key })?;
+            if !part.contexts.is_empty() && !embeddable(&part.contexts, text) {
+                return Err(SpliceError::NotEmbeddable { index: key });
+            }
             let (start, end) = span;
             if start < cursor {
                 return Err(SpliceError::Overlap {
@@ -412,6 +500,63 @@ pub fn dequote(raw: &str) -> &str {
     }
 }
 
+// Python shlex.quote's safe charset: ASCII alphanumerics plus `_@%+=:,./-`.
+fn shlex_safe(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte)
+}
+
+// Python shlex.quote semantics: safe-charset passthrough, else `'...'` with `'` -> `'\''`.
+pub fn shell_quote(text: &str) -> String {
+    if !text.is_empty() && text.bytes().all(shlex_safe) {
+        return text.to_string();
+    }
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+fn survives(layer: QuoteLayer, text: &str) -> bool {
+    match layer {
+        QuoteLayer::Single => !text.contains('\''),
+        QuoteLayer::Bare => !text.is_empty() && text.bytes().all(shlex_safe),
+        QuoteLayer::Double => {
+            let bytes = text.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => match bytes.get(i + 1) {
+                        Some(b'\\' | b'"' | b'$' | b'`') => i += 2,
+                        _ => return false,
+                    },
+                    b'"' | b'$' | b'`' => return false,
+                    _ => i += 1,
+                }
+            }
+            true
+        }
+    }
+}
+
+pub fn embeddable(contexts: &[QuoteLayer], text: &str) -> bool {
+    contexts.iter().all(|layer| survives(*layer, text))
+}
+
+// One shell word spelling `text` that survives every enclosing layer: bare, then single-quoted,
+// then double-quoted with `\ $ ` "` escaped; None when no spelling embeds cleanly.
+pub fn quote_for(contexts: &[QuoteLayer], text: &str) -> Option<String> {
+    let bare = (!text.is_empty() && text.bytes().all(shlex_safe)).then(|| text.to_string());
+    let single = (!text.contains('\'')).then(|| format!("'{text}'"));
+    let double = format!(
+        "\"{}\"",
+        text.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`")
+    );
+    [bare, single, Some(double)]
+        .into_iter()
+        .flatten()
+        .find(|candidate| embeddable(contexts, candidate))
+}
+
 fn node_text(node: Node, src: &[u8]) -> String {
     node.utf8_text(src).unwrap_or("").to_string()
 }
@@ -421,6 +566,153 @@ fn word_text(node: Node, src: &[u8]) -> String {
     match node.kind() {
         "string" | "raw_string" => dequote(node.utf8_text(src).unwrap_or("")).to_string(),
         _ => node_text(node, src),
+    }
+}
+
+// An unquoted glob (`* ? [`), a `{a,b}`/`{a..b}` brace expansion, or a leading tilde.
+fn word_expandable(raw: &str) -> bool {
+    raw.starts_with('~') || glob_or_brace(raw)
+}
+
+fn glob_or_brace(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    let mut in_brace = false;
+    let mut brace_sep = false;
+    let mut prev_dot = false;
+    while let Some(c) = chars.next() {
+        let dotted = prev_dot;
+        prev_dot = false;
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '*' | '?' | '[' => return true,
+            '{' => {
+                in_brace = true;
+                brace_sep = false;
+            }
+            ',' if in_brace => brace_sep = true,
+            '.' if in_brace => {
+                brace_sep = brace_sep || dotted;
+                prev_dot = true;
+            }
+            '}' if in_brace && brace_sep => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn unescaped(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push(chars.next().unwrap_or('\\')),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// Double-quote escape resolution; returns whether any escape reshaped the bytes. Tree-sitter
+// keeps `\"`-style escapes inside string_content, so this runs over content text too.
+fn resolve_double_quoted(text: &str, out: &mut String) -> bool {
+    let mut escaped = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some(&next @ ('$' | '`' | '"' | '\\')) => {
+                escaped = true;
+                chars.next();
+                out.push(next);
+            }
+            Some('\n') => {
+                escaped = true;
+                chars.next();
+            }
+            _ => out.push('\\'),
+        }
+    }
+    escaped
+}
+
+// Per-kind structural word resolution: value strips every quote layer and escape (None when an
+// unresolved expansion taints it), content_offset marks a verbatim contiguous source slice.
+fn analyze_word(node: Node, src: &[u8]) -> Word {
+    let node = match node.kind() {
+        "command_name" => node.child(0).unwrap_or(node),
+        _ => node,
+    };
+    let raw = node_text(node, src);
+    let span = (node.start_byte(), node.end_byte());
+    let word = |value: Option<String>, expandable, layer, content_offset| Word {
+        raw: raw.clone(),
+        value,
+        span: Some(span),
+        expandable,
+        layer,
+        content_offset,
+    };
+    match node.kind() {
+        "raw_string" => match raw.as_bytes() {
+            [b'\'', .., b'\''] => word(
+                Some(raw[1..raw.len() - 1].to_string()),
+                false,
+                QuoteLayer::Single,
+                Some(span.0 + 1),
+            ),
+            _ => word(None, false, QuoteLayer::Single, None),
+        },
+        "string" => {
+            let mut value = Some(String::new());
+            let mut content: Vec<Node> = Vec::new();
+            let mut escaped = false;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match (child.kind(), value.as_mut()) {
+                    ("\"", _) | (_, None) => {}
+                    ("string_content" | "escape_sequence", Some(v)) => {
+                        escaped |= resolve_double_quoted(&node_text(child, src), v);
+                        content.push(child);
+                    }
+                    _ => value = None,
+                }
+            }
+            let offset = (value.is_some() && !escaped && content.len() == 1)
+                .then(|| content[0].start_byte());
+            word(value, false, QuoteLayer::Double, offset)
+        }
+        "word" => {
+            let value = unescaped(&raw);
+            let offset = (value == raw).then_some(span.0);
+            word(Some(value), word_expandable(&raw), QuoteLayer::Bare, offset)
+        }
+        "number" => word(Some(raw.clone()), false, QuoteLayer::Bare, Some(span.0)),
+        "concatenation" => {
+            let mut cursor = node.walk();
+            let children: Vec<Node> = node.children(&mut cursor).collect();
+            let value = children
+                .iter()
+                .map(|child| analyze_word(*child, src).value)
+                .collect::<Option<Vec<String>>>()
+                .map(|values| values.concat());
+            // Glob and brace syntax splits across the unquoted pieces (`{a,b}` parses as three
+            // words), so expandability reads over their joined text; a tilde only counts when
+            // it leads the whole word.
+            let bare: String = children
+                .iter()
+                .filter(|child| child.kind() == "word")
+                .map(|child| node_text(*child, src))
+                .collect();
+            let expandable = raw.starts_with('~') || glob_or_brace(&bare);
+            word(value, expandable, QuoteLayer::Bare, None)
+        }
+        _ => word(None, false, QuoteLayer::Bare, None),
     }
 }
 
@@ -475,10 +767,14 @@ fn extract_command(node: Node, src: &[u8]) -> Command {
     let mut args: Vec<String> = Vec::new();
     let mut env: Vec<(String, String)> = Vec::new();
     let mut redirects: Vec<Redirect> = Vec::new();
+    let mut words: Vec<Word> = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "command_name" => executable = word_text(child, src),
+            "command_name" => {
+                executable = word_text(child, src);
+                words.push(analyze_word(child, src));
+            }
             "variable_assignment" => {
                 let mut vc = child.walk();
                 let children: Vec<Node> = child.children(&mut vc).collect();
@@ -498,6 +794,7 @@ fn extract_command(node: Node, src: &[u8]) -> Command {
                 } else {
                     args.push(word_text(child, src));
                 }
+                words.push(analyze_word(child, src));
             }
             _ => {}
         }
@@ -524,13 +821,19 @@ fn extract_command(node: Node, src: &[u8]) -> Command {
         env,
         redirects,
         span: Some(span),
-        substitution: false,
+        words,
+        ..Command::default()
     }
 }
 
 // Parity: command.py CommandLine.collect_parts — an operator child attaches as the last
 // part's op; every other child recurses and its parts are appended in order.
-fn collect_parts(node: Node, src: &[u8], ops: &[&str]) -> Vec<(Command, Option<String>)> {
+fn collect_parts(
+    node: Node,
+    src: &[u8],
+    ops: &[&str],
+    depth: u8,
+) -> Vec<(Command, Option<String>)> {
     let mut parts: Vec<(Command, Option<String>)> = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -541,14 +844,14 @@ fn collect_parts(node: Node, src: &[u8], ops: &[&str]) -> Vec<(Command, Option<S
             }
             continue;
         }
-        parts.extend(walk_node(child, src));
+        parts.extend(walk_node(child, src, depth));
     }
     parts
 }
 
 // Parity: command.py CommandLine.walk_redirected — statement redirects append to every
 // inner command; an empty inner yields one empty-executable command carrying them.
-fn walk_redirected(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+fn walk_redirected(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
     let mut redirects: Vec<Redirect> = Vec::new();
     let mut inner: Vec<(Command, Option<String>)> = Vec::new();
     let mut broken = false;
@@ -558,7 +861,7 @@ fn walk_redirected(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             redirects.push(extract_redirect(child, src));
             broken = broken || redirect_absorbed_word(child);
         } else {
-            inner.extend(walk_node(child, src));
+            inner.extend(walk_node(child, src, depth));
         }
     }
     if inner.is_empty() {
@@ -586,53 +889,153 @@ fn walk_redirected(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
 }
 
 // Parity: command.py CommandLine.walk_node — program/list/pipeline split at their ops,
-// command extracts, command substitutions mark their recursive commands, redirected_statement
-// unwraps, and everything else recurses in order.
-fn walk_node(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+// command extracts plus its substitution and payload parts, redirected_statement unwraps,
+// and everything else recurses in order.
+fn walk_node(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
     match node.kind() {
-        "program" => walk_program(node, src),
-        "list" => collect_parts(node, src, COMPOUND_OPS),
-        "pipeline" => collect_parts(node, src, &["|"]),
+        "program" => walk_program(node, src, depth),
+        "list" => collect_parts(node, src, COMPOUND_OPS, depth),
+        "pipeline" => collect_parts(node, src, &["|"], depth),
         "command" => {
             let mut parts = vec![(extract_command(node, src), None)];
-            parts.extend(substitution_parts(node, src));
+            parts.extend(substitution_parts(node, src, depth));
+            let payload = payload_parts(&parts[0].0, src, depth);
+            parts.extend(payload);
+            for index in 1..parts.len() {
+                if parts[index].0.nesting == 1 && parts[index].0.host_delta.is_none() {
+                    parts[index].0.host_delta = Some(index);
+                }
+            }
             parts
         }
-        "command_substitution" => walk_substitution(node, src),
-        "redirected_statement" => walk_redirected(node, src),
+        "command_substitution" => walk_substitution(node, src, depth),
+        "redirected_statement" => walk_redirected(node, src, depth),
         _ => {
             let mut parts = Vec::new();
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                parts.extend(walk_node(child, src));
+                parts.extend(walk_node(child, src, depth));
             }
             parts
         }
     }
 }
 
-fn walk_substitution(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+fn walk_substitution(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
     let mut parts = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        parts.extend(walk_node(child, src));
+        parts.extend(walk_node(child, src, depth));
     }
     for (cmd, _) in &mut parts {
-        cmd.substitution = true;
+        cmd.nesting = cmd.nesting.saturating_add(1);
     }
     parts
 }
 
 // Word/argument-position `$(…)`/backtick substitutions under a command node, enumerated as parts
 // mirroring assignment position: document order (host first), redirect targets excluded.
-fn substitution_parts(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+fn substitution_parts(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
     let mut parts = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "command_substitution" => parts.extend(walk_node(child, src)),
+            "command_substitution" => parts.extend(walk_node(child, src, depth)),
             "file_redirect" => {}
-            _ => parts.extend(substitution_parts(child, src)),
+            _ => parts.extend(substitution_parts(child, src, depth)),
+        }
+    }
+    parts
+}
+
+fn payload_flag(arg: &str) -> bool {
+    arg.strip_prefix('-').is_some_and(|rest| {
+        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_lowercase()) && rest.ends_with('c')
+    })
+}
+
+// The `-c` cluster must sit in the leading option run: options end at the first operand
+// (the script file) or `--`, and a `-o`/`-O` cluster consumes the next word as its argument.
+fn shell_payload(words: &[Word]) -> Option<(String, QuoteLayer, Option<usize>)> {
+    let mut index = 1;
+    while let Some(value) = words.get(index).and_then(|word| word.value.as_deref()) {
+        match value {
+            "--" => return None,
+            _ if !value.starts_with('-') => return None,
+            _ if payload_flag(value) => {
+                let word = words.get(index + 1)?;
+                return word
+                    .value
+                    .clone()
+                    .map(|value| (value, word.layer, word.content_offset));
+            }
+            _ if value.ends_with('o') || value.ends_with('O') => index += 2,
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn eval_payload(words: &[Word], src: &[u8]) -> Option<(String, QuoteLayer, Option<usize>)> {
+    match words {
+        [] => None,
+        [word] => word
+            .value
+            .clone()
+            .map(|value| (value, word.layer, word.content_offset)),
+        parts => {
+            let joined = parts
+                .iter()
+                .map(|word| word.value.as_deref())
+                .collect::<Option<Vec<&str>>>()?
+                .join(" ");
+            let offset = match (parts[0].span, parts[parts.len() - 1].span) {
+                (Some((start, _)), Some((_, end)))
+                    if src.get(start..end) == Some(joined.as_bytes()) =>
+                {
+                    Some(start)
+                }
+                _ => None,
+            };
+            Some((joined, QuoteLayer::Bare, offset))
+        }
+    }
+}
+
+// Shell `-c` / `eval` payloads enumerated as first-class nested parts, mirroring
+// substitution_parts: the payload re-parses depth-capped and hoists behind the host. Span
+// mapping is structural — a verbatim contiguous payload keeps outer-raw spans; escapes,
+// taint, and non-POSIX quoting go span-less. A tainted payload emits nothing.
+fn payload_parts(host: &Command, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
+    if depth >= PAYLOAD_DEPTH_LIMIT {
+        return Vec::new();
+    }
+    let unwrapped = host.unwrapped();
+    let words = &unwrapped.words;
+    let Some(exe) = words.first().and_then(|word| word.value.as_deref()) else {
+        return Vec::new();
+    };
+    let exe = exe.rsplit('/').next().unwrap_or(exe);
+    let payload = match exe {
+        "eval" => eval_payload(&words[1..], src),
+        _ if SHELL_COMMANDS.contains(&exe) => shell_payload(words),
+        _ => return Vec::new(),
+    };
+    let Some((value, layer, offset)) = payload else {
+        return Vec::new();
+    };
+    let offset = match exe == "eval" || POSIX_QUOTING_SHELLS.contains(&exe) {
+        true => offset,
+        false => None,
+    };
+    let mut parts = CommandLine::parse_at_depth(&value, depth + 1).parts;
+    for (cmd, _) in &mut parts {
+        cmd.nesting = cmd.nesting.saturating_add(1);
+        cmd.contexts.insert(0, layer);
+        cmd.span = offset.and_then(|offset| cmd.span.map(|(s, e)| (s + offset, e + offset)));
+        for word in &mut cmd.words {
+            word.span = offset.and_then(|offset| word.span.map(|(s, e)| (s + offset, e + offset)));
+            word.content_offset = offset.and_then(|offset| word.content_offset.map(|c| c + offset));
         }
     }
     parts
@@ -640,7 +1043,7 @@ fn substitution_parts(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> 
 
 // Parity: command.py CommandLine.walk_program — collect_parts over `;`, dropping the heredoc body
 // and delimiter lines that tree-sitter's multi-heredoc ERROR recovery re-parses as sibling commands.
-fn walk_program(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
+fn walk_program(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
     let mut parts: Vec<(Command, Option<String>)> = Vec::new();
     let mut suppress_until = 0usize;
     let mut cursor = node.walk();
@@ -658,7 +1061,7 @@ fn walk_program(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
         // A degraded multi-heredoc: emit its command(s) span-less (splice must never rewrite heredoc
         // bytes), then suppress the sibling nodes re-parsed from its heredoc text.
         if let Some(range_end) = heredoc_suppression(child, src) {
-            let mut inner = walk_node(child, src);
+            let mut inner = walk_node(child, src, depth);
             for (cmd, _) in inner.iter_mut() {
                 cmd.span = None;
             }
@@ -666,7 +1069,7 @@ fn walk_program(node: Node, src: &[u8]) -> Vec<(Command, Option<String>)> {
             suppress_until = range_end;
             continue;
         }
-        parts.extend(walk_node(child, src));
+        parts.extend(walk_node(child, src, depth));
     }
     parts
 }
@@ -1189,5 +1592,335 @@ mod tests {
             CommandLine::parse("ls -la").rewrite_occurrences(|_| None),
             Ok(None)
         );
+    }
+
+    // The v14.3 word layer: per-argument structural resolution parallel to args.
+    #[test]
+    fn words_resolve_per_quote_shape() {
+        let cmd =
+            CommandLine::parse("echo plain 'sq x' \"dq y\" a\\ b pre'mid'post $V ~/f *.rs {a,b}")
+                .head()
+                .cloned()
+                .unwrap();
+        assert_eq!(cmd.words.len(), cmd.args.len() + 1);
+        let values: Vec<Option<&str>> = cmd.words.iter().map(|w| w.value.as_deref()).collect();
+        assert_eq!(
+            values,
+            [
+                Some("echo"),
+                Some("plain"),
+                Some("sq x"),
+                Some("dq y"),
+                Some("a b"),
+                Some("premidpost"),
+                None,
+                Some("~/f"),
+                Some("*.rs"),
+                Some("{a,b}"),
+            ]
+        );
+        let expandable: Vec<bool> = cmd.words.iter().map(|w| w.expandable).collect();
+        assert_eq!(
+            expandable,
+            [false, false, false, false, false, false, false, true, true, true]
+        );
+    }
+
+    #[test]
+    fn word_double_quote_escapes_resolve_and_expansions_taint() {
+        let word = |raw: &str| {
+            CommandLine::parse(&format!("echo {raw}"))
+                .head()
+                .cloned()
+                .unwrap()
+                .words[1]
+                .clone()
+        };
+        assert_eq!(word("\"a\\\"b\"").value.as_deref(), Some("a\"b"));
+        assert_eq!(word("\"\\$HOME\"").value.as_deref(), Some("$HOME"));
+        assert_eq!(word("\"a$(b)c\"").value, None);
+        assert_eq!(word("\"a${V}b\"").value, None);
+        assert_eq!(word("\"*\"").expandable, false);
+        // Escapes reshape the content, so the resolved value has no verbatim source slice.
+        let line = CommandLine::parse("echo \"a\\\"b\"");
+        let escaped = &line.head().unwrap().words[1];
+        assert_eq!(escaped.span, Some((5, 11)));
+        // A clean double-quoted word keeps a span over its raw, quotes included.
+        let clean = CommandLine::parse("echo \"ab\"");
+        assert_eq!(clean.head().unwrap().words[1].span, Some((5, 9)));
+        assert_eq!(&clean.raw[5..9], "\"ab\"");
+    }
+
+    #[test]
+    fn words_slice_through_unwrapped() {
+        let cmd = CommandLine::parse("sudo env X=1 git push")
+            .primary()
+            .cloned()
+            .unwrap();
+        assert_eq!(cmd.words[0].value.as_deref(), Some("sudo"));
+        let unwrapped = cmd.unwrapped();
+        assert_eq!(unwrapped.argv(), ["git", "push"]);
+        assert_eq!(
+            unwrapped
+                .words
+                .iter()
+                .map(|w| w.value.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("git"), Some("push")]
+        );
+        // Synthetic commands carry no words.
+        assert!(CommandLine::parse("> out").parts[0].0.words.is_empty());
+    }
+
+    // Shell -c payloads enumerate as first-class nested parts, mirroring substitutions.
+    #[test]
+    fn payload_parts_enumerate_shell_dash_c() {
+        let line = CommandLine::parse("bash -c 'rm -rf /tmp/x'");
+        assert_eq!(execs(&line), ["bash", "rm"]);
+        let payload = &line.parts[1].0;
+        assert_eq!(payload.args, ["-rf", "/tmp/x"]);
+        assert_eq!(payload.nesting, 1);
+        assert_eq!(payload.host_delta, Some(1));
+        assert_eq!(payload.contexts, [super::QuoteLayer::Single]);
+        let (start, end) = payload.span.unwrap();
+        assert_eq!(&line.raw[start..end], "rm -rf /tmp/x");
+        let (ws, we) = payload.words[0].span.unwrap();
+        assert_eq!(&line.raw[ws..we], "rm");
+        // Top-level selectors skip nested parts.
+        assert_eq!(line.primary().unwrap().executable, "bash");
+        assert_eq!(line.head().unwrap().executable, "bash");
+        // Double-quoted and bare payloads map spans too; flag clusters count.
+        let double = CommandLine::parse("sh -c \"rm x\"");
+        assert_eq!(execs(&double), ["sh", "rm"]);
+        assert_eq!(double.parts[1].0.contexts, [super::QuoteLayer::Double]);
+        let (start, end) = double.parts[1].0.span.unwrap();
+        assert_eq!(&double.raw[start..end], "rm x");
+        let bare = CommandLine::parse("bash -c ls");
+        assert_eq!(execs(&bare), ["bash", "ls"]);
+        assert_eq!(bare.parts[1].0.contexts, [super::QuoteLayer::Bare]);
+        assert_eq!(bare.parts[1].0.span, Some((8, 10)));
+        assert_eq!(execs(&CommandLine::parse("bash -lc 'ls'")), ["bash", "ls"]);
+        assert_eq!(execs(&CommandLine::parse("zsh -xc 'ls'")), ["zsh", "ls"]);
+        // Wrappers unwrap first; absolute shell paths resolve by basename.
+        assert_eq!(
+            execs(&CommandLine::parse("sudo bash -c 'ls'")),
+            ["sudo", "ls"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse("env X=1 /bin/sh -c 'ls'")),
+            ["env", "ls"]
+        );
+    }
+
+    #[test]
+    fn payload_eval_joins_words() {
+        let single = CommandLine::parse("eval 'rm x'");
+        assert_eq!(execs(&single), ["eval", "rm"]);
+        let (start, end) = single.parts[1].0.span.unwrap();
+        assert_eq!(&single.raw[start..end], "rm x");
+        // Bare multi-word eval maps only when the join is the verbatim source slice.
+        let bare = CommandLine::parse("eval rm x");
+        assert_eq!(execs(&bare), ["eval", "rm"]);
+        assert_eq!(bare.parts[1].0.span, Some((5, 9)));
+        let quoted = CommandLine::parse("eval \"rm\" \"x\"");
+        assert_eq!(execs(&quoted), ["eval", "rm"]);
+        assert_eq!(quoted.parts[1].0.span, None);
+    }
+
+    #[test]
+    fn payload_tainted_or_missing_emits_no_parts() {
+        assert_eq!(execs(&CommandLine::parse("bash -c \"rm $X\"")), ["bash"]);
+        assert_eq!(execs(&CommandLine::parse("bash -c \"$CMD\"")), ["bash"]);
+        assert_eq!(execs(&CommandLine::parse("bash -c")), ["bash"]);
+        assert_eq!(execs(&CommandLine::parse("bash script.sh")), ["bash"]);
+        assert_eq!(execs(&CommandLine::parse("eval \"$CMD\"")), ["eval"]);
+    }
+
+    // Operand-terminates-options: a `-c` after the script operand or `--` is a positional
+    // argument the shell passes through, never the command flag.
+    #[test]
+    fn payload_options_end_at_first_operand() {
+        assert_eq!(
+            execs(&CommandLine::parse("bash script.sh -c 'rm x'")),
+            ["bash"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse("bash -- s.sh -c 'rm x'")),
+            ["bash"]
+        );
+        assert_eq!(execs(&CommandLine::parse("bash -s x -c 'rm x'")), ["bash"]);
+        // `-o`/`-O` clusters consume their argument without ending the option run.
+        assert_eq!(
+            execs(&CommandLine::parse("bash -euo pipefail -c 'rm x'")),
+            ["bash", "rm"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse("bash -O extglob -c 'ls'")),
+            ["bash", "ls"]
+        );
+    }
+
+    // bash only tilde-expands a word-leading `~`; one buried mid-concatenation stays literal.
+    #[test]
+    fn concatenation_tilde_must_lead_the_word() {
+        let word = |raw: &str| {
+            CommandLine::parse(&format!("echo {raw}"))
+                .head()
+                .cloned()
+                .unwrap()
+                .words[1]
+                .clone()
+        };
+        assert!(!word("\"foo\"~bar").expandable);
+        assert!(word("~/\"x\"").expandable);
+        assert!(word("'a'*").expandable);
+    }
+
+    #[test]
+    fn payload_depth_caps_enumeration() {
+        // Four shell levels: the third's payload still enumerates, the fourth's does not.
+        let line = CommandLine::parse(r#"bash -c 'bash -c "bash -c \"bash -c ls\""'"#);
+        assert_eq!(execs(&line), ["bash", "bash", "bash", "bash"]);
+        assert_eq!(
+            line.parts
+                .iter()
+                .map(|(cmd, _)| cmd.nesting)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn payload_non_posix_shell_enumerates_span_less() {
+        let line = CommandLine::parse("fish -c 'rm x'");
+        assert_eq!(execs(&line), ["fish", "rm"]);
+        assert_eq!(line.parts[1].0.span, None);
+        assert_eq!(line.parts[1].0.contexts, [super::QuoteLayer::Single]);
+    }
+
+    #[test]
+    fn payload_splice_embeds_or_refuses() {
+        let line = CommandLine::parse("bash -c 'rm -rf /tmp/x'");
+        assert_eq!(
+            line.splice(&BTreeMap::from([(1, "trash /tmp/x".to_string())]))
+                .unwrap(),
+            "bash -c 'trash /tmp/x'"
+        );
+        // A single quote cannot survive the single-quote layer.
+        assert_eq!(
+            line.splice(&BTreeMap::from([(1, "echo 'hi'".to_string())])),
+            Err(SpliceError::NotEmbeddable { index: 1 })
+        );
+        // Host and nested payload cannot rewrite simultaneously.
+        assert!(matches!(
+            line.splice(&BTreeMap::from([
+                (0, "X".to_string()),
+                (1, "Y".to_string())
+            ])),
+            Err(SpliceError::Overlap { .. })
+        ));
+        // The double-quote layer refuses expansions the outer shell would evaluate.
+        let double = CommandLine::parse("bash -c \"rm x\"");
+        assert_eq!(
+            double
+                .splice(&BTreeMap::from([(1, "trash x".to_string())]))
+                .unwrap(),
+            "bash -c \"trash x\""
+        );
+        assert_eq!(
+            double.splice(&BTreeMap::from([(1, "echo $HOME".to_string())])),
+            Err(SpliceError::NotEmbeddable { index: 1 })
+        );
+        // A bare payload keeps single-word replacements only.
+        let bare = CommandLine::parse("bash -c rm");
+        assert_eq!(
+            bare.splice(&BTreeMap::from([(1, "trash".to_string())]))
+                .unwrap(),
+            "bash -c trash"
+        );
+        assert_eq!(
+            bare.splice(&BTreeMap::from([(1, "trash x".to_string())])),
+            Err(SpliceError::NotEmbeddable { index: 1 })
+        );
+    }
+
+    #[test]
+    fn payload_parts_carry_operators_like_substitutions() {
+        let line = CommandLine::parse("bash -c 'ls' && foo");
+        assert_eq!(execs(&line), ["bash", "ls", "foo"]);
+        assert_eq!(line.parts[0].1, None);
+        assert_eq!(line.parts[1].1.as_deref(), Some("&&"));
+        assert_eq!(line.primary().unwrap().executable, "foo");
+    }
+
+    #[test]
+    fn nested_hosts_resolve_through_host_delta() {
+        let line = CommandLine::parse("diff $(b $(c))");
+        assert_eq!(execs(&line), ["diff", "b", "c"]);
+        assert_eq!(line.parts[1].0.host_delta, Some(1));
+        assert_eq!(line.parts[2].0.host_delta, Some(1));
+        // An assignment-position substitution has no hosting command part.
+        let assign = CommandLine::parse("x=$(a)");
+        assert_eq!(line.parts[1].0.nesting, 1);
+        assert_eq!(assign.parts[0].0.host_delta, None);
+        // Substitutions inside a payload nest below it, carrying its quote layer.
+        let nested = CommandLine::parse("bash -c 'echo $(a)'");
+        assert_eq!(execs(&nested), ["bash", "echo", "a"]);
+        assert_eq!(nested.parts[1].0.nesting, 1);
+        assert_eq!(nested.parts[1].0.host_delta, Some(1));
+        assert_eq!(nested.parts[2].0.nesting, 2);
+        assert_eq!(nested.parts[2].0.host_delta, Some(1));
+        assert_eq!(nested.parts[2].0.contexts, [super::QuoteLayer::Single]);
+        assert_eq!(nested.parts[2].0.span, None);
+    }
+
+    #[test]
+    fn nested_payload_stacks_contexts_and_splices() {
+        let line = CommandLine::parse("bash -c 'sh -c \"rm x\"'");
+        assert_eq!(execs(&line), ["bash", "sh", "rm"]);
+        assert_eq!(
+            line.parts[2].0.contexts,
+            [super::QuoteLayer::Single, super::QuoteLayer::Double]
+        );
+        let (start, end) = line.parts[2].0.span.unwrap();
+        assert_eq!(&line.raw[start..end], "rm x");
+        assert_eq!(
+            line.splice(&BTreeMap::from([(2, "trash x".to_string())]))
+                .unwrap(),
+            "bash -c 'sh -c \"trash x\"'"
+        );
+    }
+
+    #[test]
+    fn shell_quote_matches_shlex_semantics() {
+        assert_eq!(super::shell_quote("abc"), "abc");
+        assert_eq!(super::shell_quote("a b"), "'a b'");
+        assert_eq!(super::shell_quote("a'b"), "'a'\\''b'");
+        assert_eq!(super::shell_quote(""), "''");
+    }
+
+    #[test]
+    fn quote_for_picks_the_first_surviving_spelling() {
+        use super::QuoteLayer::{Bare, Double, Single};
+        assert_eq!(super::quote_for(&[], "ab").as_deref(), Some("ab"));
+        assert_eq!(super::quote_for(&[], "a b").as_deref(), Some("'a b'"));
+        assert_eq!(super::quote_for(&[Single], "ab").as_deref(), Some("ab"));
+        assert_eq!(
+            super::quote_for(&[Single], "a b").as_deref(),
+            Some("\"a b\"")
+        );
+        assert_eq!(super::quote_for(&[Double], "ab").as_deref(), Some("ab"));
+        // Single quotes transport verbatim through a double layer; the inner shell strips them.
+        assert_eq!(super::quote_for(&[Double], "a b").as_deref(), Some("'a b'"));
+        assert_eq!(super::quote_for(&[Bare], "ab").as_deref(), Some("ab"));
+        assert_eq!(super::quote_for(&[Bare], "a b"), None);
+        assert_eq!(
+            super::quote_for(&[Single, Double], "ab").as_deref(),
+            Some("ab")
+        );
+        assert_eq!(super::quote_for(&[Single, Double], "a b"), None);
+        assert!(super::embeddable(&[], "anything ' at all"));
+        assert!(super::embeddable(&[Double], "trash \\$HOME"));
+        assert!(!super::embeddable(&[Double], "trash $HOME"));
     }
 }

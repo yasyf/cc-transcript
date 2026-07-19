@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from cc_transcript.command import (
+    PAYLOAD_DEPTH_LIMIT,
     Command,
     CommandLine,
     Redirect,
+    Word,
     command_prefixes,
     parse_command_line,
 )
@@ -322,6 +324,69 @@ class TestCommandSubstitutions:
         line = CommandLine.parse("x=$(ccx repo overview)")
         assert line.commands[0].span == (4, 21)
         assert line.splice({0: "ls"}) == "x=$(ls)"
+
+
+class TestWords:
+    def test_words_parallel_args(self) -> None:
+        cmd = parse("echo 'sq x' \"dq\" plain $V")
+        assert isinstance(cmd.words, tuple)
+        assert len(cmd.words) == len(cmd.args) + 1
+        assert [w.raw for w in cmd.words] == ["echo", "'sq x'", '"dq"', "plain", "$V"]
+        assert [w.value for w in cmd.words] == ["echo", "sq x", "dq", "plain", None]
+        start, end = cmd.words[1].span or (0, 0)
+        assert cmd.raw[start:end] == "'sq x'"
+        assert cmd.words[1].expandable is False
+        assert parse("ls *.py").words[1].expandable is True
+
+    def test_word_constructs_and_compares(self) -> None:
+        word = Word("x", value="x", span=(0, 1), expandable=False)
+        assert word == Word("x", value="x", span=(0, 1))
+        assert word != Word("y", value="y")
+        assert repr(word).startswith("Word(")
+
+
+class TestPayloads:
+    def test_shell_payload_enumerates(self) -> None:
+        line = CommandLine.parse("bash -c 'rm -rf /tmp/x'")
+        assert [cmd.executable for cmd in line.commands] == ["bash", "rm"]
+        host, payload = line.occurrences
+        assert (host.nesting, payload.nesting) == (0, 1)
+        assert host.host is None
+        assert payload.host is not None
+        assert payload.host.index == 0
+        assert host.quote_contexts == ()
+        assert payload.quote_contexts == ("'",)
+        assert line.primary is not None
+        assert line.primary.executable == "bash"
+
+    def test_payload_splice_and_embed_guard(self) -> None:
+        line = CommandLine.parse("bash -c 'rm -rf /tmp/x'")
+        assert line.splice({1: "trash /tmp/x"}) == "bash -c 'trash /tmp/x'"
+        with pytest.raises(ValueError, match="quote layers"):
+            line.splice({1: "echo 'hi'"})
+
+    def test_quote_helpers(self) -> None:
+        assert CommandLine.quote("safe.txt") == "safe.txt"
+        assert CommandLine.quote("a b") == "'a b'"
+        assert CommandLine.quote("a'b") == "'a'\\''b'"
+        occ = CommandLine.parse("bash -c 'x'").occurrences[1]
+        assert occ.embeddable("trash /tmp/x") is True
+        assert occ.embeddable("don't") is False
+        assert occ.quote_for("a b") == '"a b"'
+        top = CommandLine.parse("ls").occurrences[0]
+        assert top.embeddable("anything ' goes") is True
+        assert top.quote_for("a b") == "'a b'"
+
+    def test_operand_ends_the_option_scan(self) -> None:
+        script = CommandLine.parse("bash script.sh -c 'rm x'")
+        assert [cmd.executable for cmd in script.commands] == ["bash"]
+        terminated = CommandLine.parse("bash -- s.sh -c 'rm x'")
+        assert [cmd.executable for cmd in terminated.commands] == ["bash"]
+        flagged = CommandLine.parse("bash -euo pipefail -c 'rm x'")
+        assert [cmd.executable for cmd in flagged.commands] == ["bash", "rm"]
+
+    def test_depth_limit_exported(self) -> None:
+        assert PAYLOAD_DEPTH_LIMIT == 3
 
 
 class TestCommandLineQuery:

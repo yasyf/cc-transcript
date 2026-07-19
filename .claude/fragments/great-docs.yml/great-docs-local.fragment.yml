@@ -211,6 +211,7 @@ reference:
       - CommandLineQuery
       - Occurrence
       - Redirect
+      - Word
       - parse_command_line
       - command_prefixes
   - title: Tool facts

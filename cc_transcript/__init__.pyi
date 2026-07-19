@@ -33,6 +33,7 @@ from cc_transcript.command import (
     CommandLineQuery as CommandLineQuery,
     Occurrence as Occurrence,
     Redirect as Redirect,
+    Word as Word,
     command_prefixes as command_prefixes,
     parse_command_line as parse_command_line,
 )
@@ -421,6 +422,7 @@ __all__ = [
     "UserEvent",
     "WatchEvent",
     "Watcher",
+    "Word",
     "WorkflowCall",
     "WriteCall",
     "WriteResult",

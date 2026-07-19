@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from cc_transcript import _native
 
-LITERALS: dict[str, str | float | list[str]] = _native.embedded_literals()
+LITERALS: dict[str, str | float | int | list[str]] = _native.embedded_literals()
 
 
 def literal_str(key: str) -> str:
@@ -24,4 +24,10 @@ def literal_str(key: str) -> str:
 def literal_float(key: str) -> float:
     value = LITERALS[key]
     assert isinstance(value, float), key
+    return value
+
+
+def literal_int(key: str) -> int:
+    value = LITERALS[key]
+    assert isinstance(value, int), key
     return value

@@ -6,7 +6,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyType};
 use pyo3::IntoPyObjectExt;
 
-use cc_transcript_core::command::{dequote, Command, CommandLine, Redirect, SpliceError};
+use cc_transcript_core::command::{
+    dequote, shell_quote, Command, CommandLine, QuoteLayer, Redirect, SpliceError, Word,
+};
 
 use crate::views::dunder::view_dunders;
 
@@ -64,6 +66,70 @@ impl RedirectView {
 }
 
 view_dunders!(RedirectView, "Redirect", fields = [op, target, fd]);
+
+/// One structural word of a parsed command (``Command.words``).
+/// Attributes:
+///     raw: verbatim source text.
+///     value: literal with quotes/escapes removed; None when an expansion taints it.
+///     span: byte span in the owning ``CommandLine.raw``; None without verbatim source.
+///     expandable: bash would glob/brace/tilde-expand despite the literal value.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(
+    name = "Word",
+    module = "cc_transcript.command",
+    frozen,
+    from_py_object
+)]
+#[derive(Clone)]
+pub(crate) struct WordView {
+    pub w: Word,
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl WordView {
+    #[new]
+    #[pyo3(signature = (raw, value=None, span=None, expandable=false))]
+    fn new(
+        raw: String,
+        value: Option<String>,
+        span: Option<(usize, usize)>,
+        expandable: bool,
+    ) -> Self {
+        WordView {
+            w: Word {
+                raw,
+                value,
+                span,
+                expandable,
+                layer: QuoteLayer::Bare,
+                content_offset: None,
+            },
+        }
+    }
+
+    #[getter]
+    fn raw(&self, _py: Python<'_>) -> PyResult<String> {
+        Ok(self.w.raw.clone())
+    }
+
+    #[getter]
+    fn value(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.w.value.clone())
+    }
+
+    #[getter]
+    fn span(&self, _py: Python<'_>) -> PyResult<Option<(usize, usize)>> {
+        Ok(self.w.span)
+    }
+
+    #[getter]
+    fn expandable(&self, _py: Python<'_>) -> PyResult<bool> {
+        Ok(self.w.expandable)
+    }
+}
+
+view_dunders!(WordView, "Word", fields = [raw, value, span, expandable]);
 
 /// A single parsed shell command with executable, arguments, env vars, and redirects.
 ///
@@ -125,7 +191,7 @@ impl CommandView {
                     .map(|rv| rv.r)
                     .collect(),
                 span,
-                substitution: false,
+                ..Command::default()
             },
         }
     }
@@ -184,6 +250,14 @@ impl CommandView {
     #[getter]
     fn span(&self, _py: Python<'_>) -> PyResult<Option<(usize, usize)>> {
         Ok(self.cmd.span)
+    }
+
+    /// The structural words: ``words[0]`` is the executable, ``words[1:]`` parallel ``args``.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[cc_transcript.command.Word, ...]", imports = ("cc_transcript.command",)))]
+    fn words<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pyo3::types::PyTuple::new(py, self.cmd.words.iter().map(|w| WordView { w: w.clone() }))?
+            .into_bound_py_any(py)
     }
 
     #[getter]
@@ -328,6 +402,50 @@ impl OccurrenceView {
     fn piped(&self, _py: Python<'_>) -> PyResult<bool> {
         Ok(self.line.piped(self.index))
     }
+
+    /// Substitution/payload hops below top level; 0 for a top-level command.
+    #[getter]
+    fn nesting(&self, _py: Python<'_>) -> PyResult<u8> {
+        Ok(self.line.parts[self.index].0.nesting)
+    }
+
+    /// The occurrence hosting this nested part, or None at top level.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "cc_transcript.command.Occurrence | None", imports = ("cc_transcript.command",)))]
+    fn host(&self, _py: Python<'_>) -> PyResult<Option<OccurrenceView>> {
+        Ok(self.line.parts[self.index]
+            .0
+            .host_delta
+            .map(|delta| OccurrenceView {
+                line: Arc::clone(&self.line),
+                index: self.index - delta,
+            }))
+    }
+
+    /// Enclosing payload quote layers outermost-first: ``"'"``, ``'"'``, or ``""`` (bare).
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
+    fn quote_contexts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pyo3::types::PyTuple::new(
+            py,
+            self.line.parts[self.index]
+                .0
+                .contexts
+                .iter()
+                .map(|layer| layer.symbol()),
+        )?
+        .into_bound_py_any(py)
+    }
+
+    /// Whether splicing ``text`` at this occurrence survives every enclosing quote layer.
+    fn embeddable(&self, text: &str) -> bool {
+        cc_transcript_core::command::embeddable(&self.line.parts[self.index].0.contexts, text)
+    }
+
+    /// One shell-word spelling of ``text`` that survives every enclosing layer, or None.
+    fn quote_for(&self, text: &str) -> Option<String> {
+        cc_transcript_core::command::quote_for(&self.line.parts[self.index].0.contexts, text)
+    }
 }
 
 view_dunders!(OccurrenceView, "Occurrence", fields = [line, index]);
@@ -450,6 +568,12 @@ impl CommandLineView {
     #[staticmethod]
     fn dequote(text: &str) -> String {
         dequote(text).to_string()
+    }
+
+    /// Quote ``text`` as one POSIX-sh word, with Python ``shlex.quote`` semantics.
+    #[staticmethod]
+    fn quote(text: &str) -> String {
+        shell_quote(text)
     }
 
     #[getter]

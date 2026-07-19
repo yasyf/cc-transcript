@@ -95,6 +95,7 @@ __all__ = [
     "Usage",
     "UserEvent",
     "WatchTailer",
+    "Word",
     "WorkflowCall",
     "WriteCall",
     "WriteResult",
@@ -411,6 +412,11 @@ class Command:
     @property
     def span(self) -> typing.Optional[tuple[builtins.int, builtins.int]]: ...
     @property
+    def words(self) -> tuple[Word, ...]:
+        r"""
+        The structural words: ``words[0]`` is the executable, ``words[1:]`` parallel ``args``.
+        """
+    @property
     def argv(self) -> tuple[str, ...]: ...
     @property
     def program(self) -> builtins.str: ...
@@ -470,6 +476,11 @@ class CommandLine:
     def parse(cls, raw: builtins.str) -> CommandLine: ...
     @staticmethod
     def dequote(text: builtins.str) -> builtins.str: ...
+    @staticmethod
+    def quote(text: builtins.str) -> builtins.str:
+        r"""
+        Quote ``text`` as one POSIX-sh word, with Python ``shlex.quote`` semantics.
+        """
     def splice(self, replacements: typing.Mapping[builtins.int, builtins.str]) -> builtins.str: ...
     def rewrite_occurrences(self, to: collections.abc.Callable[[Occurrence], str | None]) -> typing.Optional[builtins.str]: ...
     def __iter__(self) -> collections.abc.Iterator[Command]: ...
@@ -1087,7 +1098,30 @@ class Occurrence:
     def next_op(self) -> typing.Optional[builtins.str]: ...
     @property
     def piped(self) -> builtins.bool: ...
+    @property
+    def nesting(self) -> builtins.int:
+        r"""
+        Substitution/payload hops below top level; 0 for a top-level command.
+        """
+    @property
+    def host(self) -> Occurrence | None:
+        r"""
+        The occurrence hosting this nested part, or None at top level.
+        """
+    @property
+    def quote_contexts(self) -> tuple[str, ...]:
+        r"""
+        Enclosing payload quote layers outermost-first: ``"'"``, ``'"'``, or ``""`` (bare).
+        """
     def __new__(cls, line: CommandLine, index: builtins.int) -> Occurrence: ...
+    def embeddable(self, text: builtins.str) -> builtins.bool:
+        r"""
+        Whether splicing ``text`` at this occurrence survives every enclosing quote layer.
+        """
+    def quote_for(self, text: builtins.str) -> typing.Optional[builtins.str]:
+        r"""
+        One shell-word spelling of ``text`` that survives every enclosing layer, or None.
+        """
 
 @typing.final
 class OtherAttachment:
@@ -2064,6 +2098,27 @@ class WatchTailer:
         """
 
 @typing.final
+class Word:
+    r"""
+    One structural word of a parsed command (``Command.words``).
+    Attributes:
+        raw: verbatim source text.
+        value: literal with quotes/escapes removed; None when an expansion taints it.
+        span: byte span in the owning ``CommandLine.raw``; None without verbatim source.
+        expandable: bash would glob/brace/tilde-expand despite the literal value.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def raw(self) -> builtins.str: ...
+    @property
+    def value(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def span(self) -> typing.Optional[tuple[builtins.int, builtins.int]]: ...
+    @property
+    def expandable(self) -> builtins.bool: ...
+    def __new__(cls, raw: builtins.str, value: typing.Optional[builtins.str] = None, span: typing.Optional[tuple[builtins.int, builtins.int]] = None, expandable: builtins.bool = False) -> Word: ...
+
+@typing.final
 class WorkflowCall(ToolCallBase):
     r"""
     A Workflow dynamic-orchestration dispatch.
@@ -2162,7 +2217,7 @@ def discovery_subagent_paths(path: builtins.str | os.PathLike | pathlib.Path) ->
 
 def discovery_subagent_transcripts(path: builtins.str | os.PathLike | pathlib.Path) -> dict[str, pathlib.Path]: ...
 
-def embedded_literals() -> dict[str, str | float | list[str]]: ...
+def embedded_literals() -> dict[str, str | float | int | list[str]]: ...
 
 def expand_tool_names(spec: builtins.str) -> frozenset[str]:
     r"""

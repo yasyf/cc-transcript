@@ -26,3 +26,8 @@ pub const MULTI_LEVEL_TOOLS: &[&str] = &[
 ];
 pub const COMPOUND_OPS: &[&str] = &["&", "&&", ";", "|", "||"];
 pub const ASSIGNMENT_PATTERN: &str = "^\\w+=";
+pub const SHELL_COMMANDS: &[&str] = &[
+    "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh",
+];
+pub const POSIX_QUOTING_SHELLS: &[&str] = &["ash", "bash", "dash", "ksh", "sh", "zsh"];
+pub const PAYLOAD_DEPTH_LIMIT: u8 = 3;
