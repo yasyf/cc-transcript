@@ -143,6 +143,7 @@ __all__ = [
     "mcp_access",
     "mcp_parts",
     "mine_events",
+    "mining_sample_refs",
     "nlp_analyze",
     "noise_spec_json",
     "notifications_from_events",
@@ -2408,6 +2409,13 @@ def mcp_parts(name: builtins.str) -> tuple[str, str] | None:
     """
 
 def mine_events(events: list[models.TranscriptEvent], spec_json: builtins.str, callable_formats: typing.Sequence[tuple[builtins.str, typing.Any, typing.Any]]) -> list[dict[str, typing.Any]]: ...
+
+def mining_sample_refs(data: bytes, n: builtins.int, exclude: typing.Sequence[tuple[builtins.str, builtins.str]], exclusion_radius: builtins.int, seed: builtins.int) -> builtins.list[tuple[builtins.int, builtins.str, builtins.str]]:
+    r"""
+    The seeded negative-window draw over a transcript's completed turns
+    (mining/sampling.py sample_windows candidate build + draw): returns each drawn
+    anchor as `(turn_index, session_id, event_uuid)`, sorted by turn index.
+    """
 
 def nlp_analyze(text: builtins.str) -> builtins.list[tuple[builtins.str, builtins.str, builtins.str, builtins.str, builtins.int, builtins.int, builtins.int, builtins.bool]]:
     r"""

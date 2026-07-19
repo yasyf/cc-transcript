@@ -95,6 +95,21 @@ def test_sample_windows_exclusion_radius_is_backward_only() -> None:
     assert any(index > 7 for index in indexes)
 
 
+def test_sample_windows_exclusion_on_the_final_turn_clears_the_preceding_radius() -> None:
+    raw = make_transcript()
+    activity = make_activity(raw)
+    final = EventRef(SESSION, EventUuid("a15"))  # resolves to the final turn, itself never a candidate
+    windows = sample_windows(raw, n=99, exclude=(final,), exclusion_radius=3)
+    assert [anchor_index(activity, w) for w in windows] == list(range(12))
+
+
+def test_sample_windows_accepts_arbitrary_int_seeds() -> None:
+    raw = make_transcript()
+    huge = sample_windows(raw, n=3, seed=2**63)
+    assert huge == sample_windows(raw, n=3, seed=2**63)
+    assert [w.anchor for w in huge] != [w.anchor for w in sample_windows(raw, n=3, seed=7)]
+
+
 def test_sample_windows_ignores_unresolvable_exclusions() -> None:
     raw = make_transcript()
     ghost = EventRef(SESSION, EventUuid("compacted-away"))
@@ -109,3 +124,12 @@ def test_sample_windows_skips_turns_without_resolvable_meta() -> None:
     )
     activity = make_activity(raw)
     assert [anchor_index(activity, w) for w in sample_windows(raw, n=99)] == [1, 2, 3]
+
+
+def test_sample_windows_native_draw_is_pinned() -> None:
+    # Freezes the exact Rust-native seeded draw for one (seed, transcript) pair, so
+    # the deterministic sample stays stable across processes and releases.
+    raw = make_transcript()
+    activity = make_activity(raw)
+    indexes = [anchor_index(activity, w) for w in sample_windows(raw, n=3, seed=7)]
+    assert indexes == [0, 5, 14]

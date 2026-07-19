@@ -11,20 +11,16 @@ model input: both shapes read as the turns up to the moment being judged.
 
 from __future__ import annotations
 
-import random
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from cc_transcript.activity import SessionActivity
+from cc_transcript import _native
 from cc_transcript.context import capture_window
-from cc_transcript.filterspec import event_meta
-from cc_transcript.ids import EventRef
-from cc_transcript.parser import parse_events_from_bytes
+from cc_transcript.ids import EventRef, EventUuid, SessionId
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from cc_transcript.activity import Turn
     from cc_transcript.context import ContextWindow
 
 
@@ -52,9 +48,9 @@ def sample_windows(
     meta (the anchor), except the session's final turn, which may still be in
     flight. Every candidate in the ``exclusion_radius`` turns leading up to an
     ``exclude`` ref's turn is dropped; refs that no longer resolve are
-    ignored. Sampling is deterministic:
-    ``random.Random(f"{seed}:{session_id}")`` draws from the candidates in
-    turn order, so one seed always yields the same windows for a session.
+    ignored. The draw is a Rust-native deterministic sample keyed on
+    ``f"{seed}:{session_id}"`` — stable across processes and releases from
+    this version on, so one seed always yields the same windows for a session.
 
     Args:
         raw: The session's transcript bytes to sample from.
@@ -74,24 +70,24 @@ def sample_windows(
     Returns:
         The sampled windows, sorted by sampled turn index.
     """
-    events = parse_events_from_bytes(raw)
-    session_id = next(meta.session_id for event in events if (meta := event_meta(event)) is not None)
-    activity = SessionActivity.from_events(session_id, events)
-    excluded = {turn.index for ref in exclude if (turn := activity.turn_of(ref)) is not None}
-    candidates = [
-        (turn.index, anchor)
-        for turn in activity.turns[:-1]
-        if all(not (0 <= index - turn.index <= exclusion_radius) for index in excluded)
-        if (anchor := turn_anchor(turn)) is not None
-    ]
-    rng = random.Random(f"{seed}:{session_id}")
-    chosen = rng.sample(candidates, min(n, len(candidates)))
     return [
         fold_trigger(
-            capture_window(raw, anchor, before=before, after=after, preview_chars=preview_chars),
+            capture_window(
+                raw,
+                EventRef(SessionId(session_id), EventUuid(event_uuid)),
+                before=before,
+                after=after,
+                preview_chars=preview_chars,
+            ),
             keep=before,
         )
-        for _, anchor in sorted(chosen, key=lambda pair: pair[0])
+        for _, session_id, event_uuid in _native.mining_sample_refs(
+            raw,
+            n,
+            [(ref.session_id, ref.event_uuid) for ref in exclude],
+            exclusion_radius,
+            str(seed),
+        )
     ]
 
 
@@ -104,11 +100,3 @@ def fold_trigger(window: ContextWindow, *, keep: int) -> ContextWindow:
     """
     folded = (*window.before, *(() if window.trigger is None else (window.trigger,)))
     return replace(window, before=folded[-keep:] if keep > 0 else (), trigger=None)
-
-
-def turn_anchor(turn: Turn) -> EventRef | None:
-    """The reference to ``turn``'s first meta-bearing event, or None without one."""
-    return next(
-        (EventRef(meta.session_id, meta.uuid) for event in turn.events if (meta := event_meta(event)) is not None),
-        None,
-    )

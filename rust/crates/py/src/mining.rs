@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use chrono::{DateTime, FixedOffset};
-use pyo3::exceptions::PyTypeError;
+use chrono::{DateTime, Datelike, FixedOffset};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
+use cc_transcript_core::activity::{lift_session, sample_refs};
 use cc_transcript_core::filter::compile_group_array;
 use cc_transcript_core::literals::mining::{
     ANSWER_NOTES_SEP, ANSWER_PREVIEW_SEP, DETECTOR_ASK_USER_QUESTION, DETECTOR_DENIAL,
@@ -15,7 +16,7 @@ use cc_transcript_core::literals::mining::{
     DETECTOR_REVIEW_COMMENT, DETECTOR_TRANSCRIPT_MESSAGE, INTERRUPT_REJECTION, LOW, NONE,
     NO_OPTION_SELECTED, PLAN_REVIEW, QUESTION_ANSWER, REVIEW_COMMENT, TRANSCRIPT_MESSAGE,
 };
-use cc_transcript_core::parse::parse_questions;
+use cc_transcript_core::parse::{parse_bytes, parse_questions};
 use cc_transcript_core::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
     ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
@@ -25,6 +26,8 @@ use cc_transcript_core::types::{
     UserEntry,
 };
 use cc_transcript_core::value::{field, field_bool, field_str};
+
+use crate::views::convert::parse_err;
 
 // FINDING_KEYS prefix is folded into finding_keys by structured_format_to_dict, so the
 // compiled spec already carries the full alias list; no constant needed here.
@@ -1527,6 +1530,37 @@ fn mine_events_impl<'py>(
         iter_ask_user_question(py, events, spec, &uses, &mut out)?;
     }
     Ok(out)
+}
+
+/// The seeded negative-window draw over a transcript's completed turns
+/// (mining/sampling.py sample_windows candidate build + draw): returns each drawn
+/// anchor as `(turn_index, session_id, event_uuid)`, sorted by turn index.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (data, n, exclude, exclusion_radius, seed))]
+pub(crate) fn mining_sample_refs(
+    py: Python<'_>,
+    #[gen_stub(override_type(type_repr = "bytes"))] data: &[u8],
+    n: usize,
+    exclude: Vec<(String, String)>,
+    exclusion_radius: usize,
+    seed: String,
+) -> PyResult<Vec<(usize, String, String)>> {
+    py.detach(|| {
+        let entries = parse_bytes(data, |_| true).map_err(parse_err)?;
+        // Mirror the materialization drop: a year-0000 timestamp has no Python
+        // datetime, so parse_events_from_bytes never yields it (context.rs does the same).
+        let capped: Vec<Entry> = entries
+            .into_iter()
+            .filter(|entry| entry.meta().is_none_or(|meta| meta.timestamp.year() >= 1))
+            .collect();
+        let session_id = capped
+            .iter()
+            .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()))
+            .ok_or_else(|| PyValueError::new_err("transcript has no session id"))?;
+        let lift = lift_session(&session_id, &capped);
+        Ok(sample_refs(&lift, n, &exclude, exclusion_radius, &seed))
+    })
 }
 
 #[cfg(test)]

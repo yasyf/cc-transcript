@@ -4,6 +4,7 @@ use chrono::{DateTime, FixedOffset};
 use once_cell::sync::Lazy;
 
 use crate::pystr;
+use crate::rng::{sample_indexes, seeded};
 use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{
     matches_names, AssistantEntry, AttachmentDetail, ContentBlock, Entry, ToolResultBlock,
@@ -614,6 +615,63 @@ pub fn lift_session_refs<'a>(
         .map(|(index, segment)| lift_turn(index, segment, entries, &results))
         .collect();
     LiftedSession { session_id, turns }
+}
+
+// Parity: mining/sampling.py turn_anchor
+fn turn_anchor<'a>(turn: &Turn<'a>) -> Option<(&'a str, &'a str)> {
+    turn.events.iter().find_map(|&event| {
+        event
+            .meta()
+            .map(|meta| (meta.session_id.as_str(), meta.uuid.as_str()))
+    })
+}
+
+// Parity: activity.py SessionActivity.turn_of (matches by event uuid only)
+fn turn_index_of_uuid(lift: &LiftedSession, uuid: &str) -> Option<usize> {
+    lift.turns.iter().find_map(|turn| {
+        turn.events
+            .iter()
+            .any(|event| event.meta().is_some_and(|meta| meta.uuid == uuid))
+            .then_some(turn.index)
+    })
+}
+
+/// The seeded negative-window draw: every turn with a resolvable anchor except the
+/// final turn, cleared of the backward exclusion radius around each resolvable
+/// `exclude` ref, drawn deterministically and returned as `(turn_index, session_id,
+/// event_uuid)` anchors sorted by turn index (mining/sampling.py sample_windows).
+pub fn sample_refs(
+    lift: &LiftedSession,
+    n: usize,
+    exclude: &[(String, String)],
+    exclusion_radius: usize,
+    seed: &str,
+) -> Vec<(usize, String, String)> {
+    let excluded: HashSet<usize> = exclude
+        .iter()
+        .filter_map(|(_, uuid)| turn_index_of_uuid(lift, uuid))
+        .collect();
+    let candidates: Vec<(usize, String, String)> = lift
+        .turns
+        .iter()
+        .take(lift.turns.len().saturating_sub(1))
+        .filter(|turn| {
+            excluded
+                .iter()
+                .all(|&index| !(index >= turn.index && index - turn.index <= exclusion_radius))
+        })
+        .filter_map(|turn| {
+            turn_anchor(turn).map(|(sid, uuid)| (turn.index, sid.to_string(), uuid.to_string()))
+        })
+        .collect();
+    let mut rng = seeded(&format!("{seed}:{}", lift.session_id));
+    let mut chosen: Vec<(usize, String, String)> =
+        sample_indexes(&mut rng, candidates.len(), n.min(candidates.len()))
+            .into_iter()
+            .map(|index| candidates[index].clone())
+            .collect();
+    chosen.sort_by_key(|(index, _, _)| *index);
+    chosen
 }
 
 /// A tool use located by positional index within the input slice: `event_idx` is
