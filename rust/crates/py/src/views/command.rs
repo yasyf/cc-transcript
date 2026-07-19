@@ -304,6 +304,21 @@ impl CommandView {
             .runs(&argv.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
+    #[gen_stub(override_return_type(type_repr = "tuple[tuple[cc_transcript.command.Word, ...], tuple[cc_transcript.command.Word, ...]]", imports = ("cc_transcript.command",)))]
+    fn split_options<'py>(
+        &self,
+        py: Python<'py>,
+        value_flags: Vec<String>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let (options, operands) = self
+            .cmd
+            .split_options(&value_flags.iter().map(String::as_str).collect::<Vec<_>>());
+        Ok((
+            pyo3::types::PyTuple::new(py, options.into_iter().map(|w| WordView { w }))?.into_any(),
+            pyo3::types::PyTuple::new(py, operands.into_iter().map(|w| WordView { w }))?.into_any(),
+        ))
+    }
+
     fn matches(&self, py: Python<'_>, pattern: &str) -> PyResult<bool> {
         py.import("re")?
             .call_method1("search", (pattern, self.str_value()))?

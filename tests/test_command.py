@@ -153,6 +153,35 @@ class TestUnwrapped:
         assert cmd.env == (("VAR", "1"),)
         assert cmd.redirects == (Redirect(op=">", target="log.txt", fd=None),)
 
+    @pytest.mark.parametrize(
+        ("raw", "executable"),
+        [
+            pytest.param("env -u HOME rm /x", "rm", id="env_unset_value_flag"),
+            pytest.param("sudo -u root rm /x", "rm", id="sudo_user_value_flag"),
+            pytest.param("timeout 5s rm /x", "rm", id="timeout_duration_suffix"),
+            pytest.param("sudo -u root -g wheel rm /x", "rm", id="sudo_two_value_flags"),
+            pytest.param("env --unset=HOME rm /x", "rm", id="equals_join_consumes_nothing"),
+            pytest.param("nice -n 10 rm /x", "rm", id="nice_flag_and_integer"),
+            pytest.param("xargs -I{} rm {}", "rm", id="xargs_replace"),
+            pytest.param("sudo env -u HOME rm /x", "rm", id="nested_wrapper_chain"),
+            pytest.param("sudo -Z rm /x", "rm", id="unknown_flag_flag_only_skip"),
+            pytest.param("/usr/bin/sudo rm /x", "rm", id="basename_head"),
+        ],
+    )
+    def test_arity_aware_unwrap_reaches_real_command(self, raw: str, executable: str) -> None:
+        assert parse(raw).unwrapped.executable == executable
+
+    @pytest.mark.parametrize(
+        ("raw", "executable"),
+        [
+            pytest.param("timeout rm -rf /", "rm", id="non_digit_slot_is_command"),
+            pytest.param("timeout git push", "git", id="bare_command_after_timeout"),
+            pytest.param("timeout ٣ git push", "٣", id="arabic_digit_not_skipped"),
+        ],
+    )
+    def test_operand_skip_only_consumes_digit_led_duration(self, raw: str, executable: str) -> None:
+        assert parse(raw).unwrapped.executable == executable
+
 
 class TestPrefix:
     @pytest.mark.parametrize(
@@ -184,6 +213,32 @@ class TestCommandRuns:
     )
     def test_runs_unwraps_wrappers(self, argv: tuple[str, ...], expected: bool) -> None:
         assert parse("sudo git push -f").runs(*argv) is expected
+
+
+class TestSplitOptions:
+    @pytest.mark.parametrize(
+        ("raw", "value_flags", "options", "operands"),
+        [
+            pytest.param("cmd -a -- -b c", (), ("-a",), ("-b", "c"), id="double_dash_terminates"),
+            pytest.param("cmd - -v", (), ("-v",), ("-",), id="lone_dash_is_operand"),
+            pytest.param("cmd -o file rest", ("-o",), ("-o", "file"), ("rest",), id="value_flag_consumes_next"),
+            pytest.param("cmd -o=file rest", ("-o",), ("-o=file",), ("rest",), id="equals_join_consumes_nothing"),
+            pytest.param("cmd", ("-o",), (), (), id="empty_args"),
+        ],
+    )
+    def test_split_options(
+        self, raw: str, value_flags: tuple[str, ...], options: tuple[str, ...], operands: tuple[str, ...]
+    ) -> None:
+        opts, opers = parse(raw).split_options(value_flags)
+        assert tuple(word.value for word in opts) == options
+        assert tuple(word.value for word in opers) == operands
+
+    def test_split_options_returns_words_with_provenance(self) -> None:
+        opts, opers = parse('run --name "x y" pos').split_options(("--name",))
+        assert tuple(word.value for word in opts) == ("--name", "x y")
+        assert opts[1].raw == '"x y"'
+        assert opts[1].span is not None
+        assert tuple(word.value for word in opers) == ("pos",)
 
 
 class TestCommandLine:
