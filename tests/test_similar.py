@@ -30,6 +30,11 @@ INSERT_EVENT = (
 )
 
 
+needs_judge_extra = pytest.mark.skipif(
+    any(find_spec(name) is None for name in similar.JUDGE_DEPS),
+    reason="install cc-transcript[judge]",
+)
+
 def fake_embed(text: str) -> np.ndarray:
     import numpy as np
 
@@ -82,6 +87,7 @@ async def table_exists(store: FeedbackStore, name: str) -> bool:
     return bool(await store.sql("SELECT 1 FROM sqlite_master WHERE name = ?", [name]))
 
 
+@needs_judge_extra
 async def test_record_verdict_inserts_one_vector_and_rerecord_upserts(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "always use uv not pip"])
@@ -119,6 +125,7 @@ async def test_verdict_without_canonical_key_never_touches_the_vector_store(tmp_
         assert await table_exists(store, "verdict_vectors") is False
 
 
+@needs_judge_extra
 async def test_full_to_full_noop_does_not_re_upsert_the_vector(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "use uv not pip"])
@@ -142,6 +149,7 @@ async def test_full_to_full_noop_does_not_re_upsert_the_vector(tmp_path: Path, f
         assert evidence == [("first-rule",)]
 
 
+@needs_judge_extra
 async def test_dropping_canonical_key_on_upgrade_clears_stale_evidence(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "always use uv not pip"])
@@ -174,6 +182,7 @@ async def test_dropping_canonical_key_on_upgrade_clears_stale_evidence(tmp_path:
         assert verdict_ck is None
 
 
+@needs_judge_extra
 async def test_dropping_canonical_key_clears_evidence_on_a_fresh_connection(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "always use uv not pip"])
@@ -198,6 +207,7 @@ async def test_dropping_canonical_key_clears_evidence_on_a_fresh_connection(tmp_
         assert await counts(store) == (0, 0)
 
 
+@needs_judge_extra
 async def test_dropping_canonical_key_clears_evidence_with_only_sqlite_vec_installed(
     tmp_path: Path, fake_embedder: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -225,6 +235,7 @@ async def test_dropping_canonical_key_clears_evidence_with_only_sqlite_vec_insta
         assert await counts(store) == (0, 0)
 
 
+@needs_judge_extra
 async def test_judge_and_auditor_evidence_coexist_on_one_event(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "always use uv not pip"])
@@ -245,6 +256,7 @@ async def test_judge_and_auditor_evidence_coexist_on_one_event(tmp_path: Path, f
         assert rows == [("auditor", "use-uv-auditor"), ("judge", "use-uv-judge")]
 
 
+@needs_judge_extra
 async def test_repeated_record_verdict_prepares_the_fresh_connection_once(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         for i in range(4):
@@ -263,6 +275,7 @@ async def test_repeated_record_verdict_prepares_the_fresh_connection_once(tmp_pa
         assert verdicts == 4
 
 
+@needs_judge_extra
 async def test_suggest_returns_the_seeded_neighbor_first(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await seed(store, "k1", "always use uv not pip", "use-uv-not-pip")
@@ -273,6 +286,7 @@ async def test_suggest_returns_the_seeded_neighbor_first(tmp_path: Path, fake_em
     assert result[0].score > result[1].score
 
 
+@needs_judge_extra
 async def test_suggest_aggregates_multiple_evidence_rows_per_key(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await seed(store, "k1", "use uv not pip", "use-uv-not-pip")
@@ -286,6 +300,7 @@ async def test_suggest_aggregates_multiple_evidence_rows_per_key(tmp_path: Path,
     assert top.sentences == ("use uv not pip", "use uv over pip")
 
 
+@needs_judge_extra
 async def test_suggest_caps_sentences_at_three(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         for i in range(5):
@@ -295,6 +310,7 @@ async def test_suggest_caps_sentences_at_three(tmp_path: Path, fake_embedder: No
     assert len(top.sentences) == 3
 
 
+@needs_judge_extra
 async def test_suggest_scopes_to_prompt_version(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await seed(store, "k1", "use uv not pip", "use-uv-not-pip", prompt_version=1)
@@ -303,6 +319,7 @@ async def test_suggest_scopes_to_prompt_version(tmp_path: Path, fake_embedder: N
     assert [s.canonical_key for s in result] == ["other-rule-pv2"]
 
 
+@needs_judge_extra
 async def test_near_duplicate_finds_synonym_pair_and_respects_threshold(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await seed(store, "k1", "use uv not pip", "use-uv")

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from dataclasses import dataclass
+from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
 import pytest
 
 from cc_transcript.activity import SessionActivity
+from cc_transcript.judge import similar
 from cc_transcript.context import ContextWindow, TurnRef
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import EventRef, EventUuid, SessionId
@@ -87,6 +89,11 @@ INSERT_EVENT_CONTEXT = (
 
 EMPTY_GOLDEN = GoldenResult(total=0, passed=0, sha256="", failures=())
 
+
+needs_judge_extra = pytest.mark.skipif(
+    any(find_spec(name) is None for name in similar.JUDGE_DEPS),
+    reason="install cc-transcript[judge]",
+)
 
 def window_json() -> str:
     anchor = EventRef(SessionId("s"), EventUuid("u"))
@@ -222,6 +229,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
         ),
     ],
 )
+@needs_judge_extra
 async def test_verdict_store_roundtrip(
     tmp_path: Path,
     schema: StoreSchema,
@@ -299,6 +307,7 @@ async def test_same_key_different_model_never_holds_two_rows(tmp_path: Path) -> 
     assert after_full == {"n": 1, "model": "haiku", "summary": "c", "ck": None, "fidelity": "full"}
 
 
+@needs_judge_extra
 async def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp_path: Path) -> None:
     async with await open_generic(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
@@ -322,6 +331,7 @@ async def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_k
     assert result == {"n": 1, "model": "opus", "summary": "hydrated", "ck": "new-rule", "fidelity": "full"}
 
 
+@needs_judge_extra
 async def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
     async with await open_generic(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
@@ -345,6 +355,7 @@ async def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
     assert result == {"n": 1, "model": "sonnet", "summary": "first", "ck": "first-rule", "fidelity": "full"}
 
 
+@needs_judge_extra
 async def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
     async with await open_generic(tmp_path) as store:
         for key in ("k1", "k2"):
