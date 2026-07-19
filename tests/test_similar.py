@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import sys
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
@@ -85,6 +86,20 @@ async def counts(store: FeedbackStore) -> tuple[int, int]:
 
 async def table_exists(store: FeedbackStore, name: str) -> bool:
     return bool(await store.sql("SELECT 1 FROM sqlite_master WHERE name = ?", [name]))
+
+
+async def write_vector(
+    store: FeedbackStore, *, vector_id: str, canonical_key: str, vector: np.ndarray, prompt_version: int = 1
+) -> None:
+    await store.execute(
+        "INSERT INTO verdict_vectors(vector_id, embedding) VALUES (?, ?)",
+        [vector_id, similar.serialize_vector(vector)],
+    )
+    await store.execute(
+        "INSERT INTO verdict_evidence(vector_id, dedup_key, role, prompt_version, canonical_key, evidence_text) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [vector_id, vector_id, "judge", prompt_version, canonical_key, vector_id],
+    )
 
 
 @needs_judge_extra
@@ -334,6 +349,71 @@ async def test_near_duplicate_finds_synonym_pair_and_respects_threshold(tmp_path
     assert result["high"] == []
 
 
+@needs_judge_extra
+async def test_near_duplicate_similarities_match_the_numpy_reference(tmp_path: Path, fake_embedder: None) -> None:
+    import numpy as np
+
+    def vec(*values: float) -> np.ndarray:
+        v = np.zeros(similar.EMBED_DIM, dtype=np.float32)
+        v[: len(values)] = values
+        return v
+
+    stored = [
+        ("va1", "key-a", vec(1.0, 0.1)),
+        ("va2", "key-a", vec(0.9, 0.2)),
+        ("vb1", "key-b", vec(0.8, 0.4)),
+        ("vb2", "key-b", vec(0.7, 0.5)),
+        ("vc1", "key-c", vec(0.2, 1.0)),
+        ("vc2", "key-c", vec(0.1, 0.9)),
+    ]
+    async with await open_store(tmp_path) as store:
+        await similar.prepare_connection(store)
+        for vector_id, canonical_key, vector in stored:
+            await write_vector(store, vector_id=vector_id, canonical_key=canonical_key, vector=vector)
+        result = await near_duplicate_keys(store, prompt_version=1, threshold=0.5)
+
+    groups: dict[str, list[np.ndarray]] = {}
+    for _, canonical_key, vector in stored:
+        groups.setdefault(canonical_key, []).append(vector)
+    centroids = {ck: (mean := np.mean(vectors, axis=0)) / np.linalg.norm(mean) for ck, vectors in groups.items()}
+    keys = sorted(centroids)
+    expected = sorted(
+        (
+            (key_a, key_b, similarity)
+            for i, key_a in enumerate(keys)
+            for key_b in keys[i + 1 :]
+            if (similarity := float(np.dot(centroids[key_a], centroids[key_b]))) > 0.5
+        ),
+        key=lambda pair: pair[2],
+        reverse=True,
+    )
+    assert [(o.key_a, o.key_b) for o in result] == [(key_a, key_b) for key_a, key_b, _ in expected]
+    for overlap, (_, _, similarity) in zip(result, expected, strict=True):
+        assert overlap.similarity == pytest.approx(similarity, abs=1e-6)
+
+
+@needs_judge_extra
+async def test_suggest_scores_are_exactly_one_minus_vec_distance(tmp_path: Path, fake_embedder: None) -> None:
+    async with await open_store(tmp_path) as store:
+        await seed(store, "k1", "use uv not pip", "use-uv-not-pip")
+        await seed(store, "k2", "use uv over pip", "use-uv-not-pip")
+        await seed(store, "k3", "run the tests before commit", "run-tests")
+        result = await suggest_canonical_keys(store, "please use uv", prompt_version=1, k=5)
+        query = similar.serialize_vector(fake_embed("please use uv"))
+        raw = await store.sql(
+            "SELECT e.canonical_key AS ck, vec_distance_cosine(v.embedding, ?) AS dist "
+            "FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id "
+            "WHERE e.prompt_version = 1 ORDER BY dist",
+            [query],
+        )
+    closest: dict[str, float] = {}
+    for row in raw:
+        closest.setdefault(str(row["ck"]), 1.0 - float(row["dist"]))
+    assert {s.canonical_key for s in result} == set(closest)
+    for suggestion in result:
+        assert suggestion.score == closest[suggestion.canonical_key]
+
+
 @pytest.mark.parametrize("missing", ["model2vec", "numpy", "sqlite_vec"])
 def test_missing_extra_raises_importerror_naming_the_extra(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
     monkeypatch.setitem(sys.modules, missing, None)
@@ -357,6 +437,22 @@ async def test_record_verdict_with_canonical_key_fails_loud_and_writes_no_verdic
                 fidelity="full",
             )
         assert (await store.sql("SELECT COUNT(*) AS n FROM verdicts"))[0]["n"] == 0
+
+
+@needs_judge_extra
+async def test_vec_table_rejects_corrupt_embedding_blobs_at_write(tmp_path: Path, fake_embedder: None) -> None:
+    # sqlite-vec's vec0 table enforces blob shape at INSERT, so the engine's decode
+    # guards stay unreachable through SQL — corruption fails loudly at the write.
+    async with await open_store(tmp_path) as store:
+        await seed(store, "k1", "use uv over pip", "use-uv-not-pip")
+        with pytest.raises(sqlite3.OperationalError, match="divisible by 4"):
+            await store.execute(
+                "INSERT INTO verdict_vectors(vector_id, embedding) VALUES (?, ?)", ["torn", b"\x00\x01\x02"]
+            )
+        with pytest.raises(sqlite3.OperationalError, match="(?i)dimension"):
+            await store.execute(
+                "INSERT INTO verdict_vectors(vector_id, embedding) VALUES (?, ?)", ["short", b"\x00" * 8]
+            )
 
 
 def potion_is_cached() -> bool:

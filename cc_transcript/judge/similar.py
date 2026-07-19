@@ -288,19 +288,10 @@ async def suggest_canonical_keys(store: FeedbackStore, text: str, *, prompt_vers
     await prepare_connection(store)
     embedder = await asyncio.to_thread(default_embedder)
     query = serialize_vector(await asyncio.to_thread(embedder, text))
-    ranked: dict[str, list[tuple[float, str]]] = {}
-    for row in await store.sql(
-        "SELECT e.canonical_key AS ck, e.evidence_text AS ev, vec_distance_cosine(v.embedding, ?) AS dist "
-        "FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id "
-        "WHERE e.prompt_version = ? ORDER BY dist",
-        [query, prompt_version],
-    ):
-        ranked.setdefault(str(row["ck"]), []).append((1.0 - float(row["dist"]), str(row["ev"])))
-    return sorted(
-        (Suggestion(ck, hits[0][0], tuple(ev for _, ev in hits[:3])) for ck, hits in ranked.items()),
-        key=lambda suggestion: suggestion.score,
-        reverse=True,
-    )[:k]
+    return [
+        Suggestion(ck, score, tuple(sentences))
+        for ck, score, sentences in await store.engine.suggest_canonical_keys(query, prompt_version, k)
+    ]
 
 
 async def near_duplicate_keys(store: FeedbackStore, *, prompt_version: int, threshold: float) -> list[KeyOverlap]:
@@ -325,26 +316,8 @@ async def near_duplicate_keys(store: FeedbackStore, *, prompt_version: int, thre
         ImportError: When the ``cc-transcript[judge]`` extra is not installed.
     """
     require_judge_extra()
-    import numpy as np
-
     await prepare_connection(store)
-    groups: dict[str, list[np.ndarray]] = {}
-    for row in await store.sql(
-        "SELECT e.canonical_key AS ck, v.embedding AS emb "
-        "FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id "
-        "WHERE e.prompt_version = ?",
-        [prompt_version],
-    ):
-        groups.setdefault(str(row["ck"]), []).append(np.frombuffer(row["emb"], dtype=np.float32))
-    centroids = {ck: (mean := np.mean(vectors, axis=0)) / np.linalg.norm(mean) for ck, vectors in groups.items()}
-    keys = sorted(centroids)
-    return sorted(
-        (
-            KeyOverlap(key_a, key_b, similarity)
-            for i, key_a in enumerate(keys)
-            for key_b in keys[i + 1 :]
-            if (similarity := float(np.dot(centroids[key_a], centroids[key_b]))) > threshold
-        ),
-        key=lambda overlap: overlap.similarity,
-        reverse=True,
-    )
+    return [
+        KeyOverlap(key_a, key_b, similarity)
+        for key_a, key_b, similarity in await store.engine.near_duplicate_keys(prompt_version, threshold)
+    ]

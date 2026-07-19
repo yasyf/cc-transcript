@@ -2,7 +2,7 @@
 //! The Python facade keeps `_txn_owner` over the bare txn control; DDL lives in `literals`.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{params, Connection, OpenFlags};
@@ -465,6 +465,128 @@ impl FeedbackEngine {
             ],
         )
     }
+
+    /// Ranks canonical keys by their closest evidence vector's cosine similarity to the
+    /// serialized `query` embedding, scoped to `prompt_version`. `vec_distance_cosine`
+    /// resolves on the sqlite-vec extension the facade loads onto this connection.
+    // Parity: similar.py suggest_canonical_keys
+    pub fn suggest_canonical_keys(
+        &self,
+        query: &[u8],
+        prompt_version: i64,
+        k: usize,
+    ) -> Result<Vec<(String, f64, Vec<String>)>, LedgerError> {
+        let rows = self.sql(
+            "SELECT e.canonical_key AS ck, e.evidence_text AS ev, \
+             vec_distance_cosine(v.embedding, ?) AS dist \
+             FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id \
+             WHERE e.prompt_version = ? ORDER BY dist",
+            &[SqlCell::Blob(query.to_vec()), SqlCell::Int(prompt_version)],
+        )?;
+        let mut ranked: Vec<(String, f64, Vec<String>)> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for row in &rows {
+            let ck = cell_text(row, "ck")
+                .ok_or_else(|| vec_error("suggest row missing canonical_key"))?;
+            let ev = cell_text(row, "ev")
+                .ok_or_else(|| vec_error("suggest row missing evidence_text"))?;
+            let score = 1.0
+                - cell_real(row, "dist")
+                    .ok_or_else(|| vec_error("suggest row missing distance"))?;
+            match index.get(&ck) {
+                Some(&i) => {
+                    if ranked[i].2.len() < 3 {
+                        ranked[i].2.push(ev);
+                    }
+                }
+                None => {
+                    index.insert(ck.clone(), ranked.len());
+                    ranked.push((ck, score, vec![ev]));
+                }
+            }
+        }
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        ranked.truncate(k);
+        Ok(ranked)
+    }
+
+    /// Every pair of distinct canonical keys whose normalized evidence-centroid cosine
+    /// similarity strictly exceeds `threshold`, scoped to `prompt_version`. Centroids
+    /// accumulate and normalize in f64; pairs iterate over lexicographically sorted keys.
+    // Parity: similar.py near_duplicate_keys
+    pub fn near_duplicate_keys(
+        &self,
+        prompt_version: i64,
+        threshold: f64,
+    ) -> Result<Vec<(String, String, f64)>, LedgerError> {
+        let rows = self.sql(
+            "SELECT e.canonical_key AS ck, v.embedding AS emb \
+             FROM verdict_vectors v JOIN verdict_evidence e ON e.vector_id = v.vector_id \
+             WHERE e.prompt_version = ?",
+            &[SqlCell::Int(prompt_version)],
+        )?;
+        let mut sums: HashMap<String, (Vec<f64>, usize)> = HashMap::new();
+        let mut dim: Option<usize> = None;
+        for row in &rows {
+            let ck = cell_text(row, "ck")
+                .ok_or_else(|| vec_error("near-duplicate row missing canonical_key"))?;
+            let blob = cell_blob(row, "emb")
+                .ok_or_else(|| vec_error("near-duplicate row missing embedding"))?;
+            if blob.len() % 4 != 0 {
+                return Err(vec_error(&format!(
+                    "verdict embedding blob length {} is not a multiple of 4",
+                    blob.len()
+                )));
+            }
+            let vector: Vec<f32> = blob
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            match dim {
+                None => dim = Some(vector.len()),
+                Some(d) if d != vector.len() => {
+                    return Err(vec_error(&format!(
+                        "verdict embedding dimension {} disagrees with sibling dimension {}",
+                        vector.len(),
+                        d
+                    )))
+                }
+                Some(_) => {}
+            }
+            let entry = sums
+                .entry(ck)
+                .or_insert_with(|| (vec![0.0_f64; vector.len()], 0));
+            for (sum, x) in entry.0.iter_mut().zip(&vector) {
+                *sum += f64::from(*x);
+            }
+            entry.1 += 1;
+        }
+        let centroids: HashMap<String, Vec<f64>> = sums
+            .into_iter()
+            .map(|(ck, (sum, count))| {
+                let mean: Vec<f64> = sum.iter().map(|s| s / count as f64).collect();
+                let norm = mean.iter().map(|m| m * m).sum::<f64>().sqrt();
+                (ck, mean.iter().map(|m| m / norm).collect())
+            })
+            .collect();
+        let mut keys: Vec<String> = centroids.keys().cloned().collect();
+        keys.sort();
+        let mut overlaps: Vec<(String, String, f64)> = Vec::new();
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                let similarity: f64 = centroids[&keys[i]]
+                    .iter()
+                    .zip(&centroids[&keys[j]])
+                    .map(|(x, y)| x * y)
+                    .sum();
+                if similarity > threshold {
+                    overlaps.push((keys[i].clone(), keys[j].clone(), similarity));
+                }
+            }
+        }
+        overlaps.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        Ok(overlaps)
+    }
 }
 
 fn render_verdict_ddl(table: &str, accepted: &str, summary: &str) -> String {
@@ -662,6 +784,29 @@ fn cell_text(row: &SqlRow, name: &str) -> Option<String> {
     match cell(row, name) {
         Some(SqlCell::Text(s)) => Some(s),
         _ => None,
+    }
+}
+
+fn cell_real(row: &SqlRow, name: &str) -> Option<f64> {
+    match cell(row, name) {
+        Some(SqlCell::Real(r)) => Some(r),
+        _ => None,
+    }
+}
+
+fn cell_blob(row: &SqlRow, name: &str) -> Option<Vec<u8>> {
+    match cell(row, name) {
+        Some(SqlCell::Blob(b)) => Some(b),
+        _ => None,
+    }
+}
+
+fn vec_error(message: &str) -> LedgerError {
+    LedgerError::Sqlite {
+        class: SqliteErrorClass::Data,
+        message: message.to_string(),
+        code: None,
+        name: None,
     }
 }
 

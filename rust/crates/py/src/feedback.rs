@@ -402,4 +402,39 @@ impl RustFeedbackStore {
             )
         })
     }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[tuple[str, float, list[str]]]]", imports = ("asyncio",)))]
+    fn suggest_canonical_keys(
+        &self,
+        py: Python<'_>,
+        query: Vec<u8>,
+        prompt_version: i64,
+        k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.suggest_canonical_keys(&query, prompt_version, k),
+                |py, ranked| ranked.into_py_any(py),
+            )
+        })
+    }
+
+    #[gen_stub(override_return_type(type_repr = "asyncio.Future[list[tuple[str, str, float]]]", imports = ("asyncio",)))]
+    fn near_duplicate_keys(
+        &self,
+        py: Python<'_>,
+        prompt_version: i64,
+        threshold: f64,
+    ) -> PyResult<Py<PyAny>> {
+        self.with_actor(py, |actor| {
+            submit(
+                py,
+                actor,
+                move |e| e.near_duplicate_keys(prompt_version, threshold),
+                |py, overlaps| overlaps.into_py_any(py),
+            )
+        })
+    }
 }

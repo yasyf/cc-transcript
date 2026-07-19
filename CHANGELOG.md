@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (uniform, without replacement, in draw order), and `round_half_even` matching
   Python's `round()`. Feature-free and dependency-free beyond the core's existing
   `sha2`, so the python-free Swift build path stays green.
+- **`judge.similar` canonical-key ranking runs in the native feedback engine.**
+  `suggest_canonical_keys` and `near_duplicate_keys` move their grouping, centroid,
+  and cosine math onto the engine that owns the sqlite-vec companion tables — the
+  one connection with `vec_distance_cosine` loaded; the model2vec embedding stays
+  in Python. Near-duplicate centroid similarities are now accumulated and
+  normalized in f64 rather than numpy `float32`, so a similarity can shift by at
+  most a floating-point epsilon (non-breaking); suggestion scores are unchanged.
 
 ### Changed
 - **BREAKING (next major): activity tool-use edits are plural.** The lowered
