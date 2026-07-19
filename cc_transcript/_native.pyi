@@ -107,6 +107,7 @@ __all__ = [
     "activity_hunk_overlap",
     "activity_lift",
     "activity_lift_from_events",
+    "activity_overlap_between",
     "bucket_events_from_events",
     "cli_main",
     "codex_children_of",
@@ -2266,6 +2267,8 @@ def activity_hunk_overlap(a_old: builtins.str, a_new: builtins.str, b_old: built
 def activity_lift(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
 def activity_lift_from_events(events: list[models.TranscriptEvent], opener_flags: typing.Optional[typing.Sequence[builtins.bool]] = None) -> list[dict[str, typing.Any]]: ...
+
+def activity_overlap_between(incorrect: typing.Sequence[tuple[builtins.str, builtins.str]], correction: typing.Sequence[tuple[builtins.str, builtins.str]]) -> builtins.float: ...
 
 def bucket_events_from_events(events: list[models.TranscriptEvent]) -> list[dict[str, typing.Any]]: ...
 

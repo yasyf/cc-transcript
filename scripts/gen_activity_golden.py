@@ -5,8 +5,9 @@ every file in the deterministic bench corpus (``.fixtures/corpus``, regenerated 
 ``scripts/gen_corpus.py``). Events are sourced through the Rust parser (``stream_parse``) on
 both this generator and the parity test, so only the *lift* — turn boundaries, tool-use
 records, edit records, result indexing, and same-file hunk overlaps — is under test, not the
-parser. A closing battery of hand-built ``hunk_overlap`` cases pins the normalization
-(whitespace collapse, blank-line drop, CRLF, unicode) the corpus edits never exercise.
+parser. Closing batteries of hand-built ``hunk_overlap`` and ``overlap_between`` cases pin the
+normalization (whitespace collapse, blank-line drop, CRLF, unicode) and composition the corpus
+edits never exercise.
 
 A later run plus ``git diff`` shows Python-side drift, and ``tests/test_activity_parity.py``
 asserts the Rust ``activity_lift`` / ``activity_hunk_overlap`` ports reproduce the same
@@ -57,6 +58,16 @@ HUNK_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("return None", "return result", "return None", ""),
     ("", "a\x1fb", "a b", ""),
     ("", "a\x0bb", "a", ""),
+)
+
+OVERLAP_BETWEEN_CASES: tuple[tuple[tuple[Hunk, ...], tuple[Hunk, ...]], ...] = (
+    ((), (Hunk("unused", ""),)),
+    ((Hunk("", "unused"),), ()),
+    ((Hunk("", "x = 1\ny = 2"),), (Hunk("x = 1", ""),)),
+    (
+        (Hunk("", "first"), Hunk("", "target\nextra")),
+        (Hunk("miss", ""), Hunk("target\nextra", "")),
+    ),
 )
 
 
@@ -272,6 +283,14 @@ def hunk_case(a_old: str, a_new: str, b_old: str, b_new: str) -> dict[str, objec
     }
 
 
+def overlap_between_case(incorrect: tuple[Hunk, ...], correction: tuple[Hunk, ...]) -> dict[str, object]:
+    return {
+        "incorrect": [{"old": hunk.old, "new": hunk.new} for hunk in incorrect],
+        "correction": [{"old": hunk.old, "new": hunk.new} for hunk in correction],
+        "overlap": max((hunk_overlap(a, b) for a in incorrect for b in correction), default=0.0),
+    }
+
+
 def corpus_files() -> list[Path]:
     return sorted(CORPUS.rglob("*.jsonl"))
 
@@ -283,11 +302,13 @@ def main() -> None:
         "lifts": {str(path.relative_to(CORPUS)): project_file(path) for path in corpus_files()},
         "synthetic": {name: project_jsonl(text) for name, text in SYNTHETIC_CASES.items()},
         "hunk_overlap_cases": [hunk_case(*case) for case in HUNK_CASES],
+        "overlap_between_cases": [overlap_between_case(*case) for case in OVERLAP_BETWEEN_CASES],
     }
     GOLDEN.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     print(
         f"wrote {len(data['lifts'])} lift + {len(SYNTHETIC_CASES)} synthetic projections "
-        f"+ {len(HUNK_CASES)} hunk cases to {GOLDEN.relative_to(REPO_ROOT)}"
+        f"+ {len(HUNK_CASES)} hunk cases + {len(OVERLAP_BETWEEN_CASES)} overlap-between cases "
+        f"to {GOLDEN.relative_to(REPO_ROOT)}"
     )
 
 

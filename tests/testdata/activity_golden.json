@@ -23473,6 +23473,66 @@
     }
   },
   "max_events": 150,
+  "overlap_between_cases": [
+    {
+      "correction": [
+        {
+          "new": "",
+          "old": "unused"
+        }
+      ],
+      "incorrect": [],
+      "overlap": 0.0
+    },
+    {
+      "correction": [],
+      "incorrect": [
+        {
+          "new": "unused",
+          "old": ""
+        }
+      ],
+      "overlap": 0.0
+    },
+    {
+      "correction": [
+        {
+          "new": "",
+          "old": "x = 1"
+        }
+      ],
+      "incorrect": [
+        {
+          "new": "x = 1\ny = 2",
+          "old": ""
+        }
+      ],
+      "overlap": 0.5
+    },
+    {
+      "correction": [
+        {
+          "new": "",
+          "old": "miss"
+        },
+        {
+          "new": "",
+          "old": "target\nextra"
+        }
+      ],
+      "incorrect": [
+        {
+          "new": "first",
+          "old": ""
+        },
+        {
+          "new": "target\nextra",
+          "old": ""
+        }
+      ],
+      "overlap": 1.0
+    }
+  ],
   "synthetic": {
     "control_ws_prompt": {
       "hunk_overlaps": [],

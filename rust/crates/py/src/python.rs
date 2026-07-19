@@ -846,6 +846,23 @@ fn activity_hunk_overlap(a_old: &str, a_new: &str, b_old: &str, b_new: &str) -> 
     )
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+fn activity_overlap_between(
+    incorrect: Vec<(String, String)>,
+    correction: Vec<(String, String)>,
+) -> f64 {
+    let incorrect = incorrect
+        .into_iter()
+        .map(|(old, new)| Hunk { old, new })
+        .collect::<Vec<_>>();
+    let correction = correction
+        .into_iter()
+        .map(|(old, new)| Hunk { old, new })
+        .collect::<Vec<_>>();
+    overlap_between(&incorrect, &correction)
+}
+
 fn pairs_list<'py>(
     py: Python<'py>,
     pairs: &[(String, usize)],
@@ -993,6 +1010,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift_from_events, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_overlap_between, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;

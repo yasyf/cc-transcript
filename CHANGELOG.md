@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The native module exposes `activity_overlap_between`, and
+  `evidence.overlap_between` rehydrates its result through the typed Python facade.
+
 ### Changed
 - **BREAKING (next major): activity tool-use edits are plural.** The lowered
   `ToolUse.edit` projection is now `ToolUse.edits`, changing from an optional

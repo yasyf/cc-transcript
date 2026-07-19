@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from cc_transcript.activity import hunk_overlap
+from cc_transcript import _native
 from cc_transcript.corrections import Correction
 from cc_transcript.ids import tool_digest
 from cc_transcript.models import AssistantEvent, ToolUseBlock
@@ -165,7 +165,9 @@ def harvest_pairs(
 
 
 def overlap_between(incorrect: tuple[Hunk, ...], correction: tuple[Hunk, ...]) -> float:
-    return max((hunk_overlap(a, b) for a in incorrect for b in correction), default=0.0)
+    return _native.activity_overlap_between(
+        [(h.old, h.new) for h in incorrect], [(h.old, h.new) for h in correction]
+    )
 
 
 def harvest_one(activity: SessionActivity, edit: Edit, *, lookahead_turns: int, repo: Path | None) -> CandidatePair:
