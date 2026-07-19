@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(file_path, hunks)` pair to an ordered collection with one pair per edited
   file so multi-file `apply_patch` calls preserve every target.
 
+### Removed
+- **Breaking:** `extract_structured` and the private extractor helpers `first`,
+  `line_bounds`, `review_comment`, and `findings` are removed from
+  `cc_transcript/mining/formats.py`. The native executor behind
+  `ReviewSpec`/`mine()` is now the one implementation. The policy types
+  `ReviewComment`, `StructuredFormat`, and `FINDING_KEYS` remain unaffected.
+
 ## [14.6.1] - 2026-07-20
 
 ### Fixed

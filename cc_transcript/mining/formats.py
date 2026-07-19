@@ -10,13 +10,6 @@ The concrete review formats are app policy; an app declares its formats as
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-import orjson
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
-    from typing import Any
 
 FINDING_KEYS: tuple[str, ...] = ("findings", "bugs", "improvements", "issues", "items", "verdicts")
 
@@ -61,82 +54,3 @@ class StructuredFormat:
     comment_keys: tuple[str, ...] = ("comment", "message", "text", "description")
     fix_keys: tuple[str, ...] = field(default=())
     finding_keys: tuple[str, ...] = field(default=())
-
-    def extract(self, payload: Any) -> tuple[ReviewComment, ...]:
-        return tuple(
-            review_comment(obj, self.file_keys, self.line_keys, self.comment_keys, self.fix_keys)
-            for obj in findings(payload, FINDING_KEYS + self.finding_keys)
-            if isinstance(obj, dict)
-            if first(obj, self.comment_keys) is not None
-        )
-
-
-def first(obj: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
-    return next((obj[key] for key in keys if key in obj and obj[key] is not None), None)
-
-
-def line_bounds(value: Any) -> tuple[int | None, int | None]:
-    match value:
-        case int():
-            return value, value
-        case str() if "-" in value:
-            start, _, end = value.partition("-")
-            return int(start.strip()), int(end.strip())
-        case str() if value.strip().isdigit():
-            return (n := int(value.strip())), n
-        case _:
-            return None, None
-
-
-def review_comment(
-    obj: Mapping[str, Any],
-    file_keys: tuple[str, ...],
-    line_keys: tuple[str, ...],
-    comment_keys: tuple[str, ...],
-    fix_keys: tuple[str, ...] = (),
-) -> ReviewComment:
-    start, end = line_bounds(first(obj, line_keys))
-    return ReviewComment(
-        file=(file := first(obj, file_keys)) and str(file),
-        line_start=start,
-        line_end=end,
-        comment=" ".join(str(part) for part in (first(obj, comment_keys), first(obj, fix_keys)) if part is not None),
-    )
-
-
-def findings(payload: Any, keys: tuple[str, ...]) -> Iterator[Any]:
-    match payload:
-        case list():
-            yield from payload
-        case dict():
-            if (nested := first(payload, keys)) is not None and isinstance(nested, list):
-                yield from nested
-            elif isinstance(result := payload.get("result"), dict):
-                yield from findings(result, keys)
-            else:
-                yield from (
-                    item
-                    for key, value in payload.items()
-                    if key.startswith("confirmed")
-                    if isinstance(value, list)
-                    for item in value
-                )
-
-
-def extract_structured(
-    text: str, structured_formats: Sequence[StructuredFormat]
-) -> Iterator[tuple[StructuredFormat, ReviewComment]]:
-    """Yields every ``(format, comment)`` JSON-parsed from a finding payload.
-
-    Args:
-        text: The raw message text, expected to be a JSON document.
-        structured_formats: The structured formats to apply, in order.
-
-    Yields:
-        One pair per finding, across all formats. Non-JSON text yields nothing.
-    """
-    try:
-        payload = orjson.loads(text)
-    except (ValueError, TypeError):
-        return
-    yield from ((fmt, comment) for fmt in structured_formats for comment in fmt.extract(payload))

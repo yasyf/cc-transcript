@@ -406,7 +406,6 @@ reference:
       - mining.dedup_key
       - mining.ReviewComment
       - mining.ReviewFormat
-      - mining.extract_structured
       - mining.FeedbackStore
       - mining.StoreSchema
       - mining.ColumnMigration
