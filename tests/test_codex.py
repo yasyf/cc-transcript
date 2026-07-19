@@ -130,6 +130,23 @@ def test_discover_orders_newest_first(tmp_path: Path, codex_tree: dict[str, Path
     )
 
 
+def test_children_of_finds_direct_children(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    date_dir = root / "2026" / "07" / "16"
+    date_dir.mkdir(parents=True)
+    parent = codex_fixture("303")
+    child = codex_fixture("404")
+    shutil.copy(parent, date_dir / parent.name)
+    child_path = date_dir / child.name
+    shutil.copy(child, child_path)
+
+    child_id = "019f6800-3b4c-7d5e-9f60-000000000404"
+    assert codex.children_of(SESSION_303, root=root) == (
+        CodexRollout(child_path, child_id, False),
+    )
+    assert codex.children_of(child_id, root=root) == ()
+
+
 def test_find_transcript_prefers_uncompressed_and_rejects_compressed_only(
     tmp_path: Path, codex_tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

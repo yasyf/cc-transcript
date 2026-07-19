@@ -46,7 +46,7 @@ TOOLS_SURFACE = frozenset(
 CODEX_SURFACE = frozenset(
     {
         "SESSIONS_ROOT", "CodexPendingItem", "CodexRollout", "CodexSessionInfo", "CodexUsage",
-        "Lifecycle", "discover", "find_transcript", "session_info", "sessions_root",
+        "Lifecycle", "children_of", "discover", "find_transcript", "session_info", "sessions_root",
     }
 )
 

@@ -104,6 +104,7 @@ __all__ = [
     "activity_lift_from_events",
     "bucket_events_from_events",
     "cli_main",
+    "codex_children_of",
     "codex_discover",
     "codex_resolve",
     "codex_session_info",
@@ -2196,6 +2197,8 @@ def cli_main() -> builtins.int:
     tree, a real Rust SIGINT handler installed up front, the GIL released for the whole
     run, and the exit code returned verbatim for the wrapper's `sys.exit`.
     """
+
+def codex_children_of(session_id: builtins.str, root: typing.Optional[builtins.str] = None) -> builtins.list[tuple[pathlib.Path, builtins.str, builtins.bool]]: ...
 
 def codex_discover(root: typing.Optional[builtins.str | os.PathLike | pathlib.Path] = None) -> builtins.list[tuple[pathlib.Path, builtins.str, builtins.bool]]: ...
 

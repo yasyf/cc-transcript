@@ -1028,6 +1028,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(crate::codex::codex_session_info, m)?)?;
     m.add_function(wrap_pyfunction!(crate::codex::codex_discover, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::codex::codex_children_of, m)?)?;
     m.add_function(wrap_pyfunction!(crate::codex::codex_resolve, m)?)?;
     crate::views::add_view_classes(m)?;
     m.py()

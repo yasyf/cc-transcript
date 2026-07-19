@@ -158,6 +158,29 @@ def discover(root: Path | None = None) -> tuple[CodexRollout, ...]:
     return tuple(CodexRollout(*rollout) for rollout in _native.codex_discover(sessions_root(root)))
 
 
+def children_of(
+    session_id: SessionId, *, root: Path | None = None
+) -> tuple[CodexRollout, ...]:
+    """Finds the direct child rollouts spawned by ``session_id``.
+
+    Compressed rollouts are excluded because their session metadata cannot yet be
+    inspected. Results are ordered newest first.
+
+    Args:
+        session_id: The parent rollout's thread id.
+        root: The sessions root; when None, :func:`sessions_root`.
+
+    Returns:
+        The direct child rollouts, newest first; ``()`` when there are none.
+    """
+    from cc_transcript import _native
+
+    return tuple(
+        CodexRollout(*rollout)
+        for rollout in _native.codex_children_of(session_id, str(sessions_root(root)))
+    )
+
+
 def find_transcript(session_id: SessionId, root: Path | None = None) -> Path | None:
     """Locates ``session_id``'s rollout under the codex sessions tree.
 

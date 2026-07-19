@@ -1,8 +1,8 @@
 //! pyo3 exposure of the codex session surface: discovery, resolution, and the
 //! per-rollout session-info fold the Python `cc_transcript.codex` facade
-//! rehydrates. Paths cross as PathBuf, matching the CC discovery facade.
+//! rehydrates. Rollout paths cross as PathBuf, matching the CC discovery facade.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -131,6 +131,17 @@ pub fn codex_session_info<'py>(py: Python<'py>, path: String) -> PyResult<Bound<
 #[pyo3(signature = (root=None))]
 pub fn codex_discover(root: Option<PathBuf>) -> Vec<(PathBuf, String, bool)> {
     codex::discover(&codex::sessions_root(root.as_deref()))
+        .into_iter()
+        .map(|rollout| (rollout.path, rollout.session_id, rollout.compressed))
+        .collect()
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (session_id, root=None))]
+pub fn codex_children_of(session_id: &str, root: Option<String>) -> Vec<(PathBuf, String, bool)> {
+    let root = codex::sessions_root(root.as_deref().map(Path::new));
+    codex::children_of(session_id, &root)
         .into_iter()
         .map(|rollout| (rollout.path, rollout.session_id, rollout.compressed))
         .collect()

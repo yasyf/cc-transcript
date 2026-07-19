@@ -5,7 +5,7 @@ pub mod probe;
 pub mod protocol;
 pub mod types;
 
-pub use discovery::{discover, resolve, sessions_root, RolloutFile};
+pub use discovery::{children_of, discover, resolve, sessions_root, RolloutFile};
 pub use lower::{lower, CodexLowering, CodexUsageAggregate};
 pub use parse::parse_codex_bytes;
 pub use probe::{codex_session_activity, session_probe, CodexProbe, Lifecycle};

@@ -1,7 +1,12 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
+
+use super::parse::parse_codex_bytes;
+
+const MAX_SESSION_META_LINE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolloutFile {
@@ -47,6 +52,28 @@ pub fn resolve(session_id: &str, root: &Path) -> Option<PathBuf> {
         .iter()
         .find(|rollout| rollout.session_id == session_id && !rollout.compressed)
         .and_then(|rollout| fs::canonicalize(&rollout.path).ok())
+}
+
+pub fn children_of(session_id: &str, root: &Path) -> Vec<RolloutFile> {
+    discover(root)
+        .into_iter()
+        .filter(|rollout| {
+            !rollout.compressed
+                && rollout.session_id != session_id
+                && head_parent_thread_id(&rollout.path).as_deref() == Some(session_id)
+        })
+        .collect()
+}
+
+fn head_parent_thread_id(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file).take(MAX_SESSION_META_LINE_BYTES);
+    let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line).ok()?;
+    if line.len() as u64 == MAX_SESSION_META_LINE_BYTES && !line.ends_with(b"\n") {
+        return None;
+    }
+    parse_codex_bytes(&line).parent_thread_id
 }
 
 fn walk(dir: &Path, visit: &mut impl FnMut(&Path)) {
@@ -107,6 +134,13 @@ mod tests {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         File::create(&path).unwrap();
+        path
+    }
+
+    fn write(root: &Path, rel: &str, content: &str) -> PathBuf {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
         path
     }
 
@@ -179,6 +213,98 @@ mod tests {
         assert_eq!(resolve("019b7000-0000-7000-8000-000000000099", &root), None);
         assert_eq!(sessions_root(Some(&root)), root);
         assert!(sessions_root(None).ends_with(".codex/sessions"));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn finds_children_from_session_meta_heads() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-discovery-children-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        let parent_id = "019b7000-0000-7000-8000-000000000001";
+        let first_child = write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-02-019b7000-0000-7000-8000-000000000002.jsonl",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000002\",\"parent_thread_id\":\"{parent_id}\"}}}}\n{{not valid JSON"
+            ),
+        );
+        let newest_child = write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-03-019b7000-0000-7000-8000-000000000003.jsonl",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000003\",\"parent_thread_id\":\"{parent_id}\"}}}}\n"
+            ),
+        );
+        write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-01-019b7000-0000-7000-8000-000000000001.jsonl",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{parent_id}\",\"parent_thread_id\":\"{parent_id}\"}}}}\n"
+            ),
+        );
+        write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-04-019b7000-0000-7000-8000-000000000004.jsonl",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019b7000-0000-7000-8000-000000000004\",\"parent_thread_id\":\"019b7000-0000-7000-8000-000000000099\"}}\n",
+        );
+        write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-05-019b7000-0000-7000-8000-000000000005.jsonl.zst",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000005\",\"parent_thread_id\":\"{parent_id}\"}}}}\n"
+            ),
+        );
+
+        assert_eq!(
+            children_of(parent_id, &root),
+            [
+                RolloutFile {
+                    path: newest_child,
+                    session_id: "019b7000-0000-7000-8000-000000000003".into(),
+                    compressed: false,
+                },
+                RolloutFile {
+                    path: first_child,
+                    session_id: "019b7000-0000-7000-8000-000000000002".into(),
+                    compressed: false,
+                },
+            ]
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn head_scan_honors_the_line_cap_and_only_the_first_row() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-discovery-head-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        let parent_id = "019b7000-0000-7000-8000-000000000001";
+        write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-06-019b7000-0000-7000-8000-000000000006.jsonl",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000006\",\"parent_thread_id\":\"{parent_id}\",\"pad\":\"{}\"}}}}\n",
+                "x".repeat(MAX_SESSION_META_LINE_BYTES as usize)
+            ),
+        );
+        write(
+            &root,
+            "2026/01/01/rollout-2026-01-01T00-00-07-019b7000-0000-7000-8000-000000000007.jsonl",
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000007\"}}}}\n{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019b7000-0000-7000-8000-000000000007\",\"parent_thread_id\":\"{parent_id}\"}}}}\n"
+            ),
+        );
+
+        assert!(children_of(parent_id, &root).is_empty());
+
         fs::remove_dir_all(&root).ok();
     }
 
