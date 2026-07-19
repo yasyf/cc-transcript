@@ -14,10 +14,10 @@ pub const INJECTION_WRAPPERS: &[&str] = &[
 
 pub fn injection_wrapper(text: &str) -> Option<&'static str> {
     let body = pystr::lstrip(text).strip_prefix('<')?;
-    INJECTION_WRAPPERS
-        .iter()
-        .copied()
-        .find(|w| body.strip_prefix(*w).is_some_and(|rest| rest.starts_with('>')))
+    INJECTION_WRAPPERS.iter().copied().find(|w| {
+        body.strip_prefix(*w)
+            .is_some_and(|rest| rest.starts_with('>'))
+    })
 }
 
 pub fn mcp_tool_name(name: &str, namespace: Option<&str>) -> Option<String> {
@@ -71,7 +71,10 @@ mod tests {
             injection_wrapper("as shown in the <environment_context> above"),
             None
         );
-        assert_eq!(injection_wrapper("<unknown_wrapper>x</unknown_wrapper>"), None);
+        assert_eq!(
+            injection_wrapper("<unknown_wrapper>x</unknown_wrapper>"),
+            None
+        );
         // The tag must be closed by '>', not extended into a different name.
         assert_eq!(injection_wrapper("<environment_contextual>x"), None);
         assert_eq!(injection_wrapper(""), None);
@@ -115,7 +118,10 @@ mod tests {
 
     #[test]
     fn exit_code_absent_for_plain_and_structured_output() {
-        assert_eq!(output_exit_code(&sonic_rs::from_str(r#""omed""#).unwrap()), None);
+        assert_eq!(
+            output_exit_code(&sonic_rs::from_str(r#""omed""#).unwrap()),
+            None
+        );
         let arr: Value =
             sonic_rs::from_str(r#"[{"type": "output_text", "text": "omed"}]"#).unwrap();
         assert_eq!(output_exit_code(&arr), None);
