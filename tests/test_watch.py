@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import signal
 import subprocess
@@ -8,10 +9,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import orjson
+import pytest
 
 from cc_transcript.ids import EventUuid, SessionId
 from cc_transcript.watch import Watcher, WatchEvent
 from tests import testkit
+
+pytestmark = pytest.mark.anyio
 
 CLI = Path(sys.executable).parent / "cc-transcript"
 SESSION = SessionId("44444444-4444-4444-4444-444444444444")
@@ -84,7 +88,7 @@ def write_transcript(root: Path, name: str, *lines: dict) -> None:
     (root / name).write_bytes(b"\n".join(orjson.dumps(line) for line in lines) + b"\n")
 
 
-def test_tick_from_start_yields_every_valid_event(tmp_path: Path) -> None:
+async def test_tick_from_start_yields_every_valid_event(tmp_path: Path) -> None:
     # Guards the regression where production watch silently discarded every event.
     write_transcript(
         tmp_path,
@@ -93,18 +97,37 @@ def test_tick_from_start_yields_every_valid_event(tmp_path: Path) -> None:
         testkit.assistant_line("e2", "hi there", stop_reason="end_turn"),
         testkit.user_line("e3", "thanks"),
     )
-    events = Watcher([tmp_path], from_start=True).tick()
+    events = await Watcher([tmp_path], from_start=True).tick()
     assert [event.event.meta.uuid for event in events] == [EventUuid("e1"), EventUuid("e2"), EventUuid("e3")]
     assert all(isinstance(event, WatchEvent) for event in events)
 
 
-def test_watcher_primes_at_eof_then_drains_appends(tmp_path: Path) -> None:
+async def test_watcher_primes_at_eof_then_drains_appends(tmp_path: Path) -> None:
     # The cc-transcript watch CLI command loops this tick; drive it directly.
     transcript = tmp_path / "s.jsonl"
     write_transcript(tmp_path, "s.jsonl", testkit.user_line("w0", "preexisting"))
     watcher = Watcher([tmp_path])
-    assert watcher.tick() == []
+    assert await watcher.tick() == []
     with transcript.open("ab") as handle:
         handle.write(orjson.dumps(testkit.user_line("w1", "hi")) + b"\n")
-    events = watcher.tick()
+    events = await watcher.tick()
     assert [event.event.meta.uuid for event in events] == [EventUuid("w1")]
+
+
+async def test_stream_yields_tick_events_and_cancels_cleanly(tmp_path: Path) -> None:
+    write_transcript(
+        tmp_path,
+        "stream.jsonl",
+        testkit.user_line("s1", "hello"),
+        testkit.assistant_line("s2", "hi", stop_reason="end_turn"),
+    )
+    expected = await Watcher([tmp_path], from_start=True).tick()
+    stream = Watcher([tmp_path], from_start=True).stream(interval=0.001)
+    events = [await asyncio.wait_for(anext(stream), timeout=1.0) for _ in expected]
+    assert [event.event.meta.uuid for event in events] == [event.event.meta.uuid for event in expected]
+
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
