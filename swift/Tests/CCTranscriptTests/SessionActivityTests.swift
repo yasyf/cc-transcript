@@ -68,6 +68,40 @@ final class SessionActivityTests: XCTestCase {
         )
     }
 
+    func testCodexOpenDanglingCallIsMidTool() throws {
+        try assertVerdict(
+            fixture: "codex-open-dangling",
+            isWaiting: false,
+            midTool: true,
+            lastEventEpoch: 1_784_220_090,
+            pending: [
+                Pending(
+                    toolUseId: "call_Demo0005dang0005dang0005x", name: "exec", kind: "mid_tool"
+                )
+            ]
+        )
+    }
+
+    func testCodexCompletedTurnIsQuiet() throws {
+        try assertVerdict(
+            fixture: "codex-completed",
+            isWaiting: false,
+            midTool: false,
+            lastEventEpoch: 1_784_220_185,
+            pending: []
+        )
+    }
+
+    func testCodexCompletedDanglingCallIsQuiet() throws {
+        try assertVerdict(
+            fixture: "codex-completed-dangling",
+            isWaiting: false,
+            midTool: false,
+            lastEventEpoch: 1_784_220_190,
+            pending: []
+        )
+    }
+
     func testMissingTranscriptThrowsRustString() {
         XCTAssertThrowsError(try sessionActivity(path: "/nonexistent/transcript.jsonl")) { error in
             guard let message = (error as? RustString)?.toString() else {

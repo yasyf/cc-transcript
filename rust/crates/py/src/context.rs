@@ -4,8 +4,8 @@ use pyo3::prelude::*;
 
 use cc_transcript_core::activity::lift_session;
 use cc_transcript_core::context::{capture_window, ContextWindow};
+use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::ids::EventRef;
-use cc_transcript_core::parse::parse_bytes;
 use cc_transcript_core::types::Entry;
 
 use crate::views::convert::parse_err;
@@ -24,7 +24,7 @@ pub(crate) fn context_capture_window(
     preview_chars: i64,
 ) -> PyResult<String> {
     py.detach(|| {
-        let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
+        let entries = parse_transcript_bytes(raw).map_err(parse_err)?.entries;
         // Mirror the materialization drop: a year-0000 timestamp has no Python
         // datetime, so from_events never sees it (activity_lift does the same).
         let capped: Vec<Entry> = entries

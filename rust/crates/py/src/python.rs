@@ -15,14 +15,15 @@ use crate::views::print::print_result_view;
 use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
-    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index,
-    session_activity, ActivityOpts, Hunk, SessionActivity,
+    hunk_overlap, lift_session, lift_session_index, overlap_between, result_index, ActivityOpts,
+    Hunk, SessionActivity,
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
 use cc_transcript_core::cost::{cost_of, CostError};
 use cc_transcript_core::facts;
 use cc_transcript_core::filter::{compile_spec, spec_keep, spec_labels, CompiledSpec};
+use cc_transcript_core::gateway::{parse_transcript_bytes, transcript_session_activity};
 use cc_transcript_core::ids;
 use cc_transcript_core::notifications::Notifications;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
@@ -47,7 +48,8 @@ struct ParsedFile {
     lines: Vec<Entry>,
 }
 
-// The drop-spec evaluates on the typed entry, so dropped lines are parsed but
+// The provider gateway lowers codex rollouts before the drop-spec runs, so the
+// spec evaluates on the typed (lowered, for codex) entry and dropped lines are
 // never materialized into Python objects.
 fn parse_file_internal(
     path: &str,
@@ -55,10 +57,11 @@ fn parse_file_internal(
     filter: Option<&CompiledSpec>,
 ) -> Option<ParsedFile> {
     let bytes = std::fs::read(path).ok()?;
-    let lines = parse_bytes(&bytes, |entry| {
-        filter.is_none_or(|spec| spec_keep(spec, entry))
-    })
-    .ok()?;
+    let entries = parse_transcript_bytes(&bytes).ok()?.entries;
+    let lines = match filter {
+        Some(spec) => entries.into_iter().filter(|e| spec_keep(spec, e)).collect(),
+        None => entries,
+    };
     Some(ParsedFile {
         path: Some(path.to_string()),
         mtime,
@@ -167,10 +170,14 @@ fn parse_bytes_py<'py>(
         Some(json) => Some(compile_spec(&json).map_err(PyValueError::new_err)?),
         None => None,
     };
-    let lines = parse_bytes(raw, |entry| {
-        filter.as_ref().is_none_or(|spec| spec_keep(spec, entry))
-    })
-    .map_err(parse_err)?;
+    let entries = parse_transcript_bytes(raw).map_err(parse_err)?.entries;
+    let lines = match filter {
+        Some(spec) => entries
+            .into_iter()
+            .filter(|e| spec_keep(&spec, e))
+            .collect(),
+        None => entries,
+    };
     parsed_file_to_py(
         py,
         ParsedFile {
@@ -494,10 +501,7 @@ fn session_activity_probe<'py>(
     };
     let activity = py.detach(|| -> PyResult<SessionActivity> {
         let bytes = std::fs::read(&path)?;
-        Ok(session_activity(
-            &parse_bytes(&bytes, |_| true).map_err(parse_err)?,
-            &opts,
-        ))
+        transcript_session_activity(&bytes, &opts).map_err(parse_err)
     })?;
     let dict = PyDict::new(py);
     dict.set_item("is_waiting", activity.is_waiting)?;

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use cc_transcript_core::discovery::{find_in, mtime_secs};
-use cc_transcript_core::parse::parse_bytes;
+use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::render::display_path;
 use cc_transcript_core::types::Entry;
 use rayon::prelude::*;
@@ -108,7 +108,7 @@ pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
         .par_iter()
         .map(|(path, _)| {
             let bytes = std::fs::read(path).ok()?;
-            let entries = parse_bytes(&bytes, |_| true).ok()?;
+            let entries = parse_transcript_bytes(&bytes).ok()?.entries;
             Some(Parsed {
                 path: path.clone(),
                 session_id: session_id_of(&entries),

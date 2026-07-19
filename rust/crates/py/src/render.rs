@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use sonic_rs::Value;
 
 use cc_transcript_core::activity::Turn;
-use cc_transcript_core::parse::parse_bytes;
+use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::render::{self, Budget};
 use cc_transcript_core::toolcall::parse_tool_call;
 use cc_transcript_core::types::{tool_use_index, Entry};
@@ -104,7 +104,7 @@ pub(crate) fn render_compact_lines(
     uuids: bool,
 ) -> PyResult<Vec<String>> {
     py.detach(|| {
-        let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
+        let entries = parse_transcript_bytes(raw).map_err(parse_err)?.entries;
         let names = tool_names(&entries);
         Ok(entries
             .iter()
@@ -122,7 +122,7 @@ pub(crate) fn render_haystacks(
     wheres: Vec<String>,
 ) -> PyResult<Vec<String>> {
     py.detach(|| {
-        let entries = parse_bytes(raw, |_| true).map_err(parse_err)?;
+        let entries = parse_transcript_bytes(raw).map_err(parse_err)?.entries;
         let where_set: HashSet<String> = wheres.into_iter().collect();
         let (text, thinking, tools) = (
             where_set.contains("text"),
@@ -145,7 +145,7 @@ pub(crate) fn render_stats(
     py.detach(|| {
         let transcripts: Vec<Vec<Entry>> = raws
             .iter()
-            .map(|raw| parse_bytes(raw, |_| true))
+            .map(|raw| parse_transcript_bytes(raw).map(|p| p.entries))
             .collect::<Result<_, _>>()
             .map_err(parse_err)?;
         Ok(render::render_stats(&render::collect_stats(&transcripts)))

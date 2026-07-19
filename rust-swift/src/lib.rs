@@ -11,7 +11,8 @@ use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 
 use cc_transcript_core::activity::{self, ActivityOpts};
-use cc_transcript_core::parse::{self, ParseError};
+use cc_transcript_core::gateway::transcript_session_activity;
+use cc_transcript_core::parse::ParseError;
 
 #[swift_bridge::bridge]
 mod ffi {
@@ -102,10 +103,6 @@ pub fn session_activity(
 ) -> Result<SessionActivity, String> {
     catch_panic(move || {
         let bytes = fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
-        let entries = parse::parse_bytes(&bytes, |_| true).map_err(|e| match e {
-            ParseError::Key(key) => format!("missing key '{key}'"),
-            ParseError::Value(msg) => msg,
-        })?;
         let mut opts = ActivityOpts::default();
         if !waiting_tools.is_empty() {
             opts.waiting_tools = waiting_tools.into_iter().collect();
@@ -113,7 +110,12 @@ pub fn session_activity(
         if !human_facing_tools.is_empty() {
             opts.human_facing_tools = human_facing_tools.into_iter().collect();
         }
-        Ok(SessionActivity(activity::session_activity(&entries, &opts)))
+        transcript_session_activity(&bytes, &opts)
+            .map(SessionActivity)
+            .map_err(|e| match e {
+                ParseError::Key(key) => format!("missing key '{key}'"),
+                ParseError::Value(msg) => msg,
+            })
     })
 }
 

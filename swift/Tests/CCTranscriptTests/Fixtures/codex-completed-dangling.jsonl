@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-16T16:43:10.000Z","type":"session_meta","payload":{"session_id":"completed-dangling","cli_version":"0.144.5"}}
+{"timestamp":"2026-07-16T16:43:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"T"}}
+{"timestamp":"2026-07-16T16:43:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"dangling","name":"exec","input":"pwd","internal_chat_message_metadata_passthrough":{"turn_id":"T"}}}
+{"timestamp":"2026-07-16T16:43:10.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"T"}}

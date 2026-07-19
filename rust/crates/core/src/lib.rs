@@ -17,6 +17,7 @@ pub mod facts;
 #[cfg(feature = "sqlite")]
 pub mod feedback;
 pub mod filter;
+pub mod gateway;
 pub mod ids;
 pub mod notifications;
 pub mod parse;
