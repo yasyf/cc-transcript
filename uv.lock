@@ -188,7 +188,7 @@ css = [
 
 [[package]]
 name = "cc-transcript"
-version = "14.3.0"
+version = "14.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "orjson" },

@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.4.0] - 2026-07-19
+
+### Added
+- **A runtime MCP tool-spec registry.** `register_mcp_tool(tool, behaves_like,
+  span_edit=None)` and `unregister_mcp_tool(tool)` classify MCP tools by their bare
+  tool segment: `behaves_like` folds the tool into a builtin's name matching —
+  `matches_names`, `expand_tool_names`, and every gate spec built on them now
+  recognize a registered `mcp__<server>__<tool>` — and the optional `span_edit`
+  key-map (payload key names for `path`/`content`/`delete`) lowers payloads to the
+  new `SpanEditCall` view: an in-place edit addressed by an opaque locator, with
+  `file_path` and `new` (`None` on deletion) and no pre-image in the payload, so
+  `file_path_of` resolves it and `hunks_of` yields nothing. Registrations are
+  per-process — they bind the embedding process only; the standalone CLI never
+  sees them.
+- Mining name sets (`EDIT_TOOLS` et al.) expand lazily, so a registration made
+  after import — e.g. during a hook manager's pack discovery — still lands in
+  serialized specs.
+
+### Removed
+- **The hardcoded ccx aliases.** `MCP_TOOL_ALIASES` (`ccx_code_edit` → `Edit`,
+  `ccx_code_replace` → `Write`) is gone from the core; those bindings now ship as
+  declarative `[tools]` data in the cc-context plugin's capt-hook pack manifest,
+  registered at pack discovery by capt-hook ≥ 10.3. Until that capt-hook release,
+  ccx tool names no longer alias to builtins by default.
+
 ## [14.3.0] - 2026-07-19
 
 ### Added
