@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from cc_transcript import models, tools
+from cc_transcript import codex, models, tools
 
 MODELS_SURFACE = frozenset(
     {
@@ -43,9 +43,21 @@ TOOLS_SURFACE = frozenset(
 )
 
 
+CODEX_SURFACE = frozenset(
+    {
+        "SESSIONS_ROOT", "CodexPendingItem", "CodexRollout", "CodexSessionInfo", "CodexUsage",
+        "Lifecycle", "discover", "find_transcript", "session_info", "sessions_root",
+    }
+)
+
+
 @pytest.mark.parametrize(
     ("module", "surface"),
-    [pytest.param(models, MODELS_SURFACE, id="models"), pytest.param(tools, TOOLS_SURFACE, id="tools")],
+    [
+        pytest.param(models, MODELS_SURFACE, id="models"),
+        pytest.param(tools, TOOLS_SURFACE, id="tools"),
+        pytest.param(codex, CODEX_SURFACE, id="codex"),
+    ],
 )
 def test_facade_keeps_pre_inversion_surface(module: object, surface: frozenset[str]) -> None:
     assert surface - set(dir(module)) == set()

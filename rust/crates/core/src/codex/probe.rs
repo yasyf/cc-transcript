@@ -21,6 +21,27 @@ pub enum Lifecycle {
     },
 }
 
+impl Lifecycle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Lifecycle::Uninitialized => "uninitialized",
+            Lifecycle::NoInstrumentation => "no_instrumentation",
+            Lifecycle::Open { .. } => "open",
+            Lifecycle::Completed { .. } => "completed",
+            Lifecycle::Aborted { .. } => "aborted",
+        }
+    }
+
+    pub fn turn_id(&self) -> Option<&str> {
+        match self {
+            Lifecycle::Open { turn_id }
+            | Lifecycle::Completed { turn_id }
+            | Lifecycle::Aborted { turn_id, .. } => turn_id.as_deref(),
+            Lifecycle::Uninitialized | Lifecycle::NoInstrumentation => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TurnState {
     Open,

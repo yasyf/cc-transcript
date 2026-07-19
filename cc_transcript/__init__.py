@@ -181,6 +181,13 @@ EXPORTS: dict[str, str] = {
             "resolve",
             "subagent_paths",
         ),
+        "cc_transcript.codex": (
+            "CodexPendingItem",
+            "CodexRollout",
+            "CodexSessionInfo",
+            "CodexUsage",
+            "Lifecycle",
+        ),
         "cc_transcript.activity": (
             "Edit",
             "SessionActivity",

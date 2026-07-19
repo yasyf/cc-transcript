@@ -96,7 +96,8 @@ def resolve(session_id: SessionId, *, root: Path | None = None) -> Path | None:
     A successful lookup is memoized in ``TRANSCRIPT_MEMO`` under
     ``(session_id, resolved root)`` and revalidated on the next hit, so a
     repeated probe skips the recursive scan while a pruned transcript still
-    forces a fresh one.
+    forces a fresh one. When the projects tree yields nothing, the codex
+    sessions tree is tried as a fallback, so a codex session id resolves too.
 
     Returns:
         The newest-mtime real path, or None when no transcript exists.
@@ -105,8 +106,11 @@ def resolve(session_id: SessionId, *, root: Path | None = None) -> Path | None:
     key = (session_id, base.resolve())
     if (cached := TRANSCRIPT_MEMO.get(key)) is not None and cached.exists():
         return cached
-    if (hit := _native.discovery_find_transcript(base, session_id)) is None:
-        return None
+    hit = _native.discovery_find_transcript(base, session_id)
+    if hit is None:
+        from cc_transcript import codex
+
+        return codex.find_transcript(session_id)
     TRANSCRIPT_MEMO[key] = hit
     return hit
 

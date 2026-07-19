@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -116,6 +118,44 @@ def test_resolve_revalidates_a_deleted_cached_path(tmp_path: Path) -> None:
     fresh = write(tmp_path / "proj-b" / f"{SESSION}.jsonl", 200.0)
     assert resolve(SESSION, root=tmp_path) == fresh.resolve()
     assert TRANSCRIPT_MEMO[(SESSION, tmp_path.resolve())] == fresh.resolve()
+
+
+def test_resolve_claude_hit_does_not_import_codex(tmp_path: Path) -> None:
+    real = write(tmp_path / "proj-a" / f"{SESSION}.jsonl", 100.0)
+    probe = f"""
+import sys
+from pathlib import Path
+from cc_transcript.discovery import resolve
+from cc_transcript.ids import SessionId
+
+hit = resolve(SessionId({str(SESSION)!r}), root=Path({str(tmp_path)!r}))
+assert hit == Path({str(real.resolve())!r}), hit
+assert "cc_transcript.codex" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", probe], check=True, capture_output=True, text=True)
+
+
+def test_resolve_codex_fallback_does_not_shadow_later_claude_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cc_transcript import codex
+
+    session_id = SessionId("019b7000-0000-7000-8000-000000000001")
+    claude_root = tmp_path / "claude"
+    claude_root.mkdir()
+    codex_root = tmp_path / "codex"
+    codex_hit = write(
+        codex_root / "2026" / "01" / "01" / f"rollout-2026-01-01T00-00-00-{session_id}.jsonl",
+        100.0,
+    )
+    monkeypatch.setattr(codex, "SESSIONS_ROOT", codex_root)
+
+    assert resolve(session_id, root=claude_root) == codex_hit.resolve()
+    assert (session_id, claude_root.resolve()) not in TRANSCRIPT_MEMO
+
+    claude_hit = write(claude_root / "proj-a" / f"{session_id}.jsonl", 200.0)
+    assert resolve(session_id, root=claude_root) == claude_hit.resolve()
+    assert TRANSCRIPT_MEMO[(session_id, claude_root.resolve())] == claude_hit.resolve()
 
 
 def test_resolve_missing_session_returns_none(tmp_path: Path) -> None:

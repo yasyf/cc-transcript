@@ -23,6 +23,15 @@ pub enum Provider {
     Codex,
 }
 
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Claude => "claude",
+            Provider::Codex => "codex",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ParsedTranscript {
     pub provider: Provider,

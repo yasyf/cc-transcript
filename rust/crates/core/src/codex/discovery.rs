@@ -46,12 +46,7 @@ pub fn resolve(session_id: &str, root: &Path) -> Option<PathBuf> {
     found
         .iter()
         .find(|rollout| rollout.session_id == session_id && !rollout.compressed)
-        .or_else(|| {
-            found
-                .iter()
-                .find(|rollout| rollout.session_id == session_id)
-        })
-        .map(|rollout| rollout.path.clone())
+        .and_then(|rollout| fs::canonicalize(&rollout.path).ok())
 }
 
 fn walk(dir: &Path, visit: &mut impl FnMut(&Path)) {
@@ -173,20 +168,43 @@ mod tests {
         );
         assert_eq!(
             resolve("019b7000-0000-7000-8000-000000000002", &root),
-            Some(twin.clone())
+            Some(fs::canonicalize(&twin).unwrap())
         );
         fs::remove_file(twin).unwrap();
-        assert_eq!(
-            resolve("019b7000-0000-7000-8000-000000000002", &root),
-            Some(twin_zst)
-        );
+        assert_eq!(resolve("019b7000-0000-7000-8000-000000000002", &root), None);
         assert_eq!(
             resolve("019b7000-0000-7000-8000-000000000001", &root),
-            Some(oldest)
+            Some(fs::canonicalize(oldest).unwrap())
         );
         assert_eq!(resolve("019b7000-0000-7000-8000-000000000099", &root), None);
         assert_eq!(sessions_root(Some(&root)), root);
         assert!(sessions_root(None).ends_with(".codex/sessions"));
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_returns_canonical_path_through_symlinked_root() {
+        let base = std::env::temp_dir().join(format!(
+            "codex-discovery-symlink-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::remove_dir_all(&base).ok();
+        fs::create_dir_all(&base).unwrap();
+        let root = base.join("sessions");
+        let rollout = touch(
+            &root,
+            "2026/01/02/rollout-2026-01-02T03-04-05-019b7000-0000-7000-8000-000000000003.jsonl",
+        );
+        let linked_root = base.join("linked-sessions");
+        std::os::unix::fs::symlink(&root, &linked_root).unwrap();
+
+        assert_eq!(
+            resolve("019b7000-0000-7000-8000-000000000003", &linked_root),
+            Some(fs::canonicalize(rollout).unwrap())
+        );
+
+        fs::remove_dir_all(&base).ok();
     }
 }

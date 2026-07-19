@@ -4,6 +4,7 @@ pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
 }
 
 mod actor_bridge;
+mod codex;
 mod command;
 mod context;
 mod corrections;

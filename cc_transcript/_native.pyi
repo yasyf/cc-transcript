@@ -104,6 +104,9 @@ __all__ = [
     "activity_lift_from_events",
     "bucket_events_from_events",
     "cli_main",
+    "codex_discover",
+    "codex_resolve",
+    "codex_session_info",
     "command_parse",
     "command_prefixes",
     "context_capture_window",
@@ -1941,21 +1944,22 @@ class Transcript:
     The parsed events of a single transcript file, backed by the native parse
     output; ``events`` materializes lazy views on access.
 
-    One parse owns one ``Arc<Vec<Entry>>`` that every event and nested view shares,
-    so retaining any single view keeps that whole parse's entries alive; keeping one
-    event from each of several parses retains all of their entries. The live
-    :class:`~watch.WatchEvent` stream is exempt — its tailer builds a
-    one-entry Arc per yielded event, so a held watch event pins only itself.
+    One parse owns one ``Arc<Vec<Entry>>`` shared by every view, so retaining any
+    view keeps the whole parse's entries alive; the live
+    :class:`~watch.WatchEvent` stream is exempt (one-entry Arc each).
 
     Attributes:
         path: The transcript's path on disk; None for a bytes parse.
         mtime: The transcript's modification time when parsed.
+        provider: The transcript's source provider: "claude" or "codex".
         events: The parsed events, in file order.
     """
     @property
     def path(self) -> typing.Optional[pathlib.Path]: ...
     @property
     def mtime(self) -> builtins.float: ...
+    @property
+    def provider(self) -> typing.Literal["claude", "codex"]: ...
     @property
     def events(self) -> EventList: ...
 
@@ -2192,6 +2196,12 @@ def cli_main() -> builtins.int:
     tree, a real Rust SIGINT handler installed up front, the GIL released for the whole
     run, and the exit code returned verbatim for the wrapper's `sys.exit`.
     """
+
+def codex_discover(root: typing.Optional[builtins.str | os.PathLike | pathlib.Path] = None) -> builtins.list[tuple[pathlib.Path, builtins.str, builtins.bool]]: ...
+
+def codex_resolve(session_id: builtins.str, root: typing.Optional[builtins.str | os.PathLike | pathlib.Path] = None) -> typing.Optional[pathlib.Path]: ...
+
+def codex_session_info(path: builtins.str) -> dict[str, typing.Any]: ...
 
 def command_parse(command: builtins.str) -> dict[str, typing.Any]: ...
 

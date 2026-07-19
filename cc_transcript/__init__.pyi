@@ -27,6 +27,14 @@ from cc_transcript.builders import (
     keep_only as keep_only,
 )
 
+from cc_transcript.codex import (
+    CodexPendingItem as CodexPendingItem,
+    CodexRollout as CodexRollout,
+    CodexSessionInfo as CodexSessionInfo,
+    CodexUsage as CodexUsage,
+    Lifecycle as Lifecycle,
+)
+
 from cc_transcript.command import (
     Command as Command,
     CommandLine as CommandLine,
@@ -302,6 +310,10 @@ __all__ = [
     "CacheCreation",
     "CandidatePair",
     "CcVersion",
+    "CodexPendingItem",
+    "CodexRollout",
+    "CodexSessionInfo",
+    "CodexUsage",
     "Command",
     "CommandLine",
     "CommandLineQuery",
@@ -342,6 +354,7 @@ __all__ = [
     "HydratedWindow",
     "InitInfo",
     "JUNK_USER_MESSAGE_RE",
+    "Lifecycle",
     "McpServer",
     "ModeEvent",
     "ModelPricing",

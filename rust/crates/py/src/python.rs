@@ -45,6 +45,7 @@ static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
 struct ParsedFile {
     path: Option<String>,
     mtime: f64,
+    provider: &'static str,
     lines: Vec<Entry>,
 }
 
@@ -57,14 +58,20 @@ fn parse_file_internal(
     filter: Option<&CompiledSpec>,
 ) -> Option<ParsedFile> {
     let bytes = std::fs::read(path).ok()?;
-    let entries = parse_transcript_bytes(&bytes).ok()?.entries;
+    let parsed = parse_transcript_bytes(&bytes).ok()?;
+    let provider = parsed.provider.as_str();
     let lines = match filter {
-        Some(spec) => entries.into_iter().filter(|e| spec_keep(spec, e)).collect(),
-        None => entries,
+        Some(spec) => parsed
+            .entries
+            .into_iter()
+            .filter(|e| spec_keep(spec, e))
+            .collect(),
+        None => parsed.entries,
     };
     Some(ParsedFile {
         path: Some(path.to_string()),
         mtime,
+        provider,
         lines,
     })
 }
@@ -75,6 +82,7 @@ fn parsed_file_to_py<'py>(py: Python<'py>, pf: ParsedFile) -> PyResult<Bound<'py
         TranscriptView {
             path: pf.path,
             mtime: pf.mtime,
+            provider: pf.provider,
             entries: Arc::new(pf.lines),
         },
     )?
@@ -170,19 +178,22 @@ fn parse_bytes_py<'py>(
         Some(json) => Some(compile_spec(&json).map_err(PyValueError::new_err)?),
         None => None,
     };
-    let entries = parse_transcript_bytes(raw).map_err(parse_err)?.entries;
+    let parsed = parse_transcript_bytes(raw).map_err(parse_err)?;
+    let provider = parsed.provider.as_str();
     let lines = match filter {
-        Some(spec) => entries
+        Some(spec) => parsed
+            .entries
             .into_iter()
             .filter(|e| spec_keep(&spec, e))
             .collect(),
-        None => entries,
+        None => parsed.entries,
     };
     parsed_file_to_py(
         py,
         ParsedFile {
             path: None,
             mtime: 0.0,
+            provider,
             lines,
         },
     )
@@ -1015,6 +1026,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::discovery::discovery_is_subagent_path,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(crate::codex::codex_session_info, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::codex::codex_discover, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::codex::codex_resolve, m)?)?;
     crate::views::add_view_classes(m)?;
     m.py()
         .import("collections.abc")?

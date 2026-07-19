@@ -14,21 +14,21 @@ use crate::views::events::event_view;
 /// The parsed events of a single transcript file, backed by the native parse
 /// output; ``events`` materializes lazy views on access.
 ///
-/// One parse owns one ``Arc<Vec<Entry>>`` that every event and nested view shares,
-/// so retaining any single view keeps that whole parse's entries alive; keeping one
-/// event from each of several parses retains all of their entries. The live
-/// :class:`~cc_transcript.watch.WatchEvent` stream is exempt — its tailer builds a
-/// one-entry Arc per yielded event, so a held watch event pins only itself.
+/// One parse owns one ``Arc<Vec<Entry>>`` shared by every view, so retaining any
+/// view keeps the whole parse's entries alive; the live
+/// :class:`~cc_transcript.watch.WatchEvent` stream is exempt (one-entry Arc each).
 ///
 /// Attributes:
 ///     path: The transcript's path on disk; None for a bytes parse.
 ///     mtime: The transcript's modification time when parsed.
+///     provider: The transcript's source provider: "claude" or "codex".
 ///     events: The parsed events, in file order.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "Transcript", module = "cc_transcript.models", frozen)]
 pub(crate) struct TranscriptView {
     pub path: Option<String>,
     pub mtime: f64,
+    pub provider: &'static str,
     pub entries: Arc<Vec<Entry>>,
 }
 
@@ -43,6 +43,12 @@ impl TranscriptView {
     #[getter]
     fn mtime(&self) -> f64 {
         self.mtime
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Literal[\"claude\", \"codex\"]", imports = ("typing",)))]
+    fn provider(&self) -> &'static str {
+        self.provider
     }
 
     #[getter]
