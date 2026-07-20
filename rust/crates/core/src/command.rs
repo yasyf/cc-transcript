@@ -1,33 +1,42 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 
 use once_cell::sync::Lazy;
+use rable::{parse, ListOperator, Node, NodeKind, PipeSep, Span};
 use regex::Regex;
-use tree_sitter::{Node, Parser};
 
 use crate::literals::command::{
-    ASSIGNMENT_PATTERN, COMPOUND_OPS, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS,
-    SHELL_COMMANDS, WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
+    ASSIGNMENT_PATTERN, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS, SHELL_COMMANDS,
+    WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
 };
 use crate::pystr;
 
 static ASSIGNMENT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(ASSIGNMENT_PATTERN).expect("assignment regex"));
 
-const REDIRECT_OPS: &[&str] = &[">", ">>", "<", "<<", ">&", "<&", ">|"];
+// rable spans index characters; the contract's byte spans need a char->byte map (they diverge for
+// multibyte UTF-8). `cmap[len]` = source length, so an end index one past the last char resolves.
+struct Src<'a> {
+    text: &'a str,
+    cmap: Vec<usize>,
+}
 
-// Parity: command.py REDIRECT_OP_TYPES — the file_redirect operator/descriptor node kinds.
-const REDIRECT_OP_TYPES: &[&str] = &["file_descriptor", ">", ">>", "<", "<<", ">&", "<&", ">|"];
+impl<'a> Src<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut cmap: Vec<usize> = text.char_indices().map(|(byte, _)| byte).collect();
+        cmap.push(text.len());
+        Src { text, cmap }
+    }
 
-thread_local! {
-    static BASH_PARSER: RefCell<Parser> = RefCell::new({
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_bash::LANGUAGE.into())
-            .expect("load bash grammar");
-        parser
-    });
+    fn bytes(&self, span: &Span) -> (usize, usize) {
+        let at = |c: usize| self.cmap.get(c).copied().unwrap_or(self.text.len());
+        (at(span.start), at(span.end))
+    }
+
+    fn slice(&self, span: &Span) -> &'a str {
+        let (start, end) = self.bytes(span);
+        self.text.get(start..end).unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,11 +308,11 @@ impl CommandLine {
     }
 
     fn parse_at_depth(raw: &str, depth: u8) -> CommandLine {
-        // The borrow must drop before walking: payload enumeration re-enters parse_at_depth.
-        let tree = BASH_PARSER.with(|parser| parser.borrow_mut().parse(raw, None));
-        let mut parts = match tree {
-            Some(tree) => walk_node(tree.root_node(), raw.as_bytes(), depth),
-            None => Vec::new(),
+        let src = Src::new(raw);
+        // A syntax error (`|`, `&&`) yields no commands, matching the old empty-tree fallback.
+        let mut parts = match parse(raw, false) {
+            Ok(nodes) => nodes.iter().flat_map(|node| walk(node, &src, depth)).collect(),
+            Err(_) => Vec::new(),
         };
         // Nested inside an enumerated host's span: visible but span-less, like an absorbed word.
         // Payload parts (non-empty contexts) keep mapped spans; splice guards them by embeddability.
@@ -469,16 +478,6 @@ fn pipe_gap_full_match(gap: &str) -> bool {
     chars.next().is_none()
 }
 
-// Parity: command.py CommandLine.redirect_absorbed_word — a file_redirect that swallowed a command
-// word past its target carries more than one non-operator child.
-fn redirect_absorbed_word(node: Node) -> bool {
-    let mut cursor = node.walk();
-    node.children(&mut cursor)
-        .filter(|c| !REDIRECT_OP_TYPES.contains(&c.kind()))
-        .count()
-        > 1
-}
-
 // Parity: command.py CommandLineQuery — predicate helpers over a parsed line.
 pub struct CommandLineQuery<'a> {
     pub line: &'a CommandLine,
@@ -587,23 +586,6 @@ pub fn quote_for(contexts: &[QuoteLayer], text: &str) -> Option<String> {
         .find(|candidate| embeddable(contexts, candidate))
 }
 
-fn node_text(node: Node, src: &[u8]) -> String {
-    node.utf8_text(src).unwrap_or("").to_string()
-}
-
-// Parity: command.py CommandLine.word_text — dequote string/raw_string only.
-fn word_text(node: Node, src: &[u8]) -> String {
-    match node.kind() {
-        "string" | "raw_string" => dequote(node.utf8_text(src).unwrap_or("")).to_string(),
-        _ => node_text(node, src),
-    }
-}
-
-// An unquoted glob (`* ? [`), a `{a,b}`/`{a..b}` brace expansion, or a leading tilde.
-fn word_expandable(raw: &str) -> bool {
-    raw.starts_with('~') || glob_or_brace(raw)
-}
-
 fn glob_or_brace(raw: &str) -> bool {
     let mut chars = raw.chars();
     let mut in_brace = false;
@@ -633,20 +615,7 @@ fn glob_or_brace(raw: &str) -> bool {
     false
 }
 
-fn unescaped(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut chars = raw.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => out.push(chars.next().unwrap_or('\\')),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-// Double-quote escape resolution; returns whether any escape reshaped the bytes. Tree-sitter
-// keeps `\"`-style escapes inside string_content, so this runs over content text too.
+// Double-quote escape resolution; returns whether any escape reshaped the bytes.
 fn resolve_double_quoted(text: &str, out: &mut String) -> bool {
     let mut escaped = false;
     let mut chars = text.chars().peekable();
@@ -671,79 +640,504 @@ fn resolve_double_quoted(text: &str, out: &mut String) -> bool {
     escaped
 }
 
-// Per-kind structural word resolution: value strips every quote layer and escape (None when an
-// unresolved expansion taints it), content_offset marks a verbatim contiguous source slice.
-fn analyze_word(node: Node, src: &[u8]) -> Word {
-    let node = match node.kind() {
-        "command_name" => node.child(0).unwrap_or(node),
-        _ => node,
-    };
-    let raw = node_text(node, src);
-    let span = (node.start_byte(), node.end_byte());
-    let word = |value: Option<String>, expandable, layer, content_offset| Word {
-        raw: raw.clone(),
-        value,
-        span: Some(span),
-        expandable,
-        layer,
-        content_offset,
-    };
-    match node.kind() {
-        "raw_string" => match raw.as_bytes() {
-            [b'\'', .., b'\''] => word(
-                Some(raw[1..raw.len() - 1].to_string()),
-                false,
-                QuoteLayer::Single,
-                Some(span.0 + 1),
-            ),
-            _ => word(None, false, QuoteLayer::Single, None),
+// A word part that leaves the word unresolvable (`value = None`): every expansion kind rable
+// splits out of the literal text, plus ANSI-C (`$'…'`) and locale (`$"…"`) quoting — the raw-slice
+// re-scan mishandles their leading `$`, so signalling None matches the base parser's honest taint.
+fn is_expansion_part(part: &Node) -> bool {
+    matches!(
+        part.kind,
+        NodeKind::ParamExpansion { .. }
+            | NodeKind::ParamLength { .. }
+            | NodeKind::ParamIndirect { .. }
+            | NodeKind::CommandSubstitution { .. }
+            | NodeKind::ProcessSubstitution { .. }
+            | NodeKind::ArithmeticExpansion { .. }
+            | NodeKind::AnsiCQuote { .. }
+            | NodeKind::LocaleString { .. }
+    )
+}
+
+// The outer quote layer of a raw word: `'…'` and `"…"` only when a single matching pair wraps the
+// whole word (adjacent or mixed quoting is a bare concatenation). rable does not expose it.
+fn wholly_quoted(raw: &str) -> QuoteLayer {
+    let bytes = raw.as_bytes();
+    match bytes.first() {
+        Some(b'\'') => match raw[1..].find('\'') {
+            Some(pos) if pos + 1 == raw.len() - 1 => QuoteLayer::Single,
+            _ => QuoteLayer::Bare,
         },
-        "string" => {
-            let mut value = Some(String::new());
-            let mut content: Vec<Node> = Vec::new();
-            let mut escaped = false;
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                match (child.kind(), value.as_mut()) {
-                    ("\"", _) | (_, None) => {}
-                    ("string_content" | "escape_sequence", Some(v)) => {
-                        escaped |= resolve_double_quoted(&node_text(child, src), v);
-                        content.push(child);
+        Some(b'"') => {
+            let mut i = 1;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'"' => {
+                        return if i == bytes.len() - 1 {
+                            QuoteLayer::Double
+                        } else {
+                            QuoteLayer::Bare
+                        }
                     }
-                    _ => value = None,
+                    _ => i += 1,
                 }
             }
-            let offset = (value.is_some() && !escaped && content.len() == 1)
-                .then(|| content[0].start_byte());
-            word(value, false, QuoteLayer::Double, offset)
+            QuoteLayer::Bare
         }
-        "word" => {
-            let value = unescaped(&raw);
-            let offset = (value == raw).then_some(span.0);
-            word(Some(value), word_expandable(&raw), QuoteLayer::Bare, offset)
-        }
-        "number" => word(Some(raw.clone()), false, QuoteLayer::Bare, Some(span.0)),
-        "concatenation" => {
-            let mut cursor = node.walk();
-            let children: Vec<Node> = node.children(&mut cursor).collect();
-            let value = children
-                .iter()
-                .map(|child| analyze_word(*child, src).value)
-                .collect::<Option<Vec<String>>>()
-                .map(|values| values.concat());
-            // Glob and brace syntax splits across the unquoted pieces (`{a,b}` parses as three
-            // words), so expandability reads over their joined text; a tilde only counts when
-            // it leads the whole word.
-            let bare: String = children
-                .iter()
-                .filter(|child| child.kind() == "word")
-                .map(|child| node_text(*child, src))
-                .collect();
-            let expandable = raw.starts_with('~') || glob_or_brace(&bare);
-            word(value, expandable, QuoteLayer::Bare, None)
-        }
-        _ => word(None, false, QuoteLayer::Bare, None),
+        _ => QuoteLayer::Bare,
     }
+}
+
+// The executable/arg spelling: one wrapping quote layer stripped, else verbatim.
+fn word_text(node: &Node, src: &Src) -> String {
+    let raw = src.slice(&node.span);
+    match wholly_quoted(raw) {
+        QuoteLayer::Bare => raw.to_string(),
+        _ => dequote(raw).to_string(),
+    }
+}
+
+// Strip every quote layer and escape from a bare (concatenated) word: single quotes pass through
+// literally, double quotes resolve `\ $ ` "` escapes, a bare backslash escapes the next char.
+fn bare_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                for ic in chars.by_ref() {
+                    if ic == '\'' {
+                        break;
+                    }
+                    out.push(ic);
+                }
+            }
+            '"' => {
+                while let Some(ic) = chars.next() {
+                    if ic == '"' {
+                        break;
+                    }
+                    match (ic, chars.peek()) {
+                        ('\\', Some('"' | '\\' | '$' | '`')) => out.push(chars.next().unwrap()),
+                        ('\\', Some('\n')) => {
+                            chars.next();
+                        }
+                        _ => out.push(ic),
+                    }
+                }
+            }
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+// The unquoted runs of a bare word, joined — glob/brace expandability reads only these (a `*`
+// inside quotes is literal), and a tilde only expands when it leads the whole word.
+fn bare_pieces(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                for ic in chars.by_ref() {
+                    if ic == '\'' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                while let Some(ic) = chars.next() {
+                    match ic {
+                        '"' => break,
+                        '\\' => {
+                            chars.next();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+// Per-word structural resolution: `value` strips every quote layer and escape (None when an
+// expansion taints it), `content_offset` marks a verbatim contiguous source slice, `layer` and
+// `expandable` reconstruct what rable does not expose.
+fn analyze_word(node: &Node, src: &Src) -> Word {
+    let (start, end) = src.bytes(&node.span);
+    let raw = src.text.get(start..end).unwrap_or("").to_string();
+    let span = Some((start, end));
+    let tainted = match &node.kind {
+        NodeKind::Word { parts, .. } => parts.iter().any(is_expansion_part),
+        _ => false,
+    };
+    match wholly_quoted(&raw) {
+        QuoteLayer::Single => Word {
+            value: Some(raw[1..raw.len() - 1].to_string()),
+            span,
+            expandable: false,
+            layer: QuoteLayer::Single,
+            content_offset: Some(start + 1),
+            raw,
+        },
+        QuoteLayer::Double if tainted => Word {
+            value: None,
+            span,
+            expandable: false,
+            layer: QuoteLayer::Double,
+            content_offset: None,
+            raw,
+        },
+        QuoteLayer::Double => {
+            let inner = &raw[1..raw.len() - 1];
+            let mut value = String::new();
+            let escaped = resolve_double_quoted(inner, &mut value);
+            let content_offset = (!escaped && !inner.is_empty()).then_some(start + 1);
+            Word {
+                value: Some(value),
+                span,
+                expandable: false,
+                layer: QuoteLayer::Double,
+                content_offset,
+                raw,
+            }
+        }
+        QuoteLayer::Bare => {
+            let value = (!tainted).then(|| bare_value(&raw));
+            let content_offset = match &value {
+                Some(v) if *v == raw => Some(start),
+                _ => None,
+            };
+            let expandable = raw.starts_with('~') || glob_or_brace(&bare_pieces(&raw));
+            Word {
+                value,
+                span,
+                expandable,
+                layer: QuoteLayer::Bare,
+                content_offset,
+                raw,
+            }
+        }
+    }
+}
+
+// A standalone process/arithmetic expansion is never an executable, arg, or word; a standalone
+// command substitution is one only in command-name (first) position. Everything else, and any
+// concatenation, stays. This mirrors tree-sitter's separate node kinds for these expansions.
+fn standalone_part(node: &Node) -> Option<&NodeKind> {
+    match &node.kind {
+        NodeKind::Word { parts, .. } if parts.len() == 1 => Some(&parts[0].kind),
+        _ => None,
+    }
+}
+
+fn excluded_word(node: &Node, first: bool) -> bool {
+    match standalone_part(node) {
+        Some(NodeKind::ProcessSubstitution { .. } | NodeKind::ArithmeticExpansion { .. }) => true,
+        Some(NodeKind::CommandSubstitution { .. }) => !first,
+        _ => false,
+    }
+}
+
+// Byte offset within `raw` of the inner content of each top-level command substitution (`$(…)` or
+// backticks), paired with that inner text. Single-quoted spans are literal; `${…}`/`$((…))` are not
+// command substitutions; a command substitution inside double quotes still counts.
+fn command_subs(raw: &str) -> Vec<(usize, String)> {
+    let b = raw.as_bytes();
+    let n = b.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut in_double = false;
+    while i < n {
+        match b[i] {
+            b'\\' => i += 2,
+            b'\'' if !in_double => {
+                i += 1;
+                while i < n && b[i] != b'\'' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'"' => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'`' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < n && b[j] != b'`' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                out.push((start, raw.get(start..j.min(n)).unwrap_or("").to_string()));
+                i = j + 1;
+            }
+            b'$' if i + 1 < n && b[i + 1] == b'(' => {
+                if i + 2 < n && b[i + 2] == b'(' {
+                    i = skip_matched(b, i + 3, b'(', b')');
+                } else {
+                    let start = i + 2;
+                    let close = match_paren(b, start);
+                    out.push((start, raw.get(start..close.min(n)).unwrap_or("").to_string()));
+                    i = close + 1;
+                }
+            }
+            b'$' if i + 1 < n && b[i + 1] == b'{' => i = skip_matched(b, i + 2, b'{', b'}'),
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+// Index of the `)` closing a `$(` opened just before `from`, respecting quotes and nested parens.
+fn match_paren(b: &[u8], mut from: usize) -> usize {
+    let n = b.len();
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while from < n {
+        match b[from] {
+            b'\\' if !in_single => from += 2,
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                from += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                from += 1;
+            }
+            b'(' if !in_single && !in_double => {
+                depth += 1;
+                from += 1;
+            }
+            b')' if !in_single && !in_double => {
+                if depth == 0 {
+                    return from;
+                }
+                depth -= 1;
+                from += 1;
+            }
+            _ => from += 1,
+        }
+    }
+    n
+}
+
+// Index just past the delimiter that closes `open`/`close` opened just before `from`.
+fn skip_matched(b: &[u8], mut from: usize, open: u8, close: u8) -> usize {
+    let n = b.len();
+    let mut depth = 0usize;
+    while from < n {
+        let c = b[from];
+        from += 1;
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return from,
+            }
+        }
+    }
+    n
+}
+
+// Background `&` records no operator token (like `|&` and newlines): the old parser attached
+// nothing, and a backgrounded command is not "joined" to its neighbor.
+fn list_op(op: ListOperator) -> Option<&'static str> {
+    match op {
+        ListOperator::And => Some("&&"),
+        ListOperator::Or => Some("||"),
+        ListOperator::Semi => Some(";"),
+        ListOperator::Background => None,
+    }
+}
+
+// name=value assignments become env pairs; the value strips one wrapping quote layer like word_text.
+fn build_env(assignments: &[Node], src: &Src) -> Vec<(String, String)> {
+    assignments
+        .iter()
+        .filter_map(|node| {
+            let raw = src.slice(&node.span);
+            let eq = raw.find('=')?;
+            let value = &raw[eq + 1..];
+            let value = match wholly_quoted(value) {
+                QuoteLayer::Bare => value.to_string(),
+                _ => dequote(value).to_string(),
+            };
+            Some((raw[..eq].to_string(), value))
+        })
+        .collect()
+}
+
+// File redirects only; heredocs stay out of the redirect list (their bytes are not spliceable), and
+// an unspecified leading descriptor (rable's -1) becomes None.
+fn build_redirects(redirects: &[Node], src: &Src) -> Vec<Redirect> {
+    redirects
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NodeKind::Redirect { op, target, fd, .. } => Some(Redirect {
+                op: op.clone(),
+                target: match &target.kind {
+                    NodeKind::Word { value, .. } => value.clone(),
+                    _ => src.slice(&target.span).to_string(),
+                },
+                fd: (*fd >= 0).then_some(*fd as i64),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+// List/pipeline split at their operators; a command extracts plus its substitution and payload
+// parts; compound bodies recurse; everything else contributes nothing.
+fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
+    match &node.kind {
+        NodeKind::List { items } => {
+            let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+            for item in items {
+                let mut inner = walk(&item.command, src, depth);
+                if let (Some(Some(op)), Some(last)) =
+                    (item.operator.map(list_op), inner.last_mut())
+                {
+                    last.1 = Some(op.to_string());
+                }
+                parts.extend(inner);
+            }
+            parts
+        }
+        NodeKind::Pipeline { commands, separators } => {
+            let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+            for (i, command) in commands.iter().enumerate() {
+                let mut inner = walk(command, src, depth);
+                // `|&` records no operator token (matching the old parser); the raw-gap fallback in
+                // `piped` still reads it as a pipe. Only a plain `|` attaches an operator.
+                if let (Some(PipeSep::Pipe), Some(last)) = (separators.get(i).copied(), inner.last_mut()) {
+                    last.1 = Some("|".to_string());
+                }
+                parts.extend(inner);
+            }
+            parts
+        }
+        NodeKind::Command { assignments, words, redirects } => {
+            walk_command(node, assignments, words, redirects, src, depth)
+        }
+        NodeKind::Subshell { body, .. } | NodeKind::BraceGroup { body, .. } => walk(body, src, depth),
+        NodeKind::Negation { pipeline } => walk(pipeline, src, depth),
+        NodeKind::Time { pipeline, .. } => walk(pipeline, src, depth),
+        _ => Vec::new(),
+    }
+}
+
+// Word/argument-position `$(…)`/backtick substitutions under a command, enumerated as nested parts
+// mirroring assignment position: document order (assignments then words), redirects excluded.
+// Each inner command re-parses depth-unchanged, offsets its spans into the outer raw, and hoists a
+// nesting level; the host's own span nulls their enclosed command spans back in parse_at_depth.
+fn substitution_parts(
+    assignments: &[Node],
+    words: &[Node],
+    src: &Src,
+    depth: u8,
+) -> Vec<(Command, Option<String>)> {
+    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+    for word in assignments.iter().chain(words.iter()) {
+        let (start, _) = src.bytes(&word.span);
+        for (inner_offset, inner) in command_subs(src.slice(&word.span)) {
+            let offset = start + inner_offset;
+            let mut inner_parts = CommandLine::parse_at_depth(&inner, depth).parts;
+            for (cmd, _) in inner_parts.iter_mut() {
+                cmd.nesting = cmd.nesting.saturating_add(1);
+                cmd.span = cmd.span.map(|(s, e)| (s + offset, e + offset));
+                for w in &mut cmd.words {
+                    w.span = w.span.map(|(s, e)| (s + offset, e + offset));
+                    w.content_offset = w.content_offset.map(|c| c + offset);
+                }
+            }
+            parts.extend(inner_parts);
+        }
+    }
+    parts
+}
+
+// A simple command: words[0] is the executable (never dequoted), words[1..] the args, assignments
+// the env, file redirects excluded from the span. A pure assignment host emits no command (its
+// substitutions stand alone); a redirect-only command emits one synthetic empty part.
+fn walk_command(
+    node: &Node,
+    assignments: &[Node],
+    words: &[Node],
+    redirects: &[Node],
+    src: &Src,
+    depth: u8,
+) -> Vec<(Command, Option<String>)> {
+    let subs = substitution_parts(assignments, words, src, depth);
+    let content: Vec<&Node> = words
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| !excluded_word(w, *i == 0))
+        .map(|(_, w)| w)
+        .collect();
+
+    if content.is_empty() {
+        if !subs.is_empty() {
+            return subs;
+        }
+        if redirects.is_empty() {
+            return Vec::new();
+        }
+        return vec![(
+            Command {
+                raw: src.slice(&node.span).to_string(),
+                env: build_env(assignments, src),
+                redirects: build_redirects(redirects, src),
+                span: Some(src.bytes(&node.span)),
+                ..Command::default()
+            },
+            None,
+        )];
+    }
+
+    // None when the content interval overlaps a redirect (splice must not overwrite redirect bytes)
+    // or a degraded multi-heredoc; a trailing redirect stays outside, so `rm x >out` still rewrites.
+    let heredocs = redirects
+        .iter()
+        .filter(|r| matches!(r.kind, NodeKind::HereDoc { .. }))
+        .count();
+    let content_span: Vec<&Node> = assignments.iter().chain(words.iter()).collect();
+    let start = content_span.iter().map(|n| src.bytes(&n.span).0).min().unwrap();
+    let end = content_span.iter().map(|n| src.bytes(&n.span).1).max().unwrap();
+    let straddles_redirect = redirects.iter().any(|r| {
+        let (rs, re) = src.bytes(&r.span);
+        rs < end && re > start
+    });
+    let span = (heredocs < 2 && !straddles_redirect).then_some((start, end));
+
+    let host = Command {
+        raw: src.slice(&node.span).to_string(),
+        executable: src.slice(&content[0].span).to_string(),
+        args: content[1..].iter().map(|w| word_text(w, src)).collect(),
+        env: build_env(assignments, src),
+        redirects: build_redirects(redirects, src),
+        span,
+        words: content.iter().map(|w| analyze_word(w, src)).collect(),
+        ..Command::default()
+    };
+
+    let mut parts = vec![(host, None)];
+    parts.extend(subs);
+    parts.extend(payload_parts(&parts[0].0, src, depth));
+    for index in 1..parts.len() {
+        if parts[index].0.nesting == 1 && parts[index].0.host_delta.is_none() {
+            parts[index].0.host_delta = Some(index);
+        }
+    }
+    parts
 }
 
 // Parity: command.py Command.unwrapped dropwhile — flags, bare ASCII-integer args, VAR=val.
@@ -824,225 +1218,20 @@ fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
     argv
 }
 
-// Parity: command.py CommandLine.extract_redirect — fd, then op (typed or textual), then target.
-fn extract_redirect(node: Node, src: &[u8]) -> Redirect {
-    let mut op = String::new();
-    let mut target = String::new();
-    let mut fd: Option<i64> = None;
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-        if kind == "file_descriptor" {
-            let text = node_text(child, src);
-            fd = (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-                .then(|| text.parse().ok())
-                .flatten();
-        } else if REDIRECT_OPS.contains(&kind) {
-            op = kind.to_string();
-        } else {
-            let text = node_text(child, src);
-            if op.is_empty() && REDIRECT_OPS.contains(&text.as_str()) {
-                op = text;
-            } else {
-                target = text;
-            }
-        }
-    }
-    Redirect { op, target, fd }
-}
-
-// Parity: command.py CommandLine.extract_command — command_name/variable_assignment/
-// file_redirect are typed; word-like nodes fill the executable (first) then args.
-fn extract_command(node: Node, src: &[u8]) -> Command {
-    let mut executable = String::new();
-    let mut args: Vec<String> = Vec::new();
-    let mut env: Vec<(String, String)> = Vec::new();
-    let mut redirects: Vec<Redirect> = Vec::new();
-    let mut words: Vec<Word> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "command_name" => {
-                executable = word_text(child, src);
-                words.push(analyze_word(child, src));
-            }
-            "variable_assignment" => {
-                let mut vc = child.walk();
-                let children: Vec<Node> = child.children(&mut vc).collect();
-                if let Some(name) = children.iter().find(|c| c.kind() == "variable_name") {
-                    let value = match (children.len() >= 3).then(|| children[children.len() - 1]) {
-                        Some(val) if val.kind() != "=" => word_text(val, src),
-                        _ => String::new(),
-                    };
-                    env.push((node_text(*name, src), value));
-                }
-            }
-            "file_redirect" => redirects.push(extract_redirect(child, src)),
-            "word" | "string" | "raw_string" | "number" | "concatenation" | "simple_expansion"
-            | "expansion" => {
-                if executable.is_empty() {
-                    executable = word_text(child, src);
-                } else {
-                    args.push(word_text(child, src));
-                }
-                words.push(analyze_word(child, src));
-            }
-            _ => {}
-        }
-    }
-    // Parity: command.py CommandLine.extract_command — the span covers the command's non-redirect
-    // children (redirect bytes stay outside), falling back to the whole node when there are none.
-    let mut span_cursor = node.walk();
-    let content: Vec<Node> = node
-        .children(&mut span_cursor)
-        .filter(|c| c.kind() != "file_redirect")
-        .collect();
-    let span = if content.is_empty() {
-        (node.start_byte(), node.end_byte())
-    } else {
-        (
-            content[0].start_byte(),
-            content[content.len() - 1].end_byte(),
-        )
-    };
-    Command {
-        raw: node_text(node, src),
-        executable,
-        args,
-        env,
-        redirects,
-        span: Some(span),
-        words,
-        ..Command::default()
-    }
-}
-
-// Parity: command.py CommandLine.collect_parts — an operator child attaches as the last
-// part's op; every other child recurses and its parts are appended in order.
-fn collect_parts(
-    node: Node,
-    src: &[u8],
-    ops: &[&str],
-    depth: u8,
-) -> Vec<(Command, Option<String>)> {
-    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let text = node_text(child, src);
-        if ops.contains(&child.kind()) || ops.contains(&text.as_str()) {
-            if let Some(last) = parts.last_mut() {
-                last.1 = Some(text);
-            }
-            continue;
-        }
-        parts.extend(walk_node(child, src, depth));
-    }
-    parts
-}
-
-// Parity: command.py CommandLine.walk_redirected — statement redirects append to every
-// inner command; an empty inner yields one empty-executable command carrying them.
-fn walk_redirected(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
-    let mut redirects: Vec<Redirect> = Vec::new();
-    let mut inner: Vec<(Command, Option<String>)> = Vec::new();
-    let mut broken = false;
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "file_redirect" {
-            redirects.push(extract_redirect(child, src));
-            broken = broken || redirect_absorbed_word(child);
-        } else {
-            inner.extend(walk_node(child, src, depth));
-        }
-    }
-    if inner.is_empty() {
-        return vec![(
-            Command {
-                raw: node_text(node, src),
-                span: Some((node.start_byte(), node.end_byte())),
-                redirects,
-                ..Command::default()
-            },
-            None,
-        )];
-    }
-    // Parity: command.py CommandLine.walk_redirected — statement redirects append to every inner
-    // command, and an absorbed trailing word (broken) drops that command's contiguous span.
-    if !redirects.is_empty() {
-        for (cmd, _) in inner.iter_mut() {
-            cmd.redirects.extend(redirects.iter().cloned());
-            if broken {
-                cmd.span = None;
-            }
-        }
-    }
-    inner
-}
-
-// Parity: command.py CommandLine.walk_node — program/list/pipeline split at their ops,
-// command extracts plus its substitution and payload parts, redirected_statement unwraps,
-// and everything else recurses in order.
-fn walk_node(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
-    match node.kind() {
-        "program" => walk_program(node, src, depth),
-        "list" => collect_parts(node, src, COMPOUND_OPS, depth),
-        "pipeline" => collect_parts(node, src, &["|"], depth),
-        "command" => {
-            let mut parts = vec![(extract_command(node, src), None)];
-            parts.extend(substitution_parts(node, src, depth));
-            let payload = payload_parts(&parts[0].0, src, depth);
-            parts.extend(payload);
-            for index in 1..parts.len() {
-                if parts[index].0.nesting == 1 && parts[index].0.host_delta.is_none() {
-                    parts[index].0.host_delta = Some(index);
-                }
-            }
-            parts
-        }
-        "command_substitution" => walk_substitution(node, src, depth),
-        "redirected_statement" => walk_redirected(node, src, depth),
-        _ => {
-            let mut parts = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                parts.extend(walk_node(child, src, depth));
-            }
-            parts
-        }
-    }
-}
-
-fn walk_substitution(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
-    let mut parts = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        parts.extend(walk_node(child, src, depth));
-    }
-    for (cmd, _) in &mut parts {
-        cmd.nesting = cmd.nesting.saturating_add(1);
-    }
-    parts
-}
-
-// Word/argument-position `$(…)`/backtick substitutions under a command node, enumerated as parts
-// mirroring assignment position: document order (host first), redirect targets excluded.
-fn substitution_parts(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
-    let mut parts = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "command_substitution" => parts.extend(walk_node(child, src, depth)),
-            "file_redirect" => {}
-            _ => parts.extend(substitution_parts(child, src, depth)),
-        }
-    }
-    parts
-}
-
 fn payload_flag(arg: &str) -> bool {
     arg.strip_prefix('-').is_some_and(|rest| {
         !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_lowercase()) && rest.ends_with('c')
     })
+}
+
+// A payload word's re-parseable text: its resolved value when clean, or the dequoted raw when an
+// expansion taints it. A tainted payload re-parses span-less (offset None) so its inner command
+// enumerates but splice refuses to rewrite it.
+fn payload_of(word: &Word) -> (String, QuoteLayer, Option<usize>) {
+    match &word.value {
+        Some(value) => (value.clone(), word.layer, word.content_offset),
+        None => (dequote(&word.raw).to_string(), word.layer, None),
+    }
 }
 
 // The `-c` cluster must sit in the leading option run: options end at the first operand
@@ -1053,13 +1242,7 @@ fn shell_payload(words: &[Word]) -> Option<(String, QuoteLayer, Option<usize>)> 
         match value {
             "--" => return None,
             _ if !value.starts_with('-') => return None,
-            _ if payload_flag(value) => {
-                let word = words.get(index + 1)?;
-                return word
-                    .value
-                    .clone()
-                    .map(|value| (value, word.layer, word.content_offset));
-            }
+            _ if payload_flag(value) => return Some(payload_of(words.get(index + 1)?)),
             _ if value.ends_with('o') || value.ends_with('O') => index += 2,
             _ => index += 1,
         }
@@ -1070,10 +1253,7 @@ fn shell_payload(words: &[Word]) -> Option<(String, QuoteLayer, Option<usize>)> 
 fn eval_payload(words: &[Word], src: &[u8]) -> Option<(String, QuoteLayer, Option<usize>)> {
     match words {
         [] => None,
-        [word] => word
-            .value
-            .clone()
-            .map(|value| (value, word.layer, word.content_offset)),
+        [word] => Some(payload_of(word)),
         parts => {
             let joined = parts
                 .iter()
@@ -1096,8 +1276,8 @@ fn eval_payload(words: &[Word], src: &[u8]) -> Option<(String, QuoteLayer, Optio
 // Shell `-c` / `eval` payloads enumerated as first-class nested parts, mirroring
 // substitution_parts: the payload re-parses depth-capped and hoists behind the host. Span
 // mapping is structural — a verbatim contiguous payload keeps outer-raw spans; escapes,
-// taint, and non-POSIX quoting go span-less. A tainted payload emits nothing.
-fn payload_parts(host: &Command, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
+// taint, and non-POSIX quoting go span-less. A tainted payload enumerates span-less.
+fn payload_parts(host: &Command, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
     if depth >= PAYLOAD_DEPTH_LIMIT {
         return Vec::new();
     }
@@ -1108,7 +1288,7 @@ fn payload_parts(host: &Command, src: &[u8], depth: u8) -> Vec<(Command, Option<
     };
     let exe = exe.rsplit('/').next().unwrap_or(exe);
     let payload = match exe {
-        "eval" => eval_payload(&words[1..], src),
+        "eval" => eval_payload(&words[1..], src.text.as_bytes()),
         _ if SHELL_COMMANDS.contains(&exe) => shell_payload(words),
         _ => return Vec::new(),
     };
@@ -1132,150 +1312,6 @@ fn payload_parts(host: &Command, src: &[u8], depth: u8) -> Vec<(Command, Option<
     parts
 }
 
-// Parity: command.py CommandLine.walk_program — collect_parts over `;`, dropping the heredoc body
-// and delimiter lines that tree-sitter's multi-heredoc ERROR recovery re-parses as sibling commands.
-fn walk_program(node: Node, src: &[u8], depth: u8) -> Vec<(Command, Option<String>)> {
-    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
-    let mut suppress_until = 0usize;
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.start_byte() < suppress_until {
-            continue;
-        }
-        let text = node_text(child, src);
-        if child.kind() == ";" || text == ";" {
-            if let Some(last) = parts.last_mut() {
-                last.1 = Some(text);
-            }
-            continue;
-        }
-        // A degraded multi-heredoc: emit its command(s) span-less (splice must never rewrite heredoc
-        // bytes), then suppress the sibling nodes re-parsed from its heredoc text.
-        if let Some(range_end) = heredoc_suppression(child, src) {
-            let mut inner = walk_node(child, src, depth);
-            for (cmd, _) in inner.iter_mut() {
-                cmd.span = None;
-            }
-            parts.extend(inner);
-            suppress_until = range_end;
-            continue;
-        }
-        parts.extend(walk_node(child, src, depth));
-    }
-    parts
-}
-
-// Parity: command.py CommandLine.heredoc_suppression — suppressed byte range of a
-// redirected_statement whose heredoc degraded (a heredoc_redirect carrying an ERROR), else None.
-fn heredoc_suppression(node: Node, src: &[u8]) -> Option<usize> {
-    if node.kind() != "redirected_statement" {
-        return None;
-    }
-    let degraded = find_degraded_heredoc(node)?;
-    let delimiters = fabricated_delimiters(degraded, src);
-    if delimiters.is_empty() {
-        return None;
-    }
-    // Each unconsumed delimiter extends the range through its matching line, or to EOF when never
-    // matched (bash reads an unmatched heredoc to EOF too).
-    let raw = std::str::from_utf8(src).expect("valid utf-8 source");
-    let mut cursor = node.end_byte();
-    for (delimiter, dash) in &delimiters {
-        cursor = scan_delimiter_line(raw, cursor, delimiter, *dash);
-    }
-    Some(cursor)
-}
-
-// Parity: command.py CommandLine.find_degraded_heredoc — first heredoc_redirect under `node` whose
-// subtree carries an ERROR node.
-fn find_degraded_heredoc(node: Node) -> Option<Node> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "heredoc_redirect" && subtree_has_error(child) {
-            return Some(child);
-        }
-        if let Some(found) = find_degraded_heredoc(child) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn subtree_has_error(node: Node) -> bool {
-    node.is_error() || {
-        let mut cursor = node.walk();
-        let has_error = node
-            .children(&mut cursor)
-            .any(|child| subtree_has_error(child));
-        has_error
-    }
-}
-
-// Parity: command.py CommandLine.fabricated_delimiters — the degraded heredoc's unconsumed
-// delimiters in byte order; an unquoted leading `-` is the `<<-` tab-strip marker, split off.
-fn fabricated_delimiters(hr: Node, src: &[u8]) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
-    collect_fabricated(hr, src, &mut out);
-    out
-}
-
-fn collect_fabricated(node: Node, src: &[u8], out: &mut Vec<(String, bool)>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "file_redirect" && redirect_is_input(child) {
-            if let Some(delimiter) = redirect_delimiter(child, src) {
-                out.push(delimiter);
-            }
-        } else {
-            collect_fabricated(child, src, out);
-        }
-    }
-}
-
-fn redirect_is_input(node: Node) -> bool {
-    let mut cursor = node.walk();
-    let is_input = node.children(&mut cursor).any(|child| child.kind() == "<");
-    is_input
-}
-
-fn redirect_delimiter(node: Node, src: &[u8]) -> Option<(String, bool)> {
-    let mut cursor = node.walk();
-    let target = node
-        .children(&mut cursor)
-        .find(|child| !REDIRECT_OP_TYPES.contains(&child.kind()))?;
-    let text = word_text(target, src);
-    if !matches!(target.kind(), "string" | "raw_string") {
-        if let Some(rest) = text.strip_prefix('-') {
-            return Some((rest.to_string(), true));
-        }
-    }
-    Some((text, false))
-}
-
-// Parity: command.py CommandLine.scan_delimiter_line — byte offset just past the next line at or
-// after `from` equal to `delimiter` (leading tabs stripped when `dash`), or the end of `raw`.
-fn scan_delimiter_line(raw: &str, from: usize, delimiter: &str, dash: bool) -> usize {
-    let end = raw.len();
-    let mut pos = from;
-    while pos < end {
-        let line_end = raw[pos..].find('\n').map_or(end, |i| pos + i);
-        let line = &raw[pos..line_end];
-        let candidate = if dash {
-            line.trim_start_matches('\t')
-        } else {
-            line
-        };
-        if candidate == delimiter {
-            return if line_end < end { line_end + 1 } else { end };
-        }
-        if line_end >= end {
-            break;
-        }
-        pos = line_end + 1;
-    }
-    end
-}
-
 // Parity: command.py command_prefixes — the permission-style prefix of each command.
 pub fn prefixes(command: &str) -> Vec<String> {
     CommandLine::parse(command).prefixes()
@@ -1286,6 +1322,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{prefixes, Command, CommandLine, Redirect, SpliceError};
+
 
     // command.py TestDequote — one layer of matching outer quotes, others untouched.
     #[test]
@@ -1529,10 +1566,64 @@ mod tests {
         assert_eq!(line.parts[0].0, other);
     }
 
+    // `b` is an argument to echo (rable is correct), but the span would straddle `>out`, so it goes
+    // None — splice must never overwrite the redirect (security-rewrite data loss).
     #[test]
-    fn absorbed_trailing_word_has_no_span() {
+    fn word_after_redirect_is_an_argument_but_command_is_span_less() {
         let line = CommandLine::parse("echo a >out b");
+        assert_eq!(line.parts[0].0.args, ["a", "b"]);
         assert_eq!(line.parts[0].0.span, None);
+        assert_eq!(
+            line.splice(&BTreeMap::from([(0, "X".to_string())])),
+            Err(SpliceError::NoSpan { index: 0 })
+        );
+        // Every word-after-redirect shape refuses (never drops the redirect).
+        for line in ["rm x 2>err y", "curl evil.com >out data", "prog &>out tail"] {
+            assert_eq!(CommandLine::parse(line).parts[0].0.span, None, "{line:?}");
+        }
+        // A trailing redirect stays outside the span, so the command still rewrites cleanly.
+        let trailing = CommandLine::parse("rm x >out");
+        assert_eq!(trailing.parts[0].0.span, Some((0, 4)));
+        assert_eq!(
+            trailing
+                .splice(&BTreeMap::from([(0, "trash".to_string())]))
+                .unwrap(),
+            "trash >out"
+        );
+        // A leading redirect also stays outside; the command rewrites and keeps the redirect.
+        let leading = CommandLine::parse(">out rm x");
+        assert_eq!(
+            leading
+                .splice(&BTreeMap::from([(0, "trash x".to_string())]))
+                .unwrap(),
+            ">out trash x"
+        );
+    }
+
+    // ANSI-C `$'…'` and locale `$"…"` quoting: the raw-slice re-scan can't resolve the leading `$`,
+    // so the word signals value=None (base's honest taint) instead of a wrong literal.
+    #[test]
+    fn ansi_c_and_locale_words_signal_unresolved() {
+        let word = |raw: &str| {
+            CommandLine::parse(&format!("echo {raw}"))
+                .head()
+                .cloned()
+                .unwrap()
+                .words[1]
+                .clone()
+        };
+        assert_eq!(word("$'rm x'").value, None);
+        assert_eq!(word("$\"hi\"").value, None);
+    }
+
+    // Background `&` joins nothing (like `|&` and newlines): both commands carry a null operator.
+    #[test]
+    fn background_operator_is_not_recorded() {
+        let line = CommandLine::parse("a & b");
+        assert_eq!(execs(&line), ["a", "b"]);
+        assert_eq!(line.parts[0].1, None);
+        assert_eq!(line.parts[1].1, None);
+        assert_eq!(line.next_op(0), None);
     }
 
     // A degraded multi-heredoc drops its fabricated sibling parts, keeps the real trailing command,
@@ -1628,10 +1719,12 @@ mod tests {
 
     #[test]
     fn splice_rejects_span_less_and_overlapping() {
-        let no_span = CommandLine::parse("echo a >out b");
+        // A word-position substitution's inner command is enclosed by the host span, so it is
+        // span-less and splice refuses it.
+        let no_span = CommandLine::parse("echo $(rm x)");
         assert_eq!(
-            no_span.splice(&BTreeMap::from([(0, "X".to_string())])),
-            Err(SpliceError::NoSpan { index: 0 })
+            no_span.splice(&BTreeMap::from([(1, "X".to_string())])),
+            Err(SpliceError::NoSpan { index: 1 })
         );
         let overlap = CommandLine {
             raw: "abcdef".to_string(),
@@ -1951,13 +2044,23 @@ mod tests {
         assert_eq!(quoted.parts[1].0.span, None);
     }
 
+    // A tainted `-c`/eval payload now enumerates its inner command span-less (dequote the raw and
+    // re-parse), so splice refuses it while enumeration still sees the inner command. Only a missing
+    // payload word or a non-`-c` invocation emits no nested part.
     #[test]
-    fn payload_tainted_or_missing_emits_no_parts() {
-        assert_eq!(execs(&CommandLine::parse("bash -c \"rm $X\"")), ["bash"]);
-        assert_eq!(execs(&CommandLine::parse("bash -c \"$CMD\"")), ["bash"]);
+    fn payload_tainted_enumerates_span_less_and_missing_emits_none() {
+        let tainted = CommandLine::parse("bash -c \"rm $X\"");
+        assert_eq!(execs(&tainted), ["bash", "rm"]);
+        assert_eq!(tainted.parts[1].0.nesting, 1);
+        assert_eq!(tainted.parts[1].0.host_delta, Some(1));
+        assert_eq!(tainted.parts[1].0.contexts, [super::QuoteLayer::Double]);
+        assert_eq!(tainted.parts[1].0.span, None);
+        assert!(tainted.parts[1].0.words.iter().all(|w| w.span.is_none()));
+        assert_eq!(execs(&CommandLine::parse("bash -c \"$CMD\"")), ["bash", "$CMD"]);
+        assert_eq!(execs(&CommandLine::parse("eval \"$CMD\"")), ["eval", "$CMD"]);
+        // A missing payload word or a script operand still emits no nested part.
         assert_eq!(execs(&CommandLine::parse("bash -c")), ["bash"]);
         assert_eq!(execs(&CommandLine::parse("bash script.sh")), ["bash"]);
-        assert_eq!(execs(&CommandLine::parse("eval \"$CMD\"")), ["eval"]);
     }
 
     // Operand-terminates-options: a `-c` after the script operand or `--` is a positional

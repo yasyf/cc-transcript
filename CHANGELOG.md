@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [14.8.0] - 2026-07-20
+## [14.9.0] - 2026-07-20
 
 ### Added
 - **`Session.walk()` and `Session.deep` — the recursive deep view.** `walk()`
@@ -46,6 +46,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   short-circuiting are preserved.
 - **`MiningSpec.edit_tools` includes `apply_patch`** via the alias expansion,
   so the plan-reentry edit anchor recognizes codex `apply_patch` edits.
+
+## [14.8.0] - 2026-07-20
+
+### Changed
+- **Shell command parsing runs on the `rable` bash AST instead of tree-sitter-bash.**
+  The `command` feature swaps its parser backbone. The public
+  `CommandLine`/`Command`/`Word`/`Occurrence` contract is unchanged — byte-exact
+  `Word.span`, `splice`, `quote_contexts`, `embeddable`/`quote_for`, wrapper unwrap,
+  and `split_options` all behave as before. rable's char-indexed spans are converted
+  to byte offsets; quote layer and `expandable` are recovered from the raw word slice.
+- **`time cmd` and `! cmd` parse to the real command.** rable treats `time` and `!`
+  as the reserved words they are, so the parsed `Command` is the timed/negated
+  command (`rm`), not `time`/`!` carrying it as an argument — a prefix check now sees
+  through them.
+- **An argument positioned after a redirect** (`echo a >out b`) parses correctly (`b`
+  is an argument, no longer a parse error) but reports no span, so
+  `splice`/`rewrite_occurrences` refuse it instead of overwriting the redirect.
+
+### Added
+- **Tainted shell payloads enumerate their inner command.** A `-c`/`eval` payload
+  tainted by an expansion at its outer quote layer (`bash -c "rm $F"`) now surfaces
+  the inner command as a nested `Occurrence` with `nesting`/`host`/`quote_contexts`
+  set — span-less and non-rewritable. Such payloads were previously dropped.
+- **Native multi-heredoc parsing.** `cat <<A <<B` and similar parse natively; the
+  tree-sitter heredoc error-recovery workaround is gone.
+
+### Fixed
+- Background `&` (`a & b`) is no longer recorded as a joining operator, matching the
+  `;`/`|&`/newline handling.
 
 ## [14.7.0] - 2026-07-20
 

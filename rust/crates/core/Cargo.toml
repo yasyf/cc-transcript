@@ -13,11 +13,9 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 memchr = "2.7"
 once_cell = "1"
 regex = "1"
-# Gated behind `command`; grammar-locked to the Python wheel (tree_sitter_bash 0.25.1
-# both sides, tree-sitter core 0.26 matching the wheel's 0.26.0). The Swift/CI build
+# Gated behind `command`: a real bash AST (rable) backs the command parser. The Swift/CI build
 # takes core with default-features off, so this stays out of the python-free path.
-tree-sitter = { version = "0.26", optional = true }
-tree-sitter-bash = { version = "0.25", optional = true }
+rable = { version = "0.2.1", optional = true }
 # ids.rs computes the cross-language tool-content digest; default features only
 # (no `asm`), so the python-free core stays pure-Rust for the Swift consumer.
 sha2 = "0.10"
@@ -32,7 +30,7 @@ rusqlite = { version = "0.32", features = ["bundled", "load_extension"], optiona
 
 [features]
 default = ["command", "sqlite"]
-command = ["dep:tree-sitter", "dep:tree-sitter-bash"]
+command = ["dep:rable"]
 sqlite = ["dep:rusqlite"]
 
 [dev-dependencies]
