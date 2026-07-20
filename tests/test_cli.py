@@ -494,6 +494,32 @@ def test_tools_lists_every_call_with_outcomes(rich: Path) -> None:
     ]
 
 
+def test_tools_json_rows_carry_cwd_and_file_paths(rich: Path) -> None:
+    result = run_cli("tools", str(rich), "--json")
+    assert result.returncode == 0
+    row = json.loads(result.stdout.splitlines()[0])
+    assert row == {
+        "ts": "2026-01-02T03:04:06+00:00",
+        "session_id": "sess-1",
+        "path": str(rich),
+        "cwd": "/repo",
+        "tool_use_id": "toolu_rm",
+        "tool": "Bash",
+        "command_prefixes": ["rm"],
+        "command": "rm -rf /tmp/x",
+        "mcp_server": None,
+        "mcp_tool": None,
+        "mcp_access": None,
+        "file_path": None,
+        "file_paths": [],
+        "is_error": True,
+        "denied": True,
+        "denial_kind": "user-rejected",
+        "user_said": "do not delete that",
+        "duration_ms": 1000,
+    }
+
+
 def test_commands_human_counts(rich: Path) -> None:
     result = run_cli("commands", str(rich))
     assert result.returncode == 0

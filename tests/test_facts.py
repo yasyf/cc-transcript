@@ -63,9 +63,11 @@ def test_bash_call_yields_prefixes_and_command(tmp_path: Path) -> None:
     assert fact.command_prefixes == ("git add", "pytest")
     assert (fact.mcp_server, fact.mcp_tool, fact.mcp_access) == (None, None, None)
     assert fact.file_path is None
+    assert fact.file_paths == ()
     assert (fact.is_error, fact.denied, fact.user_said) == (False, False, None)
     assert fact.duration_ms is None
     assert (fact.session_id, fact.path, fact.ts) == (SESSION, path, BASE + timedelta(seconds=1))
+    assert fact.cwd == "/repo"
 
 
 def test_mcp_call_populates_server_tool_and_access(tmp_path: Path) -> None:
@@ -164,6 +166,7 @@ def test_error_result_without_denial_sets_is_error_only(tmp_path: Path) -> None:
     assert fact.denial_kind is None
     assert fact.user_said is None
     assert fact.file_path == "/missing.py"
+    assert fact.file_paths == ("/missing.py",)
 
 
 def test_duration_ms_from_matched_result_timestamp(tmp_path: Path) -> None:

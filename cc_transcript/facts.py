@@ -33,6 +33,7 @@ class ToolFact:
         ts: The timestamp of the assistant entry that made the call, or None.
         session_id: The Claude session the call belongs to.
         path: The transcript file the call was lifted from.
+        cwd: The working directory recorded on the originating event, or None.
         tool_use_id: The tool-use block id — the join key back to the event stream.
         tool: The tool name exactly as invoked.
         command_prefixes: The permission-style prefixes of each Bash command
@@ -42,6 +43,8 @@ class ToolFact:
         mcp_tool: The MCP tool segment for an ``mcp__server__tool`` call, else None.
         mcp_access: Whether the MCP tool reads or writes, else None.
         file_path: The file the call targets, when it targets one.
+        file_paths: Every file the call touches, apply_patch multi-file included;
+            ``file_path`` mirrors the first entry.
         is_error: Whether the call's result reported a failure.
         denied: Whether the result is a user rejection of the tool use.
         denial_kind: The structured tool-denial kind (``user-rejected`` for a human
@@ -53,6 +56,7 @@ class ToolFact:
     ts: datetime | None
     session_id: SessionId
     path: Path
+    cwd: str | None
     tool_use_id: ToolUseId
     tool: str
     command_prefixes: tuple[str, ...]
@@ -61,6 +65,7 @@ class ToolFact:
     mcp_tool: str | None
     mcp_access: Literal["read", "write"] | None
     file_path: str | None
+    file_paths: tuple[str, ...]
     is_error: bool
     denied: bool
     denial_kind: str | None
@@ -73,6 +78,7 @@ def rehydrate_fact(fact: Mapping[str, Any], path: Path) -> ToolFact:
         ts=datetime.fromisoformat(fact["ts"]),
         session_id=SessionId(fact["session_id"]),
         path=path,
+        cwd=fact["cwd"],
         tool_use_id=ToolUseId(fact["tool_use_id"]),
         tool=fact["tool"],
         command_prefixes=tuple(fact["command_prefixes"]),
@@ -81,6 +87,7 @@ def rehydrate_fact(fact: Mapping[str, Any], path: Path) -> ToolFact:
         mcp_tool=fact["mcp_tool"],
         mcp_access=fact["mcp_access"],
         file_path=fact["file_path"],
+        file_paths=tuple(fact["file_paths"]),
         is_error=fact["is_error"],
         denied=fact["denied"],
         denial_kind=fact["denial_kind"],

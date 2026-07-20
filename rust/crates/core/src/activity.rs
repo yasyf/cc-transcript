@@ -287,13 +287,15 @@ pub struct Hunk {
 
 /// One tool invocation lifted from a turn's assistant events (activity.py ToolUse);
 /// `call` is the typed tool call parsed once at lift time, `edits` its lowered
-/// `(file_path, hunks)` entries — one per patched file for apply_patch, else 0 or 1.
+/// `(file_path, hunks)` entries — one per patched file for apply_patch, else 0 or 1,
+/// and `cwd` the working directory recorded on the originating assistant event.
 #[derive(Debug)]
 pub struct ToolUse<'a> {
     pub event_uuid: &'a str,
     pub tool_use_id: &'a str,
     pub name: &'a str,
     pub ts: DateTime<FixedOffset>,
+    pub cwd: Option<&'a str>,
     pub result: Option<&'a ToolResultBlock>,
     pub result_ts: Option<DateTime<FixedOffset>>,
     pub turn_index: usize,
@@ -572,6 +574,7 @@ fn lift_turn<'a>(
                 tool_use_id: &tool_use.id,
                 name: &tool_use.name,
                 ts: assistant.meta.timestamp,
+                cwd: assistant.meta.cwd.as_deref(),
                 result: pair.map(|(block, _)| *block),
                 result_ts: pair.and_then(|(_, ts)| *ts),
                 turn_index: index,

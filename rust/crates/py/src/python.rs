@@ -892,6 +892,7 @@ fn pairs_list<'py>(
 fn fact_to_dict<'py>(py: Python<'py>, fact: &facts::ToolFact) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("session_id", &fact.session_id)?;
+    d.set_item("cwd", &fact.cwd)?;
     d.set_item("tool_use_id", &fact.tool_use_id)?;
     d.set_item("tool", &fact.tool)?;
     d.set_item("command_prefixes", &fact.command_prefixes)?;
@@ -900,6 +901,7 @@ fn fact_to_dict<'py>(py: Python<'py>, fact: &facts::ToolFact) -> PyResult<Bound<
     d.set_item("mcp_tool", &fact.mcp_tool)?;
     d.set_item("mcp_access", &fact.mcp_access)?;
     d.set_item("file_path", &fact.file_path)?;
+    d.set_item("file_paths", &fact.file_paths)?;
     d.set_item("is_error", fact.is_error)?;
     d.set_item("denied", fact.denied)?;
     d.set_item("denial_kind", &fact.denial_kind)?;
