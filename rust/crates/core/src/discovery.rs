@@ -154,6 +154,14 @@ pub fn subagent_transcripts(path: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// The ~/.claude/projects dirname Claude Code derives from a session cwd:
+/// every `/` and `.` replaced with `-`.
+pub fn project_dir_name(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
 /// A file's modification time as CPython's `os.stat().st_mtime` computes it:
 /// `sec + 1e-9 * nsec`, so the float compares bit-identically to the Python
 /// side — the `find_transcript` newest-mtime pick and the `watch` size/mtime
@@ -264,5 +272,18 @@ mod tests {
                 && !is_subagent_path(Path::new("sess.jsonl"))
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn project_dir_name_replaces_slashes_and_dots() {
+        assert_eq!(
+            project_dir_name("/Users/yasyf/Code/cc-transcript"),
+            "-Users-yasyf-Code-cc-transcript"
+        );
+        assert_eq!(
+            project_dir_name("/Users/yasyf/Code/cc-transcript/.claude/worktrees/p3-gateway"),
+            "-Users-yasyf-Code-cc-transcript--claude-worktrees-p3-gateway"
+        );
+        assert_eq!(project_dir_name("/opt/python3.13"), "-opt-python3-13");
     }
 }
