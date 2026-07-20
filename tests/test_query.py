@@ -664,7 +664,9 @@ def write_nested_subagent_transcripts(root: Path) -> Path:
             [
                 user_line("s0", 1, "worker", isSidechain=True),
                 assistant_line("s1", 2, [tool_block("c1", "Bash", command="cargo build")], isSidechain=True),
-                assistant_line("s2", 3, [tool_block("b", "Task", prompt="nest", subagent_type="deep")], isSidechain=True),
+                assistant_line(
+                    "s2", 3, [tool_block("b", "Task", prompt="nest", subagent_type="deep")], isSidechain=True
+                ),
                 user_line("s3", 4, [result_block("b", "done")], isSidechain=True),
             ]
         )
@@ -678,7 +680,10 @@ def write_nested_subagent_transcripts(root: Path) -> Path:
                 user_line("d0", 1, "deep", isSidechain=True),
                 assistant_line("d1", 2, [tool_block("g1", "Grep", pattern="DEEP_TODO")], isSidechain=True),
                 assistant_line(
-                    "d2", 3, [tool_block("e1", "Edit", file_path="/deep/only.py", old_string="x", new_string="y")], isSidechain=True
+                    "d2",
+                    3,
+                    [tool_block("e1", "Edit", file_path="/deep/only.py", old_string="x", new_string="y")],
+                    isSidechain=True,
                 ),
                 assistant_line("d3", 4, [tool_block("r1", "Read", file_path="/deep/nested.py")], isSidechain=True),
                 assistant_line("d4", 5, [tool_block("k1", "Skill", skill="deepskill")], isSidechain=True),
@@ -713,6 +718,81 @@ def test_walk_yields_descendants_depth_first_then_unions(tmp_path: Path) -> None
     assert all(d.provider == "claude" for d in walked)
 
 
+def write_branching_subagent_transcripts(root: Path) -> Path:
+    """Fabricate a *branching* sidechain tree that distinguishes DFS from BFS.
+
+    Two depth-1 siblings hang off the main session; the path-first sibling
+    ``agent-p`` owns a depth-2 child ``agent-c`` while ``agent-q`` has none.
+    DFS visits ``[agent-p, agent-c, agent-q]`` (a sibling's whole subtree
+    before the next sibling); BFS would visit ``[agent-p, agent-q, agent-c]``.
+    On a flat-sibling or single-chain fixture the two orders coincide, so this
+    is the only topology that pins the documented DFS contract.
+    """
+    main = root / "proj" / f"{SESSION}.jsonl"
+    main.parent.mkdir(parents=True)
+    main.write_text(
+        "\n".join(
+            [
+                user_line("u0", 0, "branch it"),
+                assistant_line("a0", 1, [tool_block("p", "Task", prompt="first", subagent_type="worker")]),
+                user_line("u1", 2, [result_block("p", "done")]),
+                assistant_line("a1", 3, [tool_block("q", "Task", prompt="second", subagent_type="worker")]),
+                user_line("u2", 4, [result_block("q", "done")]),
+            ]
+        )
+        + "\n"
+    )
+    subs = main.parent / main.stem / "subagents"
+    subs.mkdir(parents=True)
+    (subs / "agent-p.jsonl").write_text(
+        "\n".join(
+            [
+                user_line("s0", 1, "first", isSidechain=True),
+                assistant_line(
+                    "s1", 2, [tool_block("c", "Task", prompt="nest", subagent_type="deep")], isSidechain=True
+                ),
+                user_line("s2", 3, [result_block("c", "done")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    (subs / "agent-q.jsonl").write_text(
+        "\n".join(
+            [
+                user_line("t0", 1, "second", isSidechain=True),
+                assistant_line("t1", 2, [tool_block("g1", "Grep", pattern="Q_TODO")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    c_dir = subs / "agent-p" / "subagents"
+    c_dir.mkdir(parents=True)
+    (c_dir / "agent-c.jsonl").write_text(
+        "\n".join(
+            [
+                user_line("d0", 1, "deep", isSidechain=True),
+                assistant_line("d1", 2, [tool_block("x1", "Bash", command="deep run")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    return main
+
+
+def test_walk_order_is_depth_first_not_breadth_first(tmp_path: Path) -> None:
+    """PIN: walk() descends each sibling's subtree before the next sibling (DFS).
+
+    A BFS rewrite would yield ``[agent-p, agent-q, agent-c]``; the DFS contract
+    the docs, changelog, and positional ``first()``/``last()`` promise requires
+    the grandchild ``agent-c`` land between its parent ``agent-p`` and the next
+    sibling ``agent-q``.
+    """
+    walked = list(Session.from_path(write_branching_subagent_transcripts(tmp_path)).walk())
+    assert [d.path.name for d in walked] == ["agent-p.jsonl", "agent-c.jsonl", "agent-q.jsonl"]
+    assert [d.depth for d in walked] == [1, 2, 1]
+    assert [d.spawned_by for d in walked] == [ToolUseId("p"), ToolUseId("c"), ToolUseId("q")]
+
+
 def test_deep_unions_root_and_every_descendant(tmp_path: Path) -> None:
     sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
     deep = sess.deep
@@ -721,6 +801,26 @@ def test_deep_unions_root_and_every_descendant(tmp_path: Path) -> None:
     assert {str(f) for f in deep.tool_calls.named("Edit|Write").files()} == {"/deep/only.py"}
     assert [d.path.name for d in deep] == ["agent-a.jsonl", "agent-b.jsonl"]
     assert deep.events == sess.events + tuple(e for d in deep.sessions for e in d.session.events)
+
+
+def test_deep_tool_calls_preserve_errored_call_parity(tmp_path: Path) -> None:
+    """PIN: the deep union carries every call, errored ones included.
+
+    The union must fold each session's ``all_items`` (not its error-filtered
+    ``items``), so ``deep.tool_calls`` matches ``Session.tool_calls``'s
+    error-inclusive contract at every depth. Baking error-filtering into the
+    pool would silently zero out ``with_errors``/``failed()`` and any
+    error-sensitive count over descendants. The fixture spreads failures across
+    depths: the root's ``t10`` Task crashed and ``agent-t9``'s ``b1`` Bash
+    errored, while the default view keeps only the three that succeeded.
+    """
+    main = write_main_transcript(tmp_path)
+    write_subagent_transcripts(main)
+    deep = Session.from_path(main).deep
+    assert deep.tool_calls.with_errors.count() == 5
+    assert deep.tool_calls.failed().count() == 2
+    assert deep.tool_calls.count() == 3
+    assert {use.ref.tool_use_id for use in deep.tool_calls.failed()} == {ToolUseId("t10"), ToolUseId("b1")}
 
 
 def test_bare_tool_calls_stay_window_scoped(tmp_path: Path) -> None:
@@ -841,7 +941,10 @@ def test_walk_terminates_on_symlink_cycle(tmp_path: Path) -> None:
     main.parent.mkdir(parents=True)
     main.write_text(
         "\n".join(
-            [user_line("u0", 0, "go"), assistant_line("a0", 1, [tool_block("a", "Task", prompt="p", subagent_type="w")])]
+            [
+                user_line("u0", 0, "go"),
+                assistant_line("a0", 1, [tool_block("a", "Task", prompt="p", subagent_type="w")]),
+            ]
         )
         + "\n"
     )
@@ -850,7 +953,10 @@ def test_walk_terminates_on_symlink_cycle(tmp_path: Path) -> None:
     agent_a = a_dir / "agent-a.jsonl"
     agent_a.write_text(
         "\n".join(
-            [user_line("s0", 1, "a", isSidechain=True), assistant_line("s1", 2, [tool_block("g", "Grep", pattern="X")], isSidechain=True)]
+            [
+                user_line("s0", 1, "a", isSidechain=True),
+                assistant_line("s1", 2, [tool_block("g", "Grep", pattern="X")], isSidechain=True),
+            ]
         )
         + "\n"
     )
