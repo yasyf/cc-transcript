@@ -69,6 +69,7 @@ def test_default_spec_to_json_shape() -> None:
         "MultiEdit",
         "NotebookEdit",
         "Write",
+        "apply_patch",
     ]
     assert payload["plan_tools"] == ["ExitPlanMode", "ExitSpecMode"]
     assert payload["denial_excluded_tools"] == ["AskUserQuestion", "ExitPlanMode", "ExitSpecMode"]
