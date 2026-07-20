@@ -802,6 +802,17 @@ def test_windowing_preserves_attachments(tmp_path: Path) -> None:
     assert narrowed.has_tool("Grep")
 
 
+def test_current_turn_preserves_attachments(tmp_path: Path) -> None:
+    main = write_nested_subagent_transcripts(tmp_path)
+    att = write_attachment_transcript(tmp_path, "ext.jsonl", "xg1", "Glob", pattern="*.rs")
+    base = Session.from_path(main)
+    sess = Session(base.turns, base.path, (att,))
+    turn = sess.current_turn
+    assert turn.attachments == (att,)
+    assert turn.has_tool("Glob")
+    assert not turn.has_tool("Glob", subagents=False)
+
+
 def test_deep_dedupes_attachment_equal_to_sidechain(tmp_path: Path) -> None:
     main = write_nested_subagent_transcripts(tmp_path)
     agent_a = main.parent / main.stem / "subagents" / "agent-a.jsonl"
@@ -859,6 +870,34 @@ def test_pathless_session_with_attachments_walks_only_attachments(tmp_path: Path
     assert walked[0].depth == 1
     assert walked[0].spawned_by is None
     assert sess.has_tool("WebFetch")
+
+
+def test_walk_descends_children_of_unreadable_transcript(tmp_path: Path) -> None:
+    """An unreadable (missing/OSError) transcript is skipped, its children still walked.
+
+    The parent file never exists — a pruned or permission-denied transcript —
+    but its derived ``<stem>/subagents/`` dir carries a real child. ``walk()``
+    must yield the child even though the parent failed to load.
+    """
+    missing_parent = tmp_path / "gone" / "rollout.jsonl"
+    child_dir = missing_parent.parent / missing_parent.stem / "subagents"
+    child_dir.mkdir(parents=True)
+    child = child_dir / "agent-x.jsonl"
+    child.write_text(
+        "\n".join(
+            [
+                user_line("s0", 1, "child", isSidechain=True),
+                assistant_line("s1", 2, [tool_block("g1", "Grep", pattern="CHILD_TODO")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    sess = Session(session(user("u0", "go")).turns, None, (missing_parent,))
+    walked = list(sess.walk())
+    assert [d.path.resolve() for d in walked] == [child.resolve()]
+    assert walked[0].depth == 2
+    assert walked[0].spawned_by == ToolUseId("x")
+    assert sess.has_tool("Grep")
 
 
 def test_walk_is_lazy(tmp_path: Path) -> None:
