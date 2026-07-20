@@ -637,3 +637,68 @@ def test_from_id_raises_expired_when_transcript_gone(tmp_path: Path) -> None:
     with pytest.raises(TranscriptExpiredError) as excinfo:
         Session.from_id(SESSION, root=tmp_path)
     assert excinfo.value.session_id == SESSION
+
+
+def write_nested_subagent_transcripts(root: Path) -> Path:
+    """Fabricate a two-level sidechain tree ``sess/subagents/agent-a/subagents/agent-b.jsonl``.
+
+    ``agent-b`` (depth 2) carries tools that appear nowhere else, so a deep
+    predicate that reaches it is unambiguous.
+    """
+    main = root / "proj" / f"{SESSION}.jsonl"
+    main.parent.mkdir(parents=True)
+    main.write_text(
+        "\n".join(
+            [
+                user_line("u0", 0, "run it"),
+                assistant_line("a0", 1, [tool_block("a", "Task", prompt="delegate", subagent_type="worker")]),
+                user_line("u1", 2, [result_block("a", "done")]),
+            ]
+        )
+        + "\n"
+    )
+    a_dir = main.parent / main.stem / "subagents"
+    a_dir.mkdir(parents=True)
+    (a_dir / "agent-a.jsonl").write_text(
+        "\n".join(
+            [
+                user_line("s0", 1, "worker", isSidechain=True),
+                assistant_line("s1", 2, [tool_block("c1", "Bash", command="cargo build")], isSidechain=True),
+                assistant_line("s2", 3, [tool_block("b", "Task", prompt="nest", subagent_type="deep")], isSidechain=True),
+                user_line("s3", 4, [result_block("b", "done")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    b_dir = a_dir / "agent-a" / "subagents"
+    b_dir.mkdir(parents=True)
+    (b_dir / "agent-b.jsonl").write_text(
+        "\n".join(
+            [
+                user_line("d0", 1, "deep", isSidechain=True),
+                assistant_line("d1", 2, [tool_block("g1", "Grep", pattern="DEEP_TODO")], isSidechain=True),
+                assistant_line(
+                    "d2", 3, [tool_block("e1", "Edit", file_path="/deep/only.py", old_string="x", new_string="y")], isSidechain=True
+                ),
+                assistant_line("d3", 4, [tool_block("r1", "Read", file_path="/deep/nested.py")], isSidechain=True),
+                assistant_line("d4", 5, [tool_block("k1", "Skill", skill="deepskill")], isSidechain=True),
+                assistant_line("d5", 6, [tool_block("z1", "Bash", command="deeptool run")], isSidechain=True),
+            ]
+        )
+        + "\n"
+    )
+    return main
+
+
+def test_nested_sidechain_has_tool_finds_grandchild_tool(tmp_path: Path) -> None:
+    """PIN: has_* already reaches a depth-2 sidechain before the walk() relocation.
+
+    Committed against the unmodified query surface to lock the behavior the
+    relocation must preserve; ``Grep`` lives only in ``agent-b`` (depth 2).
+    """
+    main = write_nested_subagent_transcripts(tmp_path)
+    sess = Session.from_path(main)
+    assert sess.has_tool("Grep")
+    assert not sess.has_tool("Grep", subagents=False)
+    assert sess.has_command("deeptool", "run")
+    assert not sess.has_command("deeptool", "run", subagents=False)
