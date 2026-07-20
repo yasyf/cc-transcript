@@ -576,7 +576,7 @@ class DeepSession:
     spawned_by: ToolUseId | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # non-slots: the cached_property below needs __dict__
 class DeepView:
     """The recursive union of a session and every transcript reachable from it.
 
