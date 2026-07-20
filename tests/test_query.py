@@ -702,3 +702,181 @@ def test_nested_sidechain_has_tool_finds_grandchild_tool(tmp_path: Path) -> None
     assert not sess.has_tool("Grep", subagents=False)
     assert sess.has_command("deeptool", "run")
     assert not sess.has_command("deeptool", "run", subagents=False)
+
+
+def test_walk_yields_descendants_depth_first_then_unions(tmp_path: Path) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    walked = list(sess.walk())
+    assert [d.path.name for d in walked] == ["agent-a.jsonl", "agent-b.jsonl"]
+    assert [d.depth for d in walked] == [1, 2]
+    assert [d.spawned_by for d in walked] == [ToolUseId("a"), ToolUseId("b")]
+    assert all(d.provider == "claude" for d in walked)
+
+
+def test_deep_unions_root_and_every_descendant(tmp_path: Path) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    deep = sess.deep
+    assert deep.tool_calls.named("Grep").any()
+    assert deep.tool_calls.named("Task").count() == 2
+    assert {str(f) for f in deep.tool_calls.named("Edit|Write").files()} == {"/deep/only.py"}
+    assert [d.path.name for d in deep] == ["agent-a.jsonl", "agent-b.jsonl"]
+    assert deep.events == sess.events + tuple(e for d in deep.sessions for e in d.session.events)
+
+
+def test_bare_tool_calls_stay_window_scoped(tmp_path: Path) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    assert not sess.tool_calls.named("Grep").any()
+    assert sess.tool_calls.named("Task").count() == 1
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "deep_expected"),
+    [
+        ("has_tool", ("Grep",), True),
+        ("has_tool", ("Glob",), False),
+        ("has_command", ("cargo", "build"), True),
+        ("has_command", ("deeptool", "run"), True),
+        ("has_command", ("nonesuch",), False),
+        ("has_edit_to", ("/deep/only.py",), True),
+        ("has_edit_to", ("*.md",), False),
+        ("has_read", ("nested.py",), True),
+        ("has_read", ("missing.py",), False),
+        ("has_skill", ("deepskill",), True),
+        ("has_skill", ("elsewhere",), False),
+    ],
+    ids=[
+        "tool-grep-depth2",
+        "tool-glob-absent",
+        "command-cargo-depth1",
+        "command-deeptool-depth2",
+        "command-absent",
+        "edit-depth2",
+        "edit-absent",
+        "read-depth2",
+        "read-absent",
+        "skill-depth2",
+        "skill-absent",
+    ],
+)
+def test_has_star_equivalence_over_walk(
+    tmp_path: Path, method: str, args: tuple[str, ...], deep_expected: bool
+) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    assert getattr(sess, method)(*args) is deep_expected
+    assert getattr(sess, method)(*args, subagents=False) is False
+
+
+def test_empty_after_window_still_unions_descendants(tmp_path: Path) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    empty = sess.after(tool="Grep")
+    assert len(empty) == 0
+    assert empty.has_tool("Grep")
+    assert not empty.has_tool("Grep", subagents=False)
+
+
+def write_attachment_transcript(root: Path, name: str, id: str, tool: str, **inp: Any) -> Path:
+    path = root / "ext" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                user_line("x0", 0, "external"),
+                assistant_line("x1", 1, [tool_block(id, tool, **inp)]),
+            ]
+        )
+        + "\n"
+    )
+    return path
+
+
+def test_windowing_preserves_attachments(tmp_path: Path) -> None:
+    main = write_nested_subagent_transcripts(tmp_path)
+    att = write_attachment_transcript(tmp_path, "ext.jsonl", "xg1", "Glob", pattern="*.rs")
+    base = Session.from_path(main)
+    sess = Session(base.turns, base.path, (att,))
+    assert sess.has_tool("Glob")
+    assert sess.has_tool("Grep")
+    narrowed = sess.after(tool="Task")
+    assert narrowed.attachments == (att,)
+    assert narrowed.has_tool("Glob")
+    assert narrowed.has_tool("Grep")
+
+
+def test_deep_dedupes_attachment_equal_to_sidechain(tmp_path: Path) -> None:
+    main = write_nested_subagent_transcripts(tmp_path)
+    agent_a = main.parent / main.stem / "subagents" / "agent-a.jsonl"
+    base = Session.from_path(main)
+    sess = Session(base.turns, base.path, (agent_a,))
+    resolved = [d.path.resolve() for d in sess.walk()]
+    assert resolved.count(agent_a.resolve()) == 1
+    a_visit = next(d for d in sess.walk() if d.path.resolve() == agent_a.resolve())
+    assert a_visit.spawned_by == ToolUseId("a")
+
+
+def test_deep_dedupes_symlink_spelling_and_double_registration(tmp_path: Path) -> None:
+    main = write_main_transcript(tmp_path)
+    write_subagent_transcripts(main)
+    real = write_attachment_transcript(tmp_path, "rollout.jsonl", "xg", "Glob", pattern="*")
+    link = tmp_path / "ext" / "alias.jsonl"
+    link.symlink_to(real)
+    base = Session.from_path(main)
+    sess = Session(base.turns, base.path, (real, link, real))
+    ext_visits = [d for d in sess.walk() if d.path.resolve() == real.resolve()]
+    assert len(ext_visits) == 1
+
+
+def test_walk_terminates_on_symlink_cycle(tmp_path: Path) -> None:
+    main = tmp_path / "proj" / f"{SESSION}.jsonl"
+    main.parent.mkdir(parents=True)
+    main.write_text(
+        "\n".join(
+            [user_line("u0", 0, "go"), assistant_line("a0", 1, [tool_block("a", "Task", prompt="p", subagent_type="w")])]
+        )
+        + "\n"
+    )
+    a_dir = main.parent / main.stem / "subagents"
+    a_dir.mkdir(parents=True)
+    agent_a = a_dir / "agent-a.jsonl"
+    agent_a.write_text(
+        "\n".join(
+            [user_line("s0", 1, "a", isSidechain=True), assistant_line("s1", 2, [tool_block("g", "Grep", pattern="X")], isSidechain=True)]
+        )
+        + "\n"
+    )
+    cycle_dir = a_dir / "agent-a" / "subagents"
+    cycle_dir.mkdir(parents=True)
+    (cycle_dir / "agent-a.jsonl").symlink_to(agent_a)
+    walked = list(Session.from_path(main).walk())
+    assert [d.path.name for d in walked].count("agent-a.jsonl") == 1
+    assert Session.from_path(main).has_tool("Grep")
+
+
+def test_pathless_session_with_attachments_walks_only_attachments(tmp_path: Path) -> None:
+    att = write_attachment_transcript(tmp_path, "ext.jsonl", "xg1", "WebFetch", url="http://x")
+    sess = Session(session(user("u0", "go")).turns, None, (att,))
+    walked = list(sess.walk())
+    assert [d.path.resolve() for d in walked] == [att.resolve()]
+    assert walked[0].depth == 1
+    assert walked[0].spawned_by is None
+    assert sess.has_tool("WebFetch")
+
+
+def test_walk_is_lazy(tmp_path: Path) -> None:
+    import cc_transcript.query as query_module
+
+    main = write_main_transcript(tmp_path)
+    write_subagent_transcripts(main)
+    sess = Session.from_path(main)
+    calls: list[Path] = []
+    real_parse = query_module.parse
+    query_module.parse = lambda p: (calls.append(p), real_parse(p))[1]
+    try:
+        view = sess.deep
+        sess.walk()
+        assert calls == []
+        assert sess.has_tool("Task")
+        assert calls == []
+        assert len(view.sessions) == 2
+        assert len(calls) >= 2
+    finally:
+        query_module.parse = real_parse

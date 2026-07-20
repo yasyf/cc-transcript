@@ -313,3 +313,62 @@ def test_codex_apply_patch_surfaces_every_patched_file(tmp_path: Path) -> None:
     assert {path for path, _ in patch_use.edits} == {"src/a.py", "src/b.py", "src/c.py"}
     by_file = {e.file_path: e.hunks for e in edits}
     assert by_file["src/c.py"] == ()
+
+
+def test_deep_folds_codex_apply_patch_attachment(tmp_path: Path) -> None:
+    from cc_transcript.ids import SessionId
+    from cc_transcript.query import Session
+    from cc_transcript.synthetic import synthetic_assistant_event, synthetic_user_event, tool_use
+
+    envelope = (
+        "*** Begin Patch\n"
+        "*** Update File: src/a.py\n"
+        "@@\n"
+        "-x\n"
+        "+y\n"
+        "*** Add File: src/b.py\n"
+        "+created\n"
+        "*** Delete File: src/c.py\n"
+        "*** End Patch\n"
+    )
+    sid = "019dabc0-1234-7abc-9def-000000000aa1"
+    rollout = _write_rollout(
+        tmp_path,
+        sid,
+        _user("apply the patch"),
+        _custom_call("apply_patch", envelope, "call-1"),
+    )
+    main = Session.from_activity(
+        SessionActivity.from_events(
+            SessionId("main-sess"),
+            [synthetic_user_event("go"), synthetic_assistant_event(blocks=[tool_use("r1", "Read", {"file_path": "/m.py"})])],
+        )
+    )
+    sess = Session(main.turns, None, (rollout,))
+
+    # apply_patch matches the Edit|Write gate via the forward alias; every patched file surfaces.
+    assert {str(f) for f in sess.deep.tool_calls.named("Edit|Write").files()} == {"src/a.py", "src/b.py", "src/c.py"}
+    # The attachment is a depth-1 codex-provider DeepSession with no dispatching id.
+    (attached,) = [deep for deep in sess.walk() if deep.path == rollout]
+    assert attached.provider == "codex"
+    assert attached.depth == 1
+    assert attached.spawned_by is None
+    # A bare (window-only) query does not see the attachment.
+    assert not sess.tool_calls.named("Edit|Write").any()
+
+
+def test_deep_skips_missing_attachment_path(tmp_path: Path) -> None:
+    from cc_transcript.ids import SessionId
+    from cc_transcript.query import Session
+
+    sid = "019dabc0-1234-7abc-9def-000000000aa2"
+    rollout = _write_rollout(
+        tmp_path,
+        sid,
+        _user("edit"),
+        _custom_call("apply_patch", "*** Begin Patch\n*** Add File: only.py\n+x\n*** End Patch\n", "call-1"),
+    )
+    missing = tmp_path / "gone.jsonl"
+    sess = Session.from_activity(SessionActivity.from_events(SessionId("main-sess"), []), attachments=(rollout, missing))
+    assert [deep.path for deep in sess.walk()] == [rollout]
+    assert {str(f) for f in sess.deep.tool_calls.named("Edit|Write").files()} == {"only.py"}
