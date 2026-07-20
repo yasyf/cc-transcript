@@ -235,7 +235,15 @@ EXPORTS: dict[str, str] = {
         ),
         "cc_transcript.render": ("Budget", "render_session", "render_tool_call", "render_turn"),
         "cc_transcript.notifications": ("Notifications",),
-        "cc_transcript.query": ("FileRef", "Session", "SubagentIndex", "SubagentSession", "ToolCallQuery"),
+        "cc_transcript.query": (
+            "DeepSession",
+            "DeepView",
+            "FileRef",
+            "Session",
+            "SubagentIndex",
+            "SubagentSession",
+            "ToolCallQuery",
+        ),
         "cc_transcript.decisions": ("DECISIONS_DDL", "Action", "Decision", "DecisionLog"),
         "cc_transcript.disktruth": (
             "AttributionRange",

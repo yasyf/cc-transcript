@@ -203,6 +203,8 @@ from cc_transcript.parser import (
 )
 
 from cc_transcript.query import (
+    DeepSession as DeepSession,
+    DeepView as DeepView,
     FileRef as FileRef,
     Session as Session,
     SubagentIndex as SubagentIndex,
@@ -335,6 +337,8 @@ __all__ = [
     "DECISIONS_DDL",
     "Decision",
     "DecisionLog",
+    "DeepSession",
+    "DeepView",
     "DiskTruth",
     "Edit",
     "EditCall",

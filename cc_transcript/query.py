@@ -14,13 +14,14 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from functools import cached_property
 from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
 from cc_transcript.activity import SessionActivity, Turn, event_stamps, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError, resolve, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta, session_id_of
-from cc_transcript.ids import SessionId
+from cc_transcript.ids import SessionId, ToolUseId
 from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
     from cc_transcript.activity import ToolUse, UserClassifier
     from cc_transcript.command import CommandLine
-    from cc_transcript.ids import EventUuid, ToolUseId
+    from cc_transcript.ids import EventUuid
     from cc_transcript.models import TranscriptEvent
 
 
@@ -246,6 +247,9 @@ class Session:
         turns: The turns in the window.
         path: The transcript file the session was loaded from, when known —
             required for sidechain (subagent) lookups.
+        attachments: External transcript files (e.g. codex rollouts) registered
+            with this session; :meth:`walk` and :attr:`deep` fold them in at
+            depth 1. Empty for a session loaded straight from disk.
 
     Example:
         >>> session.prior().after(tool="Write", file=str(fp)).has_tool("ExitPlanMode")
@@ -253,11 +257,14 @@ class Session:
 
     turns: tuple[Turn, ...]
     path: Path | None = None
+    attachments: tuple[Path, ...] = ()
 
     @classmethod
-    def from_activity(cls, activity: SessionActivity, *, path: Path | None = None) -> Session:
+    def from_activity(
+        cls, activity: SessionActivity, *, path: Path | None = None, attachments: tuple[Path, ...] = ()
+    ) -> Session:
         """Views ``activity``'s full turn range as a session."""
-        return cls(activity.turns, path)
+        return cls(activity.turns, path, attachments)
 
     @classmethod
     def from_path(cls, path: Path, *, user_classifier: UserClassifier = native_user_classifier) -> Session:
@@ -326,6 +333,25 @@ class Session:
             )
         )
 
+    def walk(self) -> Iterator[DeepSession]:
+        """Every transcript reachable from this session, lazily and depth-first.
+
+        Yields each descendant sidechain (subagent/teammate) transcript at every
+        depth in DFS path order, then each registered attachment at depth 1 —
+        never this session itself. A resolved-path seen-set (seeded with
+        :attr:`path`) dedupes: the first occurrence of a path wins, so a
+        tree-discovered sidechain outranks an equal attachment, and symlink
+        cycles terminate. An unreadable transcript is skipped but its children
+        are still walked; a structurally malformed line raises, as
+        :attr:`subagents` does.
+        """
+        return deep_sessions(self)
+
+    @property
+    def deep(self) -> DeepView:
+        """The recursive union view over this session and every transcript it reaches."""
+        return DeepView(self)
+
     def after(self, *, tool: str, file: str | None = None) -> Session:
         """The window strictly after the last call matching ``tool``.
 
@@ -369,7 +395,7 @@ class Session:
     @property
     def current_turn(self) -> Session:
         """The one-turn view of the window's last turn."""
-        return Session(self.turns[-1:], self.path)
+        return Session(self.turns[-1:], self.path, self.attachments)
 
     @property
     def user_text(self) -> str:
@@ -394,7 +420,7 @@ class Session:
     def has_tool(self, name: str, *, subagents: bool = True) -> bool:
         """Whether any call in the window matches the pipe spec ``name``."""
         return self.tool_calls.named(name).any() or (
-            subagents and any(sub.has_tool(name) for sub in sidechain_sessions(self.path))
+            subagents and any(deep.session.has_tool(name, subagents=False) for deep in self.walk())
         )
 
     def has_command(self, *argv: str, subagents: bool = True) -> bool:
@@ -405,19 +431,19 @@ class Session:
         ``sudo git push -f`` and ``cd x && git push`` but not ``echo "git push"``.
         """
         return any(cmd.runs(*argv) for line in self.command_lines() for cmd in line) or (
-            subagents and any(sub.has_command(*argv) for sub in sidechain_sessions(self.path))
+            subagents and any(deep.session.has_command(*argv, subagents=False) for deep in self.walk())
         )
 
     def has_edit_to(self, *globs: str, subagents: bool = True) -> bool:
         """Whether any edit-shaped call in the window targets a file matching any glob."""
         return any(file.matches(*globs) for file in self.edited_files) or (
-            subagents and any(sub.has_edit_to(*globs) for sub in sidechain_sessions(self.path))
+            subagents and any(deep.session.has_edit_to(*globs, subagents=False) for deep in self.walk())
         )
 
     def has_read(self, pattern: str, *, subagents: bool = True) -> bool:
         """Whether any Read in the window targets a path containing ``pattern``."""
         return any(pattern in str(file) for file in self.tool_calls.named("Read").files()) or (
-            subagents and any(sub.has_read(pattern) for sub in sidechain_sessions(self.path))
+            subagents and any(deep.session.has_read(pattern, subagents=False) for deep in self.walk())
         )
 
     def has_skill(self, *names: str, subagents: bool = True) -> bool:
@@ -425,7 +451,7 @@ class Session:
         return any(
             isinstance(call := use.call, SkillCall) and call.skill in names
             for use in self.tool_calls.named("Skill")
-        ) or (subagents and any(sub.has_skill(*names) for sub in sidechain_sessions(self.path)))
+        ) or (subagents and any(deep.session.has_skill(*names, subagents=False) for deep in self.walk()))
 
     def has_override(self, token: str, *, invalidated_by: Sequence[str] = ("Edit", "Write")) -> bool:
         """Whether ``token`` appears in the window without a later invalidating call.
@@ -530,6 +556,69 @@ class SubagentIndex:
         return bool(self.items)
 
 
+@dataclass(frozen=True, slots=True)
+class DeepSession:
+    """One transcript reached by :meth:`Session.walk`.
+
+    Attributes:
+        session: The whole-session view of the reached transcript.
+        path: The transcript file it was loaded from.
+        provider: Its source provider, ``"claude"`` or ``"codex"``.
+        depth: Distance from the root; ``1`` is a direct sidechain or attachment.
+        spawned_by: The dispatching tool-use id parsed from an ``agent-<id>``
+            sidechain stem, or None for an attachment.
+    """
+
+    session: Session
+    path: Path
+    provider: str
+    depth: int
+    spawned_by: ToolUseId | None
+
+
+@dataclass(frozen=True)
+class DeepView:
+    """The recursive union of a session and every transcript reachable from it.
+
+    Sidechain (subagent/teammate) transcripts at every depth and registered
+    attachments contribute their tool calls and events to one window-spanning
+    view. The root axis respects the session's window; descendants and
+    attachments are window-invariant, mirroring how ``has_tool`` already scans
+    the whole sidechain tree.
+
+    Example:
+        >>> session.deep.tool_calls.named("Edit|Write").files()
+    """
+
+    root: Session
+
+    @cached_property
+    def sessions(self) -> tuple[DeepSession, ...]:
+        """Every reached :class:`DeepSession`, materialized once: DFS, then attachments."""
+        return tuple(self.root.walk())
+
+    @property
+    def tool_calls(self) -> ToolCallQuery:
+        """The root window's calls, then every descendant's and attachment's calls.
+
+        Positional, not chronological: root-window order, then DFS path order,
+        then attachment registration order — so :meth:`ToolCallQuery.first` and
+        :meth:`ToolCallQuery.last` read positionally.
+        """
+        return ToolCallQuery(
+            self.root.tool_calls.all_items
+            + tuple(use for deep in self.sessions for use in deep.session.tool_calls.all_items)
+        )
+
+    @property
+    def events(self) -> tuple[TranscriptEvent, ...]:
+        """Every event across the root window and every reached transcript, in walk order."""
+        return self.root.events + tuple(event for deep in self.sessions for event in deep.session.events)
+
+    def __iter__(self) -> Iterator[DeepSession]:
+        return iter(self.sessions)
+
+
 def windowed(session: Session, start: int, stop: int) -> Session:
     turns: list[Turn] = []
     base = 0
@@ -539,10 +628,47 @@ def windowed(session: Session, start: int, stop: int) -> Session:
         if lo < hi:
             turns.append(turn if (lo, hi) == (0, size) else trim_turn(turn, lo, hi))
         base += size
-    return Session(tuple(turns), session.path)
+    return Session(tuple(turns), session.path, session.attachments)
 
 
 def sidechain_sessions(path: Path | None) -> tuple[Session, ...]:
     if path is None:
         return ()
     return tuple(Session.from_path(entry) for entry in subagent_paths(path))
+
+
+def deep_sessions(root: Session) -> Iterator[DeepSession]:
+    seen: set[Path] = {root.path.resolve()} if root.path is not None else set()
+    if root.path is not None:
+        yield from descend_sidechains(root.path, 1, seen)
+    for attachment in root.attachments:
+        yield from visit_transcript(attachment, 1, None, seen)
+
+
+def descend_sidechains(parent: Path, depth: int, seen: set[Path]) -> Iterator[DeepSession]:
+    for child in subagent_paths(parent):
+        yield from visit_transcript(child, depth, ToolUseId(child.stem.removeprefix("agent-")), seen)
+
+
+def visit_transcript(path: Path, depth: int, spawned_by: ToolUseId | None, seen: set[Path]) -> Iterator[DeepSession]:
+    if (resolved := path.resolve()) in seen:
+        return
+    seen.add(resolved)
+    if (deep := load_deep_session(path, depth, spawned_by)) is not None:
+        yield deep
+    yield from descend_sidechains(path, depth + 1, seen)
+
+
+def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
+    try:
+        transcript = parse(path)
+    except OSError:
+        return None
+    session_id = session_id_of(transcript.events) or SessionId(path.stem)
+    return DeepSession(
+        session=Session.from_activity(SessionActivity.from_events(session_id, transcript.events), path=path),
+        path=path,
+        provider=transcript.provider,
+        depth=depth,
+        spawned_by=spawned_by,
+    )
