@@ -22,6 +22,8 @@ use crate::value::{field, field_str, normalized_owned};
 fn tool_aliases(name: &str) -> &'static [&'static str] {
     match name {
         "Bash" => &["Execute", "exec_command"],
+        // forward-only: a reverse entry would rekey apply_patch's parse dispatch (see below).
+        "Edit" => &["apply_patch"],
         "Write" => &["Create"],
         "Agent" => &["Task"],
         "WebFetch" => &["FetchUrl"],
@@ -1848,6 +1850,20 @@ mod tests {
             ])
         );
         assert!(tool_name_matches("exec_command", "Execute"));
+    }
+
+    #[test]
+    fn edit_forward_aliases_to_apply_patch_without_rekeying_parse() {
+        let set = expand_tool_names("Edit");
+        assert!(set.contains("Edit") && set.contains("apply_patch"));
+        assert!(tool_name_matches("apply_patch", "Edit|Write"));
+        assert!(tool_name_matches("apply_patch", "Edit"));
+        // Forward-only: a reverse entry would route apply_patch to edit_from_raw.
+        let envelope = "*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n*** End Patch\n";
+        assert!(matches!(
+            parse_tool_call("apply_patch", &str_val(envelope)),
+            ToolCall::ApplyPatch(_)
+        ));
     }
 
     #[test]

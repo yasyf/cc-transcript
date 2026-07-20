@@ -380,13 +380,21 @@ def test_expand_tool_names_includes_registered_and_alias_spellings() -> None:
     )
     assert expand_tool_names("Execute") == frozenset({"Bash", "Execute", "exec_command"})
     assert expand_tool_names("Edit|Write") == frozenset(
-        {"Edit", "Write", "Create", SYN_SPAN_EDIT, SYN_GATE_WRITE}
+        {"Edit", "apply_patch", "Write", "Create", SYN_SPAN_EDIT, SYN_GATE_WRITE}
     )
     assert expand_tool_names("Grep") == frozenset({"Grep"})
 
 
 def test_expand_tool_names_omits_unregistered_names() -> None:
-    assert expand_tool_names("Edit|Write") == frozenset({"Edit", "Write", "Create"})
+    assert expand_tool_names("Edit|Write") == frozenset({"Edit", "apply_patch", "Write", "Create"})
+
+
+def test_apply_patch_forward_aliases_to_edit() -> None:
+    assert "apply_patch" in expand_tool_names("Edit")
+    assert tool_name_matches("apply_patch", "Edit|Write")
+    assert tool_name_matches("apply_patch", "Edit")
+    # forward-only: a spec written as apply_patch does not match a canonical Edit call
+    assert not tool_name_matches("Edit", "apply_patch")
 
 
 @pytest.mark.parametrize(

@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 
 TOOL_ALIASES: dict[str, str] = {
     "Bash": "Execute",
+    "Edit": "apply_patch",
     "Write": "Create",
     "Agent": "Task",
     "WebFetch": "FetchUrl",
