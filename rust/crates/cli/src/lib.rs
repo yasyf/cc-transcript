@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 pub mod commands;
 pub mod output;
 pub mod target;
+pub mod timearg;
 
 use output::CliExit;
 

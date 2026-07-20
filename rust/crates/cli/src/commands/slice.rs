@@ -7,42 +7,15 @@ use cc_transcript_core::ids::tool_digest;
 use cc_transcript_core::render::{render_tool_call, Budget, Json};
 use cc_transcript_core::toolcall::{parse_tool_call, ToolCall};
 use cc_transcript_core::types::{epoch_ms, ContentBlock, Entry, ToolUseBlock};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, FixedOffset};
 
-use crate::output::{click_error, py_repr, usage_error, CliExit, Out};
+use crate::output::{click_error, CliExit, Out};
 use crate::target::{claude_projects_dir, parse_transcripts};
+use crate::timearg::parse_rfc3339;
 
 const SLICE_SCHEMA: &str = "cc-transcript.slice/1";
 const USAGE: &str = "cc-transcript slice [OPTIONS]";
 const HELP_PATH: &str = "cc-transcript slice";
-
-fn parse_rfc3339(option: &str, value: &str) -> Result<DateTime<FixedOffset>, CliExit> {
-    if let Ok(stamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(stamp);
-    }
-    let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f"))
-        .is_ok()
-        || NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok();
-    if naive {
-        return Err(usage_error(
-            USAGE,
-            HELP_PATH,
-            &format!(
-                "invalid {option} {}; RFC 3339 requires a UTC offset",
-                py_repr(value)
-            ),
-        ));
-    }
-    Err(usage_error(
-        USAGE,
-        HELP_PATH,
-        &format!(
-            "invalid {option} {}; expected an RFC 3339 timestamp",
-            py_repr(value)
-        ),
-    ))
-}
 
 fn slice_line(
     meta_uuid: &str,
@@ -85,8 +58,8 @@ fn slice_line(
 }
 
 pub fn run(session: &str, since: &str, until: &str, root: Option<PathBuf>) -> Result<(), CliExit> {
-    let start = parse_rfc3339("--since", since)?;
-    let end = parse_rfc3339("--until", until)?;
+    let start = parse_rfc3339("--since", since, USAGE, HELP_PATH)?;
+    let end = parse_rfc3339("--until", until, USAGE, HELP_PATH)?;
     let root = root.unwrap_or_else(claude_projects_dir);
     crate::target::require_dir(&root, "'--root'", USAGE, HELP_PATH)?;
     let Some(path) = find_transcript(&root, session) else {
