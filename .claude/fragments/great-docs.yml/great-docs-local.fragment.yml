@@ -325,13 +325,15 @@ reference:
       - CandidatePair
       - GitFix
   - title: Query
-    desc: The transcript query surface — sessions, tool-call queries, file refs, and subagent recursion.
+    desc: The transcript query surface — sessions, tool-call queries, file refs, subagent recursion, and the recursive deep view.
     contents:
       - Session
       - ToolCallQuery
       - FileRef
       - SubagentSession
       - SubagentIndex
+      - DeepView
+      - DeepSession
   - title: Decisions
     desc: The unified decision ledger, joined to tool calls by content digest.
     contents:

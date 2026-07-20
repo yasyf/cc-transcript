@@ -1,0 +1,203 @@
+---
+title: The deep view
+description: "Query across every subagent and attached transcript — walk the sidechain tree lazily, union tool calls with Session.deep, and fold external rollouts in at depth 1."
+---
+
+A Claude Code session is a tree, not a file. Every `Task` dispatch writes its
+own sidechain transcript beside the parent, and those sidechains dispatch
+sidechains of their own — so the question "did this session edit that file?"
+often has its answer three files deep. The bare query surface deliberately
+ignores all of that: `Session.tool_calls` and the window slices see exactly the
+window you built, one transcript. `Session.walk()` and `Session.deep` are the
+opt-in recursion — every sidechain at every depth, plus any external transcript
+you attach, in one union view.
+
+## A session tree to work on
+
+Claude Code writes a subagent's transcript as
+`<parent-stem>/subagents/agent-<tool_use_id>.jsonl` next to the parent, and a
+nested subagent's transcript the same way one level further down. The fixture
+builds two levels: a main session dispatches a worker (`agent-a`), and the
+worker dispatches a scout (`agent-b`) that greps for a `sleep` and edits a file
+nothing else touches:
+
+```{python}
+import json
+import tempfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+ROOT = Path(tempfile.mkdtemp())
+SESSION = "5c1f2f6e-1111-4000-8000-000000000001"
+BASE = datetime(2026, 7, 16, 16, 20, tzinfo=UTC)
+
+def line(uuid, secs, **fields):
+    return json.dumps({"uuid": uuid, "parentUuid": None, "sessionId": SESSION,
+                       "timestamp": (BASE + timedelta(seconds=secs)).isoformat(), "cwd": "/repo",
+                       "gitBranch": "main", "version": "2.1.0", "isSidechain": False} | fields)
+
+def user(uuid, secs, content, **over):
+    return line(uuid, secs, type="user", message={"role": "user", "content": content}, **over)
+
+def assistant(uuid, secs, blocks, **over):
+    return line(uuid, secs, type="assistant",
+                message={"role": "assistant", "model": "claude-opus-4-7", "content": blocks}, **over)
+
+def tool(id, name, **input):
+    return {"type": "tool_use", "id": id, "name": name, "input": input}
+
+def result(id, content="done"):
+    return {"type": "tool_result", "tool_use_id": id, "content": content, "is_error": False}
+
+def write(path, lines):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+MAIN = write(ROOT / "proj" / f"{SESSION}.jsonl", [
+    user("u0", 0, "tighten the flaky login test"),
+    assistant("a0", 1, [tool("a", "Task", prompt="fix the test", subagent_type="worker")]),
+    user("u1", 2, [result("a")]),
+])
+A_DIR = MAIN.parent / MAIN.stem / "subagents"
+write(A_DIR / "agent-a.jsonl", [
+    user("s0", 3, "fix the test", isSidechain=True),
+    assistant("s1", 4, [tool("c1", "Bash", command="pytest tests/test_login.py")], isSidechain=True),
+    assistant("s2", 5, [tool("b", "Task", prompt="find the sleep", subagent_type="scout")], isSidechain=True),
+    user("s3", 6, [result("b")], isSidechain=True),
+])
+write(A_DIR / "agent-a" / "subagents" / "agent-b.jsonl", [
+    user("d0", 7, "find the sleep", isSidechain=True),
+    assistant("d1", 8, [tool("g1", "Grep", pattern="sleep")], isSidechain=True),
+    assistant("d2", 9, [tool("e1", "Edit", file_path="/repo/tests/test_login.py",
+                             old_string="sleep(5)", new_string="wait_for(ready)")], isSidechain=True),
+])
+sorted(str(path.relative_to(ROOT)) for path in ROOT.rglob("*.jsonl"))
+```
+
+## Walk the tree
+
+`walk()` yields one `DeepSession` per reachable transcript — depth-first down
+the sidechain tree, never the session itself. Each record carries the parsed
+`session`, its `path`, the `provider` that wrote it (`"claude"` or `"codex"`),
+its `depth` (`1` is a direct child), and `spawned_by`, the dispatching tool-use
+id parsed from the `agent-<id>` stem:
+
+```{python}
+from cc_transcript import Session
+
+sess = Session.from_path(MAIN)
+[(deep.path.name, deep.depth, deep.provider, deep.spawned_by) for deep in sess.walk()]
+```
+
+The walk is a lazy generator. Nothing parses until you pull from it, and a
+short-circuiting consumer — `has_tool`, below — stops parsing at the first hit.
+
+## The deep union
+
+`session.deep` wraps the walk in a `DeepView`. Its `tool_calls` unions the root
+window's calls with every walked transcript's; the bare query stays
+window-scoped. The scout's `Grep` lives two levels down, and only the deep view
+sees it:
+
+```{python}
+sess.tool_calls.named("Grep").any(), sess.deep.tool_calls.named("Grep").any()
+```
+
+The union is a real `ToolCallQuery`, so the whole combinator surface works on
+it — `named`, `files`, `count`, and the rest:
+
+```{python}
+[str(file) for file in sess.deep.tool_calls.named("Edit|Write").files()]
+```
+
+::: {.callout-warning title="Union order is positional, not chronological"}
+`DeepView.tool_calls` concatenates root-window order, then DFS path order, then
+attachment registration order. `first()` and `last()` read positionally:
+`last()` is the final call of the last transcript walked, which can predate the
+root window's calls on the wall clock.
+:::
+
+```{python}
+sess.deep.tool_calls.first().call.name, sess.deep.tool_calls.last().call.name
+```
+
+`DeepView.sessions` materializes the walk once and caches it, `events` unions
+events in the same order, and iterating the view iterates the walked sessions:
+
+```{python}
+[deep.path.name for deep in sess.deep]
+```
+
+## Windows narrow the root axis only
+
+Slicing the root session narrows the root's own contribution and nothing else.
+Descendants are window-invariant — even a window with zero matching turns still
+unions the whole tree, mirroring how `has_tool` has always scanned sidechains
+regardless of the window:
+
+```{python}
+empty = sess.after(tool="Grep")
+len(empty), empty.has_tool("Grep"), empty.has_tool("Grep", subagents=False)
+```
+
+## Attach external transcripts
+
+`Session.attachments` registers transcripts the sidechain tree can't reach — a
+codex rollout, a teammate's session, any JSONL either provider wrote. It's a
+plain `tuple[Path, ...]`, defaulted empty: `from_activity` accepts it, and an
+already-parsed session gains registrations with `dataclasses.replace`.
+Attachments walk at depth 1 with `spawned_by=None`, after the sidechain tree,
+and every window operation preserves them:
+
+```{python}
+import dataclasses
+
+EXT = write(ROOT / "ext" / "review.jsonl", [
+    user("x0", 0, "review the diff"),
+    assistant("x1", 1, [tool("x9", "Glob", pattern="**/*.py")]),
+])
+attached = dataclasses.replace(sess, attachments=(EXT,))
+[(deep.path.name, deep.depth, deep.spawned_by) for deep in attached.walk()]
+```
+
+The seam is deliberately dumb: cc-transcript takes paths and stays ignorant of
+how they got registered — captain-hook's transcript registry, or your own
+bookkeeping, decides what to attach. A codex rollout attaches exactly the same
+way; [Codex rollouts](07-codex-rollouts.qmd) shows a multi-file `apply_patch`
+rollout surfacing through an `Edit|Write` query.
+
+## One transcript, one visit
+
+The walk dedupes by resolved path, and the first occurrence wins — tree
+provenance outranks an equal attachment, so registering a path the tree already
+reaches changes nothing, and the visit keeps its tree identity:
+
+```{python}
+dup = dataclasses.replace(sess, attachments=(A_DIR / "agent-a.jsonl",))
+[(deep.path.name, deep.spawned_by) for deep in dup.walk()]
+```
+
+The same seen-set collapses a symlinked respelling, folds a double registration
+to one visit, and terminates a symlink cycle. There is no session-id dedup: a
+resumed or forked session legitimately shares its id across files, and both
+files count. An unreadable transcript is skipped, its children still walked; a
+structurally malformed line raises, exactly as `Session.subagents` does.
+
+## The has_* predicates recurse the same way
+
+`has_tool`, `has_command`, `has_edit_to`, `has_read`, and `has_skill` run over
+the same walk when `subagents=True` (the default), so they reach every
+sidechain at every depth and every attachment; `subagents=False` stays
+window-only:
+
+```{python}
+sess.has_command("pytest"), sess.has_command("pytest", subagents=False)
+```
+
+```{python}
+attached.has_tool("Glob"), sess.has_tool("Glob")
+```
+
+For every field on `DeepView` and `DeepSession`, see the
+[API reference](../../reference/index.qmd).

@@ -4,6 +4,49 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.8.0] - 2026-07-20
+
+### Added
+- **`Session.walk()` and `Session.deep` — the recursive deep view.** `walk()`
+  lazily yields a `DeepSession` (`session`, `path`, `provider`, `depth`,
+  `spawned_by`) for every transcript reachable from a session: each sidechain
+  at every depth in DFS path order, then each registered attachment at depth 1.
+  `Session.deep` wraps the walk in a `DeepView` whose `tool_calls` and `events`
+  union the root window with every reached transcript; both types are exported.
+  The view is opt-in — bare `Session.tool_calls` stays window-scoped — and its
+  union order is positional, not chronological (root window, then DFS path
+  order, then attachment registration order), so `first()`/`last()` on a deep
+  query read positionally. The root axis respects the session window while
+  descendants and attachments are window-invariant: an empty `after()` window
+  still unions the whole tree. Dedup is by resolved path, first occurrence wins
+  (tree provenance outranks an equal attachment; symlink cycles terminate). An
+  unreadable transcript is skipped with its children still walked; a
+  structurally malformed line raises, as `Session.subagents` does.
+- **`Session.attachments`.** A defaulted `tuple[Path, ...]` field (threaded
+  through `from_activity(..., attachments=())` and every window operation)
+  registering external transcripts — codex rollouts, teammate sessions — that
+  `walk()`/`deep` fold in at depth 1. Plain paths: cc-transcript stays ignorant
+  of registration bookkeeping. `sidechain_sessions` and `Session.subagents` are
+  unchanged public API.
+
+### Changed
+- **`Edit` forward-aliases `apply_patch`.** A spec naming `Edit` (or
+  `"Edit|Write"`) through `expand_tool_names`/`tool_name_matches` now matches a
+  codex `apply_patch` call. Forward-only by design: a spec written literally as
+  `apply_patch` does not match a canonical `Edit` call, because `apply_patch`
+  keeps its own `ApplyPatchCall` parse and a reverse alias would rekey it.
+  Blast-radius note for consumers of the shared alias table (e.g. a
+  captain-hook `Tool("Edit")` condition): such specs would also match a
+  hypothetical `apply_patch` hook event — Claude Code never emits one, so this
+  is a note, not a behavior change.
+- **The `has_*` predicates recurse over `walk()`.** `has_tool`, `has_command`,
+  `has_edit_to`, `has_read`, and `has_skill` with `subagents=True` (the
+  default) now also expand over registered attachments when the session carries
+  any; with no attachments the visited set is unchanged, and laziness and
+  short-circuiting are preserved.
+- **`MiningSpec.edit_tools` includes `apply_patch`** via the alias expansion,
+  so the plan-reentry edit anchor recognizes codex `apply_patch` edits.
+
 ## [14.7.0] - 2026-07-20
 
 ### Added

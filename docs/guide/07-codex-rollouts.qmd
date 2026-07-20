@@ -1,6 +1,6 @@
 ---
 title: Codex rollouts
-description: "Parse OpenAI Codex CLI sessions with the same API — provider-transparent parsing, rollout discovery, subagent joins, per-rollout session info, and the activity probe."
+description: "Parse OpenAI Codex CLI sessions with the same API — provider-transparent parsing, rollout discovery, subagent joins, gate specs over apply_patch, rollout attachments, per-rollout session info, and the activity probe."
 ---
 
 Claude Code is not the only agent writing JSONL to your disk. The OpenAI Codex
@@ -190,6 +190,74 @@ a tree scan:
 ```{python}
 codex.session_info(CHILD).parent_thread_id == MAIN_ID
 ```
+
+## Gate specs match apply_patch as an Edit
+
+A codex edit arrives as `apply_patch`, not `Edit`, so `Edit` forward-aliases
+it: any spec that names `Edit` through `expand_tool_names` or
+`tool_name_matches` — a captain-hook gate on `"Edit|Write"`, a
+`tool_calls.named("Edit")` query — matches an `apply_patch` call too:
+
+```{python}
+from cc_transcript import expand_tool_names, tool_name_matches
+
+sorted(expand_tool_names("Edit")), tool_name_matches("apply_patch", "Edit|Write")
+```
+
+The alias is forward-only, and that's deliberate. A spec written literally as
+`apply_patch` does not match a canonical `Edit` call — `apply_patch` keeps its
+own `ApplyPatchCall` parse, and a reverse alias would rekey it:
+
+```{python}
+tool_name_matches("Edit", "apply_patch")
+```
+
+## Attach a rollout to a session
+
+`Session.attachments` registers external transcripts — a rollout, say — that
+`Session.walk()` and `Session.deep` fold in at depth 1 beside the session's own
+sidechains. Write a rollout whose one call is a multi-file `apply_patch`,
+attach it, and every patched file surfaces through the aliased `Edit|Write`
+query:
+
+```{python}
+from cc_transcript import Session, SessionActivity
+from cc_transcript.ids import SessionId
+
+PATCH_ID = "019f6830-5d6e-7e6f-9071-000000000707"
+envelope = ("*** Begin Patch\n"
+            "*** Update File: src/login.py\n@@\n-    login(user)\n+    login(user, password)\n"
+            "*** Add File: tests/test_password.py\n+def test_password(): ...\n"
+            "*** End Patch\n")
+rollout = [
+    meta(PATCH_ID),
+    event("18:00:00.100", {"type": "task_started", "turn_id": TURN}),
+    response("18:00:01.000", {"type": "custom_tool_call", "name": "apply_patch",
+                              "call_id": "call_0002", "input": envelope}, TURN),
+    response("18:00:02.000", {"type": "custom_tool_call_output", "call_id": "call_0002",
+                              "output": "Done"}, TURN),
+]
+ROLLOUT = Path(tempfile.mkdtemp()) / f"rollout-2026-07-16T18-00-00-{PATCH_ID}.jsonl"
+ROLLOUT.write_text("\n".join(rollout) + "\n")
+
+host = Session.from_activity(SessionActivity.from_events(SessionId("host"), []), attachments=(ROLLOUT,))
+sorted(str(file) for file in host.deep.tool_calls.named("Edit|Write").files())
+```
+
+The attachment walks as a depth-1 codex `DeepSession` with no dispatching
+tool-use id, and the bare window query stays empty — the deep view is opt-in:
+
+```{python}
+[(deep.provider, deep.depth, deep.spawned_by) for deep in host.walk()], host.tool_calls.named("Edit|Write").any()
+```
+
+A real host is a parsed Claude session, which gains registrations with
+`dataclasses.replace(session, attachments=(ROLLOUT,))`. The `has_*` predicates
+recurse over the same walk, so `host.has_tool("Edit")` sees the rollout's
+`apply_patch` as well. cc-transcript stays ignorant of registration — it takes
+paths; captain-hook's transcript registry (or your own bookkeeping) decides
+what to attach. Ordering, windowing, and dedup semantics live in
+[The deep view](08-deep-view.qmd).
 
 ## Session info and the lifecycle
 
