@@ -1,0 +1,8 @@
+# Rust build output — any cargo target dir variant, anywhere
+wheelhouse/
+
+# Swift bridge codegen and package build (swift/ itself is committed)
+/rust-swift/generated/
+
+# Bench corpus (regenerate: scripts/gen_corpus.py)
+.fixtures/
