@@ -19,7 +19,6 @@ const BLAME_USAGE: &str = "cc-transcript blame [OPTIONS] <PATH>";
 const BLAME_HELP: &str = "cc-transcript blame";
 const ATTRIBUTE_USAGE: &str = "cc-transcript attribute [OPTIONS] <PATH>";
 const ATTRIBUTE_HELP: &str = "cc-transcript attribute";
-const WORKTREE_MARKER: &str = "/.claude/worktrees/";
 
 pub struct BlameArgs {
     pub path: PathBuf,
@@ -59,7 +58,8 @@ fn marker_root(canonical: &Path) -> Option<&Path> {
 /// `/.claude/worktrees/` segment. Any other marker root is the repo root as found.
 fn repo_root(marker: &Path) -> String {
     let text = marker.to_string_lossy();
-    match text.find(WORKTREE_MARKER) {
+    let marker_segment = format!("/{}", cc_transcript_core::blame::WORKTREES_SEGMENT);
+    match text.find(&marker_segment) {
         Some(cut) => text[..cut].to_string(),
         None => text.into_owned(),
     }

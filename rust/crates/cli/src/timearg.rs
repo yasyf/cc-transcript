@@ -82,14 +82,19 @@ pub fn parse_time(
         }
     }
     if let Some(caps) = DURATION_RE.captures(value) {
-        let n: i64 = caps[1]
-            .parse()
-            .expect("duration regex only captures digits");
         let unit = caps[2]
             .chars()
             .next()
             .expect("duration regex captures one unit char");
-        return Ok((now - Duration::seconds(n * unit_seconds(unit))).fixed_offset());
+        if let Some(resolved) = caps[1]
+            .parse::<i64>()
+            .ok()
+            .and_then(|n| n.checked_mul(unit_seconds(unit)))
+            .and_then(Duration::try_seconds)
+            .and_then(|duration| now.checked_sub_signed(duration))
+        {
+            return Ok(resolved.fixed_offset());
+        }
     }
     Err(usage_error(
         usage,
@@ -180,5 +185,24 @@ mod tests {
         let CliExit(code) =
             parse_time("--since", "not-a-time", fixed_now(), USAGE, HELP_PATH).unwrap_err();
         assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn oversized_duration_reports_exit_2_instead_of_panicking() {
+        // "999999999999999w" overflows the `n * unit_seconds(unit)` multiply; "1000000000000w"
+        // fits the multiply but overflows chrono's `Duration` range on the subtract.
+        for input in ["999999999999999w", "1000000000000w"] {
+            assert_eq!(
+                no_match_message("--since", input),
+                format!(
+                    "invalid --since {}; expected an RFC 3339 timestamp, a YYYY-MM-DD date, or a relative duration like 2d",
+                    py_repr(input)
+                ),
+                "{input:?}"
+            );
+            let CliExit(code) =
+                parse_time("--since", input, fixed_now(), USAGE, HELP_PATH).unwrap_err();
+            assert_eq!(code, 2, "{input:?}");
+        }
     }
 }

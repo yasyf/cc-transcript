@@ -9,7 +9,8 @@ use crate::activity::lift_session;
 use crate::toolcall::ToolCall;
 use crate::types::Entry;
 
-const WORKTREES_SEGMENT: &str = ".claude/worktrees/";
+/// The path segment (no leading slash) marking a `.claude/worktrees/<name>` worktree root.
+pub const WORKTREES_SEGMENT: &str = ".claude/worktrees/";
 const BASH_SUSPECTS: usize = 5;
 
 /// A canonical absolute repository root (no trailing slash) and the lexical path logic
@@ -64,21 +65,17 @@ impl RepoPaths {
     }
 
     /// The `(tree, repo-relative path)` a target resolves to, or None outside the repo.
-    /// An absolute `file_path` is used as-is with its tree read from its own location; a
-    /// relative one is joined onto `cwd` (root when absent) and takes the cwd's tree. The
-    /// path is lexically normalized — `.`/`..` folded, no filesystem access.
+    /// `file_path` is used as-is when absolute, else joined onto `cwd` (root when absent);
+    /// either way the path is lexically normalized (`.`/`..` folded) and the tree is read
+    /// from where the NORMALIZED path lands, so a relative ref crossing a tree boundary
+    /// resolves to the tree it actually lands in, not `cwd`'s.
     pub fn relative(&self, file_path: &str, cwd: Option<&str>) -> Option<(Tree, String)> {
-        let absolute = file_path.starts_with('/');
-        let normalized = normalize(&if absolute {
+        let normalized = normalize(&if file_path.starts_with('/') {
             file_path.to_string()
         } else {
             format!("{}/{file_path}", cwd.unwrap_or(&self.root))
         });
-        let tree = if absolute {
-            self.tree_of(&normalized)?
-        } else {
-            self.tree_of(cwd.unwrap_or(&self.root))?
-        };
+        let tree = self.tree_of(&normalized)?;
         let rel = normalized
             .strip_prefix(&format!("{}/", self.tree_root(&tree)))?
             .to_string();
@@ -477,6 +474,17 @@ mod tests {
             Some((Tree::Main, "lib/app.py".to_string()))
         );
         assert_eq!(repo.relative("/elsewhere/app.py", Some("/elsewhere")), None);
+        // A worktree cwd's relative ref that climbs back out into the main tree resolves
+        // to Main, not to the worktree the cwd sits in.
+        assert_eq!(
+            repo.relative("../../../src/app.py", Some("/a/repo/.claude/worktrees/wt1")),
+            Some((Tree::Main, "src/app.py".to_string()))
+        );
+        // Mirror: a main cwd's relative ref that descends into a worktree resolves there.
+        assert_eq!(
+            repo.relative(".claude/worktrees/wt1/src/app.py", Some("/a/repo")),
+            Some((Tree::Worktree("wt1".to_string()), "src/app.py".to_string()))
+        );
     }
 
     #[test]
@@ -591,6 +599,22 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(trees.contains(&"main"));
         assert!(trees.contains(&"worktree:wt1"));
+    }
+
+    #[test]
+    fn session_writes_resolves_a_relative_edit_crossing_into_the_main_tree() {
+        let entries = vec![
+            user("do it", "2026-01-01T10:00:00Z"),
+            edit(
+                "e1",
+                "/a/repo/.claude/worktrees/wt1",
+                "2026-01-01T10:00:01Z",
+                "../../../src/app.py",
+            ),
+        ];
+        let records = session_writes("s", "/t.jsonl", &entries, &repo(), "src/app.py", None, None);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tree, "main");
     }
 
     #[test]
