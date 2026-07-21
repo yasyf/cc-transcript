@@ -520,6 +520,76 @@ def test_tools_json_rows_carry_cwd_and_file_paths(rich: Path) -> None:
     }
 
 
+def test_tools_file_glob_matches_any_path_of_a_multifile_call(tmp_path: Path) -> None:
+    envelope = (
+        "*** Begin Patch\n"
+        "*** Update File: src/a.py\n"
+        "@@\n"
+        "-x\n"
+        "+y\n"
+        "*** Add File: src/b.py\n"
+        "+created\n"
+        "*** End Patch\n"
+    )
+    entries = [
+        user_entry(0, "patch it"),
+        assistant_entry(
+            1,
+            [{"type": "tool_use", "id": "toolu_patch", "name": "apply_patch", "input": envelope}],
+            stop_reason="tool_use",
+        ),
+        tool_result_entry(2, "toolu_patch", "done", is_error=False),
+    ]
+    path = write_transcript(tmp_path / "patch.jsonl", entries)
+
+    result = run_cli("tools", str(path), "--file", "src/b.py", "--json")
+
+    assert result.returncode == 0
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["tool"] == "apply_patch"
+    assert rows[0]["file_paths"] == ["src/a.py", "src/b.py"]
+
+
+def test_tools_since_until_window_bounds(tmp_path: Path) -> None:
+    entries = [
+        user_entry(0, "go"),
+        tool_use_entry(1, "toolu_a", "Read", file_path="/a"),
+        tool_result_entry(2, "toolu_a", "ok", is_error=False),
+        tool_use_entry(3, "toolu_b", "Read", file_path="/b"),
+        tool_result_entry(4, "toolu_b", "ok", is_error=False),
+    ]
+    path = write_transcript(tmp_path / "window.jsonl", entries)
+    later = (BASE_TS + timedelta(seconds=3)).isoformat()
+
+    since_result = run_cli("tools", str(path), "--since", later, "--json")
+    assert since_result.returncode == 0
+    since_ids = [json.loads(line)["tool_use_id"] for line in since_result.stdout.splitlines()]
+    assert since_ids == ["toolu_b"]
+
+    until_result = run_cli("tools", str(path), "--until", later, "--json")
+    assert until_result.returncode == 0
+    until_ids = [json.loads(line)["tool_use_id"] for line in until_result.stdout.splitlines()]
+    assert until_ids == ["toolu_a"]
+
+
+def test_tools_since_accepts_bare_date_and_duration(rich: Path) -> None:
+    date_result = run_cli("tools", str(rich), "--since", "2020-01-01")
+    assert date_result.returncode == 0
+    assert len(date_result.stdout.splitlines()) == 4
+
+    duration_result = run_cli("tools", str(rich), "--since", "1s")
+    assert duration_result.returncode == 0
+    assert duration_result.stdout == ""
+
+    bogus_result = run_cli("tools", str(rich), "--since", "bogus")
+    assert bogus_result.returncode == 2
+    assert (
+        "expected an RFC 3339 timestamp, a YYYY-MM-DD date, or a relative duration like 2d"
+        in bogus_result.stderr
+    )
+
+
 def test_commands_human_counts(rich: Path) -> None:
     result = run_cli("commands", str(rich))
     assert result.returncode == 0

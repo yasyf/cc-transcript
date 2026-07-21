@@ -214,6 +214,15 @@ pub enum Cmd {
         /// Keep only calls to this tool.
         #[arg(long)]
         tool: Option<String>,
+        /// Keep only calls touching a file matching this glob (full path or basename; any file of a multi-file call).
+        #[arg(long)]
+        file: Option<String>,
+        /// Keep only calls at or after this time (RFC 3339, YYYY-MM-DD, or a duration like 2d).
+        #[arg(long)]
+        since: Option<String>,
+        /// Keep only calls before this time (RFC 3339, YYYY-MM-DD, or a duration like 2d).
+        #[arg(long)]
+        until: Option<String>,
         /// Emit one JSON object per tool call.
         #[arg(long)]
         json: bool,
@@ -476,8 +485,19 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             paths,
             discovery,
             tool,
+            file,
+            since,
+            until,
             json,
-        } => commands::facts::tools(&paths, &discovery, tool.as_deref(), json),
+        } => commands::facts::tools(
+            &paths,
+            &discovery,
+            tool.as_deref(),
+            file.as_deref(),
+            since.as_deref(),
+            until.as_deref(),
+            json,
+        ),
         Cmd::Commands {
             paths,
             discovery,

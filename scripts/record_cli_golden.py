@@ -84,16 +84,9 @@ INVALID_ROOT_REL = Path("tests/testdata/digest_fixtures.json")
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 ADDITIVE_CASES = frozenset(
     {
-        "grep_codex",
-        "list_all",
-        "list_all_invalid_claude_root",
-        "list_all_invalid_codex_root",
-        "list_all_json",
-        "list_codex",
-        "list_codex_contains",
-        "list_codex_invalid_root",
-        "show_codex",
-        "stats_codex",
+        "tools_file",
+        "tools_since_none",
+        "tools_window",
     }
 )
 
@@ -249,6 +242,11 @@ def matrix(smallest: str) -> dict[str, Case]:
         "stats_json": Case(["stats", "--root", root, "--all", "--json"]),
         "stats_codex": Case(["stats", codex_transcript]),
         "tools": Case(["tools", smallest]),
+        "tools_file": Case(["tools", smallest, "--file", "*"]),
+        "tools_since_none": Case(["tools", smallest, "--since", "2099-01-01T00:00:00Z"]),
+        "tools_window": Case(
+            ["tools", smallest, "--since", "2020-01-01T00:00:00Z", "--until", "2099-01-01T00:00:00Z"]
+        ),
         "commands": Case(["commands", smallest]),
         "mcp": Case(["mcp", "--root", MCP_ROOT, "--all"]),
         "mcp_json": Case(["mcp", "--root", MCP_ROOT, "--all", "--json"]),

@@ -403,5 +403,40 @@
     "exit_code": 0,
     "stderr_bytes": 0,
     "stdout_bytes": 144
+  },
+  "tools_file": {
+    "argv": [
+      "tools",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--file",
+      "*"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 103
+  },
+  "tools_since_none": {
+    "argv": [
+      "tools",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--since",
+      "2099-01-01T00:00:00Z"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 0
+  },
+  "tools_window": {
+    "argv": [
+      "tools",
+      ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
+      "--since",
+      "2020-01-01T00:00:00Z",
+      "--until",
+      "2099-01-01T00:00:00Z"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 144
   }
 }

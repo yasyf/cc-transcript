@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use cc_transcript_core::facts::{command_prefix_counts, mcp_summary, tool_facts, ToolFact};
+use cc_transcript_core::query::FileRef;
 use cc_transcript_core::render::{
     denial_json, denial_line, fact_json, fact_line, render_counts, render_mcp, Json,
 };
@@ -18,6 +19,7 @@ fn gather(
     paths: &[PathBuf],
     discovery: &DiscoveryOpts,
     name: &str,
+    min_mtime: Option<f64>,
 ) -> Result<(Targets, Vec<ToolFact>), CliExit> {
     let paths: Vec<PathBuf> = paths
         .iter()
@@ -32,6 +34,7 @@ fn gather(
         discovery.project.as_deref(),
         discovery.contains.as_deref(),
         discovery.effective_limit(),
+        min_mtime,
     )?;
     let facts: Vec<ToolFact> = parse_transcripts(&targets.paths)
         .iter()
@@ -54,12 +57,34 @@ pub fn tools(
     paths: &[PathBuf],
     discovery: &DiscoveryOpts,
     tool: Option<&str>,
+    file: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
     json: bool,
 ) -> Result<(), CliExit> {
-    let (targets, facts) = gather(paths, discovery, "tools")?;
+    let usage = "cc-transcript tools [OPTIONS] [PATHS]...";
+    let help_path = "cc-transcript tools";
+    let now = chrono::Local::now();
+    let since_ts = since
+        .map(|value| crate::timearg::parse_time("--since", value, now, usage, help_path))
+        .transpose()?;
+    let until_ts = until
+        .map(|value| crate::timearg::parse_time("--until", value, now, usage, help_path))
+        .transpose()?;
+    let min_mtime = since_ts.map(|ts| ts.timestamp() as f64);
+    let (targets, facts) = gather(paths, discovery, "tools", min_mtime)?;
     let facts: Vec<&ToolFact> = facts
         .iter()
         .filter(|fact| tool.is_none_or(|t| tool_name_matches(&fact.tool, t)))
+        .filter(|fact| {
+            file.is_none_or(|glob| {
+                fact.file_paths
+                    .iter()
+                    .any(|p| FileRef::new(p).matches(&[glob]))
+            })
+        })
+        .filter(|fact| since_ts.is_none_or(|s| fact.ts >= s))
+        .filter(|fact| until_ts.is_none_or(|u| fact.ts < u))
         .collect();
     let mut out = Out::new();
     if json {
@@ -76,7 +101,7 @@ pub fn tools(
 }
 
 pub fn commands(paths: &[PathBuf], discovery: &DiscoveryOpts, json: bool) -> Result<(), CliExit> {
-    let (targets, facts) = gather(paths, discovery, "commands")?;
+    let (targets, facts) = gather(paths, discovery, "commands", None)?;
     let counts = command_prefix_counts(facts.iter());
     let mut out = Out::new();
     if json {
@@ -103,7 +128,7 @@ pub fn permissions(
     discovery: &DiscoveryOpts,
     json: bool,
 ) -> Result<(), CliExit> {
-    let (targets, facts) = gather(paths, discovery, "permissions")?;
+    let (targets, facts) = gather(paths, discovery, "permissions", None)?;
     let denials: Vec<&ToolFact> = facts
         .iter()
         .filter(|fact| fact.denied)
@@ -124,7 +149,7 @@ pub fn permissions(
 }
 
 pub fn mcp(paths: &[PathBuf], discovery: &DiscoveryOpts, json: bool) -> Result<(), CliExit> {
-    let (targets, facts) = gather(paths, discovery, "mcp")?;
+    let (targets, facts) = gather(paths, discovery, "mcp", None)?;
     let summary = mcp_summary(facts.iter());
     let mut out = Out::new();
     if json {

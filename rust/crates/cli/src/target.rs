@@ -54,6 +54,7 @@ pub fn resolve_targets(
     project: Option<&str>,
     contains: Option<&str>,
     limit: Option<usize>,
+    min_mtime: Option<f64>,
 ) -> Result<Targets, CliExit> {
     if !paths.is_empty() {
         let mut pairs = Vec::with_capacity(paths.len());
@@ -69,6 +70,13 @@ pub fn resolve_targets(
         });
     }
     let matched = discover(root, project, contains);
+    let matched: Vec<(PathBuf, f64)> = match min_mtime {
+        Some(floor) => matched
+            .into_iter()
+            .filter(|(_, mtime)| *mtime >= floor)
+            .collect(),
+        None => matched,
+    };
     let total = matched.len();
     let paths = match limit {
         Some(n) => matched.into_iter().take(n).collect(),

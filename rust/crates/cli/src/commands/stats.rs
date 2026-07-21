@@ -35,6 +35,7 @@ pub fn run(
         discovery.project.as_deref(),
         discovery.contains.as_deref(),
         discovery.effective_limit(),
+        None,
     )?;
     let transcripts = parse_transcripts(&targets.paths);
     let mut out = Out::new();

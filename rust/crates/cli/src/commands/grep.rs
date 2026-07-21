@@ -156,6 +156,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         args.discovery.project.as_deref(),
         args.discovery.contains.as_deref(),
         args.discovery.effective_limit(),
+        None,
     )?;
     let mut out_lines: Vec<String> = Vec::new();
     let mut files_matched = 0usize;
