@@ -6,8 +6,8 @@ use rable::{parse, ListOperator, Node, NodeKind, PipeSep, Span};
 use regex::Regex;
 
 use crate::literals::command::{
-    ASSIGNMENT_PATTERN, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS, SHELL_COMMANDS,
-    WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
+    ASSIGNMENT_PATTERN, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS,
+    SHELL_COMMANDS, WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
 };
 use crate::pystr;
 
@@ -311,7 +311,10 @@ impl CommandLine {
         let src = Src::new(raw);
         // A syntax error (`|`, `&&`) yields no commands, matching the old empty-tree fallback.
         let mut parts = match parse(raw, false) {
-            Ok(nodes) => nodes.iter().flat_map(|node| walk(node, &src, depth)).collect(),
+            Ok(nodes) => nodes
+                .iter()
+                .flat_map(|node| walk(node, &src, depth))
+                .collect(),
             Err(_) => Vec::new(),
         };
         // Nested inside an enumerated host's span: visible but span-less, like an absorbed word.
@@ -884,7 +887,10 @@ fn command_subs(raw: &str) -> Vec<(usize, String)> {
                 } else {
                     let start = i + 2;
                     let close = match_paren(b, start);
-                    out.push((start, raw.get(start..close.min(n)).unwrap_or("").to_string()));
+                    out.push((
+                        start,
+                        raw.get(start..close.min(n)).unwrap_or("").to_string(),
+                    ));
                     i = close + 1;
                 }
             }
@@ -1003,8 +1009,7 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
             let mut parts: Vec<(Command, Option<String>)> = Vec::new();
             for item in items {
                 let mut inner = walk(&item.command, src, depth);
-                if let (Some(Some(op)), Some(last)) =
-                    (item.operator.map(list_op), inner.last_mut())
+                if let (Some(Some(op)), Some(last)) = (item.operator.map(list_op), inner.last_mut())
                 {
                     last.1 = Some(op.to_string());
                 }
@@ -1012,23 +1017,32 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
             }
             parts
         }
-        NodeKind::Pipeline { commands, separators } => {
+        NodeKind::Pipeline {
+            commands,
+            separators,
+        } => {
             let mut parts: Vec<(Command, Option<String>)> = Vec::new();
             for (i, command) in commands.iter().enumerate() {
                 let mut inner = walk(command, src, depth);
                 // `|&` records no operator token (matching the old parser); the raw-gap fallback in
                 // `piped` still reads it as a pipe. Only a plain `|` attaches an operator.
-                if let (Some(PipeSep::Pipe), Some(last)) = (separators.get(i).copied(), inner.last_mut()) {
+                if let (Some(PipeSep::Pipe), Some(last)) =
+                    (separators.get(i).copied(), inner.last_mut())
+                {
                     last.1 = Some("|".to_string());
                 }
                 parts.extend(inner);
             }
             parts
         }
-        NodeKind::Command { assignments, words, redirects } => {
-            walk_command(node, assignments, words, redirects, src, depth)
+        NodeKind::Command {
+            assignments,
+            words,
+            redirects,
+        } => walk_command(node, assignments, words, redirects, src, depth),
+        NodeKind::Subshell { body, .. } | NodeKind::BraceGroup { body, .. } => {
+            walk(body, src, depth)
         }
-        NodeKind::Subshell { body, .. } | NodeKind::BraceGroup { body, .. } => walk(body, src, depth),
         NodeKind::Negation { pipeline } => walk(pipeline, src, depth),
         NodeKind::Time { pipeline, .. } => walk(pipeline, src, depth),
         _ => Vec::new(),
@@ -1110,8 +1124,16 @@ fn walk_command(
         .filter(|r| matches!(r.kind, NodeKind::HereDoc { .. }))
         .count();
     let content_span: Vec<&Node> = assignments.iter().chain(words.iter()).collect();
-    let start = content_span.iter().map(|n| src.bytes(&n.span).0).min().unwrap();
-    let end = content_span.iter().map(|n| src.bytes(&n.span).1).max().unwrap();
+    let start = content_span
+        .iter()
+        .map(|n| src.bytes(&n.span).0)
+        .min()
+        .unwrap();
+    let end = content_span
+        .iter()
+        .map(|n| src.bytes(&n.span).1)
+        .max()
+        .unwrap();
     let straddles_redirect = redirects.iter().any(|r| {
         let (rs, re) = src.bytes(&r.span);
         rs < end && re > start
@@ -1207,7 +1229,12 @@ fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
     let mut argv: Vec<&str> = argv.to_vec();
     let mut words: &[Word] = words;
     while let Some(&raw_head) = argv.first() {
-        let head = basename(words.first().and_then(|w| w.value.as_deref()).unwrap_or(raw_head));
+        let head = basename(
+            words
+                .first()
+                .and_then(|w| w.value.as_deref())
+                .unwrap_or(raw_head),
+        );
         if !WRAPPER_COMMANDS.contains(&head) {
             break;
         }
@@ -1322,7 +1349,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{prefixes, Command, CommandLine, Redirect, SpliceError};
-
 
     // command.py TestDequote — one layer of matching outer quotes, others untouched.
     #[test]
@@ -1491,7 +1517,10 @@ mod tests {
         let strs = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
         // `--` ends options (dropped from both sides); everything after is an operand.
-        assert_eq!(texts("run -a -- -b c", &[]), (strs(&["-a"]), strs(&["-b", "c"])));
+        assert_eq!(
+            texts("run -a -- -b c", &[]),
+            (strs(&["-a"]), strs(&["-b", "c"]))
+        );
         // A lone `-` is an operand (stdin), not an option.
         assert_eq!(texts("run - -v", &[]), (strs(&["-v"]), strs(&["-"])));
         // A listed value flag pulls its next token into the options.
@@ -2056,8 +2085,14 @@ mod tests {
         assert_eq!(tainted.parts[1].0.contexts, [super::QuoteLayer::Double]);
         assert_eq!(tainted.parts[1].0.span, None);
         assert!(tainted.parts[1].0.words.iter().all(|w| w.span.is_none()));
-        assert_eq!(execs(&CommandLine::parse("bash -c \"$CMD\"")), ["bash", "$CMD"]);
-        assert_eq!(execs(&CommandLine::parse("eval \"$CMD\"")), ["eval", "$CMD"]);
+        assert_eq!(
+            execs(&CommandLine::parse("bash -c \"$CMD\"")),
+            ["bash", "$CMD"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse("eval \"$CMD\"")),
+            ["eval", "$CMD"]
+        );
         // A missing payload word or a script operand still emits no nested part.
         assert_eq!(execs(&CommandLine::parse("bash -c")), ["bash"]);
         assert_eq!(execs(&CommandLine::parse("bash script.sh")), ["bash"]);
