@@ -30,6 +30,8 @@ uvx cc-transcript --help
 | `stats [PATHS]…` | Histogram of kinds/models/tools, char totals (text/thinking/tool io), sessions, time span, interrupts, tool errors, sidechain count. | `--project`, `--contains`, `--limit`, `--per-file`, `--json` |
 | `grep PATTERN [PATHS]…` | Regex search over events; per-file `==` headers; each hit prefixed with its raw index. **Exit 1 = no match** (not an error). | `--kind user\|assistant\|system\|mode\|other` (repeatable), `--tool <name>` (tool calls + their results), `-i`, `-C N` context, `--where text\|thinking\|tools`, `--max-matches` (default 20) |
 | `show PATH` | One compact line per event: `index tag hh:mm:ss payload` (`*` marks sidechain). Defaults to the last 200 events. | `--head N` / `--tail N` / `--range A:B` (raw indexes, half-open; `A:` and `:B` work), `--kind`, `--signal`, `--thinking`, `--width N` (default 100, 0 = no cut), `--json` |
+| `blame PATH` | Sessions that wrote a working-tree file, newest first: last-write time, session, `main`/`worktree:<name>`, write count, tools, opening prompt. **Exit 1 = no sessions wrote it.** | `--all-projects`, `--since`/`--until` (RFC 3339, `YYYY-MM-DD`, or `2d`), `--limit N`, `--json` |
+| `attribute PATH` | Classify a working-tree file: `claude:<session>` (an edit call wrote it), `generated:<sessions>` (mtime inside a session's window with Bash activity), or `external`. | `--all-projects`, `--json` |
 
 All discovery commands default to `~/.claude/projects`; override with `--root`.
 
