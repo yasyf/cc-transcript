@@ -889,6 +889,45 @@ def test_blame_since_excluding_everything_exits_one(tmp_path: Path) -> None:
     assert "no sessions wrote src/app.py" in result.stderr
 
 
+def test_blame_until_excludes_later_writes(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    blame_session(projects, "s-old", tree_abs, [
+        prompt_entry("s-old", tree_abs, "2026-05-01T09:00:00Z", "old", "o0"),
+        call_entry("s-old", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "o1"),
+    ])
+    blame_session(projects, "s-new", tree_abs, [
+        prompt_entry("s-new", tree_abs, "2026-05-02T09:00:00Z", "new", "n0"),
+        call_entry("s-new", tree_abs, "2026-05-02T09:05:00Z", edit_block("te2", f"{tree_abs}/src/app.py"), "n1"),
+    ])
+    result = run_cli(
+        "blame", f"{tree_abs}/src/app.py", "--root", str(projects),
+        "--until", "2026-05-02T09:05:00Z", "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)["session_id"] for line in result.stdout.splitlines()] == ["s-old"]
+
+
+def test_blame_limit_keeps_newest_sessions(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    blame_session(projects, "s-old", tree_abs, [
+        prompt_entry("s-old", tree_abs, "2026-05-01T09:00:00Z", "old", "o0"),
+        call_entry("s-old", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "o1"),
+    ])
+    blame_session(projects, "s-new", tree_abs, [
+        prompt_entry("s-new", tree_abs, "2026-05-02T09:00:00Z", "new", "n0"),
+        call_entry("s-new", tree_abs, "2026-05-02T09:05:00Z", edit_block("te2", f"{tree_abs}/src/app.py"), "n1"),
+    ])
+    unlimited = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--json")
+    assert unlimited.returncode == 0, unlimited.stderr
+    first_row = unlimited.stdout.splitlines()[0]
+
+    limited = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--limit", "1", "--json")
+    assert limited.returncode == 0, limited.stderr
+    assert limited.stdout.splitlines() == [first_row]
+
+
 def test_attribute_claude_json_shape(tmp_path: Path) -> None:
     tree, projects = blame_repo(tmp_path)
     tree_abs = str(tree.resolve())

@@ -34,6 +34,15 @@ Invocation matrix (name -> argv, cwd = repo root, binary = .venv/bin/cc-transcri
   stats_json        stats --root .fixtures/corpus --all --json
   stats_codex       stats <current Codex rollout>
   tools             tools <smallest>
+  tools_file        tools <smallest> --file *
+  tools_since_none  tools <smallest> --since 2099-01-01T00:00:00Z
+  tools_window      tools <smallest> --since 2020-01-01T00:00:00Z --until 2099-01-01T00:00:00Z
+  blame             blame .fixtures/blame/tree/src/app.py --root .fixtures/blame/projects
+  blame_since_none  blame .fixtures/blame/tree/src/app.py --root .fixtures/blame/projects --since 2099-01-01T00:00:00Z   (exit 1)
+  blame_missing     blame .fixtures/blame/tree/nope.py --root .fixtures/blame/projects   (exit 2)
+  attribute_claude  attribute .fixtures/blame/tree/src/app.py --root .fixtures/blame/projects
+  attribute_generated attribute .fixtures/blame/tree/build/out.txt --root .fixtures/blame/projects
+  attribute_external attribute .fixtures/blame/tree/README.md --root .fixtures/blame/projects
   commands          commands <smallest>
   mcp               mcp --root tests/testdata/mcp_root --all   (committed MCP fixture; the corpus has no MCP uses)
   mcp_json          mcp --root tests/testdata/mcp_root --all --json
