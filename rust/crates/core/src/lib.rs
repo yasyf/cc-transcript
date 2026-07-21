@@ -3,6 +3,7 @@ pub mod literals;
 pub mod activity;
 #[cfg(feature = "sqlite")]
 pub mod actor;
+pub mod blame;
 pub mod buckets;
 pub mod codex;
 #[cfg(feature = "command")]

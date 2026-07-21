@@ -7,6 +7,7 @@ use chrono::{DateTime, FixedOffset};
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::activity::Turn;
+use crate::blame::{SessionWrites, Verdict};
 #[cfg(feature = "command")]
 use crate::facts::{McpServerSummary, ToolFact};
 use crate::filter::{entry_text, event_kind};
@@ -1964,6 +1965,150 @@ pub fn denial_line(fact: &ToolFact) -> String {
     match fact.user_said.as_deref().filter(|u| !u.is_empty()) {
         Some(user_said) => format!("{head} → {user_said}"),
         None => head,
+    }
+}
+
+/// One `blame` row: `ts sess8 tree Nw tool,tool — prompt` (prompt single-lined, cut to
+/// 80 code points; `-` when the session opened with no prompt).
+pub fn blame_line(writes: &SessionWrites) -> String {
+    let prompt = match &writes.first_prompt {
+        Some(text) => char_prefix(&collapse_ws(text), 80).to_string(),
+        None => "-".to_string(),
+    };
+    format!(
+        "{} {} {} {}w {} — {prompt}",
+        writes.last_write_ts.format(SPAN_FMT),
+        char_prefix(&writes.session_id, 8),
+        writes.tree,
+        writes.writes,
+        writes.tools.join(","),
+    )
+}
+
+/// One `blame` record as the CLI's JSON projection.
+pub fn blame_json(writes: &SessionWrites) -> Json {
+    obj(vec![
+        ("session_id", Json::Str(writes.session_id.clone())),
+        ("path", Json::Str(writes.transcript_path.clone())),
+        ("tree", Json::Str(writes.tree.clone())),
+        ("first_write_ts", Json::Datetime(writes.first_write_ts)),
+        ("last_write_ts", Json::Datetime(writes.last_write_ts)),
+        ("writes", Json::Int(writes.writes as i64)),
+        ("tools", str_arr(&writes.tools)),
+        ("first_prompt", opt_str(&writes.first_prompt)),
+    ])
+}
+
+/// The `attribute` verdict as human lines: a `claude:` header + write line, a
+/// `generated:` header + per-candidate window and `$ command` suspects, or `external`.
+pub fn attribute_lines(verdict: &Verdict, rel_target: &str) -> Vec<String> {
+    match verdict {
+        Verdict::Claude {
+            session_id,
+            evidence,
+        } => vec![
+            format!("claude:{session_id}"),
+            format!(
+                "  {} wrote {rel_target} at {} ({})",
+                evidence.tool,
+                evidence.ts.format(SPAN_FMT),
+                evidence.tree,
+            ),
+        ],
+        Verdict::Generated { candidates } => std::iter::once(format!(
+            "generated:{}",
+            candidates
+                .iter()
+                .map(|candidate| char_prefix(&candidate.session_id, 8))
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+        .chain(candidates.iter().flat_map(|candidate| {
+            std::iter::once(format!(
+                "  {} active {}..{}",
+                char_prefix(&candidate.session_id, 8),
+                candidate.window_start.format(SPAN_FMT),
+                candidate.window_end.format(SPAN_FMT),
+            ))
+            .chain(
+                candidate
+                    .bash
+                    .iter()
+                    .map(|(_ts, command)| format!("    $ {}", collapse_ws(command))),
+            )
+        }))
+        .collect(),
+        Verdict::External => vec!["external".to_string()],
+    }
+}
+
+/// The `attribute` verdict as the CLI's JSON projection: `{file, mtime, verdict}` plus
+/// `session_id`/`evidence` (claude) or `candidates` (generated).
+pub fn attribute_json(verdict: &Verdict, rel_target: &str, mtime: DateTime<FixedOffset>) -> Json {
+    let mut pairs: Vec<(&str, Json)> = vec![
+        ("file", Json::Str(rel_target.to_string())),
+        ("mtime", Json::Datetime(mtime)),
+        ("verdict", Json::Str(verdict_name(verdict).to_string())),
+    ];
+    match verdict {
+        Verdict::Claude {
+            session_id,
+            evidence,
+        } => {
+            pairs.push(("session_id", Json::Str(session_id.clone())));
+            pairs.push((
+                "evidence",
+                obj(vec![
+                    ("ts", Json::Datetime(evidence.ts)),
+                    ("tool", Json::Str(evidence.tool.clone())),
+                    ("tool_use_id", Json::Str(evidence.tool_use_id.clone())),
+                    ("tree", Json::Str(evidence.tree.clone())),
+                    ("path", Json::Str(evidence.transcript_path.clone())),
+                ]),
+            ));
+        }
+        Verdict::Generated { candidates } => pairs.push((
+            "candidates",
+            Json::Arr(
+                candidates
+                    .iter()
+                    .map(|candidate| {
+                        obj(vec![
+                            ("session_id", Json::Str(candidate.session_id.clone())),
+                            ("path", Json::Str(candidate.transcript_path.clone())),
+                            ("window_start", Json::Datetime(candidate.window_start)),
+                            ("window_end", Json::Datetime(candidate.window_end)),
+                            (
+                                "bash",
+                                Json::Arr(
+                                    candidate
+                                        .bash
+                                        .iter()
+                                        .map(|(ts, command)| {
+                                            obj(vec![
+                                                ("ts", Json::Datetime(*ts)),
+                                                ("command", Json::Str(command.clone())),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        )),
+        Verdict::External => {}
+    }
+    obj(pairs)
+}
+
+/// The verdict's discriminant label (attribute_json `verdict`).
+fn verdict_name(verdict: &Verdict) -> &'static str {
+    match verdict {
+        Verdict::Claude { .. } => "claude",
+        Verdict::Generated { .. } => "generated",
+        Verdict::External => "external",
     }
 }
 
