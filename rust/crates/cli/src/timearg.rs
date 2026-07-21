@@ -82,14 +82,20 @@ pub fn parse_time(
         }
     }
     if let Some(caps) = DURATION_RE.captures(value) {
-        let n: i64 = caps[1].parse().expect("duration regex only captures digits");
+        let n: i64 = caps[1]
+            .parse()
+            .expect("duration regex only captures digits");
         let unit = caps[2]
             .chars()
             .next()
             .expect("duration regex captures one unit char");
         return Ok((now - Duration::seconds(n * unit_seconds(unit))).fixed_offset());
     }
-    Err(usage_error(usage, help_path, &no_match_message(option, value)))
+    Err(usage_error(
+        usage,
+        help_path,
+        &no_match_message(option, value),
+    ))
 }
 
 #[cfg(test)]
