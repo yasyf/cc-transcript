@@ -227,6 +227,41 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Sessions that wrote a working-tree file, newest first.
+    Blame {
+        path: PathBuf,
+        /// Transcript root to scan (default ~/.claude/projects).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Scan every project dir, not just this repo's.
+        #[arg(long = "all-projects")]
+        all_projects: bool,
+        /// Keep only writes at or after this time (RFC 3339, YYYY-MM-DD, or a duration like 2d).
+        #[arg(long)]
+        since: Option<String>,
+        /// Keep only writes before this time (RFC 3339, YYYY-MM-DD, or a duration like 2d).
+        #[arg(long)]
+        until: Option<String>,
+        /// Keep only the newest N sessions.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Emit one JSON object per session.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Classify a working-tree file: claude:<session>, generated, or external.
+    Attribute {
+        path: PathBuf,
+        /// Transcript root to scan (default ~/.claude/projects).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Scan every project dir, not just this repo's.
+        #[arg(long = "all-projects")]
+        all_projects: bool,
+        /// Emit one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
     /// Tally Bash command prefixes across the matched transcripts, most frequent first.
     Commands {
         paths: Vec<PathBuf>,
@@ -498,6 +533,34 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             until.as_deref(),
             json,
         ),
+        Cmd::Blame {
+            path,
+            root,
+            all_projects,
+            since,
+            until,
+            limit,
+            json,
+        } => commands::blame::blame(commands::blame::BlameArgs {
+            path,
+            root,
+            all_projects,
+            since,
+            until,
+            limit,
+            json,
+        }),
+        Cmd::Attribute {
+            path,
+            root,
+            all_projects,
+            json,
+        } => commands::blame::attribute(commands::blame::AttributeArgs {
+            path,
+            root,
+            all_projects,
+            json,
+        }),
         Cmd::Commands {
             paths,
             discovery,

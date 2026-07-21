@@ -1,4 +1,72 @@
 {
+  "attribute_claude": {
+    "argv": [
+      "attribute",
+      ".fixtures/blame/tree/src/app.py",
+      "--root",
+      ".fixtures/blame/projects"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 113
+  },
+  "attribute_external": {
+    "argv": [
+      "attribute",
+      ".fixtures/blame/tree/README.md",
+      "--root",
+      ".fixtures/blame/projects"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 9
+  },
+  "attribute_generated": {
+    "argv": [
+      "attribute",
+      ".fixtures/blame/tree/build/out.txt",
+      "--root",
+      ".fixtures/blame/projects"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 95
+  },
+  "blame": {
+    "argv": [
+      "blame",
+      ".fixtures/blame/tree/src/app.py",
+      "--root",
+      ".fixtures/blame/projects"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 155
+  },
+  "blame_missing": {
+    "argv": [
+      "blame",
+      ".fixtures/blame/tree/nope.py",
+      "--root",
+      ".fixtures/blame/projects"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 173,
+    "stdout_bytes": 0
+  },
+  "blame_since_none": {
+    "argv": [
+      "blame",
+      ".fixtures/blame/tree/src/app.py",
+      "--root",
+      ".fixtures/blame/projects",
+      "--since",
+      "2099-01-01T00:00:00Z"
+    ],
+    "exit_code": 1,
+    "stderr_bytes": 29,
+    "stdout_bytes": 0
+  },
   "commands": {
     "argv": [
       "commands",

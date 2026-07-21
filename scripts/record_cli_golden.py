@@ -62,6 +62,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -71,6 +72,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_REL = Path(".fixtures") / "corpus"
 CODEX_ROOT_REL = Path(".fixtures") / "codex-sessions"
 HOME_REL = Path(".fixtures") / "home"
+BLAME_REL = Path(".fixtures") / "blame"
 GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "cli_golden"
 CLI = REPO_ROOT / ".venv" / "bin" / "cc-transcript"
 MCP_ROOT = "tests/testdata/mcp_root"
@@ -84,11 +86,19 @@ INVALID_ROOT_REL = Path("tests/testdata/digest_fixtures.json")
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 ADDITIVE_CASES = frozenset(
     {
-        "tools_file",
-        "tools_since_none",
-        "tools_window",
+        "blame",
+        "blame_since_none",
+        "blame_missing",
+        "attribute_claude",
+        "attribute_generated",
+        "attribute_external",
     }
 )
+
+BLAME_MAIN_SID = "11111111-1111-4111-8111-111111111111"
+BLAME_WORKTREE_SID = "22222222-2222-4222-8222-222222222222"
+BLAME_BASH_SID = "33333333-3333-4333-8333-333333333333"
+BLAME_DECOY_SID = "44444444-4444-4444-8444-444444444444"
 
 DIGEST_STDIN = b'[{"tool": "Bash", "input": {"command": "ls"}}, {"tool": "Read", "input": {"file_path": "a.py"}}]'
 
@@ -144,6 +154,158 @@ def stage_codex_root() -> None:
         target = day / source.name
         shutil.copyfile(source, target)
         os.utime(target, (mtime, mtime))
+
+
+def encode_project_dir(cwd: str) -> str:
+    return cwd.replace("/", "-").replace(".", "-")
+
+
+def blame_user(sid: str, uid: str, ts: str, cwd: str, text: str) -> dict[str, object]:
+    return {
+        "type": "user",
+        "uuid": uid,
+        "parentUuid": None,
+        "sessionId": sid,
+        "timestamp": ts,
+        "cwd": cwd,
+        "message": {"role": "user", "content": text},
+    }
+
+
+def blame_assistant(
+    sid: str, uid: str, ts: str, cwd: str, content: list[dict[str, object]], stop: str = "tool_use"
+) -> dict[str, object]:
+    return {
+        "type": "assistant",
+        "uuid": uid,
+        "parentUuid": None,
+        "sessionId": sid,
+        "timestamp": ts,
+        "cwd": cwd,
+        "message": {"role": "assistant", "model": "claude-opus-4-8", "stop_reason": stop, "content": content},
+    }
+
+
+def blame_result(sid: str, uid: str, ts: str, cwd: str, tool_use_id: str, content: str) -> dict[str, object]:
+    return {
+        "type": "user",
+        "uuid": uid,
+        "parentUuid": None,
+        "sessionId": sid,
+        "timestamp": ts,
+        "cwd": cwd,
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": False}],
+        },
+    }
+
+
+def write_blame_session(path: Path, entries: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\n".join(orjson.dumps(entry) for entry in entries) + b"\n")
+
+
+def stage_blame_fixture() -> None:
+    """A fake repo (``.git`` dir) with a ``.claude/worktrees/wt1`` worktree (``.git`` file),
+    plus a projects tree of pinned sessions: a main-tree Edit, a newer worktree apply_patch,
+    a Bash-only build session, and a prefix-collided ``-rust`` decoy the engine must drop.
+    Project-dir names encode the resolved tree path, so the CLI's canonical target matches."""
+    base = REPO_ROOT / BLAME_REL
+    shutil.rmtree(base, ignore_errors=True)
+    tree = base / "tree"
+    worktree = tree / ".claude" / "worktrees" / "wt1"
+    (tree / ".git").mkdir(parents=True, exist_ok=True)
+    (tree / "src").mkdir(parents=True, exist_ok=True)
+    (tree / "build").mkdir(parents=True, exist_ok=True)
+    (tree / "src" / "app.py").write_text("app\n")
+    (tree / "build" / "out.txt").write_text("built\n")
+    (tree / "README.md").write_text("# readme\n")
+    (worktree / "src").mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text("gitdir: ../../../../.git/worktrees/wt1\n")
+    (worktree / "src" / "app.py").write_text("app\n")
+
+    tree_abs = str(tree.resolve())
+    worktree_abs = str(worktree.resolve())
+    decoy_cwd = f"{tree_abs}-rust"
+    projects = base / "projects"
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/other.py\n@@\n-a\n+b\n"
+        "*** Update File: src/app.py\n@@\n-c\n+d\n"
+        "*** End Patch\n"
+    )
+    main = [
+        blame_user(BLAME_MAIN_SID, "m0", "2026-05-01T09:00:00.000Z", tree_abs, "add the blame verb"),
+        blame_assistant(
+            BLAME_MAIN_SID,
+            "m1",
+            "2026-05-01T09:05:00.000Z",
+            tree_abs,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_edit",
+                    "name": "Edit",
+                    "input": {"file_path": f"{tree_abs}/src/app.py", "old_string": "app", "new_string": "app2"},
+                }
+            ],
+        ),
+        blame_result(BLAME_MAIN_SID, "m2", "2026-05-01T09:05:01.000Z", tree_abs, "toolu_edit", "ok"),
+    ]
+    worktree_session = [
+        blame_user(BLAME_WORKTREE_SID, "w0", "2026-05-02T14:00:00.000Z", worktree_abs, "wire blame into the worktree"),
+        blame_assistant(
+            BLAME_WORKTREE_SID,
+            "w1",
+            "2026-05-02T14:10:00.000Z",
+            worktree_abs,
+            [{"type": "tool_use", "id": "toolu_patch", "name": "apply_patch", "input": patch}],
+        ),
+        blame_result(BLAME_WORKTREE_SID, "w2", "2026-05-02T14:10:01.000Z", worktree_abs, "toolu_patch", "done"),
+    ]
+    bash = [
+        blame_user(BLAME_BASH_SID, "b0", "2026-05-03T10:00:00.000Z", tree_abs, "run the build"),
+        blame_assistant(
+            BLAME_BASH_SID,
+            "b1",
+            "2026-05-03T10:05:00.000Z",
+            tree_abs,
+            [{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "make build"}}],
+        ),
+        blame_result(BLAME_BASH_SID, "b2", "2026-05-03T10:06:00.000Z", tree_abs, "toolu_bash", "built"),
+        blame_assistant(
+            BLAME_BASH_SID, "b3", "2026-05-03T10:30:00.000Z", tree_abs, [{"type": "text", "text": "done"}], stop="end_turn"
+        ),
+    ]
+    decoy = [
+        blame_user(BLAME_DECOY_SID, "d0", "2026-05-04T12:00:00.000Z", decoy_cwd, "decoy edit"),
+        blame_assistant(
+            BLAME_DECOY_SID,
+            "d1",
+            "2026-05-04T12:05:00.000Z",
+            decoy_cwd,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_decoy",
+                    "name": "Edit",
+                    "input": {"file_path": "src/app.py", "old_string": "app", "new_string": "app2"},
+                }
+            ],
+        ),
+        blame_result(BLAME_DECOY_SID, "d2", "2026-05-04T12:05:01.000Z", decoy_cwd, "toolu_decoy", "ok"),
+    ]
+    write_blame_session(projects / encode_project_dir(tree_abs) / f"{BLAME_MAIN_SID}.jsonl", main)
+    write_blame_session(projects / encode_project_dir(tree_abs) / f"{BLAME_BASH_SID}.jsonl", bash)
+    write_blame_session(projects / encode_project_dir(worktree_abs) / f"{BLAME_WORKTREE_SID}.jsonl", worktree_session)
+    write_blame_session(projects / encode_project_dir(decoy_cwd) / f"{BLAME_DECOY_SID}.jsonl", decoy)
+
+    out_mtime = datetime(2026, 5, 3, 10, 15, 0, tzinfo=UTC).timestamp()
+    os.utime(tree / "build" / "out.txt", (out_mtime, out_mtime))
+    readme_mtime = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC).timestamp()
+    os.utime(tree / "README.md", (readme_mtime, readme_mtime))
 
 
 def smallest_transcript() -> str:
@@ -247,6 +409,23 @@ def matrix(smallest: str) -> dict[str, Case]:
         "tools_window": Case(
             ["tools", smallest, "--since", "2020-01-01T00:00:00Z", "--until", "2099-01-01T00:00:00Z"]
         ),
+        "blame": Case(["blame", ".fixtures/blame/tree/src/app.py", "--root", ".fixtures/blame/projects"]),
+        "blame_since_none": Case(
+            [
+                "blame",
+                ".fixtures/blame/tree/src/app.py",
+                "--root",
+                ".fixtures/blame/projects",
+                "--since",
+                "2099-01-01T00:00:00Z",
+            ]
+        ),
+        "blame_missing": Case(["blame", ".fixtures/blame/tree/nope.py", "--root", ".fixtures/blame/projects"]),
+        "attribute_claude": Case(["attribute", ".fixtures/blame/tree/src/app.py", "--root", ".fixtures/blame/projects"]),
+        "attribute_generated": Case(
+            ["attribute", ".fixtures/blame/tree/build/out.txt", "--root", ".fixtures/blame/projects"]
+        ),
+        "attribute_external": Case(["attribute", ".fixtures/blame/tree/README.md", "--root", ".fixtures/blame/projects"]),
         "commands": Case(["commands", smallest]),
         "mcp": Case(["mcp", "--root", MCP_ROOT, "--all"]),
         "mcp_json": Case(["mcp", "--root", MCP_ROOT, "--all", "--json"]),
@@ -293,6 +472,7 @@ def run(case: Case) -> tuple[bytes, bytes, int]:
 def record(golden_dir: Path, names: frozenset[str] | None = None) -> None:
     regenerate_corpus()
     stage_codex_root()
+    stage_blame_fixture()
     shutil.rmtree(REPO_ROOT / HOME_REL, ignore_errors=True)
     (REPO_ROOT / HOME_REL).mkdir(parents=True)
     (REPO_ROOT / ".fixtures" / "tmp").mkdir(parents=True, exist_ok=True)

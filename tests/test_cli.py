@@ -10,9 +10,11 @@ import json
 import math
 import os
 import random
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,8 @@ def test_help_lists_all_commands() -> None:
         "digest",
         "corrections",
         "tools",
+        "blame",
+        "attribute",
         "commands",
         "permissions",
         "mcp",
@@ -712,3 +716,246 @@ def test_home_unset_falls_back_to_the_pwd_home(tmp_path: Path) -> None:
     result = run_cli("list", "--limit", "5", drop=("HOME",), cwd=tmp_path)
     assert result.returncode == 0
     assert "decoy-session" not in result.stdout
+
+
+BLAME_MODEL = "claude-opus-4-8"
+
+
+def encode_dir(cwd: str) -> str:
+    return cwd.replace("/", "-").replace(".", "-")
+
+
+def blame_repo(tmp_path: Path) -> tuple[Path, Path]:
+    tree = tmp_path / "tree"
+    (tree / ".git").mkdir(parents=True)
+    (tree / "src").mkdir(parents=True)
+    (tree / "build").mkdir(parents=True)
+    (tree / "src" / "app.py").write_text("app\n")
+    (tree / "build" / "out.txt").write_text("built\n")
+    (tree / "README.md").write_text("# readme\n")
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    return tree, projects
+
+
+def prompt_entry(session_id: str, cwd: str, ts: str, text: str, uid: str) -> dict[str, Any]:
+    return envelope(
+        0, uuid=uid, type="user", sessionId=session_id, cwd=cwd, timestamp=ts,
+        message={"role": "user", "content": text},
+    )
+
+
+def call_entry(session_id: str, cwd: str, ts: str, block: dict[str, Any], uid: str, *, stop: str = "tool_use") -> dict[str, Any]:
+    return envelope(
+        0, uuid=uid, type="assistant", sessionId=session_id, cwd=cwd, timestamp=ts,
+        message={"role": "assistant", "model": BLAME_MODEL, "stop_reason": stop, "content": [block]},
+    )
+
+
+def edit_block(tool_use_id: str, file_path: str) -> dict[str, Any]:
+    return {"type": "tool_use", "id": tool_use_id, "name": "Edit",
+            "input": {"file_path": file_path, "old_string": "app", "new_string": "app2"}}
+
+
+def patch_block(tool_use_id: str, files: list[str]) -> dict[str, Any]:
+    body = "".join(f"*** Update File: {f}\n@@\n-a\n+b\n" for f in files)
+    return {"type": "tool_use", "id": tool_use_id, "name": "apply_patch",
+            "input": f"*** Begin Patch\n{body}*** End Patch\n"}
+
+
+def bash_block(tool_use_id: str, command: str) -> dict[str, Any]:
+    return {"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": command}}
+
+
+def blame_session(projects: Path, session_id: str, cwd: str, entries: list[dict[str, Any]]) -> Path:
+    return write_transcript(projects / encode_dir(cwd) / f"{session_id}.jsonl", entries)
+
+
+def test_blame_orders_newest_first_with_worktree_labels(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    worktree = tree / ".claude" / "worktrees" / "wt1"
+    (worktree / "src").mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: x\n")
+    (worktree / "src" / "app.py").write_text("app\n")
+    tree_abs = str(tree.resolve())
+    wt_abs = str(worktree.resolve())
+    main = blame_session(projects, "s-main", tree_abs, [
+        prompt_entry("s-main", tree_abs, "2026-05-01T09:00:00Z", "add the blame verb", "m0"),
+        call_entry("s-main", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "m1"),
+    ])
+    wt = blame_session(projects, "s-wt", wt_abs, [
+        prompt_entry("s-wt", wt_abs, "2026-05-02T14:00:00Z", "wire it in", "w0"),
+        call_entry("s-wt", wt_abs, "2026-05-02T14:10:00Z", patch_block("tp", ["src/other.py", "src/app.py"]), "w1"),
+    ])
+
+    result = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "2026-05-02 14:10:00 s-wt worktree:wt1 1w apply_patch — wire it in",
+        "2026-05-01 09:05:00 s-main main 1w Edit — add the blame verb",
+    ]
+
+    js = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--json")
+    assert js.returncode == 0, js.stderr
+    assert [json.loads(line) for line in js.stdout.splitlines()] == [
+        {
+            "session_id": "s-wt", "path": str(wt), "tree": "worktree:wt1",
+            "first_write_ts": "2026-05-02T14:10:00+00:00", "last_write_ts": "2026-05-02T14:10:00+00:00",
+            "writes": 1, "tools": ["apply_patch"], "first_prompt": "wire it in",
+        },
+        {
+            "session_id": "s-main", "path": str(main), "tree": "main",
+            "first_write_ts": "2026-05-01T09:05:00+00:00", "last_write_ts": "2026-05-01T09:05:00+00:00",
+            "writes": 1, "tools": ["Edit"], "first_prompt": "add the blame verb",
+        },
+    ]
+
+
+def test_blame_counts_applypatch_secondary_files(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    blame_session(projects, "s1", tree_abs, [
+        prompt_entry("s1", tree_abs, "2026-05-01T09:00:00Z", "patch", "p0"),
+        call_entry("s1", tree_abs, "2026-05-01T09:05:00Z", patch_block("tp", ["src/other.py", "src/app.py"]), "p1"),
+    ])
+    result = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--json")
+    assert result.returncode == 0, result.stderr
+    row = json.loads(result.stdout)
+    assert (row["writes"], row["tools"], row["tree"]) == (1, ["apply_patch"], "main")
+
+
+def test_blame_excludes_prefix_collided_sibling_repo(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    sibling = f"{tree_abs}-rust"
+    blame_session(projects, "s-real", tree_abs, [
+        prompt_entry("s-real", tree_abs, "2026-05-01T09:00:00Z", "real", "r0"),
+        call_entry("s-real", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "r1"),
+    ])
+    blame_session(projects, "s-rust", sibling, [
+        prompt_entry("s-rust", sibling, "2026-05-02T09:00:00Z", "sibling", "x0"),
+        call_entry("s-rust", sibling, "2026-05-02T09:05:00Z", edit_block("xe", "src/app.py"), "x1"),
+    ])
+    result = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--json")
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)["session_id"] for line in result.stdout.splitlines()] == ["s-real"]
+
+
+def test_blame_all_projects_finds_misfiled_transcripts(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    write_transcript(projects / "-unrelated-project" / "s-misfiled.jsonl", [
+        prompt_entry("s-misfiled", tree_abs, "2026-05-01T09:00:00Z", "misfiled", "u0"),
+        call_entry("s-misfiled", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "u1"),
+    ])
+    without = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects))
+    assert without.returncode == 1
+    assert "no sessions wrote src/app.py" in without.stderr
+
+    with_all = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--all-projects", "--json")
+    assert with_all.returncode == 0, with_all.stderr
+    assert [json.loads(line)["session_id"] for line in with_all.stdout.splitlines()] == ["s-misfiled"]
+
+
+def test_blame_missing_file_exits_two(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    result = run_cli("blame", f"{tree_abs}/src/nope.py", "--root", str(projects))
+    assert result.returncode == 2
+    assert "does not exist" in result.stderr
+
+
+def test_blame_outside_repo_exits_one(tmp_path: Path) -> None:
+    outside = Path(tempfile.mkdtemp())
+    try:
+        target = outside / "loose.py"
+        target.write_text("x\n")
+        result = run_cli("blame", str(target), "--root", str(tmp_path))
+        assert result.returncode == 1
+        assert "not inside a repository" in result.stderr
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_blame_since_excluding_everything_exits_one(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    blame_session(projects, "s1", tree_abs, [
+        prompt_entry("s1", tree_abs, "2026-05-01T09:00:00Z", "go", "g0"),
+        call_entry("s1", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "g1"),
+    ])
+    result = run_cli("blame", f"{tree_abs}/src/app.py", "--root", str(projects), "--since", "2099-01-01T00:00:00Z")
+    assert result.returncode == 1
+    assert "no sessions wrote src/app.py" in result.stderr
+
+
+def test_attribute_claude_json_shape(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    mtime = datetime(2026, 5, 1, 9, 5, 0, tzinfo=UTC)
+    os.utime(tree / "src" / "app.py", (mtime.timestamp(), mtime.timestamp()))
+    transcript = blame_session(projects, "s-main", tree_abs, [
+        prompt_entry("s-main", tree_abs, "2026-05-01T09:00:00Z", "add it", "m0"),
+        call_entry("s-main", tree_abs, "2026-05-01T09:05:00Z", edit_block("te", f"{tree_abs}/src/app.py"), "m1"),
+    ])
+    result = run_cli("attribute", f"{tree_abs}/src/app.py", "--root", str(projects), "--json")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "file": "src/app.py",
+        "mtime": mtime.isoformat(),
+        "verdict": "claude",
+        "session_id": "s-main",
+        "evidence": {
+            "ts": "2026-05-01T09:05:00+00:00",
+            "tool": "Edit",
+            "tool_use_id": "te",
+            "tree": "main",
+            "path": str(transcript),
+        },
+    }
+
+
+def test_attribute_generated_window_and_bash_suspects(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    mtime = datetime(2026, 5, 3, 10, 20, 0, tzinfo=UTC)
+    os.utime(tree / "build" / "out.txt", (mtime.timestamp(), mtime.timestamp()))
+    commands = [f"cmd {i}" for i in range(6)]
+    entries = [prompt_entry("s-bash", tree_abs, "2026-05-03T10:00:00Z", "build", "b0")]
+    entries += [
+        call_entry("s-bash", tree_abs, f"2026-05-03T10:0{i}:00Z", bash_block(f"tb{i}", command), f"bb{i}")
+        for i, command in enumerate(commands)
+    ]
+    entries.append(call_entry("s-bash", tree_abs, "2026-05-03T10:30:00Z", {"type": "text", "text": "done"}, "bz", stop="end_turn"))
+    blame_session(projects, "s-bash", tree_abs, entries)
+
+    result = run_cli("attribute", f"{tree_abs}/build/out.txt", "--root", str(projects), "--json")
+    assert result.returncode == 0, result.stderr
+    row = json.loads(result.stdout)
+    assert row["verdict"] == "generated"
+    assert len(row["candidates"]) == 1
+    suspects = row["candidates"][0]["bash"]
+    stamps = [entry["ts"] for entry in suspects]
+    assert stamps == sorted(stamps)
+    assert [entry["command"] for entry in suspects] == commands[1:]
+
+
+def test_attribute_external_outside_all_windows(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    os.utime(tree / "README.md", (datetime(2020, 1, 1, tzinfo=UTC).timestamp(),) * 2)
+    blame_session(projects, "s-bash", tree_abs, [
+        prompt_entry("s-bash", tree_abs, "2026-05-03T10:00:00Z", "build", "b0"),
+        call_entry("s-bash", tree_abs, "2026-05-03T10:05:00Z", bash_block("tb", "make"), "b1"),
+    ])
+    result = run_cli("attribute", f"{tree_abs}/README.md", "--root", str(projects))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "external"
+
+
+def test_attribute_missing_file_exits_two(tmp_path: Path) -> None:
+    tree, projects = blame_repo(tmp_path)
+    tree_abs = str(tree.resolve())
+    result = run_cli("attribute", f"{tree_abs}/src/nope.py", "--root", str(projects))
+    assert result.returncode == 2
+    assert "does not exist" in result.stderr

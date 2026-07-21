@@ -1,0 +1,4 @@
+Usage: cc-transcript blame [OPTIONS] <PATH>
+Try 'cc-transcript blame --help' for help.
+
+Error: Invalid value for 'PATH': File '.fixtures/blame/tree/nope.py' does not exist.

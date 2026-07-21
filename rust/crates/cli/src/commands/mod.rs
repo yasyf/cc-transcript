@@ -1,3 +1,4 @@
+pub mod blame;
 pub mod corrections;
 pub mod digest;
 pub mod facts;
