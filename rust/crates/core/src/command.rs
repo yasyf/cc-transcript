@@ -1001,6 +1001,33 @@ fn build_redirects(redirects: &[Node], src: &Src) -> Vec<Redirect> {
         .collect()
 }
 
+fn with_redirects(
+    node: &Node,
+    redirects: &[Node],
+    mut parts: Vec<(Command, Option<String>)>,
+    src: &Src,
+) -> Vec<(Command, Option<String>)> {
+    if redirects.is_empty() {
+        return parts;
+    }
+    let redirects = build_redirects(redirects, src);
+    if parts.is_empty() {
+        return vec![(
+            Command {
+                raw: src.slice(&node.span).to_string(),
+                redirects,
+                span: Some(src.bytes(&node.span)),
+                ..Command::default()
+            },
+            None,
+        )];
+    }
+    for (cmd, _) in &mut parts {
+        cmd.redirects.extend(redirects.iter().cloned());
+    }
+    parts
+}
+
 // List/pipeline split at their operators; a command extracts plus its substitution and payload
 // parts; compound bodies recurse; everything else contributes nothing.
 fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
@@ -1040,12 +1067,142 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
             words,
             redirects,
         } => walk_command(node, assignments, words, redirects, src, depth),
-        NodeKind::Subshell { body, .. } | NodeKind::BraceGroup { body, .. } => {
-            walk(body, src, depth)
+        NodeKind::Subshell {
+            body, redirects, ..
         }
+        | NodeKind::BraceGroup {
+            body, redirects, ..
+        } => with_redirects(node, redirects, walk(body, src, depth), src),
+        NodeKind::If {
+            condition,
+            then_body,
+            else_body,
+            redirects,
+        } => {
+            let mut parts = walk(condition, src, depth);
+            parts.extend(walk(then_body, src, depth));
+            if let Some(else_body) = else_body {
+                parts.extend(walk(else_body, src, depth));
+            }
+            with_redirects(node, redirects, parts, src)
+        }
+        NodeKind::While {
+            condition,
+            body,
+            redirects,
+        }
+        | NodeKind::Until {
+            condition,
+            body,
+            redirects,
+        } => {
+            let mut parts = walk(condition, src, depth);
+            parts.extend(walk(body, src, depth));
+            with_redirects(node, redirects, parts, src)
+        }
+        NodeKind::For {
+            words,
+            body,
+            redirects,
+            ..
+        }
+        | NodeKind::Select {
+            words,
+            body,
+            redirects,
+            ..
+        } => {
+            let mut parts = words.as_ref().map_or_else(Vec::new, |_| {
+                header_substitution_parts(node, body, src, depth)
+            });
+            parts.extend(walk(body, src, depth));
+            with_redirects(node, redirects, parts, src)
+        }
+        NodeKind::ForArith {
+            body, redirects, ..
+        } => {
+            let mut parts = header_substitution_parts(node, body, src, depth);
+            parts.extend(walk(body, src, depth));
+            with_redirects(node, redirects, parts, src)
+        }
+        NodeKind::Case {
+            word,
+            patterns,
+            redirects,
+        } => {
+            let (mut cursor, end) = src.bytes(&node.span);
+            let mut parts = located_word_substitution_parts(word, src, &mut cursor, end, depth);
+            for pattern in patterns {
+                for word in &pattern.patterns {
+                    parts.extend(located_word_substitution_parts(
+                        word,
+                        src,
+                        &mut cursor,
+                        end,
+                        depth,
+                    ));
+                }
+                if let Some(body) = &pattern.body {
+                    parts.extend(walk(body, src, depth));
+                    cursor = src.bytes(&body.span).1;
+                }
+            }
+            with_redirects(node, redirects, parts, src)
+        }
+        NodeKind::Function { body, .. } => walk(body, src, depth),
+        NodeKind::ConditionalExpr {
+            body, redirects, ..
+        } => with_redirects(
+            node,
+            redirects,
+            substitution_parts(&[], std::slice::from_ref(body.as_ref()), src, depth),
+            src,
+        ),
+        NodeKind::ArithmeticCommand { redirects, .. } => {
+            with_redirects(node, redirects, Vec::new(), src)
+        }
+        NodeKind::Coproc { command, .. } => walk(command, src, depth),
         NodeKind::Negation { pipeline } => walk(pipeline, src, depth),
         NodeKind::Time { pipeline, .. } => walk(pipeline, src, depth),
-        _ => Vec::new(),
+        NodeKind::Word { .. }
+        | NodeKind::WordLiteral { .. }
+        | NodeKind::Redirect { .. }
+        | NodeKind::HereDoc { .. }
+        | NodeKind::ParamExpansion { .. }
+        | NodeKind::ParamLength { .. }
+        | NodeKind::ParamIndirect { .. }
+        | NodeKind::CommandSubstitution { .. }
+        | NodeKind::ProcessSubstitution { .. }
+        | NodeKind::AnsiCQuote { .. }
+        | NodeKind::LocaleString { .. }
+        | NodeKind::BraceExpansion { .. }
+        | NodeKind::ArithmeticExpansion { .. }
+        | NodeKind::ArithNumber { .. }
+        | NodeKind::ArithVar { .. }
+        | NodeKind::ArithBinaryOp { .. }
+        | NodeKind::ArithUnaryOp { .. }
+        | NodeKind::ArithPreIncr { .. }
+        | NodeKind::ArithPostIncr { .. }
+        | NodeKind::ArithPreDecr { .. }
+        | NodeKind::ArithPostDecr { .. }
+        | NodeKind::ArithAssign { .. }
+        | NodeKind::ArithTernary { .. }
+        | NodeKind::ArithComma { .. }
+        | NodeKind::ArithSubscript { .. }
+        | NodeKind::ArithEmpty
+        | NodeKind::ArithEscape { .. }
+        | NodeKind::ArithDeprecated { .. }
+        | NodeKind::ArithConcat { .. }
+        | NodeKind::UnaryTest { .. }
+        | NodeKind::BinaryTest { .. }
+        | NodeKind::CondAnd { .. }
+        | NodeKind::CondOr { .. }
+        | NodeKind::CondNot { .. }
+        | NodeKind::CondParen { .. }
+        | NodeKind::CondTerm { .. }
+        | NodeKind::Array { .. }
+        | NodeKind::Empty
+        | NodeKind::Comment { .. } => Vec::new(),
     }
 }
 
@@ -1053,30 +1210,67 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
 // mirroring assignment position: document order (assignments then words), redirects excluded.
 // Each inner command re-parses depth-unchanged, offsets its spans into the outer raw, and hoists a
 // nesting level; the host's own span nulls their enclosed command spans back in parse_at_depth.
+fn substitution_parts_in(raw: &str, start: usize, depth: u8) -> Vec<(Command, Option<String>)> {
+    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+    for (inner_offset, inner) in command_subs(raw) {
+        let offset = start + inner_offset;
+        let mut inner_parts = CommandLine::parse_at_depth(&inner, depth).parts;
+        for (cmd, _) in inner_parts.iter_mut() {
+            cmd.nesting = cmd.nesting.saturating_add(1);
+            cmd.span = cmd.span.map(|(s, e)| (s + offset, e + offset));
+            for w in &mut cmd.words {
+                w.span = w.span.map(|(s, e)| (s + offset, e + offset));
+                w.content_offset = w.content_offset.map(|c| c + offset);
+            }
+        }
+        parts.extend(inner_parts);
+    }
+    parts
+}
+
+fn header_substitution_parts(
+    node: &Node,
+    body: &Node,
+    src: &Src,
+    depth: u8,
+) -> Vec<(Command, Option<String>)> {
+    let (start, _) = src.bytes(&node.span);
+    let (body_start, _) = src.bytes(&body.span);
+    substitution_parts_in(&src.text[start..body_start], start, depth)
+}
+
+fn located_word_substitution_parts(
+    node: &Node,
+    src: &Src,
+    cursor: &mut usize,
+    end: usize,
+    depth: u8,
+) -> Vec<(Command, Option<String>)> {
+    let NodeKind::Word { value, .. } = &node.kind else {
+        unreachable!("compound header word")
+    };
+    let relative = src.text[*cursor..end]
+        .find(value)
+        .expect("compound header word source");
+    let start = *cursor + relative;
+    *cursor = start + value.len();
+    substitution_parts_in(value, start, depth)
+}
+
 fn substitution_parts(
     assignments: &[Node],
     words: &[Node],
     src: &Src,
     depth: u8,
 ) -> Vec<(Command, Option<String>)> {
-    let mut parts: Vec<(Command, Option<String>)> = Vec::new();
-    for word in assignments.iter().chain(words.iter()) {
-        let (start, _) = src.bytes(&word.span);
-        for (inner_offset, inner) in command_subs(src.slice(&word.span)) {
-            let offset = start + inner_offset;
-            let mut inner_parts = CommandLine::parse_at_depth(&inner, depth).parts;
-            for (cmd, _) in inner_parts.iter_mut() {
-                cmd.nesting = cmd.nesting.saturating_add(1);
-                cmd.span = cmd.span.map(|(s, e)| (s + offset, e + offset));
-                for w in &mut cmd.words {
-                    w.span = w.span.map(|(s, e)| (s + offset, e + offset));
-                    w.content_offset = w.content_offset.map(|c| c + offset);
-                }
-            }
-            parts.extend(inner_parts);
-        }
-    }
-    parts
+    assignments
+        .iter()
+        .chain(words.iter())
+        .flat_map(|word| {
+            let (start, _) = src.bytes(&word.span);
+            substitution_parts_in(src.slice(&word.span), start, depth)
+        })
+        .collect()
 }
 
 // A simple command: words[0] is the executable (never dequoted), words[1..] the args, assignments
@@ -1828,6 +2022,75 @@ mod tests {
             .iter()
             .map(|(cmd, _)| cmd.executable.as_str())
             .collect()
+    }
+
+    #[test]
+    fn compound_statements_enumerate_commands() {
+        let cases = [
+            (
+                "if guard; then for f in *.py; do rm \"$f\"; done; fi",
+                &["guard", "rm"][..],
+            ),
+            ("case $x in a) one;; b) two;; esac", &["one", "two"]),
+            ("until ready; do wait; done", &["ready", "wait"]),
+            ("select choice in a b; do echo \"$choice\"; done", &["echo"]),
+            ("for ((i=0; i<3; i++)); do tick; done", &["tick"]),
+            (
+                "coproc worker { produce; consume; }",
+                &["produce", "consume"],
+            ),
+            (
+                "if helper() { check; }; then helper; fi",
+                &["check", "helper"],
+            ),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(execs(&CommandLine::parse(raw)), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn compound_headers_enumerate_substitutions() {
+        let cases = [
+            ("for x in $(gen); do use $x; done", "gen"),
+            ("case $(subject) in x) use;; esac", "subject"),
+            ("case x in $(pattern)) use;; esac", "pattern"),
+            ("select x in $(choices); do use $x; done", "choices"),
+            ("for ((i=$(seed); i<3; i++)); do use; done", "seed"),
+            ("[[ $(probe) == ok ]]", "probe"),
+        ];
+
+        for (raw, expected) in cases {
+            assert!(
+                prefixes(raw).iter().any(|prefix| prefix == expected),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn compound_redirects_propagate_to_every_inner_command() {
+        for raw in [
+            "if true; then echo hi; fi >out",
+            "while ready; do tick; done 2>err",
+            "case $x in a) one;; b) two;; esac >>out",
+        ] {
+            let line = CommandLine::parse(raw);
+            assert!(
+                !line.parts.is_empty()
+                    && line.parts.iter().all(|(cmd, _)| !cmd.redirects.is_empty()),
+                "{raw}"
+            );
+        }
+
+        let nested = CommandLine::parse("{ if true; then echo hi; fi >inner; } >outer");
+        assert!(nested.parts.iter().all(|(cmd, _)| {
+            cmd.redirects
+                .iter()
+                .map(|redirect| redirect.target.as_str())
+                .eq(["inner", "outer"])
+        }));
     }
 
     // Both substitution positions get one treatment: the nested command is a first-class part.

@@ -12,9 +12,9 @@ multilevel-only-flags	git --version	git
 two-plain-segments	cat a && grep b	cat|grep
 single-plain-command	ls -la	ls
 unterminated-quote-recovered	echo "unterminated	echo
-loop-do-unwraps-body	for f in *.py; do python $f; done	
-while-condition-and-body	while true; do sleep 1; done	
-if-condition-then-else	if grep -q x f; then echo y; else echo z; fi	
+loop-do-unwraps-body	for f in *.py; do python $f; done	python
+while-condition-and-body	while true; do sleep 1; done	true|sleep
+if-condition-then-else	if grep -q x f; then echo y; else echo z; fi	grep|echo|echo
 empty		
 timeout-integer-arg-unwrapped	timeout 30 git push	git push
 single-git-subcommand	git commit -m x	git commit
@@ -35,6 +35,6 @@ process-substitution-in-pipeline	cat <(git log) | head -3	cat|head
 arithmetic-expansion	echo $((1 + 2))	echo
 arithmetic-assignment-prefix	x=$((COUNT + 1)) make build	make
 backtick-substitution	echo `git rev-parse HEAD`	echo|git rev-parse
-function-definition-body-and-call	foo() { git status; }; foo	foo
+function-definition-body-and-call	foo() { git status; }; foo	git status|foo
 multiline-quoted-string	git commit -m "line1\nline2"	git commit
 newline-separated-commands	git add .\ngit commit -m x	git add|git commit

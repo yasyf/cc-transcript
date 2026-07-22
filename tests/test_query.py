@@ -263,6 +263,14 @@ def test_has_command_matches_argv_prefix(command: str, expected: bool) -> None:
     assert sess.has_command("git", "push", subagents=False) is expected
 
 
+def test_has_command_finds_compound_body() -> None:
+    sess = session(
+        user("u0", "go"),
+        assistant("a0", "", blocks=(bash("t1", "if true; then rm -rf /; fi"),), secs=1),
+    )
+    assert sess.has_command("rm", subagents=False)
+
+
 def test_command_lines_parses_each_bash_command() -> None:
     sess = session(
         user("u0", "go"),

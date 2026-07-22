@@ -234,8 +234,29 @@
     "command": "for f in *.py; do python $f; done",
     "id": "pin-loop-do-unwraps-body",
     "parsed": {
-      "parts": [],
-      "prefixes": [],
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "$f"
+            ],
+            "env": [],
+            "executable": "python",
+            "prefix": "python",
+            "program": "python",
+            "raw": "python $f",
+            "redirects": [],
+            "unwrapped_argv": [
+              "python",
+              "$f"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "python"
+      ],
       "raw": "for f in *.py; do python $f; done"
     }
   },
@@ -243,8 +264,45 @@
     "command": "while true; do sleep 1; done",
     "id": "pin-while-condition-and-body",
     "parsed": {
-      "parts": [],
-      "prefixes": [],
+      "parts": [
+        {
+          "command": {
+            "args": [],
+            "env": [],
+            "executable": "true",
+            "prefix": "true",
+            "program": "true",
+            "raw": "true",
+            "redirects": [],
+            "unwrapped_argv": [
+              "true"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "1"
+            ],
+            "env": [],
+            "executable": "sleep",
+            "prefix": "sleep",
+            "program": "sleep",
+            "raw": "sleep 1",
+            "redirects": [],
+            "unwrapped_argv": [
+              "sleep",
+              "1"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "true",
+        "sleep"
+      ],
       "raw": "while true; do sleep 1; done"
     }
   },
@@ -252,8 +310,71 @@
     "command": "if grep -q x f; then echo y; else echo z; fi",
     "id": "pin-if-condition-then-else",
     "parsed": {
-      "parts": [],
-      "prefixes": [],
+      "parts": [
+        {
+          "command": {
+            "args": [
+              "-q",
+              "x",
+              "f"
+            ],
+            "env": [],
+            "executable": "grep",
+            "prefix": "grep",
+            "program": "grep",
+            "raw": "grep -q x f",
+            "redirects": [],
+            "unwrapped_argv": [
+              "grep",
+              "-q",
+              "x",
+              "f"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "y"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo y",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "y"
+            ]
+          },
+          "op": null
+        },
+        {
+          "command": {
+            "args": [
+              "z"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo z",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "z"
+            ]
+          },
+          "op": null
+        }
+      ],
+      "prefixes": [
+        "grep",
+        "echo",
+        "echo"
+      ],
       "raw": "if grep -q x f; then echo y; else echo z; fi"
     }
   },
@@ -914,6 +1035,24 @@
       "parts": [
         {
           "command": {
+            "args": [
+              "status"
+            ],
+            "env": [],
+            "executable": "git",
+            "prefix": "git status",
+            "program": "git",
+            "raw": "git status",
+            "redirects": [],
+            "unwrapped_argv": [
+              "git",
+              "status"
+            ]
+          },
+          "op": ";"
+        },
+        {
+          "command": {
             "args": [],
             "env": [],
             "executable": "foo",
@@ -929,6 +1068,7 @@
         }
       ],
       "prefixes": [
+        "git status",
         "foo"
       ],
       "raw": "foo() { git status; }; foo"
@@ -2111,6 +2251,24 @@
       "parts": [
         {
           "command": {
+            "args": [
+              "hi"
+            ],
+            "env": [],
+            "executable": "echo",
+            "prefix": "echo",
+            "program": "echo",
+            "raw": "echo hi",
+            "redirects": [],
+            "unwrapped_argv": [
+              "echo",
+              "hi"
+            ]
+          },
+          "op": ";"
+        },
+        {
+          "command": {
             "args": [],
             "env": [],
             "executable": "greet",
@@ -2141,6 +2299,7 @@
         }
       ],
       "prefixes": [
+        "echo",
         "greet",
         "greet"
       ],

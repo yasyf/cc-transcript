@@ -514,6 +514,14 @@ class TestCommandLineQuery:
         [
             pytest.param("cat f | grep x", True, id="pipe"),
             pytest.param("echo hi > f.txt", True, id="file_redirect"),
+            pytest.param("if true; then echo hi; fi >out", True, id="redirected_if"),
+            pytest.param("while ready; do tick; done 2>err", True, id="redirected_loop"),
+            pytest.param("case $x in a) one;; esac >>out", True, id="redirected_case"),
+            pytest.param(
+                "{ if true; then echo hi; fi >inner; } >outer",
+                True,
+                id="nested_compound_redirect",
+            ),
             pytest.param("ls -la", False, id="plain"),
         ],
     )
@@ -753,6 +761,29 @@ class TestCommandPrefixes:
     @pytest.mark.parametrize(("command", "expected"), PREFIX_PIN_CASES, ids=PREFIX_PIN_IDS)
     def test_command_prefixes(self, command: str, expected: tuple[str, ...]) -> None:
         assert command_prefixes(command) == expected
+
+    def test_command_prefixes_finds_compound_body(self) -> None:
+        assert command_prefixes("if true; then rm -rf /; fi") == ("true", "rm")
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            pytest.param("for x in $(gen); do use $x; done", "gen", id="for_in"),
+            pytest.param("case $(subject) in x) use;; esac", "subject", id="case_subject"),
+            pytest.param("case x in $(pattern)) use;; esac", "pattern", id="case_pattern"),
+            pytest.param("select x in $(choices); do use $x; done", "choices", id="select_words"),
+            pytest.param(
+                "for ((i=$(seed); i<3; i++)); do use; done",
+                "seed",
+                id="arith_for",
+            ),
+            pytest.param("[[ $(probe) == ok ]]", "probe", id="double_bracket_test"),
+        ],
+    )
+    def test_command_prefixes_find_compound_header_substitutions(
+        self, command: str, expected: str
+    ) -> None:
+        assert expected in command_prefixes(command)
 
     def test_parse_command_line_caches(self) -> None:
         assert parse_command_line("ls -la") is parse_command_line("ls -la")
