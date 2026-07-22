@@ -65,6 +65,15 @@ fn enrich_event_list(merged: &mut pyo3_stub_gen::generate::Module) {
         .collect();
 }
 
+fn allow_other_attachment_subclasses(merged: &mut pyo3_stub_gen::generate::Module) {
+    let other = merged
+        .class
+        .values_mut()
+        .find(|class| class.name == "OtherAttachment")
+        .expect("OtherAttachment in the gen_stub inventory");
+    other.subclass = true;
+}
+
 fn render() -> pyo3_stub_gen::Result<(std::path::PathBuf, String)> {
     let stub = _native::stub_info()?;
     let group_names: Vec<String> = stub.modules.keys().cloned().collect();
@@ -100,6 +109,7 @@ fn render() -> pyo3_stub_gen::Result<(std::path::PathBuf, String)> {
 
     type_match_args(&mut merged);
     enrich_event_list(&mut merged);
+    allow_other_attachment_subclasses(&mut merged);
 
     let mut rendered = String::new();
     write!(rendered, "{merged}")?;

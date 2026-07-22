@@ -1292,6 +1292,11 @@
    {
     "type": "AttachmentEvent",
     "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
     "is_sidechain": true
    },
    {
@@ -1651,6 +1656,11 @@
    {
     "type": "AttachmentEvent",
     "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
     "is_sidechain": true
    },
    {
@@ -1708,6 +1718,11 @@
    }
   ],
   "attachments_only": [
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
    {
     "type": "AttachmentEvent",
     "uuid": "uuid-1",
@@ -2042,6 +2057,11 @@
    },
    {
     "type": "OtherEvent"
+   },
+   {
+    "type": "AttachmentEvent",
+    "uuid": "uuid-1",
+    "is_sidechain": false
    },
    {
     "type": "AttachmentEvent",

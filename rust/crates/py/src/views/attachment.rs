@@ -3,8 +3,8 @@ use pyo3::types::PyTuple;
 use sonic_rs::Value;
 
 use cc_transcript_core::types::{
-    AsyncHookResponse, AttachmentDetail, HookAdditionalContext, HookBlockingError, HookCancelled,
-    HookNonBlockingError, HookSuccess, QueuedCommand,
+    AsyncHookResponse, AttachmentDetail, DeferredToolsDelta, HookAdditionalContext,
+    HookBlockingError, HookCancelled, HookNonBlockingError, HookSuccess, QueuedCommand,
 };
 
 use crate::views::convert::{json_to_py, opt_json};
@@ -498,6 +498,69 @@ view_dunders!(
     fields = [prompt, command_mode]
 );
 
+/// Tools added to and removed from the deferred tool inventory.
+///
+/// Attributes:
+///     added_count: Number of added tools.
+///     removed_count: Number of removed tools.
+///     added_names: Added tool names, in transcript order.
+///     removed_names: Removed tool names, in transcript order.
+#[pyo3_stub_gen::derive::gen_stub_pyclass]
+#[pyclass(
+    name = "DeferredToolsDelta",
+    module = "cc_transcript.models",
+    extends = OtherAttachmentView,
+    frozen
+)]
+pub(crate) struct DeferredToolsDeltaView {
+    pub r: EventRef,
+}
+
+impl DeferredToolsDeltaView {
+    fn deferred_tools_delta(&self) -> &DeferredToolsDelta {
+        match &self.r.attachment().detail {
+            AttachmentDetail::DeferredToolsDelta(delta) => delta,
+            _ => unreachable!("deferred-tools-delta view over another attachment"),
+        }
+    }
+
+    fn raw<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        json_to_py(py, &self.deferred_tools_delta().raw)
+    }
+}
+
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+#[pymethods]
+impl DeferredToolsDeltaView {
+    #[getter]
+    fn added_count(&self, _py: Python<'_>) -> PyResult<usize> {
+        Ok(self.deferred_tools_delta().added_names.len())
+    }
+
+    #[getter]
+    fn removed_count(&self, _py: Python<'_>) -> PyResult<usize> {
+        Ok(self.deferred_tools_delta().removed_names.len())
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
+    fn added_names<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, &self.deferred_tools_delta().added_names)
+    }
+
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "tuple[str, ...]"))]
+    fn removed_names<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, &self.deferred_tools_delta().removed_names)
+    }
+}
+
+view_dunders!(
+    DeferredToolsDeltaView,
+    "DeferredToolsDelta",
+    fields = [raw, added_count, removed_count, added_names, removed_names]
+);
+
 /// Any attachment whose type has no typed detail, carried verbatim.
 ///
 /// Covers the many informational attachment types (skill/tool/agent listings,
@@ -507,7 +570,12 @@ view_dunders!(
 /// Attributes:
 ///     raw: The attachment entry's full decoded payload.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
-#[pyclass(name = "OtherAttachment", module = "cc_transcript.models", frozen)]
+#[pyclass(
+    name = "OtherAttachment",
+    module = "cc_transcript.models",
+    frozen,
+    subclass
+)]
 pub(crate) struct OtherAttachmentView {
     pub r: EventRef,
 }
@@ -515,6 +583,7 @@ pub(crate) struct OtherAttachmentView {
 impl OtherAttachmentView {
     fn other(&self) -> &Value {
         match &self.r.attachment().detail {
+            AttachmentDetail::DeferredToolsDelta(delta) => &delta.raw,
             AttachmentDetail::Other(raw) => raw,
             _ => unreachable!("other view over a modeled attachment"),
         }
@@ -558,6 +627,15 @@ pub(crate) fn attachment_detail_view<'py>(
         }
         AttachmentDetail::QueuedCommand(_) => {
             Ok(Bound::new(py, QueuedCommandView { r: r.clone() })?.into_any())
+        }
+        AttachmentDetail::DeferredToolsDelta(_) => {
+            let base = OtherAttachmentView { r: r.clone() };
+            let init = PyClassInitializer::from(base);
+            Ok(Bound::new(
+                py,
+                init.add_subclass(DeferredToolsDeltaView { r: r.clone() }),
+            )?
+            .into_any())
         }
         AttachmentDetail::Other(_) => {
             Ok(Bound::new(py, OtherAttachmentView { r: r.clone() })?.into_any())

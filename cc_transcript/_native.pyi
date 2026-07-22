@@ -28,6 +28,7 @@ __all__ = [
     "CommandLine",
     "CommandLineQuery",
     "CompactBoundary",
+    "DeferredToolsDelta",
     "EditCall",
     "EditResult",
     "EditSpan",
@@ -587,6 +588,27 @@ class CompactBoundary:
     def logical_parent_uuid(self) -> ids.EventUuid | None: ...
     @property
     def precomputed(self) -> typing.Optional[builtins.bool]: ...
+
+@typing.final
+class DeferredToolsDelta(OtherAttachment):
+    r"""
+    Tools added to and removed from the deferred tool inventory.
+
+    Attributes:
+        added_count: Number of added tools.
+        removed_count: Number of removed tools.
+        added_names: Added tool names, in transcript order.
+        removed_names: Removed tool names, in transcript order.
+    """
+    __match_args__: typing.ClassVar[tuple[str, ...]]
+    @property
+    def added_count(self) -> builtins.int: ...
+    @property
+    def removed_count(self) -> builtins.int: ...
+    @property
+    def added_names(self) -> tuple[str, ...]: ...
+    @property
+    def removed_names(self) -> tuple[str, ...]: ...
 
 @typing.final
 class EditCall(ToolCallBase):
@@ -1163,7 +1185,6 @@ class Occurrence:
         One shell-word spelling of ``text`` that survives every enclosing layer, or None.
         """
 
-@typing.final
 class OtherAttachment:
     r"""
     Any attachment whose type has no typed detail, carried verbatim.

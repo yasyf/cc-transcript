@@ -9,6 +9,7 @@ from cc_transcript.models import (
     AssistantEvent,
     AttachmentEvent,
     ContentBlock,
+    DeferredToolsDelta,
     ModeEvent,
     OtherEvent,
     SystemEvent,
@@ -84,6 +85,33 @@ def test_match_narrows_union(event: TranscriptEvent, expected: str) -> None:
 
 def test_mode_event_has_no_meta() -> None:
     assert not hasattr(testkit.parse_event(testkit.mode_line("normal", session_id="s1")), "meta")
+
+
+def deferred_tools_delta(extra: str) -> DeferredToolsDelta:
+    event = testkit.parse_event(
+        testkit.meta_fields("att")
+        | {
+            "type": "attachment",
+            "attachment": {
+                "type": "deferred_tools_delta",
+                "addedNames": ["Read"],
+                "removedNames": ["Bash"],
+                "extra": extra,
+            },
+        }
+    )
+    assert isinstance(event, AttachmentEvent)
+    assert isinstance(event.detail, DeferredToolsDelta)
+    return event.detail
+
+
+def test_deferred_tools_delta_equality_includes_raw_record() -> None:
+    assert deferred_tools_delta("first") != deferred_tools_delta("second")
+
+
+def test_deferred_tools_delta_remains_unhashable_with_raw_mapping() -> None:
+    with pytest.raises(TypeError):
+        hash(deferred_tools_delta("first"))
 
 
 def test_tool_use_block_call_parses_to_edit_call() -> None:

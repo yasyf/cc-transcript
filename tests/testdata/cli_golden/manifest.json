@@ -156,7 +156,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 158
+    "stdout_bytes": 194
   },
   "grep_match": {
     "argv": [
@@ -390,7 +390,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 656
+    "stdout_bytes": 692
   },
   "show_head5": {
     "argv": [
@@ -413,7 +413,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 9791
+    "stdout_bytes": 10003
   },
   "slice": {
     "argv": [
@@ -440,7 +440,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 463
+    "stdout_bytes": 669
   },
   "stats_codex": {
     "argv": [
@@ -449,7 +449,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 294
+    "stdout_bytes": 364
   },
   "stats_json": {
     "argv": [
@@ -461,7 +461,7 @@
     ],
     "exit_code": 0,
     "stderr_bytes": 0,
-    "stdout_bytes": 500
+    "stdout_bytes": 912
   },
   "tools": {
     "argv": [

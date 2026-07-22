@@ -109,13 +109,16 @@ def test_raw_renderers_over_empty_input() -> None:
             "kinds        -",
             "models       -",
             "tools        -",
+            "tool errors  -",
+            "attachments  -",
             "text         0B",
             "thinking     0B",
             "tool io      0B",
             "sessions     0",
             "span         -",
             "interrupts   0",
-            "tool errors  0",
+            "errors       0",
+            "slowest tools -",
             "sidechain    0",
         ]
     )

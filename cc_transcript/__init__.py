@@ -109,6 +109,7 @@ EXPORTS: dict[str, str] = {
             "CcVersion",
             "CompactBoundary",
             "ContentBlock",
+            "DeferredToolsDelta",
             "EntryMeta",
             "EventList",
             "FallbackBlock",

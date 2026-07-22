@@ -359,6 +359,13 @@ pub struct QueuedCommand {
     pub command_mode: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct DeferredToolsDelta {
+    pub added_names: Vec<String>,
+    pub removed_names: Vec<String>,
+    pub raw: Value,
+}
+
 /// The typed detail of an attachment entry. Recognized attachment types carry
 /// their typed struct; every other type carries the full record verbatim under
 /// `Other`, so no attachment entry is lossy.
@@ -371,6 +378,7 @@ pub enum AttachmentDetail {
     HookAdditionalContext(HookAdditionalContext),
     AsyncHookResponse(AsyncHookResponse),
     QueuedCommand(QueuedCommand),
+    DeferredToolsDelta(DeferredToolsDelta),
     Other(Value),
 }
 

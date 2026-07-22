@@ -110,9 +110,14 @@ def test_clip(text: str, limit: int, expected: str) -> None:
             id="edit-empty-old-keeps-marker",
         ),
         pytest.param("Write", {"file_path": "/b.py", "content": "print(1)"}, "Write /b.py\nprint(1)", id="write"),
-        pytest.param("Read", {"file_path": "/x"}, "Read(/x)", id="other-read-compact"),
-        pytest.param("Agent", {"prompt": "do it"}, "Agent(do it)", id="other-task-compact"),
-        pytest.param("mcp__github__search", {"query": "x"}, "mcp__github__search(x)", id="other-mcp-compact"),
+        pytest.param("Read", {"file_path": "/x"}, 'Read({"file_path":"/x"})', id="other-read-compact"),
+        pytest.param("Agent", {"prompt": "do it"}, 'Agent({"prompt":"do it"})', id="other-task-compact"),
+        pytest.param(
+            "mcp__github__search",
+            {"query": "x"},
+            'mcp__github__search({"query":"x"})',
+            id="other-mcp-compact",
+        ),
     ],
 )
 def test_render_tool_call(name: str, input: dict[str, Any], expected: str) -> None:

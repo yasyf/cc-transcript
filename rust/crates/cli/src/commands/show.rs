@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use cc_transcript_core::filter::{event_kind, spec_keep, CompiledSpec, NOISE_SPEC, SIGNAL_SPEC};
 use cc_transcript_core::render::{compact_line, event_json};
-use cc_transcript_core::types::Entry;
+use cc_transcript_core::types::{ContentBlock, Entry};
 
 use crate::output::{eline, py_repr, usage_error, CliExit, Out};
 use crate::target::{parse_single, py_path, require_files, tool_names};
@@ -24,6 +24,7 @@ pub struct ShowArgs {
     pub kinds: Vec<String>,
     pub signal: bool,
     pub no_junk: bool,
+    pub errors: bool,
     pub thinking: bool,
     pub width: usize,
     pub uuids: bool,
@@ -60,12 +61,19 @@ pub fn filter_rows<'a>(
     entries: &'a [Entry],
     kinds: &[String],
     spec: Option<&CompiledSpec>,
+    errors: bool,
 ) -> Vec<(usize, &'a Entry)> {
     entries
         .iter()
         .enumerate()
         .filter(|(_, event)| kinds.is_empty() || kinds.iter().any(|k| k == event_kind(event)))
         .filter(|(_, event)| spec.is_none_or(|s| spec_keep(s, event)))
+        .filter(|(_, event)| {
+            !errors
+                || matches!(event, Entry::User(u) if u.blocks().iter().any(
+                    |block| matches!(block, ContentBlock::ToolResult(result) if result.is_error)
+                ))
+        })
         .collect()
 }
 
@@ -133,7 +141,7 @@ pub fn run(args: ShowArgs) -> Result<(), CliExit> {
     } else {
         None
     };
-    let rows = filter_rows(&parsed.entries, &args.kinds, spec);
+    let rows = filter_rows(&parsed.entries, &args.kinds, spec, args.errors);
     let (selected, notice) = slice_rows(rows, args.head, args.tail, bounds, args.all);
     let mut out = Out::new();
     if args.json {

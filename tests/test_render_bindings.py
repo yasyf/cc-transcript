@@ -54,7 +54,12 @@ def test_render_tool_call_view_rejects_fallback_call() -> None:
     ("name", "input", "expected"),
     [
         pytest.param("Bash", {"command": b"ls"}, "b'ls'", id="bytes-command"),
-        pytest.param("Frobnicate", {"widget": datetime(2024, 1, 1)}, "Frobnicate(2024-01-01 00:00:00)", id="datetime-arg"),
+        pytest.param(
+            "Frobnicate",
+            {"widget": datetime(2024, 1, 1)},
+            'Frobnicate({"widget":"2024-01-01 00:00:00"})',
+            id="datetime-arg",
+        ),
     ],
 )
 def test_render_tool_call_renders_non_json_fallback_raw(name: str, input: dict[str, object], expected: str) -> None:

@@ -8,7 +8,7 @@ renderer, so its section pins that native renderer via the facade. Three section
 * ``tool_calls`` — ``render_tool_call`` over every corpus tool-use input (deduped by
   ``(name, value-shape)`` like the toolcall golden), each of the 15 typed classes, and
   hand-built edge inputs (unicode clipped by code point, huge payloads straddling the
-  clip boundary, multi-line hunks, and non-string ``primary_arg`` values), at several
+  clip boundary, multi-line hunks, and non-string input values), at several
   budgets.
 * ``transcripts`` — ``render_compact_lines`` (several width/thinking/uuids combos),
   ``render_haystacks`` (several ``where`` sets), and per-transcript ``render_stats`` over
@@ -78,7 +78,7 @@ EDGE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("TaskCreate", {"subject": "port render", "description": "the one renderer"}),
     ("TaskUpdate", {"taskId": "t1", "status": "completed"}),
     ("ExitPlanMode", {"plan": "step one\nstep two"}),
-    # primary_arg over non-string values: str() of int/bool/null and repr() inside containers.
+    # Compact JSON over non-string values, including nested containers.
     ("TodoWrite", {"todos": [{"content": "a", "status": "pending"}]}),
     ("Mystery", {"count": 5}),
     ("Mystery", {"flag": True, "ratio": 1.5}),

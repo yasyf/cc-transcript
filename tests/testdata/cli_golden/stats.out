@@ -3,11 +3,14 @@ events       52964
 kinds        user 30417 · assistant 20440 · system 2107
 models       claude-sonnet-4 6972 · claude-opus-4-7 6753 · claude-opus-4-8 6715
 tools        Read 2448 · Task 2438 · Edit 2431 · Bash 2381 · Grep 2371 · Glob 2356 · Write 2326
+tool errors  Edit 216 · Task 207 · Write 202 · Read 198 · Grep 194 · Bash 180 · Glob 165
+attachments  -
 text         1.6MB
 thinking     333.3KB
 tool io      4.7MB
 sessions     21
 span         2026-01-06 09:01:06 → 2026-07-04 13:00:45
 interrupts   1219
-tool errors  1362
+errors       1362
+slowest tools Edit 180746ms · Edit 180033ms · Task 179861ms · Read 178413ms · Bash 178323ms
 sidechain    1045

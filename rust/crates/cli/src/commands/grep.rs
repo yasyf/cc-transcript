@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use cc_transcript_core::facts::{tool_facts, ToolFact};
 use cc_transcript_core::filter::event_kind;
-use cc_transcript_core::render::{compact_line, event_json, haystack, transcript_header, Json};
+use cc_transcript_core::render::{
+    compact_line, event_json, haystack, tool_haystack, transcript_header, Json,
+};
 use cc_transcript_core::toolcall::tool_name_matches;
 use cc_transcript_core::types::{ContentBlock, Entry};
 use regex::{Regex, RegexBuilder};
@@ -23,6 +25,7 @@ pub struct GrepArgs {
     pub discovery: DiscoveryOpts,
     pub kinds: Vec<String>,
     pub tool: Option<String>,
+    pub errors: bool,
     pub ignore_case: bool,
     pub wheres: Vec<String>,
     pub context: usize,
@@ -59,6 +62,28 @@ fn event_facts<'a>(event: &Entry, facts: &'a HashMap<String, ToolFact>) -> Vec<&
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn error_call_matches(
+    event: &Entry,
+    facts: &HashMap<String, ToolFact>,
+    regex: &Regex,
+    tool: Option<&str>,
+    where_tools: bool,
+) -> bool {
+    where_tools
+        && event.blocks().iter().any(|block| {
+            let fact = match block {
+                ContentBlock::ToolUse(tool_use) => facts.get(&tool_use.id),
+                ContentBlock::ToolResult(result) => facts.get(&result.tool_use_id),
+                _ => None,
+            };
+            fact.is_some_and(|fact| {
+                fact.is_error
+                    && tool.is_none_or(|name| tool_name_matches(&fact.tool, name))
+                    && regex.is_match(&tool_haystack(block))
+            })
+        })
 }
 
 fn result_key(fact: &ToolFact) -> Json {
@@ -167,6 +192,11 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             break;
         }
         let names = tool_names(&parsed.entries);
+        let facts = if args.with_result || args.errors {
+            fact_index(&parsed)
+        } else {
+            HashMap::new()
+        };
         let hits: Vec<usize> = parsed
             .entries
             .iter()
@@ -175,22 +205,25 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
                 args.kinds.is_empty() || args.kinds.iter().any(|k| k == event_kind(event))
             })
             .filter(|(_, event)| {
-                args.tool
-                    .as_deref()
-                    .is_none_or(|tool| uses_tool(event, tool, &names))
+                args.errors
+                    || args
+                        .tool
+                        .as_deref()
+                        .is_none_or(|tool| uses_tool(event, tool, &names))
             })
-            .filter(|(_, event)| regex.is_match(&haystack(event, w_text, w_thinking, w_tools)))
+            .filter(|(_, event)| {
+                if args.errors {
+                    error_call_matches(event, &facts, &regex, args.tool.as_deref(), w_tools)
+                } else {
+                    regex.is_match(&haystack(event, w_text, w_thinking, w_tools))
+                }
+            })
             .map(|(index, _)| index)
             .take(budget)
             .collect();
         if hits.is_empty() {
             continue;
         }
-        let facts = if args.with_result {
-            fact_index(&parsed)
-        } else {
-            HashMap::new()
-        };
         files_matched += 1;
         matched += hits.len();
         budget -= hits.len();

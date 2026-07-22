@@ -43,7 +43,7 @@
         700,
         1500
       ],
-      "expected": "Grep(session_activity)"
+      "expected": "Grep({\"pattern\":\"session_activity\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Grep",
@@ -52,7 +52,7 @@
         100,
         100
       ],
-      "expected": "Grep(session_activity)"
+      "expected": "Grep({\"pattern\":\"session_activity\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Grep",
@@ -61,7 +61,7 @@
         24,
         24
       ],
-      "expected": "Grep(session_activity)"
+      "expected": "Grep({\"pattern\":\"session_acti…(+30ch))"
     },
     {
       "name": "Grep",
@@ -70,7 +70,7 @@
         5,
         5
       ],
-      "expected": "Grep(sessi…(+11ch))"
+      "expected": "Grep({\"pat…(+49ch))"
     },
     {
       "name": "Read",
@@ -79,7 +79,7 @@
         700,
         1500
       ],
-      "expected": "Read(cc_transcript/parser.py)"
+      "expected": "Read({\"file_path\":\"cc_transcript/parser.py\",\"limit\":320})"
     },
     {
       "name": "Read",
@@ -88,7 +88,7 @@
         100,
         100
       ],
-      "expected": "Read(cc_transcript/parser.py)"
+      "expected": "Read({\"file_path\":\"cc_transcript/parser.py\",\"limit\":320})"
     },
     {
       "name": "Read",
@@ -97,7 +97,7 @@
         24,
         24
       ],
-      "expected": "Read(cc_transcript/parser.py)"
+      "expected": "Read({\"file_path\":\"cc_transcr…(+27ch))"
     },
     {
       "name": "Read",
@@ -106,7 +106,7 @@
         5,
         5
       ],
-      "expected": "Read(cc_tr…(+18ch))"
+      "expected": "Read({\"fil…(+46ch))"
     },
     {
       "name": "Task",
@@ -115,7 +115,7 @@
         700,
         1500
       ],
-      "expected": "Task(explore how the filter spec is compiled on the rust side)"
+      "expected": "Task({\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subagent_type\":\"Explore\"})"
     },
     {
       "name": "Task",
@@ -124,7 +124,7 @@
         100,
         100
       ],
-      "expected": "Task(explore how the filter spec is compiled on the rust side)"
+      "expected": "Task({\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subage…(+19ch))"
     },
     {
       "name": "Task",
@@ -133,7 +133,7 @@
         24,
         24
       ],
-      "expected": "Task(explore how the filter s…(+32ch))"
+      "expected": "Task({\"description\":\"explore\"…(+95ch))"
     },
     {
       "name": "Task",
@@ -142,7 +142,7 @@
         5,
         5
       ],
-      "expected": "Task(explo…(+51ch))"
+      "expected": "Task({\"des…(+114ch))"
     },
     {
       "name": "Bash",
@@ -223,7 +223,7 @@
         700,
         1500
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -232,7 +232,7 @@
         100,
         100
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -241,7 +241,7 @@
         24,
         24
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -250,7 +250,7 @@
         5,
         5
       ],
-      "expected": "Glob(**/*.…(+2ch))"
+      "expected": "Glob({\"pat…(+16ch))"
     },
     {
       "name": "Bash",
@@ -475,7 +475,7 @@
         700,
         1500
       ],
-      "expected": "Read(/r.py)"
+      "expected": "Read({\"file_path\":\"/r.py\",\"limit\":40})"
     },
     {
       "name": "Read",
@@ -484,7 +484,7 @@
         100,
         100
       ],
-      "expected": "Read(/r.py)"
+      "expected": "Read({\"file_path\":\"/r.py\",\"limit\":40})"
     },
     {
       "name": "Read",
@@ -493,7 +493,7 @@
         24,
         24
       ],
-      "expected": "Read(/r.py)"
+      "expected": "Read({\"file_path\":\"/r.py\",\"li…(+8ch))"
     },
     {
       "name": "Read",
@@ -502,7 +502,7 @@
         5,
         5
       ],
-      "expected": "Read(/r.py)"
+      "expected": "Read({\"fil…(+27ch))"
     },
     {
       "name": "NotebookEdit",
@@ -511,7 +511,7 @@
         700,
         1500
       ],
-      "expected": "NotebookEdit(/nb.ipynb)"
+      "expected": "NotebookEdit({\"notebook_path\":\"/nb.ipynb\",\"new_source\":\"print(1)\\nprint(2)\"})"
     },
     {
       "name": "NotebookEdit",
@@ -520,7 +520,7 @@
         100,
         100
       ],
-      "expected": "NotebookEdit(/nb.ipynb)"
+      "expected": "NotebookEdit({\"notebook_path\":\"/nb.ipynb\",\"new_source\":\"print(1)\\nprint(2)\"})"
     },
     {
       "name": "NotebookEdit",
@@ -529,7 +529,7 @@
         24,
         24
       ],
-      "expected": "NotebookEdit(/nb.ipynb)"
+      "expected": "NotebookEdit({\"notebook_path\":\"/nb.ip…(+39ch))"
     },
     {
       "name": "NotebookEdit",
@@ -538,7 +538,7 @@
         5,
         5
       ],
-      "expected": "NotebookEdit(/nb.i…(+4ch))"
+      "expected": "NotebookEdit({\"not…(+58ch))"
     },
     {
       "name": "Grep",
@@ -547,7 +547,7 @@
         700,
         1500
       ],
-      "expected": "Grep(parse_bytes)"
+      "expected": "Grep({\"pattern\":\"parse_bytes\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Grep",
@@ -556,7 +556,7 @@
         100,
         100
       ],
-      "expected": "Grep(parse_bytes)"
+      "expected": "Grep({\"pattern\":\"parse_bytes\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Grep",
@@ -565,7 +565,7 @@
         24,
         24
       ],
-      "expected": "Grep(parse_bytes)"
+      "expected": "Grep({\"pattern\":\"parse_bytes\"…(+25ch))"
     },
     {
       "name": "Grep",
@@ -574,7 +574,7 @@
         5,
         5
       ],
-      "expected": "Grep(parse…(+6ch))"
+      "expected": "Grep({\"pat…(+44ch))"
     },
     {
       "name": "Glob",
@@ -583,7 +583,7 @@
         700,
         1500
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -592,7 +592,7 @@
         100,
         100
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -601,7 +601,7 @@
         24,
         24
       ],
-      "expected": "Glob(**/*.py)"
+      "expected": "Glob({\"pattern\":\"**/*.py\"})"
     },
     {
       "name": "Glob",
@@ -610,7 +610,7 @@
         5,
         5
       ],
-      "expected": "Glob(**/*.…(+2ch))"
+      "expected": "Glob({\"pat…(+16ch))"
     },
     {
       "name": "Agent",
@@ -619,7 +619,7 @@
         700,
         1500
       ],
-      "expected": "Agent(map the parser)"
+      "expected": "Agent({\"description\":\"explore\",\"prompt\":\"map the parser\",\"subagent_type\":\"Explore\"})"
     },
     {
       "name": "Agent",
@@ -628,7 +628,7 @@
         100,
         100
       ],
-      "expected": "Agent(map the parser)"
+      "expected": "Agent({\"description\":\"explore\",\"prompt\":\"map the parser\",\"subagent_type\":\"Explore\"})"
     },
     {
       "name": "Agent",
@@ -637,7 +637,7 @@
         24,
         24
       ],
-      "expected": "Agent(map the parser)"
+      "expected": "Agent({\"description\":\"explore\"…(+53ch))"
     },
     {
       "name": "Agent",
@@ -646,7 +646,7 @@
         5,
         5
       ],
-      "expected": "Agent(map t…(+9ch))"
+      "expected": "Agent({\"des…(+72ch))"
     },
     {
       "name": "Workflow",
@@ -655,7 +655,7 @@
         700,
         1500
       ],
-      "expected": "Workflow(print(1))"
+      "expected": "Workflow({\"script\":\"print(1)\",\"name\":\"w\"})"
     },
     {
       "name": "Workflow",
@@ -664,7 +664,7 @@
         100,
         100
       ],
-      "expected": "Workflow(print(1))"
+      "expected": "Workflow({\"script\":\"print(1)\",\"name\":\"w\"})"
     },
     {
       "name": "Workflow",
@@ -673,7 +673,7 @@
         24,
         24
       ],
-      "expected": "Workflow(print(1))"
+      "expected": "Workflow({\"script\":\"print(1)\",\"na…(+8ch))"
     },
     {
       "name": "Workflow",
@@ -682,7 +682,7 @@
         5,
         5
       ],
-      "expected": "Workflow(print…(+3ch))"
+      "expected": "Workflow({\"scr…(+27ch))"
     },
     {
       "name": "Skill",
@@ -691,7 +691,7 @@
         700,
         1500
       ],
-      "expected": "Skill(codex)"
+      "expected": "Skill({\"skill\":\"codex\",\"args\":\"review the diff\"})"
     },
     {
       "name": "Skill",
@@ -700,7 +700,7 @@
         100,
         100
       ],
-      "expected": "Skill(codex)"
+      "expected": "Skill({\"skill\":\"codex\",\"args\":\"review the diff\"})"
     },
     {
       "name": "Skill",
@@ -709,7 +709,7 @@
         24,
         24
       ],
-      "expected": "Skill(codex)"
+      "expected": "Skill({\"skill\":\"codex\",\"args\":…(+18ch))"
     },
     {
       "name": "Skill",
@@ -718,7 +718,7 @@
         5,
         5
       ],
-      "expected": "Skill(codex)"
+      "expected": "Skill({\"ski…(+37ch))"
     },
     {
       "name": "TaskCreate",
@@ -727,7 +727,7 @@
         700,
         1500
       ],
-      "expected": "TaskCreate(the one renderer)"
+      "expected": "TaskCreate({\"subject\":\"port render\",\"description\":\"the one renderer\"})"
     },
     {
       "name": "TaskCreate",
@@ -736,7 +736,7 @@
         100,
         100
       ],
-      "expected": "TaskCreate(the one renderer)"
+      "expected": "TaskCreate({\"subject\":\"port render\",\"description\":\"the one renderer\"})"
     },
     {
       "name": "TaskCreate",
@@ -745,7 +745,7 @@
         24,
         24
       ],
-      "expected": "TaskCreate(the one renderer)"
+      "expected": "TaskCreate({\"subject\":\"port render\"…(+34ch))"
     },
     {
       "name": "TaskCreate",
@@ -754,7 +754,7 @@
         5,
         5
       ],
-      "expected": "TaskCreate(the o…(+11ch))"
+      "expected": "TaskCreate({\"sub…(+53ch))"
     },
     {
       "name": "TaskUpdate",
@@ -763,7 +763,7 @@
         700,
         1500
       ],
-      "expected": "TaskUpdate(t1)"
+      "expected": "TaskUpdate({\"taskId\":\"t1\",\"status\":\"completed\"})"
     },
     {
       "name": "TaskUpdate",
@@ -772,7 +772,7 @@
         100,
         100
       ],
-      "expected": "TaskUpdate(t1)"
+      "expected": "TaskUpdate({\"taskId\":\"t1\",\"status\":\"completed\"})"
     },
     {
       "name": "TaskUpdate",
@@ -781,7 +781,7 @@
         24,
         24
       ],
-      "expected": "TaskUpdate(t1)"
+      "expected": "TaskUpdate({\"taskId\":\"t1\",\"status\":…(+12ch))"
     },
     {
       "name": "TaskUpdate",
@@ -790,7 +790,7 @@
         5,
         5
       ],
-      "expected": "TaskUpdate(t1)"
+      "expected": "TaskUpdate({\"tas…(+31ch))"
     },
     {
       "name": "ExitPlanMode",
@@ -799,7 +799,7 @@
         700,
         1500
       ],
-      "expected": "ExitPlanMode(step one\nstep two)"
+      "expected": "ExitPlanMode({\"plan\":\"step one\\nstep two\"})"
     },
     {
       "name": "ExitPlanMode",
@@ -808,7 +808,7 @@
         100,
         100
       ],
-      "expected": "ExitPlanMode(step one\nstep two)"
+      "expected": "ExitPlanMode({\"plan\":\"step one\\nstep two\"})"
     },
     {
       "name": "ExitPlanMode",
@@ -817,7 +817,7 @@
         24,
         24
       ],
-      "expected": "ExitPlanMode(step one\nstep two)"
+      "expected": "ExitPlanMode({\"plan\":\"step one\\nstep …(+5ch))"
     },
     {
       "name": "ExitPlanMode",
@@ -826,7 +826,7 @@
         5,
         5
       ],
-      "expected": "ExitPlanMode(step …(+12ch))"
+      "expected": "ExitPlanMode({\"pla…(+24ch))"
     },
     {
       "name": "TodoWrite",
@@ -835,7 +835,7 @@
         700,
         1500
       ],
-      "expected": "TodoWrite([{'content': 'a', 'status': 'pending'}])"
+      "expected": "TodoWrite({\"todos\":[{\"content\":\"a\",\"status\":\"pending\"}]})"
     },
     {
       "name": "TodoWrite",
@@ -844,7 +844,7 @@
         100,
         100
       ],
-      "expected": "TodoWrite([{'content': 'a', 'status': 'pending'}])"
+      "expected": "TodoWrite({\"todos\":[{\"content\":\"a\",\"status\":\"pending\"}]})"
     },
     {
       "name": "TodoWrite",
@@ -853,7 +853,7 @@
         24,
         24
       ],
-      "expected": "TodoWrite([{'content': 'a', 'statu…(+15ch))"
+      "expected": "TodoWrite({\"todos\":[{\"content\":\"a\"…(+22ch))"
     },
     {
       "name": "TodoWrite",
@@ -862,7 +862,7 @@
         5,
         5
       ],
-      "expected": "TodoWrite([{'co…(+34ch))"
+      "expected": "TodoWrite({\"tod…(+41ch))"
     },
     {
       "name": "Mystery",
@@ -871,7 +871,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(5)"
+      "expected": "Mystery({\"count\":5})"
     },
     {
       "name": "Mystery",
@@ -880,7 +880,7 @@
         100,
         100
       ],
-      "expected": "Mystery(5)"
+      "expected": "Mystery({\"count\":5})"
     },
     {
       "name": "Mystery",
@@ -889,7 +889,7 @@
         24,
         24
       ],
-      "expected": "Mystery(5)"
+      "expected": "Mystery({\"count\":5})"
     },
     {
       "name": "Mystery",
@@ -898,7 +898,7 @@
         5,
         5
       ],
-      "expected": "Mystery(5)"
+      "expected": "Mystery({\"cou…(+6ch))"
     },
     {
       "name": "Mystery",
@@ -907,7 +907,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(True)"
+      "expected": "Mystery({\"flag\":true,\"ratio\":1.5})"
     },
     {
       "name": "Mystery",
@@ -916,7 +916,7 @@
         100,
         100
       ],
-      "expected": "Mystery(True)"
+      "expected": "Mystery({\"flag\":true,\"ratio\":1.5})"
     },
     {
       "name": "Mystery",
@@ -925,7 +925,7 @@
         24,
         24
       ],
-      "expected": "Mystery(True)"
+      "expected": "Mystery({\"flag\":true,\"ratio\":1.5…(+1ch))"
     },
     {
       "name": "Mystery",
@@ -934,7 +934,7 @@
         5,
         5
       ],
-      "expected": "Mystery(True)"
+      "expected": "Mystery({\"fla…(+20ch))"
     },
     {
       "name": "Mystery",
@@ -943,7 +943,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(None)"
+      "expected": "Mystery({\"x\":null})"
     },
     {
       "name": "Mystery",
@@ -952,7 +952,7 @@
         100,
         100
       ],
-      "expected": "Mystery(None)"
+      "expected": "Mystery({\"x\":null})"
     },
     {
       "name": "Mystery",
@@ -961,7 +961,7 @@
         24,
         24
       ],
-      "expected": "Mystery(None)"
+      "expected": "Mystery({\"x\":null})"
     },
     {
       "name": "Mystery",
@@ -970,7 +970,7 @@
         5,
         5
       ],
-      "expected": "Mystery(None)"
+      "expected": "Mystery({\"x\":…(+5ch))"
     },
     {
       "name": "Read",
@@ -979,7 +979,7 @@
         700,
         1500
       ],
-      "expected": "Read(None)"
+      "expected": "Read({\"file_path\":null,\"extra\":\"y\"})"
     },
     {
       "name": "Read",
@@ -988,7 +988,7 @@
         100,
         100
       ],
-      "expected": "Read(None)"
+      "expected": "Read({\"file_path\":null,\"extra\":\"y\"})"
     },
     {
       "name": "Read",
@@ -997,7 +997,7 @@
         24,
         24
       ],
-      "expected": "Read(None)"
+      "expected": "Read({\"file_path\":null,\"extra…(+6ch))"
     },
     {
       "name": "Read",
@@ -1006,7 +1006,7 @@
         5,
         5
       ],
-      "expected": "Read(None)"
+      "expected": "Read({\"fil…(+25ch))"
     },
     {
       "name": "Mystery",
@@ -1015,7 +1015,7 @@
         700,
         1500
       ],
-      "expected": "Mystery([\"it's\", 'say \"hi\"', 'both \\' and \"'])"
+      "expected": "Mystery({\"items\":[\"it's\",\"say \\\"hi\\\"\",\"both ' and \\\"\"]})"
     },
     {
       "name": "Mystery",
@@ -1024,7 +1024,7 @@
         100,
         100
       ],
-      "expected": "Mystery([\"it's\", 'say \"hi\"', 'both \\' and \"'])"
+      "expected": "Mystery({\"items\":[\"it's\",\"say \\\"hi\\\"\",\"both ' and \\\"\"]})"
     },
     {
       "name": "Mystery",
@@ -1033,7 +1033,7 @@
         24,
         24
       ],
-      "expected": "Mystery([\"it's\", 'say \"hi\"', 'bo…(+13ch))"
+      "expected": "Mystery({\"items\":[\"it's\",\"say \\\"…(+23ch))"
     },
     {
       "name": "Mystery",
@@ -1042,7 +1042,7 @@
         5,
         5
       ],
-      "expected": "Mystery([\"it'…(+32ch))"
+      "expected": "Mystery({\"ite…(+42ch))"
     },
     {
       "name": "Mystery",
@@ -1051,7 +1051,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\u2028y', '\\xa0', 'é 漢 😀'])"
+      "expected": "Mystery({\"chars\":[\"z\\u0001w\",\"ab\",\"x y\",\" \",\"é 漢 😀\"]})"
     },
     {
       "name": "Mystery",
@@ -1060,7 +1060,7 @@
         100,
         100
       ],
-      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\u2028y', '\\xa0', 'é 漢 😀'])"
+      "expected": "Mystery({\"chars\":[\"z\\u0001w\",\"ab\",\"x y\",\" \",\"é 漢 😀\"]})"
     },
     {
       "name": "Mystery",
@@ -1069,7 +1069,7 @@
         24,
         24
       ],
-      "expected": "Mystery(['z\\x01w', 'a\\x85b', 'x\\…(+25ch))"
+      "expected": "Mystery({\"chars\":[\"z\\u0001w\",\"a…(+22ch))"
     },
     {
       "name": "Mystery",
@@ -1078,7 +1078,7 @@
         5,
         5
       ],
-      "expected": "Mystery(['z\\x…(+44ch))"
+      "expected": "Mystery({\"cha…(+41ch))"
     },
     {
       "name": "Mystery",
@@ -1087,7 +1087,7 @@
         700,
         1500
       ],
-      "expected": "Mystery()"
+      "expected": "Mystery({})"
     },
     {
       "name": "Mystery",
@@ -1096,7 +1096,7 @@
         100,
         100
       ],
-      "expected": "Mystery()"
+      "expected": "Mystery({})"
     },
     {
       "name": "Mystery",
@@ -1105,7 +1105,7 @@
         24,
         24
       ],
-      "expected": "Mystery()"
+      "expected": "Mystery({})"
     },
     {
       "name": "Mystery",
@@ -1114,7 +1114,7 @@
         5,
         5
       ],
-      "expected": "Mystery()"
+      "expected": "Mystery({})"
     }
   ],
   "dup_key_calls": [
@@ -1125,7 +1125,7 @@
         700,
         1500
       ],
-      "expected": "Read(/last.py)"
+      "expected": "Read({\"file_path\":\"/last.py\",\"limit\":2})"
     },
     {
       "name": "Read",
@@ -1134,7 +1134,7 @@
         100,
         100
       ],
-      "expected": "Read(/last.py)"
+      "expected": "Read({\"file_path\":\"/last.py\",\"limit\":2})"
     },
     {
       "name": "Grep",
@@ -1143,7 +1143,7 @@
         700,
         1500
       ],
-      "expected": "Grep(last)"
+      "expected": "Grep({\"pattern\":\"last\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Grep",
@@ -1152,7 +1152,7 @@
         100,
         100
       ],
-      "expected": "Grep(last)"
+      "expected": "Grep({\"pattern\":\"last\",\"output_mode\":\"content\"})"
     },
     {
       "name": "Mystery",
@@ -1161,7 +1161,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(3)"
+      "expected": "Mystery({\"z\":3,\"y\":2})"
     },
     {
       "name": "Mystery",
@@ -1170,7 +1170,7 @@
         100,
         100
       ],
-      "expected": "Mystery(3)"
+      "expected": "Mystery({\"z\":3,\"y\":2})"
     },
     {
       "name": "TodoWrite",
@@ -1179,7 +1179,7 @@
         700,
         1500
       ],
-      "expected": "TodoWrite([2, 3])"
+      "expected": "TodoWrite({\"todos\":[2,3]})"
     },
     {
       "name": "TodoWrite",
@@ -1188,7 +1188,7 @@
         100,
         100
       ],
-      "expected": "TodoWrite([2, 3])"
+      "expected": "TodoWrite({\"todos\":[2,3]})"
     }
   ],
   "raw_json_calls": [
@@ -1199,7 +1199,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(1e-07)"
+      "expected": "Mystery({\"ratio\":1e-7})"
     },
     {
       "name": "Mystery",
@@ -1208,7 +1208,7 @@
         100,
         100
       ],
-      "expected": "Mystery(1e-07)"
+      "expected": "Mystery({\"ratio\":1e-7})"
     },
     {
       "name": "Mystery",
@@ -1217,7 +1217,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(0)"
+      "expected": "Mystery({\"ratio\":0})"
     },
     {
       "name": "Mystery",
@@ -1226,7 +1226,7 @@
         100,
         100
       ],
-      "expected": "Mystery(0)"
+      "expected": "Mystery({\"ratio\":0})"
     },
     {
       "name": "Mystery",
@@ -1235,7 +1235,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(1e+16)"
+      "expected": "Mystery({\"ratio\":1e+16})"
     },
     {
       "name": "Mystery",
@@ -1244,7 +1244,7 @@
         100,
         100
       ],
-      "expected": "Mystery(1e+16)"
+      "expected": "Mystery({\"ratio\":1e+16})"
     },
     {
       "name": "Mystery",
@@ -1253,7 +1253,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(1000000000000000.0)"
+      "expected": "Mystery({\"ratio\":1000000000000000.0})"
     },
     {
       "name": "Mystery",
@@ -1262,7 +1262,7 @@
         100,
         100
       ],
-      "expected": "Mystery(1000000000000000.0)"
+      "expected": "Mystery({\"ratio\":1000000000000000.0})"
     },
     {
       "name": "Mystery",
@@ -1271,7 +1271,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(0.1)"
+      "expected": "Mystery({\"ratio\":0.1})"
     },
     {
       "name": "Mystery",
@@ -1280,7 +1280,7 @@
         100,
         100
       ],
-      "expected": "Mystery(0.1)"
+      "expected": "Mystery({\"ratio\":0.1})"
     },
     {
       "name": "Mystery",
@@ -1289,7 +1289,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(-0.5)"
+      "expected": "Mystery({\"ratio\":-0.5})"
     },
     {
       "name": "Mystery",
@@ -1298,7 +1298,7 @@
         100,
         100
       ],
-      "expected": "Mystery(-0.5)"
+      "expected": "Mystery({\"ratio\":-0.5})"
     },
     {
       "name": "Mystery",
@@ -1307,7 +1307,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(698957826421429.2)"
+      "expected": "Mystery({\"tie\":698957826421429.2})"
     },
     {
       "name": "Mystery",
@@ -1316,7 +1316,7 @@
         100,
         100
       ],
-      "expected": "Mystery(698957826421429.2)"
+      "expected": "Mystery({\"tie\":698957826421429.2})"
     },
     {
       "name": "Mystery",
@@ -1325,7 +1325,7 @@
         700,
         1500
       ],
-      "expected": "Mystery(99999999999999999999)"
+      "expected": "Mystery({\"count\":99999999999999999999})"
     },
     {
       "name": "Mystery",
@@ -1334,13 +1334,13 @@
         100,
         100
       ],
-      "expected": "Mystery(99999999999999999999)"
+      "expected": "Mystery({\"count\":99999999999999999999})"
     }
   ],
   "transcripts": [
     {
       "id": "fixture",
-      "jsonl_b64": "eyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiIgIGZpeCB0aGUgYnVnICAifX0KCiAgIAp7bm90IHZhbGlkIGpzb24KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiIgIGZpeCB0aGUgYnVnICAifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6bnVsbCwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IiIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6ImhlcmUgaXMgY29udGV4dCJ9LHsidHlwZSI6InRleHQiLCJ0ZXh0IjoiYW5kIG1vcmUifSx7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfMSIsImNvbnRlbnQiOiJvayBvdXRwdXQiLCJpc19lcnJvciI6ZmFsc2V9LHsidHlwZSI6ImRvY3VtZW50Iiwic291cmNlIjp7ImtpbmQiOiJmaWxlIn19XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6dHJ1ZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwiaXNNZXRhIjp0cnVlLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV8yIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGluZSBhIn0seyJ0eXBlIjoidG9vbF9yZWZlcmVuY2UiLCJpZCI6IngifSx7InR5cGUiOiJpbWFnZSIsInNvdXJjZSI6eyJkYXRhIjoiLi4uIn19LHsidHlwZSI6InRleHQiLCJ0ZXh0IjoibGluZSBiIn1dLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJbUmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyXSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IiAgW3JlcXVlc3QgSU5URVJSVVBURUQgYnkgdXNlciBmb3IgdG9vbCB1c2VdIn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50Ijoic2hlIHF1b3RlZCBbUmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyXSBtaWQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJpc0FzeW5jIjp0cnVlLCJzdGF0dXMiOiJhc3luY19sYXVuY2hlZCJ9LCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9hc3luYyIsImNvbnRlbnQiOiJsYXVuY2hlZCIsImlzX2Vycm9yIjpmYWxzZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJzdGRvdXQiOiJoZWxsbyIsInN0ZGVyciI6IiIsImludGVycnVwdGVkIjpmYWxzZSwiaXNJbWFnZSI6ZmFsc2UsIm5vT3V0cHV0RXhwZWN0ZWQiOmZhbHNlLCJyZXR1cm5Db2RlSW50ZXJwcmV0YXRpb24iOiJDb21tYW5kIGV4aXRlZCB3aXRoIGNvZGUgMCJ9LCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9iYXNoIiwiY29udGVudCI6ImhlbGxvIiwiaXNfZXJyb3IiOmZhbHNlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sVXNlUmVzdWx0Ijp7ImZpbGVQYXRoIjoiL3gucHkiLCJvbGRTdHJpbmciOiJhbHBoYSIsIm5ld1N0cmluZyI6ImJldGEiLCJyZXBsYWNlQWxsIjpmYWxzZSwidXNlck1vZGlmaWVkIjpmYWxzZSwic3RhbGVSZWNvdmVyZWQiOmZhbHNlLCJzdHJ1Y3R1cmVkUGF0Y2giOlt7Im9sZFN0YXJ0IjoxLCJvbGRMaW5lcyI6MSwibmV3U3RhcnQiOjEsIm5ld0xpbmVzIjoxLCJsaW5lcyI6WyItYWxwaGEiLCIrYmV0YSJdfV0sIm9yaWdpbmFsRmlsZSI6ImFscGhhXG4ifSwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZWRpdCIsImNvbnRlbnQiOiJvayIsImlzX2Vycm9yIjpmYWxzZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJhZ2VudElkIjoiYWdlbnQtNzciLCJhZ2VudFR5cGUiOiJFeHBsb3JlIiwic3RhdHVzIjoiY29tcGxldGVkIiwidG90YWxEdXJhdGlvbk1zIjoxMjM0LCJ0b3RhbFRva2VucyI6NTY3LCJ0b3RhbFRvb2xVc2VDb3VudCI6MywidG9vbFN0YXRzIjp7IlJlYWQiOjIsIkdyZXAiOjF9LCJ1c2FnZSI6eyJpbnB1dF90b2tlbnMiOjEwLCJvdXRwdXRfdG9rZW5zIjo1fSwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiZm91bmQgaXQifV0sInByb21wdCI6ImludmVzdGlnYXRlIHRoZSBwYXJzZXIiLCJyZXNvbHZlZE1vZGVsIjoiY2xhdWRlLW9wdXMtNC04In0sIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X3Rhc2siLCJjb250ZW50IjoiZm91bmQgaXQiLCJpc19lcnJvciI6ZmFsc2V9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInRvb2xVc2VSZXN1bHQiOnsicXVlc3Rpb25zIjpbeyJxdWVzdGlvbiI6IldoaWNoIGFwcHJvYWNoPyIsImhlYWRlciI6IkFwcHJvYWNoIiwib3B0aW9ucyI6W3sibGFiZWwiOiJBIiwiZGVzY3JpcHRpb24iOiJmaXJzdCJ9LHsibGFiZWwiOiJCIiwiZGVzY3JpcHRpb24iOiJzZWNvbmQifV0sIm11bHRpU2VsZWN0IjpmYWxzZX1dLCJhbnN3ZXJzIjp7IldoaWNoIGFwcHJvYWNoPyI6IkEifSwiYW5ub3RhdGlvbnMiOnsiV2hpY2ggYXBwcm9hY2g/Ijp7InByZXZpZXciOiJwaWNrZWQgQSIsIm5vdGVzIjoid2l0aCBhIGNhdmVhdCJ9fX0sIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2FzayIsImNvbnRlbnQiOiJBIiwiaXNfZXJyb3IiOmZhbHNlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sVXNlUmVzdWx0IjoiVGhlIHVzZXIgZG9lc24ndCB3YW50IHRvIHByb2NlZWQgd2l0aCB0aGlzIHRvb2wgdXNlLiIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2RlbnkiLCJjb250ZW50IjoiZGVuaWVkIiwiaXNfZXJyb3IiOnRydWV9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInRvb2xEZW5pYWxLaW5kIjoidXNlci1yZWplY3RlZCIsInRvb2xVc2VSZXN1bHQiOiJUaGUgdXNlciBkb2Vzbid0IHdhbnQgdG8gcHJvY2VlZCB3aXRoIHRoaXMgdG9vbCB1c2UuIFRoZSB0b29sIHVzZSB3YXMgcmVqZWN0ZWQuIHN0cnVjdHVyZWQgYW5kIGJhbm5lcmVkIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9zdHJ1Y3RfYmFubmVyIiwiY29udGVudCI6IlRoZSB1c2VyIGRvZXNuJ3Qgd2FudCB0byBwcm9jZWVkIHdpdGggdGhpcyB0b29sIHVzZS4gVGhlIHRvb2wgdXNlIHdhcyByZWplY3RlZC4gc3RydWN0dXJlZCBhbmQgYmFubmVyZWQiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbERlbmlhbEtpbmQiOiJ1c2VyLXJlamVjdGVkIiwidG9vbFVzZVJlc3VsdCI6Imp1c3QgdGFrZSBhIGRpZmZlcmVudCBhcHByb2FjaCBlbnRpcmVseSIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2Rlbnlfc3RydWN0X25vYmFubmVyIiwiY29udGVudCI6Imp1c3QgdGFrZSBhIGRpZmZlcmVudCBhcHByb2FjaCBlbnRpcmVseSIsImlzX2Vycm9yIjp0cnVlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sRGVuaWFsS2luZCI6InBlcm1pc3Npb24tcnVsZSIsInRvb2xVc2VSZXN1bHQiOiJFcnJvcjogQkxPQ0tFRDogcG9saWN5IGZvcmJpZHMgd3JpdGluZyB0byAvZXRjIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9wZXJtaXNzaW9uIiwiY29udGVudCI6IkVycm9yOiBCTE9DS0VEOiBwb2xpY3kgZm9yYmlkcyB3cml0aW5nIHRvIC9ldGMiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6IlRoZSB1c2VyIGRvZXNuJ3Qgd2FudCB0byBwcm9jZWVkIHdpdGggdGhpcyB0b29sIHVzZS4gVGhlIHRvb2wgdXNlIHdhcyByZWplY3RlZC4gbGVnYWN5IGJhbm5lciB3aXRob3V0IHRoZSBzdHJ1Y3R1cmVkIGZpZWxkIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9sZWdhY3kiLCJjb250ZW50IjoiVGhlIHVzZXIgZG9lc24ndCB3YW50IHRvIHByb2NlZWQgd2l0aCB0aGlzIHRvb2wgdXNlLiBUaGUgdG9vbCB1c2Ugd2FzIHJlamVjdGVkLiBsZWdhY3kgYmFubmVyIHdpdGhvdXQgdGhlIHN0cnVjdHVyZWQgZmllbGQiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfcGxhaW5fZXJyb3IiLCJjb250ZW50IjoiRU5PRU5UOiBubyBzdWNoIGZpbGUiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwiaXNDb21wYWN0U3VtbWFyeSI6dHJ1ZSwiaXNWaXNpYmxlSW5UcmFuc2NyaXB0T25seSI6dHJ1ZSwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJjb21wYWN0IHVuaWNvZGUgaMOpbGxvIPCfpJYg5ryi5a2XIn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiPHRlYW1tYXRlLW1lc3NhZ2UgZnJvbT0ncmV2aWV3ZXInPnBsZWFzZSByZWJhc2U8L3RlYW1tYXRlLW1lc3NhZ2U+In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiPHNjaGVkdWxlZC10YXNrIGlkPSc3Jz5ydW4gdGhlIG5pZ2h0bHkgc3VpdGU8L3NjaGVkdWxlZC10YXNrPiJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IndlIGRpc2N1c3NlZCB0aGUgW1JvbGUgUmVtaW5kZXJdIGJhbm5lciBtaWQtc2VudGVuY2UifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJ3aHkgZGlkIHRoZSB0cmFuc2NyaXB0IGNvbnRhaW4gPHRlYW1tYXRlLW1lc3NhZ2UgZnJvbT1hPiBhYm92ZSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6Ijx0ZWFtbWF0ZS1tZXNzYWdlzIE+In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXNzaXN0YW50IiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTciLCJzdG9wX3JlYXNvbiI6InRvb2xfdXNlIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGV0IG1lIHJlYWQifSx7InR5cGUiOiJ0aGlua2luZyIsInRoaW5raW5nIjoiaG1tIPCfpJQifSx7InR5cGUiOiJ0b29sX3VzZSIsImlkIjoidG9vbHVfOSIsIm5hbWUiOiJSZWFkIiwiaW5wdXQiOnsiZmlsZV9wYXRoIjoiL3giLCJsaW1pdCI6MTAwLCJyYXRpbyI6MS41LCJmbGFnIjp0cnVlLCJub25lIjpudWxsfX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJtZXNzYWdlIjp7InJvbGUiOiJhc3Npc3RhbnQiLCJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtNyIsInN0b3BfcmVhc29uIjoiZW5kX3R1cm4iLCJjb250ZW50IjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJkb25lIn1dLCJ1c2FnZSI6eyJpbnB1dF90b2tlbnMiOjEwLCJvdXRwdXRfdG9rZW5zIjo3LCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjoyNTQzNywiY2FjaGVfY3JlYXRpb24iOnsiZXBoZW1lcmFsXzVtX2lucHV0X3Rva2VucyI6MCwiZXBoZW1lcmFsXzFoX2lucHV0X3Rva2VucyI6MjU0Mzd9LCJzZXJ2aWNlX3RpZXIiOiJzdGFuZGFyZCIsImluZmVyZW5jZV9nZW8iOiJub3RfYXZhaWxhYmxlIiwic2VydmVyX3Rvb2xfdXNlIjp7IndlYl9zZWFyY2hfcmVxdWVzdHMiOjAsIndlYl9mZXRjaF9yZXF1ZXN0cyI6MH19fX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJtZXNzYWdlIjp7InJvbGUiOiJhc3Npc3RhbnQiLCJtb2RlbCI6IjxzeW50aGV0aWM+Iiwic3RvcF9yZWFzb24iOm51bGwsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6Im5vb3AifV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsIm1lc3NhZ2UiOnsicm9sZSI6ImFzc2lzdGFudCIsIm1vZGVsIjoiY2xhdWRlLW9wdXMtNC04Iiwic3RvcF9yZWFzb24iOiJ0b29sX3VzZSIsImNvbnRlbnQiOlt7InR5cGUiOiJmYWxsYmFjayIsImZyb20iOnsibW9kZWwiOiJjbGF1ZGUtZmFibGUtNSJ9LCJ0byI6eyJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtOCJ9fV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsIm1lc3NhZ2UiOnsicm9sZSI6ImFzc2lzdGFudCIsIm1vZGVsIjoiY2xhdWRlLW9wdXMtNC04Iiwic3RvcF9yZWFzb24iOm51bGwsImNvbnRlbnQiOlt7InR5cGUiOiJmdXR1cmVfYmxvY2siLCJwYXlsb2FkIjp7Im4iOjEsImRlZXAiOlt0cnVlLG51bGwsMi41XX19XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInVzZXJUeXBlIjoiZXh0ZXJuYWwiLCJzbHVnIjoic2x1Zy12YWx1ZS0xMSIsInByb21wdElkIjoicHJvbXB0LWlkLTIyIiwicHJvbXB0U291cmNlIjoicXVldWVkIiwicXVldWVQcmlvcml0eSI6ImxhdGVyIiwiaW1hZ2VQYXN0ZUlkcyI6WzcsNDJdLCJzb3VyY2VUb29sVXNlSUQiOiJ0b29sdV9zcmNfMzMiLCJzb3VyY2VUb29sQXNzaXN0YW50VVVJRCI6ImFzc3QtdXVpZC00NCIsIm1jcE1ldGEiOnsiX21ldGEiOnsiZnJvbnRMb2FkZWRUYWJHcm91cElkIjoxMTQ5NTU1MDU5fX0sInBlcm1pc3Npb25Nb2RlIjoicGxhbiIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiZW52ZWxvcGUgd2l0aCBhbGwgbmV3IGZpZWxkcyJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsInVzZXJUeXBlIjoiZXh0ZXJuYWwiLCJzbHVnIjoic2x1Zy1hc3N0LTU1IiwicmVxdWVzdElkIjoicmVxLWlkLTY2IiwiZm9ya2VkRnJvbSI6ImZvcmtlZC03NyIsImF0dHJpYnV0aW9uUGx1Z2luIjoicGx1Z2luLTg4IiwiYXR0cmlidXRpb25Ta2lsbCI6InNraWxsLTk5IiwiYXR0cmlidXRpb25NY3BTZXJ2ZXIiOiJzZXJ2ZXItYWEiLCJhdHRyaWJ1dGlvbk1jcFRvb2wiOiJ0b29sLWJiIiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6ImVuZF90dXJuIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiYXR0cmlidXRlZCB0dXJuIn1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJpc0FwaUVycm9yTWVzc2FnZSI6dHJ1ZSwiZXJyb3IiOiJyYXRlX2xpbWl0IiwiYXBpRXJyb3JTdGF0dXMiOjQyOSwiZXJyb3JEZXRhaWxzIjoiZGV0YWlsLWNjIiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6bnVsbCwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiQVBJIEVycm9yOiA0MjkgcmF0ZV9saW1pdCJ9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXNzaXN0YW50IiwiZXJyb3IiOiJyYXRlX2xpbWl0IiwiYXBpRXJyb3JTdGF0dXMiOjQyOSwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6ImVuZF90dXJuIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiZXJyb3IgZmllbGQgYnV0IG5vIGZsYWcifV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJpbnRlcnJ1cHRlZE1lc3NhZ2VJZCI6Im1zZ19wYXJpdHlfZGQiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImZpZWxkLW9ubHkgaW50ZXJydXB0IHdpdGggbm8gbWFya2VyIHRleHQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJbcmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyIGZvciB0b29sIHVzZV0ifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoic3RvcF9ob29rX3N1bW1hcnkiLCJjb250ZW50IjoiaG9vayByYW4iLCJsZXZlbCI6ImluZm8iLCJob29rQ291bnQiOjMsImhvb2tJbmZvcyI6W3siY29tbWFuZCI6ImZtdCIsImR1cmF0aW9uTXMiOjEyfSx7ImNvbW1hbmQiOiJsaW50In0seyJkdXJhdGlvbk1zIjo5OX1dLCJob29rRXJyb3JzIjpbImJvb20iLCJrYWJvb20iXSwiaG9va0FkZGl0aW9uYWxDb250ZXh0IjpbImN0eC1hIiwiY3R4LWIiXSwicHJldmVudGVkQ29udGludWF0aW9uIjp0cnVlLCJzdG9wUmVhc29uIjoic3RvcC1oZXJlIiwiaGFzT3V0cHV0Ijp0cnVlLCJ0b29sVXNlSUQiOiJ0b29sdV9ob29rIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6bnVsbCwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InN5c3RlbSIsInN1YnR5cGUiOiJjb21wYWN0X2JvdW5kYXJ5IiwiY29udGVudCI6ImNvbXBhY3RlZCIsImxldmVsIjoid2FybmluZyIsImxvZ2ljYWxQYXJlbnRVdWlkIjoidXVpZC1sb2dpY2FsIiwiY29tcGFjdE1ldGFkYXRhIjp7InRyaWdnZXIiOiJtYW51YWwiLCJwcmVUb2tlbnMiOjEwMDAsInBvc3RUb2tlbnMiOjIwMCwiY3VtdWxhdGl2ZURyb3BwZWRUb2tlbnMiOjgwMCwiZHVyYXRpb25NcyI6NDI0MiwicHJlQ29tcGFjdERpc2NvdmVyZWRUb29scyI6WyJSZWFkIiwiQmFzaCJdLCJwcmVzZXJ2ZWRTZWdtZW50Ijp7ImhlYWRVdWlkIjoidXVpZC1oZWFkIiwiYW5jaG9yVXVpZCI6InV1aWQtYW5jaG9yIiwidGFpbFV1aWQiOiJ1dWlkLXRhaWwifSwicHJlc2VydmVkTWVzc2FnZXMiOnsiYW5jaG9yVXVpZCI6InV1aWQtYW5jaG9yIiwidXVpZHMiOlsidXVpZC1oZWFkIiwidXVpZC10YWlsIl0sImFsbFV1aWRzIjpbInV1aWQtaGVhZCIsInV1aWQtbWlkIiwidXVpZC10YWlsIl19LCJwcmVjb21wdXRlZCI6dHJ1ZX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6InR1cm5fZHVyYXRpb24iLCJkdXJhdGlvbk1zIjo1MDAwLCJtZXNzYWdlQ291bnQiOjcsInBlbmRpbmdXb3JrZmxvd0NvdW50IjoyLCJwZW5kaW5nQmFja2dyb3VuZEFnZW50Q291bnQiOjF9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6Im1vZGVsX3JlZnVzYWxfZmFsbGJhY2siLCJjb250ZW50IjoicmVmdXNlZCIsImxldmVsIjoiZXJyb3IiLCJhcGlSZWZ1c2FsQ2F0ZWdvcnkiOiJwb2xpY3kiLCJhcGlSZWZ1c2FsRXhwbGFuYXRpb24iOiJub3BlIiwidHJpZ2dlciI6InJlZnVzYWwiLCJkaXJlY3Rpb24iOiJkb3duZ3JhZGUiLCJvcmlnaW5hbE1vZGVsIjoiY2xhdWRlLW9wdXMtNC04IiwiZmFsbGJhY2tNb2RlbCI6ImNsYXVkZS1zb25uZXQtNCIsInJldHJhY3RlZE1lc3NhZ2VVdWlkcyI6WyJ1dWlkLXIxIiwidXVpZC1yMiJdLCJyZWZ1c2VkVXNlck1lc3NhZ2VVdWlkIjoidXVpZC1yZWZ1c2VkIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoidHVybl9kdXJhdGlvbiJ9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6ImxvY2FsX2NvbW1hbmQiLCJjb250ZW50IjoiL2NsZWFyIiwibGV2ZWwiOiJpbmZvIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoid2VpcmRfZnV0dXJlIiwiY29udGVudCI6Im15c3RlcnkifQp7InR5cGUiOiJtb2RlIiwibW9kZSI6Im5vcm1hbCIsInNlc3Npb25JZCI6InNlc3MtMSJ9CnsidHlwZSI6InBlcm1pc3Npb24tbW9kZSIsInBlcm1pc3Npb25Nb2RlIjoiYnlwYXNzUGVybWlzc2lvbnMiLCJzZXNzaW9uSWQiOiJzZXNzLTEifQp7InR5cGUiOiJzdW1tYXJ5Iiwic3VtbWFyeSI6ImRpZCBzdHVmZiIsImxlYWZVdWlkIjoidXVpZC14IiwibmVzdGVkIjp7ImEiOlsxLDIsM10sImIiOjEuNX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfc3VjY2VzcyIsImhvb2tOYW1lIjoiUG9zdFRvb2xVc2U6QmFzaCIsImhvb2tFdmVudCI6IlBvc3RUb29sVXNlIiwidG9vbFVzZUlEIjoidG9vbHVfaG9vayIsImNvbW1hbmQiOiJ1dnggY2FwdC1ob29rIHJ1biIsImNvbnRlbnQiOiJob29rLWluamVjdGVkIGNvbnRleHQiLCJzdGRvdXQiOiJIT09LLVNURE9VVCIsInN0ZGVyciI6IiIsImV4aXRDb2RlIjowLCJkdXJhdGlvbk1zIjo0Mn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfYmxvY2tpbmdfZXJyb3IiLCJob29rTmFtZSI6IlN0b3AiLCJob29rRXZlbnQiOiJTdG9wIiwidG9vbFVzZUlEIjoidG9vbHVfc3RvcCIsImJsb2NraW5nRXJyb3IiOnsiYmxvY2tpbmdFcnJvciI6InJldmlldyB5b3VyIGNoYW5nZXMifX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfbm9uX2Jsb2NraW5nX2Vycm9yIiwiaG9va05hbWUiOiJQb3N0VG9vbFVzZTpFZGl0IiwiaG9va0V2ZW50IjoiUG9zdFRvb2xVc2UiLCJ0b29sVXNlSUQiOiJ0b29sdV9lZGl0IiwiY29tbWFuZCI6InJ1ZmYgY2hlY2siLCJzdGRvdXQiOiIiLCJzdGRlcnIiOiJFNTAxIGxpbmUgdG9vIGxvbmciLCJleGl0Q29kZSI6MSwiZHVyYXRpb25NcyI6ODh9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX2NhbmNlbGxlZCIsImhvb2tOYW1lIjoiVXNlclByb21wdFN1Ym1pdCIsImhvb2tFdmVudCI6IlVzZXJQcm9tcHRTdWJtaXQiLCJ0b29sVXNlSUQiOiJ0b29sdV91cHMiLCJjb21tYW5kIjoiY2NzdGF0dXNsaW5lIC0taG9vayIsImR1cmF0aW9uTXMiOjI4OSwidGltZWRPdXQiOnRydWUsInRpbWVvdXRNcyI6MzAwMDB9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX2FkZGl0aW9uYWxfY29udGV4dCIsImhvb2tOYW1lIjoiU2Vzc2lvblN0YXJ0IiwiaG9va0V2ZW50IjoiU2Vzc2lvblN0YXJ0IiwidG9vbFVzZUlEIjoiU2Vzc2lvblN0YXJ0IiwiY29udGVudCI6WyJmaXJzdCBjb250ZXh0IGxpbmUiLCJzZWNvbmQgY29udGV4dCBsaW5lIl19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJhc3luY19ob29rX3Jlc3BvbnNlIiwiaG9va05hbWUiOiJTZXNzaW9uU3RhcnQ6c3RhcnR1cCIsImhvb2tFdmVudCI6IlNlc3Npb25TdGFydCIsInByb2Nlc3NJZCI6ImFzeW5jX2hvb2tfOTAwMSIsInN0ZG91dCI6IiIsInN0ZGVyciI6IkFTWU5DLVNUREVSUiIsImV4aXRDb2RlIjoxLCJyZXNwb25zZSI6eyJkZWNpc2lvbiI6ImFwcHJvdmUifX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InF1ZXVlZF9jb21tYW5kIiwicHJvbXB0IjoicnVuIHRoZSB0ZXN0cyIsImNvbW1hbmRNb2RlIjoicHJvbXB0In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InNraWxsX2xpc3RpbmciLCJuYW1lcyI6WyJhIiwiYiJdLCJza2lsbENvdW50IjoyfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6eyJraW5kIjoiZmlsZSIsInNpemUiOjk5OTk5OTk5OTl9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOnRydWUsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InF1ZXVlZF9jb21tYW5kIiwicHJvbXB0Ijoic2lkZWNoYWluIHF1ZXVlZCBjb21tYW5kIiwiY29tbWFuZE1vZGUiOiJwcm9tcHQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6Im1hbGZvcm1lZC1zdHJpbmctcGF5bG9hZCJ9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOlsxLCJtYWxmb3JtZWQtbGlzdC1wYXlsb2FkIl19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Nywid2VpcmQiOnRydWV9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX3N1Y2Nlc3MiLCJob29rTmFtZSI6MTIsImhvb2tFdmVudCI6bnVsbCwidG9vbFVzZUlEIjoiIiwiY29tbWFuZCI6WyJub3QiLCJhIiwic3RyaW5nIl0sImNvbnRlbnQiOjMsInN0ZG91dCI6dHJ1ZSwic3RkZXJyIjoiS0VQVC1TVERFUlIiLCJleGl0Q29kZSI6MS41LCJkdXJhdGlvbk1zIjoiNDIifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6eyJ0eXBlIjoiaG9va19jYW5jZWxsZWQiLCJob29rTmFtZSI6IlN0b3AiLCJ0aW1lZE91dCI6InllcyIsInRpbWVvdXRNcyI6MzAuNX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfYWRkaXRpb25hbF9jb250ZXh0IiwiaG9va05hbWUiOiJTZXNzaW9uU3RhcnQiLCJjb250ZW50Ijoibm90LWEtbGlzdC1zby1yZWFkcy1lbXB0eSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJxdWV1ZWRfY29tbWFuZCIsInByb21wdCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGlzdCBwcm9tcHRzIHJlYWQgYXMgYWJzZW50In1dLCJjb21tYW5kTW9kZSI6OX19CnsidHlwZSI6InF1ZXVlLW9wZXJhdGlvbiIsIm9wZXJhdGlvbiI6ImVucXVldWUiLCJpdGVtcyI6W119CnsidHlwZSI6ImZpbGUtaGlzdG9yeS1zbmFwc2hvdCIsInNuYXBzaG90Ijp7ImZpbGVzIjpbImEiLCJiIl19fQp7InR5cGUiOiJhaS10aXRsZSIsInRpdGxlIjoiU29tZSBUaXRsZSJ9CnsidHlwZSI6Imxhc3QtcHJvbXB0IiwicHJvbXB0IjoiZG8gdGhlIHRoaW5nIn0KeyJ0eXBlIjoic3RhcnRlZCIsInRzIjoxMjN9CnsidHlwZSI6InJlc3VsdCIsIm9rIjp0cnVlLCJjb3VudCI6MH0=",
+      "jsonl_b64": "eyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiIgIGZpeCB0aGUgYnVnICAifX0KCiAgIAp7bm90IHZhbGlkIGpzb24KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiIgIGZpeCB0aGUgYnVnICAifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6bnVsbCwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IiIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6ImhlcmUgaXMgY29udGV4dCJ9LHsidHlwZSI6InRleHQiLCJ0ZXh0IjoiYW5kIG1vcmUifSx7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfMSIsImNvbnRlbnQiOiJvayBvdXRwdXQiLCJpc19lcnJvciI6ZmFsc2V9LHsidHlwZSI6ImRvY3VtZW50Iiwic291cmNlIjp7ImtpbmQiOiJmaWxlIn19XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6dHJ1ZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwiaXNNZXRhIjp0cnVlLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV8yIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGluZSBhIn0seyJ0eXBlIjoidG9vbF9yZWZlcmVuY2UiLCJpZCI6IngifSx7InR5cGUiOiJpbWFnZSIsInNvdXJjZSI6eyJkYXRhIjoiLi4uIn19LHsidHlwZSI6InRleHQiLCJ0ZXh0IjoibGluZSBiIn1dLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJbUmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyXSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IiAgW3JlcXVlc3QgSU5URVJSVVBURUQgYnkgdXNlciBmb3IgdG9vbCB1c2VdIn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50Ijoic2hlIHF1b3RlZCBbUmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyXSBtaWQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJpc0FzeW5jIjp0cnVlLCJzdGF0dXMiOiJhc3luY19sYXVuY2hlZCJ9LCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9hc3luYyIsImNvbnRlbnQiOiJsYXVuY2hlZCIsImlzX2Vycm9yIjpmYWxzZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJzdGRvdXQiOiJoZWxsbyIsInN0ZGVyciI6IiIsImludGVycnVwdGVkIjpmYWxzZSwiaXNJbWFnZSI6ZmFsc2UsIm5vT3V0cHV0RXhwZWN0ZWQiOmZhbHNlLCJyZXR1cm5Db2RlSW50ZXJwcmV0YXRpb24iOiJDb21tYW5kIGV4aXRlZCB3aXRoIGNvZGUgMCJ9LCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9iYXNoIiwiY29udGVudCI6ImhlbGxvIiwiaXNfZXJyb3IiOmZhbHNlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sVXNlUmVzdWx0Ijp7ImZpbGVQYXRoIjoiL3gucHkiLCJvbGRTdHJpbmciOiJhbHBoYSIsIm5ld1N0cmluZyI6ImJldGEiLCJyZXBsYWNlQWxsIjpmYWxzZSwidXNlck1vZGlmaWVkIjpmYWxzZSwic3RhbGVSZWNvdmVyZWQiOmZhbHNlLCJzdHJ1Y3R1cmVkUGF0Y2giOlt7Im9sZFN0YXJ0IjoxLCJvbGRMaW5lcyI6MSwibmV3U3RhcnQiOjEsIm5ld0xpbmVzIjoxLCJsaW5lcyI6WyItYWxwaGEiLCIrYmV0YSJdfV0sIm9yaWdpbmFsRmlsZSI6ImFscGhhXG4ifSwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZWRpdCIsImNvbnRlbnQiOiJvayIsImlzX2Vycm9yIjpmYWxzZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6eyJhZ2VudElkIjoiYWdlbnQtNzciLCJhZ2VudFR5cGUiOiJFeHBsb3JlIiwic3RhdHVzIjoiY29tcGxldGVkIiwidG90YWxEdXJhdGlvbk1zIjoxMjM0LCJ0b3RhbFRva2VucyI6NTY3LCJ0b3RhbFRvb2xVc2VDb3VudCI6MywidG9vbFN0YXRzIjp7IlJlYWQiOjIsIkdyZXAiOjF9LCJ1c2FnZSI6eyJpbnB1dF90b2tlbnMiOjEwLCJvdXRwdXRfdG9rZW5zIjo1fSwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiZm91bmQgaXQifV0sInByb21wdCI6ImludmVzdGlnYXRlIHRoZSBwYXJzZXIiLCJyZXNvbHZlZE1vZGVsIjoiY2xhdWRlLW9wdXMtNC04In0sIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X3Rhc2siLCJjb250ZW50IjoiZm91bmQgaXQiLCJpc19lcnJvciI6ZmFsc2V9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInRvb2xVc2VSZXN1bHQiOnsicXVlc3Rpb25zIjpbeyJxdWVzdGlvbiI6IldoaWNoIGFwcHJvYWNoPyIsImhlYWRlciI6IkFwcHJvYWNoIiwib3B0aW9ucyI6W3sibGFiZWwiOiJBIiwiZGVzY3JpcHRpb24iOiJmaXJzdCJ9LHsibGFiZWwiOiJCIiwiZGVzY3JpcHRpb24iOiJzZWNvbmQifV0sIm11bHRpU2VsZWN0IjpmYWxzZX1dLCJhbnN3ZXJzIjp7IldoaWNoIGFwcHJvYWNoPyI6IkEifSwiYW5ub3RhdGlvbnMiOnsiV2hpY2ggYXBwcm9hY2g/Ijp7InByZXZpZXciOiJwaWNrZWQgQSIsIm5vdGVzIjoid2l0aCBhIGNhdmVhdCJ9fX0sIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2FzayIsImNvbnRlbnQiOiJBIiwiaXNfZXJyb3IiOmZhbHNlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sVXNlUmVzdWx0IjoiVGhlIHVzZXIgZG9lc24ndCB3YW50IHRvIHByb2NlZWQgd2l0aCB0aGlzIHRvb2wgdXNlLiIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2RlbnkiLCJjb250ZW50IjoiZGVuaWVkIiwiaXNfZXJyb3IiOnRydWV9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInRvb2xEZW5pYWxLaW5kIjoidXNlci1yZWplY3RlZCIsInRvb2xVc2VSZXN1bHQiOiJUaGUgdXNlciBkb2Vzbid0IHdhbnQgdG8gcHJvY2VlZCB3aXRoIHRoaXMgdG9vbCB1c2UuIFRoZSB0b29sIHVzZSB3YXMgcmVqZWN0ZWQuIHN0cnVjdHVyZWQgYW5kIGJhbm5lcmVkIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9zdHJ1Y3RfYmFubmVyIiwiY29udGVudCI6IlRoZSB1c2VyIGRvZXNuJ3Qgd2FudCB0byBwcm9jZWVkIHdpdGggdGhpcyB0b29sIHVzZS4gVGhlIHRvb2wgdXNlIHdhcyByZWplY3RlZC4gc3RydWN0dXJlZCBhbmQgYmFubmVyZWQiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbERlbmlhbEtpbmQiOiJ1c2VyLXJlamVjdGVkIiwidG9vbFVzZVJlc3VsdCI6Imp1c3QgdGFrZSBhIGRpZmZlcmVudCBhcHByb2FjaCBlbnRpcmVseSIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbeyJ0eXBlIjoidG9vbF9yZXN1bHQiLCJ0b29sX3VzZV9pZCI6InRvb2x1X2Rlbnlfc3RydWN0X25vYmFubmVyIiwiY29udGVudCI6Imp1c3QgdGFrZSBhIGRpZmZlcmVudCBhcHByb2FjaCBlbnRpcmVseSIsImlzX2Vycm9yIjp0cnVlfV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJ0b29sRGVuaWFsS2luZCI6InBlcm1pc3Npb24tcnVsZSIsInRvb2xVc2VSZXN1bHQiOiJFcnJvcjogQkxPQ0tFRDogcG9saWN5IGZvcmJpZHMgd3JpdGluZyB0byAvZXRjIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9wZXJtaXNzaW9uIiwiY29udGVudCI6IkVycm9yOiBCTE9DS0VEOiBwb2xpY3kgZm9yYmlkcyB3cml0aW5nIHRvIC9ldGMiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwidG9vbFVzZVJlc3VsdCI6IlRoZSB1c2VyIGRvZXNuJ3Qgd2FudCB0byBwcm9jZWVkIHdpdGggdGhpcyB0b29sIHVzZS4gVGhlIHRvb2wgdXNlIHdhcyByZWplY3RlZC4gbGVnYWN5IGJhbm5lciB3aXRob3V0IHRoZSBzdHJ1Y3R1cmVkIGZpZWxkIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfZGVueV9sZWdhY3kiLCJjb250ZW50IjoiVGhlIHVzZXIgZG9lc24ndCB3YW50IHRvIHByb2NlZWQgd2l0aCB0aGlzIHRvb2wgdXNlLiBUaGUgdG9vbCB1c2Ugd2FzIHJlamVjdGVkLiBsZWdhY3kgYmFubmVyIHdpdGhvdXQgdGhlIHN0cnVjdHVyZWQgZmllbGQiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfcGxhaW5fZXJyb3IiLCJjb250ZW50IjoiRU5PRU5UOiBubyBzdWNoIGZpbGUiLCJpc19lcnJvciI6dHJ1ZX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwiaXNDb21wYWN0U3VtbWFyeSI6dHJ1ZSwiaXNWaXNpYmxlSW5UcmFuc2NyaXB0T25seSI6dHJ1ZSwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJjb21wYWN0IHVuaWNvZGUgaMOpbGxvIPCfpJYg5ryi5a2XIn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiPHRlYW1tYXRlLW1lc3NhZ2UgZnJvbT0ncmV2aWV3ZXInPnBsZWFzZSByZWJhc2U8L3RlYW1tYXRlLW1lc3NhZ2U+In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiPHNjaGVkdWxlZC10YXNrIGlkPSc3Jz5ydW4gdGhlIG5pZ2h0bHkgc3VpdGU8L3NjaGVkdWxlZC10YXNrPiJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IndlIGRpc2N1c3NlZCB0aGUgW1JvbGUgUmVtaW5kZXJdIGJhbm5lciBtaWQtc2VudGVuY2UifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJ3aHkgZGlkIHRoZSB0cmFuc2NyaXB0IGNvbnRhaW4gPHRlYW1tYXRlLW1lc3NhZ2UgZnJvbT1hPiBhYm92ZSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6Ijx0ZWFtbWF0ZS1tZXNzYWdlzIE+In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXNzaXN0YW50IiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTciLCJzdG9wX3JlYXNvbiI6InRvb2xfdXNlIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGV0IG1lIHJlYWQifSx7InR5cGUiOiJ0aGlua2luZyIsInRoaW5raW5nIjoiaG1tIPCfpJQifSx7InR5cGUiOiJ0b29sX3VzZSIsImlkIjoidG9vbHVfOSIsIm5hbWUiOiJSZWFkIiwiaW5wdXQiOnsiZmlsZV9wYXRoIjoiL3giLCJsaW1pdCI6MTAwLCJyYXRpbyI6MS41LCJmbGFnIjp0cnVlLCJub25lIjpudWxsfX1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJtZXNzYWdlIjp7InJvbGUiOiJhc3Npc3RhbnQiLCJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtNyIsInN0b3BfcmVhc29uIjoiZW5kX3R1cm4iLCJjb250ZW50IjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJkb25lIn1dLCJ1c2FnZSI6eyJpbnB1dF90b2tlbnMiOjEwLCJvdXRwdXRfdG9rZW5zIjo3LCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjoyNTQzNywiY2FjaGVfY3JlYXRpb24iOnsiZXBoZW1lcmFsXzVtX2lucHV0X3Rva2VucyI6MCwiZXBoZW1lcmFsXzFoX2lucHV0X3Rva2VucyI6MjU0Mzd9LCJzZXJ2aWNlX3RpZXIiOiJzdGFuZGFyZCIsImluZmVyZW5jZV9nZW8iOiJub3RfYXZhaWxhYmxlIiwic2VydmVyX3Rvb2xfdXNlIjp7IndlYl9zZWFyY2hfcmVxdWVzdHMiOjAsIndlYl9mZXRjaF9yZXF1ZXN0cyI6MH19fX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJtZXNzYWdlIjp7InJvbGUiOiJhc3Npc3RhbnQiLCJtb2RlbCI6IjxzeW50aGV0aWM+Iiwic3RvcF9yZWFzb24iOm51bGwsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6Im5vb3AifV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsIm1lc3NhZ2UiOnsicm9sZSI6ImFzc2lzdGFudCIsIm1vZGVsIjoiY2xhdWRlLW9wdXMtNC04Iiwic3RvcF9yZWFzb24iOiJ0b29sX3VzZSIsImNvbnRlbnQiOlt7InR5cGUiOiJmYWxsYmFjayIsImZyb20iOnsibW9kZWwiOiJjbGF1ZGUtZmFibGUtNSJ9LCJ0byI6eyJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtOCJ9fV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsIm1lc3NhZ2UiOnsicm9sZSI6ImFzc2lzdGFudCIsIm1vZGVsIjoiY2xhdWRlLW9wdXMtNC04Iiwic3RvcF9yZWFzb24iOm51bGwsImNvbnRlbnQiOlt7InR5cGUiOiJmdXR1cmVfYmxvY2siLCJwYXlsb2FkIjp7Im4iOjEsImRlZXAiOlt0cnVlLG51bGwsMi41XX19XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoidXNlciIsInVzZXJUeXBlIjoiZXh0ZXJuYWwiLCJzbHVnIjoic2x1Zy12YWx1ZS0xMSIsInByb21wdElkIjoicHJvbXB0LWlkLTIyIiwicHJvbXB0U291cmNlIjoicXVldWVkIiwicXVldWVQcmlvcml0eSI6ImxhdGVyIiwiaW1hZ2VQYXN0ZUlkcyI6WzcsNDJdLCJzb3VyY2VUb29sVXNlSUQiOiJ0b29sdV9zcmNfMzMiLCJzb3VyY2VUb29sQXNzaXN0YW50VVVJRCI6ImFzc3QtdXVpZC00NCIsIm1jcE1ldGEiOnsiX21ldGEiOnsiZnJvbnRMb2FkZWRUYWJHcm91cElkIjoxMTQ5NTU1MDU5fX0sInBlcm1pc3Npb25Nb2RlIjoicGxhbiIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiZW52ZWxvcGUgd2l0aCBhbGwgbmV3IGZpZWxkcyJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImFzc2lzdGFudCIsInVzZXJUeXBlIjoiZXh0ZXJuYWwiLCJzbHVnIjoic2x1Zy1hc3N0LTU1IiwicmVxdWVzdElkIjoicmVxLWlkLTY2IiwiZm9ya2VkRnJvbSI6ImZvcmtlZC03NyIsImF0dHJpYnV0aW9uUGx1Z2luIjoicGx1Z2luLTg4IiwiYXR0cmlidXRpb25Ta2lsbCI6InNraWxsLTk5IiwiYXR0cmlidXRpb25NY3BTZXJ2ZXIiOiJzZXJ2ZXItYWEiLCJhdHRyaWJ1dGlvbk1jcFRvb2wiOiJ0b29sLWJiIiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6ImVuZF90dXJuIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiYXR0cmlidXRlZCB0dXJuIn1dfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhc3Npc3RhbnQiLCJpc0FwaUVycm9yTWVzc2FnZSI6dHJ1ZSwiZXJyb3IiOiJyYXRlX2xpbWl0IiwiYXBpRXJyb3JTdGF0dXMiOjQyOSwiZXJyb3JEZXRhaWxzIjoiZGV0YWlsLWNjIiwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6bnVsbCwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiQVBJIEVycm9yOiA0MjkgcmF0ZV9saW1pdCJ9XX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXNzaXN0YW50IiwiZXJyb3IiOiJyYXRlX2xpbWl0IiwiYXBpRXJyb3JTdGF0dXMiOjQyOSwibWVzc2FnZSI6eyJyb2xlIjoiYXNzaXN0YW50IiwibW9kZWwiOiJjbGF1ZGUtb3B1cy00LTgiLCJzdG9wX3JlYXNvbiI6ImVuZF90dXJuIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiZXJyb3IgZmllbGQgYnV0IG5vIGZsYWcifV19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InVzZXIiLCJpbnRlcnJ1cHRlZE1lc3NhZ2VJZCI6Im1zZ19wYXJpdHlfZGQiLCJtZXNzYWdlIjp7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImZpZWxkLW9ubHkgaW50ZXJydXB0IHdpdGggbm8gbWFya2VyIHRleHQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJ1c2VyIiwibWVzc2FnZSI6eyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJbcmVxdWVzdCBpbnRlcnJ1cHRlZCBieSB1c2VyIGZvciB0b29sIHVzZV0ifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoic3RvcF9ob29rX3N1bW1hcnkiLCJjb250ZW50IjoiaG9vayByYW4iLCJsZXZlbCI6ImluZm8iLCJob29rQ291bnQiOjMsImhvb2tJbmZvcyI6W3siY29tbWFuZCI6ImZtdCIsImR1cmF0aW9uTXMiOjEyfSx7ImNvbW1hbmQiOiJsaW50In0seyJkdXJhdGlvbk1zIjo5OX1dLCJob29rRXJyb3JzIjpbImJvb20iLCJrYWJvb20iXSwiaG9va0FkZGl0aW9uYWxDb250ZXh0IjpbImN0eC1hIiwiY3R4LWIiXSwicHJldmVudGVkQ29udGludWF0aW9uIjp0cnVlLCJzdG9wUmVhc29uIjoic3RvcC1oZXJlIiwiaGFzT3V0cHV0Ijp0cnVlLCJ0b29sVXNlSUQiOiJ0b29sdV9ob29rIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6bnVsbCwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6InN5c3RlbSIsInN1YnR5cGUiOiJjb21wYWN0X2JvdW5kYXJ5IiwiY29udGVudCI6ImNvbXBhY3RlZCIsImxldmVsIjoid2FybmluZyIsImxvZ2ljYWxQYXJlbnRVdWlkIjoidXVpZC1sb2dpY2FsIiwiY29tcGFjdE1ldGFkYXRhIjp7InRyaWdnZXIiOiJtYW51YWwiLCJwcmVUb2tlbnMiOjEwMDAsInBvc3RUb2tlbnMiOjIwMCwiY3VtdWxhdGl2ZURyb3BwZWRUb2tlbnMiOjgwMCwiZHVyYXRpb25NcyI6NDI0MiwicHJlQ29tcGFjdERpc2NvdmVyZWRUb29scyI6WyJSZWFkIiwiQmFzaCJdLCJwcmVzZXJ2ZWRTZWdtZW50Ijp7ImhlYWRVdWlkIjoidXVpZC1oZWFkIiwiYW5jaG9yVXVpZCI6InV1aWQtYW5jaG9yIiwidGFpbFV1aWQiOiJ1dWlkLXRhaWwifSwicHJlc2VydmVkTWVzc2FnZXMiOnsiYW5jaG9yVXVpZCI6InV1aWQtYW5jaG9yIiwidXVpZHMiOlsidXVpZC1oZWFkIiwidXVpZC10YWlsIl0sImFsbFV1aWRzIjpbInV1aWQtaGVhZCIsInV1aWQtbWlkIiwidXVpZC10YWlsIl19LCJwcmVjb21wdXRlZCI6dHJ1ZX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6InR1cm5fZHVyYXRpb24iLCJkdXJhdGlvbk1zIjo1MDAwLCJtZXNzYWdlQ291bnQiOjcsInBlbmRpbmdXb3JrZmxvd0NvdW50IjoyLCJwZW5kaW5nQmFja2dyb3VuZEFnZW50Q291bnQiOjF9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6Im1vZGVsX3JlZnVzYWxfZmFsbGJhY2siLCJjb250ZW50IjoicmVmdXNlZCIsImxldmVsIjoiZXJyb3IiLCJhcGlSZWZ1c2FsQ2F0ZWdvcnkiOiJwb2xpY3kiLCJhcGlSZWZ1c2FsRXhwbGFuYXRpb24iOiJub3BlIiwidHJpZ2dlciI6InJlZnVzYWwiLCJkaXJlY3Rpb24iOiJkb3duZ3JhZGUiLCJvcmlnaW5hbE1vZGVsIjoiY2xhdWRlLW9wdXMtNC04IiwiZmFsbGJhY2tNb2RlbCI6ImNsYXVkZS1zb25uZXQtNCIsInJldHJhY3RlZE1lc3NhZ2VVdWlkcyI6WyJ1dWlkLXIxIiwidXVpZC1yMiJdLCJyZWZ1c2VkVXNlck1lc3NhZ2VVdWlkIjoidXVpZC1yZWZ1c2VkIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoidHVybl9kdXJhdGlvbiJ9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6ImxvY2FsX2NvbW1hbmQiLCJjb250ZW50IjoiL2NsZWFyIiwibGV2ZWwiOiJpbmZvIn0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJzeXN0ZW0iLCJzdWJ0eXBlIjoid2VpcmRfZnV0dXJlIiwiY29udGVudCI6Im15c3RlcnkifQp7InR5cGUiOiJtb2RlIiwibW9kZSI6Im5vcm1hbCIsInNlc3Npb25JZCI6InNlc3MtMSJ9CnsidHlwZSI6InBlcm1pc3Npb24tbW9kZSIsInBlcm1pc3Npb25Nb2RlIjoiYnlwYXNzUGVybWlzc2lvbnMiLCJzZXNzaW9uSWQiOiJzZXNzLTEifQp7InR5cGUiOiJzdW1tYXJ5Iiwic3VtbWFyeSI6ImRpZCBzdHVmZiIsImxlYWZVdWlkIjoidXVpZC14IiwibmVzdGVkIjp7ImEiOlsxLDIsM10sImIiOjEuNX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfc3VjY2VzcyIsImhvb2tOYW1lIjoiUG9zdFRvb2xVc2U6QmFzaCIsImhvb2tFdmVudCI6IlBvc3RUb29sVXNlIiwidG9vbFVzZUlEIjoidG9vbHVfaG9vayIsImNvbW1hbmQiOiJ1dnggY2FwdC1ob29rIHJ1biIsImNvbnRlbnQiOiJob29rLWluamVjdGVkIGNvbnRleHQiLCJzdGRvdXQiOiJIT09LLVNURE9VVCIsInN0ZGVyciI6IiIsImV4aXRDb2RlIjowLCJkdXJhdGlvbk1zIjo0Mn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfYmxvY2tpbmdfZXJyb3IiLCJob29rTmFtZSI6IlN0b3AiLCJob29rRXZlbnQiOiJTdG9wIiwidG9vbFVzZUlEIjoidG9vbHVfc3RvcCIsImJsb2NraW5nRXJyb3IiOnsiYmxvY2tpbmdFcnJvciI6InJldmlldyB5b3VyIGNoYW5nZXMifX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfbm9uX2Jsb2NraW5nX2Vycm9yIiwiaG9va05hbWUiOiJQb3N0VG9vbFVzZTpFZGl0IiwiaG9va0V2ZW50IjoiUG9zdFRvb2xVc2UiLCJ0b29sVXNlSUQiOiJ0b29sdV9lZGl0IiwiY29tbWFuZCI6InJ1ZmYgY2hlY2siLCJzdGRvdXQiOiIiLCJzdGRlcnIiOiJFNTAxIGxpbmUgdG9vIGxvbmciLCJleGl0Q29kZSI6MSwiZHVyYXRpb25NcyI6ODh9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX2NhbmNlbGxlZCIsImhvb2tOYW1lIjoiVXNlclByb21wdFN1Ym1pdCIsImhvb2tFdmVudCI6IlVzZXJQcm9tcHRTdWJtaXQiLCJ0b29sVXNlSUQiOiJ0b29sdV91cHMiLCJjb21tYW5kIjoiY2NzdGF0dXNsaW5lIC0taG9vayIsImR1cmF0aW9uTXMiOjI4OSwidGltZWRPdXQiOnRydWUsInRpbWVvdXRNcyI6MzAwMDB9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX2FkZGl0aW9uYWxfY29udGV4dCIsImhvb2tOYW1lIjoiU2Vzc2lvblN0YXJ0IiwiaG9va0V2ZW50IjoiU2Vzc2lvblN0YXJ0IiwidG9vbFVzZUlEIjoiU2Vzc2lvblN0YXJ0IiwiY29udGVudCI6WyJmaXJzdCBjb250ZXh0IGxpbmUiLCJzZWNvbmQgY29udGV4dCBsaW5lIl19fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJhc3luY19ob29rX3Jlc3BvbnNlIiwiaG9va05hbWUiOiJTZXNzaW9uU3RhcnQ6c3RhcnR1cCIsImhvb2tFdmVudCI6IlNlc3Npb25TdGFydCIsInByb2Nlc3NJZCI6ImFzeW5jX2hvb2tfOTAwMSIsInN0ZG91dCI6IiIsInN0ZGVyciI6IkFTWU5DLVNUREVSUiIsImV4aXRDb2RlIjoxLCJyZXNwb25zZSI6eyJkZWNpc2lvbiI6ImFwcHJvdmUifX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InF1ZXVlZF9jb21tYW5kIiwicHJvbXB0IjoicnVuIHRoZSB0ZXN0cyIsImNvbW1hbmRNb2RlIjoicHJvbXB0In19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6ImRlZmVycmVkX3Rvb2xzX2RlbHRhIiwiYWRkZWROYW1lcyI6WyJSZWFkIiwiR3JlcCJdLCJyZW1vdmVkTmFtZXMiOlsiQmFzaCJdLCJzb3VyY2UiOiJmaXh0dXJlIn19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InNraWxsX2xpc3RpbmciLCJuYW1lcyI6WyJhIiwiYiJdLCJza2lsbENvdW50IjoyfX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6eyJraW5kIjoiZmlsZSIsInNpemUiOjk5OTk5OTk5OTl9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOnRydWUsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6InF1ZXVlZF9jb21tYW5kIiwicHJvbXB0Ijoic2lkZWNoYWluIHF1ZXVlZCBjb21tYW5kIiwiY29tbWFuZE1vZGUiOiJwcm9tcHQifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6Im1hbGZvcm1lZC1zdHJpbmctcGF5bG9hZCJ9CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOlsxLCJtYWxmb3JtZWQtbGlzdC1wYXlsb2FkIl19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Nywid2VpcmQiOnRydWV9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJob29rX3N1Y2Nlc3MiLCJob29rTmFtZSI6MTIsImhvb2tFdmVudCI6bnVsbCwidG9vbFVzZUlEIjoiIiwiY29tbWFuZCI6WyJub3QiLCJhIiwic3RyaW5nIl0sImNvbnRlbnQiOjMsInN0ZG91dCI6dHJ1ZSwic3RkZXJyIjoiS0VQVC1TVERFUlIiLCJleGl0Q29kZSI6MS41LCJkdXJhdGlvbk1zIjoiNDIifX0KeyJ1dWlkIjoidXVpZC0xIiwicGFyZW50VXVpZCI6InV1aWQtMCIsInNlc3Npb25JZCI6InNlc3MtMSIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMDJUMDM6MDQ6MDUuMDAwWiIsImN3ZCI6Ii9yZXBvIiwiZ2l0QnJhbmNoIjoibWFpbiIsInZlcnNpb24iOiIxLjIuMyIsImlzU2lkZWNoYWluIjpmYWxzZSwiZW50cnlwb2ludCI6ImNsaSIsInR5cGUiOiJhdHRhY2htZW50IiwiYXR0YWNobWVudCI6eyJ0eXBlIjoiaG9va19jYW5jZWxsZWQiLCJob29rTmFtZSI6IlN0b3AiLCJ0aW1lZE91dCI6InllcyIsInRpbWVvdXRNcyI6MzAuNX19CnsidXVpZCI6InV1aWQtMSIsInBhcmVudFV1aWQiOiJ1dWlkLTAiLCJzZXNzaW9uSWQiOiJzZXNzLTEiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAyVDAzOjA0OjA1LjAwMFoiLCJjd2QiOiIvcmVwbyIsImdpdEJyYW5jaCI6Im1haW4iLCJ2ZXJzaW9uIjoiMS4yLjMiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsImVudHJ5cG9pbnQiOiJjbGkiLCJ0eXBlIjoiYXR0YWNobWVudCIsImF0dGFjaG1lbnQiOnsidHlwZSI6Imhvb2tfYWRkaXRpb25hbF9jb250ZXh0IiwiaG9va05hbWUiOiJTZXNzaW9uU3RhcnQiLCJjb250ZW50Ijoibm90LWEtbGlzdC1zby1yZWFkcy1lbXB0eSJ9fQp7InV1aWQiOiJ1dWlkLTEiLCJwYXJlbnRVdWlkIjoidXVpZC0wIiwic2Vzc2lvbklkIjoic2Vzcy0xIiwidGltZXN0YW1wIjoiMjAyNi0wMS0wMlQwMzowNDowNS4wMDBaIiwiY3dkIjoiL3JlcG8iLCJnaXRCcmFuY2giOiJtYWluIiwidmVyc2lvbiI6IjEuMi4zIiwiaXNTaWRlY2hhaW4iOmZhbHNlLCJlbnRyeXBvaW50IjoiY2xpIiwidHlwZSI6ImF0dGFjaG1lbnQiLCJhdHRhY2htZW50Ijp7InR5cGUiOiJxdWV1ZWRfY29tbWFuZCIsInByb21wdCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoibGlzdCBwcm9tcHRzIHJlYWQgYXMgYWJzZW50In1dLCJjb21tYW5kTW9kZSI6OX19CnsidHlwZSI6InF1ZXVlLW9wZXJhdGlvbiIsIm9wZXJhdGlvbiI6ImVucXVldWUiLCJpdGVtcyI6W119CnsidHlwZSI6ImZpbGUtaGlzdG9yeS1zbmFwc2hvdCIsInNuYXBzaG90Ijp7ImZpbGVzIjpbImEiLCJiIl19fQp7InR5cGUiOiJhaS10aXRsZSIsInRpdGxlIjoiU29tZSBUaXRsZSJ9CnsidHlwZSI6Imxhc3QtcHJvbXB0IiwicHJvbXB0IjoiZG8gdGhlIHRoaW5nIn0KeyJ0eXBlIjoic3RhcnRlZCIsInRzIjoxMjN9CnsidHlwZSI6InJlc3VsdCIsIm9rIjp0cnVlLCJjb3VudCI6MH0=",
       "compact": [
         {
           "width": 100,
@@ -1371,7 +1371,7 @@
             "   21 user  03:04:05 we discussed the [Role Reminder] banner mid-sentence uuid-1",
             "   22 user  03:04:05 why did the transcript contain <teammate-message from=a> above uuid-1",
             "   23 user  03:04:05 <teammate-messagé> uuid-1",
-            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) hmm 🤔 Read(/x) uuid-1",
+            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) hmm 🤔 Read({\"file_path\":\"/x\",\"limit\":100,\"ratio\":1.5,\"flag\":true,\"none\":null}) uuid-1",
             "   25 asst  03:04:05 [claude-opus-4-7] \"done\" uuid-1",
             "   26 asst  03:04:05 [<synthetic>] \"noop\" uuid-1",
             "   27 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8 uuid-1",
@@ -1399,22 +1399,23 @@
             "   49 att   03:04:05 hook_additional_context first context line second context line uuid-1",
             "   50 att   03:04:05 async_hook_response ASYNC-STDERR uuid-1",
             "   51 att   03:04:05 queued_command run the tests uuid-1",
-            "   52 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
-            "   53 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
-            "   54 att*  03:04:05 queued_command sidechain queued command uuid-1",
-            "   55 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
+            "   52 att   03:04:05 deferred_tools_delta +2 −1 uuid-1",
+            "   53 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
+            "   54 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
+            "   55 att*  03:04:05 queued_command sidechain queued command uuid-1",
             "   56 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
             "   57 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
-            "   58 att   03:04:05 hook_success uuid-1",
-            "   59 att   03:04:05 hook_cancelled uuid-1",
-            "   60 att   03:04:05 hook_additional_context uuid-1",
-            "   61 att   03:04:05 queued_command uuid-1",
-            "   62 other          queue-operation",
-            "   63 other          file-history-snapshot",
-            "   64 other          ai-title",
-            "   65 other          last-prompt",
-            "   66 other          started",
-            "   67 other          result"
+            "   58 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",… uuid-1",
+            "   59 att   03:04:05 hook_success uuid-1",
+            "   60 att   03:04:05 hook_cancelled uuid-1",
+            "   61 att   03:04:05 hook_additional_context uuid-1",
+            "   62 att   03:04:05 queued_command uuid-1",
+            "   63 other          queue-operation",
+            "   64 other          file-history-snapshot",
+            "   65 other          ai-title",
+            "   66 other          last-prompt",
+            "   67 other          started",
+            "   68 other          result"
           ]
         },
         {
@@ -1446,7 +1447,7 @@
             "   21 user  03:04:05 we discussed the [Role Reminder] banner mid-sentence",
             "   22 user  03:04:05 why did the transcript contain <teammate-message from=a> above",
             "   23 user  03:04:05 <teammate-messagé>",
-            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) Read(/x)",
+            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) Read({\"file_path\":\"/x\",\"limit\":100,\"ratio\":1.5,\"flag\":true,\"none\":null})",
             "   25 asst  03:04:05 [claude-opus-4-7] \"done\"",
             "   26 asst  03:04:05 [<synthetic>] \"noop\"",
             "   27 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8",
@@ -1474,22 +1475,23 @@
             "   49 att   03:04:05 hook_additional_context first context line second context line",
             "   50 att   03:04:05 async_hook_response ASYNC-STDERR",
             "   51 att   03:04:05 queued_command run the tests",
-            "   52 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":\"skill_listing\",\"names\":[\"a\",\"b\"],\"skillCount\":2}}",
-            "   53 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"kind\":\"file\",\"size\":9999999999}}",
-            "   54 att*  03:04:05 queued_command sidechain queued command",
-            "   55 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":\"malformed-string-payload\"}",
-            "   56 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":[1,\"malformed-list-payload\"]}",
-            "   57 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":7,\"weird\":true}}",
-            "   58 att   03:04:05 hook_success",
-            "   59 att   03:04:05 hook_cancelled",
-            "   60 att   03:04:05 hook_additional_context",
-            "   61 att   03:04:05 queued_command",
-            "   62 other          queue-operation",
-            "   63 other          file-history-snapshot",
-            "   64 other          ai-title",
-            "   65 other          last-prompt",
-            "   66 other          started",
-            "   67 other          result"
+            "   52 att   03:04:05 deferred_tools_delta +2 −1",
+            "   53 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":\"skill_listing\",\"names\":[\"a\",\"b\"],\"skillCount\":2}}",
+            "   54 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"kind\":\"file\",\"size\":9999999999}}",
+            "   55 att*  03:04:05 queued_command sidechain queued command",
+            "   56 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":\"malformed-string-payload\"}",
+            "   57 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":[1,\"malformed-list-payload\"]}",
+            "   58 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":7,\"weird\":true}}",
+            "   59 att   03:04:05 hook_success",
+            "   60 att   03:04:05 hook_cancelled",
+            "   61 att   03:04:05 hook_additional_context",
+            "   62 att   03:04:05 queued_command",
+            "   63 other          queue-operation",
+            "   64 other          file-history-snapshot",
+            "   65 other          ai-title",
+            "   66 other          last-prompt",
+            "   67 other          started",
+            "   68 other          result"
           ]
         },
         {
@@ -1521,7 +1523,7 @@
             "   21 user  03:04:05 we discussed the [Role Reminder] banner mid-sentence",
             "   22 user  03:04:05 why did the transcript contain <teammate-message from=a> above",
             "   23 user  03:04:05 <teammate-messagé>",
-            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) hmm 🤔 Read(/x)",
+            "   24 asst  03:04:05 [claude-opus-4-7] \"let me read\" th(5ch) hmm 🤔 Read({\"file_path\":\"/x\",\"limit\":100,\"ratio\":1.5,\"flag\":true,\"none\":null})",
             "   25 asst  03:04:05 [claude-opus-4-7] \"done\"",
             "   26 asst  03:04:05 [<synthetic>] \"noop\"",
             "   27 asst  03:04:05 [claude-opus-4-8] fallback claude-fable-5->claude-opus-4-8",
@@ -1549,22 +1551,23 @@
             "   49 att   03:04:05 hook_additional_context first context line second context line",
             "   50 att   03:04:05 async_hook_response ASYNC-STDERR",
             "   51 att   03:04:05 queued_command run the tests",
-            "   52 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
-            "   53 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
-            "   54 att*  03:04:05 queued_command sidechain queued command",
-            "   55 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
+            "   52 att   03:04:05 deferred_tools_delta +2 −1",
+            "   53 att   03:04:05 skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
+            "   54 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
+            "   55 att*  03:04:05 queued_command sidechain queued command",
             "   56 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
             "   57 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
-            "   58 att   03:04:05 hook_success",
-            "   59 att   03:04:05 hook_cancelled",
-            "   60 att   03:04:05 hook_additional_context",
-            "   61 att   03:04:05 queued_command",
-            "   62 other          queue-operation",
-            "   63 other          file-history-snapshot",
-            "   64 other          ai-title",
-            "   65 other          last-prompt",
-            "   66 other          started",
-            "   67 other          result"
+            "   58 att   03:04:05 {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"at…",
+            "   59 att   03:04:05 hook_success",
+            "   60 att   03:04:05 hook_cancelled",
+            "   61 att   03:04:05 hook_additional_context",
+            "   62 att   03:04:05 queued_command",
+            "   63 other          queue-operation",
+            "   64 other          file-history-snapshot",
+            "   65 other          ai-title",
+            "   66 other          last-prompt",
+            "   67 other          started",
+            "   68 other          result"
           ]
         }
       ],
@@ -1628,6 +1631,7 @@
             "hook_additional_context first context line second context line",
             "async_hook_response ASYNC-STDERR",
             "queued_command run the tests",
+            "deferred_tools_delta +2 −1",
             "skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":\"skill_listing\",\"names\":[\"a\",\"b\"],\"skillCount\":2}}",
             "{\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"kind\":\"file\",\"size\":9999999999}}",
             "queued_command sidechain queued command",
@@ -1703,6 +1707,7 @@
             "hook_additional_context first context line second context line",
             "async_hook_response ASYNC-STDERR",
             "queued_command run the tests",
+            "deferred_tools_delta +2 −1",
             "skill_listing {\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"type\":\"skill_listing\",\"names\":[\"a\",\"b\"],\"skillCount\":2}}",
             "{\"uuid\":\"uuid-1\",\"parentUuid\":\"uuid-0\",\"sessionId\":\"sess-1\",\"timestamp\":\"2026-01-02T03:04:05.000Z\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"version\":\"1.2.3\",\"isSidechain\":false,\"entrypoint\":\"cli\",\"type\":\"attachment\",\"attachment\":{\"kind\":\"file\",\"size\":9999999999}}",
             "queued_command sidechain queued command",
@@ -1751,6 +1756,7 @@
             "",
             "",
             "Read {\"file_path\":\"/x\",\"limit\":100,\"ratio\":1.5,\"flag\":true,\"none\":null}",
+            "",
             "",
             "",
             "",
@@ -1868,11 +1874,12 @@
             "",
             "",
             "",
+            "",
             ""
           ]
         }
       ],
-      "stats": "files        1\nevents       68\nkinds        user 27 · attachment 17 · assistant 8 · system 7 · other 7 · mode 2\nmodels       claude-opus-4-8 5 · claude-opus-4-7 2 · <synthetic> 1\ntools        Read 1\ntext         649B\nthinking     5B\ntool io      447B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:05\ninterrupts   4\ntool errors  7\nsidechain    2"
+      "stats": "files        1\nevents       69\nkinds        user 27 · attachment 18 · assistant 8 · system 7 · other 7 · mode 2\nmodels       claude-opus-4-8 5 · claude-opus-4-7 2 · <synthetic> 1\ntools        Read 1\ntool errors  -\nattachments   4 · queued_command 3 · hook_success 2 · hook_cancelled 2 · hook_additional_context 2 · hook_blocking_error 1 · hook_non_blocking_error 1 · async_hook_response 1 · deferred_tools_delta 1 · skill_listing 1\ntext         649B\nthinking     5B\ntool io      447B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:05\ninterrupts   4\nerrors       7\nerror events 3 · 12 · 13 · 14 · 15 · 16 · 17\nslowest tools -\nsidechain    2"
     },
     {
       "id": "dup-key",
@@ -1884,7 +1891,7 @@
           "uuids": true,
           "lines": [
             "    0 user  03:04:05 dup key session du1",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read(/last.py) da1",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read({\"file_path\":\"/last.py\",\"limit\":2}) da1",
             "    2 user  03:04:07 <-Read (2ch) ok du2"
           ]
         },
@@ -1894,7 +1901,7 @@
           "uuids": false,
           "lines": [
             "    0 user  03:04:05 dup key session",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read(/last.py)",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read({\"file_path\":\"/last.py\",\"limit\":2})",
             "    2 user  03:04:07 <-Read (2ch) ok"
           ]
         },
@@ -1904,7 +1911,7 @@
           "uuids": false,
           "lines": [
             "    0 user  03:04:05 dup key session",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read(/last.py)",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"editing\" Read({\"file_path\":\"/last.py\",\"limit\":2})",
             "    2 user  03:04:07 <-Read (2ch) ok"
           ]
         }
@@ -1953,7 +1960,7 @@
           ]
         }
       ],
-      "stats": "files        1\nevents       3\nkinds        user 2 · assistant 1\nmodels       claude-opus-4-8 1\ntools        Read 1\ntext         22B\nthinking     0B\ntool io      36B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:07\ninterrupts   0\ntool errors  0\nsidechain    0"
+      "stats": "files        1\nevents       3\nkinds        user 2 · assistant 1\nmodels       claude-opus-4-8 1\ntools        Read 1\ntool errors  -\nattachments  -\ntext         22B\nthinking     0B\ntool io      36B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:07\ninterrupts   0\nerrors       0\nerror events -\nslowest tools -\nsidechain    0"
     },
     {
       "id": "numeric",
@@ -1965,7 +1972,7 @@
           "uuids": true,
           "lines": [
             "    0 user  03:04:05 numeric session nu1",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read(/n.py) na1",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read({\"file_path\":\"/n.py\",\"ratio\":1e-7,\"big\":1e+16,\"neg\":0,\"tie\":698957826421429.2}) na1",
             "    2 user  03:04:07 <-Read (2ch) ok nu2"
           ]
         },
@@ -1975,7 +1982,7 @@
           "uuids": false,
           "lines": [
             "    0 user  03:04:05 numeric session",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read(/n.py)",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read({\"file_path\":\"/n.py\",\"ratio\":1e-7,\"big\":1e+16,\"neg\":0,\"tie\":698957826421429.2})",
             "    2 user  03:04:07 <-Read (2ch) ok"
           ]
         },
@@ -1985,7 +1992,7 @@
           "uuids": false,
           "lines": [
             "    0 user  03:04:05 numeric session",
-            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read(/n.py)",
+            "    1 asst  03:04:06 [claude-opus-4-8] \"reading\" Read({\"file_path\":\"/n.py\",\"ratio\":1e-7,\"big\":1e+16,\"neg\":0,\"tie\":698957826421429.2})",
             "    2 user  03:04:07 <-Read (2ch) ok"
           ]
         }
@@ -2034,7 +2041,7 @@
           ]
         }
       ],
-      "stats": "files        1\nevents       3\nkinds        user 2 · assistant 1\nmodels       claude-opus-4-8 1\ntools        Read 1\ntext         22B\nthinking     0B\ntool io      80B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:07\ninterrupts   0\ntool errors  0\nsidechain    0"
+      "stats": "files        1\nevents       3\nkinds        user 2 · assistant 1\nmodels       claude-opus-4-8 1\ntools        Read 1\ntool errors  -\nattachments  -\ntext         22B\nthinking     0B\ntool io      80B\nsessions     1\nspan         2026-01-02 03:04:05 → 2026-01-02 03:04:07\ninterrupts   0\nerrors       0\nerror events -\nslowest tools -\nsidechain    0"
     },
     {
       "id": ".fixtures/corpus/-Users-dev-Code-scratch/dceba062-133a-4395-5966-d6030613a956.jsonl",
@@ -2164,7 +2171,7 @@
           ]
         }
       ],
-      "stats": "files        1\nevents       10\nkinds        user 6 · assistant 4\nmodels       claude-opus-4-8 4\ntools        Edit 2 · Bash 1 · Write 1\ntext         290B\nthinking     0B\ntool io      767B\nsessions     1\nspan         2026-01-25 09:01:03 → 2026-01-25 09:10:13\ninterrupts   0\ntool errors  0\nsidechain    1"
+      "stats": "files        1\nevents       10\nkinds        user 6 · assistant 4\nmodels       claude-opus-4-8 4\ntools        Edit 2 · Bash 1 · Write 1\ntool errors  -\nattachments  -\ntext         290B\nthinking     0B\ntool io      767B\nsessions     1\nspan         2026-01-25 09:01:03 → 2026-01-25 09:10:13\ninterrupts   0\nerrors       0\nerror events -\nslowest tools -\nsidechain    1"
     },
     {
       "id": ".fixtures/corpus/-Users-dev-Code-scratch/43d3d5bc-ea2d-454c-44b8-06d88563cf6a.jsonl",
@@ -2176,14 +2183,14 @@
           "uuids": true,
           "lines": [
             "    0 user  09:01:30 write a benchmark for the rust filter fast path f84c9ff0-fc96-4280-103c-5b3bb4915322",
-            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob(**/*.py) 7c93b84a-582d-47d9-4851-efd6592f28c5",
+            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) 7c93b84a-582d-47d9-4851-efd6592f28c5",
             "    2 user  09:04:07 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.r… f3a4cee1-2894-44b8-0fa6-5d1f831ad0cc",
             "    3 asst  09:05:06 [claude-opus-4-7] \"All done — the change is in and the tests are green.\" 00754ff1-5b0c-4104-97c5-168bae8a5682",
             "    4 user  10:57:55 refactor the discovery module to cache mtimes 5ffcdbc0-cf48-48b1-7a2e-82f466021719",
-            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) This is the pyo3 boundary; the Rust side owns the parse. Grep(session_activity) dc973ebf-ac97-4cb6-0b3d-ca7bbddbe0d5",
+            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) This is the pyo3 boundary; the Rust side owns the parse. Grep({\"pattern\":\"session_activity\",\"output_mode\":\"content\"}) dc973ebf-ac97-4cb6-0b3d-ca7bbddbe0d5",
             "    6 user  10:59:03 <-Grep (47ch) cc_transcript/discovery.py:240:session_activity a14b62e2-f50f-4255-4716-dfd0adbc84c4",
             "    7 user  11:00:06 the regex is over-matching, anchor it to the head d83c3748-6190-416d-84a5-130411b5cb48",
-            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task(explore how the filter spec is compiled on the rust side) Edit cc_transcript/activity.py - return None + return result e14c05cb-89fc-48ff-ced9-4e63621d0d61",
+            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task({\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subage…(+19ch)) Edit cc_transcript/activity.py - return None + return result e14c05cb-89fc-48ff-ced9-4e63621d0d61",
             "    9 user  11:01:36 <-Task (53ch) Investigated and found the answer in the parse layer. 58a96296-5066-45d5-864e-0ef04ac9d09c",
             "   10 user  11:03:00 <-Edit (2ch) ok 7af17ca2-4612-4e6e-0573-aa62d317f87c",
             "   11 sys   11:03:13 turn_duration 66540e18-90e2-43f5-dc30-cd31e9555b42",
@@ -2197,14 +2204,14 @@
           "uuids": false,
           "lines": [
             "    0 user  09:01:30 write a benchmark for the rust filter fast path",
-            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Glob(**/*.py)",
+            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Glob({\"pattern\":\"**/*.py\"})",
             "    2 user  09:04:07 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcript/activity.py",
             "    3 asst  09:05:06 [claude-opus-4-7] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:57:55 refactor the discovery module to cache mtimes",
-            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) Grep(session_activity)",
+            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) Grep({\"pattern\":\"session_activity\",\"output_mode\":\"content\"})",
             "    6 user  10:59:03 <-Grep (47ch) cc_transcript/discovery.py:240:session_activity",
             "    7 user  11:00:06 the regex is over-matching, anchor it to the head",
-            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task(explore how the filter spec is compiled on the rust side) Edit cc_transcript/activity.py - return None + return result",
+            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task({\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subagent_type\":\"Explore\"}) Edit cc_transcript/activity.py - return None + return result",
             "    9 user  11:01:36 <-Task (53ch) Investigated and found the answer in the parse layer.",
             "   10 user  11:03:00 <-Edit (2ch) ok",
             "   11 sys   11:03:13 turn_duration",
@@ -2218,14 +2225,14 @@
           "uuids": false,
           "lines": [
             "    0 user  09:01:30 write a benchmark for the rust filter fast path",
-            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob(**/*.py)",
+            "    1 asst  09:02:45 [claude-opus-4-7] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"})",
             "    2 user  09:04:07 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcr…",
             "    3 asst  09:05:06 [claude-opus-4-7] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:57:55 refactor the discovery module to cache mtimes",
-            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) This is the pyo3 boundary; the Rust side owns the parse. Grep(session_activity)",
+            "    5 asst  10:58:39 [claude-sonnet-4] \"I'll fix that now.\" th(56ch) This is the pyo3 boundary; the Rust side owns the parse. Grep({\"pattern\":\"session_activity\",\"output_mode\":\"content\"})",
             "    6 user  10:59:03 <-Grep (47ch) cc_transcript/discovery.py:240:session_activity",
             "    7 user  11:00:06 the regex is over-matching, anchor it to the head",
-            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task(explore how the filter spec is compiled on the rust side) Edit cc_transcript/activity.py - return None + return result",
+            "    8 asst  11:00:20 [claude-sonnet-4] \"I'll fix that now.\" Task({\"description\":\"explore\",\"prompt\":\"explore how the filter spec is compiled on the rust side\",\"subagent_type\":\"Explore\"}) Edit cc_transcript/activity.py - return None + return result",
             "    9 user  11:01:36 <-Task (53ch) Investigated and found the answer in the parse layer.",
             "   10 user  11:03:00 <-Edit (2ch) ok",
             "   11 sys   11:03:13 turn_duration",
@@ -2322,7 +2329,7 @@
           ]
         }
       ],
-      "stats": "files        1\nevents       14\nkinds        user 7 · assistant 6 · system 1\nmodels       claude-sonnet-4 4 · claude-opus-4-7 2\ntools        Glob 1 · Grep 1 · Task 1 · Edit 1\ntext         370B\nthinking     120B\ntool io      607B\nsessions     1\nspan         2026-01-26 09:01:30 → 2026-01-26 11:04:50\ninterrupts   0\ntool errors  0\nsidechain    1"
+      "stats": "files        1\nevents       14\nkinds        user 7 · assistant 6 · system 1\nmodels       claude-sonnet-4 4 · claude-opus-4-7 2\ntools        Glob 1 · Grep 1 · Task 1 · Edit 1\ntool errors  -\nattachments  -\ntext         370B\nthinking     120B\ntool io      607B\nsessions     1\nspan         2026-01-26 09:01:30 → 2026-01-26 11:04:50\ninterrupts   0\nerrors       0\nerror events -\nslowest tools -\nsidechain    1"
     },
     {
       "id": ".fixtures/corpus/-Users-dev-Code-scratch/2b4bd0ef-2c53-46df-c185-4194c355b888.jsonl",
@@ -2334,22 +2341,22 @@
           "uuids": true,
           "lines": [
             "    0 user  09:00:15 investigate the token blowup in the compaction path c01ebde6-154a-4db7-2963-f068b4a8d301",
-            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read(tests/test_parser.py) 76462132-86d5-4c5b-cf31-32b700a88aca",
+            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read({\"file_path\":\"tests/test_parser.py\",\"limit\":303}) 76462132-86d5-4c5b-cf31-32b700a88aca",
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py … 7bf20efa-951b-42de-d56a-a92970e6971e",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\" de1740d5-65cf-4f5d-0003-a1b539daa779",
             "    4 user  10:34:43 why does the mining detector miss short corrections? 0edb7bd0-a0bf-41f8-2872-a593651bded7",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read(cc_transcript/filterspec.py) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+269ch) 74490fd3-9f02-4e64-186e-d79b09e51fb7",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+269ch) 74490fd3-9f02-4e64-186e-d79b09e51fb7",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_tran… d26b29a1-7aec-4804-fde9-548fc84bc3a6",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs 0f8ed741-9ef9-4a94-0774-9713ba5e9937",
             "    8 user  10:36:28 yes please 68fd30aa-0337-45d9-9db4-7e69175f32f1",
             "    9 asst  10:36:49 [claude-sonnet-4] \"All done — the change is in and the tests are green.\" 125b6f51-1ec5-4cad-f7b2-ff5f3da59c16",
             "   10 user  11:17:19 port the sentiment score spec to rust a9e670b0-f989-4041-9a55-85515cb0ec89",
-            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Careful — this looks safe to change but the parity suite pins it. Grep(parse_bytes) bba62507-5535-496f-921a-230fe1329bf2",
+            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Careful — this looks safe to change but the parity suite pins it. Grep({\"pattern\":\"parse_bytes\",\"output_mode\":\"content\"}) bba62507-5535-496f-921a-230fe1329bf2",
             "   12 user  11:18:52 <-Grep[err] (129ch) The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-m… 26d6717d-fef9-4b4f-db6f-7237f4dcf6fe",
             "   13 sys   11:20:06 turn_duration 0f15616d-6df9-4575-0c6e-2db058b78d4e",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\" e92eb7ed-fb54-4df9-3462-456cc9136d9f",
             "   15 user  14:38:11 add a --json flag to the stats command 11630d1c-72c8-46e0-48fb-840f6ff76527",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob(**/*.py) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+89ch) d67e6358-d966-4bda-a851-3ce70ef0dba7",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+89ch) d67e6358-d966-4bda-a851-3ce70ef0dba7",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.r… 79737716-7758-4d9c-ccb6-90b74ed585a3",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py b22d91ad-9ca4-4a65-741f-c4f52d8a06c5",
             "   19 sys   14:43:10 turn_duration d680b31b-ddb0-4128-fe22-600283063bb2",
@@ -2362,22 +2369,22 @@
           "uuids": false,
           "lines": [
             "    0 user  09:00:15 investigate the token blowup in the compaction path",
-            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read(tests/test_parser.py)",
+            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read({\"file_path\":\"tests/test_parser.py\",\"limit\":303})",
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py 4 line 4 of tests/test_parser.py 5 line 5 of tests/test_parser.py 6 line 6 of tests/test_parser.py 7 line 7 of tests/test_parser.py 8 line 8 of tests/test_parser.py 9 line 9 of tests/test_parser.py 10 line 10 of tests/test_parser.py",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:34:43 why does the mining detector miss short corrections?",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Read(cc_transcript/filterspec.py) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generated line 10 # generated line 11 # generated line 12 # generated line 13 # generated line 14 # generated line 15 # generated line 16 # generated line 17 # generated line 18",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generated line 10 # generated line 11 # generated line 12 # generated line 13 # generated line 14 # generated line 15 # generated line 16 # generated line 17 # generated line 18",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_transcript/filterspec.py 4 line 4 of cc_transcript/filterspec.py 5 line 5 of cc_transcript/filterspec.py 6 line 6 of cc_transcript/filterspec.py 7 line 7 of cc_transcript/filterspec.py 8 line 8 of cc_transcript/filterspec.py 9 line 9 of cc_transcript/filterspec.py 10 line 10 of cc_transcript/filterspec.py 11 line 11 of cc_transcript/filterspec.py 12 line 12 of cc_transcript/filterspec.py 13 line 13 of cc_transcript/filterspec.py 14 line 14 of cc_transcript/filterspec.py 15 line 15 of cc_transcript/filterspec.py 16 line 16 of cc_transcript/filterspec.py 17 line 17 of cc_transcript/filterspec.py 18 line 18 of cc_transcript/filterspec.py 19 line 19 of cc_transcript/filterspec.py 20 line 20 of cc_transcript/filterspec.py 21 line 21 of cc_transcript/filterspec.py 22 line 22 of cc_transcript/filterspec.py 23 line 23 of cc_transcript/filterspec.py 24 line 24 of cc_transcript/filterspec.py 25 line 25 of cc_transcript/filterspec.py 26 line 26 of cc_transcript/filterspec.py 27 line 27 of cc_transcript/filterspec.py",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs",
             "    8 user  10:36:28 yes please",
             "    9 asst  10:36:49 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   10 user  11:17:19 port the sentiment score spec to rust",
-            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Grep(parse_bytes)",
+            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Grep({\"pattern\":\"parse_bytes\",\"output_mode\":\"content\"})",
             "   12 user  11:18:52 <-Grep[err] (129ch) The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-matching, anchor it to the head",
             "   13 sys   11:20:06 turn_duration",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   15 user  14:38:11 add a --json flag to the stats command",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) Glob(**/*.py) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcript/activity.py",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py",
             "   19 sys   14:43:10 turn_duration",
@@ -2390,22 +2397,22 @@
           "uuids": false,
           "lines": [
             "    0 user  09:00:15 investigate the token blowup in the compaction path",
-            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read(tests/test_parser.py)",
+            "    1 asst  09:00:19 [claude-opus-4-8] \"I'll fix that now.\" Read({\"file_path\":\"tests/test_parser.py\",\"limit\":303})",
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py 4 line 4 of tests/test_parser.py 5 line 5 of tests/test_parser.py 6 line 6 of tests/test_parser.py 7…",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:34:43 why does the mining detector miss short corrections?",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read(cc_transcript/filterspec.py) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generate…(+169ch)",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generate…(+169ch)",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_transcript/filterspec.py 4 line 4 of cc_transcript/filterspec.py 5 line 5 of cc_transcript/filterspec.py…",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs",
             "    8 user  10:36:28 yes please",
             "    9 asst  10:36:49 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   10 user  11:17:19 port the sentiment score spec to rust",
-            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Careful — this looks safe to change but the parity suite pins it. Grep(parse_bytes)",
+            "   11 asst  11:17:35 [claude-sonnet-4] \"Found the issue — the predicate was applied to the wrong kind.\" th(65ch) Careful — this looks safe to change but the parity suite pins it. Grep({\"pattern\":\"parse_bytes\",\"output_mode\":\"content\"})",
             "   12 user  11:18:52 <-Grep[err] (129ch) The user doesn't want to proceed with this tool use. The tool use was rejected. the regex is over-matching, anchor it to the head",
             "   13 sys   11:20:06 turn_duration",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   15 user  14:38:11 add a --json flag to the stats command",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob(**/*.py) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcr…",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py",
             "   19 sys   14:43:10 turn_duration",
@@ -2529,8 +2536,8 @@
           ]
         }
       ],
-      "stats": "files        1\nevents       21\nkinds        user 11 · assistant 8 · system 2\nmodels       claude-opus-4-8 4 · claude-sonnet-4 4\ntools        Read 2 · Write 2 · Grep 1 · Glob 1\ntext         609B\nthinking     193B\ntool io      2.7KB\nsessions     1\nspan         2026-01-24 09:00:15 → 2026-01-24 14:44:04\ninterrupts   0\ntool errors  1\nsidechain    0"
+      "stats": "files        1\nevents       21\nkinds        user 11 · assistant 8 · system 2\nmodels       claude-opus-4-8 4 · claude-sonnet-4 4\ntools        Read 2 · Write 2 · Grep 1 · Glob 1\ntool errors  Grep 1\nattachments  -\ntext         609B\nthinking     193B\ntool io      2.7KB\nsessions     1\nspan         2026-01-24 09:00:15 → 2026-01-24 14:44:04\ninterrupts   0\nerrors       1\nerror events 12\nslowest tools -\nsidechain    0"
     }
   ],
-  "stats_all": "files        6\nevents       119\nkinds        user 55 · assistant 28 · attachment 17 · system 10 · other 7 · mode 2\nmodels       claude-opus-4-8 15 · claude-sonnet-4 8 · claude-opus-4-7 4 · <synthetic> 1\ntools        Read 5 · Edit 3 · Write 3 · Glob 2 · Grep 2 · Bash 1 · Task 1\ntext         1.9KB\nthinking     318B\ntool io      4.6KB\nsessions     6\nspan         2026-01-02 03:04:05 → 2026-01-26 11:04:50\ninterrupts   4\ntool errors  8\nsidechain    4"
+  "stats_all": "files        6\nevents       120\nkinds        user 55 · assistant 28 · attachment 18 · system 10 · other 7 · mode 2\nmodels       claude-opus-4-8 15 · claude-sonnet-4 8 · claude-opus-4-7 4 · <synthetic> 1\ntools        Read 5 · Edit 3 · Write 3 · Glob 2 · Grep 2 · Bash 1 · Task 1\ntool errors  Grep 1\nattachments   4 · queued_command 3 · hook_success 2 · hook_cancelled 2 · hook_additional_context 2 · hook_blocking_error 1 · hook_non_blocking_error 1 · async_hook_response 1 · deferred_tools_delta 1 · skill_listing 1\ntext         1.9KB\nthinking     318B\ntool io      4.6KB\nsessions     6\nspan         2026-01-02 03:04:05 → 2026-01-26 11:04:50\ninterrupts   4\nerrors       8\nslowest tools -\nsidechain    4"
 }

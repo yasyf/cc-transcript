@@ -17,6 +17,7 @@ from cc_transcript._native import AttachmentEvent as AttachmentEvent
 from cc_transcript._native import Attribution as Attribution
 from cc_transcript._native import CacheCreation as CacheCreation
 from cc_transcript._native import CompactBoundary as CompactBoundary
+from cc_transcript._native import DeferredToolsDelta as DeferredToolsDelta
 from cc_transcript._native import EntryMeta as EntryMeta
 from cc_transcript._native import EventList as EventList
 from cc_transcript._native import FallbackBlock as FallbackBlock
@@ -121,6 +122,7 @@ AttachmentDetail = (
     | HookAdditionalContext
     | AsyncHookResponse
     | QueuedCommand
+    | DeferredToolsDelta
     | OtherAttachment
 )
 

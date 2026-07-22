@@ -665,6 +665,15 @@ def fixture_entries() -> list[dict[str, Any]]:
             type="attachment",
             attachment={"type": "queued_command", "prompt": "run the tests", "commandMode": "prompt"},
         ),
+        raw_envelope(
+            type="attachment",
+            attachment={
+                "type": "deferred_tools_delta",
+                "addedNames": ["Read", "Grep"],
+                "removedNames": ["Bash"],
+                "source": "fixture",
+            },
+        ),
         raw_envelope(type="attachment", attachment={"type": "skill_listing", "names": ["a", "b"], "skillCount": 2}),
         raw_envelope(type="attachment", attachment={"kind": "file", "size": 9999999999}),
         # A sidechain attachment: MetaFlag clauses and sidechain stats must see it.

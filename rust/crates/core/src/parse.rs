@@ -5,12 +5,13 @@ use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
 use crate::types::{
     ApiError, AssistantEntry, AsyncHookResponse, AttachmentDetail, AttachmentEntry, Attribution,
-    CacheCreation, CompactBoundary, ContentBlock, Entry, EntryMeta, FallbackBlock,
-    HookAdditionalContext, HookBlockingError, HookCancelled, HookInfo, HookNonBlockingError,
-    HookSuccess, InitInfo, McpServer, ModeChannel, ModeEntry, ModelRefusalFallback, ModelUsage,
-    OtherEntry, Plugin, PreservedMessages, PreservedSegment, PrintBody, PrintMessage, PrintResult,
-    Question, QueuedCommand, ServerToolUse, StopHookSummary, SystemDetail, SystemEntry,
-    ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent, UserEntry,
+    CacheCreation, CompactBoundary, ContentBlock, DeferredToolsDelta, Entry, EntryMeta,
+    FallbackBlock, HookAdditionalContext, HookBlockingError, HookCancelled, HookInfo,
+    HookNonBlockingError, HookSuccess, InitInfo, McpServer, ModeChannel, ModeEntry,
+    ModelRefusalFallback, ModelUsage, OtherEntry, Plugin, PreservedMessages, PreservedSegment,
+    PrintBody, PrintMessage, PrintResult, Question, QueuedCommand, ServerToolUse, StopHookSummary,
+    SystemDetail, SystemEntry, ToolResultBlock, ToolUseBlock, TurnDuration, Usage, UserContent,
+    UserEntry,
 };
 use crate::value::{
     block_type, field, field_bool, field_str, field_truthy, is_py_truthy, normalized_owned,
@@ -477,6 +478,11 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
         Some("queued_command") => AttachmentDetail::QueuedCommand(QueuedCommand {
             prompt: opt_str(att, "prompt"),
             command_mode: opt_str(att, "commandMode"),
+        }),
+        Some("deferred_tools_delta") => AttachmentDetail::DeferredToolsDelta(DeferredToolsDelta {
+            added_names: str_array(att, "addedNames"),
+            removed_names: str_array(att, "removedNames"),
+            raw: data.clone(),
         }),
         _ => AttachmentDetail::Other(data.clone()),
     }

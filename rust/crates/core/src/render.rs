@@ -20,18 +20,7 @@ use crate::types::{
     PreservedMessages, PreservedSegment, ServerToolUse, StopHookSummary, SystemDetail,
     ToolResultBlock, TurnDuration, Usage, UserEntry,
 };
-use crate::value::field;
 
-pub const PRIMARY_KEYS: [&str; 8] = [
-    "file_path",
-    "path",
-    "command",
-    "pattern",
-    "url",
-    "prompt",
-    "query",
-    "description",
-];
 const SIZE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 const BLANK_TIME: &str = "        ";
 const TIME_FMT: &str = "%H:%M:%S";
@@ -411,21 +400,6 @@ fn hunk_lines(old: &str, new: &str, budget: &Budget) -> Vec<String> {
     lines
 }
 
-fn primary_arg(raw: &Value) -> String {
-    let Some(obj) = raw.as_object() else {
-        return String::new();
-    };
-    for key in PRIMARY_KEYS {
-        if let Some(v) = field(raw, key) {
-            return py_str(v);
-        }
-    }
-    match obj.iter().next() {
-        Some((_, v)) => py_str(v),
-        None => String::new(),
-    }
-}
-
 /// Render a typed tool call, clipping each content piece to the tool budget
 /// (render.py render_tool_call).
 pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
@@ -453,7 +427,7 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
         _ => format!(
             "{}({})",
             call.name(),
-            clip(&primary_arg(call.raw()), budget.tool_chars)
+            clip(&orjson_dumps(call.raw()), budget.tool_chars)
         ),
     }
 }
@@ -572,6 +546,13 @@ fn attachment_text(detail: &AttachmentDetail) -> String {
         AttachmentDetail::HookAdditionalContext(h) => h.content.join(" "),
         AttachmentDetail::AsyncHookResponse(h) => or_empty(&[&h.stdout, &h.stderr]),
         AttachmentDetail::QueuedCommand(q) => or_empty(&[&q.prompt]),
+        AttachmentDetail::DeferredToolsDelta(delta) => {
+            format!(
+                "+{} −{}",
+                delta.added_names.len(),
+                delta.removed_names.len()
+            )
+        }
         AttachmentDetail::Other(raw) => orjson_dumps(raw),
     }
 }
@@ -707,12 +688,21 @@ pub fn haystack(
     }
 }
 
-fn tool_haystack(block: &ContentBlock) -> String {
+/// The searchable text of one tool-use or tool-result block.
+pub fn tool_haystack(block: &ContentBlock) -> String {
     match block {
         ContentBlock::ToolUse(tu) => format!("{} {}", tu.name, orjson_dumps(&tu.input)),
         ContentBlock::ToolResult(tr) => tr.content.clone(),
         _ => unreachable!("tool_haystack is called only on tool blocks"),
     }
+}
+
+/// A timed tool call included in the stats slowest-tools list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlowTool {
+    pub tool: String,
+    pub duration_ms: i64,
+    pub is_error: bool,
 }
 
 /// Corpus-wide statistics over parsed transcripts (render.py Stats).
@@ -723,6 +713,8 @@ pub struct Stats {
     pub kinds: Vec<(String, u64)>,
     pub models: Vec<(String, u64)>,
     pub tools: Vec<(String, u64)>,
+    pub tool_errors_by_name: Vec<(String, u64)>,
+    pub attachment_types: Vec<(String, u64)>,
     pub text_chars: u64,
     pub thinking_chars: u64,
     pub tool_io_chars: u64,
@@ -731,6 +723,8 @@ pub struct Stats {
     pub last_timestamp: Option<DateTime<FixedOffset>>,
     pub interrupts: u64,
     pub tool_errors: u64,
+    pub error_events: Option<Vec<usize>>,
+    pub slowest_tools: Vec<SlowTool>,
     pub sidechain: u64,
 }
 
@@ -769,6 +763,8 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
     let mut kinds = Counter::default();
     let mut models = Counter::default();
     let mut tools = Counter::default();
+    let mut tool_errors_by_name = Counter::default();
+    let mut attachment_types = Counter::default();
     let mut sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut files = 0u64;
     let mut events = 0u64;
@@ -777,12 +773,14 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
     let mut tool_io_chars = 0u64;
     let mut interrupts = 0u64;
     let mut tool_errors = 0u64;
+    let mut error_events = (transcripts.len() == 1).then(Vec::new);
     let mut sidechain = 0u64;
     let mut first: Option<DateTime<FixedOffset>> = None;
     let mut last: Option<DateTime<FixedOffset>> = None;
     for entries in transcripts {
         files += 1;
-        for event in entries {
+        let mut tool_names: HashMap<String, String> = HashMap::new();
+        for (index, event) in entries.iter().enumerate() {
             events += 1;
             kinds.add(event_kind(event));
             text_chars += char_len(&entry_text(event)) as u64;
@@ -805,6 +803,16 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
                         if let ContentBlock::ToolResult(tr) = block {
                             tool_io_chars += char_len(&tr.content) as u64;
                             tool_errors += tr.is_error as u64;
+                            if tr.is_error {
+                                if let Some(indexes) = &mut error_events {
+                                    if indexes.last().copied() != Some(index) {
+                                        indexes.push(index);
+                                    }
+                                }
+                                if let Some(name) = tool_names.get(&tr.tool_use_id) {
+                                    tool_errors_by_name.add(name);
+                                }
+                            }
                         }
                     }
                 }
@@ -817,6 +825,7 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
                             }
                             ContentBlock::ToolUse(tu) => {
                                 tools.add(&tu.name);
+                                tool_names.insert(tu.id.clone(), tu.name.clone());
                                 tool_io_chars += orjson_dumps(&tu.input).len() as u64;
                             }
                             _ => {}
@@ -826,6 +835,7 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
                 Entry::Mode(m) => {
                     sessions.insert(m.session_id.clone());
                 }
+                Entry::Attachment(a) => attachment_types.add(&a.attachment_type),
                 _ => {}
             }
         }
@@ -836,6 +846,8 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
         kinds: kinds.most_common(),
         models: models.most_common(),
         tools: tools.most_common(),
+        tool_errors_by_name: tool_errors_by_name.most_common(),
+        attachment_types: attachment_types.most_common(),
         text_chars,
         thinking_chars,
         tool_io_chars,
@@ -844,18 +856,39 @@ pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
         last_timestamp: last,
         interrupts,
         tool_errors,
+        error_events,
+        slowest_tools: Vec::new(),
         sidechain,
     }
 }
 
+#[cfg(feature = "command")]
+pub fn slowest_tools<'a>(facts: impl IntoIterator<Item = &'a ToolFact>) -> Vec<SlowTool> {
+    let mut tools: Vec<SlowTool> = facts
+        .into_iter()
+        .filter_map(|fact| {
+            fact.duration_ms.map(|duration_ms| SlowTool {
+                tool: fact.tool.clone(),
+                duration_ms,
+                is_error: fact.is_error,
+            })
+        })
+        .collect();
+    tools.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+    tools.truncate(5);
+    tools
+}
+
 /// The aligned multi-line statistics block (render.py render_stats).
 pub fn render_stats(stats: &Stats) -> String {
-    let rows: [(&str, String); 13] = [
+    let mut rows = vec![
         ("files", stats.files.to_string()),
         ("events", stats.events.to_string()),
         ("kinds", render_histogram(&stats.kinds)),
         ("models", render_histogram(&stats.models)),
         ("tools", render_histogram(&stats.tools)),
+        ("tool errors", render_histogram(&stats.tool_errors_by_name)),
+        ("attachments", render_histogram(&stats.attachment_types)),
         ("text", human_size(stats.text_chars)),
         ("thinking", human_size(stats.thinking_chars)),
         ("tool io", human_size(stats.tool_io_chars)),
@@ -865,13 +898,48 @@ pub fn render_stats(stats: &Stats) -> String {
             render_span(stats.first_timestamp, stats.last_timestamp),
         ),
         ("interrupts", stats.interrupts.to_string()),
-        ("tool errors", stats.tool_errors.to_string()),
-        ("sidechain", stats.sidechain.to_string()),
+        ("errors", stats.tool_errors.to_string()),
     ];
+    if let Some(indexes) = &stats.error_events {
+        rows.push(("error events", render_indexes(indexes)));
+    }
+    rows.extend([
+        ("slowest tools", render_slowest_tools(&stats.slowest_tools)),
+        ("sidechain", stats.sidechain.to_string()),
+    ]);
     rows.iter()
         .map(|(label, value)| format!("{label:<12} {value}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn render_indexes(indexes: &[usize]) -> String {
+    if indexes.is_empty() {
+        return "-".to_string();
+    }
+    indexes
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn render_slowest_tools(tools: &[SlowTool]) -> String {
+    if tools.is_empty() {
+        return "-".to_string();
+    }
+    tools
+        .iter()
+        .map(|tool| {
+            format!(
+                "{} {}ms{}",
+                tool.tool,
+                tool.duration_ms,
+                if tool.is_error { " [err]" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn render_span(
@@ -1445,14 +1513,22 @@ fn meta_json(meta: &EntryMeta) -> Json {
 
 fn block_json(block: &ContentBlock) -> Json {
     match block {
-        ContentBlock::Text(text) => obj(vec![("text", Json::Str(text.clone()))]),
-        ContentBlock::Thinking(thinking) => obj(vec![("thinking", Json::Str(thinking.clone()))]),
+        ContentBlock::Text(text) => obj(vec![
+            ("type", Json::Str("text".to_string())),
+            ("text", Json::Str(text.clone())),
+        ]),
+        ContentBlock::Thinking(thinking) => obj(vec![
+            ("type", Json::Str("thinking".to_string())),
+            ("thinking", Json::Str(thinking.clone())),
+        ]),
         ContentBlock::ToolUse(tu) => obj(vec![
+            ("type", Json::Str("tool_use".to_string())),
             ("id", Json::Str(tu.id.clone())),
             ("name", Json::Str(tu.name.clone())),
             ("input", Json::Value(tu.input.clone())),
         ]),
         ContentBlock::ToolResult(tr) => obj(vec![
+            ("type", Json::Str("tool_result".to_string())),
             ("tool_use_id", Json::Str(tr.tool_use_id.clone())),
             ("content", Json::Str(tr.content.clone())),
             ("is_error", Json::Bool(tr.is_error)),
@@ -1461,6 +1537,7 @@ fn block_json(block: &ContentBlock) -> Json {
             ("denial_kind", opt_str(&tr.denial_kind)),
         ]),
         ContentBlock::Fallback(f) => obj(vec![
+            ("type", Json::Str("fallback".to_string())),
             ("from_model", Json::Str(f.from_model.clone())),
             ("to_model", Json::Str(f.to_model.clone())),
         ]),
@@ -1726,6 +1803,16 @@ fn attachment_detail_json(detail: &AttachmentDetail) -> Json {
             ("prompt", opt_str(&q.prompt)),
             ("command_mode", opt_str(&q.command_mode)),
         ]),
+        AttachmentDetail::DeferredToolsDelta(delta) => obj(vec![
+            ("added_count", Json::UInt(delta.added_names.len() as u64)),
+            (
+                "removed_count",
+                Json::UInt(delta.removed_names.len() as u64),
+            ),
+            ("added_names", str_arr(&delta.added_names)),
+            ("removed_names", str_arr(&delta.removed_names)),
+            ("raw", Json::Value(delta.raw.clone())),
+        ]),
         AttachmentDetail::Other(raw) => obj(vec![("raw", Json::Value(raw.clone()))]),
     }
 }
@@ -1808,14 +1895,34 @@ fn counts_obj(counts: &[(String, u64)]) -> Json {
     )
 }
 
+fn slowest_tools_json(tools: &[SlowTool]) -> Json {
+    Json::Arr(
+        tools
+            .iter()
+            .map(|tool| {
+                obj(vec![
+                    ("tool", Json::Str(tool.tool.clone())),
+                    ("duration_ms", Json::Int(tool.duration_ms)),
+                    ("is_error", Json::Bool(tool.is_error)),
+                ])
+            })
+            .collect(),
+    )
+}
+
 /// [`Stats`] as the CLI's JSON projection (render.py stats_dict via dataclasses.asdict).
 pub fn stats_json(stats: &Stats) -> Json {
-    obj(vec![
+    let mut pairs = vec![
         ("files", Json::UInt(stats.files)),
         ("events", Json::UInt(stats.events)),
         ("kinds", counts_obj(&stats.kinds)),
         ("models", counts_obj(&stats.models)),
         ("tools", counts_obj(&stats.tools)),
+        (
+            "tool_errors_by_name",
+            counts_obj(&stats.tool_errors_by_name),
+        ),
+        ("attachment_types", counts_obj(&stats.attachment_types)),
         ("text_chars", Json::UInt(stats.text_chars)),
         ("thinking_chars", Json::UInt(stats.thinking_chars)),
         ("tool_io_chars", Json::UInt(stats.tool_io_chars)),
@@ -1830,8 +1937,23 @@ pub fn stats_json(stats: &Stats) -> Json {
         ),
         ("interrupts", Json::UInt(stats.interrupts)),
         ("tool_errors", Json::UInt(stats.tool_errors)),
+    ];
+    if let Some(error_events) = &stats.error_events {
+        pairs.push((
+            "error_events",
+            Json::Arr(
+                error_events
+                    .iter()
+                    .map(|index| Json::UInt(*index as u64))
+                    .collect(),
+            ),
+        ));
+    }
+    pairs.extend([
+        ("slowest_tools", slowest_tools_json(&stats.slowest_tools)),
         ("sidechain", Json::UInt(stats.sidechain)),
-    ])
+    ]);
+    obj(pairs)
 }
 
 /// Right-aligned `  count  name` rows, most frequent first with alphabetic ties
@@ -2116,6 +2238,35 @@ fn verdict_name(verdict: &Verdict) -> &'static str {
 mod tests {
     use super::*;
 
+    fn parsed_entry(raw: &str) -> Entry {
+        crate::parse::parse_entry(sonic_rs::from_str(raw).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn attachment_event_json_preserves_deferred_tools_delta_raw() {
+        let event = parsed_entry(
+            r#"{"type":"attachment","uuid":"a1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","attachment":{"type":"deferred_tools_delta","addedNames":["Read"],"removedNames":["Bash"],"legacyExtra":"kept"}}"#,
+        );
+
+        assert!(event_json(4, &event).dumps().contains(
+            r#""raw":{"type":"attachment","uuid":"a1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","attachment":{"type":"deferred_tools_delta","addedNames":["Read"],"removedNames":["Bash"],"legacyExtra":"kept"}}"#,
+        ));
+    }
+
+    #[test]
+    fn stats_deduplicates_error_event_indexes() {
+        let event = parsed_entry(
+            r#"{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-01-02T03:04:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"first","is_error":true},{"type":"tool_result","tool_use_id":"t2","content":"second","is_error":true}]}}"#,
+        );
+        let stats = collect_stats(&[vec![event]]);
+
+        assert_eq!(stats.error_events, Some(vec![0]));
+        assert!(render_stats(&stats)
+            .lines()
+            .any(|line| line == "error events 0"));
+        assert!(stats_json(&stats).dumps().contains(r#""error_events":[0]"#));
+    }
+
     #[test]
     fn truncate_collapses_then_cuts_by_code_point() {
         assert_eq!(truncate("a  b\n\tc", 100), "a b c");
@@ -2365,7 +2516,7 @@ mod tests {
 
     #[test]
     fn numbers_format_like_python_str_not_raw_lexeme() {
-        // str()/repr() layout (padded exponent), the primary_arg path.
+        // str()/repr() layout (padded exponent).
         assert_eq!(format_number(&num("1e-7"), true), "1e-07");
         assert_eq!(format_number(&num("1e16"), true), "1e+16");
         assert_eq!(format_number(&num("1e15"), true), "1000000000000000.0");

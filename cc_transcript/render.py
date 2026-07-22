@@ -40,7 +40,7 @@ def render_tool_call(call: ToolCall | FallbackCall, *, budget: Budget) -> str:
     The single tool-input renderer: Edit renders the path plus ``- old`` /
     ``+ new`` lines, MultiEdit renders every span under an ``edit i/n``
     marker, Write renders the path plus content, Bash renders the command,
-    and everything else renders a compact ``name(primary-arg)`` line.
+    and everything else renders the tool name with its full compact-JSON input.
 
     Example:
         >>> render_tool_call(parse_tool_call("Bash", {"command": "ls"}), budget=Budget())

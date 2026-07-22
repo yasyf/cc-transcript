@@ -2,13 +2,31 @@
 
 use std::path::PathBuf;
 
+use cc_transcript_core::facts::{tool_facts, ToolFact};
 use cc_transcript_core::render::{
-    collect_stats, render_stats, stats_json, transcript_header, Json,
+    collect_stats, render_stats, slowest_tools, stats_json, transcript_header, Json, SlowTool,
 };
 
 use crate::output::{CliExit, Out};
-use crate::target::{parse_transcripts, py_path, require_files, resolve_targets, scope_note};
+use crate::target::{
+    parse_transcripts, py_path, require_files, resolve_targets, scope_note, Parsed,
+};
 use crate::DiscoveryOpts;
+
+fn slowest(parsed: &[Parsed]) -> Vec<SlowTool> {
+    let facts: Vec<ToolFact> = parsed
+        .iter()
+        .flat_map(|transcript| match &transcript.session_id {
+            Some(session) => tool_facts(
+                session,
+                &transcript.path.to_string_lossy(),
+                &transcript.entries,
+            ),
+            None => Vec::new(),
+        })
+        .collect();
+    slowest_tools(&facts)
+}
 
 pub fn run(
     paths: &[PathBuf],
@@ -42,7 +60,8 @@ pub fn run(
     match (per_file, json) {
         (true, true) => {
             for parsed in &transcripts {
-                let stats = collect_stats(std::slice::from_ref(&parsed.entries));
+                let mut stats = collect_stats(std::slice::from_ref(&parsed.entries));
+                stats.slowest_tools = slowest(std::slice::from_ref(parsed));
                 let Json::Obj(mut pairs) = stats_json(&stats) else {
                     unreachable!("stats_json returns an object")
                 };
@@ -58,7 +77,8 @@ pub fn run(
         }
         (true, false) => {
             for parsed in &transcripts {
-                let stats = collect_stats(std::slice::from_ref(&parsed.entries));
+                let mut stats = collect_stats(std::slice::from_ref(&parsed.entries));
+                stats.slowest_tools = slowest(std::slice::from_ref(parsed));
                 out.line(&transcript_header(&parsed.path.to_string_lossy()))?;
                 out.line(&render_stats(&stats))?;
                 out.line("")?;
@@ -68,12 +88,18 @@ pub fn run(
             }
         }
         (false, true) => {
+            let slowest_tools = slowest(&transcripts);
             let entries: Vec<_> = transcripts.into_iter().map(|p| p.entries).collect();
-            out.line(&stats_json(&collect_stats(&entries)).dumps())?;
+            let mut stats = collect_stats(&entries);
+            stats.slowest_tools = slowest_tools;
+            out.line(&stats_json(&stats).dumps())?;
         }
         (false, false) => {
+            let slowest_tools = slowest(&transcripts);
             let entries: Vec<_> = transcripts.into_iter().map(|p| p.entries).collect();
-            out.line(&render_stats(&collect_stats(&entries)))?;
+            let mut stats = collect_stats(&entries);
+            stats.slowest_tools = slowest_tools;
+            out.line(&render_stats(&stats))?;
             if let Some(note) = scope_note(&targets) {
                 out.line(&note)?;
             }

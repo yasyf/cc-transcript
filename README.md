@@ -84,6 +84,14 @@ print(len(transcript.events), "events after the noise drop")
 
 `discover()` lists every transcript on disk newest first, `stream` fans a whole corpus across the parse pool, and `resolve` finds one session by UUID. `parse` also reads OpenAI Codex CLI rollouts — hand it a path from `~/.codex/sessions` and the same typed events come back. The [getting-started guide](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) builds this out to a composed filter and a sentiment score.
 
+## JSON output schema
+
+`show --json` and `grep --json` emit JSONL, with one object per event. Each event
+uses the envelope `{i, kind, meta, model, text, blocks, stop_reason, usage}`;
+fields that do not apply to its kind are omitted. Every object in `blocks` has
+a `type` discriminator such as `text`, `thinking`, `tool_use`, `tool_result`,
+or `fallback`.
+
 ## More in the docs
 
 - [The Python library](https://yasyf.github.io/cc-transcript/docs/getting-started/index.html) turns a transcript into typed lazy views, a composed filter, and a score in a dozen lines.

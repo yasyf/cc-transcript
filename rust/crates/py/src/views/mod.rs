@@ -50,6 +50,7 @@ pub(crate) fn add_view_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<attachment::AsyncHookResponseView>()?;
     m.add_class::<attachment::QueuedCommandView>()?;
     m.add_class::<attachment::OtherAttachmentView>()?;
+    m.add_class::<attachment::DeferredToolsDeltaView>()?;
     m.add_class::<print::PrintResultView>()?;
     m.add_class::<print::PrintMessageView>()?;
     m.add_class::<print::InitInfoView>()?;

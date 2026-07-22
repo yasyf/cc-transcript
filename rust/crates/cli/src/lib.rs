@@ -144,6 +144,9 @@ pub enum Cmd {
         /// Drop structural junk events.
         #[arg(long = "no-junk")]
         no_junk: bool,
+        /// Keep only events carrying an erroring tool result.
+        #[arg(long)]
+        errors: bool,
         /// Render thinking text inline.
         #[arg(long)]
         thinking: bool,
@@ -153,7 +156,7 @@ pub enum Cmd {
         /// Append each event's uuid.
         #[arg(long)]
         uuids: bool,
-        /// Emit one JSON object per event.
+        /// Emit JSONL event envelopes with i, kind, meta, model, text, blocks, stop_reason, and usage.
         #[arg(long)]
         json: bool,
     },
@@ -169,6 +172,9 @@ pub enum Cmd {
         /// Keep only events using this tool, or carrying its results.
         #[arg(long)]
         tool: Option<String>,
+        /// Keep only erroring tool calls and their results.
+        #[arg(long)]
+        errors: bool,
         /// Case-insensitive matching.
         #[arg(short = 'i', long = "ignore-case")]
         ignore_case: bool,
@@ -190,7 +196,7 @@ pub enum Cmd {
         /// Annotate tool-use hits with their result's outcome.
         #[arg(long = "with-result")]
         with_result: bool,
-        /// Emit one JSON object per match.
+        /// Emit JSONL event envelopes with i, kind, meta, model, text, blocks, stop_reason, and usage.
         #[arg(long)]
         json: bool,
     },
@@ -463,6 +469,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             kinds,
             signal,
             no_junk,
+            errors,
             thinking,
             width,
             uuids,
@@ -476,6 +483,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             kinds,
             signal,
             no_junk,
+            errors,
             thinking,
             width,
             uuids,
@@ -487,6 +495,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             discovery,
             kinds,
             tool,
+            errors,
             ignore_case,
             wheres,
             context,
@@ -501,6 +510,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             discovery,
             kinds,
             tool,
+            errors,
             ignore_case,
             wheres,
             context,

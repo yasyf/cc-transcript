@@ -199,7 +199,7 @@ WINDOW = ("--since", "2026-01-02T03:04:00Z", "--until", "2026-01-02T03:05:00Z")
 EXPECTED_SHOW = (
     "    0 user  03:04:05 hello world",
     '    1 asst  03:04:06 [claude-opus-4-7] "hi there"',
-    "    2 asst  03:04:07 [claude-opus-4-7] th(12ch) Read(/x)",
+    '    2 asst  03:04:07 [claude-opus-4-7] th(12ch) Read({"file_path":"/x"})',
     "    3 user  03:04:08 <-Read (9ch) ok output",
     "    4 asst  03:04:09 [claude-opus-4-7] ls",
     "    5 user  03:04:10 <-Bash[err] (4ch) boom",
@@ -219,13 +219,17 @@ EXPECTED_STATS = "\n".join(
         "kinds        user 7 · assistant 3 · system 1 · mode 1 · other 1",
         "models       claude-opus-4-7 3",
         "tools        Read 1 · Bash 1",
+        "tool errors  Bash 1",
+        "attachments  -",
         "text         126B",
         "thinking     12B",
         "tool io      47B",
         "sessions     1",
         "span         2026-01-02 03:04:05 → 2026-01-02 03:04:17",
         "interrupts   1",
-        "tool errors  1",
+        "errors       1",
+        "error events 5",
+        "slowest tools Read 1000ms · Bash 1000ms [err]",
         "sidechain    1",
     )
 )
@@ -238,7 +242,7 @@ READ_SLICE = {
     "tool_name": "Read",
     "tool_digest": tool_digest("Read", {"file_path": "/x"}),
     "file_path": "/x",
-    "summary": "Read(/x)",
+    "summary": 'Read({"file_path":"/x"})',
 }
 
 BASH_SLICE = {
@@ -397,6 +401,12 @@ def test_show_head_tail_range_are_mutually_exclusive(transcript: Path) -> None:
     assert "--head, --tail, and --range are mutually exclusive" in result.stderr
 
 
+def test_show_errors_keeps_only_error_results(transcript: Path) -> None:
+    result = run_cli("show", str(transcript), "--errors")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [EXPECTED_SHOW[5]]
+
+
 def test_grep_kind_filter(transcript: Path) -> None:
     result = run_cli("grep", "o", str(transcript), "--kind", "system")
     assert result.returncode == 0
@@ -417,13 +427,76 @@ def test_grep_context_windows_and_separator(transcript: Path) -> None:
     ]
 
 
+def test_grep_errors_matches_erroring_tool_call(transcript: Path) -> None:
+    result = run_cli("grep", "ls", str(transcript), "--errors")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        f"== {transcript}",
+        EXPECTED_SHOW[4],
+        "1 files, 1 matches",
+    ]
+
+
+def test_grep_errors_correlates_pattern_to_the_erroring_call(tmp_path: Path) -> None:
+    path = write_transcript(
+        tmp_path / "mixed.jsonl",
+        [
+            assistant_entry(
+                0,
+                [
+                    {"type": "tool_use", "id": "healthy-match", "name": "Read", "input": {"file_path": "needle"}},
+                    {"type": "tool_use", "id": "error-other", "name": "Read", "input": {"file_path": "other"}},
+                ],
+                stop_reason="tool_use",
+            ),
+            envelope(
+                1,
+                type="user",
+                message={
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "healthy-match", "content": "ok", "is_error": False},
+                        {"type": "tool_result", "tool_use_id": "error-other", "content": "boom", "is_error": True},
+                    ],
+                },
+            ),
+            assistant_entry(
+                2,
+                [
+                    {"type": "tool_use", "id": "error-match", "name": "Read", "input": {"file_path": "needle"}},
+                    {"type": "tool_use", "id": "healthy-other", "name": "Read", "input": {"file_path": "other"}},
+                ],
+                stop_reason="tool_use",
+            ),
+            envelope(
+                3,
+                type="user",
+                message={
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "error-match", "content": "boom", "is_error": True},
+                        {"type": "tool_result", "tool_use_id": "healthy-other", "content": "ok", "is_error": False},
+                    ],
+                },
+            ),
+        ],
+    )
+    result = run_cli("grep", "needle", str(path), "--errors")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [
+        f"== {path}",
+        '    2 asst  03:04:07 [claude-opus-4-7] Read({"file_path":"needle"}) Read({"file_path":"other"})',
+        "1 files, 1 matches",
+    ]
+
+
 def test_grep_with_result_human_appends_markers(rich: Path) -> None:
     result = run_cli("grep", "rm|query", str(rich), "--with-result")
     assert result.returncode == 0
     assert result.stdout.splitlines() == [
         f"== {rich}",
         "    1 asst  03:04:06 [claude-opus-4-7] rm -rf /tmp/x [denied] (1000ms)",
-        "    3 asst  03:04:08 [claude-opus-4-7] mcp__semble__search(x) (1000ms)",
+        '    3 asst  03:04:08 [claude-opus-4-7] mcp__semble__search({"query":"x"}) (1000ms)',
         "1 files, 2 matches",
     ]
 
@@ -441,6 +514,42 @@ def test_stats_warns_on_unparseable_file(transcript: Path, unparseable: Path) ->
     assert result.returncode == 0
     assert result.stderr == f"warning: skipped 1 unparseable transcript(s): {unparseable}\n"
     assert result.stdout == EXPECTED_STATS + "\n"
+
+
+def test_stats_omits_error_event_indexes_for_multiple_files(transcript: Path, tmp_path: Path) -> None:
+    second = write_transcript(tmp_path / "second.jsonl", fixture_entries())
+    human = run_cli("stats", str(transcript), str(second))
+    json_result = run_cli("stats", str(transcript), str(second), "--json")
+    row = json.loads(json_result.stdout)
+    assert human.returncode == json_result.returncode == 0
+    assert "error events" not in human.stdout
+    assert "error_events" not in row
+    assert row["tool_errors"] == 2
+
+
+def test_stats_slowest_tools_top_five_stable_ties_and_error_marker(tmp_path: Path) -> None:
+    specs = (
+        ("Tool0", 6, False),
+        ("Tool1", 5, False),
+        ("Tool2", 4, False),
+        ("Tool3", 4, True),
+        ("Tool4", 3, False),
+        ("Tool5", 2, False),
+    )
+    entries = [
+        entry
+        for index, (tool, duration, is_error) in enumerate(specs)
+        for entry in (
+            tool_use_entry(index * 10, f"toolu-{index}", tool, value=index),
+            tool_result_entry(index * 10 + duration, f"toolu-{index}", "done", is_error=is_error),
+        )
+    ]
+    path = write_transcript(tmp_path / "slow.jsonl", entries)
+    result = run_cli("stats", str(path))
+    assert next(line for line in result.stdout.splitlines() if line.startswith("slowest tools")) == (
+        "slowest tools Tool0 6000ms · Tool1 5000ms · Tool2 4000ms · "
+        "Tool3 4000ms [err] · Tool4 3000ms"
+    )
 
 
 def test_slice_emits_one_line_per_tool_call(session_root: Path) -> None:
