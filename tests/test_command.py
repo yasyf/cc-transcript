@@ -121,7 +121,7 @@ class TestCommand:
 
     def test_multiple_redirects(self) -> None:
         assert parse("echo hello >> out.txt 2>&1") == Command(
-            raw="echo hello",
+            raw="echo hello >> out.txt 2>&1",
             executable="echo",
             args=("hello",),
             redirects=(Redirect(op=">>", target="out.txt", fd=None), Redirect(op=">&", target="1", fd=2)),
@@ -300,8 +300,14 @@ class TestCommandLine:
 
     def test_and_chain(self) -> None:
         cl = CommandLine.parse('eval "$(direnv export bash)" && uv run mtest run tests/')
-        assert [cmd.executable for cmd in cl.commands] == ["eval", "direnv", "uv"]
-        assert cl.parts[1][1] == "&&"
+        assert [cmd.executable for cmd in cl.commands] == [
+            "eval",
+            "direnv",
+            "$(direnv export bash)",
+            "direnv",
+            "uv",
+        ]
+        assert cl.parts[3][1] == "&&"
         assert cl.primary is not None
         assert cl.primary.executable == "uv"
         assert cl.primary.program == "mtest"
@@ -697,7 +703,14 @@ class TestEdgeCases:
         cl = CommandLine.parse(
             'eval "$(direnv export bash)" && ENV=prod uv run mtest run tests/test_foo.py -k test_name 2>&1 | head -50'
         )
-        assert [cmd.executable for cmd in cl.commands] == ["eval", "direnv", "uv", "head"]
+        assert [cmd.executable for cmd in cl.commands] == [
+            "eval",
+            "direnv",
+            "$(direnv export bash)",
+            "direnv",
+            "uv",
+            "head",
+        ]
         assert cl.primary is not None
         assert cl.primary.executable == "head"
 

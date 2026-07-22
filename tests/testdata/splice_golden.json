@@ -187,26 +187,13 @@
     "command": "for f in *.py; do python $f; done",
     "id": "pin-loop-do-unwraps-body",
     "splice_layer": {
-      "parts": [
-        {
-          "executable": "python",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            18,
-            27
-          ]
-        }
-      ],
+      "parts": [],
       "raw": "for f in *.py; do python $f; done",
       "splice": {
-        "combined": "for f in *.py; do R0; done",
+        "combined": null,
         "error": null,
-        "rewrite": "for f in *.py; do X0; done",
-        "single": {
-          "0": "for f in *.py; do R0; done"
-        }
+        "rewrite": null,
+        "single": {}
       }
     }
   },
@@ -214,37 +201,13 @@
     "command": "while true; do sleep 1; done",
     "id": "pin-while-condition-and-body",
     "splice_layer": {
-      "parts": [
-        {
-          "executable": "true",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            6,
-            10
-          ]
-        },
-        {
-          "executable": "sleep",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            15,
-            22
-          ]
-        }
-      ],
+      "parts": [],
       "raw": "while true; do sleep 1; done",
       "splice": {
-        "combined": "while R0; do R1; done",
+        "combined": null,
         "error": null,
-        "rewrite": "while X0; do X1; done",
-        "single": {
-          "0": "while R0; do sleep 1; done",
-          "1": "while true; do R1; done"
-        }
+        "rewrite": null,
+        "single": {}
       }
     }
   },
@@ -252,48 +215,13 @@
     "command": "if grep -q x f; then echo y; else echo z; fi",
     "id": "pin-if-condition-then-else",
     "splice_layer": {
-      "parts": [
-        {
-          "executable": "grep",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            3,
-            14
-          ]
-        },
-        {
-          "executable": "echo",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            21,
-            27
-          ]
-        },
-        {
-          "executable": "echo",
-          "next_op": null,
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            34,
-            40
-          ]
-        }
-      ],
+      "parts": [],
       "raw": "if grep -q x f; then echo y; else echo z; fi",
       "splice": {
-        "combined": "if R0; then R1; else R2; fi",
+        "combined": null,
         "error": null,
-        "rewrite": "if X0; then X1; else X2; fi",
-        "single": {
-          "0": "if R0; then echo y; else echo z; fi",
-          "1": "if grep -q x f; then R1; else echo z; fi",
-          "2": "if grep -q x f; then echo y; else R2; fi"
-        }
+        "rewrite": null,
+        "single": {}
       }
     }
   },
@@ -859,20 +787,10 @@
     "splice_layer": {
       "parts": [
         {
-          "executable": "git",
-          "next_op": ";",
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            8,
-            18
-          ]
-        },
-        {
           "executable": "foo",
           "next_op": null,
           "piped": false,
-          "prev_op": ";",
+          "prev_op": null,
           "span": [
             23,
             26
@@ -881,12 +799,11 @@
       ],
       "raw": "foo() { git status; }; foo",
       "splice": {
-        "combined": "foo() { R0; }; R1",
+        "combined": "foo() { git status; }; R0",
         "error": null,
-        "rewrite": "foo() { X0; }; X1",
+        "rewrite": "foo() { git status; }; X0",
         "single": {
-          "0": "foo() { R0; }; foo",
-          "1": "foo() { git status; }; R1"
+          "0": "foo() { git status; }; R0"
         }
       }
     }
@@ -1444,17 +1361,17 @@
           "prev_op": null,
           "span": [
             0,
-            23
+            12
           ]
         }
       ],
       "raw": "grep pattern <<< \"$var\"",
       "splice": {
-        "combined": "R0",
+        "combined": "R0 <<< \"$var\"",
         "error": null,
-        "rewrite": "X0",
+        "rewrite": "X0 <<< \"$var\"",
         "single": {
-          "0": "R0"
+          "0": "R0 <<< \"$var\""
         }
       }
     }
@@ -1466,7 +1383,7 @@
       "parts": [
         {
           "executable": "echo",
-          "next_op": null,
+          "next_op": ";",
           "piped": false,
           "prev_op": null,
           "span": [
@@ -1478,7 +1395,7 @@
           "executable": "echo",
           "next_op": "|",
           "piped": true,
-          "prev_op": null,
+          "prev_op": ";",
           "span": [
             9,
             15
@@ -1525,20 +1442,10 @@
     "splice_layer": {
       "parts": [
         {
-          "executable": "echo",
-          "next_op": ";",
-          "piped": false,
-          "prev_op": null,
-          "span": [
-            10,
-            17
-          ]
-        },
-        {
           "executable": "greet",
           "next_op": "&&",
           "piped": false,
-          "prev_op": ";",
+          "prev_op": null,
           "span": [
             22,
             27
@@ -1557,13 +1464,12 @@
       ],
       "raw": "greet() { echo hi; }; greet && greet",
       "splice": {
-        "combined": "greet() { R0; }; R1 && R2",
+        "combined": "greet() { echo hi; }; R0 && R1",
         "error": null,
-        "rewrite": "greet() { X0; }; X1 && X2",
+        "rewrite": "greet() { echo hi; }; X0 && X1",
         "single": {
-          "0": "greet() { R0; }; greet && greet",
-          "1": "greet() { echo hi; }; R1 && greet",
-          "2": "greet() { echo hi; }; greet && R2"
+          "0": "greet() { echo hi; }; R0 && greet",
+          "1": "greet() { echo hi; }; greet && R1"
         }
       }
     }

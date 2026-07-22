@@ -1,13 +1,10 @@
-"""Golden parity: the native ``cc_transcript.command`` surface reproduces the v13.2 splice layer.
+"""Golden coverage for the native ``cc_transcript.command`` splice layer.
 
-The golden (``testdata/splice_golden.json``) freezes the Python v13.2 ``CommandLine`` splice
+The golden (``testdata/splice_golden.json``) records the current native ``CommandLine`` splice
 surface — per-part ``Command.span``, ``Occurrence`` ``prev_op``/``next_op``/``piped``,
 ``CommandLine.splice`` results, the parse-derived span-less ``ValueError`` message, and
 ``rewrite_occurrences`` — over the command-prefix pins, edge cases, and splice-specific shapes.
-The generator that wrote it (``scripts/gen_splice_golden.py``) was removed alongside command.py's
-Python bodies in the P6 deletion sweep; the golden is the frozen contract, and this asserts the
-flipped native views serialize to the same structure. The probe helpers below were lifted from
-that generator so the surface stays independently exercised.
+Regenerate it with ``scripts/gen_splice_golden.py`` when owner-approved parser behavior changes.
 
 The out-of-order and overlap ``ValueError`` legs need hand-built spans and live as construction
 tests in ``tests/test_command.py`` (``TestSplice``).

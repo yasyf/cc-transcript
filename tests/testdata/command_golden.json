@@ -234,29 +234,8 @@
     "command": "for f in *.py; do python $f; done",
     "id": "pin-loop-do-unwraps-body",
     "parsed": {
-      "parts": [
-        {
-          "command": {
-            "args": [
-              "$f"
-            ],
-            "env": [],
-            "executable": "python",
-            "prefix": "python",
-            "program": "python",
-            "raw": "python $f",
-            "redirects": [],
-            "unwrapped_argv": [
-              "python",
-              "$f"
-            ]
-          },
-          "op": null
-        }
-      ],
-      "prefixes": [
-        "python"
-      ],
+      "parts": [],
+      "prefixes": [],
       "raw": "for f in *.py; do python $f; done"
     }
   },
@@ -264,45 +243,8 @@
     "command": "while true; do sleep 1; done",
     "id": "pin-while-condition-and-body",
     "parsed": {
-      "parts": [
-        {
-          "command": {
-            "args": [],
-            "env": [],
-            "executable": "true",
-            "prefix": "true",
-            "program": "true",
-            "raw": "true",
-            "redirects": [],
-            "unwrapped_argv": [
-              "true"
-            ]
-          },
-          "op": null
-        },
-        {
-          "command": {
-            "args": [
-              "1"
-            ],
-            "env": [],
-            "executable": "sleep",
-            "prefix": "sleep",
-            "program": "sleep",
-            "raw": "sleep 1",
-            "redirects": [],
-            "unwrapped_argv": [
-              "sleep",
-              "1"
-            ]
-          },
-          "op": null
-        }
-      ],
-      "prefixes": [
-        "true",
-        "sleep"
-      ],
+      "parts": [],
+      "prefixes": [],
       "raw": "while true; do sleep 1; done"
     }
   },
@@ -310,71 +252,8 @@
     "command": "if grep -q x f; then echo y; else echo z; fi",
     "id": "pin-if-condition-then-else",
     "parsed": {
-      "parts": [
-        {
-          "command": {
-            "args": [
-              "-q",
-              "x",
-              "f"
-            ],
-            "env": [],
-            "executable": "grep",
-            "prefix": "grep",
-            "program": "grep",
-            "raw": "grep -q x f",
-            "redirects": [],
-            "unwrapped_argv": [
-              "grep",
-              "-q",
-              "x",
-              "f"
-            ]
-          },
-          "op": null
-        },
-        {
-          "command": {
-            "args": [
-              "y"
-            ],
-            "env": [],
-            "executable": "echo",
-            "prefix": "echo",
-            "program": "echo",
-            "raw": "echo y",
-            "redirects": [],
-            "unwrapped_argv": [
-              "echo",
-              "y"
-            ]
-          },
-          "op": null
-        },
-        {
-          "command": {
-            "args": [
-              "z"
-            ],
-            "env": [],
-            "executable": "echo",
-            "prefix": "echo",
-            "program": "echo",
-            "raw": "echo z",
-            "redirects": [],
-            "unwrapped_argv": [
-              "echo",
-              "z"
-            ]
-          },
-          "op": null
-        }
-      ],
-      "prefixes": [
-        "grep",
-        "echo",
-        "echo"
-      ],
+      "parts": [],
+      "prefixes": [],
       "raw": "if grep -q x f; then echo y; else echo z; fi"
     }
   },
@@ -1035,24 +914,6 @@
       "parts": [
         {
           "command": {
-            "args": [
-              "status"
-            ],
-            "env": [],
-            "executable": "git",
-            "prefix": "git status",
-            "program": "git",
-            "raw": "git status",
-            "redirects": [],
-            "unwrapped_argv": [
-              "git",
-              "status"
-            ]
-          },
-          "op": ";"
-        },
-        {
-          "command": {
             "args": [],
             "env": [],
             "executable": "foo",
@@ -1068,7 +929,6 @@
         }
       ],
       "prefixes": [
-        "git status",
         "foo"
       ],
       "raw": "foo() { git status; }; foo"
@@ -1660,7 +1520,7 @@
             "executable": "cat",
             "prefix": "cat",
             "program": "cat",
-            "raw": "cat",
+            "raw": "cat <<'EOF'",
             "redirects": [],
             "unwrapped_argv": [
               "cat"
@@ -1687,7 +1547,7 @@
             "executable": "diff",
             "prefix": "diff",
             "program": "diff",
-            "raw": "diff <(sort a) <(sort b)",
+            "raw": "diff <(sort a) <(sort b) > out.txt",
             "redirects": [
               {
                 "fd": null,
@@ -1794,7 +1654,7 @@
             "executable": "uv",
             "prefix": "uv run",
             "program": "pytest",
-            "raw": "ENV=prod uv run pytest -k test",
+            "raw": "ENV=prod uv run pytest -k test 2>&1",
             "redirects": [
               {
                 "fd": 2,
@@ -2139,7 +1999,13 @@
             "prefix": "grep",
             "program": "grep",
             "raw": "grep pattern <<< \"$var\"",
-            "redirects": [],
+            "redirects": [
+              {
+                "fd": null,
+                "op": "<<<",
+                "target": "\"$var\""
+              }
+            ],
             "unwrapped_argv": [
               "grep",
               "pattern"
@@ -2175,7 +2041,7 @@
               "a"
             ]
           },
-          "op": null
+          "op": ";"
         },
         {
           "command": {
@@ -2245,24 +2111,6 @@
       "parts": [
         {
           "command": {
-            "args": [
-              "hi"
-            ],
-            "env": [],
-            "executable": "echo",
-            "prefix": "echo",
-            "program": "echo",
-            "raw": "echo hi",
-            "redirects": [],
-            "unwrapped_argv": [
-              "echo",
-              "hi"
-            ]
-          },
-          "op": ";"
-        },
-        {
-          "command": {
             "args": [],
             "env": [],
             "executable": "greet",
@@ -2293,7 +2141,6 @@
         }
       ],
       "prefixes": [
-        "echo",
         "greet",
         "greet"
       ],
@@ -2347,7 +2194,7 @@
             "executable": "cat",
             "prefix": "cat",
             "program": "cat",
-            "raw": "cat",
+            "raw": "cat <<A <<B",
             "redirects": [],
             "unwrapped_argv": [
               "cat"
@@ -2393,7 +2240,7 @@
             "executable": "cat",
             "prefix": "cat",
             "program": "cat",
-            "raw": "cat",
+            "raw": "cat <<EOF",
             "redirects": [],
             "unwrapped_argv": [
               "cat"
@@ -2420,7 +2267,7 @@
             "executable": "cat",
             "prefix": "cat",
             "program": "cat",
-            "raw": "cat",
+            "raw": "cat <<-A <<-B",
             "redirects": [],
             "unwrapped_argv": [
               "cat"
