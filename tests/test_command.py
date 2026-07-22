@@ -303,11 +303,9 @@ class TestCommandLine:
         assert [cmd.executable for cmd in cl.commands] == [
             "eval",
             "direnv",
-            "$(direnv export bash)",
-            "direnv",
             "uv",
         ]
-        assert cl.parts[3][1] == "&&"
+        assert cl.parts[1][1] == "&&"
         assert cl.primary is not None
         assert cl.primary.executable == "uv"
         assert cl.primary.program == "mtest"
@@ -447,6 +445,21 @@ class TestPayloads:
         assert payload.quote_contexts == ("'",)
         assert line.primary is not None
         assert line.primary.executable == "bash"
+
+    def test_eval_taint_requires_a_static_executable(self) -> None:
+        assert tuple(
+            cmd.executable for cmd in CommandLine.parse('eval "echo $(probe)"').commands
+        ) == ("eval", "echo", "probe")
+        assert tuple(
+            cmd.executable for cmd in CommandLine.parse('eval "rm $(target)"').commands
+        ) == ("eval", "rm", "target")
+
+        quoted = CommandLine.parse('eval "\'rm\' $TARGET"')
+        assert tuple(cmd.executable for cmd in quoted.commands) == ("eval", "rm")
+        assert any(cmd.runs("rm") for cmd in quoted.commands)
+
+        assert command_prefixes('eval "rm $TARGET"') == ("eval", "rm")
+        assert command_prefixes('eval "$CMD"') == ("eval",)
 
     def test_payload_splice_and_embed_guard(self) -> None:
         line = CommandLine.parse("bash -c 'rm -rf /tmp/x'")
@@ -713,8 +726,6 @@ class TestEdgeCases:
         )
         assert [cmd.executable for cmd in cl.commands] == [
             "eval",
-            "direnv",
-            "$(direnv export bash)",
             "direnv",
             "uv",
             "head",

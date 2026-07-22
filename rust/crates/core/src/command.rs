@@ -1155,7 +1155,7 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
         } => with_redirects(
             node,
             redirects,
-            substitution_parts(&[], std::slice::from_ref(body.as_ref()), src, depth),
+            substitution_parts(&[], std::slice::from_ref(body.as_ref()), None, src, depth),
             src,
         ),
         NodeKind::ArithmeticCommand { redirects, .. } => {
@@ -1260,12 +1260,14 @@ fn located_word_substitution_parts(
 fn substitution_parts(
     assignments: &[Node],
     words: &[Node],
+    excluded_word_span: Option<(usize, usize)>,
     src: &Src,
     depth: u8,
 ) -> Vec<(Command, Option<String>)> {
     assignments
         .iter()
         .chain(words.iter())
+        .filter(|word| Some(src.bytes(&word.span)) != excluded_word_span)
         .flat_map(|word| {
             let (start, _) = src.bytes(&word.span);
             substitution_parts_in(src.slice(&word.span), start, depth)
@@ -1284,7 +1286,6 @@ fn walk_command(
     src: &Src,
     depth: u8,
 ) -> Vec<(Command, Option<String>)> {
-    let subs = substitution_parts(assignments, words, src, depth);
     let content: Vec<&Node> = words
         .iter()
         .enumerate()
@@ -1293,6 +1294,7 @@ fn walk_command(
         .collect();
 
     if content.is_empty() {
+        let subs = substitution_parts(assignments, words, None, src, depth);
         if !subs.is_empty() {
             return subs;
         }
@@ -1345,9 +1347,11 @@ fn walk_command(
         ..Command::default()
     };
 
+    let (payloads, excluded_word_span) = payload_parts(&host, src, depth);
+    let subs = substitution_parts(assignments, words, excluded_word_span, src, depth);
     let mut parts = vec![(host, None)];
     parts.extend(subs);
-    parts.extend(payload_parts(&parts[0].0, src, depth));
+    parts.extend(payloads);
     for index in 1..parts.len() {
         if parts[index].0.nesting == 1 && parts[index].0.host_delta.is_none() {
             parts[index].0.host_delta = Some(index);
@@ -1445,8 +1449,8 @@ fn payload_flag(arg: &str) -> bool {
     })
 }
 
-// A payload word's re-parseable text: its resolved value when clean, or the dequoted raw when an
-// expansion taints it. A tainted payload re-parses span-less (offset None) so its inner command
+// A shell payload word's re-parseable text: its resolved value when clean, or the dequoted raw when
+// an expansion taints it. A tainted payload re-parses span-less (offset None) so its inner command
 // enumerates but splice refuses to rewrite it.
 fn payload_of(word: &Word) -> (String, QuoteLayer, Option<usize>) {
     match &word.value {
@@ -1474,7 +1478,24 @@ fn shell_payload(words: &[Word]) -> Option<(String, QuoteLayer, Option<usize>)> 
 fn eval_payload(words: &[Word], src: &[u8]) -> Option<(String, QuoteLayer, Option<usize>)> {
     match words {
         [] => None,
-        [word] => Some(payload_of(word)),
+        [word] => match &word.value {
+            Some(value) => Some((value.clone(), word.layer, word.content_offset)),
+            None => {
+                let value = dequote(&word.raw).to_string();
+                CommandLine::parse_at_depth(&value, PAYLOAD_DEPTH_LIMIT)
+                    .parts
+                    .iter()
+                    .filter(|(cmd, _)| cmd.nesting == 0)
+                    .any(|(cmd, _)| {
+                        cmd.unwrapped()
+                            .words
+                            .first()
+                            .and_then(|word| word.value.as_deref())
+                            .is_some()
+                    })
+                    .then_some((value, word.layer, None))
+            }
+        },
         parts => {
             let joined = parts
                 .iter()
@@ -1496,32 +1517,44 @@ fn eval_payload(words: &[Word], src: &[u8]) -> Option<(String, QuoteLayer, Optio
 
 // Shell `-c` / `eval` payloads enumerated as first-class nested parts, mirroring
 // substitution_parts: the payload re-parses depth-capped and hoists behind the host. Span
-// mapping is structural — a verbatim contiguous payload keeps outer-raw spans; escapes,
-// taint, and non-POSIX quoting go span-less. A tainted payload enumerates span-less.
-fn payload_parts(host: &Command, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
+// mapping is structural — a verbatim contiguous payload keeps outer-raw spans; shell taint and
+// non-POSIX quoting go span-less. An unevaluable eval word emits no payload.
+fn payload_parts(
+    host: &Command,
+    src: &Src,
+    depth: u8,
+) -> (Vec<(Command, Option<String>)>, Option<(usize, usize)>) {
     if depth >= PAYLOAD_DEPTH_LIMIT {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let unwrapped = host.unwrapped();
     let words = &unwrapped.words;
     let Some(exe) = words.first().and_then(|word| word.value.as_deref()) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let exe = exe.rsplit('/').next().unwrap_or(exe);
     let payload = match exe {
         "eval" => eval_payload(&words[1..], src.text.as_bytes()),
         _ if SHELL_COMMANDS.contains(&exe) => shell_payload(words),
-        _ => return Vec::new(),
+        _ => return (Vec::new(), None),
     };
     let Some((value, layer, offset)) = payload else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
+    let excluded_word_span = (exe == "eval" && words.len() == 2)
+        .then(|| words[1].span)
+        .flatten();
     let offset = match exe == "eval" || POSIX_QUOTING_SHELLS.contains(&exe) {
         true => offset,
         false => None,
     };
     let mut parts = CommandLine::parse_at_depth(&value, depth + 1).parts;
     for (cmd, _) in &mut parts {
+        if exe == "eval" {
+            if let Some(executable) = cmd.words.first().and_then(|word| word.value.as_ref()) {
+                cmd.executable.clone_from(executable);
+            }
+        }
         cmd.nesting = cmd.nesting.saturating_add(1);
         cmd.contexts.insert(0, layer);
         cmd.span = offset.and_then(|offset| cmd.span.map(|(s, e)| (s + offset, e + offset)));
@@ -1530,7 +1563,7 @@ fn payload_parts(host: &Command, src: &Src, depth: u8) -> Vec<(Command, Option<S
             word.content_offset = offset.and_then(|offset| word.content_offset.map(|c| c + offset));
         }
     }
-    parts
+    (parts, excluded_word_span)
 }
 
 // Parity: command.py command_prefixes — the permission-style prefix of each command.
@@ -2336,11 +2369,10 @@ mod tests {
         assert_eq!(quoted.parts[1].0.span, None);
     }
 
-    // A tainted `-c`/eval payload now enumerates its inner command span-less (dequote the raw and
-    // re-parse), so splice refuses it while enumeration still sees the inner command. Only a missing
-    // payload word or a non-`-c` invocation emits no nested part.
+    // A tainted shell payload enumerates its inner command span-less, so splice refuses it while
+    // enumeration still sees the inner command.
     #[test]
-    fn payload_tainted_enumerates_span_less_and_missing_emits_none() {
+    fn shell_payload_taint_enumerates_span_less() {
         let tainted = CommandLine::parse("bash -c \"rm $X\"");
         assert_eq!(execs(&tainted), ["bash", "rm"]);
         assert_eq!(tainted.parts[1].0.nesting, 1);
@@ -2352,13 +2384,35 @@ mod tests {
             execs(&CommandLine::parse("bash -c \"$CMD\"")),
             ["bash", "$CMD"]
         );
-        assert_eq!(
-            execs(&CommandLine::parse("eval \"$CMD\"")),
-            ["eval", "$CMD"]
-        );
         // A missing payload word or a script operand still emits no nested part.
         assert_eq!(execs(&CommandLine::parse("bash -c")), ["bash"]);
         assert_eq!(execs(&CommandLine::parse("bash script.sh")), ["bash"]);
+    }
+
+    #[test]
+    fn eval_taint_requires_a_static_executable() {
+        assert_eq!(
+            execs(&CommandLine::parse(r#"eval "echo $(probe)""#)),
+            ["eval", "echo", "probe"]
+        );
+        assert_eq!(
+            execs(&CommandLine::parse(r#"eval "rm $(target)""#)),
+            ["eval", "rm", "target"]
+        );
+
+        let quoted = CommandLine::parse(r#"eval "'rm' $TARGET""#);
+        assert_eq!(execs(&quoted), ["eval", "rm"]);
+        assert!(quoted.commands().iter().any(|cmd| cmd.runs(&["rm"])));
+
+        let deterministic = CommandLine::parse("eval \"rm $TARGET\"");
+        assert_eq!(execs(&deterministic), ["eval", "rm"]);
+        assert_eq!(deterministic.parts[1].0.span, None);
+
+        assert_eq!(execs(&CommandLine::parse("eval \"$CMD\"")), ["eval"]);
+        assert_eq!(
+            execs(&CommandLine::parse("eval \"$(direnv export bash)\"")),
+            ["eval", "direnv"]
+        );
     }
 
     // Operand-terminates-options: a `-c` after the script operand or `--` is a positional
