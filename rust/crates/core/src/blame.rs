@@ -152,7 +152,9 @@ impl WriteGroup {
 
 /// Every write to `rel_target` in `entries`, grouped one record per tree, within the
 /// optional `[since, until)` window; tool names are distinct in first-seen order and
-/// `first_prompt` is the session's first non-empty turn prompt.
+/// `first_prompt` is the first non-empty turn prompt, else the first user entry's
+/// text (a subagent transcript is all sidechain — no turn opens, but its opening
+/// user message is the task brief).
 pub fn session_writes(
     session_id: &str,
     transcript_path: &str,
@@ -168,7 +170,16 @@ pub fn session_writes(
         .iter()
         .map(|turn| turn.prompt.as_str())
         .find(|prompt| !prompt.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| {
+            entries.iter().find_map(|entry| match entry {
+                Entry::User(user) => {
+                    let text = user.content.text();
+                    (!crate::pystr::strip(&text).is_empty()).then_some(text)
+                }
+                _ => None,
+            })
+        });
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, WriteGroup> = HashMap::new();
     for use_ in lifted.turns.iter().flat_map(|turn| turn.tool_uses.iter()) {
@@ -433,6 +444,30 @@ mod tests {
             at,
             &sonic_rs::to_string(&envelope).unwrap(),
         )
+    }
+
+    #[test]
+    fn session_writes_falls_back_to_sidechain_user_text_for_first_prompt() {
+        // A subagent transcript: every user entry is sidechain-marked, so no turn
+        // opens; first_prompt must fall back to the opening task brief.
+        let brief = parse(
+            r#"{"type":"user","uuid":"u-sc","sessionId":"s","isSidechain":true,"timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":"thread cwd through the facts"}}"#,
+        );
+        let entries = vec![
+            brief,
+            edit(
+                "e1",
+                "/a/repo",
+                "2026-01-01T10:00:01Z",
+                "/a/repo/src/app.py",
+            ),
+        ];
+        let records = session_writes("s", "/t.jsonl", &entries, &repo(), "src/app.py", None, None);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].first_prompt.as_deref(),
+            Some("thread cwd through the facts")
+        );
     }
 
     #[test]
