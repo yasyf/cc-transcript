@@ -12,40 +12,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
-from cc_transcript.ledger import AsyncLedger
+from cc_transcript.decision_store import DECISIONS_DDL, open_decisions_sqlite
+from cc_transcript.ledger import AsyncLedger, ConnectionActor
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
     from typing import Any
 
     from cc_transcript.ids import EventUuid, SessionId, ToolDigest
-
-DECISIONS_DDL = """\
-CREATE TABLE IF NOT EXISTS decisions (
-    id INTEGER PRIMARY KEY,
-    ts_ms INTEGER NOT NULL,
-    session_id TEXT NOT NULL,
-    source TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    source_file TEXT NOT NULL DEFAULT '',
-    event TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('allow', 'block', 'warn', 'nudge', 'note')),
-    tool_name TEXT,
-    tool_digest TEXT,
-    event_uuid TEXT,
-    message TEXT,
-    detail_json TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (session_id, ts_ms, source, kind, tool_digest)
-);
-
-CREATE INDEX IF NOT EXISTS idx_decisions_session_ts ON decisions (session_id, ts_ms);
-
-CREATE INDEX IF NOT EXISTS idx_decisions_tool_digest ON decisions (tool_digest);
-
-CREATE INDEX IF NOT EXISTS idx_decisions_source_file ON decisions (source_file);
-"""
 
 Action = Literal["allow", "block", "warn", "nudge", "note"]
 
@@ -118,6 +95,13 @@ class DecisionLog(AsyncLedger[Decision]):
         "message",
         "detail_json",
     )
+
+    @classmethod
+    async def open(cls, path: Path | None = None) -> Self:
+        """Opens the exact v1 decision ledger at ``path``."""
+        actor = ConnectionActor()
+        await actor.start(lambda: open_decisions_sqlite(path))
+        return cls(actor)
 
     def row_to_record(self, row: sqlite3.Row) -> Decision:
         return Decision(

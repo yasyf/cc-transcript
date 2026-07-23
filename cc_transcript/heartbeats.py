@@ -15,26 +15,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
-from cc_transcript.decisions import DecisionLog
-from cc_transcript.ledger import ConnectionActor, open_sqlite
+from cc_transcript.decision_store import open_decisions_sqlite
+from cc_transcript.ledger import ConnectionActor
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.ids import SessionId
-
-HEARTBEATS_DDL = """\
-CREATE TABLE IF NOT EXISTS dispatch_heartbeats (
-    session_id TEXT NOT NULL,
-    event TEXT NOT NULL,
-    first_ts_ms INTEGER NOT NULL,
-    last_ts_ms INTEGER NOT NULL,
-    count INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (session_id, event)
-);
-
-CREATE INDEX IF NOT EXISTS idx_heartbeats_session ON dispatch_heartbeats (session_id);
-"""
 
 @dataclass(frozen=True, slots=True)
 class Heartbeat:
@@ -74,9 +61,9 @@ class HeartbeatLog:
 
     @classmethod
     async def open(cls, path: Path | None = None) -> Self:
-        """Opens (creating if needed) the heartbeat table at ``path`` (defaults to ``decisions.db``)."""
+        """Opens the exact v1 decision ledger at ``path``."""
         actor = ConnectionActor()
-        await actor.start(lambda: open_sqlite(path, filename=DecisionLog.FILENAME, ddl=HEARTBEATS_DDL))
+        await actor.start(lambda: open_decisions_sqlite(path))
         return cls(actor)
 
     async def beat(self, session_id: SessionId, event: str, ts_ms: int) -> None:
