@@ -232,13 +232,14 @@ CREATE TABLE candidates (
   target_source_file TEXT,
   target_hook_name TEXT,
   misfire_class TEXT,
-  generation INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  generation INTEGER NOT NULL,
   resolved_at TEXT,
   origin_repo_key TEXT,
   pack_name TEXT,
   announced_status TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  pr_title TEXT,
   CHECK (
     (candidate_kind = 'create' AND target_source_file IS NULL AND target_hook_name IS NULL
       AND misfire_class IS NULL)
@@ -262,6 +263,10 @@ CREATE INDEX idx_observations_dedup ON candidate_observations(dedup_key);
 CREATE TABLE repos (
   repo_key TEXT PRIMARY KEY,
   watching INTEGER NOT NULL
+);
+CREATE TABLE review_triage (
+  dedup_key TEXT PRIMARY KEY REFERENCES feedback_events(dedup_key) ON DELETE CASCADE,
+  triage TEXT NOT NULL CHECK (triage IN ('junk', 'keep'))
 );
 CREATE TABLE spawn_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

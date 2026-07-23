@@ -44,13 +44,14 @@ CREATE TABLE candidates (
   target_source_file TEXT,
   target_hook_name TEXT,
   misfire_class TEXT,
-  generation INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  generation INTEGER NOT NULL,
   resolved_at TEXT,
   origin_repo_key TEXT,
   pack_name TEXT,
   announced_status TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  pr_title TEXT,
   CHECK (
     (candidate_kind = 'create' AND target_source_file IS NULL AND target_hook_name IS NULL
       AND misfire_class IS NULL)
@@ -107,6 +108,12 @@ CREATE TABLE repos (
 CREATE TABLE review_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- table review_triage (on review_triage)
+CREATE TABLE review_triage (
+  dedup_key TEXT PRIMARY KEY REFERENCES feedback_events(dedup_key) ON DELETE CASCADE,
+  triage TEXT NOT NULL CHECK (triage IN ('junk', 'keep'))
 );
 
 -- table spawn_runs (on spawn_runs)

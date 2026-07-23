@@ -56,8 +56,9 @@ async def seed(store: object, name: str) -> None:
     if name == "hook":
         await fx.execute(
             store,
-            "INSERT INTO candidates (repo_key, candidate_kind, rule, source_kind, status, created_at, updated_at) "
-            "VALUES (?, 'create', ?, ?, 'watching', ?, ?)",
+            "INSERT INTO candidates "
+            "(repo_key, candidate_kind, rule, source_kind, status, created_at, updated_at, generation) "
+            "VALUES (?, 'create', ?, ?, 'watching', ?, ?, 1)",
             ("github.com/acme/repo", "always-use-uv", str(fx.SOURCE_KIND), fx.FIXED_NOW, fx.FIXED_NOW),
         )
         await fx.execute(
