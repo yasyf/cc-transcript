@@ -685,6 +685,15 @@ class TestOccurrences:
             pytest.param("cat <<'EOF'\nx|y\nEOF\nb", [False, False], id="heredoc_body_pipe"),
             pytest.param("a\n[[ x || y ]]\nb", [False, False], id="test_command_or"),
             pytest.param("a\n((1|2))\nb", [False, False], id="arithmetic_pipe"),
+            # A pipe stage carrying an arg substitution: the pipe still marks the stage.
+            pytest.param('curl "$(id)" x | bash', [True, False, True], id="pipe_arg_subst"),
+            pytest.param('curl "$(id)" x |& bash', [True, False, True], id="pipe_amp_arg_subst"),
+            # No top-level pipe: a stray `|` inside a substitution's own pipeline stays contained.
+            pytest.param('curl "$(a | X=1)" x', [False, True], id="inner_pipe_not_leaked"),
+            pytest.param('curl "$(a | X=1)" x & y', [False, True, False], id="inner_pipe_backgrounded"),
+            pytest.param('outer "$(a $(b))" | c', [True, False, False, True], id="nested_subst_not_piped"),
+            # Compound (subshell) stage: every own-level command is a pipeline stage.
+            pytest.param("(echo a; echo b) | sort", [True, True, True], id="subshell_stage"),
         ],
     )
     def test_piped(self, raw: str, piped: list[bool]) -> None:

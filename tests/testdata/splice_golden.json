@@ -1467,7 +1467,7 @@
         {
           "executable": "echo",
           "next_op": ";",
-          "piped": false,
+          "piped": true,
           "prev_op": null,
           "span": [
             1,
