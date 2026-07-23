@@ -29,6 +29,8 @@ pub mod query;
 pub mod render;
 pub mod rng;
 #[cfg(feature = "sqlite")]
+pub mod schema;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod toolcall;
 pub mod types;

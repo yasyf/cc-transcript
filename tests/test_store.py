@@ -1,7 +1,7 @@
 """The file-state ledger and transaction discipline, now on the ``FeedbackStore`` facade.
 
 ``FileStateStore`` folded into the facade at the native-store flip; these pin the
-scanned-file mtime table, the ``extra_ddl`` composition with a foreign-keyed consumer
+scanned-file mtime table, an exact schema with a foreign-keyed consumer
 table, and the ``_txn_owner`` transaction-conflict guard the facade carries in Python.
 """
 
@@ -66,7 +66,7 @@ async def settled_thread_count(baseline: int, *, tolerance: int, tries: int = 60
     return os_thread_count()
 
 EXTRA_SCHEMA = """
-CREATE TABLE IF NOT EXISTS notes (
+CREATE TABLE notes (
   path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
   body TEXT NOT NULL
 );
@@ -74,7 +74,15 @@ CREATE TABLE IF NOT EXISTS notes (
 
 
 async def open_store(path: Path, *, extra: str = "") -> FeedbackStore:
-    return await FeedbackStore.open(path, StoreSchema(extra_ddl=(extra,) if extra else ()))
+    if not extra:
+        return await FeedbackStore.open(path)
+    return await FeedbackStore.open(
+        path,
+        StoreSchema(
+            identity="cc-transcript-feedback-notes-test",
+            ddl=store_module.DEFAULT_SCHEMA_DDL + extra,
+        ),
+    )
 
 
 async def test_record_and_read_mtimes(tmp_path: Path) -> None:

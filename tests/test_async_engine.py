@@ -18,21 +18,15 @@ from collections.abc import Mapping
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.judge.verdicts import VerdictSchemaError
+from cc_transcript.mining.store import DEFAULT_SCHEMA_DDL
 
 pytestmark = pytest.mark.anyio
 
-V8_VERDICTS_DDL = (
-    "CREATE TABLE verdicts (dedup_key TEXT, role TEXT, prompt_version INTEGER, "
-    "model TEXT, category TEXT, accepted INTEGER, summary TEXT, confidence REAL, "
-    "rationale TEXT, fidelity TEXT, judged_at TEXT, "
-    "UNIQUE(dedup_key, role, prompt_version, model));"
-)
-
 DEFAULTS: dict[str, object] = {
-    "extra_ddl": [],
+    "schema_identity": "cc-transcript-feedback-test",
+    "schema_ddl": DEFAULT_SCHEMA_DDL,
     "event_columns": [],
-    "migrations": [],
+    "extension_paths": [],
     "verdict_table": "verdicts",
     "accepted_column": "accepted",
     "summary_column": "summary",
@@ -52,11 +46,10 @@ async def open_store(path: object, **overrides: object) -> _native.RustFeedbackS
 
 async def test_queued_writes_drain_before_close_resolves(tmp_path) -> None:
     store = await open_store(tmp_path / "feedback.db")
-    await store.executescript("CREATE TABLE t (v INTEGER);")
     order: list[object] = []
     futures = []
     for i in range(20):
-        future = store.execute("INSERT INTO t (v) VALUES (?)", [i])
+        future = store.execute("INSERT INTO files(path, mtime) VALUES (?, ?)", [f"/{i}", i])
         future.add_done_callback(lambda _f, i=i: order.append(i))
         futures.append(future)
     close_future = store.close()
@@ -66,20 +59,19 @@ async def test_queued_writes_drain_before_close_resolves(tmp_path) -> None:
     assert sorted(order[:-1]) == list(range(20))
 
     reopened = await open_store(tmp_path / "feedback.db")
-    rows = await reopened.sql("SELECT v FROM t ORDER BY rowid")
-    assert [row["v"] for row in rows] == list(range(20))
+    rows = await reopened.sql("SELECT mtime FROM files ORDER BY rowid")
+    assert [row["mtime"] for row in rows] == list(range(20))
     await reopened.close()
 
 
 async def test_cancelling_a_future_still_applies_the_write(tmp_path) -> None:
     store = await open_store(tmp_path / "feedback.db")
-    await store.executescript("CREATE TABLE t (v INTEGER);")
-    future = store.execute("INSERT INTO t (v) VALUES (?)", [99])
+    future = store.execute("INSERT INTO files(path, mtime) VALUES (?, ?)", ["/x", 99])
     future.cancel()
     with pytest.raises(asyncio.CancelledError):
         await future
-    rows = await store.sql("SELECT v FROM t")
-    assert [row["v"] for row in rows] == [99]
+    rows = await store.sql("SELECT mtime FROM files")
+    assert [row["mtime"] for row in rows] == [99]
     await store.close()
 
 
@@ -99,12 +91,11 @@ async def test_op_without_a_running_loop_raises_runtimeerror(tmp_path) -> None:
 
 async def test_two_event_loops_share_one_handle(tmp_path) -> None:
     store = await open_store(tmp_path / "feedback.db")
-    await store.executescript("CREATE TABLE t (who TEXT);")
 
     def worker(name: str) -> int:
         async def body() -> int:
-            await store.execute("INSERT INTO t (who) VALUES (?)", [name])
-            return (await store.sql("SELECT COUNT(*) AS n FROM t"))[0]["n"]
+            await store.execute("INSERT INTO files(path, mtime) VALUES (?, 1)", [name])
+            return (await store.sql("SELECT COUNT(*) AS n FROM files"))[0]["n"]
 
         return asyncio.run(body())
 
@@ -113,8 +104,8 @@ async def test_two_event_loops_share_one_handle(tmp_path) -> None:
         asyncio.to_thread(worker, "b"),
     )
     assert all(1 <= count <= 2 for count in counts)
-    rows = await store.sql("SELECT who FROM t ORDER BY who")
-    assert [row["who"] for row in rows] == ["a", "b"]
+    rows = await store.sql("SELECT path FROM files ORDER BY path")
+    assert [row["path"] for row in rows] == ["a", "b"]
     await store.close()
 
 
@@ -129,13 +120,13 @@ async def test_bad_path_open_failure_surfaces_through_await_open(tmp_path) -> No
     await store.close()
 
 
-async def test_v8_verdict_schema_open_failure_surfaces_through_await_open(tmp_path) -> None:
+async def test_foreign_schema_open_failure_surfaces_through_await_open(tmp_path) -> None:
     path = tmp_path / "feedback.db"
     conn = sqlite3.connect(path)
-    conn.executescript(V8_VERDICTS_DDL)
+    conn.execute("CREATE TABLE foreign_table(id INTEGER)")
     conn.close()
     store = make_store(path, readonly=True)
-    with pytest.raises(VerdictSchemaError, match="predates the v9 schema"):
+    with pytest.raises(sqlite3.DatabaseError, match="schema"):
         await store.open()
     with pytest.raises(sqlite3.ProgrammingError, match=r"Cannot operate on a closed database\."):
         await store.sql("SELECT 1")
@@ -157,11 +148,10 @@ async def test_bind_arity_error_arrives_through_the_future(tmp_path) -> None:
 
 async def test_integrity_error_carries_sqlite_errorname_through_the_future(tmp_path) -> None:
     store = await open_store(tmp_path / "feedback.db")
-    await store.executescript("CREATE TABLE u (k TEXT UNIQUE);")
-    await store.execute("INSERT INTO u (k) VALUES ('x')", [])
+    await store.execute("INSERT INTO files(path, mtime) VALUES ('x', 1)", [])
     with pytest.raises(sqlite3.IntegrityError) as excinfo:
-        await store.execute("INSERT INTO u (k) VALUES ('x')", [])
-    assert excinfo.value.sqlite_errorname == "SQLITE_CONSTRAINT_UNIQUE"
+        await store.execute("INSERT INTO files(path, mtime) VALUES ('x', 2)", [])
+    assert excinfo.value.sqlite_errorname == "SQLITE_CONSTRAINT_PRIMARYKEY"
     await store.close()
 
 
@@ -178,19 +168,21 @@ async def test_executescript_refused_mid_transaction_through_the_future(tmp_path
     store = await open_store(tmp_path / "feedback.db")
     await store.begin_immediate()
     with pytest.raises(sqlite3.ProgrammingError, match="cannot executescript"):
-        await store.executescript("CREATE TABLE x (a INTEGER);")
+        await store.executescript("INSERT INTO files(path, mtime) VALUES ('x', 1);")
     await store.rollback()
     await store.close()
 
 
 async def test_fifo_order_preserved_across_concurrent_submits(tmp_path) -> None:
     store = await open_store(tmp_path / "feedback.db")
-    await store.executescript("CREATE TABLE t (v INTEGER);")
-    futures = [store.execute("INSERT INTO t (v) VALUES (?)", [i]) for i in range(50)]
+    futures = [
+        store.execute("INSERT INTO files(path, mtime) VALUES (?, ?)", [f"/{i}", i])
+        for i in range(50)
+    ]
     await asyncio.gather(*futures)
     assert await store.last_insert_rowid() == 50
-    rows = await store.sql("SELECT v FROM t ORDER BY rowid")
-    assert [row["v"] for row in rows] == list(range(50))
+    rows = await store.sql("SELECT mtime FROM files ORDER BY rowid")
+    assert [row["mtime"] for row in rows] == list(range(50))
     await store.close()
 
 

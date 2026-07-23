@@ -7,6 +7,15 @@ CREATE INDEX idx_feedback_source ON feedback_events(source_kind);
 -- index idx_verdicts_dedup (on verdicts)
 CREATE INDEX idx_verdicts_dedup ON verdicts(dedup_key);
 
+-- table cc_transcript_schema_v1 (on cc_transcript_schema_v1)
+CREATE TABLE cc_transcript_schema_v1 (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_identity TEXT NOT NULL,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  ddl_fingerprint TEXT NOT NULL CHECK (length(ddl_fingerprint) = 64),
+  object_fingerprint TEXT NOT NULL CHECK (length(object_fingerprint) = 64)
+) STRICT;
+
 -- table feedback_events (on feedback_events)
 CREATE TABLE feedback_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS corrections (
+CREATE TABLE corrections (
     id INTEGER PRIMARY KEY,
     ts_ms INTEGER NOT NULL,
     session_id TEXT NOT NULL,
@@ -19,6 +19,6 @@ CREATE TABLE IF NOT EXISTS corrections (
     UNIQUE (session_id, anchor_uuid, incorrect_digest)
 );
 
-CREATE INDEX IF NOT EXISTS idx_corrections_session_ts ON corrections (session_id, ts_ms);
+CREATE INDEX idx_corrections_session_ts ON corrections (session_id, ts_ms);
 
-CREATE INDEX IF NOT EXISTS idx_corrections_incorrect_digest ON corrections (incorrect_digest);
+CREATE INDEX idx_corrections_incorrect_digest ON corrections (incorrect_digest);

@@ -16,6 +16,39 @@ CREATE INDEX idx_refinement_dedup ON refinement(dedup_key);
 -- index idx_triage_dedup (on triage)
 CREATE INDEX idx_triage_dedup ON triage(dedup_key);
 
+-- table cc_transcript_schema_v1 (on cc_transcript_schema_v1)
+CREATE TABLE cc_transcript_schema_v1 (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_identity TEXT NOT NULL,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  ddl_fingerprint TEXT NOT NULL CHECK (length(ddl_fingerprint) = 64),
+  object_fingerprint TEXT NOT NULL CHECK (length(object_fingerprint) = 64)
+) STRICT;
+
+-- table evidence_fts (on evidence_fts)
+CREATE VIRTUAL TABLE evidence_fts USING fts5(
+  verbatim, direction, evidence,
+  category UNINDEXED, repo UNINDEXED, source UNINDEXED
+);
+
+-- table evidence_fts_config (on evidence_fts_config)
+CREATE TABLE 'evidence_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;
+
+-- table evidence_fts_content (on evidence_fts_content)
+CREATE TABLE 'evidence_fts_content'(id INTEGER PRIMARY KEY, c0, c1, c2, c3, c4, c5);
+
+-- table evidence_fts_data (on evidence_fts_data)
+CREATE TABLE 'evidence_fts_data'(id INTEGER PRIMARY KEY, block BLOB);
+
+-- table evidence_fts_docsize (on evidence_fts_docsize)
+CREATE TABLE 'evidence_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);
+
+-- table evidence_fts_idx (on evidence_fts_idx)
+CREATE TABLE 'evidence_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
+
+-- table evidence_meta (on evidence_meta)
+CREATE TABLE evidence_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
 -- table exemplar_embedding (on exemplar_embedding)
 CREATE TABLE exemplar_embedding (
   dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
@@ -41,7 +74,9 @@ CREATE TABLE feedback_events (
   cc_version TEXT,
   ingested_at TEXT NOT NULL,
   origin_path TEXT,
-  quarantined_reason TEXT
+  quarantined_reason TEXT,
+  import_source TEXT,
+  import_batch TEXT
 );
 
 -- table files (on files)

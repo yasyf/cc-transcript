@@ -2,12 +2,13 @@
 //! The Python facade keeps `_txn_owner` over the bare txn control; DDL lives in `literals`.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::{params, Connection, OpenFlags};
 
-use crate::literals::feedback::{EVENT_COLUMNS, FEEDBACK_DDL, FILE_SCHEMA, VERDICT_DDL_TEMPLATE};
+use crate::literals::feedback::EVENT_COLUMNS;
+use crate::schema;
 use crate::sqlite::{
     exec_changes, query_rows, run_query, sqlite_error, LedgerError, SqlCell, SqlRow,
     SqliteErrorClass,
@@ -27,25 +28,13 @@ const BASE_EVENT_COLUMNS: [&str; 10] = [
     "ingested_at",
 ];
 
-// FEEDBACK_DDL's last field line; event columns splice in after it (cc-steer's inline form).
-const FEEDBACK_LAST_FIELD: &str = "  ingested_at TEXT NOT NULL\n";
-
-/// One guard-ALTER migration run once when `column` is absent (captain-hook's pattern).
-#[derive(Debug, Clone)]
-pub struct Migration {
-    pub table: String,
-    pub column: String,
-    pub ddl: String,
-    pub backfill: Option<String>,
-}
-
-/// The open-time schema config downstream composes with (Python `StoreSchema`).
-/// `event_columns` are full column DDL strings (`"origin_path TEXT"`).
+/// The one exact schema and query policy for a feedback store.
 #[derive(Debug, Clone)]
 pub struct FeedbackConfig {
-    pub extra_ddl: Vec<String>,
+    pub schema_identity: String,
+    pub schema_ddl: String,
     pub event_columns: Vec<String>,
-    pub migrations: Vec<Migration>,
+    pub extension_paths: Vec<String>,
     pub verdict_table: String,
     pub accepted_column: String,
     pub summary_column: String,
@@ -67,9 +56,7 @@ pub struct FeedbackEngine {
 }
 
 impl FeedbackEngine {
-    /// Opens (creating if needed) the store at `path` under `config`. Readonly opens
-    /// `SQLITE_OPEN_READ_ONLY` + `query_only`, skipping DDL and migrations — the read-only
-    /// v8/v9 verdict-schema check still runs, so a legacy DB fails open in both modes.
+    /// Opens or creates exactly one v1 store. Existing databases are never altered.
     pub fn open(path: &Path, config: FeedbackConfig) -> Result<Self, LedgerError> {
         if path.as_os_str().is_empty() {
             return Err(sqlite_error(
@@ -77,14 +64,15 @@ impl FeedbackEngine {
                 "unable to open database file".to_string(),
             ));
         }
-        let event_column_names = parse_column_names(&config.event_columns);
+        validate_schema_config(&config)?;
+        let exact_schema = schema::compile(&config.schema_ddl, &config.extension_paths)?;
         for name in [
             &config.verdict_table,
             &config.accepted_column,
             &config.summary_column,
         ]
         .into_iter()
-        .chain(event_column_names.iter())
+        .chain(config.event_columns.iter())
         {
             validate_identifier(name)?;
         }
@@ -110,37 +98,22 @@ impl FeedbackEngine {
         };
         conn.execute_batch(&format!("PRAGMA busy_timeout = {}", config.busy_timeout_ms))?;
         conn.execute_batch("PRAGMA foreign_keys = ON")?;
+        schema::load_extensions(&conn, &config.extension_paths)?;
         if config.readonly {
             conn.execute_batch("PRAGMA query_only = ON")?;
-            validate_verdict_schema(&conn, &config.verdict_table)?;
+            schema::validate(&conn, &config.schema_identity, &exact_schema)?;
         } else {
             conn.execute_batch("PRAGMA journal_mode = WAL")?;
-            let feedback_ddl = splice_event_columns(FEEDBACK_DDL, &config.event_columns);
-            let verdict_ddl = render_verdict_ddl(
-                &config.verdict_table,
-                &config.accepted_column,
-                &config.summary_column,
-            );
-            conn.execute_batch(&format!("{FILE_SCHEMA}{feedback_ddl}{verdict_ddl}"))?;
-            guard_alter(
-                &conn,
-                "feedback_events",
-                &config.event_columns,
-                &event_column_names,
-            )?;
-            for script in &config.extra_ddl {
-                conn.execute_batch(script)?;
-            }
-            run_migrations(&conn, &config.migrations)?;
-            validate_verdict_schema(&conn, &config.verdict_table)?;
+            schema::initialize_or_validate(&conn, &config.schema_identity, &exact_schema)?;
         }
+        schema::install_guard(&conn);
         Ok(Self {
             conn,
             verdict_table: config.verdict_table,
             accepted_column: config.accepted_column,
             summary_column: config.summary_column,
             event_filter: config.event_filter,
-            event_column_names,
+            event_column_names: config.event_columns,
             in_txn: Cell::new(false),
         })
     }
@@ -181,16 +154,6 @@ impl FeedbackEngine {
 
     pub fn last_insert_rowid(&self) -> i64 {
         self.conn.last_insert_rowid()
-    }
-
-    /// Loads a loadable extension (sqlite-vec's dylib), enabling extension loading for the
-    /// load and disabling it after — mirroring `prepare_connection`.
-    pub fn load_extension(&self, path: &str) -> Result<(), LedgerError> {
-        unsafe { self.conn.load_extension_enable()? };
-        let loaded = unsafe { self.conn.load_extension(Path::new(path), None) };
-        self.conn.load_extension_disable()?;
-        loaded?;
-        Ok(())
     }
 
     pub fn begin_immediate(&self) -> Result<(), LedgerError> {
@@ -589,33 +552,6 @@ impl FeedbackEngine {
     }
 }
 
-fn render_verdict_ddl(table: &str, accepted: &str, summary: &str) -> String {
-    VERDICT_DDL_TEMPLATE
-        .replace("{table}", table)
-        .replace("{accepted}", accepted)
-        .replace("{summary}", summary)
-}
-
-// Splices event columns into FEEDBACK_DDL after the last field (cc-steer's inline form).
-fn splice_event_columns(base: &str, event_columns: &[String]) -> String {
-    if event_columns.is_empty() {
-        return base.to_string();
-    }
-    let spliced: String = event_columns.iter().map(|c| format!(",\n  {c}")).collect();
-    base.replacen(
-        FEEDBACK_LAST_FIELD,
-        &format!("  ingested_at TEXT NOT NULL{spliced}\n"),
-        1,
-    )
-}
-
-fn parse_column_names(columns: &[String]) -> Vec<String> {
-    columns
-        .iter()
-        .map(|c| c.split_whitespace().next().unwrap_or_default().to_string())
-        .collect()
-}
-
 fn config_error(message: String) -> LedgerError {
     LedgerError::Sqlite {
         class: SqliteErrorClass::Programming,
@@ -639,141 +575,41 @@ fn validate_identifier(name: &str) -> Result<(), LedgerError> {
     )))
 }
 
-fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>, LedgerError> {
-    Ok(
-        run_query(conn, &format!("PRAGMA table_info({table})"), params![])?
-            .into_iter()
-            .filter_map(|row| cell_text(&row, "name"))
-            .collect(),
-    )
-}
-
-// Like run_migrations: lock-free precheck, then one BEGIN IMMEDIATE whose re-check
-// serializes concurrent opens so only one ALTERs.
-fn guard_alter(
-    conn: &Connection,
-    table: &str,
-    columns_ddl: &[String],
-    names: &[String],
-) -> Result<(), LedgerError> {
-    if columns_ddl.is_empty() {
-        return Ok(());
+fn validate_schema_config(config: &FeedbackConfig) -> Result<(), LedgerError> {
+    if config.schema_identity.is_empty() || config.schema_identity.len() > 256 {
+        return Err(config_error(
+            "feedback schema identity must contain 1..=256 bytes".to_string(),
+        ));
     }
-    let existing = table_columns(conn, table)?;
-    if names.iter().all(|name| existing.contains(name)) {
-        return Ok(());
+    if config.schema_ddl.trim().is_empty() {
+        return Err(config_error("feedback schema DDL is required".to_string()));
     }
-    conn.execute_batch("BEGIN IMMEDIATE")?;
-    match apply_guard_alter(conn, table, columns_ddl, names) {
-        Ok(()) => {
-            conn.execute_batch("COMMIT")?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(error)
+    let normalized = config.schema_ddl.to_ascii_uppercase();
+    for forbidden in [
+        "IF NOT EXISTS",
+        "ALTER TABLE",
+        "DROP TABLE",
+        "DROP INDEX",
+        "DROP TRIGGER",
+        "DROP VIEW",
+        "PRAGMA USER_VERSION",
+        "CC_TRANSCRIPT_SCHEMA_V1",
+    ] {
+        if normalized.contains(forbidden) {
+            return Err(config_error(format!(
+                "feedback schema DDL contains forbidden '{forbidden}'"
+            )));
         }
     }
-}
-
-fn apply_guard_alter(
-    conn: &Connection,
-    table: &str,
-    columns_ddl: &[String],
-    names: &[String],
-) -> Result<(), LedgerError> {
-    let existing = table_columns(conn, table)?;
-    for (ddl, name) in columns_ddl.iter().zip(names) {
-        if !existing.contains(name) {
-            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {ddl}"))?;
-        }
+    for name in &config.event_columns {
+        validate_identifier(name)?;
+    }
+    if config.extension_paths.iter().any(|path| path.is_empty()) {
+        return Err(config_error(
+            "feedback schema extension path must not be empty".to_string(),
+        ));
     }
     Ok(())
-}
-
-// The lifted captain-hook migrate_columns runner: lock-free precheck, then one BEGIN
-// IMMEDIATE per table that re-checks and applies each missing column + backfill.
-fn run_migrations(conn: &Connection, migrations: &[Migration]) -> Result<(), LedgerError> {
-    let mut tables: Vec<&str> = Vec::new();
-    for migration in migrations {
-        if !tables.contains(&migration.table.as_str()) {
-            tables.push(&migration.table);
-        }
-    }
-    for table in tables {
-        let group: Vec<&Migration> = migrations.iter().filter(|m| m.table == table).collect();
-        let existing = table_columns(conn, table)?;
-        if group.iter().all(|m| existing.contains(&m.column)) {
-            continue;
-        }
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        match apply_migrations(conn, table, &group) {
-            Ok(()) => conn.execute_batch("COMMIT")?,
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_migrations(
-    conn: &Connection,
-    table: &str,
-    group: &[&Migration],
-) -> Result<(), LedgerError> {
-    let existing = table_columns(conn, table)?;
-    for migration in group {
-        if existing.contains(&migration.column) {
-            continue;
-        }
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {}", migration.ddl))?;
-        if let Some(backfill) = &migration.backfill {
-            conn.execute_batch(backfill)?;
-        }
-    }
-    Ok(())
-}
-
-// Parity: VerdictStoreMixin.ensure_verdict_schema at open — a canonical_key column and a
-// UNIQUE index over exactly (dedup_key, role, prompt_version).
-fn validate_verdict_schema(conn: &Connection, table: &str) -> Result<(), LedgerError> {
-    let columns = table_columns(conn, table)?;
-    let target = ["dedup_key", "role", "prompt_version"];
-    let has_unique = unique_index_columns(conn, table)?
-        .iter()
-        .any(|cols| cols.as_slice() == target);
-    if columns.contains("canonical_key") && has_unique {
-        return Ok(());
-    }
-    Err(LedgerError::VerdictSchema {
-        message: format!(
-            "verdict table '{table}' predates the v9 schema: it needs a canonical_key column and a \
-             UNIQUE(dedup_key, role, prompt_version) index. Rebuild it with the manual v8-to-v9 migration \
-             (recreate '{table}' from verdicts_ddl() and copy the rows over) before reading or writing."
-        ),
-    })
-}
-
-fn unique_index_columns(conn: &Connection, table: &str) -> Result<Vec<Vec<String>>, LedgerError> {
-    let indexes = run_query(conn, &format!("PRAGMA index_list({table})"), params![])?;
-    let mut out = Vec::new();
-    for index in indexes {
-        if !matches!(cell(&index, "unique"), Some(SqlCell::Int(1))) {
-            continue;
-        }
-        let Some(SqlCell::Text(name)) = cell(&index, "name") else {
-            continue;
-        };
-        out.push(
-            run_query(conn, &format!("PRAGMA index_info({name})"), params![])?
-                .into_iter()
-                .filter_map(|row| cell_text(&row, "name"))
-                .collect(),
-        );
-    }
-    Ok(out)
 }
 
 fn cell(row: &SqlRow, name: &str) -> Option<SqlCell> {
@@ -828,12 +664,24 @@ fn scalar_i64(conn: &Connection, sql: &str) -> Result<i64, LedgerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::literals::feedback::{FEEDBACK_DDL, FILE_SCHEMA, VERDICT_DDL_TEMPLATE};
+
+    fn verdict_ddl(table: &str, accepted: &str, summary: &str) -> String {
+        VERDICT_DDL_TEMPLATE
+            .replace("{table}", table)
+            .replace("{accepted}", accepted)
+            .replace("{summary}", summary)
+    }
 
     fn config() -> FeedbackConfig {
         FeedbackConfig {
-            extra_ddl: vec![],
+            schema_identity: "cc-transcript-feedback-test".to_string(),
+            schema_ddl: format!(
+                "{FILE_SCHEMA}{FEEDBACK_DDL}{}",
+                verdict_ddl("verdicts", "accepted", "summary")
+            ),
             event_columns: vec![],
-            migrations: vec![],
+            extension_paths: vec![],
             verdict_table: "verdicts".to_string(),
             accepted_column: "accepted".to_string(),
             summary_column: "summary".to_string(),
@@ -844,11 +692,18 @@ mod tests {
     }
 
     fn steer_config() -> FeedbackConfig {
+        let feedback = FEEDBACK_DDL.replacen(
+            "  ingested_at TEXT NOT NULL\n",
+            "  ingested_at TEXT NOT NULL,\n  origin_path TEXT,\n  quarantined_reason TEXT\n",
+            1,
+        );
         FeedbackConfig {
-            event_columns: vec![
-                "origin_path TEXT".to_string(),
-                "quarantined_reason TEXT".to_string(),
-            ],
+            schema_identity: "cc-transcript-steer-test".to_string(),
+            schema_ddl: format!(
+                "{FILE_SCHEMA}{feedback}{}",
+                verdict_ddl("triage", "is_steering", "what_claude_did")
+            ),
+            event_columns: vec!["origin_path".to_string(), "quarantined_reason".to_string()],
             verdict_table: "triage".to_string(),
             accepted_column: "is_steering".to_string(),
             summary_column: "what_claude_did".to_string(),
@@ -895,6 +750,13 @@ mod tests {
         }
     }
 
+    fn assert_open_schema_error(path: &Path, config: FeedbackConfig) {
+        let Err(error) = FeedbackEngine::open(path, config) else {
+            panic!("open accepted a non-exact schema");
+        };
+        assert!(error.to_string().contains("schema"), "{error}");
+    }
+
     #[test]
     fn platform_open_creates_files_events_and_verdicts() {
         let engine = open_memory(config());
@@ -924,61 +786,151 @@ mod tests {
     }
 
     #[test]
-    fn guard_alter_adds_event_columns_to_a_pre_existing_db() {
-        let path = temp_path("guard-alter");
+    fn different_exact_schema_is_rejected_without_mutation() {
+        let path = temp_path("schema-mismatch");
         std::fs::remove_file(&path).ok();
         FeedbackEngine::open(&path, config()).unwrap();
-        let engine = FeedbackEngine::open(&path, steer_config()).unwrap();
-        let columns = table_columns(&engine.conn, "feedback_events").unwrap();
-        assert!(columns.contains("origin_path"));
-        assert!(columns.contains("quarantined_reason"));
+        let Err(error) = FeedbackEngine::open(&path, steer_config()) else {
+            panic!("open accepted a different exact schema");
+        };
+        assert!(error.to_string().contains("schema"), "{error}");
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn migrations_run_once_with_backfill() {
-        let mut cfg = config();
-        cfg.extra_ddl = vec![
-            "CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, status TEXT NOT NULL);"
-                .to_string(),
-        ];
-        cfg.migrations = vec![
-            Migration {
-                table: "candidates".to_string(),
-                column: "generation".to_string(),
-                ddl: "generation INTEGER NOT NULL DEFAULT 1".to_string(),
-                backfill: None,
-            },
-            Migration {
-                table: "candidates".to_string(),
-                column: "resolved_at".to_string(),
-                ddl: "resolved_at TEXT".to_string(),
-                backfill: Some(
-                    "UPDATE candidates SET resolved_at = 'x' WHERE status = 'accepted'".to_string(),
-                ),
-            },
-        ];
-        let path = temp_path("migrations");
+    fn ddl_bytes_are_part_of_the_exact_schema_identity() {
+        let path = temp_path("ddl-fingerprint");
         std::fs::remove_file(&path).ok();
-        // A legacy DB: candidates with a row but none of the migration columns yet.
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE candidates (id INTEGER PRIMARY KEY, status TEXT NOT NULL);\
-                 INSERT INTO candidates (status) VALUES ('accepted');",
-            )
-            .unwrap();
+        FeedbackEngine::open(&path, config()).unwrap();
+        let changed = FeedbackConfig {
+            schema_ddl: format!(
+                "-- same objects, different authoritative DDL\n{}",
+                config().schema_ddl
+            ),
+            ..config()
+        };
+        assert_open_schema_error(&path, changed);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn extra_missing_and_altered_objects_are_rejected() {
+        for (tag, mutation) in [
+            ("extra", "CREATE TABLE unexpected(id INTEGER);"),
+            ("missing", "DROP INDEX idx_verdicts_dedup;"),
+            (
+                "altered",
+                "DROP INDEX idx_verdicts_dedup; CREATE INDEX idx_verdicts_dedup ON verdicts(role);",
+            ),
+            (
+                "sqlite-prefix",
+                "CREATE TABLE sqliteX_not_internal(id INTEGER);",
+            ),
+        ] {
+            let path = temp_path(tag);
+            std::fs::remove_file(&path).ok();
+            FeedbackEngine::open(&path, config()).unwrap();
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(mutation)
+                .unwrap();
+            assert_open_schema_error(&path, config());
+            std::fs::remove_file(&path).ok();
         }
-        let engine = FeedbackEngine::open(&path, cfg.clone()).unwrap();
-        let columns = table_columns(&engine.conn, "candidates").unwrap();
-        assert!(columns.contains("generation"));
-        assert!(columns.contains("resolved_at"));
-        let row = engine
-            .sql("SELECT generation, resolved_at FROM candidates", &[])
+    }
+
+    #[test]
+    fn marker_and_user_version_spoofing_are_rejected() {
+        for (tag, mutation) in [
+            (
+                "marker-spoof",
+                "UPDATE cc_transcript_schema_v1 SET ddl_fingerprint = printf('%064d', 0);",
+            ),
+            ("version-spoof", "PRAGMA user_version = 2;"),
+        ] {
+            let path = temp_path(tag);
+            std::fs::remove_file(&path).ok();
+            FeedbackEngine::open(&path, config()).unwrap();
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(mutation)
+                .unwrap();
+            assert_open_schema_error(&path, config());
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
+    fn sqlite_internal_analyze_objects_do_not_change_application_identity() {
+        let path = temp_path("analyze");
+        std::fs::remove_file(&path).ok();
+        FeedbackEngine::open(&path, config()).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("ANALYZE;")
             .unwrap();
-        assert!(matches!(cell(&row[0], "generation"), Some(SqlCell::Int(1))));
-        assert!(matches!(cell(&row[0], "resolved_at"), Some(SqlCell::Text(s)) if s == "x"));
-        FeedbackEngine::open(&path, cfg).unwrap();
+        FeedbackEngine::open(&path, config()).unwrap();
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compatibility_ddl_is_rejected() {
+        for ddl in [
+            "CREATE TABLE IF NOT EXISTS probe(id INTEGER);",
+            "ALTER TABLE feedback_events ADD COLUMN probe TEXT;",
+            "DROP VIEW probe;",
+            "PRAGMA user_version = 1;",
+        ] {
+            let cfg = FeedbackConfig {
+                schema_ddl: ddl.to_string(),
+                ..config()
+            };
+            let Err(error) = FeedbackEngine::open(Path::new(":memory:"), cfg) else {
+                panic!("open accepted compatibility DDL: {ddl}");
+            };
+            assert!(
+                matches!(
+                    error,
+                    LedgerError::Sqlite {
+                        class: SqliteErrorClass::Programming,
+                        ..
+                    }
+                ),
+                "{ddl}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_connection_cannot_mutate_its_exact_schema_attestation() {
+        let engine = open_memory(config());
+        for statement in [
+            "CREATE TABLE probe(id INTEGER)",
+            "UPDATE cc_transcript_schema_v1 SET schema_identity = 'spoofed'",
+            "PRAGMA user_version = 2",
+            "PRAGMA writable_schema = ON",
+            "UPDATE sqlite_schema SET sql = 'spoofed' WHERE name = 'files'",
+            "ATTACH DATABASE ':memory:' AS attached",
+        ] {
+            assert!(engine.execute(statement, &[]).is_err(), "{statement}");
+        }
+        assert!(engine
+            .executescript(
+                "PRAGMA writable_schema = ON; \
+                 UPDATE sqlite_schema SET sql = 'spoofed' WHERE name = 'files';"
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn open_connection_cannot_attach_its_owned_database_under_an_alias() {
+        let path = temp_path("same-file-attach");
+        std::fs::remove_file(&path).ok();
+        let engine = FeedbackEngine::open(&path, config()).unwrap();
+        let quoted = path.display().to_string().replace('\'', "''");
+        let statement = format!("ATTACH DATABASE '{quoted}' AS samefile");
+        assert!(engine.execute(&statement, &[]).is_err());
+        drop(engine);
         std::fs::remove_file(&path).ok();
     }
 
@@ -998,7 +950,7 @@ mod tests {
                 ..config()
             },
             FeedbackConfig {
-                event_columns: vec!["a,b TEXT".to_string()],
+                event_columns: vec!["a,b".to_string()],
                 ..config()
             },
             FeedbackConfig {
@@ -1055,10 +1007,9 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_opens_serialize_the_guard_alter() {
-        let path = temp_path("guard-race");
+    fn concurrent_first_opens_converge_on_one_exact_schema() {
+        let path = temp_path("create-race");
         std::fs::remove_file(&path).ok();
-        FeedbackEngine::open(&path, config()).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let opens: Vec<_> = (0..2)
             .map(|_| {
@@ -1066,7 +1017,7 @@ mod tests {
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    FeedbackEngine::open(&path, steer_config()).map(|_| ())
+                    FeedbackEngine::open(&path, config()).map(|_| ())
                 })
             })
             .collect();
@@ -1221,23 +1172,16 @@ mod tests {
             })
         ));
         engine.rollback().unwrap();
-        engine.executescript("CREATE TABLE probe(x);").unwrap();
+        engine
+            .executescript("INSERT INTO files(path, mtime) VALUES ('/probe', 1);")
+            .unwrap();
     }
 
     #[test]
     fn sql_binds_and_reads_back_bytes() {
         let engine = open_memory(config());
-        engine
-            .executescript("CREATE TABLE blobs(id INTEGER, v BLOB);")
-            .unwrap();
-        engine
-            .execute(
-                "INSERT INTO blobs(id, v) VALUES (?, ?)",
-                &[SqlCell::Int(1), SqlCell::Blob(vec![0u8, 1, 2, 255])],
-            )
-            .unwrap();
         let row = engine
-            .sql("SELECT v FROM blobs WHERE id = ?", &[SqlCell::Int(1)])
+            .sql("SELECT ? AS v", &[SqlCell::Blob(vec![0u8, 1, 2, 255])])
             .unwrap();
         assert!(matches!(cell(&row[0], "v"), Some(SqlCell::Blob(b)) if b == vec![0u8, 1, 2, 255]));
     }
@@ -1260,8 +1204,8 @@ mod tests {
     }
 
     #[test]
-    fn v8_verdict_table_fails_open_with_verdict_schema_error() {
-        let path = temp_path("v8");
+    fn arbitrary_existing_database_is_rejected_as_not_exact_v1() {
+        let path = temp_path("foreign-schema");
         std::fs::remove_file(&path).ok();
         {
             let conn = Connection::open(&path).unwrap();
@@ -1273,18 +1217,18 @@ mod tests {
             )
             .unwrap();
         }
-        assert!(matches!(
-            FeedbackEngine::open(&path, config()),
-            Err(LedgerError::VerdictSchema { .. })
-        ));
+        let Err(error) = FeedbackEngine::open(&path, config()) else {
+            panic!("open accepted a foreign database");
+        };
+        assert!(error.to_string().contains("schema"), "{error}");
         let readonly = FeedbackConfig {
             readonly: true,
             ..config()
         };
-        assert!(matches!(
-            FeedbackEngine::open(&path, readonly),
-            Err(LedgerError::VerdictSchema { .. })
-        ));
+        let Err(error) = FeedbackEngine::open(&path, readonly) else {
+            panic!("readonly open accepted a foreign database");
+        };
+        assert!(error.to_string().contains("schema"), "{error}");
         std::fs::remove_file(&path).ok();
     }
 

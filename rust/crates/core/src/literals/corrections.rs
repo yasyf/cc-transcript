@@ -1,4 +1,27 @@
-//! The `corrections` table DDL. Hand-owned; mirrored to Python via
-//! `_native.embedded_literals()` and applied by the native corrections engine.
+//! The exact v1 `corrections` schema, mirrored to Python via embedded literals.
 
-pub const DDL: &str = "CREATE TABLE IF NOT EXISTS corrections (\n    id INTEGER PRIMARY KEY,\n    ts_ms INTEGER NOT NULL,\n    session_id TEXT NOT NULL,\n    source TEXT NOT NULL,\n    anchor_uuid TEXT NOT NULL,\n    incorrect_digest TEXT,\n    incorrect_file TEXT NOT NULL,\n    incorrect_old TEXT NOT NULL,\n    incorrect_new TEXT NOT NULL,\n    correction_origin TEXT CHECK (correction_origin IN ('session', 'git', 'review')),\n    correction_file TEXT,\n    correction_old TEXT,\n    correction_new TEXT,\n    correction_commit TEXT,\n    correction_text TEXT,\n    overlap REAL NOT NULL DEFAULT 0,\n    detail_json TEXT NOT NULL DEFAULT '{}',\n    UNIQUE (session_id, anchor_uuid, incorrect_digest)\n);\n\nCREATE INDEX IF NOT EXISTS idx_corrections_session_ts ON corrections (session_id, ts_ms);\n\nCREATE INDEX IF NOT EXISTS idx_corrections_incorrect_digest ON corrections (incorrect_digest);\n";
+pub const DDL: &str = r#"CREATE TABLE corrections (
+    id INTEGER PRIMARY KEY,
+    ts_ms INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    anchor_uuid TEXT NOT NULL,
+    incorrect_digest TEXT,
+    incorrect_file TEXT NOT NULL,
+    incorrect_old TEXT NOT NULL,
+    incorrect_new TEXT NOT NULL,
+    correction_origin TEXT CHECK (correction_origin IN ('session', 'git', 'review')),
+    correction_file TEXT,
+    correction_old TEXT,
+    correction_new TEXT,
+    correction_commit TEXT,
+    correction_text TEXT,
+    overlap REAL NOT NULL DEFAULT 0,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (session_id, anchor_uuid, incorrect_digest)
+);
+
+CREATE INDEX idx_corrections_session_ts ON corrections (session_id, ts_ms);
+
+CREATE INDEX idx_corrections_incorrect_digest ON corrections (incorrect_digest);
+"#;

@@ -1,10 +1,4 @@
-"""Native ``RustFeedbackStore`` wrapper behavior pinned against CPython ``sqlite3``.
-
-Pins the open-time v8/v9 verdict-schema guard on readonly opens and the parameter-binding
-exception fidelity (OverflowError for out-of-range ints, ProgrammingError for unsupported
-types) that the stdlib ``sqlite3`` module raises for the same inputs. Every op is awaited;
-parameter-conversion errors stay synchronous, before the future.
-"""
+"""Native ``RustFeedbackStore`` wrapper behavior pinned against CPython ``sqlite3``."""
 
 from __future__ import annotations
 
@@ -13,23 +7,16 @@ import sqlite3
 import pytest
 
 from cc_transcript import _native
-from cc_transcript.judge.verdicts import VerdictSchemaError
+from cc_transcript.mining.store import DEFAULT_SCHEMA_DDL
 
 pytestmark = pytest.mark.anyio
 
-V8_VERDICTS_DDL = (
-    "CREATE TABLE verdicts (dedup_key TEXT, role TEXT, prompt_version INTEGER, "
-    "model TEXT, category TEXT, accepted INTEGER, summary TEXT, confidence REAL, "
-    "rationale TEXT, fidelity TEXT, judged_at TEXT, "
-    "UNIQUE(dedup_key, role, prompt_version, model));"
-)
-
-
 async def open_store(path: object, **overrides: object) -> _native.RustFeedbackStore:
     kwargs = {
-        "extra_ddl": [],
+        "schema_identity": "cc-transcript-feedback-test",
+        "schema_ddl": DEFAULT_SCHEMA_DDL,
         "event_columns": [],
-        "migrations": [],
+        "extension_paths": [],
         "verdict_table": "verdicts",
         "accepted_column": "accepted",
         "summary_column": "summary",
@@ -40,12 +27,12 @@ async def open_store(path: object, **overrides: object) -> _native.RustFeedbackS
     return store
 
 
-async def test_readonly_open_rejects_v8_verdict_schema(tmp_path) -> None:
+async def test_readonly_open_rejects_foreign_schema(tmp_path) -> None:
     path = tmp_path / "feedback.db"
     conn = sqlite3.connect(path)
-    conn.executescript(V8_VERDICTS_DDL)
+    conn.execute("CREATE TABLE foreign_table(id INTEGER)")
     conn.close()
-    with pytest.raises(VerdictSchemaError, match="predates the v9 schema"):
+    with pytest.raises(sqlite3.DatabaseError, match="schema"):
         await open_store(path, readonly=True)
 
 

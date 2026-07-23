@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.util import find_spec
 from math import comb
 from typing import TYPE_CHECKING
@@ -10,10 +9,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from cc_transcript.activity import SessionActivity
-from cc_transcript.judge import similar
 from cc_transcript.context import ContextWindow, TurnRef
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import EventRef, EventUuid, SessionId
+from cc_transcript.judge import similar
 from cc_transcript.judge.verdicts import (
     SLUG_PATTERN,
     AuditEstimate,
@@ -21,7 +20,6 @@ from cc_transcript.judge.verdicts import (
     GoldenRow,
     JudgeError,
     Metrics,
-    VerdictSchemaError,
     canonical_slug,
     exact_upper_bound,
     flip_pairs,
@@ -40,7 +38,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.anyio
 
 CC_PUSHBACK_TRIAGE_DDL = """
-CREATE TABLE IF NOT EXISTS triage (
+CREATE TABLE triage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
   role TEXT NOT NULL,
@@ -56,26 +54,7 @@ CREATE TABLE IF NOT EXISTS triage (
   judged_at TEXT NOT NULL,
   UNIQUE(dedup_key, role, prompt_version)
 );
-CREATE INDEX IF NOT EXISTS idx_triage_dedup ON triage(dedup_key);
-"""
-
-V8_VERDICT_DDL = """
-CREATE TABLE IF NOT EXISTS verdicts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
-  role TEXT NOT NULL,
-  prompt_version INTEGER NOT NULL,
-  model TEXT NOT NULL,
-  category TEXT NOT NULL,
-  accepted INTEGER NOT NULL,
-  summary TEXT NOT NULL,
-  confidence REAL NOT NULL,
-  rationale TEXT NOT NULL,
-  fidelity TEXT NOT NULL CHECK(fidelity IN ('full','summary')),
-  judged_at TEXT NOT NULL,
-  UNIQUE(dedup_key, role, prompt_version, model)
-);
-CREATE INDEX IF NOT EXISTS idx_verdicts_dedup ON verdicts(dedup_key);
+CREATE INDEX idx_triage_dedup ON triage(dedup_key);
 """
 
 INSERT_EVENT = (
@@ -159,15 +138,36 @@ class AliasedVerdict:
         return self.is_pushback
 
 
-LEGACY_SCHEMA = StoreSchema(verdict_table="triage", accepted_column="is_pushback", summary_column="what_claude_did")
+ALIASED_SCHEMA = StoreSchema(
+    identity="cc-transcript-aliased-verdict-test",
+    ddl=(
+        literal_str("feedback.FILE_SCHEMA")
+        + literal_str("feedback.FEEDBACK_DDL")
+        + CC_PUSHBACK_TRIAGE_DDL
+    ),
+    verdict_table="triage",
+    accepted_column="is_pushback",
+    summary_column="what_claude_did",
+)
 
 
 async def open_generic(tmp_path: Path) -> FeedbackStore:
     return await FeedbackStore.open(tmp_path / "feedback.db")
 
 
-async def open_legacy(tmp_path: Path) -> FeedbackStore:
-    return await FeedbackStore.open(tmp_path / "feedback.db", LEGACY_SCHEMA)
+async def open_generic_vector(tmp_path: Path) -> FeedbackStore:
+    import sqlite_vec
+
+    schema = StoreSchema(identity="cc-transcript-verdict-vector-test", ddl=StoreSchema().ddl + similar.VECTOR_SCHEMA)
+    return await FeedbackStore.open(
+        tmp_path / "feedback.db",
+        schema,
+        extensions=(sqlite_vec.loadable_path(),),
+    )
+
+
+async def open_aliased(tmp_path: Path) -> FeedbackStore:
+    return await FeedbackStore.open(tmp_path / "feedback.db", ALIASED_SCHEMA)
 
 
 def judged_row(
@@ -180,19 +180,19 @@ def render_verdict_ddl(*, table: str, accepted: str, summary: str) -> str:
     return literal_str("feedback.VERDICT_DDL_TEMPLATE").format(table=table, accepted=accepted, summary=summary)
 
 
-def test_legacy_params_reproduce_cc_pushback_triage_ddl_byte_for_byte() -> None:
+def test_aliased_params_reproduce_cc_pushback_triage_ddl_byte_for_byte() -> None:
     rendered = render_verdict_ddl(table="triage", accepted="is_pushback", summary="what_claude_did")
     assert rendered == CC_PUSHBACK_TRIAGE_DDL
 
 
 def test_generic_params_name_generic_table_and_columns() -> None:
     ddl = render_verdict_ddl(table="verdicts", accepted="accepted", summary="summary")
-    assert "CREATE TABLE IF NOT EXISTS verdicts (" in ddl
+    assert "CREATE TABLE verdicts (" in ddl
     assert "  accepted INTEGER NOT NULL,\n  summary TEXT NOT NULL," in ddl
     assert "  canonical_key TEXT,\n" in ddl
     assert "UNIQUE(dedup_key, role, prompt_version)\n" in ddl
     assert "prompt_version, model)" not in ddl
-    assert "CREATE INDEX IF NOT EXISTS idx_verdicts_dedup ON verdicts(dedup_key);" in ddl
+    assert "CREATE INDEX idx_verdicts_dedup ON verdicts(dedup_key);" in ddl
 
 
 @pytest.mark.parametrize(
@@ -214,7 +214,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
             id="generic-names",
         ),
         pytest.param(
-            LEGACY_SCHEMA,
+            ALIASED_SCHEMA,
             "triage",
             "is_pushback",
             "what_claude_did",
@@ -226,7 +226,7 @@ def test_generic_params_name_generic_table_and_columns() -> None:
                 is_pushback=True,
                 canonical_key="never-force-push",
             ),
-            id="legacy-triage-names",
+            id="aliased-triage-names",
         ),
     ],
 )
@@ -239,7 +239,18 @@ async def test_verdict_store_roundtrip(
     summary_col: str,
     verdict: PlainVerdict | AliasedVerdict,
 ) -> None:
-    async with await FeedbackStore.open(tmp_path / "feedback.db", schema) as store:
+    import sqlite_vec
+
+    vector_schema = replace(
+        schema,
+        identity=f"{schema.identity}-vector",
+        ddl=schema.ddl + similar.VECTOR_SCHEMA,
+    )
+    async with await FeedbackStore.open(
+        tmp_path / "feedback.db",
+        vector_schema,
+        extensions=(sqlite_vec.loadable_path(),),
+    ) as store:
         for i, key in enumerate(("k1", "k2")):
             await store.execute(INSERT_EVENT, [key, "transcript_message", f"2026-01-0{i + 1}T00:00:00+00:00", f"text {key}"])
         before = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
@@ -310,7 +321,7 @@ async def test_same_key_different_model_never_holds_two_rows(tmp_path: Path) -> 
 
 @needs_judge_extra
 async def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_key(tmp_path: Path) -> None:
-    async with await open_generic(tmp_path) as store:
+    async with await open_generic_vector(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
         await store.record_verdict(
             DedupKey("k1"),
@@ -334,7 +345,7 @@ async def test_cross_model_summary_to_full_upgrade_updates_model_and_canonical_k
 
 @needs_judge_extra
 async def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
-    async with await open_generic(tmp_path) as store:
+    async with await open_generic_vector(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
         await store.record_verdict(
             DedupKey("k1"),
@@ -358,7 +369,7 @@ async def test_different_model_full_to_full_is_a_noop(tmp_path: Path) -> None:
 
 @needs_judge_extra
 async def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
-    async with await open_generic(tmp_path) as store:
+    async with await open_generic_vector(tmp_path) as store:
         for key in ("k1", "k2"):
             await store.execute(INSERT_EVENT, [key, "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
         await store.record_verdict(
@@ -384,16 +395,14 @@ async def test_canonical_key_roundtrips_including_none(tmp_path: Path) -> None:
     assert result == [("k1", "use-uv-not-pip"), ("k2", None)]
 
 
-async def test_unmigrated_v8_verdict_table_fails_loud_at_open(tmp_path: Path) -> None:
+async def test_foreign_schema_fails_loud_at_open(tmp_path: Path) -> None:
     path = tmp_path / "feedback.db"
-    conn = sqlite3.connect(path)
-    conn.executescript(literal_str("feedback.FEEDBACK_DDL") + V8_VERDICT_DDL)
-    conn.close()
-    with pytest.raises(VerdictSchemaError, match="v8-to-v9"):
+    path.write_bytes(b"not a database")
+    with pytest.raises(Exception, match="(?i)(database|file is not a database)"):
         await FeedbackStore.open(path)
 
 
-async def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
+async def test_fresh_exact_v1_verdict_table_passes_every_path(tmp_path: Path) -> None:
     async with await open_generic(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "transcript_message", "2026-01-01T00:00:00+00:00", "t"])
         unjudged = [row["dedup_key"] for row in await store.unjudged(role="judge", prompt_version=1)]
@@ -403,8 +412,8 @@ async def test_fresh_v9_verdict_table_passes_every_path(tmp_path: Path) -> None:
     assert judged == ["k1"]
 
 
-async def test_legacy_aliased_v9_table_passes_schema_validation(tmp_path: Path) -> None:
-    store = await open_legacy(tmp_path)
+async def test_aliased_exact_v1_table_passes_schema_validation(tmp_path: Path) -> None:
+    store = await open_aliased(tmp_path)
     await store.close()
 
 

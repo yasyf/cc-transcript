@@ -12,6 +12,7 @@ from cc_transcript.decision_store import (
     SCHEMA_VERSION,
     ddl_fingerprint,
     object_fingerprint,
+    open_decisions_sqlite,
 )
 from cc_transcript.decisions import DecisionLog
 from cc_transcript.heartbeats import HeartbeatLog
@@ -72,6 +73,7 @@ async def test_existing_empty_database_is_the_only_initializable_shape(tmp_path:
     [
         ("raw", "CREATE TABLE decisions(id INTEGER PRIMARY KEY)", "schema version"),
         ("raw", "CREATE TABLE cc_review_decisions_schema_v1(id INTEGER PRIMARY KEY)", "schema version"),
+        ("raw", "PRAGMA user_version = 77", "schema version"),
         ("exact", "DROP INDEX idx_decisions_tool_digest", "object fingerprint"),
         ("exact", "CREATE TABLE foreign_state(id TEXT PRIMARY KEY)", "object fingerprint"),
         (
@@ -81,7 +83,7 @@ async def test_existing_empty_database_is_the_only_initializable_shape(tmp_path:
         ),
         ("exact", "PRAGMA user_version = 2", "schema version"),
     ],
-    ids=("old", "partial", "missing", "extra", "foreign-fingerprint", "foreign-version"),
+    ids=("old", "partial", "nonzero-empty", "missing", "extra", "foreign-fingerprint", "foreign-version"),
 )
 async def test_nonexact_shapes_are_rejected_without_mutation(
     tmp_path: Path, initial: str, mutation: str, error: str
@@ -93,4 +95,31 @@ async def test_nonexact_shapes_are_rejected_without_mutation(
     before = snapshot(path)
     with pytest.raises(RuntimeError, match=error):
         await DecisionLog.open(path)
+    assert snapshot(path) == before
+
+
+def test_open_connection_cannot_mutate_exact_schema_or_attestation(tmp_path: Path) -> None:
+    path = tmp_path / "decisions.db"
+    conn = open_decisions_sqlite(path)
+    before = snapshot(path)
+    statements = (
+        "CREATE TABLE probe(id INTEGER)",
+        "DROP INDEX idx_decisions_tool_digest",
+        "ALTER TABLE decisions ADD COLUMN probe TEXT",
+        "UPDATE cc_review_decisions_schema_v1 SET ddl_fingerprint = printf('%064d', 0) WHERE id = 1",
+        "DELETE FROM cc_review_decisions_schema_v1 WHERE id = 1",
+        "PRAGMA user_version = 2",
+        "PRAGMA writable_schema = ON",
+        "UPDATE sqlite_schema SET sql = sql WHERE name = 'decisions'",
+        f"ATTACH DATABASE '{path}' AS samefile",
+    )
+    try:
+        for statement in statements:
+            with pytest.raises(sqlite3.DatabaseError):
+                conn.execute(statement)
+        conn.execute("CREATE TEMP TABLE allowed(id INTEGER)")
+        conn.execute("INSERT INTO allowed(id) VALUES (1)")
+        assert conn.execute("SELECT id FROM allowed").fetchone()[0] == 1
+    finally:
+        conn.close()
     assert snapshot(path) == before

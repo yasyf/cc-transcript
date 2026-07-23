@@ -37,8 +37,9 @@
 - **The store tier is native.** `feedback.db` and the corrections ledger are owned by
   Rust engines (`rust/crates/core/src/{feedback,corrections}.rs`) — one SQLite library
   per file per process. Python composes, never subclasses: a consumer holds a
-  `mining.FeedbackStore` configured by a frozen `StoreSchema` (extra DDL, event
-  columns, migrations, verdict naming, event filter) and adds its domain methods
+  `mining.FeedbackStore` configured by a frozen `StoreSchema` (one complete exact
+  v1 DDL, event columns, verdict naming, event filter) and the required SQLite
+  extensions supplied at open; consumers add their domain methods
   around it. The domain layering law follows the same split: policy is declared in
   Python as frozen spec dataclasses with a JSON contract, the Rust core is the sole
   executor, and only LLM orchestration (spawnllm) plus policy declaration stay Python.

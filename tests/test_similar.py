@@ -16,7 +16,7 @@ from cc_transcript.judge.similar import (
     suggest_canonical_keys,
 )
 from cc_transcript.mining.candidates import DedupKey
-from cc_transcript.mining.store import FeedbackStore
+from cc_transcript.mining.store import DEFAULT_SCHEMA_DDL, FeedbackStore, StoreSchema
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,7 +51,16 @@ def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def open_store(tmp_path: Path) -> FeedbackStore:
-    return await FeedbackStore.open(tmp_path / "feedback.db")
+    import sqlite_vec
+
+    return await FeedbackStore.open(
+        tmp_path / "feedback.db",
+        StoreSchema(
+            identity="cc-transcript-vector-test",
+            ddl=DEFAULT_SCHEMA_DDL + similar.VECTOR_SCHEMA,
+        ),
+        extensions=(sqlite_vec.loadable_path(),),
+    )
 
 
 async def seed(
@@ -82,10 +91,6 @@ async def counts(store: FeedbackStore) -> tuple[int, int]:
     vec = (await store.sql("SELECT COUNT(*) AS n FROM verdict_vectors"))[0]["n"]
     evi = (await store.sql("SELECT COUNT(*) AS n FROM verdict_evidence"))[0]["n"]
     return vec, evi
-
-
-async def table_exists(store: FeedbackStore, name: str) -> bool:
-    return bool(await store.sql("SELECT 1 FROM sqlite_master WHERE name = ?", [name]))
 
 
 async def write_vector(
@@ -126,6 +131,7 @@ async def test_record_verdict_inserts_one_vector_and_rerecord_upserts(tmp_path: 
         assert await counts(store) == (1, 1)
 
 
+@needs_judge_extra
 async def test_verdict_without_canonical_key_never_touches_the_vector_store(tmp_path: Path, fake_embedder: None) -> None:
     async with await open_store(tmp_path) as store:
         await store.execute(INSERT_EVENT, ["k1", "some feedback"])
@@ -137,7 +143,7 @@ async def test_verdict_without_canonical_key_never_touches_the_vector_store(tmp_
             model="sonnet",
             fidelity="full",
         )
-        assert await table_exists(store, "verdict_vectors") is False
+        assert await counts(store) == (0, 0)
 
 
 @needs_judge_extra
@@ -425,7 +431,7 @@ async def test_record_verdict_with_canonical_key_fails_loud_and_writes_no_verdic
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(sys.modules, "sqlite_vec", None)
-    async with await open_store(tmp_path) as store:
+    async with await FeedbackStore.open(tmp_path / "feedback.db") as store:
         await store.execute(INSERT_EVENT, ["k1", "use uv not pip"])
         with pytest.raises(ImportError, match=r"cc-transcript\[judge\]"):
             await store.record_verdict(

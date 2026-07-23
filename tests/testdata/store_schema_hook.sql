@@ -44,14 +44,28 @@ CREATE TABLE candidates (
   target_source_file TEXT,
   target_hook_name TEXT,
   misfire_class TEXT,
+  generation INTEGER NOT NULL DEFAULT 1,
+  resolved_at TEXT,
+  origin_repo_key TEXT,
+  pack_name TEXT,
+  announced_status TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, resolved_at TEXT, origin_repo_key TEXT, pack_name TEXT, announced_status TEXT,
+  updated_at TEXT NOT NULL,
   CHECK (
     (candidate_kind = 'create' AND target_source_file IS NULL AND target_hook_name IS NULL
       AND misfire_class IS NULL)
     OR (candidate_kind = 'fix' AND target_source_file IS NOT NULL AND target_hook_name IS NOT NULL)
   )
 );
+
+-- table cc_transcript_schema_v1 (on cc_transcript_schema_v1)
+CREATE TABLE cc_transcript_schema_v1 (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_identity TEXT NOT NULL,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  ddl_fingerprint TEXT NOT NULL CHECK (length(ddl_fingerprint) = 64),
+  object_fingerprint TEXT NOT NULL CHECK (length(object_fingerprint) = 64)
+) STRICT;
 
 -- table feedback_events (on feedback_events)
 CREATE TABLE feedback_events (
@@ -65,8 +79,9 @@ CREATE TABLE feedback_events (
   payload_json TEXT,
   context_json TEXT NOT NULL,
   cc_version TEXT,
-  ingested_at TEXT NOT NULL
-, triage TEXT);
+  ingested_at TEXT NOT NULL,
+  triage TEXT
+);
 
 -- table files (on files)
 CREATE TABLE files (

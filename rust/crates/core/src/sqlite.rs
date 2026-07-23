@@ -44,7 +44,6 @@ impl SqliteErrorClass {
 /// A store failure, pre-classified for the py binding's exception mapping. `code`/`name`
 /// carry the SQLite extended result code and symbolic name for a genuine SQLite failure,
 /// and are None for a Python-side error (multi-statement, UTF-8 decode, NUL byte).
-/// `VerdictSchema` is the feedback engine's open-time v8/v9 guard.
 #[derive(Debug)]
 pub enum LedgerError {
     Io {
@@ -58,9 +57,6 @@ pub enum LedgerError {
         name: Option<String>,
     },
     MultipleStatements,
-    VerdictSchema {
-        message: String,
-    },
 }
 
 impl std::fmt::Display for LedgerError {
@@ -71,7 +67,6 @@ impl std::fmt::Display for LedgerError {
             LedgerError::MultipleStatements => {
                 write!(f, "You can only execute one statement at a time.")
             }
-            LedgerError::VerdictSchema { message } => write!(f, "{message}"),
         }
     }
 }

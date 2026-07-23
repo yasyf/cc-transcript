@@ -410,7 +410,6 @@ reference:
       - mining.ReviewFormat
       - mining.FeedbackStore
       - mining.StoreSchema
-      - mining.ColumnMigration
       - mining.TransactionConflictError
       - mining.Stats
       - mining.sample_windows

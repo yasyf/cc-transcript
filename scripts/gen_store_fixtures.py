@@ -18,6 +18,7 @@ Run: ``uv run --no-sync python scripts/gen_store_fixtures.py``
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 from pathlib import Path
 from unittest import mock
@@ -67,11 +68,14 @@ async def seed(store: object, name: str) -> None:
         await fx.execute(store, "INSERT INTO repos (repo_key, watching) VALUES (?, 1)", ("github.com/acme/repo",))
 
 
-async def finalize(store: object) -> None:
-    facade = store.store
-    await facade.execute("VACUUM")
-    await facade.sql("PRAGMA journal_mode = DELETE")
+async def finalize(store: object, path: Path) -> None:
     await store.close()
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA journal_mode = DELETE")
+    finally:
+        conn.close()
 
 
 def clear(path: Path) -> None:
@@ -89,7 +93,7 @@ async def generate() -> None:
             clear(db_path)
             store = await fx.open_config(name, db_path)
             await seed(store, name)
-            await finalize(store)
+            await finalize(store, db_path)
             for suffix in ("-wal", "-shm"):
                 db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
             golden = TESTDATA / config.schema_golden()

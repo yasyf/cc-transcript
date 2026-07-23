@@ -1,5 +1,5 @@
 //! Shared py-side SQLite mapping for the native store engines (`corrections`, `feedback`):
-//! `LedgerError` -> the faithful `sqlite3`/`OSError`/`VerdictSchemaError` types callers
+//! `LedgerError` -> the faithful `sqlite3`/`OSError` types callers
 //! branch on, cell <-> Python value projection, and `sqlite3.Row`-shaped row dicts.
 
 use pyo3::exceptions::{PyMemoryError, PyOverflowError};
@@ -18,7 +18,6 @@ pub fn ledger_err(py: Python<'_>, error: LedgerError) -> PyErr {
             None,
             None,
         ),
-        LedgerError::VerdictSchema { message } => verdict_schema_error(py, &message),
         // SQLITE_NOMEM maps to the builtin MemoryError (CPython's PyErr_NoMemory), with no
         // sqlite payload; every other class is looked up in the sqlite3 module.
         LedgerError::Sqlite {
@@ -50,20 +49,6 @@ pub fn sqlite3_error(
             exc.setattr("sqlite_errorname", name.unwrap_or("unknown"))?;
         }
         Ok(exc)
-    };
-    match build() {
-        Ok(exc) => PyErr::from_value(exc),
-        Err(err) => err,
-    }
-}
-
-// The open-time v8/v9 guard raises judge.verdicts.VerdictSchemaError so callers catch the
-// exact type; the module is pure-Python and always importable (no [judge] extra needed).
-fn verdict_schema_error(py: Python<'_>, message: &str) -> PyErr {
-    let build = || -> PyResult<Bound<'_, PyAny>> {
-        py.import("cc_transcript.judge.verdicts")?
-            .getattr("VerdictSchemaError")?
-            .call1((message,))
     };
     match build() {
         Ok(exc) => PyErr::from_value(exc),

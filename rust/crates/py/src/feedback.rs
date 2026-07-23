@@ -3,7 +3,7 @@
 //! is cheap and stores config; `open()` spawns the actor thread that owns the connection, and
 //! every op returns an `asyncio.Future` resolved from that thread. The state machine mirrors
 //! `sqlite3.Connection`'s lifecycle: a closed handle raises `ProgrammingError` synchronously,
-//! open failure (incl. the v8/v9 `VerdictSchemaError` guard) arrives through `await open()`,
+//! open failure (including an exact-schema mismatch) arrives through `await open()`,
 //! and errors raise the faithful `sqlite3` types via `crate::sqlite`.
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
 
 use cc_transcript_core::actor::Actor;
-use cc_transcript_core::feedback::{FeedbackConfig, FeedbackEngine, Migration};
+use cc_transcript_core::feedback::{FeedbackConfig, FeedbackEngine};
 use cc_transcript_core::sqlite::{SqlCell, SqlRow};
 
 use crate::actor_bridge::{
@@ -59,15 +59,16 @@ impl RustFeedbackStore {
 impl RustFeedbackStore {
     #[new]
     #[pyo3(signature = (
-        path, extra_ddl, event_columns, migrations, verdict_table, accepted_column,
-        summary_column, event_filter, readonly=false, busy_timeout_ms=None,
+        path, schema_identity, schema_ddl, event_columns, extension_paths, verdict_table,
+        accepted_column, summary_column, event_filter, readonly=false, busy_timeout_ms=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         path: String,
-        extra_ddl: Vec<String>,
+        schema_identity: String,
+        schema_ddl: String,
         event_columns: Vec<String>,
-        migrations: Vec<(String, String, String, Option<String>)>,
+        extension_paths: Vec<String>,
         verdict_table: String,
         accepted_column: String,
         summary_column: String,
@@ -76,17 +77,10 @@ impl RustFeedbackStore {
         busy_timeout_ms: Option<i64>,
     ) -> Self {
         let config = FeedbackConfig {
-            extra_ddl,
+            schema_identity,
+            schema_ddl,
             event_columns,
-            migrations: migrations
-                .into_iter()
-                .map(|(table, column, ddl, backfill)| Migration {
-                    table,
-                    column,
-                    ddl,
-                    backfill,
-                })
-                .collect(),
+            extension_paths,
             verdict_table,
             accepted_column,
             summary_column,
@@ -203,13 +197,6 @@ impl RustFeedbackStore {
                 |e| Ok(e.last_insert_rowid()),
                 |py, n| n.into_py_any(py),
             )
-        })
-    }
-
-    #[gen_stub(override_return_type(type_repr = "asyncio.Future[None]", imports = ("asyncio",)))]
-    fn load_extension(&self, py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
-        self.with_actor(py, |actor| {
-            submit(py, actor, move |e| e.load_extension(&path), none)
         })
     }
 

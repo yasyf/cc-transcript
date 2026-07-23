@@ -85,7 +85,6 @@ from cc_transcript.mining.spec import (
 )
 from cc_transcript.mining.store import (
     FEEDBACK_DDL,
-    ColumnMigration,
     FeedbackStore,
     Stats,
     StoreSchema,

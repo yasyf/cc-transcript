@@ -1,9 +1,9 @@
 """The append-only SQLite base under the decision ledger.
 
 A family ledger is one durable, WAL-mode, ``INSERT OR IGNORE`` table behind
-a fixed schema, so :class:`AsyncLedger` owns a :class:`ConnectionActor`, the
-``open`` plumbing, and the schema-driven append and read — a ledger supplies
-only its DDL, filename, table, columns, and row mapper. The corrections ledger
+a fixed schema, so :class:`AsyncLedger` owns a :class:`ConnectionActor` and the
+schema-driven append and read — a concrete ledger must supply its exact opener,
+table, columns, and row mapper. The corrections ledger
 left this base in v14: its one write codepath is the native engine behind
 :class:`~cc_transcript.corrections.CorrectionLog`.
 
@@ -21,24 +21,13 @@ import queue
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import Path
 
     from cc_transcript.ids import SessionId
-
-
-def open_sqlite(path: Path | None, *, filename: str, ddl: str) -> sqlite3.Connection:
-    path = path or Path.home() / ".cc-transcript" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, autocommit=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 2000")
-    conn.executescript(ddl)
-    return conn
 
 
 class ConnectionActor:
@@ -101,8 +90,6 @@ class LedgerRecord(Protocol):
 
 
 class AsyncLedger[R: LedgerRecord](ABC):
-    DDL: ClassVar[str]
-    FILENAME: ClassVar[str]
     TABLE: ClassVar[str]
     COLUMNS: ClassVar[tuple[str, ...]]
 
@@ -113,19 +100,9 @@ class AsyncLedger[R: LedgerRecord](ABC):
     def row_to_record(self, row: sqlite3.Row) -> R: ...
 
     @classmethod
+    @abstractmethod
     async def open(cls, path: Path | None = None) -> Self:
-        """Opens (creating if needed) the ledger at ``path``.
-
-        Args:
-            path: The database file path; its parents are created if absent.
-                Defaults to the ledger's file under ``~/.cc-transcript``.
-
-        Returns:
-            The opened log, backed by a live connection actor.
-        """
-        actor = ConnectionActor()
-        await actor.start(lambda: open_sqlite(path, filename=cls.FILENAME, ddl=cls.DDL))
-        return cls(actor)
+        """Opens the ledger through the concrete store's exact schema contract."""
 
     async def append(self, record: R) -> None:
         """Appends ``record`` as a single ``INSERT OR IGNORE``.

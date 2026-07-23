@@ -7,7 +7,7 @@ native-engine facade. Coverage: schema goldens and committed-fixture drift for t
 downstream shapes (platform default, cc-steer, captain-hook), ``INSERT OR IGNORE`` dedup
 counts, the ``record_verdict`` fidelity matrix, the verdict↔sqlite-vec single-transaction
 property (``[judge]`` extra, stubbed embedder), ``unjudged`` ordering plus cc-steer's
-paged ``OFFSET`` probe loop, the captain-hook guarded-ALTER migration runner,
+paged ``OFFSET`` probe loop, the captain-hook exact schema,
 transaction-conflict discipline, the ``sqlite3`` exception types callers observe, and the
 ``FileStateStore`` file-mtime ledger.
 """
@@ -27,7 +27,9 @@ import pytest
 from cc_transcript.activity import SessionActivity
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import SessionId
+from cc_transcript.judge import similar
 from cc_transcript.mining.candidates import DedupKey, FeedbackCandidate
+from cc_transcript.mining.store import FeedbackStore
 from tests import store_contract_fixtures as fx
 from tests.store_contract_fixtures import (
     CONFIG_NAMES,
@@ -43,7 +45,6 @@ from tests.store_contract_fixtures import (
     query,
     raw_schema_dump,
     record_file,
-    reject_evidence_metadata_writes,
     requires_judge,
     store_transaction,
     verdict_rows,
@@ -547,7 +548,7 @@ async def test_record_verdict_fidelity_matrix(
 async def test_summary_to_full_upgrade_carries_the_new_canonical_key(
     name: str, tmp_path: Path, fake_embedder: None, store_clock: fx.StoreClock
 ) -> None:
-    store = await open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db", vectors=True)
     await seed_events(store, ["k1"])
     store_clock.value = "2026-01-01T00:01:01+00:00"
     await record_verdict(store, "k1", summary="preview", model="sonnet", fidelity="summary", canonical_key="old-rule")
@@ -582,7 +583,7 @@ async def test_summary_to_full_upgrade_carries_the_new_canonical_key(
 async def test_summary_to_full_upgrade_without_canonical_key_clears_evidence(
     name: str, tmp_path: Path, fake_embedder: None, store_clock: fx.StoreClock
 ) -> None:
-    store = await open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db", vectors=True)
     await seed_events(store, ["k1"])
     store_clock.value = "2026-01-01T00:02:01+00:00"
     await record_verdict(store, "k1", summary="preview", fidelity="summary", canonical_key="old-rule")
@@ -621,7 +622,7 @@ async def test_verdict_and_evidence_commit_together(
     name: str, tmp_path: Path, fake_embedder: None
 ) -> None:
     config = CONFIGS[name]
-    store = await open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db", vectors=True)
     await seed_events(store, ["k1"])
     await record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
     assert await count(store, config.verdict_table) == 1
@@ -639,14 +640,33 @@ async def test_verdict_and_evidence_commit_together(
 
 @requires_judge
 @pytest.mark.parametrize("name", CONFIG_PARAMS)
-async def test_verdict_vector_and_evidence_roll_back_when_metadata_write_fails(
-    name: str, tmp_path: Path, fake_embedder: None
+async def test_verdict_and_evidence_roll_back_when_evidence_path_fails(
+    name: str, tmp_path: Path, fake_embedder: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = CONFIGS[name]
-    store = await open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db", vectors=True)
     await seed_events(store, ["k1"])
-    await reject_evidence_metadata_writes(store)
-    with pytest.raises(sqlite3.IntegrityError, match="evidence metadata write failed"):
+    record_evidence = similar.record_evidence
+
+    async def fail_after_writing(
+        evidence_store: FeedbackStore,
+        *,
+        dedup_key: DedupKey,
+        role: str,
+        prompt_version: int,
+        evidence: similar.Evidence,
+    ) -> None:
+        await record_evidence(
+            evidence_store,
+            dedup_key=dedup_key,
+            role=role,
+            prompt_version=prompt_version,
+            evidence=evidence,
+        )
+        raise sqlite3.IntegrityError("evidence write failed")
+
+    monkeypatch.setattr(similar, "record_evidence", fail_after_writing)
+    with pytest.raises(sqlite3.IntegrityError, match="evidence write failed"):
         await record_verdict(store, "k1", summary="preview", canonical_key="use-uv", fidelity="full")
     assert await count(store, config.verdict_table) == 0
     assert await count(store, "verdict_evidence") == 0
@@ -658,7 +678,7 @@ async def test_verdict_vector_and_evidence_roll_back_when_metadata_write_fails(
 async def test_full_to_full_noop_does_not_re_upsert_evidence(
     name: str, tmp_path: Path, fake_embedder: None
 ) -> None:
-    store = await open_config(name, tmp_path / "s.db")
+    store = await open_config(name, tmp_path / "s.db", vectors=True)
     await seed_events(store, ["k1"])
     await record_verdict(store, "k1", model="sonnet", canonical_key="first-rule", fidelity="full")
     await record_verdict(store, "k1", model="opus", canonical_key="second-rule", fidelity="full")
@@ -730,42 +750,10 @@ async def test_steer_event_filter_excludes_quarantined_from_unjudged_and_judged(
     assert await count(store, "feedback_events", "quarantined_reason IS NOT NULL") == 1
 
 
-# --- captain-hook guarded-ALTER migration runner ----------------------------
-BASE_CANDIDATES_DDL = """
-CREATE TABLE candidates (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_key TEXT NOT NULL,
-  status TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-"""
-
-
-async def test_hook_migrate_columns_adds_and_backfills_once(tmp_path: Path) -> None:
-    from tests.store_contract_fixtures import HOOK_CANDIDATE_MIGRATIONS, HookStore
-
-    db = tmp_path / "hook.db"
-    store = HookStore(await fx.FileStateStore.open(db, extra_schema=BASE_CANDIDATES_DDL))
-    await execute(
-        store,
-        "INSERT INTO candidates (repo_key, status, updated_at) VALUES ('r', 'accepted', '2026-01-01T00:00:00+00:00')",
-    )
-    await store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)
+async def test_hook_schema_contains_every_current_column_at_creation(tmp_path: Path) -> None:
+    store = await open_config("hook", tmp_path / "hook.db")
     columns = {row["name"] for row in await query(store, "PRAGMA table_info(candidates)")}
     assert {"generation", "resolved_at", "origin_repo_key", "pack_name", "announced_status"} <= columns
-    row = (await query(store, "SELECT generation, resolved_at, announced_status FROM candidates"))[0]
-    assert row["generation"] == 1
-    assert row["resolved_at"] == "2026-01-01T00:00:00+00:00"
-    assert row["announced_status"] == "accepted"
-
-
-async def test_hook_migrate_columns_is_a_noop_when_current(tmp_path: Path) -> None:
-    from tests.store_contract_fixtures import HOOK_CANDIDATE_MIGRATIONS
-
-    store = await open_config("hook", tmp_path / "hook.db")
-    before = raw_schema_dump(tmp_path / "hook.db")
-    await store.migrate_columns("candidates", HOOK_CANDIDATE_MIGRATIONS)  # type: ignore[attr-defined]
-    assert raw_schema_dump(tmp_path / "hook.db") == before
 
 
 # --- transaction-conflict discipline ----------------------------------------

@@ -3,7 +3,7 @@
 When a verdict assigns a ``canonical_key``, :func:`record_evidence` embeds the
 judged event's feedback with a static text model (``potion-retrieval-32M``) and
 upserts the vector into a sqlite-vec table that lives in the verdict store's own
-database — created on first use, never part of the base schema. Two read paths
+exact schema. Two read paths
 sit on top: :func:`suggest_canonical_keys` ranks stored keys by evidence
 similarity to a new correction, and :func:`near_duplicate_keys` flags distinct
 keys whose evidence centroids nearly coincide (split detection; nothing merges).
@@ -35,11 +35,11 @@ JUDGE_EXTRA = "cc-transcript[judge]"
 JUDGE_DEPS = ("model2vec", "numpy", "sqlite_vec")
 
 VECTOR_SCHEMA = f"""
-CREATE VIRTUAL TABLE IF NOT EXISTS verdict_vectors USING vec0(
+CREATE VIRTUAL TABLE verdict_vectors USING vec0(
   vector_id TEXT PRIMARY KEY,
   embedding float[{EMBED_DIM}] distance_metric=cosine
 );
-CREATE TABLE IF NOT EXISTS verdict_evidence (
+CREATE TABLE verdict_evidence (
   vector_id TEXT PRIMARY KEY,
   dedup_key TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -127,19 +127,14 @@ def default_embedder() -> Embedder:
 
 
 async def prepare_connection(store: FeedbackStore) -> None:
-    """Loads the sqlite-vec extension and creates the companion tables, once per store.
-
-    The schema-creating ``executescript`` implicitly commits the connection, so
-    it can never fire while an open
-    :meth:`~cc_transcript.mining.store.FeedbackStore.transaction` is held: the
-    caller prepares the vector store before it opens the verdict transaction.
-    """
-    import sqlite_vec
-
+    """Verifies the exact store includes the vector companion tables."""
     if store._vec_prepared:
         return
-    await store.load_extension(sqlite_vec.loadable_path())
-    await store.executescript(VECTOR_SCHEMA)
+    rows = await store.sql(
+        "SELECT name FROM sqlite_schema WHERE name IN ('verdict_evidence', 'verdict_vectors') ORDER BY name"
+    )
+    if [str(row["name"]) for row in rows] != ["verdict_evidence", "verdict_vectors"]:
+        raise RuntimeError("feedback store exact v1 schema does not include vector evidence")
     store._vec_prepared = True
 
 
@@ -153,11 +148,9 @@ async def embed_evidence(store: FeedbackStore, *, dedup_key: DedupKey, canonical
     """Prepares the vector store and embeds a judged event's feedback for upsert.
 
     Fetches the event's feedback text from ``feedback_events`` and embeds it
-    together with ``summary``. The schema-creating :func:`prepare_connection` and
-    the feedback read run before the caller's transaction, because
-    ``prepare_connection``'s ``executescript`` implicitly commits an open
-    transaction: the caller calls this before opening the verdict transaction and
-    then upserts the returned :class:`Evidence` atomically via
+    together with ``summary``. The exact-schema check and feedback read happen
+    before the caller's transaction; the caller then upserts the returned
+    :class:`Evidence` atomically via
     :func:`record_evidence`. Called from
     :meth:`~cc_transcript.mining.store.FeedbackStore.record_verdict` whenever a
     verdict assigns a ``canonical_key``.
@@ -238,27 +231,23 @@ async def record_evidence(
 
 
 async def prepare_evidence_removal(store: FeedbackStore) -> bool:
-    """Readies the vec companion so an in-transaction :func:`clear_evidence` can reach it.
+    """Validates the declared vector profile before removing evidence.
 
-    Returns False — skip the removal — whenever no evidence could exist: ``sqlite_vec``
-    is absent, or the companion tables were never created. The removal path embeds
-    nothing, so it gates on ``sqlite_vec`` alone — the ``model2vec``/``numpy``
-    embedder deps that :func:`require_judge_extra` guards belong to the insert side,
-    and a partial install (``sqlite_vec`` present, embedder absent) must still clear
-    stranded evidence. Otherwise loads the extension onto the connection (a no-op
-    once the store is prepared) so a later :func:`clear_evidence` on the caller's
-    transaction can delete from the ``vec0`` virtual table, and returns True. Called
-    before the verdict transaction opens, mirroring :func:`embed_evidence`, because
-    :func:`prepare_connection`'s ``executescript`` commits.
+    Returns ``False`` when the store's exact v1 schema intentionally omits both
+    vector companion objects, because such a store cannot contain evidence. If
+    either object is declared, both must be present and usable; the extension that
+    implements ``vec0`` must already have been supplied to
+    :meth:`~cc_transcript.mining.store.FeedbackStore.open`.
 
     Args:
         store: The verdict store; the vectors live in its database.
     """
     if store._vec_prepared:
         return True
-    if find_spec("sqlite_vec") is None:
-        return False
-    if not await store.sql("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'verdict_evidence'"):
+    rows = await store.sql(
+        "SELECT name FROM sqlite_schema WHERE name IN ('verdict_evidence', 'verdict_vectors') ORDER BY name"
+    )
+    if not rows:
         return False
     await prepare_connection(store)
     return True

@@ -1,8 +1,8 @@
 //! The shared code-correction ledger over a bundled SQLite (the Rust port of
 //! `cc_transcript.corrections.CorrectionLog` and its `cc_transcript.ledger.SyncLedger`
 //! base). The on-disk format is a cross-language contract — cc-review's Go reads this
-//! ledger file directly — so the schema, WAL journal mode, and `INSERT OR IGNORE` append
-//! mirror the Python reference byte-for-byte.
+//! ledger file directly — so the exact v1 schema, WAL journal mode, and `INSERT OR IGNORE`
+//! append form a cross-language contract.
 //!
 //! ONE ENGINE PER PROCESS. This crate links its own bundled SQLite; two SQLite libraries
 //! in one process cannot coordinate POSIX advisory locks, so a process must never mix this
@@ -20,6 +20,7 @@ use std::path::Path;
 use rusqlite::{ffi, params, Connection};
 
 use crate::literals::corrections::DDL;
+use crate::schema;
 use crate::sqlite::{query_rows, run_query, sqlite_error};
 pub use crate::sqlite::{LedgerError, SqlCell, SqlRow, SqliteErrorClass};
 
@@ -42,6 +43,7 @@ const COLUMNS: [&str; 16] = [
     "overlap",
     "detail_json",
 ];
+const SCHEMA_IDENTITY: &str = "cc-transcript-corrections";
 
 /// One incorrect edit and the correction that overwrote it — the append DTO mirroring
 /// `cc_transcript.corrections.Correction`. `detail_json` is the already-serialized detail
@@ -78,10 +80,8 @@ pub struct CorrectionLog {
 }
 
 impl CorrectionLog {
-    /// Opens (creating if needed) the ledger at `path`, mirroring `SyncLedger.open`: the
-    /// parent directories are created, then WAL journal mode, a 2000 ms busy timeout, and
-    /// the schema are applied in that order. An empty path is rejected like an unopenable
-    /// one — a private temp database is never a valid ledger.
+    /// Opens or creates exactly one v1 ledger. Only a truly empty database is initialized;
+    /// every existing schema mismatch is rejected without repair or import.
     pub fn open(path: &Path) -> Result<Self, LedgerError> {
         if path.as_os_str().is_empty() {
             return Err(sqlite_error(
@@ -97,10 +97,12 @@ impl CorrectionLog {
                 })?;
             }
         }
+        let exact_schema = schema::compile(DDL, &[])?;
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL")?;
         conn.execute_batch("PRAGMA busy_timeout = 2000")?;
-        conn.execute_batch(DDL)?;
+        schema::initialize_or_validate(&conn, SCHEMA_IDENTITY, &exact_schema)?;
+        schema::install_guard(&conn);
         Ok(Self { conn })
     }
 
@@ -213,6 +215,10 @@ mod tests {
         CorrectionLog::open(Path::new(":memory:")).unwrap()
     }
 
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cc-corrections-{tag}-{}.db", std::process::id()))
+    }
+
     #[test]
     fn sql_one_statement_rule_matches_cpython() {
         let log = log();
@@ -250,14 +256,74 @@ mod tests {
     #[test]
     fn sql_rejects_multiple_before_executing_the_head() {
         let log = log();
+        let insert = "INSERT INTO corrections (ts_ms, session_id, source, anchor_uuid, \
+            incorrect_file, incorrect_old, incorrect_new, incorrect_digest) \
+            VALUES (1, 's', 'x', 'a', '/f', '', '', 'd')";
         assert!(matches!(
-            log.sql("CREATE TABLE probe(x); INSERT INTO probe VALUES (1)"),
+            log.sql(&format!("{insert}; {insert}")),
             Err(LedgerError::MultipleStatements)
         ));
-        assert!(log
-            .sql("SELECT name FROM sqlite_master WHERE name = 'probe'")
-            .unwrap()
-            .is_empty());
+        assert!(log.for_session("s").unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_cannot_mutate_the_schema_or_attestation() {
+        let log = log();
+        for statement in [
+            "CREATE TABLE probe(id INTEGER)",
+            "UPDATE cc_transcript_schema_v1 SET schema_identity = 'spoofed'",
+            "PRAGMA user_version = 2",
+            "PRAGMA writable_schema = ON",
+            "UPDATE sqlite_schema SET sql = 'spoofed' WHERE name = 'corrections'",
+            "ATTACH DATABASE ':memory:' AS attached",
+        ] {
+            assert!(log.sql(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn existing_schema_tampering_is_rejected_without_repair() {
+        for (tag, mutation) in [
+            ("extra", "CREATE TABLE unexpected(id INTEGER);"),
+            ("missing", "DROP INDEX idx_corrections_incorrect_digest;"),
+            (
+                "marker",
+                "UPDATE cc_transcript_schema_v1 SET object_fingerprint = printf('%064d', 0);",
+            ),
+            ("version", "PRAGMA user_version = 2;"),
+        ] {
+            let path = temp_path(tag);
+            std::fs::remove_file(&path).ok();
+            CorrectionLog::open(&path).unwrap();
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(mutation)
+                .unwrap();
+            let error = CorrectionLog::open(&path).unwrap_err();
+            assert!(error.to_string().contains("schema"), "{error}");
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
+    fn concurrent_first_opens_converge_on_one_exact_schema() {
+        let path = temp_path("create-race");
+        std::fs::remove_file(&path).ok();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let opens: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    CorrectionLog::open(&path).map(|_| ())
+                })
+            })
+            .collect();
+        for open in opens {
+            open.join().unwrap().unwrap();
+        }
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

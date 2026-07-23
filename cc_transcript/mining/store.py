@@ -12,7 +12,7 @@ import json
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Self
 
@@ -26,11 +26,16 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from cc_transcript.context import Fidelity
+    from cc_transcript.judge.verdicts import VerdictLike
     from cc_transcript.mining.candidates import DedupKey, FeedbackCandidate
     from cc_transcript.mining.sourcekind import SourceKind
-    from cc_transcript.judge.verdicts import VerdictLike
 
+FILE_SCHEMA = literal_str("feedback.FILE_SCHEMA")
 FEEDBACK_DDL = literal_str("feedback.FEEDBACK_DDL")
+VERDICT_DDL_TEMPLATE = literal_str("feedback.VERDICT_DDL_TEMPLATE")
+DEFAULT_SCHEMA_DDL = FILE_SCHEMA + FEEDBACK_DDL + VERDICT_DDL_TEMPLATE.format(
+    table="verdicts", accepted="accepted", summary="summary"
+)
 REFRESH_PAGE_SIZE = 256
 
 
@@ -75,33 +80,13 @@ class TransactionConflictError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class ColumnMigration:
-    """One guarded ``ALTER TABLE ADD COLUMN``, run once when ``column`` is absent.
-
-    Attributes:
-        table: The table the column belongs to.
-        column: The column name to add if missing.
-        ddl: The column DDL fragment, e.g. ``"resolved_at TEXT"``.
-        backfill: An optional statement run once after the column is added.
-    """
-
-    table: str
-    column: str
-    ddl: str
-    backfill: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class StoreSchema:
-    """The open-time schema an app composes with, replacing subclass overrides.
+    """One complete exact v1 feedback-store schema.
 
     Attributes:
-        extra_ddl: Scripts run verbatim at every non-readonly open, after the
-            base schema — so ``DROP VIEW`` / ``CREATE VIEW`` pairs re-run each open.
-        event_columns: Extra ``feedback_events`` column DDL strings
-            (``"origin_path TEXT"``), appended on create and guard-ALTERed onto
-            an existing database.
-        migrations: Guarded column migrations, run once at open.
+        identity: The product-owned identity recorded in the exact v1 marker.
+        ddl: Complete one-shot application DDL, excluding the platform marker.
+        event_columns: Product column names appended to candidate insert rows.
         verdict_table: The physical verdict table name.
         accepted_column: The verdict table's accept column name.
         summary_column: The verdict table's summary column name.
@@ -109,9 +94,9 @@ class StoreSchema:
             and ``judged``, e.g. ``"e.quarantined_reason IS NULL"``.
     """
 
-    extra_ddl: tuple[str, ...] = ()
+    identity: str = "cc-transcript-feedback"
+    ddl: str = DEFAULT_SCHEMA_DDL
     event_columns: tuple[str, ...] = ()
-    migrations: tuple[ColumnMigration, ...] = ()
     verdict_table: str = "verdicts"
     accepted_column: str = "accepted"
     summary_column: str = "summary"
@@ -162,14 +147,16 @@ class FeedbackStore:
         *,
         readonly: bool = False,
         busy_timeout_ms: int | None = None,
+        extensions: Sequence[str] = (),
     ) -> Self:
         """Opens (creating if needed) the feedback database at ``path``.
 
         Args:
             path: The database file path; its parent is created if absent.
             schema: The app's schema composition; the platform default when omitted.
-            readonly: When True, open read-only and skip all DDL and migrations.
+            readonly: When True, open read-only after exact schema attestation.
             busy_timeout_ms: The SQLite busy timeout; the 5000ms default when omitted.
+            extensions: Loadable SQLite extensions required by the exact schema.
 
         Returns:
             The opened store.
@@ -177,9 +164,10 @@ class FeedbackStore:
         schema = schema if schema is not None else StoreSchema()
         engine = _native.RustFeedbackStore(
             str(path),
-            extra_ddl=list(schema.extra_ddl),
+            schema_identity=schema.identity,
+            schema_ddl=schema.ddl,
             event_columns=list(schema.event_columns),
-            migrations=[(m.table, m.column, m.ddl, m.backfill) for m in schema.migrations],
+            extension_paths=list(extensions),
             verdict_table=schema.verdict_table,
             accepted_column=schema.accepted_column,
             summary_column=schema.summary_column,
@@ -234,10 +222,6 @@ class FeedbackStore:
     async def last_insert_rowid(self) -> int:
         """Returns the rowid of the last inserted row on this connection."""
         return await self.engine.last_insert_rowid()
-
-    async def load_extension(self, path: str) -> None:
-        """Loads a loadable SQLite extension (sqlite-vec's dylib) onto the connection."""
-        await self.engine.load_extension(path)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Self]:

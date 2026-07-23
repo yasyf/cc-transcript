@@ -9,6 +9,25 @@ SCHEMA_VERSION = 1
 EXPECTED_DDL_FINGERPRINT = "6ae938038f3420cdd4a00189b678fb399d60bb7647d009acb0fa9cc4a653040f"
 EXPECTED_OBJECT_FINGERPRINT = "a993521f1ae402d85545d9cd841b58c7e9ba755babba32c7d59cc3a97ee17af9"
 
+_SCHEMA_DDL_ACTIONS = frozenset(
+    {
+        sqlite3.SQLITE_ALTER_TABLE,
+        sqlite3.SQLITE_CREATE_INDEX,
+        sqlite3.SQLITE_CREATE_TABLE,
+        sqlite3.SQLITE_CREATE_TRIGGER,
+        sqlite3.SQLITE_CREATE_VIEW,
+        sqlite3.SQLITE_CREATE_VTABLE,
+        sqlite3.SQLITE_DROP_INDEX,
+        sqlite3.SQLITE_DROP_TABLE,
+        sqlite3.SQLITE_DROP_TRIGGER,
+        sqlite3.SQLITE_DROP_VIEW,
+        sqlite3.SQLITE_DROP_VTABLE,
+    }
+)
+_SCHEMA_DML_ACTIONS = frozenset({sqlite3.SQLITE_DELETE, sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE})
+_PROTECTED_SCHEMA_TABLES = frozenset({"cc_review_decisions_schema_v1", "sqlite_master", "sqlite_schema"})
+_PROTECTED_PRAGMAS = frozenset({"user_version", "writable_schema"})
+
 DECISIONS_DDL = """\
 CREATE TABLE cc_review_decisions_schema_v1 (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -85,17 +104,13 @@ def verify_schema(conn: sqlite3.Connection) -> None:
     if marker_version != SCHEMA_VERSION:
         raise RuntimeError(f"decisions marker version {marker_version}, want exactly {SCHEMA_VERSION}")
     if stored_ddl != EXPECTED_DDL_FINGERPRINT:
-        raise RuntimeError(
-            f"decisions DDL fingerprint {stored_ddl!r}, want exactly {EXPECTED_DDL_FINGERPRINT!r}"
-        )
+        raise RuntimeError(f"decisions DDL fingerprint {stored_ddl!r}, want exactly {EXPECTED_DDL_FINGERPRINT!r}")
     if stored_objects != EXPECTED_OBJECT_FINGERPRINT:
         raise RuntimeError(
             f"decisions stored object fingerprint {stored_objects!r}, want exactly {EXPECTED_OBJECT_FINGERPRINT!r}"
         )
     if (actual := object_fingerprint(conn)) != EXPECTED_OBJECT_FINGERPRINT:
-        raise RuntimeError(
-            f"decisions object fingerprint {actual!r}, want exactly {EXPECTED_OBJECT_FINGERPRINT!r}"
-        )
+        raise RuntimeError(f"decisions object fingerprint {actual!r}, want exactly {EXPECTED_OBJECT_FINGERPRINT!r}")
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
@@ -104,14 +119,31 @@ def create_schema(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     if (actual := object_fingerprint(conn)) != EXPECTED_OBJECT_FINGERPRINT:
-        raise RuntimeError(
-            f"decisions object fingerprint {actual!r}, want exactly {EXPECTED_OBJECT_FINGERPRINT!r}"
-        )
+        raise RuntimeError(f"decisions object fingerprint {actual!r}, want exactly {EXPECTED_OBJECT_FINGERPRINT!r}")
     conn.execute(
         "INSERT INTO cc_review_decisions_schema_v1"
         "(id, component, schema_version, ddl_fingerprint, object_fingerprint) VALUES(1, ?, 1, ?, ?)",
         (SCHEMA_COMPONENT, EXPECTED_DDL_FINGERPRINT, EXPECTED_OBJECT_FINGERPRINT),
     )
+
+
+def _authorize_exact_schema(
+    action: int,
+    argument1: str | None,
+    argument2: str | None,
+    database: str | None,
+    _source: str | None,
+) -> int:
+    if action == sqlite3.SQLITE_ATTACH:
+        return sqlite3.SQLITE_DENY
+    if database == "main":
+        if action in _SCHEMA_DDL_ACTIONS:
+            return sqlite3.SQLITE_DENY
+        if action in _SCHEMA_DML_ACTIONS and (argument1 or "").casefold() in _PROTECTED_SCHEMA_TABLES:
+            return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA and argument2 is not None and (argument1 or "").casefold() in _PROTECTED_PRAGMAS:
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 def open_decisions_sqlite(path: Path | None) -> sqlite3.Connection:
@@ -128,7 +160,13 @@ def open_decisions_sqlite(path: Path | None) -> sqlite3.Connection:
     created = False
     try:
         conn.execute("BEGIN IMMEDIATE")
-        created = conn.execute("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").fetchone()[0] == 0
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        app_objects = conn.execute(
+            "SELECT count(*) FROM sqlite_schema "
+            "WHERE type IN ('table', 'index', 'trigger', 'view') "
+            "AND lower(substr(name, 1, 7)) <> 'sqlite_'"
+        ).fetchone()[0]
+        created = version == 0 and app_objects == 0
         create_schema(conn) if created else verify_schema(conn)
         conn.execute("COMMIT")
         committed = True
@@ -142,4 +180,5 @@ def open_decisions_sqlite(path: Path | None) -> sqlite3.Connection:
     if (journal_mode := conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]) != "wal":
         conn.close()
         raise RuntimeError(f"enable decisions WAL: mode {journal_mode!r}")
+    conn.set_authorizer(_authorize_exact_schema)
     return conn

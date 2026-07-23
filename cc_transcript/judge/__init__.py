@@ -36,7 +36,6 @@ from cc_transcript.judge.verdicts import (
     JudgeError,
     Metrics,
     VerdictLike,
-    VerdictSchemaError,
     canonical_slug,
     exact_upper_bound,
     flip_pairs,

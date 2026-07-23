@@ -86,8 +86,10 @@ class Correction:
 class CorrectionLog:
     """The ``corrections`` ledger at ``~/.cc-transcript/corrections.db``.
 
-    A facade over the native engine, opened in WAL mode with a busy timeout
-    because writers across the family touch the same file concurrently.
+    A facade over the native engine. Only an empty database receives the exact
+    v1 schema; every existing schema mismatch is rejected without repair.
+    The opened ledger uses WAL mode and a busy timeout because writers across
+    the family touch the same file concurrently.
     Durable by convention: rows are never auto-dropped. Requires a local
     disk — WAL does not work over NFS. The engine bundles its own SQLite, so
     within this process no other SQLite library may open the same file (see

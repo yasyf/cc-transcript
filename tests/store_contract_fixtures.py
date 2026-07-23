@@ -9,15 +9,14 @@ whole flip and every assertion in the suite carries over verbatim.
 
 The two downstream shapes are replicated locally rather than imported: cc-steer's
 schema (``origin_path`` / ``quarantined_reason`` columns, the ``triage`` verdict
-naming, the triage/refine/gate views) and captain-hook's six review tables plus its
-guarded-ALTER migrations are mirrored here. Both mirrors reproduce the schema and
-observable behaviour the downstream store produces, not its code.
+naming, the triage/refine/gate views) and captain-hook's complete review schema.
+Both mirrors reproduce the exact v1 schema and observable downstream behaviour.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Self
@@ -27,10 +26,11 @@ import pytest
 from cc_transcript.context import ContextWindow, TurnRef
 from cc_transcript.ids import EventRef, EventUuid, SessionId
 from cc_transcript.judge import similar
+from cc_transcript.literals import literal_str
 from cc_transcript.mining.candidates import DedupKey, FeedbackCandidate
 from cc_transcript.mining.confidence import CandidateSignal, Confidence
 from cc_transcript.mining.sourcekind import SourceKind
-from cc_transcript.mining.store import ColumnMigration, FeedbackStore, StoreSchema, TransactionConflictError, event_row, now
+from cc_transcript.mining.store import FeedbackStore, StoreSchema, TransactionConflictError, event_row, now
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -54,7 +54,6 @@ __all__ = [
     "query",
     "raw_schema_dump",
     "record_file",
-    "reject_evidence_metadata_writes",
     "requires_judge",
     "schema_dump",
     "store_clock",
@@ -74,7 +73,21 @@ SCHEMA_QUERY = (
     "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name"
 )
 
-STEER_EVENT_COLUMNS = ("origin_path TEXT", "quarantined_reason TEXT")
+FILE_SCHEMA = literal_str("feedback.FILE_SCHEMA")
+FEEDBACK_DDL = literal_str("feedback.FEEDBACK_DDL")
+VERDICT_DDL_TEMPLATE = literal_str("feedback.VERDICT_DDL_TEMPLATE")
+
+
+def feedback_ddl_with(*columns: str) -> str:
+    suffix = "".join(f",\n  {column}" for column in columns)
+    return FEEDBACK_DDL.replace("  ingested_at TEXT NOT NULL\n", f"  ingested_at TEXT NOT NULL{suffix}\n", 1)
+
+
+def verdict_ddl(*, table: str, accepted: str, summary: str) -> str:
+    return VERDICT_DDL_TEMPLATE.format(table=table, accepted=accepted, summary=summary)
+
+
+STEER_EVENT_COLUMNS = ("origin_path", "quarantined_reason")
 STEER_ACCRUED_EMPTY_REASON = "accrued_context_empty"
 STEER_REBUILD_QUARANTINE_REASONS = (
     STEER_ACCRUED_EMPTY_REASON,
@@ -92,9 +105,7 @@ STEER_QUARANTINE_CONTEXT = f"""
 UPDATE feedback_events SET quarantined_reason = ?
 WHERE dedup_key = ? AND {STEER_QUARANTINE_ELIGIBLE}
 """
-STEER_TRIAGE_VIEWS_DDL = """DROP VIEW IF EXISTS training_pairs;
-DROP VIEW IF EXISTS latest_judge;
-CREATE VIEW latest_judge AS
+STEER_TRIAGE_VIEWS_DDL = """CREATE VIEW latest_judge AS
 SELECT * FROM (
   SELECT t.*, ROW_NUMBER() OVER (
     PARTITION BY t.dedup_key ORDER BY t.prompt_version DESC, t.judged_at DESC, t.id DESC
@@ -102,7 +113,6 @@ SELECT * FROM (
   FROM triage t
   WHERE t.role = 'judge'
 ) WHERE rn = 1;
-DROP VIEW IF EXISTS latest_auditor;
 CREATE VIEW latest_auditor AS
 SELECT * FROM (
   SELECT t.*, ROW_NUMBER() OVER (
@@ -111,7 +121,6 @@ SELECT * FROM (
   FROM triage t
   WHERE t.role = 'auditor'
 ) WHERE rn = 1;
-DROP VIEW IF EXISTS accepted_steering;
 CREATE VIEW accepted_steering AS
 SELECT
   e.id AS event_id,
@@ -128,7 +137,7 @@ JOIN latest_judge t ON t.dedup_key = e.dedup_key
 WHERE t.is_steering = 1 AND e.quarantined_reason IS NULL;
 """
 STEER_REFINE_DDL = """
-CREATE TABLE IF NOT EXISTS refinement (
+CREATE TABLE refinement (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
   prompt_version INTEGER NOT NULL,
@@ -140,8 +149,7 @@ CREATE TABLE IF NOT EXISTS refinement (
   refined_at TEXT NOT NULL,
   UNIQUE(dedup_key, prompt_version, model, pair_index)
 );
-CREATE INDEX IF NOT EXISTS idx_refinement_dedup ON refinement(dedup_key);
-DROP VIEW IF EXISTS latest_refinement;
+CREATE INDEX idx_refinement_dedup ON refinement(dedup_key);
 CREATE VIEW latest_refinement AS
 WITH gens AS (
   SELECT dedup_key, prompt_version, model, refined_at,
@@ -154,7 +162,6 @@ SELECT r.*
 FROM refinement r
 JOIN gens ON gens.dedup_key = r.dedup_key AND gens.prompt_version = r.prompt_version
          AND gens.model = r.model AND gens.refined_at = r.refined_at AND gens.g = 1;
-DROP VIEW IF EXISTS refined_pairs;
 CREATE VIEW refined_pairs AS
 SELECT
   e.id AS event_id,
@@ -178,7 +185,7 @@ JOIN accepted_steering ap ON ap.dedup_key = r.dedup_key
 ORDER BY e.id, r.pair_index;
 """
 STEER_GATE_DDL = """
-CREATE TABLE IF NOT EXISTS gate_sample (
+CREATE TABLE gate_sample (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sample_key TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,
@@ -191,13 +198,13 @@ CREATE TABLE IF NOT EXISTS gate_sample (
   seed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_gate_sample_kind ON gate_sample(kind);
-CREATE INDEX IF NOT EXISTS idx_gate_sample_session ON gate_sample(session_id);
-CREATE TABLE IF NOT EXISTS sampled_session (
+CREATE INDEX idx_gate_sample_kind ON gate_sample(kind);
+CREATE INDEX idx_gate_sample_session ON gate_sample(session_id);
+CREATE TABLE sampled_session (
   session_id TEXT PRIMARY KEY,
   sampled_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS exemplar_embedding (
+CREATE TABLE exemplar_embedding (
   dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
   model TEXT NOT NULL,
   text_digest TEXT NOT NULL,
@@ -206,9 +213,14 @@ CREATE TABLE IF NOT EXISTS exemplar_embedding (
   created_at TEXT NOT NULL,
   UNIQUE(dedup_key, model)
 );
+CREATE VIRTUAL TABLE evidence_fts USING fts5(
+  verbatim, direction, evidence,
+  category UNINDEXED, repo UNINDEXED, source UNINDEXED
+);
+CREATE TABLE evidence_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 HOOK_REVIEW_DDL = """
-CREATE TABLE IF NOT EXISTS candidates (
+CREATE TABLE candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_key TEXT NOT NULL,
   candidate_kind TEXT NOT NULL CHECK (candidate_kind IN ('create', 'fix')),
@@ -220,6 +232,11 @@ CREATE TABLE IF NOT EXISTS candidates (
   target_source_file TEXT,
   target_hook_name TEXT,
   misfire_class TEXT,
+  generation INTEGER NOT NULL DEFAULT 1,
+  resolved_at TEXT,
+  origin_repo_key TEXT,
+  pack_name TEXT,
+  announced_status TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (
@@ -228,12 +245,12 @@ CREATE TABLE IF NOT EXISTS candidates (
     OR (candidate_kind = 'fix' AND target_source_file IS NOT NULL AND target_hook_name IS NOT NULL)
   )
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_create_key
+CREATE UNIQUE INDEX idx_candidates_create_key
   ON candidates(repo_key, rule) WHERE candidate_kind = 'create';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_fix_key
+CREATE UNIQUE INDEX idx_candidates_fix_key
   ON candidates(repo_key, target_hook_name, target_source_file) WHERE candidate_kind = 'fix';
-CREATE INDEX IF NOT EXISTS idx_candidates_repo_status ON candidates(repo_key, status);
-CREATE TABLE IF NOT EXISTS candidate_observations (
+CREATE INDEX idx_candidates_repo_status ON candidates(repo_key, status);
+CREATE TABLE candidate_observations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   candidate_id INTEGER NOT NULL REFERENCES candidates(id),
   dedup_key TEXT NOT NULL REFERENCES feedback_events(dedup_key),
@@ -241,12 +258,12 @@ CREATE TABLE IF NOT EXISTS candidate_observations (
   occurred_at TEXT NOT NULL,
   UNIQUE(candidate_id, dedup_key)
 );
-CREATE INDEX IF NOT EXISTS idx_observations_dedup ON candidate_observations(dedup_key);
-CREATE TABLE IF NOT EXISTS repos (
+CREATE INDEX idx_observations_dedup ON candidate_observations(dedup_key);
+CREATE TABLE repos (
   repo_key TEXT PRIMARY KEY,
   watching INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS spawn_runs (
+CREATE TABLE spawn_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL,
@@ -256,11 +273,11 @@ CREATE TABLE IF NOT EXISTS spawn_runs (
   report_json TEXT,
   CHECK ((ok = 1) = (error IS NULL))
 );
-CREATE TABLE IF NOT EXISTS review_meta (
+CREATE TABLE review_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS pr_states (
+CREATE TABLE pr_states (
   pr_url TEXT PRIMARY KEY,
   state TEXT NOT NULL,
   merged_at TEXT,
@@ -268,28 +285,18 @@ CREATE TABLE IF NOT EXISTS pr_states (
 );
 """
 
-HOOK_CANDIDATE_MIGRATIONS: tuple[ColumnMigration, ...] = (
-    ColumnMigration("candidates", "generation", "generation INTEGER NOT NULL DEFAULT 1"),
-    ColumnMigration(
-        "candidates",
-        "resolved_at",
-        "resolved_at TEXT",
-        "UPDATE candidates SET resolved_at = updated_at WHERE status = 'accepted'",
-    ),
-    ColumnMigration("candidates", "origin_repo_key", "origin_repo_key TEXT"),
-    ColumnMigration("candidates", "pack_name", "pack_name TEXT"),
-    ColumnMigration(
-        "candidates",
-        "announced_status",
-        "announced_status TEXT",
-        "UPDATE candidates SET announced_status = status WHERE status NOT IN ('watching', 'pr_open')",
-    ),
-)
-HOOK_FEEDBACK_MIGRATIONS: tuple[ColumnMigration, ...] = (ColumnMigration("feedback_events", "triage", "triage TEXT"),)
-
 requires_judge = pytest.mark.skipif(
     not JUDGE_DEPS_PRESENT, reason="cc-transcript[judge] extra (sqlite-vec, model2vec, numpy) not installed"
 )
+
+
+def vector_profile(schema: StoreSchema) -> tuple[StoreSchema, tuple[str, ...]]:
+    import sqlite_vec
+
+    return (
+        replace(schema, identity=f"{schema.identity}-vector", ddl=schema.ddl + similar.VECTOR_SCHEMA),
+        (sqlite_vec.loadable_path(),),
+    )
 
 
 def fake_embed(text: str):  # noqa: ANN201 — numpy only imported under the [judge] extra
@@ -407,16 +414,6 @@ async def evidence_rows(store: object) -> list[dict[str, object]]:
     )
 
 
-async def reject_evidence_metadata_writes(store: object) -> None:
-    """Makes the metadata insert fail after the real sqlite-vec insert runs."""
-    await similar.prepare_connection(store.store)  # type: ignore[attr-defined]
-    await execute(
-        store,
-        "CREATE TRIGGER reject_evidence_metadata BEFORE INSERT ON verdict_evidence "
-        "BEGIN SELECT RAISE(ABORT, 'evidence metadata write failed'); END",
-    )
-
-
 def _format_schema(rows: Sequence[Mapping[str, object]]) -> str:
     return "".join(
         f"-- {row['type']} {row['name']} (on {row['tbl_name']})\n{(str(row['sql']) or '').strip()};\n\n" for row in rows
@@ -439,15 +436,19 @@ def raw_schema_dump(path: Path) -> str:
 
 
 class FileStateStore:
-    """Flip shim: the deleted file-state store, re-expressed over the facade.
-
-    Serves the one contract test that builds a bare store from a standalone
-    ``extra_schema`` and then exercises the guarded-ALTER migration runner.
-    """
+    """Flip shim: the deleted file-state store, re-expressed over the facade."""
 
     @staticmethod
     async def open(path: Path, *, extra_schema: str = "") -> FeedbackStore:
-        return await FeedbackStore.open(path, StoreSchema(extra_ddl=(extra_schema,) if extra_schema else ()))
+        if not extra_schema:
+            return await FeedbackStore.open(path)
+        return await FeedbackStore.open(
+            path,
+            StoreSchema(
+                identity="cc-transcript-contract-file-state",
+                ddl=FILE_SCHEMA + FEEDBACK_DDL + verdict_ddl(table="verdicts", accepted="accepted", summary="summary") + extra_schema,
+            ),
+        )
 
 
 class ContractStore:
@@ -500,26 +501,48 @@ class PlatformStore(ContractStore):
     """Config (a): platform default — generic ``verdicts`` / ``accepted`` / ``summary`` naming."""
 
     @classmethod
-    async def open(cls, path: Path) -> Self:
-        return cls(await FeedbackStore.open(path, StoreSchema()))
+    async def open(cls, path: Path, *, vectors: bool = False) -> Self:
+        schema = StoreSchema()
+        extensions: tuple[str, ...] = ()
+        if vectors:
+            schema, extensions = vector_profile(schema)
+        return cls(await FeedbackStore.open(path, schema, extensions=extensions))
 
 
 class SteerStore(ContractStore):
     """Config (b): cc-steer shape (sync) — ``triage`` naming, quarantine column + event filter."""
 
     @classmethod
-    async def open(cls, path: Path) -> Self:
+    async def open(cls, path: Path, *, vectors: bool = False) -> Self:
+        schema = StoreSchema(
+            identity="cc-transcript-contract-steer",
+            ddl=(
+                FILE_SCHEMA
+                + feedback_ddl_with(
+                    "origin_path TEXT",
+                    "quarantined_reason TEXT",
+                    "import_source TEXT",
+                    "import_batch TEXT",
+                )
+                + verdict_ddl(table="triage", accepted="is_steering", summary="what_claude_did")
+                + STEER_TRIAGE_VIEWS_DDL
+                + STEER_REFINE_DDL
+                + STEER_GATE_DDL
+            ),
+            event_columns=STEER_EVENT_COLUMNS,
+            verdict_table="triage",
+            accepted_column="is_steering",
+            summary_column="what_claude_did",
+            event_filter="e.quarantined_reason IS NULL",
+        )
+        extensions: tuple[str, ...] = ()
+        if vectors:
+            schema, extensions = vector_profile(schema)
         return cls(
             await FeedbackStore.open(
                 path,
-                StoreSchema(
-                    extra_ddl=(STEER_TRIAGE_VIEWS_DDL, STEER_REFINE_DDL, STEER_GATE_DDL),
-                    event_columns=STEER_EVENT_COLUMNS,
-                    verdict_table="triage",
-                    accepted_column="is_steering",
-                    summary_column="what_claude_did",
-                    event_filter="e.quarantined_reason IS NULL",
-                ),
+                schema,
+                extensions=extensions,
             )
         )
 
@@ -540,33 +563,40 @@ class SteerStore(ContractStore):
 
 
 class HookStore(ContractStore):
-    """Config (c): captain-hook shape — generic naming + review tables + guarded-ALTER migrations."""
+    """Config (c): captain-hook shape — generic naming plus the exact review schema."""
 
     @classmethod
-    async def open(cls, path: Path) -> Self:
+    async def open(cls, path: Path, *, vectors: bool = False) -> Self:
+        schema = StoreSchema(
+            identity="cc-transcript-contract-hook",
+            ddl=(
+                FILE_SCHEMA
+                + feedback_ddl_with("triage TEXT")
+                + verdict_ddl(table="verdicts", accepted="accepted", summary="summary")
+                + HOOK_REVIEW_DDL
+            ),
+            event_columns=("triage",),
+        )
+        extensions: tuple[str, ...] = ()
+        if vectors:
+            schema, extensions = vector_profile(schema)
         return cls(
             await FeedbackStore.open(
                 path,
-                StoreSchema(
-                    extra_ddl=(HOOK_REVIEW_DDL,),
-                    migrations=HOOK_CANDIDATE_MIGRATIONS + HOOK_FEEDBACK_MIGRATIONS,
-                ),
+                schema,
+                extensions=extensions,
             )
         )
 
-    async def migrate_columns(self, table: str, migrations: tuple[ColumnMigration, ...]) -> None:
-        def pending(columns: set[str]) -> list[ColumnMigration]:
-            return [migration for migration in migrations if migration.column not in columns]
-
-        columns = {str(row["name"]) for row in await query(self, f"PRAGMA table_info({table})")}
-        if not pending(columns):
-            return
-        async with self.store.transaction() as db:
-            columns = {str(row["name"]) for row in await db.sql(f"PRAGMA table_info({table})")}
-            for migration in pending(columns):
-                await db.execute(f"ALTER TABLE {table} ADD COLUMN {migration.ddl}")
-                if migration.backfill is not None:
-                    await db.execute(migration.backfill)
+    async def record_file_scan(self, path: str, mtime: float, candidates: Sequence[FeedbackCandidate]) -> int:
+        ingested_at = now()
+        async with self.store.transaction():
+            inserted = await self.store.insert_candidates(
+                [list(event_row(candidate, ingested_at)) for candidate in candidates],
+                extras=[[None] for _ in candidates],
+            )
+            await self.store.record_file(path, mtime)
+            return len(inserted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,6 +689,6 @@ async def committed_fixture_state(store: object, name: str) -> dict[str, object]
     return state
 
 
-async def open_config(name: str, path: Path) -> object:
+async def open_config(name: str, path: Path, *, vectors: bool = False) -> object:
     """Opens the named configuration's store at ``path`` (the flip-point factory)."""
-    return await CONFIGS[name].open(path)
+    return await CONFIGS[name].open(path, vectors=vectors)

@@ -27,18 +27,6 @@ with the hyphen requirement — can never match a 64-character hex digest, so a
 slug and a content digest never collide.
 """
 
-class VerdictSchemaError(RuntimeError):
-    """The verdict table predates the v9 schema and must be rebuilt by hand.
-
-    Raised at open time by the native store engine when the physical verdict
-    table lacks the ``canonical_key`` column or its unique index still covers the
-    v8 identity ``(dedup_key, role, prompt_version, model)``. ``CREATE TABLE IF
-    NOT EXISTS`` leaves such a table untouched, and the ``judged`` query neither
-    selects ``canonical_key`` nor joins on ``model``, so a v8 table would
-    otherwise read without error while silently returning per-model duplicates.
-    """
-
-
 class JudgeError(RuntimeError):
     """A provider or transport failure from one judge call.
 
