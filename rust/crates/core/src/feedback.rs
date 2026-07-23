@@ -103,8 +103,8 @@ impl FeedbackEngine {
             conn.execute_batch("PRAGMA query_only = ON")?;
             schema::validate(&conn, &config.schema_identity, &exact_schema)?;
         } else {
-            conn.execute_batch("PRAGMA journal_mode = WAL")?;
             schema::initialize_or_validate(&conn, &config.schema_identity, &exact_schema)?;
+            conn.execute_batch("PRAGMA journal_mode = WAL")?;
         }
         schema::install_guard(&conn);
         Ok(Self {
@@ -794,6 +794,20 @@ mod tests {
             panic!("open accepted a different exact schema");
         };
         assert!(error.to_string().contains("schema"), "{error}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn foreign_database_rejection_does_not_change_rollback_journal_header() {
+        let path = temp_path("foreign-header");
+        std::fs::remove_file(&path).ok();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE foreign_table(id INTEGER);")
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_open_schema_error(&path, config());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_file(&path).ok();
     }
 

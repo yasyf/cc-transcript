@@ -99,9 +99,9 @@ impl CorrectionLog {
         }
         let exact_schema = schema::compile(DDL, &[])?;
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL")?;
         conn.execute_batch("PRAGMA busy_timeout = 2000")?;
         schema::initialize_or_validate(&conn, SCHEMA_IDENTITY, &exact_schema)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL")?;
         schema::install_guard(&conn);
         Ok(Self { conn })
     }
@@ -303,6 +303,20 @@ mod tests {
             assert!(error.to_string().contains("schema"), "{error}");
             std::fs::remove_file(&path).ok();
         }
+    }
+
+    #[test]
+    fn foreign_database_rejection_does_not_change_rollback_journal_header() {
+        let path = temp_path("foreign-header");
+        std::fs::remove_file(&path).ok();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE foreign_table(id INTEGER);")
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(CorrectionLog::open(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
