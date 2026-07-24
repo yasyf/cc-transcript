@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
+import logging
 import sqlite3
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_COMPONENT = "cc-review-decisions-v1"
 SCHEMA_VERSION = 1
 EXPECTED_DDL_FINGERPRINT = "6ae938038f3420cdd4a00189b678fb399d60bb7647d009acb0fa9cc4a653040f"
 EXPECTED_OBJECT_FINGERPRINT = "a993521f1ae402d85545d9cd841b58c7e9ba755babba32c7d59cc3a97ee17af9"
+_ARCHIVE_LOCK_TIMEOUT_SECONDS = 2.0
+_ARCHIVE_LOCK_RETRY_SECONDS = 0.01
 
 _SCHEMA_DDL_ACTIONS = frozenset(
     {
@@ -146,6 +156,66 @@ def _authorize_exact_schema(
     return sqlite3.SQLITE_OK
 
 
+@contextmanager
+def _archive_lock(db_path: Path) -> Iterator[None]:
+    lock_path = db_path.with_name(f"{db_path.name}.archive.lock")
+    with lock_path.open("a+b") as lock:
+        deadline = time.monotonic() + _ARCHIVE_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"timed out acquiring decisions archive lock {lock_path} "
+                        f"after {_ARCHIVE_LOCK_TIMEOUT_SECONDS:g} seconds"
+                    ) from error
+                time.sleep(min(_ARCHIVE_LOCK_RETRY_SECONDS, remaining))
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _archive_incompatible_database(db_path: Path, found_version: int) -> None:
+    checkpoint = sqlite3.connect(db_path, autocommit=True)
+    try:
+        try:
+            checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+    finally:
+        checkpoint.close()
+
+    timestamp_ns = time.time_ns()
+    seconds = timestamp_ns // 1_000_000_000
+    microseconds = timestamp_ns // 1_000 % 1_000_000
+    archive_stem = (
+        f"{db_path.name}.v{found_version}."
+        f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(seconds))}-{microseconds:06d}"
+    )
+    archive_path = db_path.with_name(f"{archive_stem}.bak")
+    collision = 0
+    while archive_path.exists():
+        collision += 1
+        archive_path = db_path.with_name(f"{archive_stem}.{collision}.bak")
+    db_path.rename(archive_path)
+    for suffix in ("-wal", "-shm"):
+        sidecar = db_path.with_name(f"{db_path.name}{suffix}")
+        sidecar.unlink(missing_ok=True)
+    logger.warning(
+        "Archived incompatible decisions database %s with schema version %s (expected %s) to %s",
+        db_path,
+        found_version,
+        SCHEMA_VERSION,
+        archive_path,
+    )
+
+
 def open_decisions_sqlite(path: Path | None) -> sqlite3.Connection:
     if ddl_fingerprint() != EXPECTED_DDL_FINGERPRINT:
         raise RuntimeError(
@@ -153,32 +223,40 @@ def open_decisions_sqlite(path: Path | None) -> sqlite3.Connection:
         )
     db_path = path or Path.home() / ".cc-transcript" / "decisions.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, autocommit=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 2000")
-    committed = False
     created = False
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        app_objects = conn.execute(
-            "SELECT count(*) FROM sqlite_schema "
-            "WHERE type IN ('table', 'index', 'trigger', 'view') "
-            "AND lower(substr(name, 1, 7)) <> 'sqlite_'"
-        ).fetchone()[0]
-        created = version == 0 and app_objects == 0
-        create_schema(conn) if created else verify_schema(conn)
-        conn.execute("COMMIT")
-        committed = True
-    finally:
-        if not committed:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
+    with _archive_lock(db_path):
+        while True:
+            conn = sqlite3.connect(db_path, autocommit=True)
+            committed = False
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout = 2000")
+                conn.execute("BEGIN IMMEDIATE")
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                has_objects = conn.execute("SELECT EXISTS(SELECT 1 FROM sqlite_master)").fetchone()[0]
+                created = version == 0 and not has_objects
+                if version != SCHEMA_VERSION and not created:
+                    conn.execute("ROLLBACK")
+                else:
+                    create_schema(conn) if created else verify_schema(conn)
+                    conn.execute("COMMIT")
+                    committed = True
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                conn.close()
+                raise
+            if committed:
+                break
             conn.close()
-    if created:
-        db_path.chmod(0o600)
-    if (journal_mode := conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]) != "wal":
-        conn.close()
-        raise RuntimeError(f"enable decisions WAL: mode {journal_mode!r}")
-    conn.set_authorizer(_authorize_exact_schema)
+            _archive_incompatible_database(db_path, version)
+        try:
+            if created:
+                db_path.chmod(0o600)
+            if (journal_mode := conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]) != "wal":
+                raise RuntimeError(f"enable decisions WAL: mode {journal_mode!r}")
+            conn.set_authorizer(_authorize_exact_schema)
+        except BaseException:
+            conn.close()
+            raise
     return conn
