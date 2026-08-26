@@ -11,7 +11,7 @@ import pytest
 from cc_transcript.activity import SessionActivity, ToolUse
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
-from cc_transcript.query import FileRef, Session, SubagentIndex, SubagentSession, ToolCallQuery
+from cc_transcript.query import DEEP_LIFTS, FileRef, Session, SubagentIndex, SubagentSession, ToolCallQuery
 from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
@@ -724,6 +724,32 @@ def test_walk_yields_descendants_depth_first_then_unions(tmp_path: Path) -> None
     assert [d.depth for d in walked] == [1, 2]
     assert [d.spawned_by for d in walked] == [ToolUseId("a"), ToolUseId("b")]
     assert all(d.provider == "claude" for d in walked)
+
+
+def test_walk_lifts_each_sidechain_once_until_it_grows(tmp_path: Path) -> None:
+    main = write_nested_subagent_transcripts(tmp_path)
+    sess = Session.from_path(main)
+    DEEP_LIFTS.clear()
+
+    lifted = [deep.session for deep in sess.walk()]
+    assert all(new is held for new, held in zip((deep.session for deep in sess.walk()), lifted, strict=True))
+    assert not sess.has_command("deeptool", "later")
+
+    child = main.parent / main.stem / "subagents" / "agent-a.jsonl"
+    with child.open("a") as handle:
+        handle.write(
+            assistant_line("s4", 5, [tool_block("c2", "Bash", command="deeptool later")], isSidechain=True) + "\n"
+        )
+    assert sess.has_command("deeptool", "later")
+
+
+def test_walk_stops_holding_lifts_past_the_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cc_transcript.query.DEEP_LIFT_BUDGET", 1)
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    DEEP_LIFTS.clear()
+
+    assert [deep.path.name for deep in sess.walk()] == ["agent-a.jsonl", "agent-b.jsonl"]
+    assert len(DEEP_LIFTS) == 1
 
 
 def write_branching_subagent_transcripts(root: Path) -> Path:
