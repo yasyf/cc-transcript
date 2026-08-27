@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A deep predicate no longer reparses the whole sidechain tree on every call.
+  `has_command`, `has_tool`, `has_edit_to`, `has_read` and `has_skill` walk every
+  reachable transcript when `subagents=True`, and each walk parsed and lifted every
+  node from disk again — so a hook firing twenty predicates over a session with sixty
+  sidechains paid twelve hundred parses. Lifts are now held in `DEEP_LIFTS`, keyed by
+  tree position and stamped with the file's `(size, mtime_ns)`, so a sidechain
+  reparses only once it grows. Admission stops at `DEEP_LIFT_BUDGET` source bytes
+  rather than evicting: a walk re-reads a tree in the same order, so an LRU smaller
+  than the tree would drop exactly what the next walk asks for first.
+- `Session` derivations are computed once per window. `tool_calls`, `commands` and
+  `command_lines` rebuilt themselves from the turn list on every access, so a
+  predicate that asked twenty times refiltered and reparsed the window's Bash calls
+  twenty times. The window is immutable, so `Session` is now unslotted and each
+  derivation is a `cached_property`.
+
 ## [14.9.0] - 2026-07-20
 
 ### Added

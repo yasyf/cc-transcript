@@ -11,6 +11,7 @@ predicates compose over progressively narrower windows.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -44,6 +45,31 @@ if TYPE_CHECKING:
     from cc_transcript.command import CommandLine
     from cc_transcript.ids import EventUuid
     from cc_transcript.models import TranscriptEvent
+
+
+DEEP_LIFT_BUDGET = 64 * 1024 * 1024
+
+DEEP_LIFTS: dict[LiftKey, tuple[LiftStamp, DeepSession]] = {}
+"""Lifted sidechain transcripts, keyed by tree position and stamped with the file's ``(size, mtime_ns)``.
+
+:meth:`Session.walk` re-reads every node of a tree in the same order, so evicting the
+least-recently-used entry thrashes on any tree larger than the cache — each walk drops
+exactly what the next one asks for first. Admission stops at :data:`DEEP_LIFT_BUDGET`
+source bytes instead: what is held stays held, and a tree that outgrows the budget
+reparses only its tail. A sidechain that grew replaces its own entry, budget or not.
+"""
+
+DEEP_LIFT_GUARD = threading.Lock()
+
+type LiftStamp = tuple[int, int]
+type LiftKey = tuple[Path, int, ToolUseId | None]
+
+
+def hold_lift(key: LiftKey, stamp: LiftStamp, deep: DeepSession) -> DeepSession:
+    with DEEP_LIFT_GUARD:
+        if key in DEEP_LIFTS or sum(size for (size, _), _ in DEEP_LIFTS.values()) < DEEP_LIFT_BUDGET:
+            DEEP_LIFTS[key] = (stamp, deep)
+    return deep
 
 
 def is_failure(use: ToolUse) -> bool:
@@ -236,12 +262,17 @@ class ToolCallQuery:
         return bool(self.items)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Session:
     """An immutable windowed view of a session's turns.
 
     Every slicing operation returns another :class:`Session`; turns at a
     window boundary are trimmed copies, so mid-turn slices stay event-precise.
+
+    Unslotted, unlike its neighbours: the window is immutable, so every
+    derivation over it — :attr:`tool_calls`, :meth:`commands`,
+    :meth:`command_lines` — memoizes per instance, and a predicate that
+    queries one window repeatedly pays each derivation once.
 
     Attributes:
         turns: The turns in the window.
@@ -301,7 +332,7 @@ class Session:
         """Every event in the window, in order."""
         return tuple(event for turn in self.turns for event in turn.events)
 
-    @property
+    @cached_property
     def tool_calls(self) -> ToolCallQuery:
         """The window's tool calls as a chainable query."""
         return ToolCallQuery(tuple(use for turn in self.turns for use in turn.tool_uses))
@@ -344,6 +375,10 @@ class Session:
         cycles terminate. An unreadable transcript is skipped but its children
         are still walked; a structurally malformed line raises, as
         :attr:`subagents` does.
+
+        Each reached transcript is parsed and lifted once per ``(size, mtime)``
+        stamp and memoized across walks, so a predicate that walks repeatedly —
+        or a resident process that re-walks per event — reparses only what grew.
         """
         return deep_sessions(self)
 
@@ -489,13 +524,21 @@ class Session:
 
     def commands(self) -> tuple[str, ...]:
         """The shell command strings of the window's Bash calls."""
-        return tuple(call.command for use in self.tool_calls.named("Bash") if isinstance(call := use.call, BashCall))
+        return self._commands
 
     def command_lines(self) -> tuple[CommandLine, ...]:
         """The window's Bash commands parsed into :class:`~cc_transcript.command.CommandLine` objects."""
+        return self._command_lines
+
+    @cached_property
+    def _commands(self) -> tuple[str, ...]:
+        return tuple(call.command for use in self.tool_calls.named("Bash") if isinstance(call := use.call, BashCall))
+
+    @cached_property
+    def _command_lines(self) -> tuple[CommandLine, ...]:
         from cc_transcript.command import parse_command_line
 
-        return tuple(parse_command_line(command) for command in self.commands())
+        return tuple(parse_command_line(command) for command in self._commands)
 
     def __len__(self) -> int:
         return sum(len(turn.events) for turn in self.turns)
@@ -659,11 +702,8 @@ def visit_transcript(path: Path, depth: int, spawned_by: ToolUseId | None, seen:
     yield from descend_sidechains(path, depth + 1, seen)
 
 
-def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
-    try:
-        transcript = parse(path)
-    except OSError:
-        return None
+def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:
+    transcript = parse(path)
     session_id = session_id_of(transcript.events) or SessionId(path.stem)
     return DeepSession(
         session=Session.from_activity(SessionActivity.from_events(session_id, transcript.events), path=path),
@@ -672,3 +712,18 @@ def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> D
         depth=depth,
         spawned_by=spawned_by,
     )
+
+
+def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    key = (path, depth, spawned_by)
+    if (held := DEEP_LIFTS.get(key)) is not None and held[0] == stamp:
+        return held[1]
+    try:
+        return hold_lift(key, stamp, lift_deep_session(path, depth, spawned_by))
+    except OSError:
+        return None
