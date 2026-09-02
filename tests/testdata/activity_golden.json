@@ -23969,8 +23969,8 @@
       "turns": [
         {
           "edits": [],
-          "ended_at_ms": 1767225604000,
-          "event_count": 5,
+          "ended_at_ms": 1767225605000,
+          "event_count": 6,
           "index": 0,
           "prompt": "real prompt one",
           "started_at_ms": 1767225600000,
@@ -23978,11 +23978,11 @@
         },
         {
           "edits": [],
-          "ended_at_ms": 1767225605000,
+          "ended_at_ms": 1767225606000,
           "event_count": 1,
           "index": 1,
           "prompt": "real prompt two",
-          "started_at_ms": 1767225605000,
+          "started_at_ms": 1767225606000,
           "tool_uses": []
         }
       ]

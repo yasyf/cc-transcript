@@ -147,6 +147,66 @@
    "event_index": 21,
    "event_uuid": "uuid-1",
    "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.0,
+    "reasons": [
+     "structural_only"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 22,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "<agent-message from=\"x\">rebase onto main</agent-message>",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.0,
+    "reasons": [
+     "structural_only"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 23,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "<cross-session-message from=\"x\">the build is green</cross-session-message>",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.0,
+    "reasons": [
+     "structural_only"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 24,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
    "text": "we discussed the [Role Reminder] banner mid-sentence",
    "cc_version": "1.2.3",
    "trigger_index": null,
@@ -164,7 +224,7 @@
    "kind": "transcript_message",
    "detector": "transcript_message",
    "session_id": "sess-1",
-   "event_index": 22,
+   "event_index": 25,
    "event_uuid": "uuid-1",
    "occurred_at": "2026-01-02T03:04:05+00:00",
    "text": "why did the transcript contain <teammate-message from=a> above",
@@ -184,7 +244,27 @@
    "kind": "transcript_message",
    "detector": "transcript_message",
    "session_id": "sess-1",
-   "event_index": 23,
+   "event_index": 26,
+   "event_uuid": "uuid-1",
+   "occurred_at": "2026-01-02T03:04:05+00:00",
+   "text": "the log says Another Claude session sent a message: further down",
+   "cc_version": "1.2.3",
+   "trigger_index": null,
+   "signal": {
+    "confidence": 0.5,
+    "reasons": [
+     "user_message"
+    ],
+    "durable": true
+   },
+   "lower_bound": null,
+   "evidence": {}
+  },
+  {
+   "kind": "transcript_message",
+   "detector": "transcript_message",
+   "session_id": "sess-1",
+   "event_index": 27,
    "event_uuid": "uuid-1",
    "occurred_at": "2026-01-02T03:04:05+00:00",
    "text": "<teammate-message\u0301>",
@@ -205,12 +285,12 @@
    "kind": "transcript_message",
    "detector": "transcript_message",
    "session_id": "sess-1",
-   "event_index": 29,
+   "event_index": 33,
    "event_uuid": "uuid-1",
    "occurred_at": "2026-01-02T03:04:05+00:00",
    "text": "envelope with all new fields",
    "cc_version": "1.2.3",
-   "trigger_index": 28,
+   "trigger_index": 32,
    "signal": {
     "confidence": 0.75,
     "reasons": [
@@ -226,12 +306,12 @@
    "kind": "transcript_message",
    "detector": "transcript_message",
    "session_id": "sess-1",
-   "event_index": 33,
+   "event_index": 37,
    "event_uuid": "uuid-1",
    "occurred_at": "2026-01-02T03:04:05+00:00",
    "text": "field-only interrupt with no marker text",
    "cc_version": "1.2.3",
-   "trigger_index": 32,
+   "trigger_index": 36,
    "signal": {
     "confidence": 0.75,
     "reasons": [

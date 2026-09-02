@@ -15,6 +15,36 @@
    },
    {
     "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude sess\u0131on sent a message:",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "  <teammate-message>indented banner",
     "uuid": "u",
     "is_sidechain": false
@@ -185,6 +215,18 @@
   "pushback": [
    {
     "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude sess\u0131on sent a message:",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "why does the transcript mention <teammate-message x> here",
     "uuid": "u",
     "is_sidechain": false
@@ -301,6 +343,18 @@
   "all_groups": [
    {
     "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude sess\u0131on sent a message:",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "why does the transcript mention <teammate-message x> here",
     "uuid": "u",
     "is_sidechain": false
@@ -394,6 +448,36 @@
    {
     "type": "UserEvent",
     "text": "<scheduled-task>auto",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude sess\u0131on sent a message:",
     "uuid": "u",
     "is_sidechain": false
    },
@@ -625,6 +709,36 @@
    {
     "type": "UserEvent",
     "text": "<scheduled-task>auto",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
+    "uuid": "u",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "Another Claude sess\u0131on sent a message:",
     "uuid": "u",
     "is_sidechain": false
    },
@@ -892,6 +1006,24 @@
    },
    {
     "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main</agent-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green</cross-session-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "we discussed the [Role Reminder] banner mid-sentence",
     "uuid": "uuid-1",
     "is_sidechain": false
@@ -899,6 +1031,12 @@
    {
     "type": "UserEvent",
     "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
     "uuid": "uuid-1",
     "is_sidechain": false
    },
@@ -997,6 +1135,12 @@
    {
     "type": "UserEvent",
     "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
     "uuid": "uuid-1",
     "is_sidechain": false
    },
@@ -1131,6 +1275,12 @@
    {
     "type": "UserEvent",
     "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
     "uuid": "uuid-1",
     "is_sidechain": false
    },
@@ -1482,6 +1632,24 @@
    },
    {
     "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main</agent-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green</cross-session-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "we discussed the [Role Reminder] banner mid-sentence",
     "uuid": "uuid-1",
     "is_sidechain": false
@@ -1489,6 +1657,12 @@
    {
     "type": "UserEvent",
     "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
     "uuid": "uuid-1",
     "is_sidechain": false
    },
@@ -1932,6 +2106,24 @@
    },
    {
     "type": "UserEvent",
+    "text": "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<agent-message from=\"x\">rebase onto main</agent-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "<cross-session-message from=\"x\">the build is green</cross-session-message>",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
     "text": "we discussed the [Role Reminder] banner mid-sentence",
     "uuid": "uuid-1",
     "is_sidechain": false
@@ -1939,6 +2131,12 @@
    {
     "type": "UserEvent",
     "text": "why did the transcript contain <teammate-message from=a> above",
+    "uuid": "uuid-1",
+    "is_sidechain": false
+   },
+   {
+    "type": "UserEvent",
+    "text": "the log says Another Claude session sent a message: further down",
     "uuid": "uuid-1",
     "is_sidechain": false
    },

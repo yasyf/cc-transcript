@@ -167,6 +167,15 @@ mod tests {
         assert!(is_agent_injection(
             "<scheduled-task id='7'>run the suite</scheduled-task>"
         ));
+        assert!(is_agent_injection(
+            "Another Claude session sent a message: <teammate-message teammate_id=\"x\" color=\"orange\">\nhello"
+        ));
+        assert!(is_agent_injection(
+            "<agent-message from='x'>rebase onto main"
+        ));
+        assert!(is_agent_injection(
+            "<cross-session-message from='x'>the build is green"
+        ));
         assert!(is_agent_injection("[Role Reminder: You are a Coordinator."));
         assert!(is_agent_injection("# Augment Agent\nyou have these tools"));
         // Leading whitespace before the marker is tolerated.
@@ -189,6 +198,14 @@ mod tests {
         ));
         assert!(!is_agent_injection(
             "we discussed the [Role Reminder] banner mid-sentence"
+        ));
+        assert!(!is_agent_injection(
+            "the log says Another Claude session sent a message: further down"
+        ));
+        // The "i" of "session" is ASCII-pinned: the dotless-I (U+0131) Python re folds must
+        // never match on either backend.
+        assert!(!is_agent_injection(
+            "Another Claude sess\u{131}on sent a message: dotless"
         ));
         // A combining mark (U+0301) after the tag name is not a portable word boundary; and
         // dotless-I must not fold to ASCII "i" — Python re once matched both, Rust never did.

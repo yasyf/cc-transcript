@@ -61,6 +61,11 @@ def activity(*events: TranscriptEvent) -> SessionActivity:
             False,
             id="agent_injected_banner",
         ),
+        pytest.param(
+            user("u0", 'Another Claude session sent a message: <teammate-message teammate_id="x">\nhello'),
+            False,
+            id="agent_injected_relay_envelope",
+        ),
         pytest.param(user("u0", "", blocks=(result("t1"),)), False, id="tool_result_only"),
         pytest.param(user("u0", "   "), False, id="whitespace_only"),
         pytest.param(user("u0", "compact recap", is_compact_summary=True), False, id="compact_summary"),
@@ -106,11 +111,12 @@ def test_agent_injected_banner_mid_turn_does_not_split_turn() -> None:
         user("u0", "fix the bug"),
         assistant("a0", "on it", secs=1),
         user("u1", "<teammate-message>ping</teammate-message>", secs=2),
-        assistant("a1", "still on it", secs=3),
-        user("u2", "second ask", secs=4),
+        user("u2", 'Another Claude session sent a message: <agent-message from="x">ping</agent-message>', secs=3),
+        assistant("a1", "still on it", secs=4),
+        user("u3", "second ask", secs=5),
     )
     assert [turn.prompt for turn in act.turns] == ["fix the bug", "second ask"]
-    assert [len(turn.events) for turn in act.turns] == [4, 1]
+    assert [len(turn.events) for turn in act.turns] == [5, 1]
 
 
 def test_turn_timestamps_span_meta_bearing_events() -> None:

@@ -125,7 +125,8 @@ SYNTHETIC_CASES: dict[str, str] = {
         usr("us", whole(2), "sidechain note", isSidechain=True),
         usr("uc", whole(3), "compact recap", isCompactSummary=True),
         usr("ua", whole(4), "<teammate-message from='mate'>ping</teammate-message>"),
-        usr("u1", whole(5), "real prompt two"),
+        usr("ur", whole(5), 'Another Claude session sent a message: <agent-message from="x">ping</agent-message>'),
+        usr("u1", whole(6), "real prompt two"),
     ),
     "eof_interruption": jsonl(
         usr("u0", whole(0), "do it"),
