@@ -73,7 +73,8 @@ STRUCTURAL_GROUPS: tuple[tuple[str, str], ...] = (
 # Start-anchored so a mid-text mention is not a banner.
 # Dialect-hardened for Rust-regex parity — see cc-notes doc "rust-regex-dialect-parity".
 AGENT_INJECTION_GROUPS: tuple[tuple[str, str], ...] = (
-    ("xml_tags_extra", r"\A\s*<(?:teammate-message|scheduled-task)(?:[\s/>]|$)"),
+    ("xml_tags_extra", r"\A\s*<(?:teammate-message|scheduled-task|agent-message|cross-session-message)(?:[\s/>]|$)"),
+    ("relay_preamble", r"\A\s*Another Claude sess(?-i:[Ii])on sent a message:"),
     ("augment_agent", r"\A\s*# Augment Agent(?:\s|$)"),
     ("role_reminder", r"\A\s*\[Role Rem(?-i:[Ii])nder(?:[\s:\]]|$)"),
 )

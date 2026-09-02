@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Relay envelopes now count as agent injection. The `agent_injection` groups
+  predate the current relay wrapper, so a user event opening with
+  `Another Claude session sent a message:` — or with a bare `<agent-message>` /
+  `<cross-session-message>` tag — was classified as an authored prompt and opened a
+  turn. Verified against a live orchestration session whose last four turn-opening
+  prompts were all such relays. The preamble is now its own start-anchored group and
+  the tag alternation carries both wrappers, on both the Python and Rust sides; a
+  mid-text mention stays authored.
 - A deep predicate no longer reparses the whole sidechain tree on every call.
   `has_command`, `has_tool`, `has_edit_to`, `has_read` and `has_skill` walk every
   reachable transcript when `subagents=True`, and each walk parsed and lifted every

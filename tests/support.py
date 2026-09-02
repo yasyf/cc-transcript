@@ -354,6 +354,27 @@ def fixture_entries() -> list[dict[str, Any]]:
             type="user",
             message={"role": "user", "content": "<scheduled-task id='7'>run the nightly suite</scheduled-task>"},
         ),
+        raw_envelope(
+            type="user",
+            message={
+                "role": "user",
+                "content": (
+                    "Another Claude session sent a message: "
+                    '<teammate-message teammate_id="x" color="orange">\nhello'
+                ),
+            },
+        ),
+        raw_envelope(
+            type="user",
+            message={"role": "user", "content": '<agent-message from="x">rebase onto main</agent-message>'},
+        ),
+        raw_envelope(
+            type="user",
+            message={
+                "role": "user",
+                "content": '<cross-session-message from="x">the build is green</cross-session-message>',
+            },
+        ),
         # Head-anchored role-reminder marker appearing mid-text: the group is start-anchored, so both
         # backends must agree is_agent_injected is False — guards Rust against over-matching.
         raw_envelope(
@@ -364,6 +385,10 @@ def fixture_entries() -> list[dict[str, Any]]:
         raw_envelope(
             type="user",
             message={"role": "user", "content": "why did the transcript contain <teammate-message from=a> above"},
+        ),
+        raw_envelope(
+            type="user",
+            message={"role": "user", "content": "the log says Another Claude session sent a message: further down"},
         ),
         # A combining mark (U+0301) after the tag name is not a portable word boundary: Python re once
         # matched here while the Rust regex crate did not — the follower class restores False on both.
