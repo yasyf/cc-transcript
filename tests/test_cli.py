@@ -48,6 +48,7 @@ def test_help_lists_all_commands() -> None:
         "list",
         "show",
         "grep",
+        "corpus",
         "stats",
         "slice",
         "scratchpad",
@@ -507,6 +508,183 @@ def test_grep_with_result_json_adds_results_sibling(rich: Path) -> None:
     by_i = {row["i"]: row for line in result.stdout.splitlines() if (row := json.loads(line))}
     assert by_i[1]["results"] == {"toolu_rm": {"is_error": True, "denied": True, "duration_ms": 1000}}
     assert by_i[3]["results"] == {"toolu_srch": {"is_error": False, "denied": False, "duration_ms": 1000}}
+
+
+def test_grep_max_matches_zero_lifts_the_cap(transcript: Path) -> None:
+    capped = run_cli("grep", "o", str(transcript), "--max-matches", "2")
+    uncapped = run_cli("grep", "o", str(transcript), "--max-matches", "0")
+    assert (capped.returncode, uncapped.returncode) == (0, 0)
+    assert capped.stdout.splitlines()[-1] == "1 files, 2 matches"
+    assert uncapped.stdout.splitlines()[-1] == "1 files, 9 matches"
+
+
+def test_grep_warns_when_the_cap_truncates(transcript: Path) -> None:
+    result = run_cli("grep", "o", str(transcript), "--max-matches", "2")
+    assert result.returncode == 0
+    assert result.stderr == (
+        "warning: stopped at --max-matches 2; more matches may exist"
+        " — raise it, or pass --max-matches 0 for no cap\n"
+    )
+
+
+def test_grep_stays_quiet_when_the_cap_is_not_reached(transcript: Path) -> None:
+    result = run_cli("grep", "o", str(transcript), "--max-matches", "9")
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.splitlines()[-1] == "1 files, 9 matches"
+
+
+def corpus_entries() -> list[dict[str, Any]]:
+    return [
+        user_entry(0, "prefix needle suffix"),
+        user_entry(1, "prefix needle suffix"),
+        user_entry(2, "other needle tail\nsecond line"),
+        tool_use_entry(3, "toolu_run", "Bash", command="run needle now"),
+    ]
+
+
+@pytest.fixture
+def sweep_root(tmp_path: Path) -> Path:
+    root = tmp_path / "projects"
+    newest = write_transcript(root / "-Users-dev-monorepo-api" / "one.jsonl", corpus_entries())
+    oldest = write_transcript(root / "-Users-dev-webapp" / "two.jsonl", [user_entry(0, "another needle here")])
+    os.utime(newest, (2_000_000_200, 2_000_000_200))
+    os.utime(oldest, (2_000_000_100, 2_000_000_100))
+    return root
+
+
+def test_corpus_writes_deduped_character_windows(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    result = run_cli("corpus", "needle", "--root", str(sweep_root), "--window", "3", "-o", str(out))
+    assert result.returncode == 0
+    assert out.read_text().splitlines() == [
+        "ix needle su",
+        "er needle ta",
+        "un needle no",
+        "er needle he",
+    ]
+    assert result.stderr == "2 files scanned, 4 windows kept, 1 duplicates dropped, 52 bytes written\n"
+
+
+def test_corpus_windows_are_characters_and_escape_line_breaks(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    result = run_cli("corpus", "needle", "--root", str(sweep_root), "--window", "6", "-o", str(out))
+    assert result.returncode == 0
+    assert out.read_text().splitlines() == [
+        "refix needle suffi",
+        "other needle tail\\n",
+        ':"run needle now"}',
+        "other needle here",
+    ]
+
+
+def test_corpus_sweeps_every_transcript_unless_limit_asks_otherwise(sweep_root: Path, tmp_path: Path) -> None:
+    swept = run_cli("corpus", "needle", "--root", str(sweep_root), "-o", str(tmp_path / "all.txt"))
+    limited = run_cli("corpus", "needle", "--root", str(sweep_root), "--limit", "1", "-o", str(tmp_path / "one.txt"))
+    assert swept.stderr.startswith("2 files scanned,")
+    assert limited.stderr.startswith("1 files scanned,")
+
+
+def test_corpus_filters_project_dirs_whose_names_start_with_a_dash(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    result = run_cli(
+        "corpus", "needle", "--root", str(sweep_root), "--project", "monorepo", "--window", "3", "-o", str(out)
+    )
+    assert result.returncode == 0
+    assert result.stderr.startswith("1 files scanned,")
+    assert "er needle he" not in out.read_text().splitlines()
+
+
+def test_corpus_takes_a_dash_leading_path_after_the_argument_separator(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    result = run_cli(
+        "corpus",
+        "needle",
+        "--window",
+        "3",
+        "-o",
+        str(out),
+        "--",
+        "-Users-dev-monorepo-api/one.jsonl",
+        cwd=sweep_root,
+    )
+    assert result.returncode == 0
+    assert result.stderr.startswith("1 files scanned,")
+
+
+def test_corpus_exits_1_when_nothing_matched(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    result = run_cli("corpus", "zzzz_no_such_pattern", "--root", str(sweep_root), "-o", str(out))
+    assert result.returncode == 1
+    assert out.read_text() == ""
+    assert result.stderr == "2 files scanned, 0 windows kept, 0 duplicates dropped, 0 bytes written\n"
+
+
+def test_grep_corpus_queries_the_extract_instead_of_transcripts(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    assert run_cli("corpus", "needle", "--root", str(sweep_root), "--window", "3", "-o", str(out)).returncode == 0
+    result = run_cli("grep", "--corpus", str(out), "needle su|needle he")
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["ix needle su", "er needle he", f"2 matches in {out}"]
+
+
+def test_grep_corpus_exits_1_when_nothing_matched(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    run_cli("corpus", "needle", "--root", str(sweep_root), "-o", str(out))
+    result = run_cli("grep", "--corpus", str(out), "zzzz_no_such_pattern")
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [f"0 matches in {out}"]
+
+
+def test_grep_corpus_is_uncapped_but_still_honors_an_explicit_cap(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    run_cli("corpus", "needle", "--root", str(sweep_root), "--window", "3", "-o", str(out))
+    uncapped = run_cli("grep", "--corpus", str(out), "needle")
+    capped = run_cli("grep", "--corpus", str(out), "needle", "--max-matches", "2")
+    assert uncapped.stdout.splitlines()[-1] == f"4 matches in {out}"
+    assert uncapped.stderr == ""
+    assert capped.stdout.splitlines()[-1] == f"2 matches in {out}"
+    assert capped.stderr == (
+        "warning: stopped at --max-matches 2; more matches may exist"
+        " — raise it, or pass --max-matches 0 for no cap\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        pytest.param(["--kind", "user"], id="kind"),
+        pytest.param(["--tool", "Bash"], id="tool"),
+        pytest.param(["--errors"], id="errors"),
+        pytest.param(["--where", "text"], id="where"),
+        pytest.param(["-C", "1"], id="context"),
+        pytest.param(["--width", "40"], id="width"),
+        pytest.param(["--uuids"], id="uuids"),
+        pytest.param(["--with-result"], id="with-result"),
+        pytest.param(["--json"], id="json"),
+        pytest.param(["--project", "monorepo"], id="project"),
+        pytest.param(["--contains", "one"], id="contains"),
+        pytest.param(["--limit", "1"], id="limit"),
+        pytest.param(["--all"], id="all"),
+        pytest.param(["--root", "."], id="root"),
+    ],
+)
+def test_grep_corpus_rejects_flags_that_need_event_structure(
+    flag: list[str], sweep_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "extract.txt"
+    run_cli("corpus", "needle", "--root", str(sweep_root), "-o", str(out))
+    result = run_cli("grep", "--corpus", str(out), "needle", *flag)
+    assert result.returncode == 2
+    assert "'--corpus <CORPUS>' cannot be used with" in result.stderr
+
+
+def test_grep_corpus_rejects_transcript_paths(sweep_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "extract.txt"
+    run_cli("corpus", "needle", "--root", str(sweep_root), "-o", str(out))
+    result = run_cli("grep", "--corpus", str(out), "needle", str(sweep_root / "-Users-dev-webapp" / "two.jsonl"))
+    assert result.returncode == 2
+    assert "'--corpus <CORPUS>' cannot be used with" in result.stderr
 
 
 def test_stats_warns_on_unparseable_file(transcript: Path, unparseable: Path) -> None:

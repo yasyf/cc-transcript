@@ -30,6 +30,9 @@ Invocation matrix (name -> argv, cwd = repo root, binary = .venv/bin/cc-transcri
   grep_match        grep "tests are green" --root .fixtures/corpus --width 100 --max-matches 10
   grep_nomatch      grep zzzz_no_such_pattern_xyzzy --root .fixtures/corpus   (exit 1)
   grep_codex        grep python3 <current Codex rollout> --width 100 --max-matches 10
+  corpus            corpus green --root .fixtures/corpus --window 60 --out .fixtures/corpus-extract.txt
+  corpus_query      grep --corpus .fixtures/corpus-extract.txt Bash   (reads the extract corpus wrote)
+  corpus_conflict   grep --corpus .fixtures/corpus-extract.txt Bash --kind user   (exit 2)
   stats             stats --root .fixtures/corpus --all
   stats_json        stats --root .fixtures/corpus --all --json
   stats_codex       stats <current Codex rollout>
@@ -85,6 +88,7 @@ BLAME_REL = Path(".fixtures") / "blame"
 GOLDEN_DIR = REPO_ROOT / "tests" / "testdata" / "cli_golden"
 CLI = REPO_ROOT / ".venv" / "bin" / "cc-transcript"
 MCP_ROOT = "tests/testdata/mcp_root"
+CORPUS_EXTRACT_REL = ".fixtures/corpus-extract.txt"
 CODEX_TRANSCRIPT_REL = Path(
     "tests/testdata/codex/rollout-2026-07-16T16-20-00-019f67f0-2a3b-7c4d-8e5f-000000000303.jsonl"
 )
@@ -409,6 +413,9 @@ def matrix(smallest: str) -> dict[str, Case]:
         "grep_match": Case(["grep", "tests are green", "--root", root, "--width", "100", "--max-matches", "10"]),
         "grep_nomatch": Case(["grep", "zzzz_no_such_pattern_xyzzy", "--root", root]),
         "grep_codex": Case(["grep", "python3", codex_transcript, "--width", "100", "--max-matches", "10"]),
+        "corpus": Case(["corpus", "green", "--root", root, "--window", "60", "--out", CORPUS_EXTRACT_REL]),
+        "corpus_query": Case(["grep", "--corpus", CORPUS_EXTRACT_REL, "Bash"]),
+        "corpus_conflict": Case(["grep", "--corpus", CORPUS_EXTRACT_REL, "Bash", "--kind", "user"]),
         "stats": Case(["stats", "--root", root, "--all"]),
         "stats_json": Case(["stats", "--root", root, "--all", "--json"]),
         "stats_codex": Case(["stats", codex_transcript]),

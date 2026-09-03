@@ -44,6 +44,27 @@ fn pkg_version() -> String {
 const KIND_CHOICES: [&str; 6] = ["user", "assistant", "system", "mode", "other", "attachment"];
 const WHERE_CHOICES: [&str; 3] = ["text", "thinking", "tools"];
 const LIST_PROVIDER_CHOICES: [&str; 3] = ["claude", "codex", "all"];
+const DEFAULT_LIMIT: usize = 50;
+
+/// `grep --corpus` reads a flattened extract, so every flag that selects transcripts or
+/// reaches into an event's structure is rejected rather than silently ignored.
+const CORPUS_INCOMPATIBLE: [&str; 15] = [
+    "paths",
+    "root",
+    "project",
+    "contains",
+    "limit",
+    "all",
+    "kinds",
+    "tool",
+    "errors",
+    "wheres",
+    "context",
+    "width",
+    "uuids",
+    "with_result",
+    "json",
+];
 
 #[derive(Parser)]
 #[command(
@@ -68,9 +89,9 @@ pub struct DiscoveryOpts {
     /// Substring filter over transcript file names.
     #[arg(long)]
     pub contains: Option<String>,
-    /// Keep only the newest N transcripts.
-    #[arg(long, default_value_t = 50)]
-    pub limit: usize,
+    /// Keep only the newest N transcripts [default: 50, uncapped for corpus].
+    #[arg(long)]
+    pub limit: Option<usize>,
     /// Ignore --limit.
     #[arg(long)]
     pub all: bool,
@@ -93,7 +114,17 @@ impl DiscoveryOpts {
         if self.all {
             None
         } else {
-            Some(self.limit)
+            Some(self.limit.unwrap_or(DEFAULT_LIMIT))
+        }
+    }
+
+    /// A whole-corpus sweep's limit: unbounded unless `--limit` asks for a cap, so an
+    /// extract never silently covers only the newest 50 transcripts.
+    pub fn sweep_limit(&self) -> Option<usize> {
+        if self.all {
+            None
+        } else {
+            self.limit
         }
     }
 }
@@ -166,6 +197,10 @@ pub enum Cmd {
         paths: Vec<PathBuf>,
         #[command(flatten)]
         discovery: DiscoveryOpts,
+        /// Search a `corpus` extract instead of transcripts: its windows carry no event
+        /// structure, so discovery, kind, tool, context, and rendering flags do not apply.
+        #[arg(long, conflicts_with_all = CORPUS_INCOMPATIBLE)]
+        corpus: Option<PathBuf>,
         /// Keep only these event kinds.
         #[arg(long = "kind", value_parser = KIND_CHOICES)]
         kinds: Vec<String>,
@@ -184,9 +219,9 @@ pub enum Cmd {
         /// Events of context around each hit.
         #[arg(short = 'C', long, default_value_t = 0)]
         context: usize,
-        /// Stop after this many matches.
-        #[arg(long = "max-matches", default_value_t = 20)]
-        max_matches: usize,
+        /// Stop after this many matches; 0 lifts the cap [default: 20, uncapped with --corpus].
+        #[arg(long = "max-matches")]
+        max_matches: Option<usize>,
         /// Truncation width per chunk (0 = no cut).
         #[arg(long, default_value_t = 100)]
         width: usize,
@@ -199,6 +234,25 @@ pub enum Cmd {
         /// Emit JSONL event envelopes with i, kind, meta, model, text, blocks, stop_reason, and usage.
         #[arg(long)]
         json: bool,
+    },
+    /// Sweep the matched transcripts into a deduped file of character windows around every hit.
+    Corpus {
+        pattern: String,
+        paths: Vec<PathBuf>,
+        #[command(flatten)]
+        discovery: DiscoveryOpts,
+        /// Search only these areas [default: all].
+        #[arg(long = "where", value_parser = WHERE_CHOICES)]
+        wheres: Vec<String>,
+        /// Case-insensitive matching.
+        #[arg(short = 'i', long = "ignore-case")]
+        ignore_case: bool,
+        /// Characters kept either side of each match.
+        #[arg(long, default_value_t = 200)]
+        window: usize,
+        /// Write the extract here, one window per line.
+        #[arg(short = 'o', long, required = true)]
+        out: PathBuf,
     },
     /// Summarize event, model, and tool statistics.
     Stats {
@@ -493,6 +547,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             pattern,
             paths,
             discovery,
+            corpus,
             kinds,
             tool,
             errors,
@@ -508,6 +563,7 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             pattern,
             paths,
             discovery,
+            corpus,
             kinds,
             tool,
             errors,
@@ -519,6 +575,23 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             uuids,
             with_result,
             json,
+        }),
+        Cmd::Corpus {
+            pattern,
+            paths,
+            discovery,
+            wheres,
+            ignore_case,
+            window,
+            out,
+        } => commands::corpus::run(commands::corpus::CorpusArgs {
+            pattern,
+            paths,
+            discovery,
+            wheres,
+            ignore_case,
+            window,
+            out,
         }),
         Cmd::Stats {
             paths,
