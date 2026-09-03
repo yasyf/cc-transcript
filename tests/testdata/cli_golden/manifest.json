@@ -76,6 +76,45 @@
     "stderr_bytes": 0,
     "stdout_bytes": 12
   },
+  "corpus": {
+    "argv": [
+      "corpus",
+      "green",
+      "--root",
+      ".fixtures/corpus",
+      "--window",
+      "60",
+      "--out",
+      ".fixtures/corpus-extract.txt"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 81,
+    "stdout_bytes": 0
+  },
+  "corpus_conflict": {
+    "argv": [
+      "grep",
+      "--corpus",
+      ".fixtures/corpus-extract.txt",
+      "Bash",
+      "--kind",
+      "user"
+    ],
+    "exit_code": 2,
+    "stderr_bytes": 180,
+    "stdout_bytes": 0
+  },
+  "corpus_query": {
+    "argv": [
+      "grep",
+      "--corpus",
+      ".fixtures/corpus-extract.txt",
+      "Bash"
+    ],
+    "exit_code": 0,
+    "stderr_bytes": 0,
+    "stdout_bytes": 1809
+  },
   "corrections_add": {
     "argv": [
       "corrections",
@@ -170,7 +209,7 @@
       "10"
     ],
     "exit_code": 0,
-    "stderr_bytes": 0,
+    "stderr_bytes": 110,
     "stdout_bytes": 1328
   },
   "grep_nomatch": {
