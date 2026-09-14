@@ -16,12 +16,13 @@ from cc_transcript.query import (
     DEEP_LIFTS,
     SIDECHAIN_INPUTS,
     FileRef,
+    PredicateInputs,
     Session,
     SubagentIndex,
     SubagentSession,
     ToolCallQuery,
 )
-from cc_transcript.tools import file_paths_of
+from cc_transcript.tools import file_paths_of, register_mcp_tool, unregister_mcp_tool
 from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
@@ -886,6 +887,54 @@ def test_a_sidechain_added_after_a_walk_is_reached_by_the_next_one(tmp_path: Pat
     )
     assert Session.from_path(main).has_command("step", "late")
     assert [deep.path.name for deep in Session.from_path(main).walk()][-1] == "agent-late.jsonl"
+
+
+def test_a_retargeted_symlinked_sidechain_is_resolved_afresh(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    elsewhere = tmp_path / "elsewhere.jsonl"
+    elsewhere.write_text(
+        assistant_line("b6", 2, [tool_block("c6", "Bash", command="git push")], isSidechain=True) + "\n"
+    )
+    link = main.parent / main.stem / "subagents" / "agent-link.jsonl"
+    target = tmp_path / "current.jsonl"
+    target.symlink_to(main)
+    link.symlink_to(target)
+    assert not Session.from_path(main).has_command("git", "push")
+
+    target.unlink()
+    target.symlink_to(elsewhere)
+    assert Session.from_path(main).has_command("git", "push")
+
+
+def test_an_unreadable_subagents_directory_is_listed_again_once_readable(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    directory = main.parent / main.stem / "subagents"
+    directory.chmod(0o100)
+    try:
+        assert not Session.from_path(main).has_command("step", "0")
+    finally:
+        directory.chmod(0o700)
+    assert Session.from_path(main).has_command("step", "0")
+
+
+def test_a_tool_registered_after_an_answer_changes_deep_has_tool(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    with (main.parent / main.stem / "subagents" / "agent-0.jsonl").open("a") as handle:
+        handle.write(assistant_line("b5", 3, [tool_block("c5", "mcp__review__lookalike")], isSidechain=True) + "\n")
+    assert not Session.from_path(main).has_tool("Grep")
+
+    register_mcp_tool("lookalike", "Grep")
+    try:
+        assert Session.from_path(main).has_tool("Grep")
+    finally:
+        unregister_mcp_tool("lookalike")
+
+
+def test_memoized_answers_stay_bounded_under_varying_arguments(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    for index in range(PredicateInputs.MAX_ANSWERS * 3):
+        Session.from_path(main).has_edit_to(f"src/file_{index}.py")
+    assert all(len(inputs.answers) <= PredicateInputs.MAX_ANSWERS for inputs in Session.from_path(main).deep_inputs())
 
 
 def test_an_errored_sidechain_call_stays_invisible_to_deep_predicates(tmp_path: Path) -> None:

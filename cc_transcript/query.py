@@ -149,11 +149,13 @@ process re-answering the same predicates per event neither reparses nor holds th
 """
 
 
-SIDECHAIN_LISTINGS: OrderedDict[Path, tuple[tuple[int, int], tuple[tuple[Path, Path], ...]]] = OrderedDict()
-"""Each ``subagents`` directory's sidechain files and their resolved paths, stamped ``(inode, mtime_ns)``.
+SIDECHAIN_LISTINGS: OrderedDict[Path, tuple[tuple[int, int], tuple[tuple[Path, bool], ...]]] = OrderedDict()
+"""Each non-empty ``subagents`` listing and whether each file is a symlink, stamped ``(inode, mtime_ns)``.
 
-Adding, removing, or renaming a sidechain moves the directory's mtime, so an unchanged stamp
-proves the listing current and a walk skips the directory read and a ``resolve`` per file.
+Adding, removing, renaming, or replacing a sidechain moves the directory's mtime, so an unchanged
+stamp proves the listing current. A walk then skips the directory read and resolves the directory
+once rather than every file; only a symlinked sidechain is resolved on every walk. An empty listing
+is never held, since the native lister reports an unreadable directory as empty.
 """
 
 SIDECHAIN_LISTINGS_GUARD = threading.Lock()
@@ -720,7 +722,8 @@ class PredicateInputs:
 
     Small enough to hold for every transcript in a tree of thousands, where a lifted
     :class:`Session` is not. Calls whose result errored are left out, as
-    :class:`ToolCallQuery` hides them by default. Each ``has_*`` answer is memoized.
+    :class:`ToolCallQuery` hides them by default. Answers that do not depend on the MCP
+    tool registry are memoized, up to :attr:`MAX_ANSWERS` per instance.
 
     Attributes:
         calls: Each call's tool name and the file paths it targets, in order.
@@ -734,6 +737,8 @@ class PredicateInputs:
     edited_files: tuple[FileRef, ...]
     skills: tuple[str, ...]
     answers: dict[tuple[str, object], bool] = field(default_factory=dict, compare=False, repr=False)
+
+    MAX_ANSWERS: ClassVar[int] = 256
 
     @classmethod
     def of(cls, session: Session) -> PredicateInputs:
@@ -753,17 +758,25 @@ class PredicateInputs:
 
         return tuple(parse_command_line(command) for command in self.commands)
 
+    @cached_property
+    def tool_names(self) -> frozenset[str]:
+        """The distinct names in :attr:`calls`."""
+        return frozenset(name for name, _ in self.calls)
+
     def files(self, spec: str) -> tuple[FileRef, ...]:
         """The files targeted by calls matching the pipe spec ``spec``, one entry per path."""
-        return tuple(FileRef(path) for name, paths in self.calls if tool_name_matches(name, spec) for path in paths)
+        matching = {name for name in self.tool_names if tool_name_matches(name, spec)}
+        return tuple(FileRef(path) for name, paths in self.calls if name in matching for path in paths)
 
     def answer(self, query: tuple[str, object], compute: Callable[[], bool]) -> bool:
         if (known := self.answers.get(query)) is None:
+            if len(self.answers) >= self.MAX_ANSWERS:
+                self.answers.clear()
             known = self.answers[query] = compute()
         return known
 
     def has_tool(self, name: str) -> bool:
-        return self.answer(("tool", name), lambda: any(tool_name_matches(tool, name) for tool, _ in self.calls))
+        return any(tool_name_matches(tool, name) for tool in self.tool_names)
 
     def has_command(self, argv: tuple[str, ...]) -> bool:
         return self.answer(
@@ -774,7 +787,7 @@ class PredicateInputs:
         return self.answer(("edit", globs), lambda: any(file.matches(*globs) for file in self.edited_files))
 
     def has_read(self, pattern: str) -> bool:
-        return self.answer(("read", pattern), lambda: any(pattern in str(file) for file in self.files("Read")))
+        return any(pattern in str(file) for file in self.files("Read"))
 
     def has_skill(self, names: tuple[str, ...]) -> bool:
         return self.answer(("skill", names), lambda: any(skill in names for skill in self.skills))
@@ -878,17 +891,17 @@ def sidechain_listing(parent: Path) -> tuple[tuple[Path, Path], ...]:
     with SIDECHAIN_LISTINGS_GUARD:
         held = SIDECHAIN_LISTINGS.get(directory)
     if held is not None and held[0] == stamp:
-        return held[1]
+        children = held[1]
+    else:
+        children = tuple((child, child.is_symlink()) for child in subagent_paths(parent))
+        if children:
+            with SIDECHAIN_LISTINGS_GUARD:
+                SIDECHAIN_LISTINGS[directory] = (stamp, children)
+                SIDECHAIN_LISTINGS.move_to_end(directory)
+                while len(SIDECHAIN_LISTINGS) > SIDECHAIN_INPUTS_LIMIT:
+                    SIDECHAIN_LISTINGS.popitem(last=False)
     real = directory.resolve()
-    listing = tuple(
-        (child, child.resolve() if child.is_symlink() else real / child.name) for child in subagent_paths(parent)
-    )
-    with SIDECHAIN_LISTINGS_GUARD:
-        SIDECHAIN_LISTINGS[directory] = (stamp, listing)
-        SIDECHAIN_LISTINGS.move_to_end(directory)
-        while len(SIDECHAIN_LISTINGS) > SIDECHAIN_INPUTS_LIMIT:
-            SIDECHAIN_LISTINGS.popitem(last=False)
-    return listing
+    return tuple((child, child.resolve() if link else real / child.name) for child, link in children)
 
 
 def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) -> PredicateInputs | None:
