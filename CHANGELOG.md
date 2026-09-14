@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls' names and file paths, Bash command strings, edited files and Skill names.
   `Session.deep_inputs()` yields the window's inputs and those of every transcript
   `walk()` reaches, in the same depth-first order and with the same deduplication,
-  without holding lifts. Predicate answers are memoized per instance; command lines
-  are parsed lazily.
+  without holding lifts. Answers that do not read the MCP tool registry are memoized
+  per instance, up to `PredicateInputs.MAX_ANSWERS`; command lines are parsed lazily.
 
 ### Fixed
 
