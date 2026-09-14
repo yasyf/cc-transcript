@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from functools import cached_property
 from pathlib import PurePath
@@ -47,29 +48,62 @@ if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 
-DEEP_LIFT_BUDGET = 64 * 1024 * 1024
+DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
 
-DEEP_LIFTS: dict[LiftKey, tuple[LiftStamp, DeepSession]] = {}
-"""Lifted sidechain transcripts, keyed by tree position and stamped with the file's ``(size, mtime_ns)``.
-
-:meth:`Session.walk` re-reads every node of a tree in the same order, so evicting the
-least-recently-used entry thrashes on any tree larger than the cache — each walk drops
-exactly what the next one asks for first. Admission stops at :data:`DEEP_LIFT_BUDGET`
-source bytes instead: what is held stays held, and a tree that outgrows the budget
-reparses only its tail. A sidechain that grew replaces its own entry, budget or not.
-"""
-
-DEEP_LIFT_GUARD = threading.Lock()
-
-type LiftStamp = tuple[int, int]
+type LiftStamp = tuple[int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
 
 
-def hold_lift(key: LiftKey, stamp: LiftStamp, deep: DeepSession) -> DeepSession:
-    with DEEP_LIFT_GUARD:
-        if key in DEEP_LIFTS or sum(size for (size, _), _ in DEEP_LIFTS.values()) < DEEP_LIFT_BUDGET:
-            DEEP_LIFTS[key] = (stamp, deep)
-    return deep
+@dataclass(slots=True)
+class LiftCache:
+    held: OrderedDict[LiftKey, tuple[LiftStamp, DeepSession]] = field(default_factory=OrderedDict)
+    size: int = 0
+    guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def get(self, key: LiftKey, stamp: LiftStamp) -> DeepSession | None:
+        with self.guard:
+            match self.held.get(key):
+                case None:
+                    return None
+                case (held_stamp, deep) if held_stamp == stamp:
+                    self.held.move_to_end(key)
+                    return deep
+                case _:
+                    self.drop(key)
+                    return None
+
+    def put(self, key: LiftKey, stamp: LiftStamp, deep: DeepSession) -> DeepSession:
+        with self.guard:
+            self.drop(key)
+            self.held[key] = (stamp, deep)
+            self.size += stamp[0]
+            while self.size > DEEP_LIFT_BUDGET:
+                self.drop(next(iter(self.held)))
+        return deep
+
+    def drop(self, key: LiftKey) -> None:
+        if (held := self.held.pop(key, None)) is not None:
+            self.size -= held[0][0]
+
+    def clear(self) -> None:
+        with self.guard:
+            self.held.clear()
+            self.size = 0
+
+    def __len__(self) -> int:
+        return len(self.held)
+
+
+DEEP_LIFTS = LiftCache()
+"""Lifted sidechain transcripts, keyed by tree position and stamped with the file's ``(size, mtime_ns, inode)``.
+
+A least-recently-used hold bounded at :data:`DEEP_LIFT_BUDGET` source bytes. One resident
+process serves many lead sessions, so the tree walked most recently stays held while an
+idle lead's sidechains age out; a changed stamp drops the stale lift and releases its
+bytes. A lifted session costs about 2.3 times its source bytes in resident memory, so the
+default holds roughly 2.3 GiB. A single tree larger than the budget reparses the part that
+no longer fits on every walk.
+"""
 
 
 def is_failure(use: ToolUse) -> bool:
@@ -719,11 +753,11 @@ def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> D
         stat = path.stat()
     except OSError:
         return None
-    stamp = (stat.st_size, stat.st_mtime_ns)
+    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
     key = (path, depth, spawned_by)
-    if (held := DEEP_LIFTS.get(key)) is not None and held[0] == stamp:
-        return held[1]
+    if (held := DEEP_LIFTS.get(key, stamp)) is not None:
+        return held
     try:
-        return hold_lift(key, stamp, lift_deep_session(path, depth, spawned_by))
+        return DEEP_LIFTS.put(key, stamp, lift_deep_session(path, depth, spawned_by))
     except OSError:
         return None
