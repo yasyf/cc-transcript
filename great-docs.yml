@@ -335,6 +335,7 @@ reference:
       - SubagentIndex
       - DeepView
       - DeepSession
+      - PredicateInputs
   - title: Decisions
     desc: The unified decision ledger, joined to tool calls by content digest.
     contents:
