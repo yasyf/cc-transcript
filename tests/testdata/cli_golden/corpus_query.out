@@ -1,0 +1,17 @@
+Running the tests to confirm the change is green.\nBash {"command":"git diff --stat","description":"review th
+Running the tests to confirm the change is green.\nBash {"command":"cargo test --workspace","description":"ru
+Running the tests to confirm the change is green.\nBash {"command":"rg -n 'parse_bytes' rust/src","descriptio
+Running the tests to confirm the change is green.\nBash {"command":"uv run python -m cc_transcript stats","de
+Running the tests to confirm the change is green.\nBash {"command":"ls -la cc_transcript/mining","description
+Running the tests to confirm the change is green.\nBash {"command":"uv run ruff check cc_transcript","descrip
+Running the tests to confirm the change is green.\nBash {"command":"git status --short","description":"check 
+Running the tests to confirm the change is green.\nBash {"command":"cargo bench --no-run","description":"comp
+Running the tests to confirm the change is green.\nBash {"command":"uv run pytest tests/test_parser.py -x","d
+Running the tests to confirm the change is green.\nBash {"command":"uv build","description":"build the wheel"
+Running the tests to confirm the change is green.\nGlob {"pattern":"**/*.py"}\nBash {"command":"rg -n 'parse_b
+Running the tests to confirm the change is green.\nGrep {"pattern":"MiningSpec","output_mode":"content"}\nBash
+Running the tests to confirm the change is green.\nRead {"file_path":"cc_transcript/cli.py","limit":383}\nBash
+Running the tests to confirm the change is green.\nGlob {"pattern":"**/*.py"}\nBash {"command":"git status --s
+Running the tests to confirm the change is green.\nGlob {"pattern":"**/*.py"}\nBash {"command":"uv run python 
+Running the tests to confirm the change is green.\nRead {"file_path":"rust/src/filter.rs","limit":247}\nBash {
+16 matches in .fixtures/corpus-extract.txt

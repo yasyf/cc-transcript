@@ -1,0 +1,5 @@
+error: the argument '--corpus <CORPUS>' cannot be used with '--kind <KINDS>'
+
+Usage: cc-transcript grep --corpus <CORPUS> <PATTERN> [PATHS]...
+
+For more information, try '--help'.
