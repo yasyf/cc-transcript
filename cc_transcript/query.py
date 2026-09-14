@@ -106,6 +106,59 @@ no longer fits on every walk.
 """
 
 
+SIDECHAIN_INPUTS_LIMIT = 16384
+
+
+@dataclass(slots=True)
+class PredicateInputsCache:
+    held: OrderedDict[Path, tuple[LiftStamp, PredicateInputs]] = field(default_factory=OrderedDict)
+    guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def get(self, path: Path, stamp: LiftStamp) -> PredicateInputs | None:
+        with self.guard:
+            match self.held.get(path):
+                case (held_stamp, inputs) if held_stamp == stamp:
+                    self.held.move_to_end(path)
+                    return inputs
+                case _:
+                    return None
+
+    def put(self, path: Path, stamp: LiftStamp, inputs: PredicateInputs) -> PredicateInputs:
+        with self.guard:
+            self.held[path] = (stamp, inputs)
+            self.held.move_to_end(path)
+            while len(self.held) > SIDECHAIN_INPUTS_LIMIT:
+                self.held.popitem(last=False)
+        return inputs
+
+    def clear(self) -> None:
+        with self.guard:
+            self.held.clear()
+
+    def __len__(self) -> int:
+        return len(self.held)
+
+
+SIDECHAIN_INPUTS = PredicateInputsCache()
+"""Each sidechain's :class:`PredicateInputs`, keyed by path and stamped like :data:`DEEP_LIFTS`.
+
+A lifted session costs about 2.3 times its source bytes, so a tree of a thousand sidechains
+cannot stay lifted; its :class:`PredicateInputs` are a few kilobytes each. A predicate lifts a
+sidechain only when its stamp moved, keeps those inputs, and lets the lift go, so a resident
+process re-answering the same predicates per event neither reparses nor holds the tree.
+"""
+
+
+SIDECHAIN_LISTINGS: OrderedDict[Path, tuple[tuple[int, int], tuple[tuple[Path, Path], ...]]] = OrderedDict()
+"""Each ``subagents`` directory's sidechain files and their resolved paths, stamped ``(inode, mtime_ns)``.
+
+Adding, removing, or renaming a sidechain moves the directory's mtime, so an unchanged stamp
+proves the listing current and a walk skips the directory read and a ``resolve`` per file.
+"""
+
+SIDECHAIN_LISTINGS_GUARD = threading.Lock()
+
+
 def is_failure(use: ToolUse) -> bool:
     return use.result is not None and use.result.is_error
 
@@ -256,8 +309,12 @@ class ToolCallQuery:
         callable predicate, or a value compared for equality.
         """
         return self.where(
-            lambda use: isinstance(use.call.raw, Mapping)
-            and all(key in use.call.raw and input_rule_matches(rule, use.call.raw[key]) for key, rule in rules.items())
+            lambda use: (
+                isinstance(use.call.raw, Mapping)
+                and all(
+                    key in use.call.raw and input_rule_matches(rule, use.call.raw[key]) for key, rule in rules.items()
+                )
+            )
         )
 
     def count(self) -> int:
@@ -488,9 +545,7 @@ class Session:
 
     def has_tool(self, name: str, *, subagents: bool = True) -> bool:
         """Whether any call in the window matches the pipe spec ``name``."""
-        return self.tool_calls.named(name).any() or (
-            subagents and any(deep.session.has_tool(name, subagents=False) for deep in self.walk())
-        )
+        return any_inputs(self, lambda inputs: inputs.has_tool(name), subagents=subagents)
 
     def has_command(self, *argv: str, subagents: bool = True) -> bool:
         """Whether any Bash command in the window runs ``argv``.
@@ -499,28 +554,36 @@ class Session:
         unwrapped argv, so ``has_command("git", "push")`` matches
         ``sudo git push -f`` and ``cd x && git push`` but not ``echo "git push"``.
         """
-        return any(cmd.runs(*argv) for line in self.command_lines() for cmd in line) or (
-            subagents and any(deep.session.has_command(*argv, subagents=False) for deep in self.walk())
-        )
+        return any_inputs(self, lambda inputs: inputs.has_command(argv), subagents=subagents)
 
     def has_edit_to(self, *globs: str, subagents: bool = True) -> bool:
         """Whether any edit-shaped call in the window targets a file matching any glob."""
-        return any(file.matches(*globs) for file in self.edited_files) or (
-            subagents and any(deep.session.has_edit_to(*globs, subagents=False) for deep in self.walk())
-        )
+        return any_inputs(self, lambda inputs: inputs.has_edit_to(globs), subagents=subagents)
 
     def has_read(self, pattern: str, *, subagents: bool = True) -> bool:
         """Whether any Read in the window targets a path containing ``pattern``."""
-        return any(pattern in str(file) for file in self.tool_calls.named("Read").files()) or (
-            subagents and any(deep.session.has_read(pattern, subagents=False) for deep in self.walk())
-        )
+        return any_inputs(self, lambda inputs: inputs.has_read(pattern), subagents=subagents)
 
     def has_skill(self, *names: str, subagents: bool = True) -> bool:
         """Whether any Skill invocation in the window names one of ``names``."""
-        return any(
-            isinstance(call := use.call, SkillCall) and call.skill in names
-            for use in self.tool_calls.named("Skill")
-        ) or (subagents and any(deep.session.has_skill(*names, subagents=False) for deep in self.walk()))
+        return any_inputs(self, lambda inputs: inputs.has_skill(names), subagents=subagents)
+
+    @cached_property
+    def predicate_inputs(self) -> PredicateInputs:
+        """What the ``has_*`` predicates read from this window."""
+        return PredicateInputs.of(self)
+
+    def deep_inputs(self) -> Iterator[PredicateInputs]:
+        """This window's :class:`PredicateInputs`, then those of every transcript :meth:`walk` reaches.
+
+        The walk order and dedupe match :meth:`walk`, but no reached transcript stays lifted: each
+        one's inputs are held per ``(size, mtime, inode)`` stamp, and a transcript is reparsed only
+        once its stamp moves. Prefer it to :meth:`walk` for any predicate these inputs can answer.
+        """
+        yield self.predicate_inputs
+        for path, depth, spawned_by in reachable_transcripts(self):
+            if (inputs := load_predicate_inputs(path, depth, spawned_by)) is not None:
+                yield inputs
 
     def has_override(self, token: str, *, invalidated_by: Sequence[str] = ("Edit", "Write")) -> bool:
         """Whether ``token`` appears in the window without a later invalidating call.
@@ -570,9 +633,7 @@ class Session:
 
     @cached_property
     def _command_lines(self) -> tuple[CommandLine, ...]:
-        from cc_transcript.command import parse_command_line
-
-        return tuple(parse_command_line(command) for command in self._commands)
+        return self.predicate_inputs.command_lines
 
     def __len__(self) -> int:
         return sum(len(turn.events) for turn in self.turns)
@@ -654,6 +715,72 @@ class DeepSession:
 
 
 @dataclass(frozen=True)  # non-slots: the cached_property below needs __dict__
+class PredicateInputs:
+    """The slice of one transcript window that the ``has_*`` predicates read.
+
+    Small enough to hold for every transcript in a tree of thousands, where a lifted
+    :class:`Session` is not. Calls whose result errored are left out, as
+    :class:`ToolCallQuery` hides them by default. Each ``has_*`` answer is memoized.
+
+    Attributes:
+        calls: Each call's tool name and the file paths it targets, in order.
+        commands: The command string of every Bash call.
+        edited_files: The files modified by edit-shaped calls, one entry per edited file.
+        skills: The skill named by every Skill call.
+    """
+
+    calls: tuple[tuple[str, tuple[str, ...]], ...]
+    commands: tuple[str, ...]
+    edited_files: tuple[FileRef, ...]
+    skills: tuple[str, ...]
+    answers: dict[tuple[str, object], bool] = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def of(cls, session: Session) -> PredicateInputs:
+        """Extracts the predicate inputs from ``session``'s window."""
+        calls = session.tool_calls
+        return cls(
+            calls=tuple((use.call.name, tuple(file_paths_of(use.call))) for use in calls.items),
+            commands=session.commands(),
+            edited_files=session.edited_files,
+            skills=tuple(call.skill for use in calls.named("Skill") if isinstance(call := use.call, SkillCall)),
+        )
+
+    @cached_property
+    def command_lines(self) -> tuple[CommandLine, ...]:
+        """:attr:`commands` parsed into :class:`~cc_transcript.command.CommandLine` objects."""
+        from cc_transcript.command import parse_command_line
+
+        return tuple(parse_command_line(command) for command in self.commands)
+
+    def files(self, spec: str) -> tuple[FileRef, ...]:
+        """The files targeted by calls matching the pipe spec ``spec``, one entry per path."""
+        return tuple(FileRef(path) for name, paths in self.calls if tool_name_matches(name, spec) for path in paths)
+
+    def answer(self, query: tuple[str, object], compute: Callable[[], bool]) -> bool:
+        if (known := self.answers.get(query)) is None:
+            known = self.answers[query] = compute()
+        return known
+
+    def has_tool(self, name: str) -> bool:
+        return self.answer(("tool", name), lambda: any(tool_name_matches(tool, name) for tool, _ in self.calls))
+
+    def has_command(self, argv: tuple[str, ...]) -> bool:
+        return self.answer(
+            ("command", argv), lambda: any(cmd.runs(*argv) for line in self.command_lines for cmd in line)
+        )
+
+    def has_edit_to(self, globs: tuple[str, ...]) -> bool:
+        return self.answer(("edit", globs), lambda: any(file.matches(*globs) for file in self.edited_files))
+
+    def has_read(self, pattern: str) -> bool:
+        return self.answer(("read", pattern), lambda: any(pattern in str(file) for file in self.files("Read")))
+
+    def has_skill(self, names: tuple[str, ...]) -> bool:
+        return self.answer(("skill", names), lambda: any(skill in names for skill in self.skills))
+
+
+@dataclass(frozen=True)  # non-slots: the cached_property below needs __dict__
 class DeepView:
     """The recursive union of a session and every transcript reachable from it.
 
@@ -714,26 +841,75 @@ def sidechain_sessions(path: Path | None) -> tuple[Session, ...]:
     return tuple(Session.from_path(entry) for entry in subagent_paths(path))
 
 
-def deep_sessions(root: Session) -> Iterator[DeepSession]:
+def any_inputs(session: Session, predicate: Callable[[PredicateInputs], bool], *, subagents: bool) -> bool:
+    return any(map(predicate, session.deep_inputs() if subagents else (session.predicate_inputs,)))
+
+
+def reachable_transcripts(root: Session) -> Iterator[tuple[Path, int, ToolUseId | None]]:
     seen: set[Path] = {root.path.resolve()} if root.path is not None else set()
     if root.path is not None:
-        yield from descend_sidechains(root.path, 1, seen)
+        yield from reachable_sidechains(root.path, 1, seen)
     for attachment in root.attachments:
-        yield from visit_transcript(attachment, 1, None, seen)
+        yield from reachable_from(attachment, attachment.resolve(), 1, None, seen)
 
 
-def descend_sidechains(parent: Path, depth: int, seen: set[Path]) -> Iterator[DeepSession]:
-    for child in subagent_paths(parent):
-        yield from visit_transcript(child, depth, ToolUseId(child.stem.removeprefix("agent-")), seen)
+def reachable_sidechains(parent: Path, depth: int, seen: set[Path]) -> Iterator[tuple[Path, int, ToolUseId | None]]:
+    for child, resolved in sidechain_listing(parent):
+        yield from reachable_from(child, resolved, depth, ToolUseId(child.stem.removeprefix("agent-")), seen)
 
 
-def visit_transcript(path: Path, depth: int, spawned_by: ToolUseId | None, seen: set[Path]) -> Iterator[DeepSession]:
-    if (resolved := path.resolve()) in seen:
+def reachable_from(
+    path: Path, resolved: Path, depth: int, spawned_by: ToolUseId | None, seen: set[Path]
+) -> Iterator[tuple[Path, int, ToolUseId | None]]:
+    if resolved in seen:
         return
     seen.add(resolved)
-    if (deep := load_deep_session(path, depth, spawned_by)) is not None:
-        yield deep
-    yield from descend_sidechains(path, depth + 1, seen)
+    yield path, depth, spawned_by
+    yield from reachable_sidechains(path, depth + 1, seen)
+
+
+def sidechain_listing(parent: Path) -> tuple[tuple[Path, Path], ...]:
+    directory = parent.parent / parent.stem / "subagents"
+    try:
+        stat = directory.stat()
+    except OSError:
+        return ()
+    stamp = (stat.st_ino, stat.st_mtime_ns)
+    with SIDECHAIN_LISTINGS_GUARD:
+        held = SIDECHAIN_LISTINGS.get(directory)
+    if held is not None and held[0] == stamp:
+        return held[1]
+    real = directory.resolve()
+    listing = tuple(
+        (child, child.resolve() if child.is_symlink() else real / child.name) for child in subagent_paths(parent)
+    )
+    with SIDECHAIN_LISTINGS_GUARD:
+        SIDECHAIN_LISTINGS[directory] = (stamp, listing)
+        SIDECHAIN_LISTINGS.move_to_end(directory)
+        while len(SIDECHAIN_LISTINGS) > SIDECHAIN_INPUTS_LIMIT:
+            SIDECHAIN_LISTINGS.popitem(last=False)
+    return listing
+
+
+def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) -> PredicateInputs | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
+    if (held := SIDECHAIN_INPUTS.get(path, stamp)) is not None:
+        return held
+    try:
+        deep = DEEP_LIFTS.get((path, depth, spawned_by), stamp) or lift_deep_session(path, depth, spawned_by)
+    except OSError:
+        return None
+    return SIDECHAIN_INPUTS.put(path, stamp, PredicateInputs.of(deep.session))
+
+
+def deep_sessions(root: Session) -> Iterator[DeepSession]:
+    for path, depth, spawned_by in reachable_transcripts(root):
+        if (deep := load_deep_session(path, depth, spawned_by)) is not None:
+            yield deep
 
 
 def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:

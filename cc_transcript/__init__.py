@@ -240,6 +240,7 @@ EXPORTS: dict[str, str] = {
             "DeepSession",
             "DeepView",
             "FileRef",
+            "PredicateInputs",
             "Session",
             "SubagentIndex",
             "SubagentSession",

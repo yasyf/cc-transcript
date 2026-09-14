@@ -12,7 +12,16 @@ from cc_transcript import query
 from cc_transcript.activity import SessionActivity, ToolUse
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
-from cc_transcript.query import DEEP_LIFTS, FileRef, Session, SubagentIndex, SubagentSession, ToolCallQuery
+from cc_transcript.query import (
+    DEEP_LIFTS,
+    SIDECHAIN_INPUTS,
+    FileRef,
+    Session,
+    SubagentIndex,
+    SubagentSession,
+    ToolCallQuery,
+)
+from cc_transcript.tools import file_paths_of
 from tests import testkit
 from tests.support import BASE, SESSION, assistant, user
 
@@ -805,15 +814,97 @@ def test_deep_predicates_lift_each_sidechain_once_after_another_lead_filled_the_
 def test_a_grown_sidechain_releases_its_stale_bytes(tmp_path: Path) -> None:
     main = write_flat_subagent_tree(tmp_path, "lead", 2)
     DEEP_LIFTS.clear()
-    assert not Session.from_path(main).has_command("step", "later")
+    list(Session.from_path(main).walk())
     assert DEEP_LIFTS.size == sidechain_bytes(main)
 
     with (main.parent / main.stem / "subagents" / "agent-0.jsonl").open("a") as handle:
         handle.write(assistant_line("b9", 3, [tool_block("c9", "Bash", command="step later")], isSidechain=True) + "\n")
 
-    assert Session.from_path(main).has_command("step", "later")
+    assert any(deep.session.has_command("step", "later") for deep in Session.from_path(main).walk())
     assert DEEP_LIFTS.size == sidechain_bytes(main)
     assert len(DEEP_LIFTS) == 2
+
+
+def test_deep_predicates_hold_no_lifts_and_reanswer_without_lifting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 4)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    lifts = count_lifts(monkeypatch)
+    for _ in range(3):
+        sess = Session.from_path(main)
+        assert sess.has_command("step", "2")
+        assert not sess.has_command("git", "push")
+        assert not sess.has_tool("Grep")
+        assert sess.has_tool("Bash")
+        assert not sess.has_edit_to("*.py")
+        assert not sess.has_read("README")
+        assert not sess.has_skill("review")
+
+    assert len(lifts) == 4
+    assert len(DEEP_LIFTS) == 0
+    assert len(SIDECHAIN_INPUTS) == 4
+
+
+def test_a_grown_sidechain_is_the_only_one_relifted_for_a_predicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 3)
+    SIDECHAIN_INPUTS.clear()
+    assert not Session.from_path(main).has_command("step", "later")
+
+    grown = main.parent / main.stem / "subagents" / "agent-1.jsonl"
+    with grown.open("a") as handle:
+        handle.write(assistant_line("b9", 3, [tool_block("c9", "Bash", command="step later")], isSidechain=True) + "\n")
+
+    lifts = count_lifts(monkeypatch)
+    assert Session.from_path(main).has_command("step", "later")
+    assert lifts == [grown]
+
+
+def test_deep_inputs_mirror_the_walk_without_holding_it(tmp_path: Path) -> None:
+    sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+
+    inputs = list(sess.deep_inputs())
+    assert len(DEEP_LIFTS) == 0
+    walked = [sess, *(deep.session for deep in sess.walk())]
+    assert [i.calls for i in inputs] == [
+        tuple((use.call.name, tuple(file_paths_of(use.call))) for use in s.tool_calls) for s in walked
+    ]
+    assert [i.files("Read|Grep") for i in inputs] == [s.tool_calls.named("Read|Grep").files() for s in walked]
+
+
+def test_a_sidechain_added_after_a_walk_is_reached_by_the_next_one(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 2)
+    assert not Session.from_path(main).has_command("step", "late")
+
+    (main.parent / main.stem / "subagents" / "agent-late.jsonl").write_text(
+        assistant_line("b7", 2, [tool_block("c7", "Bash", command="step late")], isSidechain=True) + "\n"
+    )
+    assert Session.from_path(main).has_command("step", "late")
+    assert [deep.path.name for deep in Session.from_path(main).walk()][-1] == "agent-late.jsonl"
+
+
+def test_an_errored_sidechain_call_stays_invisible_to_deep_predicates(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    with (main.parent / main.stem / "subagents" / "agent-0.jsonl").open("a") as handle:
+        handle.write(
+            "\n".join(
+                [
+                    assistant_line("b8", 3, [tool_block("c8", "Bash", command="git push")], isSidechain=True),
+                    user_line("r8", 4, [result_block("c8", "rejected", is_error=True)], isSidechain=True),
+                ]
+            )
+            + "\n"
+        )
+    sess = Session.from_path(main)
+    assert not sess.has_command("git", "push")
+    assert any(
+        deep.session.tool_calls.with_errors.named("Bash").where_input(command="git push") for deep in sess.walk()
+    )
 
 
 def test_the_least_recently_walked_lift_is_evicted_past_the_budget(
