@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from cc_transcript import query
 from cc_transcript.activity import SessionActivity, ToolUse
 from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.models import TranscriptEvent
+    from cc_transcript.query import DeepSession
 
 PLAN_FILE = "/Users/x/.claude/plans/p.md"
 
@@ -743,13 +745,101 @@ def test_walk_lifts_each_sidechain_once_until_it_grows(tmp_path: Path) -> None:
     assert sess.has_command("deeptool", "later")
 
 
-def test_walk_stops_holding_lifts_past_the_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def write_flat_subagent_tree(root: Path, lead: str, count: int) -> Path:
+    main = root / lead / f"{SESSION}.jsonl"
+    main.parent.mkdir(parents=True)
+    main.write_text(user_line("u0", 0, "fan out") + "\n")
+    subagents = main.parent / main.stem / "subagents"
+    subagents.mkdir(parents=True)
+    for index in range(count):
+        (subagents / f"agent-{index}.jsonl").write_text(
+            "\n".join(
+                [
+                    user_line(f"s{index}", 1, "work", isSidechain=True),
+                    assistant_line(
+                        f"b{index}", 2, [tool_block(f"c{index}", "Bash", command=f"step {index}")], isSidechain=True
+                    ),
+                ]
+            )
+            + "\n"
+        )
+    return main
+
+
+def sidechain_bytes(main: Path) -> int:
+    return sum(path.stat().st_size for path in (main.parent / main.stem / "subagents").glob("agent-*.jsonl"))
+
+
+def count_lifts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    lifts: list[Path] = []
+    lift = query.lift_deep_session
+
+    def counted(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:
+        lifts.append(path)
+        return lift(path, depth, spawned_by)
+
+    monkeypatch.setattr(query, "lift_deep_session", counted)
+    return lifts
+
+
+def test_deep_predicates_lift_each_sidechain_once_after_another_lead_filled_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hog = write_flat_subagent_tree(tmp_path, "hog", 8)
+    lead = write_flat_subagent_tree(tmp_path, "lead", 8)
+    monkeypatch.setattr("cc_transcript.query.DEEP_LIFT_BUDGET", sidechain_bytes(lead))
+    DEEP_LIFTS.clear()
+    assert not Session.from_path(hog).has_tool("Grep")
+
+    lifts = count_lifts(monkeypatch)
+    for _ in range(2):
+        sess = Session.from_path(lead)
+        assert not sess.has_command("git", "push")
+        assert not sess.has_tool("Grep")
+        assert not sess.has_edit_to("*.py")
+        assert not sess.has_skill("review")
+
+    assert len(lifts) == 8
+
+
+def test_a_grown_sidechain_releases_its_stale_bytes(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 2)
+    DEEP_LIFTS.clear()
+    assert not Session.from_path(main).has_command("step", "later")
+    assert DEEP_LIFTS.size == sidechain_bytes(main)
+
+    with (main.parent / main.stem / "subagents" / "agent-0.jsonl").open("a") as handle:
+        handle.write(assistant_line("b9", 3, [tool_block("c9", "Bash", command="step later")], isSidechain=True) + "\n")
+
+    assert Session.from_path(main).has_command("step", "later")
+    assert DEEP_LIFTS.size == sidechain_bytes(main)
+    assert len(DEEP_LIFTS) == 2
+
+
+def test_the_least_recently_walked_lift_is_evicted_past_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second, third = (write_flat_subagent_tree(tmp_path, lead, 1) for lead in ("first", "second", "third"))
+    monkeypatch.setattr("cc_transcript.query.DEEP_LIFT_BUDGET", sidechain_bytes(first) + sidechain_bytes(second))
+    DEEP_LIFTS.clear()
+    for main in (first, second, first, third):
+        list(Session.from_path(main).walk())
+
+    lifts = count_lifts(monkeypatch)
+    for main in (first, third, second):
+        list(Session.from_path(main).walk())
+
+    assert [path.parent.parent.parent.name for path in lifts] == ["second"]
+
+
+def test_a_sidechain_larger_than_the_budget_is_never_held(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("cc_transcript.query.DEEP_LIFT_BUDGET", 1)
     sess = Session.from_path(write_nested_subagent_transcripts(tmp_path))
     DEEP_LIFTS.clear()
 
     assert [deep.path.name for deep in sess.walk()] == ["agent-a.jsonl", "agent-b.jsonl"]
-    assert len(DEEP_LIFTS) == 1
+    assert len(DEEP_LIFTS) == 0
+    assert DEEP_LIFTS.size == 0
 
 
 def write_branching_subagent_transcripts(root: Path) -> Path:

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The deep-lift hold is now a least-recently-used cache bounded at 1 GiB of source
+  bytes, up from an admit-only 64 MiB. A resident process that serves several lead
+  sessions filled the old budget with whichever tree it walked first. Every other
+  lead's sidechains then went unheld, and each deep predicate reparsed them on every
+  event. One lead with 1,215 sidechain files and 872 MB of transcripts cost about
+  16 s of CPU per hook dispatch. `DEEP_LIFTS` now evicts the least recently used lift
+  once `DEEP_LIFT_BUDGET` is exceeded. A sidechain whose `(size, mtime_ns, inode)`
+  stamp changes gives up its stale entry and the bytes it held. On a synthetic tree
+  of 1,000 sidechains totalling 354 MiB, a four-predicate event fell from 2.6 s and
+  3,276 lifts to 0.27 s and zero lifts once warm.
 - Relay envelopes now count as agent injection. The `agent_injection` groups
   predate the current relay wrapper, so a user event opening with
   `Another Claude session sent a message:` — or with a bare `<agent-message>` /
