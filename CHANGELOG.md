@@ -6,8 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `PredicateInputs` exposes the slice of a window that predicates read: error-free
+  calls' names and file paths, Bash command strings, edited files and Skill names.
+  `Session.deep_inputs()` yields the window's inputs and those of every transcript
+  `walk()` reaches, in the same depth-first order and with the same deduplication,
+  without holding lifts. Answers that do not read the MCP tool registry are memoized
+  per instance, up to `PredicateInputs.MAX_ANSWERS`; command lines are parsed lazily.
+
 ### Fixed
 
+- `has_tool`, `has_command`, `has_edit_to`, `has_read` and `has_skill` now answer
+  from held inputs without filling `DEEP_LIFTS` or reparsing unchanged sidechains.
+  Two lead trees totalling 1.55 GiB exceeded the 1 GiB lift budget; alternating
+  walks re-lifted evicted files, and the allocator kept their memory.
+  `SIDECHAIN_INPUTS` holds inputs by file stamp in an LRU bounded at 16,384 files;
+  `SIDECHAIN_LISTINGS` holds listings and resolved paths by directory stamp.
+  On the same 450-dispatch capt-hook replay, CPU per dispatch fell from 174 ms to
+  94 ms and peak RSS from 4,257 MiB to 1,963 MiB. `walk()` keeps its behavior and
+  its lift hold; grown sidechains are re-read and errored calls remain hidden.
 - The deep-lift hold is now a least-recently-used cache bounded at 1 GiB of source
   bytes, up from an admit-only 64 MiB. A resident process that serves several lead
   sessions filled the old budget with whichever tree it walked first. Every other
