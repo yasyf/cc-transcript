@@ -85,7 +85,7 @@ fn bench_activity(c: &mut Criterion) {
     });
     let refs: Vec<&Entry> = entries.iter().collect();
     group.bench_function("lift_index", |b| b.iter(|| lift_session_index(&refs, None)));
-    let appended = &refs[refs.len() - 8..];
+    let appended = &refs[refs.len().saturating_sub(8)..];
     group.bench_function("lift_index_tail_8", |b| {
         b.iter(|| lift_session_index_tail(appended, None, true))
     });
