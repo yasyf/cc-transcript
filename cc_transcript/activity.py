@@ -13,7 +13,7 @@ products.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from cc_transcript import _native
@@ -181,7 +181,10 @@ class SessionActivity:
         turn; everything else folds into the current one. Events before the
         first qualifying prompt form turn 0 with prompt ``""``.
         """
-        return ActivityLift(session_id, user_classifier=user_classifier).extend(events)
+        return cls(
+            session_id=session_id,
+            turns=ActivityLift(session_id, user_classifier=user_classifier).extend(events).turns,
+        )
 
     @classmethod
     def from_session(
@@ -269,7 +272,6 @@ class SessionActivity:
         return tuple(same_turn + later)
 
 
-@dataclass(slots=True)
 class ActivityLift:
     """A session's lift that grows with its transcript.
 
@@ -277,15 +279,14 @@ class ActivityLift:
     the activity lifted so far: closed turns are kept, the open turn grows by
     the appended events alone, and a tool use whose result arrives in the tail
     is re-paired wherever it sits. The result always equals
-    :meth:`SessionActivity.from_events` over every event fed so far, at a cost
-    that scales with the appended events rather than the session. The
-    classifier is fixed at construction, since turns lifted under one cannot
-    continue under another.
+    :meth:`SessionActivity.from_events` over every event fed so far. A step
+    costs the appended events, the tool uses they re-pair, and copies of the
+    turn tuple and of the open turn's event and tool-use tuples; it never
+    re-derives the session.
 
-    Attributes:
-        session_id: The session being lifted.
-        user_classifier: Decides which user events open turns.
-        activity: Everything lifted so far.
+    The classifier is read once, at construction, and must be deterministic
+    and event-only: its answer for an event has to stay the same as later
+    events are appended, since turns lifted under it are never revisited.
 
     Example:
         >>> lift = ActivityLift(session_id)
@@ -294,30 +295,45 @@ class ActivityLift:
         True
     """
 
-    session_id: SessionId
-    user_classifier: UserClassifier = native_user_classifier
-    activity: SessionActivity = field(init=False)
-    _turns_of_use: dict[ToolUseId, tuple[int, ...]] = field(init=False, default_factory=dict)
-    _results: dict[ToolUseId, UserEvent] = field(init=False, default_factory=dict)
+    __slots__ = ("_activity", "_results", "_session_id", "_user_classifier", "_uses")
 
-    def __post_init__(self) -> None:
-        self.activity = SessionActivity(session_id=self.session_id, turns=())
+    def __init__(self, session_id: SessionId, *, user_classifier: UserClassifier = native_user_classifier) -> None:
+        self._session_id = session_id
+        self._user_classifier = user_classifier
+        self._activity = SessionActivity(session_id=session_id, turns=())
+        self._uses: dict[ToolUseId, tuple[tuple[int, int], ...]] = {}
+        self._results: dict[ToolUseId, UserEvent] = {}
+
+    @property
+    def session_id(self) -> SessionId:
+        """The session being lifted."""
+        return self._session_id
+
+    @property
+    def user_classifier(self) -> UserClassifier:
+        """Decides which user events open turns."""
+        return self._user_classifier
+
+    @property
+    def activity(self) -> SessionActivity:
+        """Everything lifted so far."""
+        return self._activity
 
     def extend(self, events: Sequence[TranscriptEvent]) -> SessionActivity:
         """Lifts ``events``, appended after everything fed so far, into :attr:`activity`."""
         tail = list(events)
         if not tail:
-            return self.activity
+            return self._activity
         opener_flags = (
             None
-            if self.user_classifier is native_user_classifier
-            else [bool(self.user_classifier(event)) if isinstance(event, UserEvent) else False for event in tail]
+            if self._user_classifier is native_user_classifier
+            else [bool(self._user_classifier(event)) if isinstance(event, UserEvent) else False for event in tail]
         )
-        turns = list(self.activity.turns)
+        turns = list(self._activity.turns)
         lifted = _native.activity_lift_tail(tail, opener_flags, open_turn=bool(turns))
         first = len(turns) - 1 if lifted["continued"] else len(turns)
         grown = [
-            lift_turn(self.session_id, first + offset, skeleton, tail, self._results)
+            lift_turn(self._session_id, first + offset, skeleton, tail, self._results)
             for offset, skeleton in enumerate(lifted["turns"])
         ]
         if lifted["continued"]:
@@ -325,16 +341,19 @@ class ActivityLift:
             turns.extend(grown[1:])
         else:
             turns.extend(grown)
+        repairs: dict[int, dict[int, UserEvent]] = {}
         for tool_use_id, result_idx in lifted["results"]:
-            for turn_index in self._turns_of_use.get(tool_use_id, ()):
-                turns[turn_index] = paired(turns[turn_index], tool_use_id, tail[result_idx])
+            for turn_index, position in self._uses.get(tool_use_id, ()):
+                repairs.setdefault(turn_index, {})[position] = tail[result_idx]
             self._results[tool_use_id] = tail[result_idx]
+        for turn_index, at in repairs.items():
+            turns[turn_index] = repaired(turns[turn_index], at)
         for turn in grown:
-            for use in turn.tool_uses:
-                if (held := self._turns_of_use.get(use.ref.tool_use_id, ()))[-1:] != (turn.index,):
-                    self._turns_of_use[use.ref.tool_use_id] = (*held, turn.index)
-        self.activity = SessionActivity(session_id=self.session_id, turns=tuple(turns))
-        return self.activity
+            base = len(turns[turn.index].tool_uses) - len(turn.tool_uses)
+            for position, use in enumerate(turn.tool_uses, base):
+                self._uses[use.ref.tool_use_id] = (*self._uses.get(use.ref.tool_use_id, ()), (turn.index, position))
+        self._activity = SessionActivity(session_id=self._session_id, turns=tuple(turns))
+        return self._activity
 
 
 def lift_turn(
@@ -406,17 +425,15 @@ def continued(turn: Turn, tail: Turn) -> Turn:
     )
 
 
-def paired(turn: Turn, tool_use_id: ToolUseId, result_event: UserEvent) -> Turn:
-    block = result_block(result_event, tool_use_id)
-    return replace(
-        turn,
-        tool_uses=tuple(
-            replace(use, result=block, result_ts=result_event.meta.timestamp)
-            if use.ref.tool_use_id == tool_use_id
-            else use
-            for use in turn.tool_uses
-        ),
-    )
+def repaired(turn: Turn, at: Mapping[int, UserEvent]) -> Turn:
+    uses = list(turn.tool_uses)
+    for position, event in at.items():
+        uses[position] = replace(
+            uses[position],
+            result=result_block(event, uses[position].ref.tool_use_id),
+            result_ts=event.meta.timestamp,
+        )
+    return replace(turn, tool_uses=tuple(uses))
 
 
 def hunk_overlap(a: Hunk, b: Hunk) -> float:

@@ -9,11 +9,13 @@ one-event and small-chunk extends must hold the same equality at every prefix.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 from cc_transcript import _native
+from cc_transcript import activity as activity_module
 from cc_transcript.activity import ActivityLift, SessionActivity, native_user_classifier
 from cc_transcript.ids import SessionId
 from cc_transcript.models import TranscriptEvent, UserEvent
@@ -231,3 +233,62 @@ def test_session_over_an_extended_activity_derives_afresh() -> None:
     assert "tool_calls" not in second.__dict__
     assert second.tool_calls.count() == 3
     assert first.tool_calls.count() == 2
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedActivity(SessionActivity):
+    def prompts(self) -> tuple[str, ...]:
+        return tuple(turn.prompt for turn in self.turns)
+
+
+def test_cold_factory_builds_the_subclass() -> None:
+    derived = DerivedActivity.from_events(SESSION, late_result_past_compact())
+    assert type(derived) is DerivedActivity
+    assert derived.prompts() == ("run it", "/compact")
+    assert derived == DerivedActivity(SESSION, SessionActivity.from_events(SESSION, late_result_past_compact()).turns)
+    assert type(DerivedActivity.from_events(SESSION, ())) is DerivedActivity
+
+
+def test_native_tail_ignores_an_opener_flag_on_a_non_user_entry() -> None:
+    events = [user("u0", "go", secs=0), assistant("a0", "done", secs=1)]
+    cold = _native.activity_lift_from_events(events, [True, True])
+    assert [(turn["start"], turn["end"]) for turn in cold] == [(0, 2)]
+    assert _native.activity_lift_tail(events[1:], [True], open_turn=True)["continued"] is True
+    assert _native.activity_lift_tail(events[:1], [True], open_turn=True)["continued"] is False
+    assert _native.activity_lift_tail(events[:1], [False], open_turn=True)["continued"] is True
+
+
+def burst(uses: int, results: int) -> tuple[TranscriptEvent, ...]:
+    return (
+        user("u0", "go", secs=0),
+        assistant("a0", blocks=[testkit.tool_use(f"t{i}", "Bash", {"command": "ls"}) for i in range(uses)], secs=1),
+        user("u1", "status?", secs=2),
+        *(result(f"r{i}", f"t{i}", secs=3 + i) for i in range(results)),
+    )
+
+
+@pytest.mark.parametrize("uses", [1000, 2000])
+def test_late_results_repair_only_the_uses_they_answer(uses: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    events = burst(uses, 500)
+    lift = ActivityLift(SESSION)
+    lift.extend(events[:2])
+    rebuilt: list[object] = []
+
+    def counting_replace(obj, /, **changes):
+        rebuilt.append(obj)
+        return replace(obj, **changes)
+
+    monkeypatch.setattr(activity_module, "replace", counting_replace)
+    assert lift.extend(events[2:]) == SessionActivity.from_events(SESSION, events)
+    assert sum(isinstance(obj, activity_module.ToolUse) for obj in rebuilt) == 500
+    assert sum(isinstance(obj, activity_module.Turn) for obj in rebuilt) == 1
+
+
+def test_lift_attributes_are_read_only() -> None:
+    lift = ActivityLift(SESSION, user_classifier=every_other_user)
+    assert lift.user_classifier is every_other_user
+    assert lift.session_id == SESSION
+    with pytest.raises(AttributeError):
+        lift.user_classifier = native_user_classifier  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        lift.activity = SessionActivity(SESSION, ())  # type: ignore[misc]
