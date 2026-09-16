@@ -250,9 +250,11 @@ UNREADABLE = StampSet()
 
 A sidechain carrying one line the typed parser rejects — schema drift Claude Code has not
 caught up to — cannot be lifted, so a walk skips it. Without this a resident process re-read
-and re-parsed the whole file on every walk forever. The failure is held by full stamp: an
-unchanged bad file is skipped at stamp-check cost, and any change — a growth that completes
-the line, a rewrite — clears the miss and retries.
+and re-parsed the whole file on every walk forever. Only a deterministic parse failure
+(:class:`UnparseableTranscript`) is held, never a transient filesystem error, which must
+retry. The failure is held by full stamp: an unchanged bad file is skipped at stamp-check
+cost, and any change — a growth that completes the line, a rewrite — clears the miss and
+retries.
 """
 
 
@@ -1063,13 +1065,13 @@ def deep_session_at(
     if (held := DEEP_LIFTS.get(key, stamp)) is not None:
         return held.deep
     if UNREADABLE.has(path, stamp):
-        raise OSError(f"unreadable transcript: {path}")
+        raise UnparseableTranscript(f"unreadable transcript: {path}")
     stale = DEEP_LIFTS.take(key)
     try:
         lifted = (None if stale is None else grown_lift(stale, path, stamp)) or lift_deep_session(
             path, depth, spawned_by, stamp
         )
-    except OSError:
+    except UnparseableTranscript:
         UNREADABLE.put(path, stamp)
         raise
     return (DEEP_LIFTS.put(key, lifted) if hold or stale is not None else lifted).deep
@@ -1140,8 +1142,17 @@ def appended_bytes(path: Path, start: int, stop: int) -> bytes | None:
     return read if len(read) == stop - start else None
 
 
+class UnparseableTranscript(OSError):
+    """A transcript a typed parse rejected deterministically, not a filesystem failure.
+
+    Raised only for a line the parser cannot type — schema drift — so a walk can hold the
+    failure by stamp, where a transient ``OSError`` (EACCES, EIO, an ENOENT race) must
+    retry. An ``OSError`` subclass so both still skip the transcript rather than raise.
+    """
+
+
 def parsed(path: Path, raw: bytes) -> Transcript:
     try:
         return parse(raw)
     except (KeyError, ValueError):
-        raise OSError(f"unreadable transcript: {path}") from None
+        raise UnparseableTranscript(f"unreadable transcript: {path}") from None

@@ -1596,3 +1596,52 @@ def test_a_readable_sidechain_that_grows_a_bad_line_is_skipped_until_it_changes(
     )
     assert Session.from_path(main).has_command("step", "fixed")
     assert_deep_matches_cold(main, child)
+
+
+def test_a_transient_read_error_is_not_held_and_retries_next_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    UNREADABLE.clear()
+    real = pathlib.Path.read_bytes
+    monkeypatch.setattr(
+        pathlib.Path,
+        "read_bytes",
+        lambda self: (_ for _ in ()).throw(OSError(5, "transient I/O error")) if self == child else real(self),
+    )
+    assert not Session.from_path(main).has_command("step", "0")
+    assert len(UNREADABLE) == 0
+
+    monkeypatch.undo()
+    assert Session.from_path(main).has_command("step", "0")
+
+
+def test_a_read_time_permission_error_is_not_held_and_retries_once_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    UNREADABLE.clear()
+    real = pathlib.Path.read_bytes
+
+    def denied_once(self: Path) -> bytes:
+        if self != child:
+            return real(self)
+        mode = self.parent.stat().st_mode
+        self.parent.chmod(0o600)
+        try:
+            return real(self)
+        finally:
+            self.parent.chmod(mode)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", denied_once)
+    assert not Session.from_path(main).has_command("step", "0")
+    assert len(UNREADABLE) == 0
+
+    monkeypatch.undo()
+    assert Session.from_path(main).has_command("step", "0")

@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Only a deterministic parse failure is held in `UNREADABLE`, never a transient filesystem
+  error. `parsed` raises `UnparseableTranscript` (an `OSError` subclass) for a line the
+  typed parser rejects, and `deep_session_at` records the stamp only for that; an EACCES,
+  EIO or ENOENT race during the read propagates unrecorded and retries on the next walk.
+  A held negative from a transient read error would otherwise skip a readable sidechain
+  until its stamp moved.
 - A sidechain carrying one line the typed parser rejects — schema drift the parser has
   not caught up to — is skipped once and held by stamp instead of being re-read and
   re-parsed whole on every deep walk. `UNREADABLE` holds the failure keyed by the full
