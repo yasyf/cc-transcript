@@ -57,14 +57,16 @@ IDLE_SECONDS_BEFORE_RELEASE = 900
 type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
 
-RESOLVED_PATHS: OrderedDict[Path, Path] = OrderedDict()
+RESOLVED_PATHS: OrderedDict[Path, tuple[LiftStamp, Path]] = OrderedDict()
 """The real path of each root and attachment a deep call has seeded or folded in, resolved once.
 
 A deep call dedupes by real path, so it seeds its seen-set with the root and resolves every
 attachment; a resident process re-answering per event over a hundred attachments paid a
-resolve for each on every call. A path's resolution is held for the process's lifetime,
-least-recently-used past :data:`SIDECHAIN_INPUTS_LIMIT` paths, so an attachment retargeted
-through a symlink keeps the real path it first resolved to.
+resolve for each on every call. A resolution is held per path, keyed by the path's own
+``lstat`` identity — ``lstat`` follows intermediate symlinks and a final-component retarget
+replaces the symlink's own inode and ctime, so the key moves whenever ``resolve`` would
+land elsewhere, and a stale target is never served. Held for the process's lifetime,
+least-recently-used past :data:`SIDECHAIN_INPUTS_LIMIT` paths.
 """
 
 RESOLVED_PATHS_GUARD = threading.Lock()
@@ -990,13 +992,17 @@ def reachable_transcripts(root: Session) -> Iterator[tuple[Path, int, ToolUseId 
 
 
 def resolved_path(path: Path) -> Path:
+    try:
+        stamp = stamp_of(path.lstat())
+    except OSError:
+        return path.resolve()
     with RESOLVED_PATHS_GUARD:
-        if (held := RESOLVED_PATHS.get(path)) is not None:
+        if (held := RESOLVED_PATHS.get(path)) is not None and held[0] == stamp:
             RESOLVED_PATHS.move_to_end(path)
-            return held
+            return held[1]
     resolved = path.resolve()
     with RESOLVED_PATHS_GUARD:
-        RESOLVED_PATHS[path] = resolved
+        RESOLVED_PATHS[path] = (stamp, resolved)
         RESOLVED_PATHS.move_to_end(path)
         while len(RESOLVED_PATHS) > SIDECHAIN_INPUTS_LIMIT:
             RESOLVED_PATHS.popitem(last=False)

@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cached attachment resolution is re-keyed on the path's `lstat` identity, so a retargeted
+  symlink is followed instead of resolving to the old target forever. `RESOLVED_PATHS`
+  memoized `path -> resolve()` unconditionally, so retargeting `link -> A` to `link -> B`
+  made later walks skip B. The memo now holds `(lstat stamp, resolved)`; `lstat` follows
+  intermediate symlinks and a final-component retarget replaces the symlink's own inode and
+  ctime, so the key moves whenever `resolve` would land elsewhere. Measured on 116 real-file
+  attachments, plain `resolve()` costs 1.7 ms and the `lstat`-keyed hit 0.24 ms (7x under
+  resolve), where full-chain-exact keying would cost as much as `resolve` itself.
+- A held sidechain cursor expires by elapsed inactivity, not a walk count, so aggregate
+  predicate traffic never releases a cursor that is still growing. The idle count advanced
+  once per cache-hit predicate, so 16 reader threads answering one sidechain 256 times each
+  dropped a live cursor between two of its writes. `DeepLift` now carries `grown_at` from a
+  monotonic clock, and a cursor is released only once `IDLE_SECONDS_BEFORE_RELEASE` (900 s)
+  has passed since its last growth; any growth resets the clock. 900 s sits above the p99.9
+  wall-clock gap between writes to an active sidechain (~11 min) and far below the multi-hour
+  tail after a sidechain's last write.
 - A grown attachment keeps the provider composition contract. Each appended chunk was
   parsed on its own, so its provider was re-detected from its first line; a Codex rollout,
   whose lowering needs whole-session context, got different session ids and event uuids
@@ -70,9 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches, as before; the `has_*` predicates hold a transcript once they have had to lift
   it twice, since a sidechain that changed is a running subagent, and a finished one is
   still lifted once and its `PredicateInputs` kept instead. A held cursor is released once
-  its file survives `IDLE_WALKS_BEFORE_RELEASE` deep walks unchanged, so resident cursor
-  memory tracks the sidechains still being written rather than every one that ever grew;
-  `DEEP_LIFT_BUDGET` stays the upper bound over that live set. A deep call resolves the root
+  its file has gone `IDLE_SECONDS_BEFORE_RELEASE` unwritten — elapsed inactivity since its
+  last growth, not a count of walks — so resident cursor memory tracks the sidechains still
+  being written rather than every one that ever grew; `DEEP_LIFT_BUDGET` stays the upper
+  bound over that live set. A deep call resolves the root
   and each attachment once per process, held in `RESOLVED_PATHS`, instead of on every
   call. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
   4.7 MiB sidechain grew by one line fell from 22-83 ms to 11-13 ms, and after a 56 MiB one

@@ -1774,3 +1774,19 @@ def test_a_growing_codex_attachment_matches_a_cold_walk_at_every_line(tmp_path: 
         with path.open("ab") as handle:
             handle.write(line)
         deep_matches_cold()
+
+
+def test_a_retargeted_attachment_symlink_is_reached_after_the_retarget(tmp_path: Path) -> None:
+    target = write_attachment_transcript(tmp_path, "target.jsonl", "t", "Bash", command="reach target")
+    other = write_attachment_transcript(tmp_path, "other.jsonl", "o", "Read", file_path="other")
+    link = tmp_path / "ext" / "link.jsonl"
+    link.symlink_to(other)
+    RESOLVED_PATHS.clear()
+    root = Session((), None, (link,))
+    assert not root.has_command("reach", "target")
+    assert [d.path.name for d in root.walk()] == ["link.jsonl"]
+
+    link.unlink()
+    link.symlink_to(target)
+    assert root.has_command("reach", "target")
+    assert [d.path.resolve() for d in root.walk()] == [target.resolve()]
