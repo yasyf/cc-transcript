@@ -1509,3 +1509,38 @@ def test_attachment_paths_are_resolved_once_across_deep_calls(tmp_path: Path, mo
     assert Session(sess.turns, None, attachments[::-1]).has_tool("Glob")
     assert [deep.path for deep in sess.walk()] == list(attachments)
     assert resolved == []
+
+
+def test_a_cursor_is_released_after_it_idles_and_readmitted_when_it_grows_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cc_transcript.query.IDLE_WALKS_BEFORE_RELEASE", 3)
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    assert len(DEEP_LIFTS) == 1
+
+    for _ in range(3):
+        assert Session.from_path(main).has_command("step", "one")
+    assert len(DEEP_LIFTS) == 0
+    assert SIDECHAIN_INPUTS.holds(child)
+    assert lifts == []
+
+    grow(child, step_line("b2", 4, "step", "two"))
+    assert Session.from_path(main).has_command("step", "two")
+    assert lifts == [child]
+    assert len(DEEP_LIFTS) == 1
+    assert_deep_matches_cold(main, child)
+
+
+def test_the_parity_sweep_holds_across_an_idle_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cc_transcript.query.IDLE_WALKS_BEFORE_RELEASE", 2)
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    assert_deep_matches_cold(main, child)
+    for index, line in enumerate(GROWTH_MATERIAL.read_bytes().splitlines(keepends=True)):
+        grow(child, line)
+        assert_deep_matches_cold(main, child)
+        for _ in range(index % 4):
+            assert_deep_matches_cold(main, child)
+    assert_deep_matches_cold(main, child)

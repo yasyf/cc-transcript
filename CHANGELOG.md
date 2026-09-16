@@ -39,7 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a concurrent reader never sees it mid-extension. `walk()` holds every transcript it
   reaches, as before; the `has_*` predicates hold a transcript once they have had to lift
   it twice, since a sidechain that changed is a running subagent, and a finished one is
-  still lifted once and its `PredicateInputs` kept instead. A deep call resolves the root
+  still lifted once and its `PredicateInputs` kept instead. A held cursor is released once
+  its file survives `IDLE_WALKS_BEFORE_RELEASE` deep walks unchanged, so resident cursor
+  memory tracks the sidechains still being written rather than every one that ever grew;
+  `DEEP_LIFT_BUDGET` stays the upper bound over that live set. A deep call resolves the root
   and each attachment once per process, held in `RESOLVED_PATHS`, instead of on every
   call. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
   4.7 MiB sidechain grew by one line fell from 22-83 ms to 11-13 ms, and after a 56 MiB one

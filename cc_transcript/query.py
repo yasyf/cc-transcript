@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
 DEEP_LIFT_FENCE = 64
+IDLE_WALKS_BEFORE_RELEASE = 256
 
 type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
@@ -72,7 +73,7 @@ def stamp_of(stat: os.stat_result) -> LiftStamp:
     return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class DeepLift:
     stamp: LiftStamp
     deep: DeepSession
@@ -80,6 +81,7 @@ class DeepLift:
     consumed: int
     fence: bytes
     found: SessionId | None
+    idle: int = 0
 
 
 @dataclass(slots=True)
@@ -96,6 +98,21 @@ class LiftCache:
                     return lift
                 case _:
                     return None
+
+    def idle_release(self, key: LiftKey, stamp: LiftStamp) -> None:
+        """Counts one unchanged walk over ``key``'s cursor, releasing it once it goes idle.
+
+        A held cursor amortizes the next growth of a live sidechain; a finished one earns
+        nothing, so a stamp-unchanged walk over one that :data:`SIDECHAIN_INPUTS` already
+        answers bumps its idle count, and past :data:`IDLE_WALKS_BEFORE_RELEASE` the entry
+        is dropped and its cursor with it. Any growth replaces the entry with ``idle`` 0.
+        """
+        with self.guard:
+            match self.held.get(key):
+                case DeepLift(stamp=held_stamp) as lift if held_stamp == stamp:
+                    lift.idle += 1
+                    if lift.idle >= IDLE_WALKS_BEFORE_RELEASE:
+                        self.drop(key)
 
     def take(self, key: LiftKey) -> DeepLift | None:
         with self.guard:
@@ -146,7 +163,11 @@ entry, the later put replacing the earlier. A dropped entry releases its cursor 
 :meth:`Session.walk` holds every transcript it reaches; the ``has_*`` predicates hold only a
 transcript they have had to lift twice, since a sidechain that changed once is a running
 subagent whose next growth would otherwise cost a whole relift, while a finished one is
-lifted once and its :class:`PredicateInputs` kept instead.
+lifted once and its :class:`PredicateInputs` kept instead. A held cursor is released once its
+file survives :data:`IDLE_WALKS_BEFORE_RELEASE` deep walks unchanged, so resident cursors
+track the set of sidechains still being written rather than every one that ever grew; a
+released file that grows again pays one relift and is re-admitted. :data:`DEEP_LIFT_BUDGET`
+stays the upper bound over that live set.
 """
 
 
@@ -975,6 +996,7 @@ def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) 
     except OSError:
         return None
     if (held := SIDECHAIN_INPUTS.get(path, stamp)) is not None:
+        DEEP_LIFTS.idle_release((path, depth, spawned_by), stamp)
         return held
     try:
         deep = deep_session_at(path, depth, spawned_by, stamp, hold=SIDECHAIN_INPUTS.holds(path))
