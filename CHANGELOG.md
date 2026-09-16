@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A sidechain carrying one line the typed parser rejects — schema drift the parser has
+  not caught up to — is skipped once and held by stamp instead of being re-read and
+  re-parsed whole on every deep walk. `UNREADABLE` holds the failure keyed by the full
+  `(size, mtime_ns, ctime_ns, inode)` stamp; an unchanged bad file is skipped at
+  stamp-check cost, and any change — a growth that completes the line, a rewrite — clears
+  the miss and retries. The skip itself is unchanged: the file is passed over, never
+  raised. A 55 MiB sidechain with one bad line cost ~90 ms of reparse on every event.
 - A sidechain that has only grown is extended by its appended lines instead of being
   reparsed and relifted whole. `DEEP_LIFTS` entries keep the `ActivityLift` cursor behind
   each lift and the newline-terminated byte offset it consumed; a stamp miss on a file

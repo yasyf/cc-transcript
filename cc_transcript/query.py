@@ -208,6 +208,33 @@ class PredicateInputsCache:
         return len(self.held)
 
 
+@dataclass(slots=True)
+class StampSet:
+    held: OrderedDict[Path, LiftStamp] = field(default_factory=OrderedDict)
+    guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def has(self, path: Path, stamp: LiftStamp) -> bool:
+        with self.guard:
+            if self.held.get(path) != stamp:
+                return False
+            self.held.move_to_end(path)
+            return True
+
+    def put(self, path: Path, stamp: LiftStamp) -> None:
+        with self.guard:
+            self.held[path] = stamp
+            self.held.move_to_end(path)
+            while len(self.held) > SIDECHAIN_INPUTS_LIMIT:
+                self.held.popitem(last=False)
+
+    def clear(self) -> None:
+        with self.guard:
+            self.held.clear()
+
+    def __len__(self) -> int:
+        return len(self.held)
+
+
 SIDECHAIN_INPUTS = PredicateInputsCache()
 """Each sidechain's :class:`PredicateInputs`, keyed by path and stamped like :data:`DEEP_LIFTS`.
 
@@ -215,6 +242,17 @@ A lifted session costs about 2.3 times its source bytes, so a tree of a thousand
 cannot stay lifted; its :class:`PredicateInputs` are a few kilobytes each. A predicate lifts a
 sidechain only when its stamp moved, keeps those inputs, and lets the lift go, so a resident
 process re-answering the same predicates per event neither reparses nor holds the tree.
+"""
+
+
+UNREADABLE = StampSet()
+"""Transcripts whose typed parse failed, keyed by path and stamped like :data:`DEEP_LIFTS`.
+
+A sidechain carrying one line the typed parser rejects — schema drift Claude Code has not
+caught up to — cannot be lifted, so a walk skips it. Without this a resident process re-read
+and re-parsed the whole file on every walk forever. The failure is held by full stamp: an
+unchanged bad file is skipped at stamp-check cost, and any change — a growth that completes
+the line, a rewrite — clears the miss and retries.
 """
 
 
@@ -1024,10 +1062,16 @@ def deep_session_at(
     key = (path, depth, spawned_by)
     if (held := DEEP_LIFTS.get(key, stamp)) is not None:
         return held.deep
+    if UNREADABLE.has(path, stamp):
+        raise OSError(f"unreadable transcript: {path}")
     stale = DEEP_LIFTS.take(key)
-    lifted = None if stale is None else grown_lift(stale, path, stamp)
-    if lifted is None:
-        lifted = lift_deep_session(path, depth, spawned_by, stamp)
+    try:
+        lifted = (None if stale is None else grown_lift(stale, path, stamp)) or lift_deep_session(
+            path, depth, spawned_by, stamp
+        )
+    except OSError:
+        UNREADABLE.put(path, stamp)
+        raise
     return (DEEP_LIFTS.put(key, lifted) if hold or stale is not None else lifted).deep
 
 

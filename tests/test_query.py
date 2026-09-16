@@ -18,6 +18,7 @@ from cc_transcript.query import (
     DEEP_LIFTS,
     RESOLVED_PATHS,
     SIDECHAIN_INPUTS,
+    UNREADABLE,
     FileRef,
     PredicateInputs,
     Session,
@@ -1543,4 +1544,55 @@ def test_the_parity_sweep_holds_across_an_idle_release(tmp_path: Path, monkeypat
         assert_deep_matches_cold(main, child)
         for _ in range(index % 4):
             assert_deep_matches_cold(main, child)
+    assert_deep_matches_cold(main, child)
+
+
+def bad_line(uuid: str, secs: int) -> str:
+    return json.dumps({"uuid": uuid, "type": "assistant", "sessionId": str(SESSION), "isSidechain": True}) + "\n"
+
+
+def test_an_unreadable_sidechain_is_parsed_once_until_it_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    grow(child, bad_line("b1", 3))
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    UNREADABLE.clear()
+    parses: list[Path] = []
+    real = query.parsed
+    monkeypatch.setattr(query, "parsed", lambda path, raw: parses.append(path) or real(path, raw))
+
+    for _ in range(3):
+        assert list(Session.from_path(main).walk()) == []
+        assert not Session.from_path(main).has_command("step", "0")
+    assert parses == [child]
+    assert len(UNREADABLE) == 1
+
+    child.write_bytes(
+        child.read_bytes().replace(bad_line("b1", 3).encode(), step_line("b2", 4, "step", "fixed").encode())
+    )
+    assert Session.from_path(main).has_command("step", "fixed")
+    assert parses[1:] == [child]
+
+
+def test_a_readable_sidechain_that_grows_a_bad_line_is_skipped_until_it_changes(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    UNREADABLE.clear()
+    assert Session.from_path(main).has_command("step", "0")
+
+    grow(child, bad_line("b1", 3))
+    assert list(Session.from_path(main).walk()) == []
+    assert not Session.from_path(main).has_command("step", "0")
+    assert len(DEEP_LIFTS) == 0
+    assert len(UNREADABLE) == 1
+
+    child.write_bytes(
+        child.read_bytes().replace(bad_line("b1", 3).encode(), step_line("b2", 3, "step", "fixed").encode())
+    )
+    assert Session.from_path(main).has_command("step", "fixed")
     assert_deep_matches_cold(main, child)
