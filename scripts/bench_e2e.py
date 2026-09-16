@@ -2,7 +2,8 @@
 
 Times the public parse/stream, activity-probe, mining, and post-parse-filter paths
 over the synthetic corpus (``scripts/gen_corpus.py``), each ``--runs`` times, and
-reports the minimum. Also times CLI cold start (``--help`` and a real ``stats`` run
+reports the minimum, plus the activity lift of the largest file cold against an
+``ActivityLift.extend`` of its last eight events. Also times CLI cold start (``--help`` and a real ``stats`` run
 over the corpus) with a ``--cold-runs`` subprocess timer — the fallback for when
 ``hyperfine`` is absent. The computation is deterministic and never touches the
 network; only wall-clock timings vary between runs. Emits one JSON object to stdout.
@@ -15,19 +16,23 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import perf_counter
 
 import orjson
 
+from cc_transcript.activity import ActivityLift, SessionActivity
 from cc_transcript.activity_probe import session_activity_probe
 from cc_transcript.filterspec import apply_spec
+from cc_transcript.ids import SessionId
 from cc_transcript.mining import MiningSpec, mine
+from cc_transcript.models import TranscriptEvent
 from cc_transcript.parser import parse, stream
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CORPUS = REPO_ROOT / ".fixtures" / "corpus"
+APPENDED_EVENTS = 8
 
 
 def corpus_files(corpus: Path) -> list[Path]:
@@ -50,6 +55,12 @@ def stream_stats(files: list[Path]) -> int:
     return sum(len(parsed.events) for parsed in stream(files, prefetch=8))
 
 
+def lift_extend(events: Sequence[TranscriptEvent], session_id: SessionId) -> ActivityLift:
+    lift = ActivityLift(session_id)
+    lift.extend(events[:-APPENDED_EVENTS])
+    return lift
+
+
 def bench_e2e(corpus: Path, runs: int) -> dict[str, object]:
     from cc_transcript.builders import build_spec, drop_junk, drop_synthetic, keep_only
 
@@ -57,9 +68,15 @@ def bench_e2e(corpus: Path, runs: int) -> dict[str, object]:
     parsed = [parse(path).events for path in files]
     spec = build_spec(keep_only("user", "assistant"), drop_junk("structural"), drop_synthetic())
     mining_spec = MiningSpec()
+    largest = list(max(parsed, key=len))
+    session_id = SessionId("bench")
+    lifts = [lift_extend(largest, session_id) for _ in range(runs)]
+    fresh = iter(lifts)
     return {
         "stream_stats": timed(lambda: stream_stats(files), runs),
         "probe_sweep": timed(lambda: [session_activity_probe(path) for path in files], runs),
+        "activity_lift_cold": timed(lambda: SessionActivity.from_events(session_id, largest), runs),
+        "activity_lift_extend_8": timed(lambda: next(fresh).extend(largest[-APPENDED_EVENTS:]), runs),
         "mine": timed(lambda: [len(list(mine(events, mining_spec))) for events in parsed], runs),
         "post_filter": timed(lambda: [len(list(apply_spec(events, spec))) for events in parsed], runs),
     }

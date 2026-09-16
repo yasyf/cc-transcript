@@ -2,6 +2,7 @@
 # isort: off
 
 from cc_transcript.activity import (
+    ActivityLift as ActivityLift,
     Edit as Edit,
     SessionActivity as SessionActivity,
     ToolUse as ToolUse,
@@ -305,6 +306,7 @@ EXPORTS: dict[str, str]
 __all__ = [
     "ASSISTANTS",
     "Action",
+    "ActivityLift",
     "ApiError",
     "ApplyPatchCall",
     "AskUserQuestionResult",

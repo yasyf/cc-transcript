@@ -500,17 +500,17 @@ struct Segment {
     end: usize,
 }
 
+fn opens(entry: &Entry, index: usize, openers: Option<&[bool]>) -> bool {
+    matches!(entry, Entry::User(user) if openers.map_or_else(|| opens_turn(user), |flags| flags[index]))
+}
+
 // activity.py from_events segmentation: a turn-opening user entry starts a contiguous
 // segment, else folds into the current one; `Some(openers)` replaces that per-entry decision.
 fn segments(entries: &[&Entry], openers: Option<&[bool]>) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
     for (index, &entry) in entries.iter().enumerate() {
-        let opens = openers.map_or_else(
-            || matches!(entry, Entry::User(user) if opens_turn(user)),
-            |flags| flags[index],
-        );
         match entry {
-            Entry::User(user) if opens => segments.push(Segment {
+            Entry::User(user) if opens(entry, index, openers) => segments.push(Segment {
                 prompt: user.content.text(),
                 start: index,
                 end: index + 1,
@@ -711,7 +711,42 @@ pub fn lift_session_index<'a>(
     entries: &[&'a Entry],
     openers: Option<&[bool]>,
 ) -> Vec<TurnIndex<'a>> {
-    let result_pos: HashMap<&'a str, usize> = entries
+    turn_indexes(entries, openers, &result_positions(entries))
+}
+
+/// The tail of an incremental lift (activity.py ActivityLift.extend): skeletons over the
+/// appended entries alone, `continued` when the first is the rest of the prior open turn,
+/// and every tool result the tail carries as `(tool_use_id, position)` for re-pairing.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LiftTail<'a> {
+    pub turns: Vec<TurnIndex<'a>>,
+    pub continued: bool,
+    pub results: Vec<(&'a str, usize)>,
+}
+
+/// `lift_session_index` over the entries appended since a prior lift whose last turn
+/// is open when `open_turn`. Turn boundaries never look ahead, so prior turns are final.
+pub fn lift_session_index_tail<'a>(
+    entries: &[&'a Entry],
+    openers: Option<&[bool]>,
+    open_turn: bool,
+) -> LiftTail<'a> {
+    let result_pos = result_positions(entries);
+    let mut results: Vec<(&'a str, usize)> =
+        result_pos.iter().map(|(&id, &pos)| (id, pos)).collect();
+    results.sort_unstable_by_key(|&(_, pos)| pos);
+    LiftTail {
+        turns: turn_indexes(entries, openers, &result_pos),
+        continued: open_turn
+            && entries
+                .first()
+                .is_some_and(|&entry| !opens(entry, 0, openers)),
+        results,
+    }
+}
+
+fn result_positions<'a>(entries: &[&'a Entry]) -> HashMap<&'a str, usize> {
+    entries
         .iter()
         .enumerate()
         .filter_map(|(index, &entry)| match entry {
@@ -722,7 +757,14 @@ pub fn lift_session_index<'a>(
             user.tool_results()
                 .map(move |block| (block.tool_use_id.as_str(), index))
         })
-        .collect();
+        .collect()
+}
+
+fn turn_indexes<'a>(
+    entries: &[&'a Entry],
+    openers: Option<&[bool]>,
+    result_pos: &HashMap<&'a str, usize>,
+) -> Vec<TurnIndex<'a>> {
     segments(entries, openers)
         .into_iter()
         .map(|segment| {
@@ -1550,6 +1592,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("", 0, 1), ("second ask", 1, 2)],
             "the index skeleton aligns the promoted boundary to entry 1"
+        );
+    }
+
+    #[test]
+    fn tail_continues_an_open_turn_only_through_a_non_opener() {
+        let entries = vec![
+            tool_use("Bash", "t1", r#"{"command":"ls"}"#),
+            tool_result("t1"),
+            user("next ask"),
+        ];
+        let refs: Vec<&Entry> = entries.iter().collect();
+
+        let continued = lift_session_index_tail(&refs, None, true);
+        assert!(continued.continued);
+        assert_eq!(continued.turns, lift_session_index(&refs, None));
+        assert_eq!(continued.results, [("t1", 1)]);
+
+        assert!(!lift_session_index_tail(&refs, None, false).continued);
+        assert!(!lift_session_index_tail(&refs[2..], None, true).continued);
+        assert!(!lift_session_index_tail(&[], None, true).continued);
+        assert!(lift_session_index_tail(&refs, Some(&[false, false, false]), true).continued);
+        assert!(
+            lift_session_index_tail(&refs, Some(&[true, false, false]), true).continued,
+            "a flag on a non-user entry opens nothing, exactly as segments() ignores it"
+        );
+        assert!(lift_session_index_tail(&refs[2..], Some(&[false]), true).continued);
+        assert!(!lift_session_index_tail(&refs[2..], Some(&[true]), true).continued);
+    }
+
+    #[test]
+    fn tail_results_keep_the_last_position_per_id_in_tail_order() {
+        let entries = vec![
+            tool_result("t2"),
+            tool_result("t1"),
+            user("interrupting ask"),
+            tool_result("t2"),
+        ];
+        let refs: Vec<&Entry> = entries.iter().collect();
+        assert_eq!(
+            lift_session_index_tail(&refs, None, true).results,
+            [("t1", 1), ("t2", 3)]
         );
     }
 

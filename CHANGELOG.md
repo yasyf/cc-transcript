@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ActivityLift` lifts a session incrementally: `extend(events)` folds the events
+  appended since the last call into the activity lifted so far and returns it, equal to
+  `SessionActivity.from_events` over every event fed. A step costs the appended events,
+  the tool uses they re-pair, and copies of the turn tuple and of the open turn's event
+  and tool-use tuples; it never re-derives the session. Closed turns are kept, the open
+  turn grows by the appended events alone, and a tool use whose result lands later — past
+  a `/compact` opener or an interrupting prompt, or a duplicate result — is re-paired
+  wherever it sits. The classifier is read once, at construction, and must be
+  deterministic and event-only. `SessionActivity.from_events` now runs through it, and
+  `_native.activity_lift_tail` is the tail skeleton behind it.
 - `PredicateInputs` exposes the slice of a window that predicates read: error-free
   calls' names and file paths, Bash command strings, edited files and Skill names.
   `Session.deep_inputs()` yields the window's inputs and those of every transcript

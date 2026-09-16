@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
-use cc_transcript_core::activity::{lift_session, session_activity, ActivityOpts};
+use cc_transcript_core::activity::{
+    lift_session, lift_session_index, lift_session_index_tail, session_activity, ActivityOpts,
+};
 use cc_transcript_core::filter::{compile_spec, spec_keep, SIGNAL_SPEC_JSON};
 use cc_transcript_core::parse::parse_bytes;
+use cc_transcript_core::types::Entry;
 
 fn corpus_dir() -> PathBuf {
     std::env::var_os("CC_BENCH_CORPUS")
@@ -79,6 +82,12 @@ fn bench_activity(c: &mut Criterion) {
     });
     group.bench_function("full_lift", |b| {
         b.iter(|| lift_session(&session_id, &entries))
+    });
+    let refs: Vec<&Entry> = entries.iter().collect();
+    group.bench_function("lift_index", |b| b.iter(|| lift_session_index(&refs, None)));
+    let appended = &refs[refs.len().saturating_sub(8)..];
+    group.bench_function("lift_index_tail_8", |b| {
+        b.iter(|| lift_session_index_tail(appended, None, true))
     });
     group.finish();
 }

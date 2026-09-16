@@ -15,8 +15,8 @@ use crate::views::print::print_result_view;
 use crate::views::transcript::TranscriptView;
 use crate::{command, lexicon, mining, score};
 use cc_transcript_core::activity::{
-    hunk_overlap, lift_session, lift_session_index, overlap_between, parse_show_hunks,
-    result_index, ActivityOpts, Hunk, SessionActivity,
+    hunk_overlap, lift_session, lift_session_index, lift_session_index_tail, overlap_between,
+    parse_show_hunks, result_index, ActivityOpts, Hunk, SessionActivity, TurnIndex,
 };
 use cc_transcript_core::buckets;
 use cc_transcript_core::command::CommandLine;
@@ -310,28 +310,73 @@ fn activity_lift_from_events<'py>(
         .collect::<PyResult<Vec<_>>>()?;
     lift_session_index(&entries, opener_flags.as_deref())
         .iter()
-        .map(|turn| {
-            let td = PyDict::new(py);
-            td.set_item("prompt", &turn.prompt)?;
-            td.set_item("start", turn.start)?;
-            td.set_item("end", turn.end)?;
-            td.set_item("started_idx", turn.started_idx)?;
-            td.set_item("ended_idx", turn.ended_idx)?;
-            let tool_uses = turn
-                .tool_uses
-                .iter()
-                .map(|use_| {
-                    let ud = PyDict::new(py);
-                    ud.set_item("event_idx", use_.event_idx)?;
-                    ud.set_item("tool_use_id", use_.tool_use_id)?;
-                    ud.set_item("result_event_idx", use_.result_event_idx)?;
-                    Ok(ud)
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            td.set_item("tool_uses", PyList::new(py, tool_uses)?)?;
-            Ok(td)
-        })
+        .map(|turn| turn_index_dict(py, turn))
         .collect()
+}
+
+// activity.ActivityLift.extend: the tail skeleton over the appended events alone, plus
+// whether its first turn continues the open one and every result the tail carries.
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (events, opener_flags=None, open_turn=false))]
+#[gen_stub(override_return_type(type_repr = "dict[str, typing.Any]", imports = ("typing",)))]
+fn activity_lift_tail<'py>(
+    py: Python<'py>,
+    #[gen_stub(override_type(type_repr = "list[cc_transcript.models.TranscriptEvent]", imports = ("cc_transcript.models",)))]
+    events: Vec<Bound<'py, PyAny>>,
+    opener_flags: Option<Vec<bool>>,
+    open_turn: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    if let Some(flags) = &opener_flags {
+        if flags.len() != events.len() {
+            return Err(PyValueError::new_err(format!(
+                "activity_lift_tail() got {} opener_flags for {} events",
+                flags.len(),
+                events.len()
+            )));
+        }
+    }
+    let entries = events
+        .iter()
+        .map(|event| mining::view_entry(event, "activity_lift_tail"))
+        .collect::<PyResult<Vec<_>>>()?;
+    let tail = lift_session_index_tail(&entries, opener_flags.as_deref(), open_turn);
+    let dict = PyDict::new(py);
+    dict.set_item(
+        "turns",
+        PyList::new(
+            py,
+            tail.turns
+                .iter()
+                .map(|turn| turn_index_dict(py, turn))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?,
+    )?;
+    dict.set_item("continued", tail.continued)?;
+    dict.set_item("results", tail.results)?;
+    Ok(dict)
+}
+
+fn turn_index_dict<'py>(py: Python<'py>, turn: &TurnIndex<'_>) -> PyResult<Bound<'py, PyDict>> {
+    let td = PyDict::new(py);
+    td.set_item("prompt", &turn.prompt)?;
+    td.set_item("start", turn.start)?;
+    td.set_item("end", turn.end)?;
+    td.set_item("started_idx", turn.started_idx)?;
+    td.set_item("ended_idx", turn.ended_idx)?;
+    let tool_uses = turn
+        .tool_uses
+        .iter()
+        .map(|use_| {
+            let ud = PyDict::new(py);
+            ud.set_item("event_idx", use_.event_idx)?;
+            ud.set_item("tool_use_id", use_.tool_use_id)?;
+            ud.set_item("result_event_idx", use_.result_event_idx)?;
+            Ok(ud)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    td.set_item("tool_uses", PyList::new(py, tool_uses)?)?;
+    Ok(td)
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -1023,6 +1068,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift, m)?)?;
     m.add_function(wrap_pyfunction!(activity_lift_from_events, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_lift_tail, m)?)?;
     m.add_function(wrap_pyfunction!(activity_hunk_overlap, m)?)?;
     m.add_function(wrap_pyfunction!(activity_overlap_between, m)?)?;
     m.add_function(wrap_pyfunction!(activity_parse_show_hunks, m)?)?;

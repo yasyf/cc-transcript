@@ -197,6 +197,7 @@ EXPORTS: dict[str, str] = {
             "Lifecycle",
         ),
         "cc_transcript.activity": (
+            "ActivityLift",
             "Edit",
             "SessionActivity",
             "ToolUse",
