@@ -1,10 +1,13 @@
 """Parity of the incremental lift with the cold one.
 
-``ActivityLift.extend`` over a prefix and then its suffix must equal
-``SessionActivity.from_events`` over the whole sequence at every event boundary,
+``ActivityLift.extend`` over a prefix and then its suffix must equal a cold lift over
+the whole sequence at every event boundary,
 including cuts mid-turn, between a tool use and its result, before a late result
 that answers an earlier turn's use, and inside sidechain and compact runs; chaining
-one-event and small-chunk extends must hold the same equality at every prefix.
+one-event and small-chunk extends must hold the same equality at every prefix. The
+oracle is ``reference_lift``, the full native skeleton assembled here without touching
+``ActivityLift``, so a cold regression shows even though ``from_events`` runs through
+the cursor.
 """
 
 from __future__ import annotations
@@ -16,11 +19,12 @@ import pytest
 
 from cc_transcript import _native
 from cc_transcript import activity as activity_module
-from cc_transcript.activity import ActivityLift, SessionActivity, native_user_classifier
-from cc_transcript.ids import SessionId
-from cc_transcript.models import TranscriptEvent, UserEvent
+from cc_transcript.activity import ActivityLift, SessionActivity, ToolUse, Turn, native_user_classifier
+from cc_transcript.ids import EventRef, SessionId
+from cc_transcript.models import AssistantEvent, ToolResultBlock, ToolUseBlock, TranscriptEvent, UserEvent
 from cc_transcript.parser import parse, parse_events_from_bytes
 from cc_transcript.query import Session
+from cc_transcript.tools import edits_of, parse_tool_call
 from scripts.gen_activity_golden import SYNTHETIC_CASES
 from tests import testkit
 from tests.corpus import CORPUS_MANIFEST
@@ -135,8 +139,59 @@ CLASSIFIERS = [
 ]
 
 
+def reference_lift(events: tuple[TranscriptEvent, ...], user_classifier=native_user_classifier) -> SessionActivity:
+    evs = list(events)
+    opener_flags = (
+        None
+        if user_classifier is native_user_classifier
+        else [bool(user_classifier(event)) if isinstance(event, UserEvent) else False for event in evs]
+    )
+    tool_blocks = {
+        event_idx: [block for block in event.blocks if isinstance(block, ToolUseBlock)]
+        for event_idx, event in enumerate(evs)
+        if isinstance(event, AssistantEvent)
+    }
+    turns: list[Turn] = []
+    for index, skeleton in enumerate(_native.activity_lift_from_events(evs, opener_flags)):
+        tool_uses: list[ToolUse] = []
+        for use in skeleton["tool_uses"]:
+            event = evs[use["event_idx"]]
+            block = tool_blocks[use["event_idx"]].pop(0)
+            result_event = None if use["result_event_idx"] is None else evs[use["result_event_idx"]]
+            call = parse_tool_call(block.name, block.input, on_error="other")
+            tool_uses.append(
+                ToolUse(
+                    ref=EventRef(SESSION, event.meta.uuid, block.id),
+                    call=call,
+                    result=None
+                    if result_event is None
+                    else next(
+                        candidate
+                        for candidate in reversed(result_event.blocks)
+                        if isinstance(candidate, ToolResultBlock) and candidate.tool_use_id == use["tool_use_id"]
+                    ),
+                    result_ts=None if result_event is None else result_event.meta.timestamp,
+                    edits=edits_of(call),
+                    turn_index=index,
+                    ts=event.meta.timestamp,
+                )
+            )
+        turns.append(
+            Turn(
+                index=index,
+                prompt=skeleton["prompt"],
+                started_at=None if skeleton["started_idx"] is None else evs[skeleton["started_idx"]].meta.timestamp,
+                ended_at=None if skeleton["ended_idx"] is None else evs[skeleton["ended_idx"]].meta.timestamp,
+                events=tuple(evs[skeleton["start"] : skeleton["end"]]),
+                tool_uses=tuple(tool_uses),
+            )
+        )
+    return SessionActivity(session_id=SESSION, turns=tuple(turns))
+
+
 def assert_split_parity(events: tuple[TranscriptEvent, ...], user_classifier=native_user_classifier) -> None:
-    cold = SessionActivity.from_events(SESSION, events, user_classifier=user_classifier)
+    cold = reference_lift(events, user_classifier)
+    assert SessionActivity.from_events(SESSION, events, user_classifier=user_classifier) == cold
     for cut in range(len(events) + 1):
         lift = ActivityLift(SESSION, user_classifier=user_classifier)
         lift.extend(events[:cut])
@@ -149,9 +204,9 @@ def assert_chained_parity(
 ) -> None:
     lift = ActivityLift(SESSION, user_classifier=user_classifier)
     for start in range(0, len(events), chunk):
-        assert lift.extend(events[start : start + chunk]) == SessionActivity.from_events(
-            SESSION, events[: start + chunk], user_classifier=user_classifier
-        ), f"prefix={start + chunk}"
+        assert lift.extend(events[start : start + chunk]) == reference_lift(events[: start + chunk], user_classifier), (
+            f"prefix={start + chunk}"
+        )
 
 
 @pytest.mark.parametrize("events", CASES)
@@ -166,9 +221,10 @@ def test_chained_extends_match_cold_lift_at_every_prefix(events: tuple[Transcrip
     assert_chained_parity(events, chunk)
 
 
+@pytest.mark.parametrize("events", CASES)
 @pytest.mark.parametrize("chunk", [1, 5])
-def test_chained_extends_under_a_custom_classifier(chunk: int) -> None:
-    assert_chained_parity(tuple(parse_events_from_bytes(fixture_bytes())), chunk, every_other_user)
+def test_chained_extends_under_a_custom_classifier(events: tuple[TranscriptEvent, ...], chunk: int) -> None:
+    assert_chained_parity(events, chunk, every_other_user)
 
 
 @pytest.mark.parametrize("rel", CORPUS_SCRATCH)

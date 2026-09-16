@@ -284,6 +284,10 @@ class ActivityLift:
     turn tuple and of the open turn's event and tool-use tuples; it never
     re-derives the session.
 
+    Feed only the events appended since the previous call: nothing checks
+    provenance, so events fed twice lift twice. A transcript rewritten in
+    place, rather than appended to, needs a new cursor.
+
     The classifier is read once, at construction, and must be deterministic
     and event-only: its answer for an event has to stay the same as later
     events are appended, since turns lifted under it are never revisited.
