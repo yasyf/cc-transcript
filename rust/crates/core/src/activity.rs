@@ -501,10 +501,7 @@ struct Segment {
 }
 
 fn opens(entry: &Entry, index: usize, openers: Option<&[bool]>) -> bool {
-    openers.map_or_else(
-        || matches!(entry, Entry::User(user) if opens_turn(user)),
-        |flags| flags[index],
-    )
+    matches!(entry, Entry::User(user) if openers.map_or_else(|| opens_turn(user), |flags| flags[index]))
 }
 
 // activity.py from_events segmentation: a turn-opening user entry starts a contiguous
@@ -1616,7 +1613,12 @@ mod tests {
         assert!(!lift_session_index_tail(&refs[2..], None, true).continued);
         assert!(!lift_session_index_tail(&[], None, true).continued);
         assert!(lift_session_index_tail(&refs, Some(&[false, false, false]), true).continued);
-        assert!(!lift_session_index_tail(&refs, Some(&[true, false, false]), true).continued);
+        assert!(
+            lift_session_index_tail(&refs, Some(&[true, false, false]), true).continued,
+            "a flag on a non-user entry opens nothing, exactly as segments() ignores it"
+        );
+        assert!(lift_session_index_tail(&refs[2..], Some(&[false]), true).continued);
+        assert!(!lift_session_index_tail(&refs[2..], Some(&[true]), true).continued);
     }
 
     #[test]
