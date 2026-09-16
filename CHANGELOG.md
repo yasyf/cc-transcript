@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A deep lift validates the open descriptor's stat around every read, so a transcript
+  replaced between the routing stat and the read never splices two file versions. Each
+  read compares `(size, mtime_ns, ctime_ns, inode)` of the fd after reading against the
+  routing stamp; a growth whose descriptor moved falls to a cold relift rather than paste
+  replacement bytes past the cached prefix, and a cold read whose descriptor moved answers
+  the request but is not published. An equal-length in-place replacement moves the inode
+  and ctime, which the size-and-mtime routing stamp alone would miss. Mirrors capt-hook's
+  transcache fix.
 - Only a deterministic parse failure is held in `UNREADABLE`, never a transient filesystem
   error. `parsed` raises `UnparseableTranscript` (an `OSError` subclass) for a line the
   typed parser rejects, and `deep_session_at` records the stamp only for that; an EACCES,

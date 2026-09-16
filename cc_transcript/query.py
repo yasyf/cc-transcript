@@ -10,6 +10,7 @@ predicates compose over progressively narrower windows.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -39,7 +40,6 @@ from cc_transcript.tools import (
 )
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
@@ -155,7 +155,11 @@ the byte offset it has consumed, which always ends on a newline. A transcript th
 grown — same inode, larger, its last held bytes unchanged — is extended by its appended lines
 alone: the tail past the last newline is parsed for the session but never fed to the cursor.
 A shrink, a replaced or rewritten file, a short read, or a session id that surfaces only in
-the appended lines lifts the file afresh. The cursor is mutable, so a stamp miss takes the
+the appended lines lifts the file afresh. Every read validates the open descriptor's stat
+after reading against the stat that routed it — a replacement between the routing stat and
+the read moves the inode and ctime — so a growth that reads spliced bytes falls to a cold
+relift, and a cold read whose descriptor moved under it answers but is not published. The
+cursor is mutable, so a stamp miss takes the
 entry out of the hold before extending it and puts the grown entry back: a concurrent reader
 never sees a cursor mid-extension, and two threads that miss together each produce a correct
 entry, the later put replacing the earlier. A dropped entry releases its cursor with it.
@@ -1067,18 +1071,21 @@ def deep_session_at(
     if UNREADABLE.has(path, stamp):
         raise UnparseableTranscript(f"unreadable transcript: {path}")
     stale = DEEP_LIFTS.take(key)
+    if stale is not None and (grown := grown_lift(stale, path, stamp)) is not None:
+        return DEEP_LIFTS.put(key, grown).deep
     try:
-        lifted = (None if stale is None else grown_lift(stale, path, stamp)) or lift_deep_session(
-            path, depth, spawned_by, stamp
-        )
+        lifted, settled = lift_deep_session(path, depth, spawned_by)
     except UnparseableTranscript:
         UNREADABLE.put(path, stamp)
         raise
-    return (DEEP_LIFTS.put(key, lifted) if hold or stale is not None else lifted).deep
+    return (DEEP_LIFTS.put(key, lifted) if settled and (hold or stale is not None) else lifted).deep
 
 
-def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp) -> DeepLift:
-    raw = path.read_bytes()
+def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> tuple[DeepLift, bool]:
+    with path.open("rb") as handle:
+        stamp = stamp_of(before := os.fstat(handle.fileno()))
+        raw = handle.read(before.st_size)
+        settled = stamp_of(os.fstat(handle.fileno())) == stamp
     events = list((transcript := parsed(path, raw)).events)
     session_id = (found := session_id_of(events)) or SessionId(path.stem)
     cut = raw.rfind(b"\n") + 1
@@ -1099,13 +1106,13 @@ def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None, stam
         consumed=cut,
         fence=raw[max(cut - DEEP_LIFT_FENCE, 0) : cut],
         found=found,
-    )
+    ), settled
 
 
 def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
     if stamp[3] != held.stamp[3] or stamp[0] <= held.stamp[0] or stamp[0] < held.consumed:
         return None
-    if (read := appended_bytes(path, held.consumed - len(held.fence), stamp[0])) is None or not read.startswith(
+    if (read := appended_bytes(path, held.consumed - len(held.fence), stamp[0], stamp)) is None or not read.startswith(
         held.fence
     ):
         return None
@@ -1135,11 +1142,12 @@ def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
     )
 
 
-def appended_bytes(path: Path, start: int, stop: int) -> bytes | None:
+def appended_bytes(path: Path, start: int, stop: int, stamp: LiftStamp) -> bytes | None:
     with path.open("rb") as handle:
         handle.seek(start)
         read = handle.read(stop - start)
-    return read if len(read) == stop - start else None
+        settled = stamp_of(os.fstat(handle.fileno())) == stamp
+    return read if len(read) == stop - start and settled else None
 
 
 class UnparseableTranscript(OSError):

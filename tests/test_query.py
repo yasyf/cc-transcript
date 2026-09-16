@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.models import TranscriptEvent
-    from cc_transcript.query import DeepLift, LiftStamp
+    from cc_transcript.query import DeepLift
 
 PLAN_FILE = "/Users/x/.claude/plans/p.md"
 
@@ -788,9 +788,9 @@ def count_lifts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     lifts: list[Path] = []
     lift = query.lift_deep_session
 
-    def counted(path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp) -> DeepLift:
+    def counted(path: Path, depth: int, spawned_by: ToolUseId | None) -> tuple[DeepLift, bool]:
         lifts.append(path)
-        return lift(path, depth, spawned_by, stamp)
+        return lift(path, depth, spawned_by)
 
     monkeypatch.setattr(query, "lift_deep_session", counted)
     return lifts
@@ -1606,12 +1606,14 @@ def test_a_transient_read_error_is_not_held_and_retries_next_walk(
     DEEP_LIFTS.clear()
     SIDECHAIN_INPUTS.clear()
     UNREADABLE.clear()
-    real = pathlib.Path.read_bytes
-    monkeypatch.setattr(
-        pathlib.Path,
-        "read_bytes",
-        lambda self: (_ for _ in ()).throw(OSError(5, "transient I/O error")) if self == child else real(self),
-    )
+    real = pathlib.Path.open
+
+    def failing(self, *args, **kwargs):
+        if self == child:
+            raise OSError(5, "transient I/O error")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", failing)
     assert not Session.from_path(main).has_command("step", "0")
     assert len(UNREADABLE) == 0
 
@@ -1627,21 +1629,54 @@ def test_a_read_time_permission_error_is_not_held_and_retries_once_readable(
     DEEP_LIFTS.clear()
     SIDECHAIN_INPUTS.clear()
     UNREADABLE.clear()
-    real = pathlib.Path.read_bytes
+    real = pathlib.Path.open
 
-    def denied_once(self: Path) -> bytes:
-        if self != child:
-            return real(self)
-        mode = self.parent.stat().st_mode
-        self.parent.chmod(0o600)
-        try:
-            return real(self)
-        finally:
-            self.parent.chmod(mode)
+    def denied(self, *args, **kwargs):
+        if self == child:
+            raise PermissionError(13, "permission denied")
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, "read_bytes", denied_once)
+    monkeypatch.setattr(pathlib.Path, "open", denied)
     assert not Session.from_path(main).has_command("step", "0")
     assert len(UNREADABLE) == 0
 
     monkeypatch.undo()
     assert Session.from_path(main).has_command("step", "0")
+
+
+def replace_before_read(monkeypatch: pytest.MonkeyPatch, target: Path, contents: bytes) -> None:
+    real = query.appended_bytes
+    seen = {"done": False}
+
+    def swapping(path: Path, start: int, stop: int, stamp) -> bytes | None:
+        if path == target and not seen["done"]:
+            seen["done"] = True
+            fresh = target.with_name("replacement.jsonl")
+            fresh.write_bytes(contents)
+            os.replace(fresh, target)
+        return real(path, start, stop, stamp)
+
+    monkeypatch.setattr(query, "appended_bytes", swapping)
+
+
+def test_an_equal_length_replacement_during_a_growth_read_falls_to_a_cold_relift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    child.write_bytes(step_line("old", 1, "step", "old").encode() + user_line("pad", 2, "x" * 200).encode() + b"\n")
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    list(Session.from_path(main).walk())
+    held = next(iter(DEEP_LIFTS.held.values()))
+    grow(child, step_line("add", 3, "step", "add"))
+    replacement = child.read_bytes().replace(b"step old", b"step new")
+    assert child.read_bytes()[held.consumed - len(held.fence) : held.consumed] == held.fence
+
+    lifts = count_lifts(monkeypatch)
+    replace_before_read(monkeypatch, child, replacement)
+    sess = Session.from_path(main)
+    assert not sess.has_command("step", "old")
+    assert sess.has_command("step", "new")
+    assert lifts == [child]
+    assert_deep_matches_cold(main, child)
