@@ -1680,3 +1680,64 @@ def test_an_equal_length_replacement_during_a_growth_read_falls_to_a_cold_relift
     assert sess.has_command("step", "new")
     assert lifts == [child]
     assert_deep_matches_cold(main, child)
+
+
+CODEX_FIXTURE = (
+    pathlib.Path(__file__).resolve().parent
+    / "testdata"
+    / "codex"
+    / "rollout-2026-01-20T04-00-05-019bd9c0-0a1b-7c2d-8e3f-000000000101.jsonl"
+)
+
+
+def test_a_codex_response_item_appended_to_a_claude_attachment_reads_as_a_cold_walk_does(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.jsonl"
+    path.write_text(user_line("u0", 0, "start") + "\n")
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    root = Session((), None, (path,))
+    assert not root.has_tool("exec_command")
+
+    with path.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "arguments": '{"cmd":"echo INCREMENTAL_ONLY"}',
+                        "call_id": "call-1",
+                    },
+                }
+            )
+            + "\n"
+        )
+    cold = Session.from_path(path)
+    assert root.has_tool("exec_command") == cold.has_tool("exec_command", subagents=False)
+    assert [inputs.commands for inputs in root.deep_inputs()][1:] == [cold.predicate_inputs.commands]
+    assert not root.has_command("echo", "INCREMENTAL_ONLY")
+
+
+def test_a_growing_codex_attachment_matches_a_cold_walk_at_every_line(tmp_path: Path) -> None:
+    lines = CODEX_FIXTURE.read_bytes().splitlines(keepends=True)
+    path = tmp_path / CODEX_FIXTURE.name
+    path.write_bytes(lines[0])
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    root = Session((), None, (path,))
+
+    def deep_matches_cold() -> None:
+        cold = Session.from_path(path)
+        (walked,) = root.walk()
+        assert walked.provider == "codex"
+        assert walked.session.turns == cold.turns
+        assert [inputs.commands for inputs in root.deep_inputs()][1] == cold.predicate_inputs.commands
+        assert root.has_tool("Bash") == cold.has_tool("Bash", subagents=False)
+
+    deep_matches_cold()
+    for line in lines[1:]:
+        with path.open("ab") as handle:
+            handle.write(line)
+        deep_matches_cold()

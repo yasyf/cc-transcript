@@ -81,6 +81,7 @@ class DeepLift:
     consumed: int
     fence: bytes
     found: SessionId | None
+    provider: str | None
     idle: int = 0
 
 
@@ -151,15 +152,20 @@ resident memory, so the default holds roughly 2.3 GiB. A single tree larger than
 reparses the part that no longer fits on every walk.
 
 Each entry keeps the :class:`~cc_transcript.activity.ActivityLift` cursor behind its lift and
-the byte offset it has consumed, which always ends on a newline. A transcript that has only
-grown — same inode, larger, its last held bytes unchanged — is extended by its appended lines
-alone: the tail past the last newline is parsed for the session but never fed to the cursor.
-A shrink, a replaced or rewritten file, a short read, or a session id that surfaces only in
-the appended lines lifts the file afresh. Every read validates the open descriptor's stat
-after reading against the stat that routed it — a replacement between the routing stat and
-the read moves the inode and ctime — so a growth that reads spliced bytes falls to a cold
-relift, and a cold read whose descriptor moved under it answers but is not published. The
-cursor is mutable, so a stamp miss takes the
+the byte offset it has consumed, which always ends on a newline. A Claude transcript that has
+only grown — same inode, larger, its last held bytes unchanged — is extended by its appended
+lines alone: the tail past the last newline is parsed for the session but never fed to the
+cursor. Only Claude is extended incrementally, because its parse is line-compositional; a
+Codex rollout lowers against whole-session context (echo sets, the model timeline), so its
+provider is pinned on the cold parse and any growth cold-relifts, as does a growth whose
+appended chunk parses as a different provider than the file was pinned to. An empty file pins
+no provider until a line lands, extending while its appended lines parse as Claude and
+cold-relifting the moment a Codex line completes. A shrink, a replaced or rewritten file, a
+short read, or a session id that surfaces only in the appended lines lifts the file afresh.
+Every read validates the open descriptor's stat after reading against the stat that routed it
+— a replacement between the routing stat and the read moves the inode and ctime — so a growth
+that reads spliced bytes falls to a cold relift, and a cold read whose descriptor moved under
+it answers but is not published. The cursor is mutable, so a stamp miss takes the
 entry out of the hold before extending it and puts the grown entry back: a concurrent reader
 never sees a cursor mid-extension, and two threads that miss together each produce a correct
 entry, the later put replacing the earlier. A dropped entry releases its cursor with it.
@@ -1106,11 +1112,17 @@ def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> t
         consumed=cut,
         fence=raw[max(cut - DEEP_LIFT_FENCE, 0) : cut],
         found=found,
+        provider=transcript.provider if events else None,
     ), settled
 
 
 def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
-    if stamp[3] != held.stamp[3] or stamp[0] <= held.stamp[0] or stamp[0] < held.consumed:
+    if (
+        held.provider not in (None, "claude")
+        or stamp[3] != held.stamp[3]
+        or stamp[0] <= held.stamp[0]
+        or stamp[0] < held.consumed
+    ):
         return None
     if (read := appended_bytes(path, held.consumed - len(held.fence), stamp[0], stamp)) is None or not read.startswith(
         held.fence
@@ -1118,8 +1130,12 @@ def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
         return None
     appended = read[len(held.fence) :]
     cut = appended.rfind(b"\n") + 1
-    committed = list(parsed(path, appended[:cut]).events)
-    tail = [] if cut == len(appended) else list(parsed(path, appended[cut:]).events)
+    if (committed_chunk := parsed(path, appended[:cut])).provider != "claude":
+        return None
+    if cut != len(appended) and (tail_chunk := parsed(path, appended[cut:])).provider != "claude":
+        return None
+    committed = list(committed_chunk.events)
+    tail = [] if cut == len(appended) else list(tail_chunk.events)
     found = held.found or session_id_of([*committed, *tail])
     if (found or SessionId(path.stem)) != held.lift.session_id:
         return None
@@ -1139,6 +1155,7 @@ def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
         consumed=held.consumed + cut,
         fence=(held.fence + appended[:cut])[-DEEP_LIFT_FENCE:],
         found=found,
+        provider=held.provider or ("claude" if committed or tail else None),
     )
 
 

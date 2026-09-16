@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A grown attachment keeps the provider composition contract. Each appended chunk was
+  parsed on its own, so its provider was re-detected from its first line; a Codex rollout,
+  whose lowering needs whole-session context, got different session ids and event uuids
+  than a cold parse, and a Codex-shaped `response_item` appended to a held Claude
+  transcript made deep predicates surface its call while a cold parse read it as an
+  `OtherEvent`. The provider is now pinned on the cold parse and carried on the cursor:
+  only a Claude-pinned transcript extends incrementally, a Codex one cold-relifts on
+  growth, and a growth whose appended chunk parses as a different provider than the pin
+  cold-relifts too. An empty file pins no provider until a line lands.
 - A deep lift validates the open descriptor's stat around every read, so a transcript
   replaced between the routing stat and the read never splices two file versions. Each
   read compares `(size, mtime_ns, ctime_ns, inode)` of the fd after reading against the
