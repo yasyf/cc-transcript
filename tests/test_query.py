@@ -1512,15 +1512,36 @@ def test_attachment_paths_are_resolved_once_across_deep_calls(tmp_path: Path, mo
     assert resolved == []
 
 
-def test_a_cursor_is_released_after_it_idles_and_readmitted_when_it_grows_again(
+class Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def install_clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    monkeypatch.setattr(query, "monotonic", clock := Clock())
+    return clock
+
+
+def test_a_burst_of_hits_never_releases_a_recently_grown_cursor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("cc_transcript.query.IDLE_WALKS_BEFORE_RELEASE", 3)
+    clock = install_clock(monkeypatch)
     main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
     assert len(DEEP_LIFTS) == 1
 
-    for _ in range(3):
+    clock.advance(query.IDLE_SECONDS_BEFORE_RELEASE - 1)
+    for _ in range(50):
         assert Session.from_path(main).has_command("step", "one")
+    assert len(DEEP_LIFTS) == 1
+
+    clock.advance(1)
+    assert Session.from_path(main).has_command("step", "one")
     assert len(DEEP_LIFTS) == 0
     assert SIDECHAIN_INPUTS.holds(child)
     assert lifts == []
@@ -1532,8 +1553,19 @@ def test_a_cursor_is_released_after_it_idles_and_readmitted_when_it_grows_again(
     assert_deep_matches_cold(main, child)
 
 
+def test_a_growth_resets_the_idle_clock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = install_clock(monkeypatch)
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    for index in range(2, 6):
+        clock.advance(query.IDLE_SECONDS_BEFORE_RELEASE - 1)
+        grow(child, step_line(f"b{index}", index + 2, "step", str(index)))
+        assert Session.from_path(main).has_command("step", str(index))
+        assert len(DEEP_LIFTS) == 1
+    assert lifts == []
+
+
 def test_the_parity_sweep_holds_across_an_idle_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("cc_transcript.query.IDLE_WALKS_BEFORE_RELEASE", 2)
+    clock = install_clock(monkeypatch)
     main = write_flat_subagent_tree(tmp_path, "lead", 1)
     child = only_child(main)
     DEEP_LIFTS.clear()
@@ -1542,7 +1574,8 @@ def test_the_parity_sweep_holds_across_an_idle_release(tmp_path: Path, monkeypat
     for index, line in enumerate(GROWTH_MATERIAL.read_bytes().splitlines(keepends=True)):
         grow(child, line)
         assert_deep_matches_cold(main, child)
-        for _ in range(index % 4):
+        if index % 3 == 0:
+            clock.advance(query.IDLE_SECONDS_BEFORE_RELEASE)
             assert_deep_matches_cold(main, child)
     assert_deep_matches_cold(main, child)
 

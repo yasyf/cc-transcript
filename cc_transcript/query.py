@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from functools import cached_property
 from pathlib import PurePath
+from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
 from cc_transcript.activity import ActivityLift, SessionActivity, Turn, event_stamps, native_user_classifier
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 
 DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
 DEEP_LIFT_FENCE = 64
-IDLE_WALKS_BEFORE_RELEASE = 256
+IDLE_SECONDS_BEFORE_RELEASE = 900
 
 type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
@@ -73,7 +74,7 @@ def stamp_of(stat: os.stat_result) -> LiftStamp:
     return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class DeepLift:
     stamp: LiftStamp
     deep: DeepSession
@@ -82,7 +83,7 @@ class DeepLift:
     fence: bytes
     found: SessionId | None
     provider: str | None
-    idle: int = 0
+    grown_at: float
 
 
 @dataclass(slots=True)
@@ -101,18 +102,17 @@ class LiftCache:
                     return None
 
     def idle_release(self, key: LiftKey, stamp: LiftStamp) -> None:
-        """Counts one unchanged walk over ``key``'s cursor, releasing it once it goes idle.
+        """Releases ``key``'s cursor once its file has gone :data:`IDLE_SECONDS_BEFORE_RELEASE` unwritten.
 
         A held cursor amortizes the next growth of a live sidechain; a finished one earns
-        nothing, so a stamp-unchanged walk over one that :data:`SIDECHAIN_INPUTS` already
-        answers bumps its idle count, and past :data:`IDLE_WALKS_BEFORE_RELEASE` the entry
-        is dropped and its cursor with it. Any growth replaces the entry with ``idle`` 0.
+        nothing. Expiry is elapsed inactivity, not a hit count, so a burst of predicate
+        traffic over a cursor that just grew never releases it — the clock is read from the
+        entry's last growth. Any growth replaces the entry, resetting ``grown_at``.
         """
         with self.guard:
             match self.held.get(key):
-                case DeepLift(stamp=held_stamp) as lift if held_stamp == stamp:
-                    lift.idle += 1
-                    if lift.idle >= IDLE_WALKS_BEFORE_RELEASE:
+                case DeepLift(stamp=held_stamp, grown_at=at) if held_stamp == stamp:
+                    if monotonic() - at >= IDLE_SECONDS_BEFORE_RELEASE:
                         self.drop(key)
 
     def take(self, key: LiftKey) -> DeepLift | None:
@@ -174,10 +174,11 @@ entry, the later put replacing the earlier. A dropped entry releases its cursor 
 transcript they have had to lift twice, since a sidechain that changed once is a running
 subagent whose next growth would otherwise cost a whole relift, while a finished one is
 lifted once and its :class:`PredicateInputs` kept instead. A held cursor is released once its
-file survives :data:`IDLE_WALKS_BEFORE_RELEASE` deep walks unchanged, so resident cursors
-track the set of sidechains still being written rather than every one that ever grew; a
-released file that grows again pays one relift and is re-admitted. :data:`DEEP_LIFT_BUDGET`
-stays the upper bound over that live set.
+file has gone :data:`IDLE_SECONDS_BEFORE_RELEASE` unwritten — elapsed inactivity since its
+last growth, not a count of walks, so aggregate predicate traffic from many readers never
+expires a cursor that just grew — so resident cursors track the set of sidechains still being
+written rather than every one that ever grew; a released file that grows again pays one relift
+and is re-admitted. :data:`DEEP_LIFT_BUDGET` stays the upper bound over that live set.
 """
 
 
@@ -1113,6 +1114,7 @@ def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> t
         fence=raw[max(cut - DEEP_LIFT_FENCE, 0) : cut],
         found=found,
         provider=transcript.provider if events else None,
+        grown_at=monotonic(),
     ), settled
 
 
@@ -1156,6 +1158,7 @@ def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
         fence=(held.fence + appended[:cut])[-DEEP_LIFT_FENCE:],
         found=found,
         provider=held.provider or ("claude" if committed or tail else None),
+        grown_at=monotonic(),
     )
 
 
