@@ -13,8 +13,8 @@ products.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
 from cc_transcript import _native
 from cc_transcript.discovery import TranscriptExpiredError, resolve
@@ -25,7 +25,7 @@ from cc_transcript.parser import parse
 from cc_transcript.tools import edits_of, parse_tool_call, parse_tool_result
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import datetime
     from pathlib import Path
 
@@ -181,64 +181,7 @@ class SessionActivity:
         turn; everything else folds into the current one. Events before the
         first qualifying prompt form turn 0 with prompt ``""``.
         """
-        evs = list(events)
-        opener_flags = (
-            None
-            if user_classifier is native_user_classifier
-            else [bool(user_classifier(event)) if isinstance(event, UserEvent) else False for event in evs]
-        )
-        tool_blocks = {
-            event_idx: tuple(block for block in event.blocks if isinstance(block, ToolUseBlock))
-            for event_idx, event in enumerate(evs)
-            if isinstance(event, AssistantEvent)
-        }
-        tool_block_positions: dict[int, int] = {}
-        turns: list[Turn] = []
-        for index, skeleton in enumerate(_native.activity_lift_from_events(evs, opener_flags)):
-            tool_uses: list[ToolUse] = []
-            for use in skeleton["tool_uses"]:
-                event_idx = use["event_idx"]
-                event = evs[event_idx]
-                block_position = tool_block_positions.get(event_idx, 0)
-                block = tool_blocks[event_idx][block_position]
-                tool_block_positions[event_idx] = block_position + 1
-                result_event_idx = use["result_event_idx"]
-                if result_event_idx is None:
-                    result = None
-                    result_ts = None
-                else:
-                    result_event = evs[result_event_idx]
-                    result = next(
-                        candidate
-                        for candidate in reversed(result_event.blocks)
-                        if isinstance(candidate, ToolResultBlock) and candidate.tool_use_id == use["tool_use_id"]
-                    )
-                    result_ts = result_event.meta.timestamp
-                call = parse_tool_call(block.name, block.input, on_error="other")
-                tool_uses.append(
-                    ToolUse(
-                        ref=EventRef(session_id, event.meta.uuid, block.id),
-                        call=call,
-                        result=result,
-                        result_ts=result_ts,
-                        edits=edits_of(call),
-                        turn_index=index,
-                        ts=event.meta.timestamp,
-                    )
-                )
-            started_idx = skeleton["started_idx"]
-            ended_idx = skeleton["ended_idx"]
-            turns.append(
-                Turn(
-                    index=index,
-                    prompt=skeleton["prompt"],
-                    started_at=None if started_idx is None else evs[started_idx].meta.timestamp,
-                    ended_at=None if ended_idx is None else evs[ended_idx].meta.timestamp,
-                    events=tuple(evs[skeleton["start"] : skeleton["end"]]),
-                    tool_uses=tuple(tool_uses),
-                )
-            )
-        return cls(session_id=session_id, turns=tuple(turns))
+        return ActivityLift(session_id, user_classifier=user_classifier).extend(events)
 
     @classmethod
     def from_session(
@@ -324,6 +267,156 @@ class SessionActivity:
             if edit.file_path == file_path
         ]
         return tuple(same_turn + later)
+
+
+@dataclass(slots=True)
+class ActivityLift:
+    """A session's lift that grows with its transcript.
+
+    Each :meth:`extend` folds the events appended since the previous call into
+    the activity lifted so far: closed turns are kept, the open turn grows by
+    the appended events alone, and a tool use whose result arrives in the tail
+    is re-paired wherever it sits. The result always equals
+    :meth:`SessionActivity.from_events` over every event fed so far, at a cost
+    that scales with the appended events rather than the session. The
+    classifier is fixed at construction, since turns lifted under one cannot
+    continue under another.
+
+    Attributes:
+        session_id: The session being lifted.
+        user_classifier: Decides which user events open turns.
+        activity: Everything lifted so far.
+
+    Example:
+        >>> lift = ActivityLift(session_id)
+        >>> activity = lift.extend(events)
+        >>> lift.extend(appended) == SessionActivity.from_events(session_id, [*events, *appended])
+        True
+    """
+
+    session_id: SessionId
+    user_classifier: UserClassifier = native_user_classifier
+    activity: SessionActivity = field(init=False)
+    _turns_of_use: dict[ToolUseId, tuple[int, ...]] = field(init=False, default_factory=dict)
+    _results: dict[ToolUseId, UserEvent] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.activity = SessionActivity(session_id=self.session_id, turns=())
+
+    def extend(self, events: Sequence[TranscriptEvent]) -> SessionActivity:
+        """Lifts ``events``, appended after everything fed so far, into :attr:`activity`."""
+        tail = list(events)
+        if not tail:
+            return self.activity
+        opener_flags = (
+            None
+            if self.user_classifier is native_user_classifier
+            else [bool(self.user_classifier(event)) if isinstance(event, UserEvent) else False for event in tail]
+        )
+        turns = list(self.activity.turns)
+        lifted = _native.activity_lift_tail(tail, opener_flags, open_turn=bool(turns))
+        first = len(turns) - 1 if lifted["continued"] else len(turns)
+        grown = [
+            lift_turn(self.session_id, first + offset, skeleton, tail, self._results)
+            for offset, skeleton in enumerate(lifted["turns"])
+        ]
+        if lifted["continued"]:
+            turns[-1] = continued(turns[-1], grown[0])
+            turns.extend(grown[1:])
+        else:
+            turns.extend(grown)
+        for tool_use_id, result_idx in lifted["results"]:
+            for turn_index in self._turns_of_use.get(tool_use_id, ()):
+                turns[turn_index] = paired(turns[turn_index], tool_use_id, tail[result_idx])
+            self._results[tool_use_id] = tail[result_idx]
+        for turn in grown:
+            for use in turn.tool_uses:
+                if (held := self._turns_of_use.get(use.ref.tool_use_id, ()))[-1:] != (turn.index,):
+                    self._turns_of_use[use.ref.tool_use_id] = (*held, turn.index)
+        self.activity = SessionActivity(session_id=self.session_id, turns=tuple(turns))
+        return self.activity
+
+
+def lift_turn(
+    session_id: SessionId,
+    index: int,
+    skeleton: dict[str, Any],
+    evs: Sequence[TranscriptEvent],
+    prior_results: Mapping[ToolUseId, UserEvent],
+) -> Turn:
+    events = tuple(evs[skeleton["start"] : skeleton["end"]])
+    calls = [
+        (event, block)
+        for event in events
+        if isinstance(event, AssistantEvent)
+        for block in event.blocks
+        if isinstance(block, ToolUseBlock)
+    ]
+    started_idx = skeleton["started_idx"]
+    ended_idx = skeleton["ended_idx"]
+    return Turn(
+        index=index,
+        prompt=skeleton["prompt"],
+        started_at=None if started_idx is None else evs[started_idx].meta.timestamp,
+        ended_at=None if ended_idx is None else evs[ended_idx].meta.timestamp,
+        events=events,
+        tool_uses=tuple(
+            lift_tool_use(
+                session_id,
+                index,
+                event,
+                block,
+                prior_results.get(block.id) if (result_idx := use["result_event_idx"]) is None else evs[result_idx],
+            )
+            for (event, block), use in zip(calls, skeleton["tool_uses"], strict=True)
+        ),
+    )
+
+
+def lift_tool_use(
+    session_id: SessionId, turn_index: int, event: AssistantEvent, block: ToolUseBlock, result_event: UserEvent | None
+) -> ToolUse:
+    call = parse_tool_call(block.name, block.input, on_error="other")
+    return ToolUse(
+        ref=EventRef(session_id, event.meta.uuid, block.id),
+        call=call,
+        result=None if result_event is None else result_block(result_event, block.id),
+        result_ts=None if result_event is None else result_event.meta.timestamp,
+        edits=edits_of(call),
+        turn_index=turn_index,
+        ts=event.meta.timestamp,
+    )
+
+
+def result_block(event: UserEvent, tool_use_id: ToolUseId) -> ToolResultBlock:
+    return next(
+        candidate
+        for candidate in reversed(event.blocks)
+        if isinstance(candidate, ToolResultBlock) and candidate.tool_use_id == tool_use_id
+    )
+
+
+def continued(turn: Turn, tail: Turn) -> Turn:
+    return replace(
+        turn,
+        started_at=tail.started_at if turn.started_at is None else turn.started_at,
+        ended_at=turn.ended_at if tail.ended_at is None else tail.ended_at,
+        events=turn.events + tail.events,
+        tool_uses=turn.tool_uses + tail.tool_uses,
+    )
+
+
+def paired(turn: Turn, tool_use_id: ToolUseId, result_event: UserEvent) -> Turn:
+    block = result_block(result_event, tool_use_id)
+    return replace(
+        turn,
+        tool_uses=tuple(
+            replace(use, result=block, result_ts=result_event.meta.timestamp)
+            if use.ref.tool_use_id == tool_use_id
+            else use
+            for use in turn.tool_uses
+        ),
+    )
 
 
 def hunk_overlap(a: Hunk, b: Hunk) -> float:

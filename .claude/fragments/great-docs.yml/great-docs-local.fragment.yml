@@ -225,6 +225,7 @@ reference:
     desc: The spine — transcripts lifted into turns, tool uses, and first-class edits.
     contents:
       - SessionActivity
+      - ActivityLift
       - Turn
       - ToolUse
       - Edit
