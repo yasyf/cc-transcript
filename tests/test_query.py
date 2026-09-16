@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -1459,35 +1460,67 @@ def test_racing_deep_predicates_over_a_growing_sidechain_agree_with_a_cold_walk(
     SIDECHAIN_INPUTS.clear()
     root = Session.from_path(main)
     assert root.has_command("step", "0")
-    done = threading.Event()
-    failures: list[object] = []
+    stop = threading.Event()
 
-    def read() -> None:
-        seen = -1
-        while not done.is_set():
-            steps = [
+    def read() -> int:
+        seen = 0
+        while not stop.is_set():
+            steps = sorted(
                 int(command.split()[1])
                 for inputs in root.deep_inputs()
                 for command in inputs.commands
                 if command.startswith("grow ")
-            ]
-            if steps != list(range(len(steps))) or len(steps) < seen:
-                failures.append((seen, steps))
+            )
+            assert steps == list(range(len(steps))), steps
+            assert len(steps) >= seen
             seen = len(steps)
+        return seen
 
-    readers = [threading.Thread(target=read) for _ in range(16)]
-    for reader in readers:
-        reader.start()
-    for k in range(200):
-        grow(child, step_line(f"g{k}", 3 + k, "grow", str(k)))
-    done.set()
-    for reader in readers:
-        reader.join()
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        readers = [pool.submit(read) for _ in range(16)]
+        for k in range(200):
+            grow(child, step_line(f"g{k}", 3 + k, "grow", str(k)))
+        stop.set()
+        seen = [future.result() for future in readers]
 
-    assert failures == []
+    assert all(count > 0 for count in seen)
     assert_deep_matches_cold(main, child)
     assert len(DEEP_LIFTS) == 1
     assert Session.from_path(main).has_command("grow", "199")
+
+
+def test_a_barrier_forced_take_put_race_matches_a_cold_walk_during_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    list(Session.from_path(main).walk())
+    grow(child, step_line("g", 3, "step", "grown"))
+
+    parked = threading.Event()
+    release = threading.Event()
+    real = query.grown_lift
+
+    def parking(held, path, stamp):
+        result = real(held, path, stamp)
+        parked.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(query, "grown_lift", parking)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        extender = pool.submit(lambda: Session.from_path(main).has_command("step", "grown"))
+        assert parked.wait(5)
+        assert Session.from_path(child).has_command("step", "grown", subagents=False)
+        monkeypatch.undo()
+        assert Session.from_path(main).has_command("step", "grown")
+        release.set()
+        assert extender.result()
+
+    assert len(DEEP_LIFTS) == 1
+    assert_deep_matches_cold(main, child)
 
 
 def test_attachment_paths_are_resolved_once_across_deep_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
