@@ -14,13 +14,13 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from functools import cached_property
 from pathlib import PurePath
 from typing import TYPE_CHECKING, ClassVar
 
-from cc_transcript.activity import SessionActivity, Turn, event_stamps, native_user_classifier
+from cc_transcript.activity import ActivityLift, SessionActivity, Turn, event_stamps, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError, resolve, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId, ToolUseId
@@ -39,51 +39,81 @@ from cc_transcript.tools import (
 )
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from cc_transcript.activity import ToolUse, UserClassifier
     from cc_transcript.command import CommandLine
     from cc_transcript.ids import EventUuid
-    from cc_transcript.models import TranscriptEvent
+    from cc_transcript.models import Transcript, TranscriptEvent
 
 
 DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
+DEEP_LIFT_FENCE = 64
 
-type LiftStamp = tuple[int, int, int]
+type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
+
+RESOLVED_PATHS: OrderedDict[Path, Path] = OrderedDict()
+"""The real path of each root and attachment a deep call has seeded or folded in, resolved once.
+
+A deep call dedupes by real path, so it seeds its seen-set with the root and resolves every
+attachment; a resident process re-answering per event over a hundred attachments paid a
+resolve for each on every call. A path's resolution is held for the process's lifetime,
+least-recently-used past :data:`SIDECHAIN_INPUTS_LIMIT` paths, so an attachment retargeted
+through a symlink keeps the real path it first resolved to.
+"""
+
+RESOLVED_PATHS_GUARD = threading.Lock()
+
+
+def stamp_of(stat: os.stat_result) -> LiftStamp:
+    return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+
+
+@dataclass(frozen=True, slots=True)
+class DeepLift:
+    stamp: LiftStamp
+    deep: DeepSession
+    lift: ActivityLift
+    consumed: int
+    fence: bytes
+    found: SessionId | None
 
 
 @dataclass(slots=True)
 class LiftCache:
-    held: OrderedDict[LiftKey, tuple[LiftStamp, DeepSession]] = field(default_factory=OrderedDict)
+    held: OrderedDict[LiftKey, DeepLift] = field(default_factory=OrderedDict)
     size: int = 0
     guard: threading.Lock = field(default_factory=threading.Lock)
 
-    def get(self, key: LiftKey, stamp: LiftStamp) -> DeepSession | None:
+    def get(self, key: LiftKey, stamp: LiftStamp) -> DeepLift | None:
         with self.guard:
             match self.held.get(key):
-                case None:
-                    return None
-                case (held_stamp, deep) if held_stamp == stamp:
+                case DeepLift(stamp=held_stamp) as lift if held_stamp == stamp:
                     self.held.move_to_end(key)
-                    return deep
+                    return lift
                 case _:
-                    self.drop(key)
                     return None
 
-    def put(self, key: LiftKey, stamp: LiftStamp, deep: DeepSession) -> DeepSession:
+    def take(self, key: LiftKey) -> DeepLift | None:
+        with self.guard:
+            return self.drop(key)
+
+    def put(self, key: LiftKey, lift: DeepLift) -> DeepLift:
         with self.guard:
             self.drop(key)
-            self.held[key] = (stamp, deep)
-            self.size += stamp[0]
+            self.held[key] = lift
+            self.size += lift.stamp[0]
             while self.size > DEEP_LIFT_BUDGET:
                 self.drop(next(iter(self.held)))
-        return deep
+        return lift
 
-    def drop(self, key: LiftKey) -> None:
-        if (held := self.held.pop(key, None)) is not None:
-            self.size -= held[0][0]
+    def drop(self, key: LiftKey) -> DeepLift | None:
+        if (lift := self.held.pop(key, None)) is not None:
+            self.size -= lift.stamp[0]
+        return lift
 
     def clear(self) -> None:
         with self.guard:
@@ -95,14 +125,28 @@ class LiftCache:
 
 
 DEEP_LIFTS = LiftCache()
-"""Lifted sidechain transcripts, keyed by tree position and stamped with the file's ``(size, mtime_ns, inode)``.
+"""Lifted sidechain transcripts, keyed by tree position and stamped ``(size, mtime_ns, ctime_ns, inode)``.
 
 A least-recently-used hold bounded at :data:`DEEP_LIFT_BUDGET` source bytes. One resident
 process serves many lead sessions, so the tree walked most recently stays held while an
-idle lead's sidechains age out; a changed stamp drops the stale lift and releases its
-bytes. A lifted session costs about 2.3 times its source bytes in resident memory, so the
-default holds roughly 2.3 GiB. A single tree larger than the budget reparses the part that
-no longer fits on every walk.
+idle lead's sidechains age out. A lifted session costs about 2.3 times its source bytes in
+resident memory, so the default holds roughly 2.3 GiB. A single tree larger than the budget
+reparses the part that no longer fits on every walk.
+
+Each entry keeps the :class:`~cc_transcript.activity.ActivityLift` cursor behind its lift and
+the byte offset it has consumed, which always ends on a newline. A transcript that has only
+grown — same inode, larger, its last held bytes unchanged — is extended by its appended lines
+alone: the tail past the last newline is parsed for the session but never fed to the cursor.
+A shrink, a replaced or rewritten file, a short read, or a session id that surfaces only in
+the appended lines lifts the file afresh. The cursor is mutable, so a stamp miss takes the
+entry out of the hold before extending it and puts the grown entry back: a concurrent reader
+never sees a cursor mid-extension, and two threads that miss together each produce a correct
+entry, the later put replacing the earlier. A dropped entry releases its cursor with it.
+
+:meth:`Session.walk` holds every transcript it reaches; the ``has_*`` predicates hold only a
+transcript they have had to lift twice, since a sidechain that changed once is a running
+subagent whose next growth would otherwise cost a whole relift, while a finished one is
+lifted once and its :class:`PredicateInputs` kept instead.
 """
 
 
@@ -130,6 +174,10 @@ class PredicateInputsCache:
             while len(self.held) > SIDECHAIN_INPUTS_LIMIT:
                 self.held.popitem(last=False)
         return inputs
+
+    def holds(self, path: Path) -> bool:
+        with self.guard:
+            return path in self.held
 
     def clear(self) -> None:
         with self.guard:
@@ -465,13 +513,14 @@ class Session:
         never this session itself. A resolved-path seen-set (seeded with
         :attr:`path`) dedupes: the first occurrence of a path wins, so a
         tree-discovered sidechain outranks an equal attachment, and symlink
-        cycles terminate. An unreadable transcript is skipped but its children
-        are still walked; a structurally malformed line raises, as
-        :attr:`subagents` does.
+        cycles terminate. An unreadable or unparseable transcript is skipped
+        but its children are still walked.
 
-        Each reached transcript is parsed and lifted once per ``(size, mtime)``
-        stamp and memoized across walks, so a predicate that walks repeatedly —
-        or a resident process that re-walks per event — reparses only what grew.
+        Each reached transcript is parsed and lifted once per ``(size, mtime,
+        ctime, inode)`` stamp and memoized across walks, and one that has only
+        grown is extended by its appended lines, so a predicate that walks
+        repeatedly — or a resident process that re-walks per event — parses
+        only what was appended.
         """
         return deep_sessions(self)
 
@@ -578,9 +627,11 @@ class Session:
     def deep_inputs(self) -> Iterator[PredicateInputs]:
         """This window's :class:`PredicateInputs`, then those of every transcript :meth:`walk` reaches.
 
-        The walk order and dedupe match :meth:`walk`, but no reached transcript stays lifted: each
-        one's inputs are held per ``(size, mtime, inode)`` stamp, and a transcript is reparsed only
-        once its stamp moves. Prefer it to :meth:`walk` for any predicate these inputs can answer.
+        The walk order and dedupe match :meth:`walk`, but a reached transcript stays lifted only
+        once it has changed: each one's inputs are held per ``(size, mtime, ctime, inode)`` stamp,
+        a transcript is lifted again only once its stamp moves, and from then on one that has only
+        grown is extended by its appended lines. Prefer it to :meth:`walk` for any predicate these
+        inputs can answer.
         """
         yield self.predicate_inputs
         for path, depth, spawned_by in reachable_transcripts(self):
@@ -859,11 +910,25 @@ def any_inputs(session: Session, predicate: Callable[[PredicateInputs], bool], *
 
 
 def reachable_transcripts(root: Session) -> Iterator[tuple[Path, int, ToolUseId | None]]:
-    seen: set[Path] = {root.path.resolve()} if root.path is not None else set()
+    seen: set[Path] = {resolved_path(root.path)} if root.path is not None else set()
     if root.path is not None:
         yield from reachable_sidechains(root.path, 1, seen)
     for attachment in root.attachments:
-        yield from reachable_from(attachment, attachment.resolve(), 1, None, seen)
+        yield from reachable_from(attachment, resolved_path(attachment), 1, None, seen)
+
+
+def resolved_path(path: Path) -> Path:
+    with RESOLVED_PATHS_GUARD:
+        if (held := RESOLVED_PATHS.get(path)) is not None:
+            RESOLVED_PATHS.move_to_end(path)
+            return held
+    resolved = path.resolve()
+    with RESOLVED_PATHS_GUARD:
+        RESOLVED_PATHS[path] = resolved
+        RESOLVED_PATHS.move_to_end(path)
+        while len(RESOLVED_PATHS) > SIDECHAIN_INPUTS_LIMIT:
+            RESOLVED_PATHS.popitem(last=False)
+    return resolved
 
 
 def reachable_sidechains(parent: Path, depth: int, seen: set[Path]) -> Iterator[tuple[Path, int, ToolUseId | None]]:
@@ -906,14 +971,13 @@ def sidechain_listing(parent: Path) -> tuple[tuple[Path, Path], ...]:
 
 def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) -> PredicateInputs | None:
     try:
-        stat = path.stat()
+        stamp = stamp_of(path.stat())
     except OSError:
         return None
-    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
     if (held := SIDECHAIN_INPUTS.get(path, stamp)) is not None:
         return held
     try:
-        deep = DEEP_LIFTS.get((path, depth, spawned_by), stamp) or lift_deep_session(path, depth, spawned_by)
+        deep = deep_session_at(path, depth, spawned_by, stamp, hold=SIDECHAIN_INPUTS.holds(path))
     except OSError:
         return None
     return SIDECHAIN_INPUTS.put(path, stamp, PredicateInputs.of(deep.session))
@@ -925,28 +989,93 @@ def deep_sessions(root: Session) -> Iterator[DeepSession]:
             yield deep
 
 
-def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:
-    transcript = parse(path)
-    session_id = session_id_of(transcript.events) or SessionId(path.stem)
-    return DeepSession(
-        session=Session.from_activity(SessionActivity.from_events(session_id, transcript.events), path=path),
-        path=path,
-        provider=transcript.provider,
-        depth=depth,
-        spawned_by=spawned_by,
+def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
+    try:
+        return deep_session_at(path, depth, spawned_by, stamp_of(path.stat()), hold=True)
+    except OSError:
+        return None
+
+
+def deep_session_at(
+    path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp, *, hold: bool
+) -> DeepSession:
+    key = (path, depth, spawned_by)
+    if (held := DEEP_LIFTS.get(key, stamp)) is not None:
+        return held.deep
+    stale = DEEP_LIFTS.take(key)
+    lifted = None if stale is None else grown_lift(stale, path, stamp)
+    if lifted is None:
+        lifted = lift_deep_session(path, depth, spawned_by, stamp)
+    return (DEEP_LIFTS.put(key, lifted) if hold or stale is not None else lifted).deep
+
+
+def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp) -> DeepLift:
+    raw = path.read_bytes()
+    events = list((transcript := parsed(path, raw)).events)
+    session_id = (found := session_id_of(events)) or SessionId(path.stem)
+    cut = raw.rfind(b"\n") + 1
+    committed = len(events) if cut == len(raw) else len(events) - len(parsed(path, raw[cut:]).events)
+    activity = (lift := ActivityLift(session_id)).extend(events[:committed])
+    return DeepLift(
+        stamp=stamp,
+        deep=DeepSession(
+            session=Session.from_activity(
+                activity if committed == len(events) else SessionActivity.from_events(session_id, events), path=path
+            ),
+            path=path,
+            provider=transcript.provider,
+            depth=depth,
+            spawned_by=spawned_by,
+        ),
+        lift=lift,
+        consumed=cut,
+        fence=raw[max(cut - DEEP_LIFT_FENCE, 0) : cut],
+        found=found,
     )
 
 
-def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
-    try:
-        stat = path.stat()
-    except OSError:
+def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
+    if stamp[3] != held.stamp[3] or stamp[0] <= held.stamp[0] or stamp[0] < held.consumed:
         return None
-    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
-    key = (path, depth, spawned_by)
-    if (held := DEEP_LIFTS.get(key, stamp)) is not None:
-        return held
-    try:
-        return DEEP_LIFTS.put(key, stamp, lift_deep_session(path, depth, spawned_by))
-    except OSError:
+    if (read := appended_bytes(path, held.consumed - len(held.fence), stamp[0])) is None or not read.startswith(
+        held.fence
+    ):
         return None
+    appended = read[len(held.fence) :]
+    cut = appended.rfind(b"\n") + 1
+    committed = list(parsed(path, appended[:cut]).events)
+    tail = [] if cut == len(appended) else list(parsed(path, appended[cut:]).events)
+    found = held.found or session_id_of([*committed, *tail])
+    if (found or SessionId(path.stem)) != held.lift.session_id:
+        return None
+    activity = held.lift.extend(committed)
+    session = Session.from_activity(
+        activity
+        if not tail
+        else SessionActivity.from_events(
+            held.lift.session_id, [*(event for turn in activity.turns for event in turn.events), *tail]
+        ),
+        path=path,
+    )
+    return DeepLift(
+        stamp=stamp,
+        deep=replace(held.deep, session=session),
+        lift=held.lift,
+        consumed=held.consumed + cut,
+        fence=(held.fence + appended[:cut])[-DEEP_LIFT_FENCE:],
+        found=found,
+    )
+
+
+def appended_bytes(path: Path, start: int, stop: int) -> bytes | None:
+    with path.open("rb") as handle:
+        handle.seek(start)
+        read = handle.read(stop - start)
+    return read if len(read) == stop - start else None
+
+
+def parsed(path: Path, raw: bytes) -> Transcript:
+    try:
+        return parse(raw)
+    except (KeyError, ValueError):
+        raise OSError(f"unreadable transcript: {path}") from None

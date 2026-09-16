@@ -27,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A sidechain that has only grown is extended by its appended lines instead of being
+  reparsed and relifted whole. `DEEP_LIFTS` entries keep the `ActivityLift` cursor behind
+  each lift and the newline-terminated byte offset it consumed; a stamp miss on a file
+  with the same inode, a larger size and its last held bytes unchanged reads just the
+  appended bytes, parses them cut on the last newline, and extends the cursor, while the
+  tail past that newline is parsed for the session but never fed to it. A shrink, a
+  replaced or rewritten file, a short read, or a session id that first surfaces in the
+  appended lines lifts the file afresh. Stamps now carry `ctime_ns`. The cursor is handed
+  off under the lock — taken out of the hold before it is extended and put back grown — so
+  a concurrent reader never sees it mid-extension. `walk()` holds every transcript it
+  reaches, as before; the `has_*` predicates hold a transcript once they have had to lift
+  it twice, since a sidechain that changed is a running subagent, and a finished one is
+  still lifted once and its `PredicateInputs` kept instead. A deep call resolves the root
+  and each attachment once per process, held in `RESOLVED_PATHS`, instead of on every
+  call. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
+  4.7 MiB sidechain grew by one line fell from 22-83 ms to 11-13 ms, and after a 56 MiB one
+  grew from 126-169 ms to 20-24 ms; each pays one last whole relift, the one that admits
+  it. An unchanged walk fell from 9.6 ms to 7.2 ms.
 - `has_tool`, `has_command`, `has_edit_to`, `has_read` and `has_skill` now answer
   from held inputs without filling `DEEP_LIFTS` or reparsing unchanged sidechains.
   Two lead trees totalling 1.55 GiB exceeded the 1 GiB lift budget; alternating

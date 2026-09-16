@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
+import threading
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +16,7 @@ from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
 from cc_transcript.query import (
     DEEP_LIFTS,
+    RESOLVED_PATHS,
     SIDECHAIN_INPUTS,
     FileRef,
     PredicateInputs,
@@ -30,7 +33,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cc_transcript.models import TranscriptEvent
-    from cc_transcript.query import DeepSession
+    from cc_transcript.query import DeepLift, LiftStamp
 
 PLAN_FILE = "/Users/x/.claude/plans/p.md"
 
@@ -784,9 +787,9 @@ def count_lifts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     lifts: list[Path] = []
     lift = query.lift_deep_session
 
-    def counted(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:
+    def counted(path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp) -> DeepLift:
         lifts.append(path)
-        return lift(path, depth, spawned_by)
+        return lift(path, depth, spawned_by, stamp)
 
     monkeypatch.setattr(query, "lift_deep_session", counted)
     return lifts
@@ -1289,3 +1292,220 @@ def test_walk_is_lazy(tmp_path: Path) -> None:
         assert len(calls) >= 2
     finally:
         query_module.parse = real_parse
+
+
+GROWTH_MATERIAL = pathlib.Path(__file__).resolve().parent / "testdata" / "views_edge" / "edge_core.jsonl"
+
+
+def grow(path: Path, text: str | bytes) -> None:
+    with path.open("ab") as handle:
+        handle.write(text.encode() if isinstance(text, str) else text)
+
+
+def step_line(uuid: str, secs: int, *words: str) -> str:
+    return assistant_line(uuid, secs, [tool_block(uuid, "Bash", command=" ".join(words))], isSidechain=True) + "\n"
+
+
+def only_child(main: Path) -> Path:
+    return main.parent / main.stem / "subagents" / "agent-0.jsonl"
+
+
+def assert_deep_matches_cold(main: Path, child: Path) -> None:
+    cold = Session.from_path(child)
+    sess = Session.from_path(main)
+    (walked,) = sess.walk()
+    assert walked.session.turns == cold.turns
+    assert walked.path == child
+    assert list(sess.deep_inputs())[1] == PredicateInputs.of(cold)
+    for name in ("Bash", "Edit", "Read", "Grep"):
+        assert sess.has_tool(name) == (sess.has_tool(name, subagents=False) or cold.has_tool(name, subagents=False))
+
+
+def test_a_sidechain_grown_in_pieces_matches_a_cold_walk_at_every_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    child.write_bytes(b"")
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    lifts = count_lifts(monkeypatch)
+    assert_deep_matches_cold(main, child)
+    for line in GROWTH_MATERIAL.read_bytes().splitlines(keepends=True):
+        half = len(line) // 2
+        for piece in (line[:half], line[half:-1], line[-1:]):
+            grow(child, piece)
+            assert_deep_matches_cold(main, child)
+    assert len(DEEP_LIFTS) == 1
+    assert DEEP_LIFTS.size == child.stat().st_size
+    assert lifts.count(child) == 2
+
+
+def test_a_sidechain_grown_a_line_at_a_time_is_extended_not_relifted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    assert_deep_matches_cold(main, child)
+    lifts = count_lifts(monkeypatch)
+    for line in GROWTH_MATERIAL.read_bytes().splitlines(keepends=True):
+        grow(child, line)
+        assert_deep_matches_cold(main, child)
+    assert lifts == []
+
+
+def test_deep_predicates_hold_a_sidechain_only_once_it_has_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 2)
+    child = main.parent / main.stem / "subagents" / "agent-1.jsonl"
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    assert not Session.from_path(main).has_command("step", "later")
+    assert len(DEEP_LIFTS) == 0
+
+    grow(child, step_line("b1", 3, "step", "later"))
+    lifts = count_lifts(monkeypatch)
+    assert Session.from_path(main).has_command("step", "later")
+    assert lifts == [child]
+    assert len(DEEP_LIFTS) == 1
+    assert DEEP_LIFTS.size == child.stat().st_size
+
+    grow(child, step_line("b2", 4, "step", "again"))
+    assert Session.from_path(main).has_command("step", "again")
+    assert lifts == [child]
+    assert DEEP_LIFTS.size == child.stat().st_size
+
+
+def held_after_one_growth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, list[Path]]:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    list(Session.from_path(main).walk())
+    grow(child, step_line("b1", 3, "step", "one"))
+    lifts = count_lifts(monkeypatch)
+    assert Session.from_path(main).has_command("step", "one")
+    assert lifts == []
+    return main, child, lifts
+
+
+def test_a_shrunk_sidechain_is_lifted_afresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    child.write_bytes(child.read_bytes()[: -len(step_line("b1", 3, "step", "one"))])
+    assert not Session.from_path(main).has_command("step", "one")
+    assert lifts == [child]
+    assert_deep_matches_cold(main, child)
+
+
+def test_a_sidechain_rewritten_at_the_same_size_is_lifted_afresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    child.write_bytes(child.read_bytes().replace(b"step one", b"step two"))
+    assert Session.from_path(main).has_command("step", "two")
+    assert not Session.from_path(main).has_command("step", "one")
+    assert lifts == [child]
+
+
+def test_a_sidechain_rewritten_and_grown_is_lifted_afresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    child.write_bytes(
+        child.read_bytes().replace(b"step one", b"step two") + step_line("b2", 4, "step", "three").encode()
+    )
+    assert Session.from_path(main).has_command("step", "three")
+    assert not Session.from_path(main).has_command("step", "one")
+    assert lifts == [child]
+    assert_deep_matches_cold(main, child)
+
+
+def test_a_replaced_sidechain_is_lifted_afresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    fresh = tmp_path / "fresh.jsonl"
+    fresh.write_bytes(child.read_bytes() + step_line("b2", 4, "step", "two").encode())
+    os.replace(fresh, child)
+    assert Session.from_path(main).has_command("step", "two")
+    assert lifts == [child]
+    assert_deep_matches_cold(main, child)
+
+
+def test_a_growth_longer_than_the_fence_is_extended(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    grow(child, "".join(step_line(f"b{k}", 4 + k, "step", str(k)) for k in range(2, 40)))
+    assert Session.from_path(main).has_command("step", "39")
+    assert lifts == []
+    assert_deep_matches_cold(main, child)
+
+
+def test_a_held_cursor_goes_with_its_evicted_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    monkeypatch.setattr("cc_transcript.query.DEEP_LIFT_BUDGET", 1)
+    grow(child, step_line("b2", 4, "step", "two"))
+    assert Session.from_path(main).has_command("step", "two")
+    assert lifts == []
+    assert len(DEEP_LIFTS) == 0
+    grow(child, step_line("b3", 5, "step", "three"))
+    assert Session.from_path(main).has_command("step", "three")
+    assert lifts == [child]
+
+
+def test_racing_deep_predicates_over_a_growing_sidechain_agree_with_a_cold_walk(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    root = Session.from_path(main)
+    assert root.has_command("step", "0")
+    done = threading.Event()
+    failures: list[object] = []
+
+    def read() -> None:
+        seen = -1
+        while not done.is_set():
+            steps = [
+                int(command.split()[1])
+                for inputs in root.deep_inputs()
+                for command in inputs.commands
+                if command.startswith("grow ")
+            ]
+            if steps != list(range(len(steps))) or len(steps) < seen:
+                failures.append((seen, steps))
+            seen = len(steps)
+
+    readers = [threading.Thread(target=read) for _ in range(16)]
+    for reader in readers:
+        reader.start()
+    for k in range(200):
+        grow(child, step_line(f"g{k}", 3 + k, "grow", str(k)))
+    done.set()
+    for reader in readers:
+        reader.join()
+
+    assert failures == []
+    assert_deep_matches_cold(main, child)
+    assert len(DEEP_LIFTS) == 1
+    assert Session.from_path(main).has_command("grow", "199")
+
+
+def test_attachment_paths_are_resolved_once_across_deep_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attachments = tuple(
+        write_attachment_transcript(tmp_path, f"ext{index}.jsonl", f"x{index}", "Glob", pattern="*")
+        for index in range(3)
+    )
+    sess = Session(session(user("u0", "go")).turns, None, attachments)
+    RESOLVED_PATHS.clear()
+    assert [deep.path for deep in sess.walk()] == list(attachments)
+    resolved: list[Path] = []
+    real = pathlib.Path.resolve
+
+    def counting(self: Path, *args: Any, **kwargs: Any) -> Path:
+        resolved.append(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", counting)
+    assert sess.has_tool("Glob")
+    assert Session(sess.turns, None, attachments[::-1]).has_tool("Glob")
+    assert [deep.path for deep in sess.walk()] == list(attachments)
+    assert resolved == []
