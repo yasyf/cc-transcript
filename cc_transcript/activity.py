@@ -285,8 +285,10 @@ class ActivityLift:
     re-derives the session.
 
     Feed only the events appended since the previous call: nothing checks
-    provenance, so events fed twice lift twice. A transcript rewritten in
-    place, rather than appended to, needs a new cursor.
+    provenance, so events fed twice lift twice. The contract is append-only:
+    a cursor's transcript is assumed never rewritten behind the events it has
+    been fed, and a transcript rewritten in place, rather than appended to,
+    needs a new cursor. Claude Code and Codex transcripts satisfy it.
 
     The classifier is read once, at construction, and must be deterministic
     and event-only: its answer for an event has to stay the same as later

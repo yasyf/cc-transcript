@@ -10,17 +10,19 @@ predicates compose over progressively narrower windows.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from functools import cached_property
 from pathlib import PurePath
+from time import monotonic
 from typing import TYPE_CHECKING, ClassVar
 
-from cc_transcript.activity import SessionActivity, Turn, event_stamps, native_user_classifier
+from cc_transcript.activity import ActivityLift, SessionActivity, Turn, event_stamps, native_user_classifier
 from cc_transcript.discovery import TranscriptExpiredError, resolve, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId, ToolUseId
@@ -45,45 +47,79 @@ if TYPE_CHECKING:
     from cc_transcript.activity import ToolUse, UserClassifier
     from cc_transcript.command import CommandLine
     from cc_transcript.ids import EventUuid
-    from cc_transcript.models import TranscriptEvent
+    from cc_transcript.models import Transcript, TranscriptEvent
 
 
 DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
+DEEP_LIFT_FENCE = 64
+IDLE_SECONDS_BEFORE_RELEASE = 900
 
-type LiftStamp = tuple[int, int, int]
+type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
+
+
+def stamp_of(stat: os.stat_result) -> LiftStamp:
+    return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+
+
+@dataclass(frozen=True, slots=True)
+class DeepLift:
+    stamp: LiftStamp
+    deep: DeepSession
+    lift: ActivityLift
+    consumed: int
+    fence: bytes
+    found: SessionId | None
+    provider: str | None
+    grown_at: float
 
 
 @dataclass(slots=True)
 class LiftCache:
-    held: OrderedDict[LiftKey, tuple[LiftStamp, DeepSession]] = field(default_factory=OrderedDict)
+    held: OrderedDict[LiftKey, DeepLift] = field(default_factory=OrderedDict)
     size: int = 0
     guard: threading.Lock = field(default_factory=threading.Lock)
 
-    def get(self, key: LiftKey, stamp: LiftStamp) -> DeepSession | None:
+    def get(self, key: LiftKey, stamp: LiftStamp) -> DeepLift | None:
         with self.guard:
             match self.held.get(key):
-                case None:
-                    return None
-                case (held_stamp, deep) if held_stamp == stamp:
+                case DeepLift(stamp=held_stamp) as lift if held_stamp == stamp:
                     self.held.move_to_end(key)
-                    return deep
+                    return lift
                 case _:
-                    self.drop(key)
                     return None
 
-    def put(self, key: LiftKey, stamp: LiftStamp, deep: DeepSession) -> DeepSession:
+    def idle_release(self, key: LiftKey, stamp: LiftStamp) -> None:
+        """Releases ``key``'s cursor once its file has gone :data:`IDLE_SECONDS_BEFORE_RELEASE` unwritten.
+
+        A held cursor amortizes the next growth of a live sidechain; a finished one earns
+        nothing. Expiry is elapsed inactivity, not a hit count, so a burst of predicate
+        traffic over a cursor that just grew never releases it — the clock is read from the
+        entry's last growth. Any growth replaces the entry, resetting ``grown_at``.
+        """
+        with self.guard:
+            match self.held.get(key):
+                case DeepLift(stamp=held_stamp, grown_at=at) if held_stamp == stamp:
+                    if monotonic() - at >= IDLE_SECONDS_BEFORE_RELEASE:
+                        self.drop(key)
+
+    def take(self, key: LiftKey) -> DeepLift | None:
+        with self.guard:
+            return self.drop(key)
+
+    def put(self, key: LiftKey, lift: DeepLift) -> DeepLift:
         with self.guard:
             self.drop(key)
-            self.held[key] = (stamp, deep)
-            self.size += stamp[0]
+            self.held[key] = lift
+            self.size += lift.stamp[0]
             while self.size > DEEP_LIFT_BUDGET:
                 self.drop(next(iter(self.held)))
-        return deep
+        return lift
 
-    def drop(self, key: LiftKey) -> None:
-        if (held := self.held.pop(key, None)) is not None:
-            self.size -= held[0][0]
+    def drop(self, key: LiftKey) -> DeepLift | None:
+        if (lift := self.held.pop(key, None)) is not None:
+            self.size -= lift.stamp[0]
+        return lift
 
     def clear(self) -> None:
         with self.guard:
@@ -95,14 +131,51 @@ class LiftCache:
 
 
 DEEP_LIFTS = LiftCache()
-"""Lifted sidechain transcripts, keyed by tree position and stamped with the file's ``(size, mtime_ns, inode)``.
+"""Lifted sidechain transcripts, keyed by tree position and stamped ``(size, mtime_ns, ctime_ns, inode)``.
 
 A least-recently-used hold bounded at :data:`DEEP_LIFT_BUDGET` source bytes. One resident
 process serves many lead sessions, so the tree walked most recently stays held while an
-idle lead's sidechains age out; a changed stamp drops the stale lift and releases its
-bytes. A lifted session costs about 2.3 times its source bytes in resident memory, so the
-default holds roughly 2.3 GiB. A single tree larger than the budget reparses the part that
-no longer fits on every walk.
+idle lead's sidechains age out. A lifted session costs about 2.3 times its source bytes in
+resident memory, so the default holds roughly 2.3 GiB. A single tree larger than the budget
+reparses the part that no longer fits on every walk.
+
+Each entry keeps the :class:`~cc_transcript.activity.ActivityLift` cursor behind its lift and
+the byte offset it has consumed, which always ends on a newline. A Claude transcript that has
+only grown — same inode, larger, its last held bytes unchanged — is extended by its appended
+lines alone: the tail past the last newline is parsed for the session but never fed to the
+cursor. Only Claude is extended incrementally, because its parse is line-compositional; a
+Codex rollout lowers against whole-session context (echo sets, the model timeline), so its
+provider is pinned on the cold parse and any growth cold-relifts, as does a growth whose
+appended chunk parses as a different provider than the file was pinned to. An empty file pins
+no provider until a line lands, extending while its appended lines parse as Claude and
+cold-relifting the moment a Codex line completes. A shrink, a replaced or rewritten file, a
+short read, or a session id that surfaces only in the appended lines lifts the file afresh.
+
+The contract is append-only: a held transcript is assumed never rewritten behind its consumed
+offset. Growth is recognized by the same inode, a larger size, and the last
+:data:`DEEP_LIFT_FENCE` consumed bytes still in place, with the descriptor's stat rechecked
+around the read; a shrink, a replaced inode, a same-size rewrite, or a fence mismatch triggers
+a cold relift. An in-place rewrite of earlier bytes that keeps the fence and grows the file is
+not detected and is folded in as growth. Claude Code and Codex transcripts satisfy the contract.
+Every read validates the open descriptor's stat after reading against the stat that routed it
+— a replacement between the routing stat and the read moves the inode and ctime — so a growth
+that reads spliced bytes falls to a cold relift, and a cold read whose descriptor moved under
+it answers the request but is published to no cache — not here, not :data:`SIDECHAIN_INPUTS`,
+not :data:`UNREADABLE` — and every publication is keyed by the descriptor stamp the read
+verified rather than the routing stat. The cursor is mutable, so a stamp miss takes the
+entry out of the hold before extending it and puts the grown entry back: a concurrent reader
+never sees a cursor mid-extension, and two threads that miss together each produce a correct
+entry, the later put replacing the earlier. A dropped entry releases its cursor with it.
+
+:meth:`Session.walk` holds every transcript it reaches; the ``has_*`` predicates hold only a
+transcript they have had to lift twice, since a sidechain that changed once is a running
+subagent whose next growth would otherwise cost a whole relift, while a finished one is
+lifted once and its :class:`PredicateInputs` kept instead. A held cursor is released once its
+file has gone :data:`IDLE_SECONDS_BEFORE_RELEASE` unwritten — elapsed inactivity since its
+last growth, not a count of walks, so aggregate predicate traffic from many readers never
+expires a cursor that just grew — so resident cursors track the set of sidechains still being
+written rather than every one that ever grew; a released file that grows again pays one relift
+and is re-admitted. :data:`DEEP_LIFT_BUDGET` stays the upper bound over that live set.
 """
 
 
@@ -131,6 +204,37 @@ class PredicateInputsCache:
                 self.held.popitem(last=False)
         return inputs
 
+    def holds(self, path: Path) -> bool:
+        with self.guard:
+            return path in self.held
+
+    def clear(self) -> None:
+        with self.guard:
+            self.held.clear()
+
+    def __len__(self) -> int:
+        return len(self.held)
+
+
+@dataclass(slots=True)
+class StampSet:
+    held: OrderedDict[Path, LiftStamp] = field(default_factory=OrderedDict)
+    guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def has(self, path: Path, stamp: LiftStamp) -> bool:
+        with self.guard:
+            if self.held.get(path) != stamp:
+                return False
+            self.held.move_to_end(path)
+            return True
+
+    def put(self, path: Path, stamp: LiftStamp) -> None:
+        with self.guard:
+            self.held[path] = stamp
+            self.held.move_to_end(path)
+            while len(self.held) > SIDECHAIN_INPUTS_LIMIT:
+                self.held.popitem(last=False)
+
     def clear(self) -> None:
         with self.guard:
             self.held.clear()
@@ -146,6 +250,21 @@ A lifted session costs about 2.3 times its source bytes, so a tree of a thousand
 cannot stay lifted; its :class:`PredicateInputs` are a few kilobytes each. A predicate lifts a
 sidechain only when its stamp moved, keeps those inputs, and lets the lift go, so a resident
 process re-answering the same predicates per event neither reparses nor holds the tree.
+"""
+
+
+UNREADABLE = StampSet()
+"""Transcripts whose typed parse failed, keyed by path and stamped like :data:`DEEP_LIFTS`.
+
+A sidechain carrying one line the typed parser rejects — schema drift Claude Code has not
+caught up to — cannot be lifted, so a walk skips it. Without this a resident process re-read
+and re-parsed the whole file on every walk forever. Only a deterministic parse failure
+(:class:`UnparseableTranscript`) is held, never a transient filesystem error, which must
+retry. The failure is held by full stamp — the stamp of the descriptor the rejected bytes were
+read from, never the stat that routed the read, and only when that read settled — so an
+unchanged bad file is skipped at stamp-check cost, any change — a growth that completes the
+line, a rewrite — clears the miss and retries, and a file that was swapped under the read is
+never held against the file the path names next time.
 """
 
 
@@ -465,13 +584,16 @@ class Session:
         never this session itself. A resolved-path seen-set (seeded with
         :attr:`path`) dedupes: the first occurrence of a path wins, so a
         tree-discovered sidechain outranks an equal attachment, and symlink
-        cycles terminate. An unreadable transcript is skipped but its children
-        are still walked; a structurally malformed line raises, as
-        :attr:`subagents` does.
+        cycles terminate. An unreadable or unparseable transcript is skipped
+        but its children are still walked.
 
-        Each reached transcript is parsed and lifted once per ``(size, mtime)``
-        stamp and memoized across walks, so a predicate that walks repeatedly —
-        or a resident process that re-walks per event — reparses only what grew.
+        Each reached transcript is parsed and lifted once per ``(size, mtime,
+        ctime, inode)`` stamp and memoized across walks, and one that has only
+        grown is extended by its appended lines, so a predicate that walks
+        repeatedly — or a resident process that re-walks per event — parses
+        only what was appended. Transcripts are assumed append-only: a
+        rewrite of earlier bytes that keeps the file's consumed tail and
+        grows it is read as growth, as :data:`DEEP_LIFTS` documents.
         """
         return deep_sessions(self)
 
@@ -578,9 +700,11 @@ class Session:
     def deep_inputs(self) -> Iterator[PredicateInputs]:
         """This window's :class:`PredicateInputs`, then those of every transcript :meth:`walk` reaches.
 
-        The walk order and dedupe match :meth:`walk`, but no reached transcript stays lifted: each
-        one's inputs are held per ``(size, mtime, inode)`` stamp, and a transcript is reparsed only
-        once its stamp moves. Prefer it to :meth:`walk` for any predicate these inputs can answer.
+        The walk order and dedupe match :meth:`walk`, but a reached transcript stays lifted only
+        once it has changed: each one's inputs are held per ``(size, mtime, ctime, inode)`` stamp,
+        a transcript is lifted again only once its stamp moves, and from then on one that has only
+        grown is extended by its appended lines under the append-only contract :data:`DEEP_LIFTS`
+        documents. Prefer it to :meth:`walk` for any predicate these inputs can answer.
         """
         yield self.predicate_inputs
         for path, depth, spawned_by in reachable_transcripts(self):
@@ -906,17 +1030,18 @@ def sidechain_listing(parent: Path) -> tuple[tuple[Path, Path], ...]:
 
 def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) -> PredicateInputs | None:
     try:
-        stat = path.stat()
+        stamp = stamp_of(path.stat())
     except OSError:
         return None
-    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
     if (held := SIDECHAIN_INPUTS.get(path, stamp)) is not None:
+        DEEP_LIFTS.idle_release((path, depth, spawned_by), stamp)
         return held
     try:
-        deep = DEEP_LIFTS.get((path, depth, spawned_by), stamp) or lift_deep_session(path, depth, spawned_by)
+        deep, read, settled = deep_session_at(path, depth, spawned_by, stamp, hold=SIDECHAIN_INPUTS.holds(path))
     except OSError:
         return None
-    return SIDECHAIN_INPUTS.put(path, stamp, PredicateInputs.of(deep.session))
+    inputs = PredicateInputs.of(deep.session)
+    return SIDECHAIN_INPUTS.put(path, read, inputs) if settled else inputs
 
 
 def deep_sessions(root: Session) -> Iterator[DeepSession]:
@@ -925,28 +1050,136 @@ def deep_sessions(root: Session) -> Iterator[DeepSession]:
             yield deep
 
 
-def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession:
-    transcript = parse(path)
-    session_id = session_id_of(transcript.events) or SessionId(path.stem)
-    return DeepSession(
-        session=Session.from_activity(SessionActivity.from_events(session_id, transcript.events), path=path),
+def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
+    try:
+        return deep_session_at(path, depth, spawned_by, stamp_of(path.stat()), hold=True)[0]
+    except OSError:
+        return None
+
+
+def deep_session_at(
+    path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp, *, hold: bool
+) -> tuple[DeepSession, LiftStamp, bool]:
+    key = (path, depth, spawned_by)
+    if (held := DEEP_LIFTS.get(key, stamp)) is not None:
+        return held.deep, stamp, True
+    if UNREADABLE.has(path, stamp):
+        raise UnparseableTranscript(path, stamp, True)
+    stale = DEEP_LIFTS.take(key)
+    try:
+        if stale is not None and (grown := grown_lift(stale, path, stamp)) is not None:
+            return DEEP_LIFTS.put(key, grown).deep, stamp, True
+        lifted, settled = lift_deep_session(path, depth, spawned_by)
+    except UnparseableTranscript as failure:
+        if failure.settled:
+            UNREADABLE.put(path, failure.stamp)
+        raise
+    if settled and (hold or stale is not None):
+        DEEP_LIFTS.put(key, lifted)
+    return lifted.deep, lifted.stamp, settled
+
+
+def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> tuple[DeepLift, bool]:
+    with path.open("rb") as handle:
+        stamp = stamp_of(before := os.fstat(handle.fileno()))
+        raw = handle.read(before.st_size)
+        settled = stamp_of(os.fstat(handle.fileno())) == stamp
+    events = list((transcript := parsed(path, raw, stamp, settled)).events)
+    session_id = (found := session_id_of(events)) or SessionId(path.stem)
+    cut = raw.rfind(b"\n") + 1
+    committed = len(events) if cut == len(raw) else len(events) - len(parsed(path, raw[cut:], stamp, settled).events)
+    activity = (lift := ActivityLift(session_id)).extend(events[:committed])
+    return DeepLift(
+        stamp=stamp,
+        deep=DeepSession(
+            session=Session.from_activity(
+                activity if committed == len(events) else SessionActivity.from_events(session_id, events), path=path
+            ),
+            path=path,
+            provider=transcript.provider,
+            depth=depth,
+            spawned_by=spawned_by,
+        ),
+        lift=lift,
+        consumed=cut,
+        fence=raw[max(cut - DEEP_LIFT_FENCE, 0) : cut],
+        found=found,
+        provider=transcript.provider if events else None,
+        grown_at=monotonic(),
+    ), settled
+
+
+def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
+    if (
+        held.provider not in (None, "claude")
+        or stamp[3] != held.stamp[3]
+        or stamp[0] <= held.stamp[0]
+        or stamp[0] < held.consumed
+    ):
+        return None
+    if (read := appended_bytes(path, held.consumed - len(held.fence), stamp[0], stamp)) is None or not read.startswith(
+        held.fence
+    ):
+        return None
+    appended = read[len(held.fence) :]
+    cut = appended.rfind(b"\n") + 1
+    if (committed_chunk := parsed(path, appended[:cut], stamp, True)).provider != "claude":
+        return None
+    if cut != len(appended) and (tail_chunk := parsed(path, appended[cut:], stamp, True)).provider != "claude":
+        return None
+    committed = list(committed_chunk.events)
+    tail = [] if cut == len(appended) else list(tail_chunk.events)
+    found = held.found or session_id_of([*committed, *tail])
+    if (found or SessionId(path.stem)) != held.lift.session_id:
+        return None
+    activity = held.lift.extend(committed)
+    session = Session.from_activity(
+        activity
+        if not tail
+        else SessionActivity.from_events(
+            held.lift.session_id, [*(event for turn in activity.turns for event in turn.events), *tail]
+        ),
         path=path,
-        provider=transcript.provider,
-        depth=depth,
-        spawned_by=spawned_by,
+    )
+    return DeepLift(
+        stamp=stamp,
+        deep=replace(held.deep, session=session),
+        lift=held.lift,
+        consumed=held.consumed + cut,
+        fence=(held.fence + appended[:cut])[-DEEP_LIFT_FENCE:],
+        found=found,
+        provider=held.provider or ("claude" if committed or tail else None),
+        grown_at=monotonic(),
     )
 
 
-def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
+def appended_bytes(path: Path, start: int, stop: int, stamp: LiftStamp) -> bytes | None:
+    with path.open("rb") as handle:
+        handle.seek(start)
+        read = handle.read(stop - start)
+        settled = stamp_of(os.fstat(handle.fileno())) == stamp
+    return read if len(read) == stop - start and settled else None
+
+
+class UnparseableTranscript(OSError):
+    """A transcript a typed parse rejected deterministically, not a filesystem failure.
+
+    Raised only for a line the parser cannot type — schema drift — so a walk can hold the
+    failure by stamp, where a transient ``OSError`` (EACCES, EIO, an ENOENT race) must
+    retry. An ``OSError`` subclass so both still skip the transcript rather than raise.
+    Carries the stamp of the descriptor the rejected bytes were read from and whether that
+    read settled, so the failure is held under the bytes actually parsed, never under the
+    stat that routed the read, and never when the file moved under it.
+    """
+
+    def __init__(self, path: Path, stamp: LiftStamp, settled: bool) -> None:
+        super().__init__(f"unreadable transcript: {path}")
+        self.stamp = stamp
+        self.settled = settled
+
+
+def parsed(path: Path, raw: bytes, stamp: LiftStamp, settled: bool) -> Transcript:
     try:
-        stat = path.stat()
-    except OSError:
-        return None
-    stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino)
-    key = (path, depth, spawned_by)
-    if (held := DEEP_LIFTS.get(key, stamp)) is not None:
-        return held
-    try:
-        return DEEP_LIFTS.put(key, stamp, lift_deep_session(path, depth, spawned_by))
-    except OSError:
-        return None
+        return parse(raw)
+    except (KeyError, ValueError):
+        raise UnparseableTranscript(path, stamp, settled) from None

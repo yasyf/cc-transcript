@@ -25,8 +25,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without holding lifts. Answers that do not read the MCP tool registry are memoized
   per instance, up to `PredicateInputs.MAX_ANSWERS`; command lines are parsed lazily.
 
+### Changed
+
+- The incremental deep lift's contract is append-only, and is now documented as such on
+  `ActivityLift`, `DEEP_LIFTS`, `Session.walk` and `Session.deep_inputs`. A held transcript
+  is assumed never rewritten behind its consumed offset. Growth is recognized by the same
+  inode, a larger size, and the last `DEEP_LIFT_FENCE` consumed bytes still in place, with
+  the descriptor's stat rechecked around the read; a shrink, a replaced inode, a same-size
+  rewrite, or a fence mismatch triggers a cold relift. An in-place rewrite of earlier bytes
+  that keeps the fence and grows the file is not detected and is folded in as growth. Claude
+  Code and Codex transcripts satisfy the contract; the limit is pinned by a test rather than
+  guarded by prefix validation.
+
 ### Fixed
 
+- A typed-invalid line appended to a held cursor is held in `UNREADABLE` after its first
+  failure. The growth path ran outside the negative-cache handler, so the first failing walk
+  recorded nothing and the next unchanged walk re-parsed the whole file before recording it.
+  Both the growth and the cold path now record the failure, under the descriptor stamp the
+  bytes were read from and only when that read settled.
+- An unsettled cold read publishes to no cache. A cold read whose descriptor moved under it
+  already stayed out of `DEEP_LIFTS`, but its predicate inputs still landed in
+  `SIDECHAIN_INPUTS` under the routing stamp and a parse failure in `UNREADABLE` under that
+  same stamp, so a symlink swapped to another file for the duration of one read kept
+  answering with the other file's commands, and an unparseable other file negative-cached the
+  readable one. `deep_session_at` now returns the stamp of the descriptor the bytes were read
+  from and whether that read settled; every publication — `DEEP_LIFTS`, `SIDECHAIN_INPUTS`,
+  `UNREADABLE` — is gated on settlement and keyed by that descriptor stamp, never the routing
+  stat, and `UnparseableTranscript` carries both so a parse failure is held under the bytes
+  actually parsed.
+- Attachment and root paths are resolved on every deep call again; the resolved-path memo
+  is gone. `RESOLVED_PATHS` memoized `path -> resolve()`, first unconditionally and then
+  keyed by the path's own `lstat` identity, and neither is exact: a retarget in the middle
+  of a symlink chain, a directory retarget between trees whose transcripts are hard links
+  to one inode, and a directory move under a relative symlink all leave the final
+  component's `lstat` unchanged while `resolve()` lands elsewhere, so a walk deduped
+  against a stale real path and skipped reachable transcripts. Exact chain validation
+  would `lstat` every component, which is what `resolve()` already does, so the memo is
+  dropped rather than re-keyed. On 116 real-file attachments `resolve()` costs about 1.7 ms
+  per deep call.
+- A held sidechain cursor expires by elapsed inactivity, not a walk count, so aggregate
+  predicate traffic never releases a cursor that is still growing. The idle count advanced
+  once per cache-hit predicate, so 16 reader threads answering one sidechain 256 times each
+  dropped a live cursor between two of its writes. `DeepLift` now carries `grown_at` from a
+  monotonic clock, and a cursor is released only once `IDLE_SECONDS_BEFORE_RELEASE` (900 s)
+  has passed since its last growth; any growth resets the clock. 900 s sits above the p99.9
+  wall-clock gap between writes to an active sidechain (~11 min) and far below the multi-hour
+  tail after a sidechain's last write.
+- A grown attachment keeps the provider composition contract. Each appended chunk was
+  parsed on its own, so its provider was re-detected from its first line; a Codex rollout,
+  whose lowering needs whole-session context, got different session ids and event uuids
+  than a cold parse, and a Codex-shaped `response_item` appended to a held Claude
+  transcript made deep predicates surface its call while a cold parse read it as an
+  `OtherEvent`. The provider is now pinned on the cold parse and carried on the cursor:
+  only a Claude-pinned transcript extends incrementally, a Codex one cold-relifts on
+  growth, and a growth whose appended chunk parses as a different provider than the pin
+  cold-relifts too. An empty file pins no provider until a line lands.
+- A deep lift validates the open descriptor's stat around every read, so a transcript
+  replaced between the routing stat and the read never splices two file versions. Each
+  read compares `(size, mtime_ns, ctime_ns, inode)` of the fd after reading against the
+  routing stamp; a growth whose descriptor moved falls to a cold relift rather than paste
+  replacement bytes past the cached prefix, and a cold read whose descriptor moved answers
+  the request but is not published. An equal-length in-place replacement moves the inode
+  and ctime, which the size-and-mtime routing stamp alone would miss. Mirrors capt-hook's
+  transcache fix.
+- Only a deterministic parse failure is held in `UNREADABLE`, never a transient filesystem
+  error. `parsed` raises `UnparseableTranscript` (an `OSError` subclass) for a line the
+  typed parser rejects, and `deep_session_at` records the stamp only for that; an EACCES,
+  EIO or ENOENT race during the read propagates unrecorded and retries on the next walk.
+  A held negative from a transient read error would otherwise skip a readable sidechain
+  until its stamp moved.
+- A sidechain carrying one line the typed parser rejects — schema drift the parser has
+  not caught up to — is skipped once and held by stamp instead of being re-read and
+  re-parsed whole on every deep walk. `UNREADABLE` holds the failure keyed by the full
+  `(size, mtime_ns, ctime_ns, inode)` stamp; an unchanged bad file is skipped at
+  stamp-check cost, and any change — a growth that completes the line, a rewrite — clears
+  the miss and retries. The skip itself is unchanged: the file is passed over, never
+  raised. A 55 MiB sidechain with one bad line cost ~90 ms of reparse on every event.
+- A sidechain that has only grown is extended by its appended lines instead of being
+  reparsed and relifted whole. `DEEP_LIFTS` entries keep the `ActivityLift` cursor behind
+  each lift and the newline-terminated byte offset it consumed; a stamp miss on a file
+  with the same inode, a larger size and its last held bytes unchanged reads just the
+  appended bytes, parses them cut on the last newline, and extends the cursor, while the
+  tail past that newline is parsed for the session but never fed to it. A shrink, a
+  replaced or rewritten file, a short read, or a session id that first surfaces in the
+  appended lines lifts the file afresh. Stamps now carry `ctime_ns`. The cursor is handed
+  off under the lock — taken out of the hold before it is extended and put back grown — so
+  a concurrent reader never sees it mid-extension. `walk()` holds every transcript it
+  reaches, as before; the `has_*` predicates hold a transcript once they have had to lift
+  it twice, since a sidechain that changed is a running subagent, and a finished one is
+  still lifted once and its `PredicateInputs` kept instead. A held cursor is released once
+  its file has gone `IDLE_SECONDS_BEFORE_RELEASE` unwritten — elapsed inactivity since its
+  last growth, not a count of walks — so resident cursor memory tracks the sidechains still
+  being written rather than every one that ever grew; `DEEP_LIFT_BUDGET` stays the upper
+  bound over that live set. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
+  4.7 MiB sidechain grew by one line fell from 22-83 ms to 11-13 ms, and after a 56 MiB one
+  grew from 126-169 ms to 20-24 ms; each pays one last whole relift, the one that admits
+  it. An unchanged walk fell from 9.6 ms to 7.2 ms.
 - `has_tool`, `has_command`, `has_edit_to`, `has_read` and `has_skill` now answer
   from held inputs without filling `DEEP_LIFTS` or reparsing unchanged sidechains.
   Two lead trees totalling 1.55 GiB exceeded the 1 GiB lift budget; alternating
