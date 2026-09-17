@@ -1488,14 +1488,17 @@ def test_racing_deep_predicates_over_a_growing_sidechain_agree_with_a_cold_walk(
     assert Session.from_path(main).has_command("grow", "199")
 
 
-def test_a_barrier_forced_take_put_race_matches_a_cold_walk_during_growth(
+def test_a_barrier_forced_take_put_race_publishes_twice_and_the_later_put_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     main = write_flat_subagent_tree(tmp_path, "lead", 1)
     child = only_child(main)
+    key = (child, 1, ToolUseId("0"))
     DEEP_LIFTS.clear()
     SIDECHAIN_INPUTS.clear()
     list(Session.from_path(main).walk())
+    assert Session.from_path(main).has_command("step", "0")
+    assert SIDECHAIN_INPUTS.holds(child)
     grow(child, step_line("g", 3, "step", "grown"))
 
     parked = threading.Event()
@@ -1512,13 +1515,18 @@ def test_a_barrier_forced_take_put_race_matches_a_cold_walk_during_growth(
     with ThreadPoolExecutor(max_workers=1) as pool:
         extender = pool.submit(lambda: Session.from_path(main).has_command("step", "grown"))
         assert parked.wait(5)
+        assert key not in DEEP_LIFTS.held
         assert Session.from_path(child).has_command("step", "grown", subagents=False)
         monkeypatch.undo()
         assert Session.from_path(main).has_command("step", "grown")
+        racer = DEEP_LIFTS.held[key]
+        assert racer.deep.session.has_command("step", "grown", subagents=False)
         release.set()
         assert extender.result()
 
-    assert len(DEEP_LIFTS) == 1
+    assert list(DEEP_LIFTS.held) == [key]
+    assert DEEP_LIFTS.held[key] is not racer
+    assert DEEP_LIFTS.held[key].deep.session.turns == racer.deep.session.turns
     assert_deep_matches_cold(main, child)
 
 
