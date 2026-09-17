@@ -17,7 +17,6 @@ from cc_transcript.discovery import TranscriptExpiredError
 from cc_transcript.ids import ToolUseId
 from cc_transcript.query import (
     DEEP_LIFTS,
-    RESOLVED_PATHS,
     SIDECHAIN_INPUTS,
     UNREADABLE,
     FileRef,
@@ -1523,28 +1522,6 @@ def test_a_barrier_forced_take_put_race_matches_a_cold_walk_during_growth(
     assert_deep_matches_cold(main, child)
 
 
-def test_attachment_paths_are_resolved_once_across_deep_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    attachments = tuple(
-        write_attachment_transcript(tmp_path, f"ext{index}.jsonl", f"x{index}", "Glob", pattern="*")
-        for index in range(3)
-    )
-    sess = Session(session(user("u0", "go")).turns, None, attachments)
-    RESOLVED_PATHS.clear()
-    assert [deep.path for deep in sess.walk()] == list(attachments)
-    resolved: list[Path] = []
-    real = pathlib.Path.resolve
-
-    def counting(self: Path, *args: Any, **kwargs: Any) -> Path:
-        resolved.append(self)
-        return real(self, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "resolve", counting)
-    assert sess.has_tool("Glob")
-    assert Session(sess.turns, None, attachments[::-1]).has_tool("Glob")
-    assert [deep.path for deep in sess.walk()] == list(attachments)
-    assert resolved == []
-
-
 class Clock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -1814,7 +1791,6 @@ def test_a_retargeted_attachment_symlink_is_reached_after_the_retarget(tmp_path:
     other = write_attachment_transcript(tmp_path, "other.jsonl", "o", "Read", file_path="other")
     link = tmp_path / "ext" / "link.jsonl"
     link.symlink_to(other)
-    RESOLVED_PATHS.clear()
     root = Session((), None, (link,))
     assert not root.has_command("reach", "target")
     assert [d.path.name for d in root.walk()] == ["link.jsonl"]
@@ -1956,3 +1932,73 @@ def test_a_bad_line_appended_to_a_held_cursor_is_held_after_its_first_failure(
     assert not Session.from_path(main).has_command("step", "one")
     assert parses == [child]
     assert lifts == []
+
+
+def write_bash_transcript(path: Path, uuid: str, command: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                user_line(f"{uuid}-u", 0, "go"),
+                assistant_line(f"{uuid}-a", 1, [tool_block(uuid, "Bash", command=command)]),
+            ]
+        )
+        + "\n"
+    )
+    return path
+
+
+def test_a_retarget_in_the_middle_of_a_symlink_chain_is_followed(tmp_path: Path) -> None:
+    a = write_bash_transcript(tmp_path / "a.jsonl", "a", "from A")
+    b = write_bash_transcript(tmp_path / "b.jsonl", "b", "from B")
+    middle = tmp_path / "middle.jsonl"
+    link = tmp_path / "link.jsonl"
+    middle.symlink_to(a)
+    link.symlink_to(middle)
+    root = Session((), None, (a, link))
+    assert [d.path.name for d in root.walk()] == ["a.jsonl"]
+    assert not root.has_command("from", "B")
+
+    middle.unlink()
+    middle.symlink_to(b)
+    assert [d.path.name for d in root.walk()] == ["a.jsonl", "link.jsonl"]
+    assert root.has_command("from", "B")
+
+
+def test_a_directory_retarget_between_hard_linked_transcripts_reaches_the_new_children(tmp_path: Path) -> None:
+    parent_a = write_bash_transcript(tmp_path / "a" / "parent.jsonl", "pa", "parent common")
+    parent_b = tmp_path / "b" / "parent.jsonl"
+    parent_b.parent.mkdir()
+    os.link(parent_a, parent_b)
+    write_bash_transcript(tmp_path / "a" / "parent" / "subagents" / "agent-a.jsonl", "ca", "child A")
+    write_bash_transcript(tmp_path / "b" / "parent" / "subagents" / "agent-b.jsonl", "cb", "child B")
+    current = tmp_path / "current"
+    current.symlink_to(tmp_path / "a", target_is_directory=True)
+    through = current / "parent.jsonl"
+    root = Session((), None, (parent_a, through))
+    assert [d.path.name for d in root.walk()] == ["parent.jsonl", "agent-a.jsonl"]
+    assert not root.has_command("child", "B")
+
+    current.unlink()
+    current.symlink_to(tmp_path / "b", target_is_directory=True)
+    assert [d.path.name for d in root.walk()] == ["parent.jsonl", "agent-a.jsonl", "parent.jsonl", "agent-b.jsonl"]
+    assert root.has_command("child", "B")
+
+
+def test_a_relative_symlink_resolves_against_the_directory_it_now_lives_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    write_bash_transcript(old / "target.jsonl", "new", "from NEW")
+    (old / "link.jsonl").symlink_to("target.jsonl")
+    monkeypatch.chdir(old)
+    link = pathlib.Path("link.jsonl")
+    assert Session((), None, (link,)).has_command("from", "NEW")
+
+    os.rename(old, new)
+    old_target = write_bash_transcript(old / "target.jsonl", "old", "from OLD")
+    parsed = Session.from_path(old_target)
+    root = Session(parsed.turns, parsed.path, (link,))
+    assert [d.path.name for d in root.walk()] == ["link.jsonl"]
+    assert root.has_command("from", "NEW")
+    assert root.has_command("from", "OLD", subagents=False)

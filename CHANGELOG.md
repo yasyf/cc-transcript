@@ -54,14 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UNREADABLE` — is gated on settlement and keyed by that descriptor stamp, never the routing
   stat, and `UnparseableTranscript` carries both so a parse failure is held under the bytes
   actually parsed.
-- A cached attachment resolution is re-keyed on the path's `lstat` identity, so a retargeted
-  symlink is followed instead of resolving to the old target forever. `RESOLVED_PATHS`
-  memoized `path -> resolve()` unconditionally, so retargeting `link -> A` to `link -> B`
-  made later walks skip B. The memo now holds `(lstat stamp, resolved)`; `lstat` follows
-  intermediate symlinks and a final-component retarget replaces the symlink's own inode and
-  ctime, so the key moves whenever `resolve` would land elsewhere. Measured on 116 real-file
-  attachments, plain `resolve()` costs 1.7 ms and the `lstat`-keyed hit 0.24 ms (7x under
-  resolve), where full-chain-exact keying would cost as much as `resolve` itself.
+- Attachment and root paths are resolved on every deep call again; the resolved-path memo
+  is gone. `RESOLVED_PATHS` memoized `path -> resolve()`, first unconditionally and then
+  keyed by the path's own `lstat` identity, and neither is exact: a retarget in the middle
+  of a symlink chain, a directory retarget between trees whose transcripts are hard links
+  to one inode, and a directory move under a relative symlink all leave the final
+  component's `lstat` unchanged while `resolve()` lands elsewhere, so a walk deduped
+  against a stale real path and skipped reachable transcripts. Exact chain validation
+  would `lstat` every component, which is what `resolve()` already does, so the memo is
+  dropped rather than re-keyed. On 116 real-file attachments `resolve()` costs about 1.7 ms
+  per deep call.
 - A held sidechain cursor expires by elapsed inactivity, not a walk count, so aggregate
   predicate traffic never releases a cursor that is still growing. The idle count advanced
   once per cache-hit predicate, so 16 reader threads answering one sidechain 256 times each
@@ -116,9 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its file has gone `IDLE_SECONDS_BEFORE_RELEASE` unwritten — elapsed inactivity since its
   last growth, not a count of walks — so resident cursor memory tracks the sidechains still
   being written rather than every one that ever grew; `DEEP_LIFT_BUDGET` stays the upper
-  bound over that live set. A deep call resolves the root
-  and each attachment once per process, held in `RESOLVED_PATHS`, instead of on every
-  call. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
+  bound over that live set. On a lead with 503 sidechains and 116 attachments, a deep predicate answered after a
   4.7 MiB sidechain grew by one line fell from 22-83 ms to 11-13 ms, and after a 56 MiB one
   grew from 126-169 ms to 20-24 ms; each pays one last whole relift, the one that admits
   it. An unchanged walk fell from 9.6 ms to 7.2 ms.
