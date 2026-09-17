@@ -1098,9 +1098,9 @@ def deep_session_at(
     if UNREADABLE.has(path, stamp):
         raise UnparseableTranscript(path, stamp, True)
     stale = DEEP_LIFTS.take(key)
-    if stale is not None and (grown := grown_lift(stale, path, stamp)) is not None:
-        return DEEP_LIFTS.put(key, grown).deep, stamp, True
     try:
+        if stale is not None and (grown := grown_lift(stale, path, stamp)) is not None:
+            return DEEP_LIFTS.put(key, grown).deep, stamp, True
         lifted, settled = lift_deep_session(path, depth, spawned_by)
     except UnparseableTranscript as failure:
         if failure.settled:

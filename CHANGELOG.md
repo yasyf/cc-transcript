@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A typed-invalid line appended to a held cursor is held in `UNREADABLE` after its first
+  failure. The growth path ran outside the negative-cache handler, so the first failing walk
+  recorded nothing and the next unchanged walk re-parsed the whole file before recording it.
+  Both the growth and the cold path now record the failure, under the descriptor stamp the
+  bytes were read from and only when that read settled.
 - An unsettled cold read publishes to no cache. A cold read whose descriptor moved under it
   already stayed out of `DEEP_LIFTS`, but its predicate inputs still landed in
   `SIDECHAIN_INPUTS` under the routing stamp and a parse failure in `UNREADABLE` under that

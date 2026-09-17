@@ -1935,3 +1935,24 @@ def test_a_link_swapped_to_an_unparseable_file_is_not_held_against_the_readable_
     assert UNREADABLE.has(link, query.stamp_of(b.stat()))
     monkeypatch.undo()
     assert [root.has_command("step", "a") for _ in range(3)] == [True, True, True]
+
+
+def test_a_bad_line_appended_to_a_held_cursor_is_held_after_its_first_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main, child, lifts = held_after_one_growth(tmp_path, monkeypatch)
+    UNREADABLE.clear()
+    parses: list[Path] = []
+    real = query.parsed
+    monkeypatch.setattr(query, "parsed", lambda path, *args: parses.append(path) or real(path, *args))
+
+    grow(child, bad_line("b2", 4))
+    assert not Session.from_path(main).has_command("step", "one")
+    assert len(UNREADABLE) == 1
+    assert UNREADABLE.has(child, query.stamp_of(child.stat()))
+    assert parses == [child]
+    assert lifts == []
+
+    assert not Session.from_path(main).has_command("step", "one")
+    assert parses == [child]
+    assert lifts == []
