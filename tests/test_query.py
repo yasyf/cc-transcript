@@ -1823,3 +1823,26 @@ def test_a_retargeted_attachment_symlink_is_reached_after_the_retarget(tmp_path:
     link.symlink_to(target)
     assert root.has_command("reach", "target")
     assert [d.path.resolve() for d in root.walk()] == [target.resolve()]
+
+
+def test_append_only_is_the_contract_a_rewrite_behind_the_fence_reads_as_growth(tmp_path: Path) -> None:
+    main = write_flat_subagent_tree(tmp_path, "lead", 1)
+    child = only_child(main)
+    child.write_bytes(step_line("old", 1, "step", "old").encode() + user_line("pad", 2, "x" * 200).encode() + b"\n")
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    list(Session.from_path(main).walk())
+    held = next(iter(DEEP_LIFTS.held.values()))
+
+    child.write_bytes(
+        child.read_bytes().replace(b"step old", b"step new") + step_line("add", 3, "step", "add").encode()
+    )
+    assert child.read_bytes()[held.consumed - len(held.fence) : held.consumed] == held.fence
+
+    sess = Session.from_path(main)
+    assert sess.has_command("step", "add")
+    assert sess.has_command("step", "old")
+    assert not sess.has_command("step", "new")
+    cold = Session.from_path(child)
+    assert cold.has_command("step", "new", subagents=False)
+    assert not cold.has_command("step", "old", subagents=False)

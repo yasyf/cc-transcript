@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without holding lifts. Answers that do not read the MCP tool registry are memoized
   per instance, up to `PredicateInputs.MAX_ANSWERS`; command lines are parsed lazily.
 
+### Changed
+
+- The incremental deep lift's contract is append-only, and is now documented as such on
+  `ActivityLift`, `DEEP_LIFTS`, `Session.walk` and `Session.deep_inputs`. A held transcript
+  is assumed never rewritten behind its consumed offset. Growth is recognized by the same
+  inode, a larger size, and the last `DEEP_LIFT_FENCE` consumed bytes still in place, with
+  the descriptor's stat rechecked around the read; a shrink, a replaced inode, a same-size
+  rewrite, or a fence mismatch triggers a cold relift. An in-place rewrite of earlier bytes
+  that keeps the fence and grows the file is not detected and is folded in as growth. Claude
+  Code and Codex transcripts satisfy the contract; the limit is pinned by a test rather than
+  guarded by prefix validation.
+
 ### Fixed
 
 - A cached attachment resolution is re-keyed on the path's `lstat` identity, so a retargeted

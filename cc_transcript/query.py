@@ -164,6 +164,13 @@ appended chunk parses as a different provider than the file was pinned to. An em
 no provider until a line lands, extending while its appended lines parse as Claude and
 cold-relifting the moment a Codex line completes. A shrink, a replaced or rewritten file, a
 short read, or a session id that surfaces only in the appended lines lifts the file afresh.
+
+The contract is append-only: a held transcript is assumed never rewritten behind its consumed
+offset. Growth is recognized by the same inode, a larger size, and the last
+:data:`DEEP_LIFT_FENCE` consumed bytes still in place, with the descriptor's stat rechecked
+around the read; a shrink, a replaced inode, a same-size rewrite, or a fence mismatch triggers
+a cold relift. An in-place rewrite of earlier bytes that keeps the fence and grows the file is
+not detected and is folded in as growth. Claude Code and Codex transcripts satisfy the contract.
 Every read validates the open descriptor's stat after reading against the stat that routed it
 — a replacement between the routing stat and the read moves the inode and ctime — so a growth
 that reads spliced bytes falls to a cold relift, and a cold read whose descriptor moved under
@@ -594,7 +601,9 @@ class Session:
         ctime, inode)`` stamp and memoized across walks, and one that has only
         grown is extended by its appended lines, so a predicate that walks
         repeatedly — or a resident process that re-walks per event — parses
-        only what was appended.
+        only what was appended. Transcripts are assumed append-only: a
+        rewrite of earlier bytes that keeps the file's consumed tail and
+        grows it is read as growth, as :data:`DEEP_LIFTS` documents.
         """
         return deep_sessions(self)
 
@@ -704,8 +713,8 @@ class Session:
         The walk order and dedupe match :meth:`walk`, but a reached transcript stays lifted only
         once it has changed: each one's inputs are held per ``(size, mtime, ctime, inode)`` stamp,
         a transcript is lifted again only once its stamp moves, and from then on one that has only
-        grown is extended by its appended lines. Prefer it to :meth:`walk` for any predicate these
-        inputs can answer.
+        grown is extended by its appended lines under the append-only contract :data:`DEEP_LIFTS`
+        documents. Prefer it to :meth:`walk` for any predicate these inputs can answer.
         """
         yield self.predicate_inputs
         for path, depth, spawned_by in reachable_transcripts(self):
