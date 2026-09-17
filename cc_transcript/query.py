@@ -174,7 +174,9 @@ not detected and is folded in as growth. Claude Code and Codex transcripts satis
 Every read validates the open descriptor's stat after reading against the stat that routed it
 — a replacement between the routing stat and the read moves the inode and ctime — so a growth
 that reads spliced bytes falls to a cold relift, and a cold read whose descriptor moved under
-it answers but is not published. The cursor is mutable, so a stamp miss takes the
+it answers the request but is published to no cache — not here, not :data:`SIDECHAIN_INPUTS`,
+not :data:`UNREADABLE` — and every publication is keyed by the descriptor stamp the read
+verified rather than the routing stat. The cursor is mutable, so a stamp miss takes the
 entry out of the hold before extending it and puts the grown entry back: a concurrent reader
 never sees a cursor mid-extension, and two threads that miss together each produce a correct
 entry, the later put replacing the earlier. A dropped entry releases its cursor with it.
@@ -272,9 +274,11 @@ A sidechain carrying one line the typed parser rejects — schema drift Claude C
 caught up to — cannot be lifted, so a walk skips it. Without this a resident process re-read
 and re-parsed the whole file on every walk forever. Only a deterministic parse failure
 (:class:`UnparseableTranscript`) is held, never a transient filesystem error, which must
-retry. The failure is held by full stamp: an unchanged bad file is skipped at stamp-check
-cost, and any change — a growth that completes the line, a rewrite — clears the miss and
-retries.
+retry. The failure is held by full stamp — the stamp of the descriptor the rejected bytes were
+read from, never the stat that routed the read, and only when that read settled — so an
+unchanged bad file is skipped at stamp-check cost, any change — a growth that completes the
+line, a rewrite — clears the miss and retries, and a file that was swapped under the read is
+never held against the file the path names next time.
 """
 
 
@@ -1065,10 +1069,11 @@ def load_predicate_inputs(path: Path, depth: int, spawned_by: ToolUseId | None) 
         DEEP_LIFTS.idle_release((path, depth, spawned_by), stamp)
         return held
     try:
-        deep = deep_session_at(path, depth, spawned_by, stamp, hold=SIDECHAIN_INPUTS.holds(path))
+        deep, read, settled = deep_session_at(path, depth, spawned_by, stamp, hold=SIDECHAIN_INPUTS.holds(path))
     except OSError:
         return None
-    return SIDECHAIN_INPUTS.put(path, stamp, PredicateInputs.of(deep.session))
+    inputs = PredicateInputs.of(deep.session)
+    return SIDECHAIN_INPUTS.put(path, read, inputs) if settled else inputs
 
 
 def deep_sessions(root: Session) -> Iterator[DeepSession]:
@@ -1079,28 +1084,31 @@ def deep_sessions(root: Session) -> Iterator[DeepSession]:
 
 def load_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> DeepSession | None:
     try:
-        return deep_session_at(path, depth, spawned_by, stamp_of(path.stat()), hold=True)
+        return deep_session_at(path, depth, spawned_by, stamp_of(path.stat()), hold=True)[0]
     except OSError:
         return None
 
 
 def deep_session_at(
     path: Path, depth: int, spawned_by: ToolUseId | None, stamp: LiftStamp, *, hold: bool
-) -> DeepSession:
+) -> tuple[DeepSession, LiftStamp, bool]:
     key = (path, depth, spawned_by)
     if (held := DEEP_LIFTS.get(key, stamp)) is not None:
-        return held.deep
+        return held.deep, stamp, True
     if UNREADABLE.has(path, stamp):
-        raise UnparseableTranscript(f"unreadable transcript: {path}")
+        raise UnparseableTranscript(path, stamp, True)
     stale = DEEP_LIFTS.take(key)
     if stale is not None and (grown := grown_lift(stale, path, stamp)) is not None:
-        return DEEP_LIFTS.put(key, grown).deep
+        return DEEP_LIFTS.put(key, grown).deep, stamp, True
     try:
         lifted, settled = lift_deep_session(path, depth, spawned_by)
-    except UnparseableTranscript:
-        UNREADABLE.put(path, stamp)
+    except UnparseableTranscript as failure:
+        if failure.settled:
+            UNREADABLE.put(path, failure.stamp)
         raise
-    return (DEEP_LIFTS.put(key, lifted) if settled and (hold or stale is not None) else lifted).deep
+    if settled and (hold or stale is not None):
+        DEEP_LIFTS.put(key, lifted)
+    return lifted.deep, lifted.stamp, settled
 
 
 def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> tuple[DeepLift, bool]:
@@ -1108,10 +1116,10 @@ def lift_deep_session(path: Path, depth: int, spawned_by: ToolUseId | None) -> t
         stamp = stamp_of(before := os.fstat(handle.fileno()))
         raw = handle.read(before.st_size)
         settled = stamp_of(os.fstat(handle.fileno())) == stamp
-    events = list((transcript := parsed(path, raw)).events)
+    events = list((transcript := parsed(path, raw, stamp, settled)).events)
     session_id = (found := session_id_of(events)) or SessionId(path.stem)
     cut = raw.rfind(b"\n") + 1
-    committed = len(events) if cut == len(raw) else len(events) - len(parsed(path, raw[cut:]).events)
+    committed = len(events) if cut == len(raw) else len(events) - len(parsed(path, raw[cut:], stamp, settled).events)
     activity = (lift := ActivityLift(session_id)).extend(events[:committed])
     return DeepLift(
         stamp=stamp,
@@ -1147,9 +1155,9 @@ def grown_lift(held: DeepLift, path: Path, stamp: LiftStamp) -> DeepLift | None:
         return None
     appended = read[len(held.fence) :]
     cut = appended.rfind(b"\n") + 1
-    if (committed_chunk := parsed(path, appended[:cut])).provider != "claude":
+    if (committed_chunk := parsed(path, appended[:cut], stamp, True)).provider != "claude":
         return None
-    if cut != len(appended) and (tail_chunk := parsed(path, appended[cut:])).provider != "claude":
+    if cut != len(appended) and (tail_chunk := parsed(path, appended[cut:], stamp, True)).provider != "claude":
         return None
     committed = list(committed_chunk.events)
     tail = [] if cut == len(appended) else list(tail_chunk.events)
@@ -1191,11 +1199,19 @@ class UnparseableTranscript(OSError):
     Raised only for a line the parser cannot type — schema drift — so a walk can hold the
     failure by stamp, where a transient ``OSError`` (EACCES, EIO, an ENOENT race) must
     retry. An ``OSError`` subclass so both still skip the transcript rather than raise.
+    Carries the stamp of the descriptor the rejected bytes were read from and whether that
+    read settled, so the failure is held under the bytes actually parsed, never under the
+    stat that routed the read, and never when the file moved under it.
     """
 
+    def __init__(self, path: Path, stamp: LiftStamp, settled: bool) -> None:
+        super().__init__(f"unreadable transcript: {path}")
+        self.stamp = stamp
+        self.settled = settled
 
-def parsed(path: Path, raw: bytes) -> Transcript:
+
+def parsed(path: Path, raw: bytes, stamp: LiftStamp, settled: bool) -> Transcript:
     try:
         return parse(raw)
     except (KeyError, ValueError):
-        raise UnparseableTranscript(f"unreadable transcript: {path}") from None
+        raise UnparseableTranscript(path, stamp, settled) from None

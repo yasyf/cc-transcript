@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An unsettled cold read publishes to no cache. A cold read whose descriptor moved under it
+  already stayed out of `DEEP_LIFTS`, but its predicate inputs still landed in
+  `SIDECHAIN_INPUTS` under the routing stamp and a parse failure in `UNREADABLE` under that
+  same stamp, so a symlink swapped to another file for the duration of one read kept
+  answering with the other file's commands, and an unparseable other file negative-cached the
+  readable one. `deep_session_at` now returns the stamp of the descriptor the bytes were read
+  from and whether that read settled; every publication — `DEEP_LIFTS`, `SIDECHAIN_INPUTS`,
+  `UNREADABLE` — is gated on settlement and keyed by that descriptor stamp, never the routing
+  stat, and `UnparseableTranscript` carries both so a parse failure is held under the bytes
+  actually parsed.
 - A cached attachment resolution is re-keyed on the path's `lstat` identity, so a retargeted
   symlink is followed instead of resolving to the old target forever. `RESOLVED_PATHS`
   memoized `path -> resolve()` unconditionally, so retargeting `link -> A` to `link -> B`

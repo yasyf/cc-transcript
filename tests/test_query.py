@@ -1628,7 +1628,7 @@ def test_an_unreadable_sidechain_is_parsed_once_until_it_changes(
     UNREADABLE.clear()
     parses: list[Path] = []
     real = query.parsed
-    monkeypatch.setattr(query, "parsed", lambda path, raw: parses.append(path) or real(path, raw))
+    monkeypatch.setattr(query, "parsed", lambda path, *args: parses.append(path) or real(path, *args))
 
     for _ in range(3):
         assert list(Session.from_path(main).walk()) == []
@@ -1846,3 +1846,92 @@ def test_append_only_is_the_contract_a_rewrite_behind_the_fence_reads_as_growth(
     cold = Session.from_path(child)
     assert cold.has_command("step", "new", subagents=False)
     assert not cold.has_command("step", "old", subagents=False)
+
+
+class AppendingReader:
+    def __init__(self, handle, target: Path, line: str) -> None:
+        self.handle, self.target, self.line = handle, target, line
+
+    def __enter__(self) -> AppendingReader:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.handle.__exit__(*args)
+
+    def fileno(self) -> int:
+        return self.handle.fileno()
+
+    def read(self, size: int) -> bytes:
+        raw = self.handle.read(size)
+        with self.target.open("a") as out:
+            out.write(self.line)
+        return raw
+
+
+def opening_through(monkeypatch: pytest.MonkeyPatch, link: Path, target: Path, restore: Path, line: str | None):
+    real = pathlib.Path.open
+
+    def swapped(self, *args, **kwargs):
+        if self != link or args != ("rb",):
+            return real(self, *args, **kwargs)
+        if target != link:
+            link.unlink()
+            link.symlink_to(target)
+        handle = real(link, *args, **kwargs)
+        if target != link:
+            link.unlink()
+            link.symlink_to(restore)
+        return handle if line is None else AppendingReader(handle, target, line)
+
+    monkeypatch.setattr(pathlib.Path, "open", swapped)
+
+
+def test_an_unsettled_cold_read_publishes_to_no_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "a.jsonl"
+    path.write_text(step_line("a", 1, "step", "a"))
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    root = Session((), None, (path,))
+    opening_through(monkeypatch, path, path, path, user_line("later", 9, "append during cold read") + "\n")
+    assert root.has_command("step", "a")
+    assert len(DEEP_LIFTS) == 0
+    assert len(SIDECHAIN_INPUTS) == 0
+    monkeypatch.undo()
+    assert root.has_command("step", "a")
+    assert len(SIDECHAIN_INPUTS) == 1
+
+
+def test_a_link_swapped_under_an_unsettled_read_does_not_cache_the_other_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, b, link = (tmp_path / name for name in ("a.jsonl", "b.jsonl", "link.jsonl"))
+    a.write_text(step_line("a", 1, "step", "a"))
+    b.write_text(step_line("b", 1, "step", "b"))
+    link.symlink_to(a)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    root = Session((), None, (link,))
+    opening_through(monkeypatch, link, b, a, user_line("later", 9, "append during cold read") + "\n")
+    assert root.has_command("step", "b")
+    monkeypatch.undo()
+    assert [root.has_command("step", "b") for _ in range(3)] == [False, False, False]
+    assert root.has_command("step", "a")
+
+
+def test_a_link_swapped_to_an_unparseable_file_is_not_held_against_the_readable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, b, link = (tmp_path / name for name in ("a.jsonl", "b.jsonl", "link.jsonl"))
+    a.write_text(step_line("a", 1, "step", "a"))
+    b.write_text(bad_line("b", 1))
+    link.symlink_to(a)
+    DEEP_LIFTS.clear()
+    SIDECHAIN_INPUTS.clear()
+    UNREADABLE.clear()
+    root = Session((), None, (link,))
+    opening_through(monkeypatch, link, b, a, None)
+    assert not root.has_command("step", "a")
+    assert len(UNREADABLE) == 1
+    assert UNREADABLE.has(link, query.stamp_of(b.stat()))
+    monkeypatch.undo()
+    assert [root.has_command("step", "a") for _ in range(3)] == [True, True, True]
