@@ -109,19 +109,23 @@ fn session_id_of(entries: &[Entry]) -> Option<String> {
         .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()))
 }
 
-/// Parse every target in parallel, keeping target order and warning once about
-/// unparseable files (cli.py parse_transcripts).
-pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
-    let results: Vec<Option<Parsed>> = targets
+/// Parse every target in parallel and reduce each one on the spot, keeping target order
+/// and warning once about unparseable files. A whole-corpus sweep folds its per-file
+/// answer here instead of retaining every transcript's events at once.
+pub fn map_transcripts<T: Send>(
+    targets: &[(PathBuf, f64)],
+    reduce: impl Fn(Parsed) -> T + Sync,
+) -> Vec<T> {
+    let results: Vec<Option<T>> = targets
         .par_iter()
         .map(|(path, _)| {
             let bytes = std::fs::read(path).ok()?;
             let entries = parse_transcript_bytes(&bytes).ok()?.entries;
-            Some(Parsed {
+            Some(reduce(Parsed {
                 path: path.clone(),
                 session_id: session_id_of(&entries),
                 entries,
-            })
+            }))
         })
         .collect();
     let missing: Vec<String> = targets
@@ -138,6 +142,12 @@ pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
         ));
     }
     results.into_iter().flatten().collect()
+}
+
+/// Parse every target in parallel, keeping target order and warning once about
+/// unparseable files (cli.py parse_transcripts).
+pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
+    map_transcripts(targets, |parsed| parsed)
 }
 
 /// cli.py parse_single: one path or a click-style `Error:` exit 1.

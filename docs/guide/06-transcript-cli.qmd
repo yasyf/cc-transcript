@@ -9,7 +9,8 @@ prompt kicked off yesterday's refactor, where a tool call failed — lives in a
 few hundred bytes of it. The CLI is the investigation layer for that gap: four
 investigation commands that narrow from "every transcript on disk" to "these
 five events", so neither you nor an agent reading the output ever pages raw
-JSONL. The CLI's other verbs are narrower tools — `slice` emits the
+JSONL — plus `corpus`, which flattens a whole sweep once when one topic has to
+answer many questions. The CLI's other verbs are narrower tools — `slice` emits the
 per-tool-call JSONL bridge cc-review consumes, `digest` checks the
 cross-language digest fixture contract, `watch` tails live sessions,
 `scratchpad` prints a session's scratchpad directory, `corrections` fronts the
@@ -200,10 +201,58 @@ the context rows show the `Bash` call that produced it and the assistant's
 first (soon-to-be-rejected) diagnosis.
 
 Narrow further with `--kind`, `--tool` (matches a tool's calls *and* its
-correlated results), `--where text|thinking|tools`, and `-i`; `--max-matches`
-stops after 20 hits by default. `grep` exits 1 when nothing matched — handy in
-scripts, and the reason the `cc` helper deliberately ignores the return code
-(`subprocess.run` without `check=True`) while probing.
+correlated results), `--where text|thinking|tools`, and `-i`. `--max-matches`
+stops after 20 hits by default and says so on stderr when it cuts, so a sweep
+that returns 20 rows never passes for a complete one; `--max-matches 0` lifts
+the cap. `grep` exits 1 when nothing matched — handy in scripts, and the reason
+the `cc` helper deliberately ignores the return code (`subprocess.run` without
+`check=True`) while probing.
+
+## `corpus` — ask the same corpus a hundred questions
+
+The funnel above assumes one question. Asking twenty questions about one topic
+across a whole projects tree re-reads every transcript twenty times. `corpus`
+reads them once and writes a flat extract instead: every match, with a bounded
+window of *characters* either side, one window per line, deduplicated.
+
+```bash
+uvx cc-transcript corpus "slop-cop" --project monorepo -o /tmp/slop.txt
+```
+
+```{python}
+EXTRACT = Path(tempfile.mkdtemp()) / "extract.txt"
+swept = subprocess.run(
+    [str(Path(sys.executable).parent / "cc-transcript"), "corpus", "deploy",
+     "--root", str(ROOT), "--window", "60", "-o", str(EXTRACT)],
+    capture_output=True, text=True)
+print(swept.stderr, EXTRACT.read_text(), sep="")
+```
+
+The summary lands on stderr — files scanned, windows kept, duplicates dropped,
+bytes written — and the extract on disk. Deduplication is what keeps it small at
+scale: the same `CLAUDE.md` boilerplate injected into every session's system
+prompt collapses to one line. On a real projects tree that is the difference
+between hundreds of thousands of windows and tens of thousands — the
+three-session fixture here is too small to show it.
+
+`--window` is characters, not events, which is the point: a single event can be
+megabytes, so an event of context is unbounded, while 200 characters either
+side of a hit is a readable line. Line breaks inside a window become `\n` so
+one window always stays one line. Unlike the other commands, `corpus` sweeps
+every discovered transcript by default rather than the newest 50 — pass
+`--limit N` when you want the cap back.
+
+Then query the extract instead of the tree:
+
+```{python}
+print(cc("grep", "--corpus", str(EXTRACT), "staging"))
+```
+
+That is a millisecond over a few megabytes, against a couple of minutes over
+gigabytes of JSONL. A flattened window carries no event structure, so the flags
+that reach into one — `--kind`, `--tool`, `-C`, `--json`, and the discovery
+flags — are rejected rather than silently ignored, and `--max-matches` starts
+uncapped here because each match is already one bounded line.
 
 ## `show` — read just the window
 
@@ -258,7 +307,10 @@ how sure you are:
 4. `show --range A:B` — read just that window; add `--json` only once the
    slice is small.
 
-Each step reads strictly less than the last would have. The same funnel is what
+Each step reads strictly less than the last would have. When the question is
+not "what happened in this session?" but "how has this tool behaved across a
+thousand sessions?", `corpus` replaces steps 1–3 with one sweep and then answers
+every follow-up off the extract. The same funnel is what
 the bundled Claude Code plugin teaches Claude to run, so an agent can answer
 "what went wrong in yesterday's session?" without ever opening the JSONL. For
 the `uvx` quick reference, see the
