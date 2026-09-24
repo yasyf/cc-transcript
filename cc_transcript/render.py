@@ -62,7 +62,11 @@ def prefixed(prefix: str, text: str) -> tuple[str, ...]:
 
 
 def render_turn(turn: Turn, *, budget: Budget, tool_results: bool = False) -> str:
-    """Render one turn: the prompt, the user's mid-turn messages, assistant prose, and every tool call, in order.
+    """Render one turn: the prompt, the messages queued mid-turn, assistant prose, and every tool call, in order.
+
+    A message queued while the agent worked renders under who sent it: ``user:`` for
+    the user's own, ``notification:`` for a background task's, ``peer:`` for another
+    agent's, ``channel:`` for an MCP channel's.
 
     Prose chunks clip to ``budget.turn_chars``; each tool call renders via
     :func:`render_tool_call` under ``budget.tool_chars``. An AskUserQuestion answer

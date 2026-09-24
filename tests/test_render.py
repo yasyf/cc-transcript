@@ -241,7 +241,7 @@ def test_queued_command_exposes_origin() -> None:
     assert queued("<task-notification>", mode="task-notification", origin=None).detail.origin is None
 
 
-def test_render_turn_renders_the_users_mid_turn_messages_in_order() -> None:
+def test_render_turn_renders_the_mid_turn_messages_by_sender() -> None:
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
@@ -254,8 +254,16 @@ def test_render_turn_renders_the_users_mid_turn_messages_in_order() -> None:
             assistant("sending"),
         ),
     )
-    assert render_turn(act.turns[0], budget=Budget()) == (
-        "user: post an ack in the thread\nassistant: drafting\nuser: once you have the draft, send it\nassistant: sending"
+    assert render_turn(act.turns[0], budget=Budget()) == "\n".join(
+        [
+            "user: post an ack in the thread",
+            "assistant: drafting",
+            "notification: <task-notification>drafted</task-notification>",
+            'peer: <agent-message from="lead">send it</agent-message>',
+            'channel: <channel source="plugin">send it</channel>',
+            "user: once you have the draft, send it",
+            "assistant: sending",
+        ]
     )
 
 
@@ -275,7 +283,10 @@ def test_render_turn_renders_the_users_ask_user_question_answer() -> None:
         (
             user("draft a reply"),
             assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": questions}),)),
-            user(blocks=(testkit.tool_result("q1", 'User has answered your questions: "Send it?"="Send"'),), tool_use_result=payload),
+            user(
+                blocks=(testkit.tool_result("q1", 'User has answered your questions: "Send it?"="Send"'),),
+                tool_use_result=payload,
+            ),
             assistant(blocks=(testkit.tool_use("b1", "Bash", {"command": "ls"}),)),
             user(blocks=(testkit.tool_result("b1", "a.py"),)),
         ),
