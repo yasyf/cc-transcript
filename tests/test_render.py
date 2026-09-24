@@ -45,8 +45,19 @@ def _mkw(
     }
 
 
-def user(text: str = "", *, blocks: Sequence[dict[str, Any]] = (), interrupted: bool = False, **mk: Any) -> UserEvent:
-    event = testkit.parse_event(testkit.user_line("uuid-1", text, blocks=blocks, interrupted=interrupted, **_mkw(**mk)))
+def user(
+    text: str = "",
+    *,
+    blocks: Sequence[dict[str, Any]] = (),
+    interrupted: bool = False,
+    tool_use_result: dict[str, Any] | None = None,
+    **mk: Any,
+) -> UserEvent:
+    event = testkit.parse_event(
+        testkit.user_line(
+            "uuid-1", text, blocks=blocks, interrupted=interrupted, tool_use_result=tool_use_result, **_mkw(**mk)
+        )
+    )
     assert isinstance(event, UserEvent)
     return event
 
@@ -238,31 +249,56 @@ def test_render_turn_renders_the_users_mid_turn_messages_in_order() -> None:
 
 
 def test_render_turn_renders_the_users_ask_user_question_answer() -> None:
-    questions = [{"question": "Send it?", "header": "Send", "multiSelect": False, "options": [{"label": "Send"}]}]
-    answer = 'User has answered your questions: "Send it?"="Send" selected preview:\nhello'
+    options = [
+        {"label": "Send", "description": "Post exactly the previewed text.", "preview": "hello"},
+        {"label": "Hold", "description": "Don't post yet."},
+    ]
+    questions = [{"question": "Send it?", "header": "Send", "multiSelect": False, "options": options}]
+    payload = {
+        "questions": questions,
+        "answers": {"Send it?": "Send"},
+        "annotations": {"Send it?": {"preview": "hello", "notes": "tag Andrew"}},
+    }
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
             user("draft a reply"),
             assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": questions}),)),
-            user(blocks=(testkit.tool_result("q1", answer),)),
-            assistant(blocks=(testkit.tool_use("b1", "Bash", {"command": "ls"}),)),
-            user(blocks=(testkit.tool_result("b1", "a.py"),)),
+            user(blocks=(testkit.tool_result("q1", 'User has answered your questions: "Send it?"="Send"'),), tool_use_result=payload),
         ),
     )
     ask = render_tool_call(parse_tool_call("AskUserQuestion", {"questions": questions}), budget=Budget())
-    assert render_turn(act.turns[0], budget=Budget()) == (
-        f"user: draft a reply\n{ask}\nuser answered: {answer}\nls"
+    assert render_turn(act.turns[0], budget=Budget()) == "\n".join(
+        [
+            "user: draft a reply",
+            ask,
+            "user answered: Send it? -> Send",
+            "  option: Post exactly the previewed text.",
+            "  preview: hello",
+            "  notes: tag Andrew",
+        ]
     )
 
 
-def test_render_turn_skips_a_failed_ask_user_question() -> None:
+def test_render_turn_renders_each_tool_result_after_its_call() -> None:
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
-            user("draft a reply"),
-            assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": []}),)),
-            user(blocks=(testkit.tool_result("q1", "dismissed", is_error=True),)),
+            user("post it"),
+            assistant(blocks=(testkit.tool_use("b1", "Bash", {"command": "ls"}),)),
+            user(blocks=(testkit.tool_result("b1", "a.py\n" + "x" * 800),)),
+            assistant(blocks=(testkit.tool_use("s1", "mcp__slack__slack_send_message", {"channel_id": "C1"}),)),
+            user(blocks=(testkit.tool_result("s1", "Slack writes need permission.", is_error=True),)),
+            assistant(blocks=(testkit.tool_use("e1", "Bash", {"command": "true"}),)),
+            user(blocks=(testkit.tool_result("e1", ""),)),
+            user(blocks=(testkit.tool_result("orphan", "no call in this turn"),)),
         ),
     )
-    assert render_turn(act.turns[0], budget=Budget()) == 'user: draft a reply\nAskUserQuestion({"questions":[]})'
+    assert render_turn(act.turns[0], budget=Budget(turn_chars=20)) == "\n".join([
+        "user: post it",
+        "ls",
+        f"result: a.py\n{'x' * 15}…(+785ch)",
+        'mcp__slack__slack_send_message({"channel_id":"C1"})',
+        "failed: Slack writes need pe…(+9ch)",
+        "true",
+    ])
