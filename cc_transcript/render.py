@@ -62,10 +62,13 @@ def prefixed(prefix: str, text: str) -> tuple[str, ...]:
 
 
 def render_turn(turn: Turn, *, budget: Budget) -> str:
-    """Render one turn: the prompt, assistant prose, and every tool call, in order.
+    """Render one turn: the prompt, the user's mid-turn messages, assistant prose, and every tool call with its result, in order.
 
-    Prose chunks clip to ``budget.turn_chars``; each tool call renders via
-    :func:`render_tool_call` under ``budget.tool_chars``.
+    Prose chunks and tool results clip to ``budget.turn_chars``; each tool call
+    renders via :func:`render_tool_call` under ``budget.tool_chars``. A result
+    renders as ``result:``, or ``failed:`` when the call errored; an
+    AskUserQuestion answer renders as ``user answered:`` with the chosen option's
+    description, the selected preview and any notes.
     """
     return _native.render_turn_from_events(
         turn.prompt,

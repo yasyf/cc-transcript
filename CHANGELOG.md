@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `render_turn` renders each tool result on the line after its call: `result:` with the
+  output, or `failed:` when the call errored, clipped to `Budget.turn_chars`. An
+  AskUserQuestion answer renders as `user answered: <question> -> <label>`, followed
+  by the chosen option's description, the selected preview and any notes. A result
+  whose call falls outside the rendered turn renders nothing.
 - `render_turn` renders a message the user typed while the agent was working as a
   `user:` line at its place in the turn, and a successful AskUserQuestion result as a
   `user answered:` line after the call. Task notifications and messages from peers or

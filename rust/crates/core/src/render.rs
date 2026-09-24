@@ -1,7 +1,7 @@
 //! The one renderer, ported from `cc_transcript/render.py` — every cut happens here,
 //! under a [`Budget`]. Parity notes on the individual helpers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
@@ -14,13 +14,16 @@ use crate::facts::{McpServerSummary, ToolFact};
 use crate::filter::{entry_text, event_kind};
 use crate::ids::encode_string;
 use crate::pystr;
-use crate::toolcall::{parse_tool_call, ToolCall};
+use crate::toolcall::{
+    parse_tool_call, parse_tool_result, AskUserQuestionResult, ToolCall, ToolResult,
+};
 use crate::types::{
     joined_text, ApiError, AssistantEntry, AttachmentDetail, Attribution, CacheCreation,
     CompactBoundary, ContentBlock, Entry, EntryMeta, HookInfo, ModelRefusalFallback,
     PreservedMessages, PreservedSegment, ServerToolUse, StopHookSummary, SystemDetail,
     ToolResultBlock, TurnDuration, Usage, UserEntry,
 };
+use crate::value::{field, field_str};
 
 const SIZE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 const BLANK_TIME: &str = "        ";
@@ -434,15 +437,15 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
 }
 
 /// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
-/// every tool call, and the user's AskUserQuestion answers, in order (render.py
-/// render_turn). Prose clips to `budget.turn_chars`; each tool call and answer
-/// renders under `budget.tool_chars`.
+/// every tool call with its result, and the user's AskUserQuestion answers, in order
+/// (render.py render_turn). Prose and tool results clip to `budget.turn_chars`; each
+/// tool call and answer preview renders under `budget.tool_chars`.
 pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !turn.prompt.is_empty() {
         parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
     }
-    let mut questions: HashSet<&str> = HashSet::new();
+    let mut calls: HashMap<&str, &str> = HashMap::new();
     for &event in &turn.events {
         match event {
             Entry::Assistant(assistant) => {
@@ -452,9 +455,7 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
                             parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
                         }
                         ContentBlock::ToolUse(tool_use) => {
-                            if tool_use.name == ASK_USER_QUESTION {
-                                questions.insert(&tool_use.id);
-                            }
+                            calls.insert(&tool_use.id, &tool_use.name);
                             parts.push(render_tool_call(
                                 &parse_tool_call(&tool_use.name, &tool_use.input),
                                 budget,
@@ -465,17 +466,13 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
                 }
             }
             Entry::User(user) => {
-                parts.extend(user.blocks().iter().filter_map(|block| match block {
-                    ContentBlock::ToolResult(result)
-                        if !result.is_error && questions.contains(result.tool_use_id.as_str()) =>
-                    {
-                        Some(format!(
-                            "user answered: {}",
-                            clip(&result.content, budget.tool_chars)
-                        ))
+                for block in user.blocks() {
+                    if let ContentBlock::ToolResult(result) = block {
+                        if let Some(name) = calls.get(result.tool_use_id.as_str()) {
+                            parts.extend(result_lines(name, result, budget));
+                        }
                     }
-                    _ => None,
-                }));
+                }
             }
             Entry::Attachment(attachment) => {
                 if let Some(prompt) = human_queued_prompt(&attachment.detail) {
@@ -486,6 +483,74 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
         }
     }
     parts.join("\n")
+}
+
+fn result_lines(name: &str, result: &ToolResultBlock, budget: &Budget) -> Vec<String> {
+    if result.is_error {
+        return vec![format!(
+            "failed: {}",
+            clip(&result.content, budget.turn_chars)
+        )];
+    }
+    if name == ASK_USER_QUESTION {
+        if let Some(ToolResult::AskUserQuestion(answer)) = result
+            .tool_use_result
+            .as_ref()
+            .map(|payload| parse_tool_result(name, payload))
+        {
+            return answer_lines(&answer, budget);
+        }
+    }
+    if pystr::strip(&result.content).is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "result: {}",
+        clip(&result.content, budget.turn_chars)
+    )]
+}
+
+fn answer_lines(answer: &AskUserQuestionResult, budget: &Budget) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (question, label) in &answer.answers {
+        let option = chosen_option(&answer.raw, question, label);
+        let annotation = answer
+            .annotations
+            .iter()
+            .find_map(|(asked, annotation)| (asked == question).then_some(annotation));
+        lines.push(format!(
+            "user answered: {} -> {}",
+            clip(question, budget.turn_chars),
+            clip(label, budget.turn_chars)
+        ));
+        if let Some(description) = option.and_then(|option| field_str(option, "description")) {
+            lines.push(format!(
+                "  option: {}",
+                clip(description, budget.turn_chars)
+            ));
+        }
+        let preview = annotation
+            .and_then(|annotation| annotation.preview.as_deref())
+            .or_else(|| option.and_then(|option| field_str(option, "preview")));
+        if let Some(preview) = preview {
+            lines.push(format!("  preview: {}", clip(preview, budget.tool_chars)));
+        }
+        if let Some(notes) = annotation.and_then(|annotation| annotation.notes.as_deref()) {
+            lines.push(format!("  notes: {}", clip(notes, budget.turn_chars)));
+        }
+    }
+    lines
+}
+
+fn chosen_option<'a>(payload: &'a Value, question: &str, label: &str) -> Option<&'a Value> {
+    field(payload, "questions")?
+        .as_array()?
+        .iter()
+        .find(|asked| field_str(asked, "question") == Some(question))
+        .and_then(|asked| field(asked, "options"))
+        .and_then(JsonContainerTrait::as_array)?
+        .iter()
+        .find(|option| field_str(option, "label") == Some(label))
 }
 
 pub(crate) fn human_queued_prompt(detail: &AttachmentDetail) -> Option<&str> {
