@@ -72,8 +72,10 @@ def render_turn(turn: Turn, *, budget: Budget, tool_results: bool = False) -> st
     Args:
         turn: The turn to render.
         budget: Character budgets for prose and tool calls.
-        tool_results: Render each other tool result after its call, as ``result:``,
-            or ``failed:`` when the call errored, clipped to ``budget.turn_chars``.
+        tool_results: Render each other tool result after its call: a ``result:``
+            head, or ``failed:`` when the call errored, naming the tool, then the
+            content clipped to ``budget.turn_chars`` on ``> `` lines. Calls batched in
+            one message and their results carry a ``call i/n``/``result i/n`` ordinal.
     """
     return _native.render_turn_from_events(
         turn.prompt,
