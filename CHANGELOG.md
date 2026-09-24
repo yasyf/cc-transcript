@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- With `tool_results=True`, a tool result renders as a `result:` or `failed:` head
+  naming its tool, then its content on `> ` lines, so no line of a fetched page or a
+  command's output can read as a `user:`, `user answered:` or `assistant:` line to a
+  judge reading the render. When one assistant message batches several calls, each call
+  line carries a `call i/n:` prefix and its result a `result i/n:` or `failed i/n:` head,
+  so a failed call and a succeeded one stay told apart whatever order their results land
+  in. A finished call with empty output now renders its head. The default output, with
+  tool results off, is unchanged.
 - `render_turn` and `render_session` take `tool_results=True` to render each tool
   result on the line after its call: `result:` with the output, or `failed:` when the
   call errored, clipped to `Budget.turn_chars`. A result whose call falls outside the

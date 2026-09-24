@@ -438,29 +438,44 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
 
 /// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
 /// every tool call, and the user's AskUserQuestion answers, in order (render.py
-/// render_turn). With `tool_results`, each other result follows its call. Prose and
-/// tool results clip to `budget.turn_chars`; each tool call and answer preview
-/// renders under `budget.tool_chars`.
+/// render_turn). With `tool_results`, each other result follows its call as a
+/// `result:`/`failed:` head naming the call, its content on `> ` lines, and a
+/// `call i/n`/`result i/n` ordinal on calls batched in one message.
 pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !turn.prompt.is_empty() {
         parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
     }
-    let mut calls: HashMap<&str, &str> = HashMap::new();
+    let mut calls: HashMap<&str, CallLabel<'_>> = HashMap::new();
     for &event in &turn.events {
         match event {
             Entry::Assistant(assistant) => {
+                let batch = assistant
+                    .blocks
+                    .iter()
+                    .filter(|block| matches!(block, ContentBlock::ToolUse(_)))
+                    .count();
+                let mut ordinal = 0;
                 for block in &assistant.blocks {
                     match block {
                         ContentBlock::Text(text) if !pystr::strip(text).is_empty() => {
                             parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
                         }
                         ContentBlock::ToolUse(tool_use) => {
-                            calls.insert(&tool_use.id, &tool_use.name);
-                            parts.push(render_tool_call(
+                            ordinal += 1;
+                            let label = CallLabel {
+                                name: &tool_use.name,
+                                ordinal: (tool_results && batch > 1).then_some((ordinal, batch)),
+                            };
+                            let rendered = render_tool_call(
                                 &parse_tool_call(&tool_use.name, &tool_use.input),
                                 budget,
-                            ));
+                            );
+                            parts.push(match label.ordinal {
+                                Some((i, n)) => format!("call {i}/{n}: {rendered}"),
+                                None => rendered,
+                            });
+                            calls.insert(&tool_use.id, label);
                         }
                         _ => {}
                     }
@@ -469,8 +484,8 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
             Entry::User(user) => {
                 for block in user.blocks() {
                     if let ContentBlock::ToolResult(result) = block {
-                        if let Some(name) = calls.get(result.tool_use_id.as_str()) {
-                            parts.extend(result_lines(name, result, budget, tool_results));
+                        if let Some(label) = calls.get(result.tool_use_id.as_str()) {
+                            parts.extend(result_lines(label, result, budget, tool_results));
                         }
                     }
                 }
@@ -486,8 +501,22 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
     parts.join("\n")
 }
 
+struct CallLabel<'a> {
+    name: &'a str,
+    ordinal: Option<(usize, usize)>,
+}
+
+impl CallLabel<'_> {
+    fn head(&self, verdict: &str) -> String {
+        match self.ordinal {
+            Some((i, n)) => format!("{verdict} {i}/{n}: {}", self.name),
+            None => format!("{verdict}: {}", self.name),
+        }
+    }
+}
+
 fn result_lines(
-    name: &str,
+    label: &CallLabel<'_>,
     result: &ToolResultBlock,
     budget: &Budget,
     tool_results: bool,
@@ -496,16 +525,13 @@ fn result_lines(
         if !tool_results {
             return Vec::new();
         }
-        return vec![format!(
-            "failed: {}",
-            clip(&result.content, budget.turn_chars)
-        )];
+        return quoted_result(label.head("failed"), &result.content, budget);
     }
-    if name == ASK_USER_QUESTION {
+    if label.name == ASK_USER_QUESTION {
         if let Some(ToolResult::AskUserQuestion(answer)) = result
             .tool_use_result
             .as_ref()
-            .map(|payload| parse_tool_result(name, payload))
+            .map(|payload| parse_tool_result(label.name, payload))
         {
             return answer_lines(&answer, budget);
         }
@@ -514,13 +540,18 @@ fn result_lines(
             clip(&result.content, budget.tool_chars)
         )];
     }
-    if !tool_results || pystr::strip(&result.content).is_empty() {
+    if !tool_results {
         return Vec::new();
     }
-    vec![format!(
-        "result: {}",
-        clip(&result.content, budget.turn_chars)
-    )]
+    quoted_result(label.head("result"), &result.content, budget)
+}
+
+fn quoted_result(head: String, content: &str, budget: &Budget) -> Vec<String> {
+    let mut lines = vec![head];
+    if !pystr::strip(content).is_empty() {
+        lines.extend(prefixed("> ", &clip(content, budget.turn_chars)));
+    }
+    lines
 }
 
 fn answer_lines(answer: &AskUserQuestionResult, budget: &Budget) -> Vec<String> {
