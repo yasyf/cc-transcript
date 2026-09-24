@@ -223,6 +223,8 @@ def test_recent_messages_counts_only_messages() -> None:
     ]
     assert sess.recent_messages(2).events[0].detail.prompt == "send it"
     assert len(sess.recent_messages(99)) == len(sess)
+    assert len(sess.recent_messages(0)) == 0
+    assert len(session().recent_messages(3)) == 0
 
 
 def test_trimmed_boundary_turn_drops_prompt_and_earlier_tool_uses() -> None:

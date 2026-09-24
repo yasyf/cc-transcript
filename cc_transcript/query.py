@@ -643,12 +643,14 @@ class Session:
         return windowed(self, max(len(self) - n, 0), len(self))
 
     def recent_messages(self, n: int) -> Session:
-        """The window reaching back over its last ``n`` messages, for positive ``n``.
+        """The window reaching back over its last ``n`` messages; empty when ``n`` is not positive.
 
         A message is a user or assistant event or a queued command. The hook,
         reminder, system and mode events between messages ride along without
         counting, so harness noise never crowds the conversation out of the window.
         """
+        if n <= 0:
+            return windowed(self, len(self), len(self))
         messages = [index for index, event in enumerate(self.events) if is_message(event)]
         return windowed(self, messages[-n] if n <= len(messages) else 0, len(self))
 

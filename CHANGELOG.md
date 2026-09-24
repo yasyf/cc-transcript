@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Session.recent_messages(0)` returns the empty window. It used to return the window
+  from the first message, or raise `IndexError` on an empty session.
 - A typed-invalid line appended to a held cursor is held in `UNREADABLE` after its first
   failure. The growth path ran outside the negative-cache handler, so the first failing walk
   recorded nothing and the next unchanged walk re-parsed the whole file before recording it.
