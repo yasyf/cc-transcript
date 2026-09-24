@@ -437,10 +437,11 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
 }
 
 /// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
-/// every tool call with its result, and the user's AskUserQuestion answers, in order
-/// (render.py render_turn). Prose and tool results clip to `budget.turn_chars`; each
-/// tool call and answer preview renders under `budget.tool_chars`.
-pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
+/// every tool call, and the user's AskUserQuestion answers, in order (render.py
+/// render_turn). With `tool_results`, each other result follows its call. Prose and
+/// tool results clip to `budget.turn_chars`; each tool call and answer preview
+/// renders under `budget.tool_chars`.
+pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !turn.prompt.is_empty() {
         parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
@@ -469,7 +470,7 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
                 for block in user.blocks() {
                     if let ContentBlock::ToolResult(result) = block {
                         if let Some(name) = calls.get(result.tool_use_id.as_str()) {
-                            parts.extend(result_lines(name, result, budget));
+                            parts.extend(result_lines(name, result, budget, tool_results));
                         }
                     }
                 }
@@ -485,8 +486,16 @@ pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
     parts.join("\n")
 }
 
-fn result_lines(name: &str, result: &ToolResultBlock, budget: &Budget) -> Vec<String> {
+fn result_lines(
+    name: &str,
+    result: &ToolResultBlock,
+    budget: &Budget,
+    tool_results: bool,
+) -> Vec<String> {
     if result.is_error {
+        if !tool_results {
+            return Vec::new();
+        }
         return vec![format!(
             "failed: {}",
             clip(&result.content, budget.turn_chars)
@@ -500,8 +509,12 @@ fn result_lines(name: &str, result: &ToolResultBlock, budget: &Budget) -> Vec<St
         {
             return answer_lines(&answer, budget);
         }
+        return vec![format!(
+            "user answered: {}",
+            clip(&result.content, budget.tool_chars)
+        )];
     }
-    if pystr::strip(&result.content).is_empty() {
+    if !tool_results || pystr::strip(&result.content).is_empty() {
         return Vec::new();
     }
     vec![format!(

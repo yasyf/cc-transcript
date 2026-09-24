@@ -61,23 +61,39 @@ def prefixed(prefix: str, text: str) -> tuple[str, ...]:
     return tuple(f"{prefix}{line}" for line in text.splitlines()) or (prefix.rstrip(),)
 
 
-def render_turn(turn: Turn, *, budget: Budget) -> str:
-    """Render one turn: the prompt, the user's mid-turn messages, assistant prose, and every tool call with its result, in order.
+def render_turn(turn: Turn, *, budget: Budget, tool_results: bool = False) -> str:
+    """Render one turn: the prompt, the user's mid-turn messages, assistant prose, and every tool call, in order.
 
-    Prose chunks and tool results clip to ``budget.turn_chars``; each tool call
-    renders via :func:`render_tool_call` under ``budget.tool_chars``. A result
-    renders as ``result:``, or ``failed:`` when the call errored; an
-    AskUserQuestion answer renders as ``user answered:`` with the chosen option's
-    description, the selected preview and any notes.
+    Prose chunks clip to ``budget.turn_chars``; each tool call renders via
+    :func:`render_tool_call` under ``budget.tool_chars``. An AskUserQuestion answer
+    renders as ``user answered:`` with the chosen option's description, the
+    selected preview and any notes.
+
+    Args:
+        turn: The turn to render.
+        budget: Character budgets for prose and tool calls.
+        tool_results: Render each other tool result after its call, as ``result:``,
+            or ``failed:`` when the call errored, clipped to ``budget.turn_chars``.
     """
     return _native.render_turn_from_events(
         turn.prompt,
         list(turn.events),
         budget.turn_chars,
         budget.tool_chars,
+        tool_results,
     )
 
 
-def render_session(activity: SessionActivity, *, budget: Budget) -> str:
-    """Render every turn of a session under ``budget``, separated by blank lines."""
-    return "\n\n".join(rendered for turn in activity.turns if (rendered := render_turn(turn, budget=budget)))
+def render_session(activity: SessionActivity, *, budget: Budget, tool_results: bool = False) -> str:
+    """Render every turn of a session under ``budget``, separated by blank lines.
+
+    Args:
+        activity: The session to render.
+        budget: Character budgets for prose and tool calls.
+        tool_results: Render each tool result after its call; see :func:`render_turn`.
+    """
+    return "\n\n".join(
+        rendered
+        for turn in activity.turns
+        if (rendered := render_turn(turn, budget=budget, tool_results=tool_results))
+    )
