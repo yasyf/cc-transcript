@@ -26,7 +26,7 @@ from cc_transcript.activity import ActivityLift, SessionActivity, Turn, event_st
 from cc_transcript.discovery import TranscriptExpiredError, resolve, subagent_paths, subagent_transcripts
 from cc_transcript.filterspec import event_meta, session_id_of
 from cc_transcript.ids import SessionId, ToolUseId
-from cc_transcript.models import AssistantEvent, SystemEvent, ToolResultBlock, UserEvent
+from cc_transcript.models import AssistantEvent, AttachmentEvent, QueuedCommand, SystemEvent, ToolResultBlock, UserEvent
 from cc_transcript.notifications import Notifications
 from cc_transcript.parser import parse
 from cc_transcript.tools import (
@@ -642,6 +642,16 @@ class Session:
         """The window's last ``n`` events."""
         return windowed(self, max(len(self) - n, 0), len(self))
 
+    def recent_messages(self, n: int) -> Session:
+        """The window reaching back over its last ``n`` messages, for positive ``n``.
+
+        A message is a user or assistant event or a queued command. The hook,
+        reminder, system and mode events between messages ride along without
+        counting, so harness noise never crowds the conversation out of the window.
+        """
+        messages = [index for index, event in enumerate(self.events) if is_message(event)]
+        return windowed(self, messages[-n] if n <= len(messages) else 0, len(self))
+
     @property
     def current_turn(self) -> Session:
         """The one-turn view of the window's last turn."""
@@ -958,6 +968,12 @@ class DeepView:
 
     def __iter__(self) -> Iterator[DeepSession]:
         return iter(self.sessions)
+
+
+def is_message(event: TranscriptEvent) -> bool:
+    return isinstance(event, UserEvent | AssistantEvent) or (
+        isinstance(event, AttachmentEvent) and isinstance(event.detail, QueuedCommand)
+    )
 
 
 def windowed(session: Session, start: int, stop: int) -> Session:

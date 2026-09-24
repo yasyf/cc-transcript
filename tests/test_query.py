@@ -194,6 +194,37 @@ def test_recent_keeps_the_last_n_events() -> None:
     assert len(sess.recent(99)) == len(sess)
 
 
+def hook_attachment(uuid: str, secs: int) -> TranscriptEvent:
+    return testkit.parse_event(
+        {"type": "attachment", "attachment": {"type": "hook_success", "content": "ok"}}
+        | testkit.meta_fields(uuid, session_id=SESSION, timestamp=BASE, secs=secs)
+    )
+
+
+def test_recent_messages_counts_only_messages() -> None:
+    queued_send = testkit.parse_event(
+        {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "send it", "commandMode": "prompt"}}
+        | testkit.meta_fields("q0", session_id=SESSION, timestamp=BASE, secs=2)
+    )
+    sess = session(
+        user("u0", "draft it"),
+        hook_attachment("h0", 1),
+        queued_send,
+        *(hook_attachment(f"h{i}", 2 + i) for i in range(1, 9)),
+        assistant("a0", "sent", secs=12),
+        hook_attachment("h9", 13),
+    )
+    assert len(sess.recent(3).turns[0].events) == 3
+    assert [type(event).__name__ for event in sess.recent_messages(2).events] == [
+        "AttachmentEvent",
+        *["AttachmentEvent"] * 8,
+        "AssistantEvent",
+        "AttachmentEvent",
+    ]
+    assert sess.recent_messages(2).events[0].detail.prompt == "send it"
+    assert len(sess.recent_messages(99)) == len(sess)
+
+
 def test_trimmed_boundary_turn_drops_prompt_and_earlier_tool_uses() -> None:
     sliced = plan_session().prior().after(tool="Write")
     assert [use.call.name for use in sliced.tool_calls] == ["ExitPlanMode"]

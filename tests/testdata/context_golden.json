@@ -1345,19 +1345,19 @@
           "before": 6,
           "after": 2,
           "preview_chars": 200,
-          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+68ch)\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+92ch)\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+268ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+287ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1367,19 +1367,19 @@
           "before": 2,
           "after": 1,
           "preview_chars": 50,
-          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\nuser answered: answered\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+119ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+138ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1389,19 +1389,19 @@
           "before": 3,
           "after": 0,
           "preview_chars": 24,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))\nuser answered: answered"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+69ch)"
+              "expected": "user: set up the adapter…(+93ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+88ch)"
+              "expected": "user:…(+112ch)"
             }
           ]
         },
@@ -1411,19 +1411,19 @@
           "before": 1,
           "after": 1,
           "preview_chars": 5,
-          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\\nuser answered: answe…(+3ch)\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\n\nuser: thank…(+1ch)\nassistant: done"
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\nuser answered: answe…(+3ch)\n\nuser: thank…(+1ch)\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+              "expected": "user: set u…(+13ch)\nassi…(+79ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+              "expected": "user:…(+98ch)\n\nuser:…(+29ch)"
             }
           ]
         },
@@ -1433,19 +1433,19 @@
           "before": 0,
           "after": 0,
           "preview_chars": 200,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+68ch)"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+92ch)"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+244ch)"
+              "expected": "user: set up the adapter…(+268ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+263ch)"
+              "expected": "user:…(+287ch)"
             }
           ]
         },
@@ -1455,19 +1455,19 @@
           "before": 6,
           "after": 2,
           "preview_chars": 200,
-          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+68ch)\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+92ch)\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+268ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+287ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1477,19 +1477,19 @@
           "before": 2,
           "after": 1,
           "preview_chars": 50,
-          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\nuser answered: answered\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+119ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+138ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1499,19 +1499,19 @@
           "before": 3,
           "after": 0,
           "preview_chars": 24,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))\nuser answered: answered"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+69ch)"
+              "expected": "user: set up the adapter…(+93ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+88ch)"
+              "expected": "user:…(+112ch)"
             }
           ]
         },
@@ -1521,19 +1521,19 @@
           "before": 1,
           "after": 1,
           "preview_chars": 5,
-          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\\nuser answered: answe…(+3ch)\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\n\nuser: thank…(+1ch)\nassistant: done"
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\nuser answered: answe…(+3ch)\n\nuser: thank…(+1ch)\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+              "expected": "user: set u…(+13ch)\nassi…(+79ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+              "expected": "user:…(+98ch)\n\nuser:…(+29ch)"
             }
           ]
         },
@@ -1543,19 +1543,19 @@
           "before": 0,
           "after": 0,
           "preview_chars": 200,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":\"q1\"},\"before\":[],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+68ch)"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+92ch)"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+244ch)"
+              "expected": "user: set up the adapter…(+268ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+263ch)"
+              "expected": "user:…(+287ch)"
             }
           ]
         },
@@ -1565,19 +1565,19 @@
           "before": 6,
           "after": 2,
           "preview_chars": 200,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header\\\":\\\"Adapter\\\",\\\"multiSelect\\\":false,\\\"options\\\":[{\\\"label\\\":\\\"Storage (Recommended)\\\"},{\\\"label\\\":\\\"Memory\\\"}]},{\\\"question\\\":\\\"Name the contexts?\\\",\\\"header\\\":\\\"Names\\\",\\\"m…(+76ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":200,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+68ch)\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header\":\"Adapter\",\"multiSelect\":false,\"options\":[{\"label\":\"Storage (Recommended)\"},{\"label\":\"Memo…(+92ch)\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+244ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+268ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+263ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+287ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1587,19 +1587,19 @@
           "before": 2,
           "after": 1,
           "preview_chars": 50,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question\\\":\\\"Which adapter?\\\",\\\"header…(+226ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":50,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question\":\"Which adapter?\",\"header…(+226ch))\nuser answered: answered\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+95ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+119ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+114ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+138ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1609,19 +1609,19 @@
           "before": 3,
           "after": 0,
           "preview_chars": 24,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set up the adapter\\nassistant: asking\\nAskUserQuestion({\\\"questions\\\":[{\\\"question…(+252ch))\\nuser answered: answered\",\"previews\":[{\"kind\":\"text\",\"text\":\"set up the adapter\"},{\"kind\":\"text\",\"text\":\"asking\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":24,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thanks\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thanks\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))\n\nuser: thanks\nassistant: done"
+              "expected": "user: set up the adapter\nassistant: asking\nAskUserQuestion({\"questions\":[{\"question…(+252ch))\nuser answered: answered\n\nuser: thanks\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set up the adapter…(+69ch)\n\nuser: thanks\nassistant: …(+4ch)"
+              "expected": "user: set up the adapter…(+93ch)\n\nuser: thanks\nassistant: …(+4ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+88ch)\n\nuser:…(+23ch)"
+              "expected": "user:…(+112ch)\n\nuser:…(+23ch)"
             }
           ]
         },
@@ -1631,19 +1631,19 @@
           "before": 1,
           "after": 1,
           "preview_chars": 5,
-          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
+          "to_json": "{\"after\":[],\"anchor\":{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},\"before\":[{\"preview\":\"user: set u…(+13ch)\\nassistant: askin…(+1ch)\\nAskUserQuestion({\\\"que…(+271ch))\\nuser answered: answe…(+3ch)\",\"previews\":[{\"kind\":\"text\",\"text\":\"set u…(+13ch)\"},{\"kind\":\"text\",\"text\":\"askin…(+1ch)\"},{\"kind\":\"ask_user_question\",\"notes\":{\"Which adapter?\":\"and never use the memory one again\"},\"questions\":[{\"header\":\"Adapter\",\"labels\":[\"Storage (Recommended)\",\"Memory\"],\"multi_select\":false,\"question\":\"Which adapter?\"},{\"header\":\"Names\",\"labels\":[\"BeforeEdit\",\"AfterEdit\"],\"multi_select\":true,\"question\":\"Name the contexts?\"}],\"selections\":{\"Name the contexts?\":\"BeforeEdit, AfterEdit\",\"Which adapter?\":\"Storage (Recommended)\"}}],\"refs\":[{\"event_uuid\":\"u0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a0\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"u1\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[\"a5c8e7669a12440c08b39f1d030292f1e27efd53a538d24e32a9e500c2aaa0f8\"]}],\"fidelity\":\"full\",\"preview_chars\":5,\"preview_schema\":\"cc-transcript.preview/1\",\"schema\":\"cc-transcript.context/2\",\"trigger\":{\"preview\":\"user: thank…(+1ch)\\nassistant: done\",\"previews\":[{\"kind\":\"text\",\"text\":\"thank…(+1ch)\"},{\"kind\":\"text\",\"text\":\"done\"}],\"refs\":[{\"event_uuid\":\"u2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null},{\"event_uuid\":\"a2\",\"session_id\":\"22222222-2222-2222-2222-222222222222\",\"tool_use_id\":null}],\"role\":\"user\",\"tool_digests\":[]}}",
           "previews": [
             {
               "turn_chars": 200,
-              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\n\nuser: thank…(+1ch)\nassistant: done"
+              "expected": "user: set u…(+13ch)\nassistant: askin…(+1ch)\nAskUserQuestion({\"que…(+271ch))\nuser answered: answe…(+3ch)\n\nuser: thank…(+1ch)\nassistant: done"
             },
             {
               "turn_chars": 24,
-              "expected": "user: set u…(+13ch)\nassi…(+51ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
+              "expected": "user: set u…(+13ch)\nassi…(+79ch)\n\nuser: thank…(+1ch)\nassis…(+10ch)"
             },
             {
               "turn_chars": 5,
-              "expected": "user:…(+70ch)\n\nuser:…(+29ch)"
+              "expected": "user:…(+98ch)\n\nuser:…(+29ch)"
             }
           ]
         },

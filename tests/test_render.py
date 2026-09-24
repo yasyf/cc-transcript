@@ -9,7 +9,9 @@ import pytest
 from cc_transcript.activity import SessionActivity
 from cc_transcript.models import (
     AssistantEvent,
+    AttachmentEvent,
     ModeEvent,
+    QueuedCommand,
     SessionId,
     UserEvent,
 )
@@ -61,6 +63,14 @@ def assistant(
         testkit.assistant_line("uuid-1", text, model=model, blocks=blocks, stop_reason=stop_reason, **_mkw(**mk))
     )
     assert isinstance(event, AssistantEvent)
+    return event
+
+
+def queued(prompt: str, *, mode: str = "prompt", origin: str | None = "human") -> AttachmentEvent:
+    attachment = {"type": "queued_command", "prompt": prompt, "commandMode": mode}
+    line = {"type": "attachment", "attachment": attachment | ({"origin": {"kind": origin}} if origin else {})}
+    event = testkit.parse_event(line | testkit.meta_fields("uuid-1", session_id="sess-1", timestamp=TS))
+    assert isinstance(event, AttachmentEvent)
     return event
 
 
@@ -200,3 +210,59 @@ def test_render_session_joins_turns_skipping_empty() -> None:
         ),
     )
     assert render_session(act, budget=Budget()) == "user: one\nassistant: ack\n\nuser: two"
+
+
+def test_queued_command_exposes_origin() -> None:
+    detail = queued("send it", origin="peer").detail
+    assert isinstance(detail, QueuedCommand)
+    assert (detail.prompt, detail.command_mode, detail.origin) == ("send it", "prompt", "peer")
+    assert queued("<task-notification>", mode="task-notification", origin=None).detail.origin is None
+
+
+def test_render_turn_renders_the_users_mid_turn_messages_in_order() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            user("post an ack in the thread"),
+            assistant("drafting"),
+            queued("<task-notification>drafted</task-notification>", mode="task-notification", origin=None),
+            queued('<agent-message from="lead">send it</agent-message>', origin="peer"),
+            queued('<channel source="plugin">send it</channel>', origin="channel"),
+            queued("once you have the draft, send it"),
+            assistant("sending"),
+        ),
+    )
+    assert render_turn(act.turns[0], budget=Budget()) == (
+        "user: post an ack in the thread\nassistant: drafting\nuser: once you have the draft, send it\nassistant: sending"
+    )
+
+
+def test_render_turn_renders_the_users_ask_user_question_answer() -> None:
+    questions = [{"question": "Send it?", "header": "Send", "multiSelect": False, "options": [{"label": "Send"}]}]
+    answer = 'User has answered your questions: "Send it?"="Send" selected preview:\nhello'
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            user("draft a reply"),
+            assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": questions}),)),
+            user(blocks=(testkit.tool_result("q1", answer),)),
+            assistant(blocks=(testkit.tool_use("b1", "Bash", {"command": "ls"}),)),
+            user(blocks=(testkit.tool_result("b1", "a.py"),)),
+        ),
+    )
+    ask = render_tool_call(parse_tool_call("AskUserQuestion", {"questions": questions}), budget=Budget())
+    assert render_turn(act.turns[0], budget=Budget()) == (
+        f"user: draft a reply\n{ask}\nuser answered: {answer}\nls"
+    )
+
+
+def test_render_turn_skips_a_failed_ask_user_question() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            user("draft a reply"),
+            assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": []}),)),
+            user(blocks=(testkit.tool_result("q1", "dismissed", is_error=True),)),
+        ),
+    )
+    assert render_turn(act.turns[0], budget=Budget()) == 'user: draft a reply\nAskUserQuestion({"questions":[]})'

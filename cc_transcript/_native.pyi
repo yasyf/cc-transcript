@@ -1498,12 +1498,17 @@ class QueuedCommand:
             plain-string prompt (e.g. an image-paste payload).
         command_mode: How the command was queued, e.g. ``prompt`` or
             ``task-notification``, or None.
+        origin: Who sent a ``prompt``-mode command: ``human`` for the user,
+            ``peer`` for another agent or session, ``channel`` for an MCP
+            channel event; None when the transcript does not record it.
     """
     __match_args__: typing.ClassVar[tuple[str, ...]]
     @property
     def prompt(self) -> typing.Optional[builtins.str]: ...
     @property
     def command_mode(self) -> typing.Optional[builtins.str]: ...
+    @property
+    def origin(self) -> typing.Optional[builtins.str]: ...
 
 @typing.final
 class ReadCall(ToolCallBase):
