@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `render_turn` quotes the lines past the first of an assistant prose chunk, a Bash
+  command and a Write's content with `> `, in the default render, so no line the agent
+  wrote can read as a `user:`, `user answered:` or `assistant:` line to a judge reading
+  the render. Edit hunks keep their `- `/`+ ` prefixes and single-line calls render as
+  before.
 - With `tool_results=True`, a tool result renders as a `result:` or `failed:` head
   naming its tool, then its content on `> ` lines, so no line of a fetched page or a
   command's output can read as a `user:`, `user answered:` or `assistant:` line to a

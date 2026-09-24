@@ -398,6 +398,18 @@ fn prefixed(prefix: &str, text: &str) -> Vec<String> {
     }
 }
 
+fn quote_continuations(text: &str) -> String {
+    let mut lines = py_splitlines(text).into_iter();
+    let Some(head) = lines.next() else {
+        return String::new();
+    };
+    lines.fold(head.to_string(), |mut out, line| {
+        out.push_str("\n> ");
+        out.push_str(line);
+        out
+    })
+}
+
 fn hunk_lines(old: &str, new: &str, budget: &Budget) -> Vec<String> {
     let mut lines = prefixed("- ", &clip(old, budget.tool_chars));
     lines.extend(prefixed("+ ", &clip(new, budget.tool_chars)));
@@ -405,10 +417,11 @@ fn hunk_lines(old: &str, new: &str, budget: &Budget) -> Vec<String> {
 }
 
 /// Render a typed tool call, clipping each content piece to the tool budget
-/// (render.py render_tool_call).
+/// (render.py render_tool_call); a Bash command's or Write content's lines past the
+/// first are quoted `> `, so none reads as a transcript role line.
 pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
     match call {
-        ToolCall::Bash(c) => clip(&c.command, budget.tool_chars),
+        ToolCall::Bash(c) => quote_continuations(&clip(&c.command, budget.tool_chars)),
         ToolCall::Edit(c) => {
             let mut lines = vec![format!("Edit {}", c.file_path)];
             lines.extend(hunk_lines(&c.old, &c.new, budget));
@@ -423,11 +436,11 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
             }
             lines.join("\n")
         }
-        ToolCall::Write(c) => format!(
+        ToolCall::Write(c) => quote_continuations(&format!(
             "Write {}\n{}",
             c.file_path,
             clip(&c.content, budget.tool_chars)
-        ),
+        )),
         _ => format!(
             "{}({})",
             call.name(),
@@ -438,9 +451,10 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
 
 /// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
 /// every tool call, and the user's AskUserQuestion answers, in order (render.py
-/// render_turn). With `tool_results`, each other result follows its call as a
-/// `result:`/`failed:` head naming the call, its content on `> ` lines, and a
-/// `call i/n`/`result i/n` ordinal on calls batched in one message.
+/// render_turn). Prose lines past the first are quoted `> `, as are a call's. With
+/// `tool_results`, each other result follows its call as a `result:`/`failed:` head
+/// naming the call, its content on `> ` lines, and a `call i/n`/`result i/n` ordinal
+/// on calls batched in one message.
 pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !turn.prompt.is_empty() {
@@ -459,7 +473,10 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
                 for block in &assistant.blocks {
                     match block {
                         ContentBlock::Text(text) if !pystr::strip(text).is_empty() => {
-                            parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
+                            parts.push(quote_continuations(&format!(
+                                "assistant: {}",
+                                clip(text, budget.turn_chars)
+                            )));
                         }
                         ContentBlock::ToolUse(tool_use) => {
                             ordinal += 1;

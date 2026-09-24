@@ -187,7 +187,7 @@
         700,
         1500
       ],
-      "expected": "Write cc_transcript/activity.py\n# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      "expected": "Write cc_transcript/activity.py\n> # generated line 0\n> # generated line 1\n> # generated line 2\n> # generated line 3\n> # generated line 4"
     },
     {
       "name": "Write",
@@ -196,7 +196,7 @@
         100,
         100
       ],
-      "expected": "Write cc_transcript/activity.py\n# generated line 0\n# generated line 1\n# generated line 2\n# generated line 3\n# generated line 4"
+      "expected": "Write cc_transcript/activity.py\n> # generated line 0\n> # generated line 1\n> # generated line 2\n> # generated line 3\n> # generated line 4"
     },
     {
       "name": "Write",
@@ -205,7 +205,7 @@
         24,
         24
       ],
-      "expected": "Write cc_transcript/activity.py\n# generated line 0\n# gen…(+70ch)"
+      "expected": "Write cc_transcript/activity.py\n> # generated line 0\n> # gen…(+70ch)"
     },
     {
       "name": "Write",
@@ -214,7 +214,7 @@
         5,
         5
       ],
-      "expected": "Write cc_transcript/activity.py\n# gen…(+89ch)"
+      "expected": "Write cc_transcript/activity.py\n> # gen…(+89ch)"
     },
     {
       "name": "Glob",
@@ -439,7 +439,7 @@
         700,
         1500
       ],
-      "expected": "Write /w.py\n# generated 🤖\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…(+514ch)"
+      "expected": "Write /w.py\n> # generated 🤖\n> xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…(+514ch)"
     },
     {
       "name": "Write",
@@ -448,7 +448,7 @@
         100,
         100
       ],
-      "expected": "Write /w.py\n# generated 🤖\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…(+1914ch)"
+      "expected": "Write /w.py\n> # generated 🤖\n> xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…(+1914ch)"
     },
     {
       "name": "Write",
@@ -457,7 +457,7 @@
         24,
         24
       ],
-      "expected": "Write /w.py\n# generated 🤖\nxxxxxxxxxx…(+1990ch)"
+      "expected": "Write /w.py\n> # generated 🤖\n> xxxxxxxxxx…(+1990ch)"
     },
     {
       "name": "Write",
@@ -466,7 +466,7 @@
         5,
         5
       ],
-      "expected": "Write /w.py\n# gen…(+2009ch)"
+      "expected": "Write /w.py\n> # gen…(+2009ch)"
     },
     {
       "name": "Read",
@@ -2085,7 +2085,7 @@
             "    2 user  09:03:26 <-Bash (8ch) 1 passed 78507f7f-8616-455d-8186-8027fb0ed9dd",
             "    3 user  09:04:07 <-Edit (2ch) ok e95f94d3-48df-49da-8a00-f5e51a223c41",
             "    4 user  09:04:24 actually keep the old behavior for empty specs ebebba60-beed-470f-67dc-54ccc016fb22",
-            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+269ch) 9d57bffe-15bf-4d37-aca4-9929b4eb64f4",
+            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # gen…(+269ch) 9d57bffe-15bf-4d37-aca4-9929b4eb64f4",
             "    6 user  09:07:00 <-Edit (2ch) ok cfa5e241-7bc9-4a72-3e47-52a83a3591d1",
             "    7 user  09:08:29 <-Write (33ch) wrote cc_transcript/filterspec.py f354362d-f6c8-430b-1225-a09ee489f2d3",
             "    8 asst* 09:09:15 [claude-opus-4-8] \"subagent progress note\" 0f12481a-c94f-4f34-582d-e32c9839ecbb",
@@ -2102,7 +2102,7 @@
             "    2 user  09:03:26 <-Bash (8ch) 1 passed",
             "    3 user  09:04:07 <-Edit (2ch) ok",
             "    4 user  09:04:24 actually keep the old behavior for empty specs",
-            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generated line 10 # generated line 11 # generated line 12 # generated line 13 # generated line 14 # generated line 15 # generated line 16 # generated line 17 # generated line 18",
+            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9 > # generated line 10 > # generated line 11 > # generated line 12 > # generated line 13 > # generated line 14 > # generated line 15 > # generated line 16 > # generated line 17 > # generated line 18",
             "    6 user  09:07:00 <-Edit (2ch) ok",
             "    7 user  09:08:29 <-Write (33ch) wrote cc_transcript/filterspec.py",
             "    8 asst* 09:09:15 [claude-opus-4-8] \"subagent progress note\"",
@@ -2119,7 +2119,7 @@
             "    2 user  09:03:26 <-Bash (8ch) 1 passed",
             "    3 user  09:04:07 <-Edit (2ch) ok",
             "    4 user  09:04:24 actually keep the old behavior for empty specs",
-            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generate…(+169ch)",
+            "    5 asst  09:05:41 [claude-opus-4-8] \"Found the issue — the predicate was applied to the wrong kind.\" Edit tests/test_parser.py - return None + return result Write cc_transcript/filterspec.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9 > # generate…(+169ch)",
             "    6 user  09:07:00 <-Edit (2ch) ok",
             "    7 user  09:08:29 <-Write (33ch) wrote cc_transcript/filterspec.py",
             "    8 asst* 09:09:15 [claude-opus-4-8] \"subagent progress note\"",
@@ -2373,7 +2373,7 @@
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py … 7bf20efa-951b-42de-d56a-a92970e6971e",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\" de1740d5-65cf-4f5d-0003-a1b539daa779",
             "    4 user  10:34:43 why does the mining detector miss short corrections? 0edb7bd0-a0bf-41f8-2872-a593651bded7",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+269ch) 74490fd3-9f02-4e64-186e-d79b09e51fb7",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # gen…(+269ch) 74490fd3-9f02-4e64-186e-d79b09e51fb7",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_tran… d26b29a1-7aec-4804-fde9-548fc84bc3a6",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs 0f8ed741-9ef9-4a94-0774-9713ba5e9937",
             "    8 user  10:36:28 yes please 68fd30aa-0337-45d9-9db4-7e69175f32f1",
@@ -2384,7 +2384,7 @@
             "   13 sys   11:20:06 turn_duration 0f15616d-6df9-4575-0c6e-2db058b78d4e",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\" e92eb7ed-fb54-4df9-3462-456cc9136d9f",
             "   15 user  14:38:11 add a --json flag to the stats command 11630d1c-72c8-46e0-48fb-840f6ff76527",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # gen…(+89ch) d67e6358-d966-4bda-a851-3ce70ef0dba7",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # gen…(+89ch) d67e6358-d966-4bda-a851-3ce70ef0dba7",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.r… 79737716-7758-4d9c-ccb6-90b74ed585a3",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py b22d91ad-9ca4-4a65-741f-c4f52d8a06c5",
             "   19 sys   14:43:10 turn_duration d680b31b-ddb0-4128-fe22-600283063bb2",
@@ -2401,7 +2401,7 @@
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py 4 line 4 of tests/test_parser.py 5 line 5 of tests/test_parser.py 6 line 6 of tests/test_parser.py 7 line 7 of tests/test_parser.py 8 line 8 of tests/test_parser.py 9 line 9 of tests/test_parser.py 10 line 10 of tests/test_parser.py",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:34:43 why does the mining detector miss short corrections?",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generated line 10 # generated line 11 # generated line 12 # generated line 13 # generated line 14 # generated line 15 # generated line 16 # generated line 17 # generated line 18",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9 > # generated line 10 > # generated line 11 > # generated line 12 > # generated line 13 > # generated line 14 > # generated line 15 > # generated line 16 > # generated line 17 > # generated line 18",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_transcript/filterspec.py 4 line 4 of cc_transcript/filterspec.py 5 line 5 of cc_transcript/filterspec.py 6 line 6 of cc_transcript/filterspec.py 7 line 7 of cc_transcript/filterspec.py 8 line 8 of cc_transcript/filterspec.py 9 line 9 of cc_transcript/filterspec.py 10 line 10 of cc_transcript/filterspec.py 11 line 11 of cc_transcript/filterspec.py 12 line 12 of cc_transcript/filterspec.py 13 line 13 of cc_transcript/filterspec.py 14 line 14 of cc_transcript/filterspec.py 15 line 15 of cc_transcript/filterspec.py 16 line 16 of cc_transcript/filterspec.py 17 line 17 of cc_transcript/filterspec.py 18 line 18 of cc_transcript/filterspec.py 19 line 19 of cc_transcript/filterspec.py 20 line 20 of cc_transcript/filterspec.py 21 line 21 of cc_transcript/filterspec.py 22 line 22 of cc_transcript/filterspec.py 23 line 23 of cc_transcript/filterspec.py 24 line 24 of cc_transcript/filterspec.py 25 line 25 of cc_transcript/filterspec.py 26 line 26 of cc_transcript/filterspec.py 27 line 27 of cc_transcript/filterspec.py",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs",
             "    8 user  10:36:28 yes please",
@@ -2412,7 +2412,7 @@
             "   13 sys   11:20:06 turn_duration",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   15 user  14:38:11 add a --json flag to the stats command",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcript/activity.py",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py",
             "   19 sys   14:43:10 turn_duration",
@@ -2429,7 +2429,7 @@
             "    2 user  09:00:40 <-Read (360ch) 1 line 1 of tests/test_parser.py 2 line 2 of tests/test_parser.py 3 line 3 of tests/test_parser.py 4 line 4 of tests/test_parser.py 5 line 5 of tests/test_parser.py 6 line 6 of tests/test_parser.py 7…",
             "    3 asst  09:01:29 [claude-opus-4-8] \"All done — the change is in and the tests are green.\"",
             "    4 user  10:34:43 why does the mining detector miss short corrections?",
-            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9 # generate…(+169ch)",
+            "    5 asst  10:35:25 [claude-sonnet-4] \"That path never re-parses raw events; it consumes the lifted layer.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Read({\"file_path\":\"cc_transcript/filterspec.py\",\"limit\":327}) Write rust/src/parse.rs > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9 > # generate…(+169ch)",
             "    6 user  10:35:37 <-Read (1178ch) 1 line 1 of cc_transcript/filterspec.py 2 line 2 of cc_transcript/filterspec.py 3 line 3 of cc_transcript/filterspec.py 4 line 4 of cc_transcript/filterspec.py 5 line 5 of cc_transcript/filterspec.py…",
             "    7 user  10:36:17 <-Write (23ch) wrote rust/src/parse.rs",
             "    8 user  10:36:28 yes please",
@@ -2440,7 +2440,7 @@
             "   13 sys   11:20:06 turn_duration",
             "   14 asst  11:20:39 [claude-sonnet-4] \"All done — the change is in and the tests are green.\"",
             "   15 user  14:38:11 add a --json flag to the stats command",
-            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py # generated line 0 # generated line 1 # generated line 2 # generated line 3 # generated line 4 # generated line 5 # generated line 6 # generated line 7 # generated line 8 # generated line 9",
+            "   16 asst  14:39:14 [claude-opus-4-8] \"Let me read the relevant files to understand the current behavior.\" th(64ch) The filter clause negates KindIs, so non-user events drop first. Glob({\"pattern\":\"**/*.py\"}) Write tests/test_parser.py > # generated line 0 > # generated line 1 > # generated line 2 > # generated line 3 > # generated line 4 > # generated line 5 > # generated line 6 > # generated line 7 > # generated line 8 > # generated line 9",
             "   17 user  14:40:26 <-Glob (214ch) cc_transcript/parser.py cc_transcript/filterspec.py cc_transcript/mining/engine.py rust/src/parse.rs rust/src/filter.rs cc_transcript/discovery.py tests/test_parser.py cc_transcript/cli.py cc_transcr…",
             "   18 user  14:41:46 <-Write (26ch) wrote tests/test_parser.py",
             "   19 sys   14:43:10 turn_duration",

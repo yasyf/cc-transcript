@@ -41,6 +41,7 @@ def render_tool_call(call: ToolCall | FallbackCall, *, budget: Budget) -> str:
     ``+ new`` lines, MultiEdit renders every span under an ``edit i/n``
     marker, Write renders the path plus content, Bash renders the command,
     and everything else renders the tool name with its full compact-JSON input.
+    A command's or content's lines past the first are quoted ``> ``.
 
     Example:
         >>> render_tool_call(parse_tool_call("Bash", {"command": "ls"}), budget=Budget())
@@ -64,8 +65,9 @@ def prefixed(prefix: str, text: str) -> tuple[str, ...]:
 def render_turn(turn: Turn, *, budget: Budget, tool_results: bool = False) -> str:
     """Render one turn: the prompt, the user's mid-turn messages, assistant prose, and every tool call, in order.
 
-    Prose chunks clip to ``budget.turn_chars``; each tool call renders via
-    :func:`render_tool_call` under ``budget.tool_chars``. An AskUserQuestion answer
+    Prose chunks clip to ``budget.turn_chars``, with lines past the first quoted
+    ``> ``; each tool call renders via :func:`render_tool_call` under
+    ``budget.tool_chars``. An AskUserQuestion answer
     renders as ``user answered:`` with the chosen option's description, the
     selected preview and any notes.
 
