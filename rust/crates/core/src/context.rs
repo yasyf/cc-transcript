@@ -514,7 +514,7 @@ fn turn_ref(turn: &Turn, budget: &Budget) -> TurnRef {
                 tool_use_id: None,
             })
             .collect(),
-        preview: render_turn(turn, budget),
+        preview: render_turn(turn, budget, false),
         tool_digests: turn_tool_uses(turn)
             .map(|tu| tool_digest(&tu.name, &tu.input).expect("tool input digests"))
             .collect(),

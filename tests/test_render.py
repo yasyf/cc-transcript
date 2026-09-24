@@ -265,6 +265,8 @@ def test_render_turn_renders_the_users_ask_user_question_answer() -> None:
             user("draft a reply"),
             assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": questions}),)),
             user(blocks=(testkit.tool_result("q1", 'User has answered your questions: "Send it?"="Send"'),), tool_use_result=payload),
+            assistant(blocks=(testkit.tool_use("b1", "Bash", {"command": "ls"}),)),
+            user(blocks=(testkit.tool_result("b1", "a.py"),)),
         ),
     )
     ask = render_tool_call(parse_tool_call("AskUserQuestion", {"questions": questions}), budget=Budget())
@@ -276,11 +278,24 @@ def test_render_turn_renders_the_users_ask_user_question_answer() -> None:
             "  option: Post exactly the previewed text.",
             "  preview: hello",
             "  notes: tag Andrew",
+            "ls",
         ]
     )
 
 
-def test_render_turn_renders_each_tool_result_after_its_call() -> None:
+def test_render_turn_skips_a_failed_ask_user_question() -> None:
+    act = SessionActivity.from_events(
+        SessionId("sess-1"),
+        (
+            user("draft a reply"),
+            assistant(blocks=(testkit.tool_use("q1", "AskUserQuestion", {"questions": []}),)),
+            user(blocks=(testkit.tool_result("q1", "dismissed", is_error=True),)),
+        ),
+    )
+    assert render_turn(act.turns[0], budget=Budget()) == 'user: draft a reply\nAskUserQuestion({"questions":[]})'
+
+
+def test_render_turn_renders_each_tool_result_after_its_call_when_asked() -> None:
     act = SessionActivity.from_events(
         SessionId("sess-1"),
         (
@@ -294,7 +309,10 @@ def test_render_turn_renders_each_tool_result_after_its_call() -> None:
             user(blocks=(testkit.tool_result("orphan", "no call in this turn"),)),
         ),
     )
-    assert render_turn(act.turns[0], budget=Budget(turn_chars=20)) == "\n".join([
+    assert render_turn(act.turns[0], budget=Budget(turn_chars=20)) == "\n".join(
+        ["user: post it", "ls", 'mcp__slack__slack_send_message({"channel_id":"C1"})', "true"]
+    )
+    assert render_turn(act.turns[0], budget=Budget(turn_chars=20), tool_results=True) == "\n".join([
         "user: post it",
         "ls",
         f"result: a.py\n{'x' * 15}…(+785ch)",

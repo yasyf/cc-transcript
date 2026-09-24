@@ -76,7 +76,8 @@ def test_render_tool_call_renders_non_json_fallback_raw(name: str, input: dict[s
         pytest.param(Budget(turn_chars=10, tool_chars=8), id="clipped"),
     ],
 )
-def test_render_turn_from_events_matches_render_turn(budget: Budget) -> None:
+@pytest.mark.parametrize("tool_results", [False, True])
+def test_render_turn_from_events_matches_render_turn(budget: Budget, tool_results: bool) -> None:
     events = [
         user("u0", "please refactor the parser"),
         assistant("a0", "working on the refactor now", secs=1),
@@ -86,5 +87,5 @@ def test_render_turn_from_events_matches_render_turn(budget: Budget) -> None:
     ]
     turn = SessionActivity.from_events(SESSION, events).turns[0]
     assert _native.render_turn_from_events(
-        turn.prompt, list(turn.events), budget.turn_chars, budget.tool_chars
-    ) == render_turn(turn, budget=budget)
+        turn.prompt, list(turn.events), budget.turn_chars, budget.tool_chars, tool_results
+    ) == render_turn(turn, budget=budget, tool_results=tool_results)

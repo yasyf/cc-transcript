@@ -72,6 +72,7 @@ pub(crate) fn render_turn_from_events(
     events: Vec<Bound<'_, PyAny>>,
     turn_chars: usize,
     tool_chars: usize,
+    tool_results: bool,
 ) -> PyResult<String> {
     let entries = events
         .iter()
@@ -91,6 +92,7 @@ pub(crate) fn render_turn_from_events(
             turn_chars,
             tool_chars,
         },
+        tool_results,
     ))
 }
 
