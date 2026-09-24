@@ -463,6 +463,9 @@ view_dunders!(
 ///         plain-string prompt (e.g. an image-paste payload).
 ///     command_mode: How the command was queued, e.g. ``prompt`` or
 ///         ``task-notification``, or None.
+///     origin: Who sent a ``prompt``-mode command: ``human`` for the user,
+///         ``peer`` for another agent or session, ``channel`` for an MCP
+///         channel event; None when the transcript does not record it.
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "QueuedCommand", module = "cc_transcript.models", frozen)]
 pub(crate) struct QueuedCommandView {
@@ -490,12 +493,17 @@ impl QueuedCommandView {
     fn command_mode(&self, _py: Python<'_>) -> PyResult<Option<String>> {
         Ok(self.queued_command().command_mode.clone())
     }
+
+    #[getter]
+    fn origin(&self, _py: Python<'_>) -> PyResult<Option<String>> {
+        Ok(self.queued_command().origin.clone())
+    }
 }
 
 view_dunders!(
     QueuedCommandView,
     "QueuedCommand",
-    fields = [prompt, command_mode]
+    fields = [prompt, command_mode, origin]
 );
 
 /// Tools added to and removed from the deferred tool inventory.

@@ -1,13 +1,14 @@
 //! The one renderer, ported from `cc_transcript/render.py` — every cut happens here,
 //! under a [`Budget`]. Parity notes on the individual helpers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::activity::Turn;
 use crate::blame::{SessionWrites, Verdict};
+use crate::context::ASK_USER_QUESTION;
 #[cfg(feature = "command")]
 use crate::facts::{McpServerSummary, ToolFact};
 use crate::filter::{entry_text, event_kind};
@@ -432,34 +433,71 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
     }
 }
 
-/// Render one turn — the prompt, assistant prose, and every tool call, in order
-/// (render.py render_turn). Prose clips to `budget.turn_chars`; each tool call
-/// renders via [`render_tool_call`] under `budget.tool_chars`.
+/// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
+/// every tool call, and the user's AskUserQuestion answers, in order (render.py
+/// render_turn). Prose clips to `budget.turn_chars`; each tool call and answer
+/// renders under `budget.tool_chars`.
 pub fn render_turn(turn: &Turn, budget: &Budget) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !turn.prompt.is_empty() {
         parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
     }
+    let mut questions: HashSet<&str> = HashSet::new();
     for &event in &turn.events {
-        let Entry::Assistant(assistant) = event else {
-            continue;
-        };
-        for block in &assistant.blocks {
-            match block {
-                ContentBlock::Text(text) if !pystr::strip(text).is_empty() => {
-                    parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
+        match event {
+            Entry::Assistant(assistant) => {
+                for block in &assistant.blocks {
+                    match block {
+                        ContentBlock::Text(text) if !pystr::strip(text).is_empty() => {
+                            parts.push(format!("assistant: {}", clip(text, budget.turn_chars)));
+                        }
+                        ContentBlock::ToolUse(tool_use) => {
+                            if tool_use.name == ASK_USER_QUESTION {
+                                questions.insert(&tool_use.id);
+                            }
+                            parts.push(render_tool_call(
+                                &parse_tool_call(&tool_use.name, &tool_use.input),
+                                budget,
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
-                ContentBlock::ToolUse(tool_use) => {
-                    parts.push(render_tool_call(
-                        &parse_tool_call(&tool_use.name, &tool_use.input),
-                        budget,
-                    ));
-                }
-                _ => {}
             }
+            Entry::User(user) => {
+                parts.extend(user.blocks().iter().filter_map(|block| match block {
+                    ContentBlock::ToolResult(result)
+                        if !result.is_error && questions.contains(result.tool_use_id.as_str()) =>
+                    {
+                        Some(format!(
+                            "user answered: {}",
+                            clip(&result.content, budget.tool_chars)
+                        ))
+                    }
+                    _ => None,
+                }));
+            }
+            Entry::Attachment(attachment) => {
+                if let Some(prompt) = human_queued_prompt(&attachment.detail) {
+                    parts.push(format!("user: {}", clip(prompt, budget.turn_chars)));
+                }
+            }
+            _ => {}
         }
     }
     parts.join("\n")
+}
+
+pub(crate) fn human_queued_prompt(detail: &AttachmentDetail) -> Option<&str> {
+    match detail {
+        AttachmentDetail::QueuedCommand(queued)
+            if queued.command_mode.as_deref() == Some("prompt")
+                && queued.origin.as_deref() == Some("human") =>
+        {
+            queued.prompt.as_deref()
+        }
+        _ => None,
+    }
 }
 
 /// One compact `index tag time payload [uuid]` line (render.py compact_line).
@@ -1802,6 +1840,7 @@ fn attachment_detail_json(detail: &AttachmentDetail) -> Json {
         AttachmentDetail::QueuedCommand(q) => obj(vec![
             ("prompt", opt_str(&q.prompt)),
             ("command_mode", opt_str(&q.command_mode)),
+            ("origin", opt_str(&q.origin)),
         ]),
         AttachmentDetail::DeferredToolsDelta(delta) => obj(vec![
             ("added_count", Json::UInt(delta.added_names.len() as u64)),

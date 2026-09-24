@@ -357,6 +357,7 @@ pub struct AsyncHookResponse {
 pub struct QueuedCommand {
     pub prompt: Option<String>,
     pub command_mode: Option<String>,
+    pub origin: Option<String>,
 }
 
 #[derive(Debug)]

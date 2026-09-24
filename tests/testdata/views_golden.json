@@ -2794,9 +2794,10 @@
        "__class__": "QueuedCommand",
        "prompt": "run the tests",
        "command_mode": "prompt",
-       "__repr__": "QueuedCommand(prompt='run the tests', command_mode='prompt')"
+       "origin": null,
+       "__repr__": "QueuedCommand(prompt='run the tests', command_mode='prompt', origin=None)"
       },
-      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=False, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt='run the tests', command_mode='prompt'))"
+      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=False, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt='run the tests', command_mode='prompt', origin=None))"
      }
     },
     "52": {
@@ -2936,9 +2937,10 @@
        "__class__": "QueuedCommand",
        "prompt": "sidechain queued command",
        "command_mode": "prompt",
-       "__repr__": "QueuedCommand(prompt='sidechain queued command', command_mode='prompt')"
+       "origin": null,
+       "__repr__": "QueuedCommand(prompt='sidechain queued command', command_mode='prompt', origin=None)"
       },
-      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=True, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt='sidechain queued command', command_mode='prompt'))"
+      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=True, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt='sidechain queued command', command_mode='prompt', origin=None))"
      }
     },
     "55": {
@@ -3234,9 +3236,10 @@
        "__class__": "QueuedCommand",
        "prompt": null,
        "command_mode": null,
-       "__repr__": "QueuedCommand(prompt=None, command_mode=None)"
+       "origin": null,
+       "__repr__": "QueuedCommand(prompt=None, command_mode=None, origin=None)"
       },
-      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=False, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt=None, command_mode=None))"
+      "__repr__": "AttachmentEvent(meta=EntryMeta(uuid='uuid-1', parent_uuid='uuid-0', session_id='sess-1', timestamp=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), cwd='/repo', git_branch='main', cc_version='1.2.3', is_sidechain=False, is_meta=False, entrypoint='cli', is_compact_summary=False, is_visible_in_transcript_only=False, user_type=None, slug=None), attachment_type='queued_command', detail=QueuedCommand(prompt=None, command_mode=None, origin=None))"
      }
     },
     "62": {

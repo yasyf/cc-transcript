@@ -478,6 +478,7 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
         Some("queued_command") => AttachmentDetail::QueuedCommand(QueuedCommand {
             prompt: opt_str(att, "prompt"),
             command_mode: opt_str(att, "commandMode"),
+            origin: field(att, "origin").and_then(|origin| opt_str(origin, "kind")),
         }),
         Some("deferred_tools_delta") => AttachmentDetail::DeferredToolsDelta(DeferredToolsDelta {
             added_names: str_array(att, "addedNames"),

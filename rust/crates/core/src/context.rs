@@ -11,7 +11,7 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::activity::{LiftedSession, ToolUse, Turn};
 use crate::ids::{encode_string, tool_digest, EventRef};
 use crate::parse::parse_questions;
-use crate::render::{clip, render_tool_call, render_turn, Budget};
+use crate::render::{clip, human_queued_prompt, render_tool_call, render_turn, Budget};
 use crate::toolcall::{parse_tool_call, parse_tool_result, ToolResult};
 use crate::types::{ContentBlock, Entry, Question, ToolUseBlock};
 use crate::value::{field, field_bool, field_str};
@@ -19,7 +19,7 @@ use crate::value::{field, field_bool, field_str};
 pub const SCHEMA: &str = "cc-transcript.context/2";
 pub const PREVIEW_SCHEMA: &str = "cc-transcript.preview/1";
 pub const SUMMARY_LABEL: &str = "[summary fidelity — transcript unavailable]";
-const ASK_USER_QUESTION: &str = "AskUserQuestion";
+pub(crate) const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
 /// One structured preview part of a turn (context.py `Preview`): typed text, a tool
 /// call reduced to name + digest + summary, or an AskUserQuestion round with its
@@ -549,8 +549,17 @@ fn build_previews(turn: &Turn, budget: &Budget) -> Vec<Preview> {
     }
     let mut uses = turn.tool_uses.iter();
     for &event in &turn.events {
-        let Entry::Assistant(assistant) = event else {
-            continue;
+        let assistant = match event {
+            Entry::Assistant(assistant) => assistant,
+            Entry::Attachment(attachment) => {
+                if let Some(prompt) = human_queued_prompt(&attachment.detail) {
+                    parts.push(Preview::Text {
+                        text: clip(prompt, budget.turn_chars),
+                    });
+                }
+                continue;
+            }
+            _ => continue,
         };
         for block in &assistant.blocks {
             match block {

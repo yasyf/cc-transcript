@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `QueuedCommand.origin` names who sent a message queued mid-turn: `human` for the
+  user, `peer` for another agent or session, `channel` for an MCP channel event, and
+  None when the transcript predates the field.
+- `Session.recent_messages(n)` is the window reaching back over the last `n` user,
+  assistant, and queued-command events. Hook, reminder, system, and mode events between
+  them ride along without counting, so harness noise cannot push the conversation out
+  of the window the way it can with `Session.recent(n)`.
 - `ActivityLift` lifts a session incrementally: `extend(events)` folds the events
   appended since the last call into the activity lifted so far and returns it, equal to
   `SessionActivity.from_events` over every event fed. A step costs the appended events,
@@ -27,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `render_turn` renders a message the user typed while the agent was working as a
+  `user:` line at its place in the turn, and a successful AskUserQuestion result as a
+  `user answered:` line after the call. Task notifications and messages from peers or
+  channels still render nothing. Context-window previews pick up both, and the typed
+  previews gain the mid-turn messages as text previews in the same order.
 - The incremental deep lift's contract is append-only, and is now documented as such on
   `ActivityLift`, `DEEP_LIFTS`, `Session.walk` and `Session.deep_inputs`. A held transcript
   is assumed never rewritten behind its consumed offset. Growth is recognized by the same
