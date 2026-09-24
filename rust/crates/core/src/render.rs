@@ -436,9 +436,9 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
     }
 }
 
-/// Render one turn — the prompt, the user's mid-turn messages, assistant prose,
-/// every tool call, and the user's AskUserQuestion answers, in order (render.py
-/// render_turn). With `tool_results`, each other result follows its call as a
+/// Render one turn — the prompt, the messages queued mid-turn under `user:`,
+/// `notification:`, `peer:` or `channel:` by who sent them, assistant prose, every tool
+/// call, and the user's AskUserQuestion answers, in order (render.py render_turn). With `tool_results`, each other result follows its call as a
 /// `result:`/`failed:` head naming the call, its content on `> ` lines, and a
 /// `call i/n`/`result i/n` ordinal on calls batched in one message.
 pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
@@ -491,8 +491,8 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
                 }
             }
             Entry::Attachment(attachment) => {
-                if let Some(prompt) = human_queued_prompt(&attachment.detail) {
-                    parts.push(format!("user: {}", clip(prompt, budget.turn_chars)));
+                if let Some((role, prompt)) = queued_line(&attachment.detail) {
+                    parts.push(format!("{role}: {}", clip(prompt, budget.turn_chars)));
                 }
             }
             _ => {}
@@ -595,6 +595,22 @@ fn chosen_option<'a>(payload: &'a Value, question: &str, label: &str) -> Option<
         .and_then(JsonContainerTrait::as_array)?
         .iter()
         .find(|option| field_str(option, "label") == Some(label))
+}
+
+// The role a queued command renders under: the user's own `user:`, a background task's
+// `notification:`, another agent's `peer:`, an MCP channel's `channel:`.
+pub(crate) fn queued_line(detail: &AttachmentDetail) -> Option<(&'static str, &str)> {
+    let AttachmentDetail::QueuedCommand(queued) = detail else {
+        return None;
+    };
+    let prompt = queued.prompt.as_deref()?;
+    match (queued.command_mode.as_deref(), queued.origin.as_deref()) {
+        (Some("task-notification"), _) => Some(("notification", prompt)),
+        (Some("prompt"), Some("human")) => Some(("user", prompt)),
+        (Some("prompt"), Some("peer")) => Some(("peer", prompt)),
+        (Some("prompt"), Some("channel")) => Some(("channel", prompt)),
+        _ => None,
+    }
 }
 
 pub(crate) fn human_queued_prompt(detail: &AttachmentDetail) -> Option<&str> {

@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `render_turn` renders every message queued mid-turn under who sent it: `user:` for
+  the user's own, as before, and now `notification:` for a task notification, `peer:`
+  for another agent or session and `channel:` for an MCP channel event, at its place
+  in the turn. Before, only the user's own rendered and the rest rendered nothing, so a
+  judge reading the render could not see that a condition the user set had been met by
+  a background task. Context-window previews still carry the user's own only.
 - With `tool_results=True`, a tool result renders as a `result:` or `failed:` head
   naming its tool, then its content on `> ` lines, so no line of a fetched page or a
   command's output can read as a `user:`, `user answered:` or `assistant:` line to a
