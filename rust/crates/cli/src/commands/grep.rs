@@ -1,35 +1,39 @@
 //! cli.py `grep`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 use cc_transcript_core::facts::{tool_facts, ToolFact};
 use cc_transcript_core::filter::event_kind;
 use cc_transcript_core::render::{
-    compact_line, event_json, haystack, tool_haystack, transcript_header, Json,
+    compact_line, display_path, event_json, haystack, tool_haystack, transcript_header, Json,
 };
 use cc_transcript_core::toolcall::tool_name_matches;
 use cc_transcript_core::types::{ContentBlock, Entry};
 use regex::{Regex, RegexBuilder};
 
-use crate::output::{usage_error, CliExit, Out};
+use crate::output::{click_error, eline, usage_error, CliExit, Out};
 use crate::target::{parse_transcripts, py_path, resolve_targets, scope_note, tool_names, Parsed};
 use crate::DiscoveryOpts;
 
 const USAGE: &str = "cc-transcript grep [OPTIONS] PATTERN [PATHS]...";
 const HELP_PATH: &str = "cc-transcript grep";
+const DEFAULT_MAX_MATCHES: usize = 20;
 
 pub struct GrepArgs {
     pub pattern: String,
     pub paths: Vec<PathBuf>,
     pub discovery: DiscoveryOpts,
+    pub corpus: Option<PathBuf>,
     pub kinds: Vec<String>,
     pub tool: Option<String>,
     pub errors: bool,
     pub ignore_case: bool,
     pub wheres: Vec<String>,
     pub context: usize,
-    pub max_matches: usize,
+    pub max_matches: Option<usize>,
     pub width: usize,
     pub uuids: bool,
     pub with_result: bool,
@@ -141,11 +145,78 @@ fn merge_windows(hits: &[usize], context: usize, size: usize) -> Vec<(usize, usi
     merged
 }
 
-fn compile_pattern(pattern: &str, ignore_case: bool) -> Result<Regex, CliExit> {
+pub fn compile_pattern(
+    pattern: &str,
+    ignore_case: bool,
+    usage: &str,
+    help_path: &str,
+) -> Result<Regex, CliExit> {
     RegexBuilder::new(pattern)
         .case_insensitive(ignore_case)
         .build()
-        .map_err(|e| usage_error(USAGE, HELP_PATH, &format!("invalid pattern: {e}")))
+        .map_err(|e| usage_error(usage, help_path, &format!("invalid pattern: {e}")))
+}
+
+/// An empty `--where` searches everywhere (cli.py's default).
+pub fn where_flags(wheres: &[String]) -> (bool, bool, bool) {
+    if wheres.is_empty() {
+        return (true, true, true);
+    }
+    (
+        wheres.iter().any(|w| w == "text"),
+        wheres.iter().any(|w| w == "thinking"),
+        wheres.iter().any(|w| w == "tools"),
+    )
+}
+
+/// `--max-matches 0` lifts the cap and so does leaving it off in corpus mode, where each
+/// match is one bounded window; anything else is a budget that must announce itself when
+/// it bites, so a whole-corpus sweep never looks complete at 20 rows.
+fn match_cap(max_matches: Option<usize>, default: Option<usize>) -> Option<usize> {
+    max_matches.map_or(default, |cap| (cap > 0).then_some(cap))
+}
+
+fn warn_truncated(cap: usize) {
+    eline(&format!(
+        "warning: stopped at --max-matches {cap}; more matches may exist — raise it, or pass --max-matches 0 for no cap"
+    ));
+}
+
+/// `grep --corpus`: one `corpus` window per line, matched verbatim. There is no event
+/// structure left to filter on, so only the pattern, `-i`, and `--max-matches` apply.
+fn run_over_corpus(args: &GrepArgs, corpus: &Path) -> Result<(), CliExit> {
+    let regex = compile_pattern(&args.pattern, args.ignore_case, USAGE, HELP_PATH)?;
+    let file =
+        File::open(corpus).map_err(|e| click_error(&format!("{}: {e}", corpus.display())))?;
+    let cap = match_cap(args.max_matches, None);
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut truncated = false;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| click_error(&format!("{}: {e}", corpus.display())))?;
+        if !regex.is_match(&line) {
+            continue;
+        }
+        if cap.is_some_and(|cap| out_lines.len() == cap) {
+            truncated = true;
+            break;
+        }
+        out_lines.push(line);
+    }
+    let matched = out_lines.len();
+    out_lines.push(format!(
+        "{matched} matches in {}",
+        display_path(&corpus.to_string_lossy())
+    ));
+    let mut out = Out::new();
+    out.lines(out_lines)?;
+    out.finish()?;
+    if let Some(cap) = cap.filter(|_| truncated) {
+        warn_truncated(cap);
+    }
+    if matched == 0 {
+        return Err(CliExit(1));
+    }
+    Ok(())
 }
 
 fn fact_index(parsed: &Parsed) -> HashMap<String, ToolFact> {
@@ -159,16 +230,11 @@ fn fact_index(parsed: &Parsed) -> HashMap<String, ToolFact> {
 }
 
 pub fn run(args: GrepArgs) -> Result<(), CliExit> {
-    let regex = compile_pattern(&args.pattern, args.ignore_case)?;
-    let (w_text, w_thinking, w_tools) = if args.wheres.is_empty() {
-        (true, true, true)
-    } else {
-        (
-            args.wheres.iter().any(|w| w == "text"),
-            args.wheres.iter().any(|w| w == "thinking"),
-            args.wheres.iter().any(|w| w == "tools"),
-        )
-    };
+    if let Some(corpus) = &args.corpus {
+        return run_over_corpus(&args, corpus);
+    }
+    let regex = compile_pattern(&args.pattern, args.ignore_case, USAGE, HELP_PATH)?;
+    let (w_text, w_thinking, w_tools) = where_flags(&args.wheres);
     let paths: Vec<PathBuf> = args
         .paths
         .iter()
@@ -186,9 +252,11 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let mut out_lines: Vec<String> = Vec::new();
     let mut files_matched = 0usize;
     let mut matched = 0usize;
-    let mut budget = args.max_matches;
+    let cap = match_cap(args.max_matches, Some(DEFAULT_MAX_MATCHES));
+    let mut truncated = false;
     for parsed in parse_transcripts(&targets.paths) {
-        if budget == 0 {
+        if cap.is_some_and(|cap| matched == cap) {
+            truncated = true;
             break;
         }
         let names = tool_names(&parsed.entries);
@@ -197,7 +265,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             HashMap::new()
         };
-        let hits: Vec<usize> = parsed
+        let mut hits: Vec<usize> = parsed
             .entries
             .iter()
             .enumerate()
@@ -219,14 +287,18 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
                 }
             })
             .map(|(index, _)| index)
-            .take(budget)
             .collect();
+        if let Some(cap) = cap {
+            if matched + hits.len() > cap {
+                truncated = true;
+                hits.truncate(cap - matched);
+            }
+        }
         if hits.is_empty() {
             continue;
         }
         files_matched += 1;
         matched += hits.len();
-        budget -= hits.len();
         let windows = merge_windows(&hits, args.context, parsed.entries.len());
         if args.json {
             let hit_set: std::collections::HashSet<usize> = hits.iter().copied().collect();
@@ -284,6 +356,9 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let mut out = Out::new();
     out.lines(out_lines)?;
     out.finish()?;
+    if let Some(cap) = cap.filter(|_| truncated) {
+        warn_truncated(cap);
+    }
     if matched == 0 {
         return Err(CliExit(1));
     }
