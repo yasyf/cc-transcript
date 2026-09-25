@@ -123,7 +123,8 @@ fn cancellation_prevents_discovery_and_reads() {
 fn projection_budget_is_cumulative() {
     let mut bound = limits();
     bound.max_read_bytes = 10;
-    let mut budget = ScanBudget::new(bound);
+    let owner = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&owner, bound);
     let cancel = Cancellation::default();
     budget.charge_projection(6, 1, &cancel).unwrap();
     assert!(budget.charge_projection(5, 1, &cancel).is_err());
@@ -138,7 +139,8 @@ fn long_corpus_line_is_incomplete_without_visiting_it() {
     std::fs::write(&path, "abcdefghijk\n").unwrap();
     let mut bound = limits();
     bound.max_read_bytes = 4;
-    let mut budget = ScanBudget::new(bound);
+    let owner = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&owner, bound);
     let result = scan_corpus(
         &path,
         &mut budget,
@@ -157,7 +159,7 @@ fn corpus_complete_zero_and_quota_are_distinct() {
     let mut visited = Vec::new();
     let result = scan_corpus(
         &path,
-        &mut ScanBudget::new(limits()),
+        &mut ScanBudget::new(&NativeStore::new(&json!({})).unwrap(), limits()),
         &Cancellation::default(),
         |i, text, _, _| {
             visited.push((i, text.to_owned()));
@@ -168,7 +170,7 @@ fn corpus_complete_zero_and_quota_are_distinct() {
     assert_eq!(visited, vec![(1, "one".into()), (2, "two".into())]);
     let result = scan_corpus(
         &path,
-        &mut ScanBudget::new(limits()),
+        &mut ScanBudget::new(&NativeStore::new(&json!({})).unwrap(), limits()),
         &Cancellation::default(),
         |_, _, _, _| Ok(true),
     );
@@ -302,7 +304,7 @@ fn corpus_quota_on_final_line_is_complete() {
         std::fs::write(&path, contents).unwrap();
         let result = scan_corpus(
             &path,
-            &mut ScanBudget::new(limits()),
+            &mut ScanBudget::new(&NativeStore::new(&json!({})).unwrap(), limits()),
             &Cancellation::default(),
             |_, _, _, _| Ok(true),
         );
@@ -336,4 +338,50 @@ fn discovery_timestamps_keep_legacy_float_ordering() {
             crate::discovery::mtime_secs(&metadata).to_bits()
         );
     }
+}
+
+#[test]
+fn staging_uses_the_shared_owner_pool_and_releases_between_operations() {
+    let store = NativeStore::new(
+        &json!({"max_retained_bytes":16*1024*1024,"reserved_hook_accounted_bytes":0}),
+    )
+    .unwrap();
+    let mut first = ScanBudget::new(&store, limits());
+    let mut second = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let before = gauges(&store, &first.context)["pending_input_capacity_bytes"]
+        .as_u64()
+        .unwrap();
+    let held = first.reserve_staging(12 * 1024 * 1024, &cancel).unwrap();
+    assert_eq!(first.progress.projection_bytes, 0);
+    assert_eq!(first.remaining().max_read_bytes, limits().max_read_bytes);
+    assert_eq!(
+        gauges(&store, &first.context)["pending_input_capacity_bytes"]
+            .as_u64()
+            .unwrap()
+            - before,
+        12 * 1024 * 1024
+    );
+    assert_eq!(
+        second
+            .reserve_staging(8 * 1024 * 1024, &cancel)
+            .err()
+            .unwrap()
+            .status,
+        Status::RetainedLimit
+    );
+    drop(held);
+    for _ in 0..32 {
+        let transient = second.reserve_staging(8 * 1024 * 1024, &cancel).unwrap();
+        second.charge_projection(1, 0, &cancel).unwrap();
+        drop(transient);
+    }
+    assert_eq!(second.progress.projection_bytes, 32);
+    assert_eq!(second.progress.staging_peak_reserved_bytes, 8 * 1024 * 1024);
+    assert_eq!(
+        gauges(&store, &second.context)["pending_input_capacity_bytes"]
+            .as_u64()
+            .unwrap(),
+        before
+    );
 }

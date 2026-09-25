@@ -818,7 +818,7 @@ impl NativeStore {
         Ok(fingerprint)
     }
 
-    fn registry(
+    pub(crate) fn registry(
         &self,
         context: &Value,
     ) -> Result<Arc<crate::toolcall::ToolRegistrySnapshot>, SnapshotError> {
@@ -873,7 +873,7 @@ impl NativeStore {
         Ok(ProjectionReservation { store: self, bytes })
     }
 
-    fn extend_projection_reservation(
+    pub(crate) fn extend_projection_reservation(
         &self,
         reservation: &mut ProjectionReservation<'_>,
         context: &Value,

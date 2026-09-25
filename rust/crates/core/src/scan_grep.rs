@@ -7,7 +7,7 @@ use regex::{Regex, RegexBuilder};
 use crate::activity::{result_index, tool_result_metadata};
 use crate::filter::event_kind;
 use crate::render::{haystack, haystack_bound, tool_haystack, tool_haystack_bound};
-use crate::scan::ScanBudget;
+use crate::scan::{ScanBudget, StagingReservation};
 use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot};
 use crate::toolcall::{expand_tool_names, with_registry, ToolRegistrySnapshot};
 use crate::types::{matches_names, ContentBlock, Entry};
@@ -44,13 +44,16 @@ pub struct GrepResultMetadata<'a> {
     pub duration_ms: Option<i64>,
 }
 
-pub struct GrepSourceResult<'a> {
+pub struct GrepSourceResult<'a, 'store> {
     pub hits: Vec<GrepHit>,
     pub windows: Vec<Range<usize>>,
     pub names: HashMap<&'a str, &'a str>,
     pub results: HashMap<&'a str, GrepResultMetadata<'a>>,
     pub quota_reached: bool,
     pub source_complete: bool,
+    staging: StagingReservation<'store>,
+    hits_staging: Option<StagingReservation<'store>>,
+    windows_staging: Option<StagingReservation<'store>>,
 }
 
 struct CompiledPattern {
@@ -59,7 +62,7 @@ struct CompiledPattern {
     max_matches: Option<usize>,
 }
 
-pub struct GrepReducer {
+pub struct GrepReducer<'store> {
     patterns: Vec<CompiledPattern>,
     counts: Vec<usize>,
     options: GrepOptions,
@@ -69,6 +72,7 @@ pub struct GrepReducer {
     haystacks_built: usize,
     sources_indexed: usize,
     coverage_complete: bool,
+    _staging: StagingReservation<'store>,
 }
 
 fn incomplete(reason: &str) -> SnapshotError {
@@ -79,19 +83,17 @@ fn invalid(reason: &str) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
 }
 
-fn reserve_next<T>(
+fn reserve_next<'store, T>(
     items: &mut Vec<T>,
-    budget: &mut ScanBudget,
+    reservation: &mut Option<StagingReservation<'store>>,
+    budget: &mut ScanBudget<'store>,
     cancel: &Cancellation,
 ) -> Result<(), SnapshotError> {
     if items.len() == items.capacity() {
         let next = items.capacity().max(4).saturating_mul(2);
-        budget.charge_projection(
-            next.saturating_mul(size_of::<T>()).saturating_mul(2),
-            0,
-            cancel,
-        )?;
+        let replacement = budget.reserve_staging(next.saturating_mul(size_of::<T>()), cancel)?;
         items.reserve_exact(next - items.len());
+        *reservation = Some(replacement);
     }
     Ok(())
 }
@@ -108,11 +110,11 @@ fn entry_bytes(snapshot: &TranscriptSnapshot, index: usize) -> usize {
         .saturating_add(charge.opaque_dom_accounted_bytes)
 }
 
-impl GrepReducer {
+impl<'store> GrepReducer<'store> {
     pub fn new(
         patterns: Vec<GrepPatternSpec>,
         options: GrepOptions,
-        budget: &mut ScanBudget,
+        budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<Self, SnapshotError> {
         budget.checkpoint(cancel)?;
@@ -133,19 +135,19 @@ impl GrepReducer {
                 return Err(invalid("grep pattern ids must be unique"));
             }
         }
-        let registry = ToolRegistrySnapshot::capture_current();
+        let registry = budget.registry()?;
         let option_bytes = options
             .kinds
             .iter()
             .map(String::len)
             .sum::<usize>()
             .saturating_add(options.tool.as_ref().map_or(0, String::len));
-        budget.charge_projection(
+        budget.charge_projection(bytes.saturating_add(option_bytes), 0, cancel)?;
+        let mut staging = budget.reserve_staging(
             bytes
                 .saturating_add(option_bytes)
                 .saturating_mul(32)
                 .saturating_add(patterns.len().saturating_mul(256)),
-            0,
             cancel,
         )?;
         let compiled_budget = (budget.remaining().max_read_bytes / 4).min(1024 * 1024);
@@ -153,7 +155,7 @@ impl GrepReducer {
         if per_pattern < 256 {
             return Err(incomplete("insufficient regex compilation budget"));
         }
-        budget.charge_projection(compiled_budget, 0, cancel)?;
+        budget.extend_staging(&mut staging, compiled_budget, cancel)?;
         let mut compiled = Vec::with_capacity(patterns.len());
         for pattern in patterns {
             budget.checkpoint(cancel)?;
@@ -181,15 +183,17 @@ impl GrepReducer {
                 .iter()
                 .map(|(_, bytes)| *bytes)
                 .sum::<usize>();
-            budget.charge_projection(
+            budget.extend_staging(
+                &mut staging,
                 registry_bytes
                     .saturating_add(spec.len())
                     .saturating_mul(8)
                     .saturating_add(8192),
-                0,
                 cancel,
             )?;
-            Some(with_registry(registry.clone(), || expand_tool_names(spec)))
+            let names = with_registry(registry.clone(), || expand_tool_names(spec));
+            budget.charge_projection(names.iter().map(String::len).sum(), 0, cancel)?;
+            Some(names)
         } else {
             None
         };
@@ -203,6 +207,7 @@ impl GrepReducer {
             haystacks_built: 0,
             sources_indexed: 0,
             coverage_complete: true,
+            _staging: staging,
         })
     }
 
@@ -235,35 +240,33 @@ impl GrepReducer {
     pub fn scan_text(
         &mut self,
         text: &str,
-        budget: &mut ScanBudget,
+        budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
-    ) -> Result<Vec<usize>, SnapshotError> {
-        budget.charge_projection(
-            text.len().saturating_add(
-                self.patterns
-                    .len()
-                    .saturating_mul(size_of::<bool>() + size_of::<usize>()),
-            ),
-            1,
+    ) -> Result<(Vec<usize>, StagingReservation<'store>), SnapshotError> {
+        budget.charge_projection(text.len(), 1, cancel)?;
+        let mut staging = budget.reserve_staging(
+            self.patterns.len().saturating_mul(size_of::<bool>()),
             cancel,
         )?;
         self.mark_skipped_patterns();
         let mut matched = vec![false; self.patterns.len()];
         self.match_text(text, &mut matched, budget, cancel)?;
-        self.commit_matches(&matched, budget, cancel)
+        let ids = self.commit_matches(&matched, &mut staging, budget, cancel)?;
+        Ok((ids, staging))
     }
 
     fn commit_matches(
         &mut self,
         matched: &[bool],
-        budget: &mut ScanBudget,
+        staging: &mut StagingReservation<'store>,
+        budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<Vec<usize>, SnapshotError> {
         let count = matched.iter().filter(|matched| **matched).count();
         if self.matched_items.saturating_add(count) > budget.limits.max_items {
             return Err(incomplete("matched pattern item budget exhausted"));
         }
-        budget.charge_projection(count.saturating_mul(size_of::<usize>()), 0, cancel)?;
+        budget.extend_staging(staging, count.saturating_mul(size_of::<usize>()), cancel)?;
         let mut ids = Vec::with_capacity(count);
         for (index, did_match) in matched.iter().enumerate() {
             if *did_match {
@@ -296,9 +299,9 @@ impl GrepReducer {
     pub fn scan_source<'a>(
         &mut self,
         snapshot: &'a TranscriptSnapshot,
-        budget: &mut ScanBudget,
+        budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
-    ) -> Result<GrepSourceResult<'a>, SnapshotError> {
+    ) -> Result<GrepSourceResult<'a, 'store>, SnapshotError> {
         budget.checkpoint(cancel)?;
         if self.satisfied() {
             if snapshot.event_count != 0 {
@@ -311,6 +314,9 @@ impl GrepReducer {
                 results: HashMap::new(),
                 quota_reached: true,
                 source_complete: snapshot.event_count == 0,
+                staging: budget.reserve_staging(0, cancel)?,
+                hits_staging: None,
+                windows_staging: None,
             });
         }
         let mut index_bytes = snapshot.event_count.saturating_mul(size_of::<&Entry>());
@@ -318,12 +324,22 @@ impl GrepReducer {
             budget.charge_projection(0, 1, cancel)?;
             index_bytes = index_bytes
                 .saturating_add(snapshot.entry(index).blocks().len().saturating_mul(512));
-            if index_bytes > budget.remaining().max_read_bytes {
-                return Err(incomplete("tool index exceeds projection budget"));
+        }
+        let staging = budget.reserve_staging(index_bytes, cancel)?;
+        let entries = snapshot.entries();
+        for entry in &entries {
+            for block in entry.blocks() {
+                let bytes = match block {
+                    ContentBlock::ToolUse(tool) => tool.id.len().saturating_add(tool.name.len()),
+                    ContentBlock::ToolResult(result) => result
+                        .tool_use_id
+                        .len()
+                        .saturating_add(result.denial_kind.as_ref().map_or(0, String::len)),
+                    _ => 0,
+                };
+                budget.charge_projection(bytes.saturating_add(1), 0, cancel)?;
             }
         }
-        budget.charge_projection(index_bytes, 0, cancel)?;
-        let entries = snapshot.entries();
         let joined = result_index(&entries);
         budget.checkpoint(cancel)?;
         let joined: HashMap<_, _> = joined
@@ -365,6 +381,9 @@ impl GrepReducer {
             results,
             quota_reached: false,
             source_complete: true,
+            staging,
+            hits_staging: None,
+            windows_staging: None,
         };
         for index in 0..snapshot.event_count {
             budget.charge_projection(0, 1, cancel)?;
@@ -388,12 +407,10 @@ impl GrepReducer {
             if self.options.errors && !self.options.where_tools {
                 continue;
             }
-            budget.charge_projection(entry_bytes(snapshot, index).saturating_mul(4), 0, cancel)?;
-            budget.charge_projection(
-                self.patterns
-                    .len()
-                    .saturating_mul(size_of::<bool>() + size_of::<usize>()),
-                0,
+            let _event_staging =
+                budget.reserve_staging(entry_bytes(snapshot, index).saturating_mul(4), cancel)?;
+            let _match_staging = budget.reserve_staging(
+                self.patterns.len().saturating_mul(size_of::<bool>()),
                 cancel,
             )?;
             let mut matched = vec![false; self.patterns.len()];
@@ -412,8 +429,9 @@ impl GrepReducer {
                     {
                         continue;
                     }
-                    let bytes = tool_haystack_bound(block, budget.remaining().max_read_bytes / 3)?;
-                    budget.charge_projection(bytes.saturating_mul(3), 0, cancel)?;
+                    let bytes = tool_haystack_bound(block, budget.remaining().max_read_bytes)?;
+                    let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
+                    budget.charge_projection(bytes, 0, cancel)?;
                     let text = tool_haystack(block);
                     self.haystacks_built += 1;
                     self.match_text(&text, &mut matched, budget, cancel)?;
@@ -424,9 +442,10 @@ impl GrepReducer {
                     self.options.where_text,
                     self.options.where_thinking,
                     self.options.where_tools,
-                    budget.remaining().max_read_bytes / 3,
+                    budget.remaining().max_read_bytes,
                 )?;
-                budget.charge_projection(bytes.saturating_mul(3), 0, cancel)?;
+                let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
+                budget.charge_projection(bytes, 0, cancel)?;
                 let text = haystack(
                     event,
                     self.options.where_text,
@@ -439,9 +458,14 @@ impl GrepReducer {
             if !matched.iter().any(|matched| *matched) {
                 continue;
             }
-            reserve_next(&mut output.hits, budget, cancel)?;
-            reserve_next(&mut output.windows, budget, cancel)?;
-            let pattern_ids = self.commit_matches(&matched, budget, cancel)?;
+            reserve_next(&mut output.hits, &mut output.hits_staging, budget, cancel)?;
+            reserve_next(
+                &mut output.windows,
+                &mut output.windows_staging,
+                budget,
+                cancel,
+            )?;
+            let pattern_ids = self.commit_matches(&matched, &mut output.staging, budget, cancel)?;
             output.hits.push(GrepHit {
                 event_index: index,
                 pattern_ids,
@@ -493,14 +517,14 @@ impl GrepReducer {
     }
 }
 
-impl GrepSourceResult<'_> {
+impl<'store> GrepSourceResult<'_, 'store> {
     pub fn preflight_render(
         &self,
         snapshot: &TranscriptSnapshot,
         index: usize,
-        budget: &mut ScanBudget,
+        budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
-    ) -> Result<(), SnapshotError> {
+    ) -> Result<StagingReservation<'store>, SnapshotError> {
         budget.checkpoint(cancel)?;
         if index >= snapshot.event_count {
             return Err(invalid("render event index is outside snapshot"));
@@ -530,7 +554,13 @@ impl GrepSourceResult<'_> {
                 "event render exceeds remaining output budget",
             ));
         }
-        budget.charge_projection(bytes, 1, cancel)
+        let staging = budget.reserve_staging(bytes, cancel)?;
+        let projected = crate::snapshot_codec::encoded_size(
+            &crate::snapshot_codec::EventWire::new(index, snapshot.entry(index)),
+            budget.remaining().max_read_bytes,
+        )?;
+        budget.charge_projection(projected, 1, cancel)?;
+        Ok(staging)
     }
 }
 
@@ -605,23 +635,26 @@ mod tests {
         }
     }
 
-    fn budget() -> ScanBudget {
-        ScanBudget::new(WorkLimits {
-            max_read_bytes: 8 * 1024 * 1024,
-            max_events: 4096,
-            max_items: 4096,
-            max_output_bytes: 1024 * 1024,
-            max_sources: 100,
-            max_discovery_entries: 100,
-            deadline_unix_ms: u64::MAX,
-        })
+    fn budget(owner: &crate::snapshot::NativeStore) -> ScanBudget<'_> {
+        ScanBudget::new(
+            owner,
+            WorkLimits {
+                max_read_bytes: 8 * 1024 * 1024,
+                max_events: 4096,
+                max_items: 4096,
+                max_output_bytes: 1024 * 1024,
+                max_sources: 100,
+                max_discovery_entries: 100,
+                deadline_unix_ms: u64::MAX,
+            },
+        )
     }
 
-    fn reducer(
+    fn reducer<'store>(
         patterns: &[(&str, Option<usize>)],
         options: GrepOptions,
-        budget: &mut ScanBudget,
-    ) -> GrepReducer {
+        budget: &mut ScanBudget<'store>,
+    ) -> GrepReducer<'store> {
         GrepReducer::new(
             patterns
                 .iter()
@@ -642,7 +675,8 @@ mod tests {
     #[test]
     fn eighteen_patterns_share_one_index_and_one_haystack_per_event() {
         let source = snapshot(&[user("needle"), user("other")]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut grep = reducer(&vec![("needle", None); 18], options(), &mut budget);
         let result = grep
             .scan_source(&source, &mut budget, &Cancellation::default())
@@ -663,7 +697,8 @@ mod tests {
     #[test]
     fn overlapping_patterns_have_independent_global_quotas() {
         let source = snapshot(&[user("ab"), user("a"), user("b"), user("tail")]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut grep = reducer(&[("a", Some(1)), ("b", Some(2))], options(), &mut budget);
         let result = grep
             .scan_source(&source, &mut budget, &Cancellation::default())
@@ -695,7 +730,8 @@ mod tests {
     #[test]
     fn exact_final_event_quota_is_complete_and_zero_is_unlimited() {
         let source = snapshot(&[user("hit"), user("hit")]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut grep = reducer(&[("hit", Some(2))], options(), &mut budget);
         let result = grep
             .scan_source(&source, &mut budget, &Cancellation::default())
@@ -715,7 +751,8 @@ mod tests {
             assistant(json!([tool("t", "Bash", json!({"command":"oops"}))])),
             result("t", "oops", true),
         ]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut opts = options();
         opts.errors = true;
         opts.tool = Some("Bash".into());
@@ -746,7 +783,8 @@ mod tests {
             result("a", "failed", true),
             result("b", "failed", true),
         ]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut opts = options();
         opts.errors = true;
         opts.kinds = vec!["assistant".into()];
@@ -776,7 +814,8 @@ mod tests {
             assistant(json!([tool("t", "Bash", json!({}))])),
             result("t", "success", false),
         ]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut opts = options();
         opts.tool = Some("Bash".into());
         let mut grep = reducer(&[("found", None)], opts, &mut budget);
@@ -798,7 +837,8 @@ mod tests {
             user("after"),
             user("tail"),
         ]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut opts = options();
         opts.context = 1;
         opts.ignore_case = true;
@@ -813,7 +853,8 @@ mod tests {
     #[test]
     fn oversized_event_is_rejected_before_haystack_production() {
         let source = snapshot(&[user(&"x".repeat(32768)), user("never")]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut grep = reducer(&[("x", None)], options(), &mut budget);
         budget.limits.max_read_bytes = budget.progress.projection_bytes + 8192;
         let error = grep
@@ -828,7 +869,8 @@ mod tests {
     #[test]
     fn context_render_rejects_output_before_producer_is_visited() {
         let source = snapshot(&[user("hit"), user(&"x".repeat(32768))]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut opts = options();
         opts.context = 1;
         let mut grep = reducer(&[("hit", Some(1))], opts, &mut budget);
@@ -839,7 +881,7 @@ mod tests {
         let mut visited = false;
         let admission = result
             .preflight_render(&source, 1, &mut budget, &Cancellation::default())
-            .map(|()| {
+            .map(|_staging| {
                 visited = true;
                 haystack(source.entry(1), true, true, true)
             });
@@ -850,7 +892,8 @@ mod tests {
     #[test]
     fn cancelled_and_expired_scans_do_not_visit_source_or_producer() {
         let source = snapshot(&[user("hit")]);
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let mut grep = reducer(&[("hit", None)], options(), &mut budget);
         let cancel = Cancellation::default();
         cancel.cancel();
@@ -874,7 +917,8 @@ mod tests {
 
     #[test]
     fn pattern_limits_and_duplicate_ids_fail_before_compile() {
-        let mut budget = budget();
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
         let patterns = vec![
             GrepPatternSpec {
                 id: 7,
@@ -943,5 +987,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn repeated_small_sources_release_staging_without_consuming_byte_work() {
+        let source = snapshot(&(0..100).map(|_| user("none")).collect::<Vec<_>>());
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
+        let mut grep = reducer(&[("absent", None)], options(), &mut budget);
+        budget.limits.max_read_bytes = 20_000;
+        budget.limits.max_events = 10_000;
+        let before = budget.progress.projection_bytes;
+        let first = grep
+            .scan_source(&source, &mut budget, &Cancellation::default())
+            .unwrap();
+        assert!(first.hits.is_empty());
+        let per_source = budget.progress.projection_bytes - before;
+        assert!(per_source > 0);
+        let peak = budget.progress.staging_peak_reserved_bytes;
+        drop(first);
+        for _ in 1..32 {
+            let result = grep
+                .scan_source(&source, &mut budget, &Cancellation::default())
+                .unwrap();
+            assert!(result.hits.is_empty());
+            drop(result);
+        }
+        assert_eq!(budget.progress.projection_bytes - before, per_source * 32);
+        assert_eq!(budget.progress.staging_peak_reserved_bytes, peak);
+        assert!(budget.progress.projection_bytes < budget.limits.max_read_bytes);
     }
 }

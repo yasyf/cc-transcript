@@ -345,3 +345,10 @@ Its path and line provenance identify that extract. They cannot recover the
 original events lost by window extraction and deduplication. The `corpus` writer
 still performs a full preparation pass; its unchanged cost is separate from
 bounded searching. Independent CLI invocations do not share in-memory snapshots.
+
+
+Work counters separate source reads and logical projected payload bytes from
+`staging_peak_reserved_bytes`, the conservative peak allocation reservation.
+Temporary allocation reservations are released through the shared snapshot
+owner when each operation finishes; they do not consume the cumulative byte
+work allowance. A larger completed-query budget must be supplied explicitly.

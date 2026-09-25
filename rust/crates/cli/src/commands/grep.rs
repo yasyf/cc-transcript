@@ -20,17 +20,20 @@ const DEFAULT_MAX_MATCHES: usize = 20;
 
 #[derive(clap::Args, Default)]
 pub struct ScanOptions {
-    #[arg(long)]
+    #[arg(long, help = "Maximum cumulative source and logical projection bytes.")]
     pub max_read_bytes: Option<usize>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Maximum cumulative preparation and event traversal work."
+    )]
     pub max_events: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help = "Maximum emitted output bytes.")]
     pub max_output_bytes: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help = "Maximum filesystem entries examined during discovery.")]
     pub max_discovery_entries: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help = "Maximum sources in the discovered inventory.")]
     pub max_sources: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help = "Deadline for the complete scan in milliseconds.")]
     pub timeout_ms: Option<u64>,
 }
 
@@ -216,7 +219,7 @@ impl Emitter {
     }
 }
 
-fn result_fields(event: &Entry, result: &GrepSourceResult<'_>) -> Vec<(String, Json)> {
+fn result_fields(event: &Entry, result: &GrepSourceResult<'_, '_>) -> Vec<(String, Json)> {
     if !matches!(event, Entry::Assistant(_)) {
         return Vec::new();
     }
@@ -243,7 +246,7 @@ fn result_fields(event: &Entry, result: &GrepSourceResult<'_>) -> Vec<(String, J
         .collect()
 }
 
-fn result_suffix(event: &Entry, result: &GrepSourceResult<'_>) -> String {
+fn result_suffix(event: &Entry, result: &GrepSourceResult<'_, '_>) -> String {
     if !matches!(event, Entry::Assistant(_)) {
         return String::new();
     }
@@ -288,7 +291,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     *crate::SCAN_CANCELLATION.lock().expect("scan cancellation") = Some(cancel.clone());
     let _interrupt = ScanInterrupt;
     if let Some(path) = &args.corpus {
-        return run_over_corpus(&args, path, limits, cancel);
+        return run_over_corpus(&store, &args, path, limits, cancel);
     }
     let mut session = ScanSession::new(&store, limits, cancel.clone());
     let mut reducer = match prepare_reducer(&args, &mut session.budget, &cancel) {
@@ -341,7 +344,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
                 emitter.emit("--".to_owned(), budget, cancel)?;
             }
             for index in window.clone() {
-                result.preflight_render(snapshot, index, budget, cancel)?;
+                let _render_staging = result.preflight_render(snapshot, index, budget, cancel)?;
                 let event = snapshot.entry(index);
                 let hit = result.hits.iter().find(|hit| hit.event_index == index);
                 let line = if args.json || args.scan_json {
@@ -430,12 +433,13 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
 }
 
 fn run_over_corpus(
+    store: &NativeStore,
     args: &GrepArgs,
     path: &Path,
     limits: WorkLimits,
     cancel: Cancellation,
 ) -> Result<(), CliExit> {
-    let mut budget = ScanBudget::new(limits);
+    let mut budget = ScanBudget::new(store, limits);
     let mut reducer = match prepare_reducer(args, &mut budget, &cancel) {
         Ok(reducer) => reducer,
         Err(error) if error.status == Status::InvalidRequest => {
@@ -455,7 +459,7 @@ fn run_over_corpus(
         &mut budget,
         &cancel,
         |line_number, line, budget, cancel| {
-            let ids = reducer.scan_text(line, budget, cancel)?;
+            let (ids, _match_staging) = reducer.scan_text(line, budget, cancel)?;
             if !ids.is_empty() {
                 let render_bound = if args.scan_json {
                     line.len()
@@ -471,7 +475,12 @@ fn run_over_corpus(
                         "corpus match exceeds remaining output budget",
                     ));
                 }
-                budget.charge_projection(render_bound, 0, cancel)?;
+                let _render_staging = budget.reserve_staging(render_bound, cancel)?;
+                budget.charge_projection(
+                    line.len().saturating_add(path.as_os_str().len()),
+                    0,
+                    cancel,
+                )?;
                 let rendered = if args.scan_json {
                     sonic_rs::to_string(&json!({"path":path.to_string_lossy().as_ref(),"line":line_number,"text":line,"pattern_ids":ids})).map_err(|e|SnapshotError::new(Status::OutputLimit,e.to_string()))?
                 } else {
@@ -522,11 +531,11 @@ impl Drop for ScanInterrupt {
     }
 }
 
-fn prepare_reducer(
+fn prepare_reducer<'store>(
     args: &GrepArgs,
-    budget: &mut ScanBudget,
+    budget: &mut ScanBudget<'store>,
     cancel: &Cancellation,
-) -> Result<GrepReducer, SnapshotError> {
+) -> Result<GrepReducer<'store>, SnapshotError> {
     let (where_text, where_thinking, where_tools) = where_flags(&args.wheres);
     let patterns = std::iter::once(&args.pattern)
         .chain(args.patterns.iter())

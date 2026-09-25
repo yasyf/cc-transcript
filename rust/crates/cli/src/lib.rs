@@ -201,6 +201,9 @@ pub enum Cmd {
         json: bool,
     },
     /// Search transcript events for a regex pattern.
+    #[command(
+        long_about = "Search transcripts with finite read, event, source, output, and time limits. --all removes only the selected-file limit. Use repeated --pattern with --scan-json to share one traversal; incomplete scans cannot establish absence."
+    )]
     Grep {
         pattern: String,
         #[arg(long = "pattern", requires = "scan_json")]

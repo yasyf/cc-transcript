@@ -1,10 +1,13 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde::Serialize;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::snapshot::{
-    Cancellation, NativeStore, SnapshotError, Status, TranscriptSnapshot, WorkLimits, SCHEMA,
+    Cancellation, NativeStore, ProjectionReservation, SnapshotError, Status, TranscriptSnapshot,
+    WorkLimits, SCHEMA,
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -16,22 +19,104 @@ pub struct ScanProgress {
     pub preparation_reserved_events: usize,
     pub examined_events: usize,
     pub projection_bytes: usize,
+    pub staging_peak_reserved_bytes: usize,
     pub output_bytes: usize,
     pub source_opens: usize,
     pub cache_hits: usize,
 }
 
-pub struct ScanBudget {
+pub struct ScanBudget<'store> {
     pub limits: WorkLimits,
     pub progress: ScanProgress,
+    store: &'store NativeStore,
+    context: Value,
+    staging_current: Rc<Cell<usize>>,
 }
 
-impl ScanBudget {
-    pub fn new(limits: WorkLimits) -> Self {
+pub struct StagingReservation<'store> {
+    shared: ProjectionReservation<'store>,
+    current: Rc<Cell<usize>>,
+    bytes: usize,
+}
+
+impl Drop for StagingReservation<'_> {
+    fn drop(&mut self) {
+        self.current.set(
+            self.current
+                .get()
+                .checked_sub(self.bytes)
+                .expect("balanced staging reservations"),
+        );
+    }
+}
+
+impl<'store> ScanBudget<'store> {
+    pub fn new(store: &'store NativeStore, limits: WorkLimits) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let context = json!({"claimant":format!("cli-scan-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)),"admission":"background","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":store.default_registry_generation()});
         Self {
             limits,
             progress: ScanProgress::default(),
+            store,
+            context,
+            staging_current: Rc::new(Cell::new(0)),
         }
+    }
+
+    pub fn registry(
+        &self,
+    ) -> Result<std::sync::Arc<crate::toolcall::ToolRegistrySnapshot>, SnapshotError> {
+        self.store.registry(&self.context)
+    }
+
+    pub fn reserve_staging(
+        &mut self,
+        bytes: usize,
+        cancel: &Cancellation,
+    ) -> Result<StagingReservation<'store>, SnapshotError> {
+        self.checkpoint(cancel)?;
+        let current = self
+            .staging_current
+            .get()
+            .checked_add(bytes)
+            .ok_or_else(|| incomplete("staging reservation overflow"))?;
+        let shared = self.store.reserve_projection(&self.context, bytes)?;
+        self.staging_current.set(current);
+        self.progress.staging_peak_reserved_bytes =
+            self.progress.staging_peak_reserved_bytes.max(current);
+        Ok(StagingReservation {
+            shared,
+            current: self.staging_current.clone(),
+            bytes,
+        })
+    }
+
+    pub fn extend_staging(
+        &mut self,
+        reservation: &mut StagingReservation<'store>,
+        bytes: usize,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        self.checkpoint(cancel)?;
+        if !Rc::ptr_eq(&self.staging_current, &reservation.current) {
+            return Err(invalid("staging reservation belongs to another scan"));
+        }
+        let current = self
+            .staging_current
+            .get()
+            .checked_add(bytes)
+            .ok_or_else(|| incomplete("staging reservation overflow"))?;
+        let total = reservation
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| incomplete("staging reservation overflow"))?;
+        self.store
+            .extend_projection_reservation(&mut reservation.shared, &self.context, bytes)?;
+        reservation.bytes = total;
+        self.staging_current.set(current);
+        self.progress.staging_peak_reserved_bytes =
+            self.progress.staging_peak_reserved_bytes.max(current);
+        Ok(())
     }
 
     pub fn checkpoint(&self, cancel: &Cancellation) -> Result<(), SnapshotError> {
@@ -174,7 +259,7 @@ pub enum ScanControl {
 pub struct ScanSession<'a> {
     store: &'a NativeStore,
     context: Value,
-    pub budget: ScanBudget,
+    pub budget: ScanBudget<'a>,
     cancel: Cancellation,
     sequence: usize,
     pending: Option<Value>,
@@ -201,12 +286,12 @@ impl Drop for ResponseGuard<'_> {
 
 impl<'a> ScanSession<'a> {
     pub fn new(store: &'a NativeStore, limits: WorkLimits, cancel: Cancellation) -> Self {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let context = json!({"claimant":format!("cli-scan-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)),"admission":"background","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":store.default_registry_generation()});
+        let budget = ScanBudget::new(store, limits);
+        let context = budget.context.clone();
         Self {
             store,
             context,
-            budget: ScanBudget::new(limits),
+            budget,
             cancel,
             sequence: 0,
             pending: None,
@@ -301,7 +386,7 @@ impl<'a> ScanSession<'a> {
         F: FnMut(
             &Path,
             &TranscriptSnapshot,
-            &mut ScanBudget,
+            &mut ScanBudget<'a>,
             &Cancellation,
         ) -> Result<ScanControl, SnapshotError>,
     {
@@ -450,14 +535,14 @@ fn incomplete(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::Incomplete, reason)
 }
 
-pub fn scan_corpus<F>(
+pub fn scan_corpus<'store, F>(
     path: &Path,
-    budget: &mut ScanBudget,
+    budget: &mut ScanBudget<'store>,
     cancel: &Cancellation,
     mut visit: F,
 ) -> ScanOutcome
 where
-    F: FnMut(usize, &str, &mut ScanBudget, &Cancellation) -> Result<bool, SnapshotError>,
+    F: FnMut(usize, &str, &mut ScanBudget<'store>, &Cancellation) -> Result<bool, SnapshotError>,
 {
     use std::io::{BufRead, Read};
     let result = (|| {
@@ -474,10 +559,13 @@ where
             inner: file.take(read_limit as u64),
             bytes: read_count.clone(),
         };
-        let mut reader = std::io::BufReader::with_capacity(8192.min(read_limit.max(1)), counted);
+        let buffer_capacity = 8192.min(read_limit.max(1));
+        let _read_staging = budget.reserve_staging(buffer_capacity, cancel)?;
+        let mut reader = std::io::BufReader::with_capacity(buffer_capacity, counted);
         budget.progress.sources += 1;
         budget.progress.source_opens += 1;
         let mut line = Vec::new();
+        let mut _line_staging = None;
         let mut line_number = 0;
         loop {
             budget.checkpoint(cancel)?;
@@ -520,6 +608,16 @@ where
                 return Err(incomplete("corpus line budget exhausted"));
             }
             let complete = part[take - 1] == b'\n';
+            let needed = line.len().saturating_add(take);
+            if needed > line.capacity() {
+                let capacity = needed
+                    .checked_next_power_of_two()
+                    .ok_or_else(|| incomplete("corpus line capacity overflow"))?
+                    .min(read_limit);
+                let replacement = budget.reserve_staging(capacity, cancel)?;
+                line.reserve_exact(capacity - line.len());
+                _line_staging = Some(replacement);
+            }
             line.extend_from_slice(&part[..take]);
             reader.consume(take);
             if complete {
