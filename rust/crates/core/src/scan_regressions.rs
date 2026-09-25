@@ -309,3 +309,31 @@ fn corpus_quota_on_final_line_is_complete() {
         assert!(result.complete, "{:?}", result.reason);
     }
 }
+
+#[test]
+fn discovery_timestamps_keep_legacy_float_ordering() {
+    let fixture = Fixture::new();
+    let path = fixture.source("mtime.jsonl", "a");
+    let file = std::fs::File::open(&path).unwrap();
+    for (before_epoch, nanos) in [
+        (false, 1),
+        (false, 123_456_789),
+        (true, 1),
+        (true, 100_000_000),
+    ] {
+        let duration = std::time::Duration::from_nanos(nanos);
+        let modified = if before_epoch {
+            std::time::UNIX_EPOCH - duration
+        } else {
+            std::time::UNIX_EPOCH + duration
+        };
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let metadata = file.metadata().unwrap();
+        let stamp = crate::snapshot::SourceStamp::of(&metadata);
+        assert_eq!(
+            discovered_mtime(stamp.mtime_ns).to_bits(),
+            crate::discovery::mtime_secs(&metadata).to_bits()
+        );
+    }
+}

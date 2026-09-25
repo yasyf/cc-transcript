@@ -259,11 +259,7 @@ impl<'a> ScanSession<'a> {
                     .parse::<i128>()
                     .map_err(|_| invalid("invalid discovery timestamp"))?;
                 if matches_source(&path, plan) {
-                    paths.push((
-                        path,
-                        timestamp.div_euclid(1_000_000_000) as f64
-                            + timestamp.rem_euclid(1_000_000_000) as f64 / 1_000_000_000.0,
-                    ));
+                    paths.push((path, discovered_mtime(timestamp)));
                 }
             }
             if let Some(cursor) = guarded.response["cursor"].as_str() {
@@ -379,6 +375,16 @@ impl Drop for ScanSession<'_> {
         if let Some(response) = self.pending.take() {
             let _ = self.store.discard_response(&response, &self.context);
         }
+    }
+}
+
+fn discovered_mtime(timestamp: i128) -> f64 {
+    let magnitude = timestamp.unsigned_abs();
+    let seconds = (magnitude / 1_000_000_000) as f64 + 1e-9 * (magnitude % 1_000_000_000) as f64;
+    if timestamp < 0 {
+        -seconds
+    } else {
+        seconds
     }
 }
 
