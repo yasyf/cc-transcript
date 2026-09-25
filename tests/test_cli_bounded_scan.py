@@ -27,8 +27,9 @@ def source(path: Path, texts: list[str]) -> Path:
 
 
 def run_scan(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    scope = [] if "--corpus" in args or "--root" in args else ["--root", str(root)]
     return subprocess.run(
-        [str(Path(sys.executable).parent / "cc-transcript"), "grep", *args],
+        [str(Path(sys.executable).parent / "cc-transcript"), "grep", *scope, *args],
         capture_output=True,
         text=True,
         env=os.environ | {"HOME": str(root)},
@@ -110,3 +111,39 @@ def test_eighteen_patterns_share_one_preparation(tmp_path: Path) -> None:
     assert payload["counts"] == [1] * 18
     assert payload["matches"][0]["pattern_ids"] == list(range(18))
     assert payload["outcome"]["progress"]["source_opens"] == 1
+
+
+def test_relative_root_keeps_project_filter_and_provenance(tmp_path: Path) -> None:
+    project = tmp_path / "project-foo"
+    project.mkdir()
+    source(project / "one.jsonl", ["needle"])
+    result = run_scan(tmp_path, "needle", "--root", ".", "--project", "foo", "--scan-json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["counts"] == [1]
+    assert payload["matches"][0]["path"] == "./project-foo/one.jsonl"
+    assert payload["outcome"]["complete"] is True
+
+
+def test_discovery_does_not_follow_directory_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source(outside / "secret.jsonl", ["needle"])
+    (root / "linked").symlink_to(outside, target_is_directory=True)
+    result = run_scan(tmp_path, "needle", "--root", str(root), "--scan-json")
+    assert result.returncode == 1, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["outcome"]["complete"] is True
+    assert payload["outcome"]["progress"]["source_opens"] == 0
+
+
+def test_corpus_match_checks_output_before_rendering(tmp_path: Path) -> None:
+    path = tmp_path / "corpus.txt"
+    path.write_text("needle " + "x" * 1024 + "\n")
+    result = run_scan(tmp_path, "needle", "--corpus", str(path), "--scan-json", "--max-output-bytes", "4097")
+    assert result.returncode == 3, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["matches"] == []
+    assert "output" in payload["outcome"]["reason"]

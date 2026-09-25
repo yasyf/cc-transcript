@@ -231,9 +231,12 @@ impl<'a> ScanSession<'a> {
             let total = plan.paths.len();
             return Ok((plan.paths.clone(), total));
         }
+        let canonical_root =
+            std::fs::canonicalize(&plan.root).map_err(|error| incomplete(error.to_string()))?;
         let mut request = self.bounded_request("discover");
         request.insert("roots", json!([plan.root.to_string_lossy().as_ref()]));
         request.insert("preserve_aliases", json!(true));
+        request.insert("follow_directory_symlinks", json!(false));
         let mut paths = Vec::new();
         loop {
             let response = self.request(request)?;
@@ -247,7 +250,11 @@ impl<'a> ScanSession<'a> {
                 .as_array()
                 .ok_or_else(|| response_error(&guarded.response))?;
             for entry in entries {
-                let path = PathBuf::from(string(entry, "path")?);
+                let discovered = PathBuf::from(string(entry, "path")?);
+                let relative = discovered
+                    .strip_prefix(&canonical_root)
+                    .map_err(|_| invalid("discovered path outside scan root"))?;
+                let path = plan.root.join(relative);
                 let timestamp = string(entry, "mtime_ns")?
                     .parse::<i128>()
                     .map_err(|_| invalid("invalid discovery timestamp"))?;
@@ -328,9 +335,10 @@ impl<'a> ScanSession<'a> {
                     }
                     let snapshot = self
                         .store
-                        .pin_scope(
+                        .pin_scope_for_work(
                             &guarded.response["data"]["description"]["handle"],
                             &self.context,
+                            self.budget.limits.deadline_unix_ms,
                         )?
                         .0;
                     if snapshot.event_count > self.budget.remaining().max_events {
@@ -474,9 +482,7 @@ where
                     line_number += 1;
                     let text = std::str::from_utf8(&line).map_err(|e| incomplete(e.to_string()))?;
                     budget.charge_projection(0, 1, cancel)?;
-                    if visit(line_number, text, budget, cancel)? {
-                        return Ok(false);
-                    }
+                    visit(line_number, text, budget, cancel)?;
                 }
                 let after = reader
                     .get_ref()
@@ -510,7 +516,20 @@ where
                 let text = std::str::from_utf8(&line).map_err(|e| incomplete(e.to_string()))?;
                 budget.charge_projection(0, 1, cancel)?;
                 if visit(line_number, text, budget, cancel)? {
-                    return Ok(false);
+                    let after = reader
+                        .get_ref()
+                        .inner
+                        .get_ref()
+                        .metadata()
+                        .map_err(|error| incomplete(error.to_string()))?;
+                    if crate::snapshot::SourceStamp::of(&before)
+                        != crate::snapshot::SourceStamp::of(&after)
+                    {
+                        return Err(incomplete("corpus changed during scan"));
+                    }
+                    return Ok(
+                        reader.buffer().is_empty() && read_count.get() == before.len() as usize
+                    );
                 }
                 line.clear();
             }

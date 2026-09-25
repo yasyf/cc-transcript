@@ -457,11 +457,21 @@ fn run_over_corpus(
         |line_number, line, budget, cancel| {
             let ids = reducer.scan_text(line, budget, cancel)?;
             if !ids.is_empty() {
-                budget.charge_projection(
-                    line.len().saturating_mul(6).saturating_add(1024),
-                    0,
-                    cancel,
-                )?;
+                let render_bound = if args.scan_json {
+                    line.len()
+                        .saturating_add(path.as_os_str().len())
+                        .saturating_mul(6)
+                        .saturating_add(1024)
+                } else {
+                    line.len().saturating_add(2)
+                };
+                if render_bound > budget.remaining().max_output_bytes {
+                    return Err(SnapshotError::new(
+                        Status::OutputLimit,
+                        "corpus match exceeds remaining output budget",
+                    ));
+                }
+                budget.charge_projection(render_bound, 0, cancel)?;
                 let rendered = if args.scan_json {
                     sonic_rs::to_string(&json!({"path":path.to_string_lossy().as_ref(),"line":line_number,"text":line,"pattern_ids":ids})).map_err(|e|SnapshotError::new(Status::OutputLimit,e.to_string()))?
                 } else {

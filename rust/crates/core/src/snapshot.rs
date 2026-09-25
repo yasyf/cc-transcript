@@ -4642,6 +4642,15 @@ impl NativeStore {
                 self.authority(&scan.context, Some(&canonical))?;
                 let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 if metadata.is_dir() {
+                    if scan
+                        .request
+                        .get("follow_directory_symlinks")
+                        .and_then(Value::as_bool)
+                        == Some(false)
+                        && entry.file_type().map_err(io_error)?.is_symlink()
+                    {
+                        continue;
+                    }
                     scan.roots.push(canonical);
                     continue;
                 }
@@ -4664,7 +4673,12 @@ impl NativeStore {
             let metadata = std::fs::metadata(&path).map_err(io_error)?;
             let stamp = SourceStamp::of(&metadata);
             if !scan.seen.insert(stamp.identity)
-                && scan.request.get("preserve_aliases").and_then(Value::as_bool) != Some(true) {
+                && scan
+                    .request
+                    .get("preserve_aliases")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
                 continue;
             }
             scan.sources += 1;

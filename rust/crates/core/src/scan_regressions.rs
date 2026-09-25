@@ -176,3 +176,136 @@ fn corpus_complete_zero_and_quota_are_distinct() {
     assert_eq!(result.reason.as_deref(), Some("result_limit"));
     assert_eq!(result.progress.source_bytes, 8);
 }
+
+fn gauges(store: &NativeStore, context: &Value) -> Value {
+    store.request(
+        &json!({"schema":SCHEMA,"id":"gauges","operation":"stats"}),
+        context,
+        &Cancellation::default(),
+    )["data"]["gauges"]
+        .clone()
+}
+
+#[test]
+fn writer_failure_releases_lease_without_opening_next_source() {
+    let fixture = Fixture::new();
+    let first = fixture.source("first.jsonl", "a");
+    let second = fixture.source("second.jsonl", "b");
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut scan = ScanSession::new(&store, limits(), Cancellation::default());
+    let result = scan.run(&fixture.plan(vec![first, second]), |_, _, _, _| {
+        Err(SnapshotError::new(Status::OutputLimit, "writer failed"))
+    });
+    assert!(!result.complete);
+    assert_eq!(result.progress.source_opens, 1);
+    assert_eq!(result.progress.sources, 1);
+    assert_eq!(
+        gauges(&store, &scan.context)["active_leases"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        gauges(&store, &scan.context)["pending_loads"].as_u64(),
+        Some(0)
+    );
+}
+
+fn load_request(scan: &ScanSession<'_>, path: &Path) -> Value {
+    let mut request = scan.bounded_request("acquire");
+    request.insert("path", json!(path.to_string_lossy().as_ref()));
+    request.insert("classifier", json!({"id":"native","version":"1"}));
+    request
+}
+
+#[test]
+fn dropping_cancelled_driver_keeps_another_waiters_load_alive() {
+    let fixture = Fixture::new();
+    let path = fixture.source("shared.jsonl", "shared");
+    let store =
+        NativeStore::new(&json!({"max_read_bytes_per_step":16,"max_events_per_step":1})).unwrap();
+    let mut first = ScanSession::new(&store, limits(), Cancellation::default());
+    let mut second = ScanSession::new(&store, limits(), Cancellation::default());
+    let a = first.request(load_request(&first, &path)).unwrap();
+    let mut b = second.request(load_request(&second, &path)).unwrap();
+    assert!(a["cursor"].as_str().is_some());
+    assert_eq!(
+        a["data"]["reservation"]["load_id"].as_str(),
+        b["data"]["reservation"]["load_id"].as_str()
+    );
+    first.cancel.cancel();
+    assert!(first
+        .request(json!({"operation":"resume","cursor":a["cursor"]}))
+        .is_err());
+    drop(first);
+    assert_eq!(
+        gauges(&store, &second.context)["pending_loads"].as_u64(),
+        Some(1)
+    );
+    for _ in 0..100 {
+        let Some(cursor) = b["cursor"].as_str() else {
+            break;
+        };
+        b = second
+            .request(json!({"operation":"resume","cursor":cursor}))
+            .unwrap();
+    }
+    assert_eq!(b["status"].as_str(), Some("ok"));
+    let snapshot = store
+        .pin(&b["data"]["description"]["handle"], &second.context)
+        .unwrap();
+    assert_eq!(snapshot.event_count, 1);
+    store.discard_response(&b, &second.context).unwrap();
+    assert_eq!(
+        gauges(&store, &second.context)["active_leases"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        gauges(&store, &second.context)["pending_loads"].as_u64(),
+        Some(0)
+    );
+}
+
+#[test]
+fn cumulative_read_budget_survives_small_load_pages_and_sources() {
+    let fixture = Fixture::new();
+    let first = fixture.source("first.jsonl", "a");
+    let second = fixture.source("second.jsonl", "b");
+    let config = json!({"max_read_bytes_per_step":16,"max_events_per_step":1});
+    let baseline = NativeStore::new(&config).unwrap();
+    let mut once = ScanSession::new(&baseline, limits(), Cancellation::default());
+    let reference = once.run(&fixture.plan(vec![first.clone()]), |_, _, _, _| {
+        Ok(ScanControl::Continue)
+    });
+    assert!(reference.complete, "{:?}", reference.reason);
+    let mut bound = limits();
+    bound.max_read_bytes = reference.progress.source_bytes + 1;
+    let store = NativeStore::new(&config).unwrap();
+    let mut scan = ScanSession::new(&store, bound, Cancellation::default());
+    let mut visits = 0;
+    let result = scan.run(&fixture.plan(vec![first, second]), |_, _, _, _| {
+        visits += 1;
+        Ok(ScanControl::Continue)
+    });
+    assert!(!result.complete);
+    assert_eq!(visits, 1);
+    assert!(result.progress.source_bytes <= bound.max_read_bytes);
+    let context = scan.context.clone();
+    drop(scan);
+    assert_eq!(gauges(&store, &context)["active_leases"].as_u64(), Some(0));
+    assert_eq!(gauges(&store, &context)["pending_loads"].as_u64(), Some(0));
+}
+
+#[test]
+fn corpus_quota_on_final_line_is_complete() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("corpus.txt");
+    for contents in ["last\n", "last"] {
+        std::fs::write(&path, contents).unwrap();
+        let result = scan_corpus(
+            &path,
+            &mut ScanBudget::new(limits()),
+            &Cancellation::default(),
+            |_, _, _, _| Ok(true),
+        );
+        assert!(result.complete, "{:?}", result.reason);
+    }
+}
