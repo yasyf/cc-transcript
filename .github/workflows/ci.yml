@@ -50,7 +50,7 @@ jobs:
           command = [str(Path(sys.executable).parent / "cc-transcript"), "grep", "zzzz_no_such_pattern_xyzzy", "--root", ".fixtures/corpus", "--scan-json"]
           profiles = {
               "interactive": [],
-              "completion_probe": ["--max-read-bytes", "1073741824", "--max-events", "1000000", "--timeout-ms", "120000"],
+              "completion_oracle": ["--max-read-bytes", "268435456", "--max-events", "262144", "--timeout-ms", "120000"],
           }
           for name, flags in profiles.items():
               result = subprocess.run([*command, *flags], capture_output=True, text=True, timeout=125)

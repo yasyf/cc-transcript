@@ -411,7 +411,9 @@ def matrix(smallest: str) -> dict[str, Case]:
         "show_head5": Case(["show", smallest, "--head", "5", "--width", "100"]),
         "show_codex": Case(["show", codex_transcript, "--width", "100"]),
         "grep_match": Case(["grep", "tests are green", "--root", root, "--width", "100", "--max-matches", "10"]),
-        "grep_nomatch": Case(["grep", "zzzz_no_such_pattern_xyzzy", "--root", root]),
+        "grep_nomatch": Case(
+            ["grep", "zzzz_no_such_pattern_xyzzy", "--root", root, "--max-read-bytes", "268435456", "--max-events", "262144"]
+        ),
         "grep_codex": Case(["grep", "python3", codex_transcript, "--width", "100", "--max-matches", "10"]),
         "corpus": Case(["corpus", "green", "--root", root, "--window", "60", "--out", CORPUS_EXTRACT_REL]),
         "corpus_query": Case(["grep", "--corpus", CORPUS_EXTRACT_REL, "Bash"]),
