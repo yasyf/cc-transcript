@@ -224,6 +224,15 @@ from cc_transcript.render import (
     render_turn as render_turn,
 )
 
+from cc_transcript.snapshots import (
+    CallContext as CallContext,
+    CancellationToken as CancellationToken,
+    SnapshotIncomplete as SnapshotIncomplete,
+    TranscriptSnapshot as TranscriptSnapshot,
+    TranscriptStore as TranscriptStore,
+    decode_projection as decode_projection,
+)
+
 from cc_transcript.synthetic import (
     assistant_line as assistant_line,
     meta_fields as meta_fields,
@@ -324,6 +333,8 @@ __all__ = [
     "CLAUDE_PROJECTS_DIR",
     "CORRECTIONS_DDL",
     "CacheCreation",
+    "CallContext",
+    "CancellationToken",
     "CandidatePair",
     "CcVersion",
     "CodeModeCall",
@@ -415,6 +426,7 @@ __all__ = [
     "SessionId",
     "SkillCall",
     "SkillResult",
+    "SnapshotIncomplete",
     "SpanEditCall",
     "StopHookSummary",
     "SubagentIndex",
@@ -447,6 +459,8 @@ __all__ = [
     "Transcript",
     "TranscriptEvent",
     "TranscriptExpiredError",
+    "TranscriptSnapshot",
+    "TranscriptStore",
     "TreeTurn",
     "Turn",
     "TurnDuration",
@@ -474,6 +488,7 @@ __all__ = [
     "command_prefixes",
     "cost_of",
     "cost_of_assistant",
+    "decode_projection",
     "discover",
     "drop_compacted",
     "drop_empty",

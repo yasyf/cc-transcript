@@ -7,7 +7,8 @@ use crate::protocol::{interrupt_marker, is_agent_injection};
 
 /// Envelope metadata shared by the conversational entry kinds (user, assistant,
 /// system). Mode and Other entries carry no envelope on disk.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntryMeta {
     pub uuid: String,
     pub parent_uuid: Option<String>,
@@ -29,7 +30,8 @@ pub struct EntryMeta {
 
 /// The plugin/skill/MCP attribution of an assistant turn, present only when the
 /// entry carries at least one of the four attribution fields.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Attribution {
     pub plugin: Option<String>,
     pub skill: Option<String>,
@@ -39,7 +41,8 @@ pub struct Attribution {
 
 /// The upstream API error an assistant turn failed with, present only when the
 /// entry's ``isApiErrorMessage`` flag is set.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiError {
     pub error: Option<String>,
     pub status: Option<i64>,
@@ -49,7 +52,8 @@ pub struct ApiError {
 /// One AskUserQuestion round, lifted from a tool-use input's ``questions``
 /// array. Questions without string text are dropped — ``answered_pairs``
 /// (mining/signals.py) never anchors them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Question {
     pub question: String,
     pub header: Option<String>,
@@ -57,7 +61,8 @@ pub struct Question {
     pub labels: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolUseBlock {
     pub id: String,
     pub name: String,
@@ -71,7 +76,8 @@ pub struct ToolUseBlock {
     pub input: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolResultBlock {
     pub tool_use_id: String,
     pub content: String,
@@ -86,13 +92,15 @@ pub struct ToolResultBlock {
     pub denial_kind: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FallbackBlock {
     pub from_model: String,
     pub to_model: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ContentBlock {
     Text(String),
     Thinking(String),
@@ -105,7 +113,8 @@ pub enum ContentBlock {
 /// A user message body: the plain-string content verbatim, or its parsed blocks
 /// in document order (text and tool_result blocks; other kinds are dropped, as
 /// in the Python parser).
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum UserContent {
     Plain(String),
     Blocks(Vec<ContentBlock>),
@@ -122,7 +131,8 @@ impl UserContent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub meta: EntryMeta,
     pub content: UserContent,
@@ -161,7 +171,8 @@ impl UserEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantEntry {
     pub meta: EntryMeta,
     pub model: String,
@@ -174,13 +185,15 @@ pub struct AssistantEntry {
     pub api_error: Option<ApiError>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookInfo {
     pub command: String,
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StopHookSummary {
     pub hook_count: Option<i64>,
     pub hook_infos: Vec<HookInfo>,
@@ -192,21 +205,24 @@ pub struct StopHookSummary {
     pub tool_use_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreservedSegment {
     pub head_uuid: Option<String>,
     pub anchor_uuid: Option<String>,
     pub tail_uuid: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreservedMessages {
     pub anchor_uuid: Option<String>,
     pub uuids: Vec<String>,
     pub all_uuids: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompactBoundary {
     pub trigger: Option<String>,
     pub pre_tokens: Option<i64>,
@@ -220,7 +236,8 @@ pub struct CompactBoundary {
     pub precomputed: Option<bool>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnDuration {
     pub duration_ms: Option<i64>,
     pub message_count: Option<i64>,
@@ -228,7 +245,8 @@ pub struct TurnDuration {
     pub pending_background_agent_count: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRefusalFallback {
     pub api_refusal_category: Option<String>,
     pub api_refusal_explanation: Option<String>,
@@ -243,7 +261,8 @@ pub struct ModelRefusalFallback {
 /// The typed detail of a system entry. Recognized subtypes carry their typed
 /// struct; every other subtype carries the full record verbatim under `Other`,
 /// so no system entry is lossy.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum SystemDetail {
     StopHookSummary(StopHookSummary),
     CompactBoundary(CompactBoundary),
@@ -252,7 +271,8 @@ pub enum SystemDetail {
     Other(Value),
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemEntry {
     pub meta: EntryMeta,
     pub subtype: String,
@@ -261,7 +281,8 @@ pub struct SystemEntry {
     pub detail: SystemDetail,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ModeChannel {
     Mode,
     PermissionMode,
@@ -276,21 +297,24 @@ impl ModeChannel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModeEntry {
     pub session_id: String,
     pub channel: ModeChannel,
     pub value: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OtherEntry {
     pub ty: String,
     /// The full decoded payload, passed through to Python verbatim.
     pub raw: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookSuccess {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -303,7 +327,8 @@ pub struct HookSuccess {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookBlockingError {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -311,7 +336,8 @@ pub struct HookBlockingError {
     pub blocking_error: Option<Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookNonBlockingError {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -323,7 +349,8 @@ pub struct HookNonBlockingError {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookCancelled {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -334,7 +361,8 @@ pub struct HookCancelled {
     pub timeout_ms: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HookAdditionalContext {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -342,7 +370,8 @@ pub struct HookAdditionalContext {
     pub content: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AsyncHookResponse {
     pub hook_name: Option<String>,
     pub hook_event: Option<String>,
@@ -353,14 +382,16 @@ pub struct AsyncHookResponse {
     pub response: Option<Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueuedCommand {
     pub prompt: Option<String>,
     pub command_mode: Option<String>,
     pub origin: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeferredToolsDelta {
     pub added_names: Vec<String>,
     pub removed_names: Vec<String>,
@@ -370,7 +401,8 @@ pub struct DeferredToolsDelta {
 /// The typed detail of an attachment entry. Recognized attachment types carry
 /// their typed struct; every other type carries the full record verbatim under
 /// `Other`, so no attachment entry is lossy.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum AttachmentDetail {
     HookSuccess(HookSuccess),
     HookBlockingError(HookBlockingError),
@@ -383,7 +415,8 @@ pub enum AttachmentDetail {
     Other(Value),
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttachmentEntry {
     pub meta: EntryMeta,
     pub attachment_type: String,
@@ -392,7 +425,8 @@ pub struct AttachmentEntry {
 
 /// One parsed JSONL transcript line. Each line is parsed exactly once into this
 /// model; Python objects are materialized from it afterwards.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Entry {
     User(UserEntry),
     Assistant(AssistantEntry),
@@ -487,19 +521,22 @@ pub fn joined_text(blocks: &[ContentBlock]) -> String {
         .join(" ")
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheCreation {
     pub ephemeral_5m_input_tokens: i64,
     pub ephemeral_1h_input_tokens: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerToolUse {
     pub web_search_requests: i64,
     pub web_fetch_requests: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Usage {
     // Representation-blocked divergence (accepted, e0ab2411): an out-of-i64 or -0 token count
     // fails the file vs Python's preserve. P3: inherit; do not widen. See EntryMeta.
@@ -513,7 +550,8 @@ pub struct Usage {
     pub server_tool_use: Option<ServerToolUse>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
@@ -525,20 +563,23 @@ pub struct ModelUsage {
     pub max_output_tokens: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServer {
     pub name: String,
     pub status: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plugin {
     pub name: String,
     pub path: String,
     pub source: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InitInfo {
     pub mcp_servers: Vec<McpServer>,
     pub plugins: Vec<Plugin>,
@@ -546,7 +587,8 @@ pub struct InitInfo {
     pub skills: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum PrintBody {
     User(UserContent),
     Assistant {
@@ -555,7 +597,8 @@ pub enum PrintBody {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrintMessage {
     pub body: PrintBody,
     pub id: Option<String>,
@@ -566,7 +609,8 @@ pub struct PrintMessage {
 
 /// A parsed ``--print`` envelope: the result element plus the optional init
 /// element and the conversational messages.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrintResult {
     pub total_cost_usd: f64,
     pub model_usage: Vec<(String, ModelUsage)>,

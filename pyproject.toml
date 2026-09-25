@@ -37,6 +37,7 @@ dependencies = [
 dev = [
     "anyio>=4.4",
     "pytest>=8.0",
+    "pydantic>=2.0",
     "ty>=0.0.44",
     "ruff>=0.8",
 ]
@@ -66,7 +67,7 @@ module-name = "cc_transcript._native"
 manifest-path = "rust/crates/py/Cargo.toml"
 python-source = "."
 features = ["extension-module"]
-include = ["cc_transcript/sentiment/data/*.tsv", "cc_transcript/sentiment/data/en-ewt.udpipe"]
+include = ["cc_transcript/sentiment/data/*.tsv", "cc_transcript/sentiment/data/en-ewt.udpipe", "cc_transcript/snapshot_schema/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

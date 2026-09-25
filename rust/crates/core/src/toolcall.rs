@@ -78,7 +78,8 @@ fn requires_object_input(canonical: &str) -> bool {
 }
 
 /// The payload key names an MCP tool's span-edit lowering reads — never values.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpanEditMap {
     pub path: String,
     pub content: String,
@@ -87,7 +88,8 @@ pub struct SpanEditMap {
 
 /// A registered MCP tool's behavior: the built-in gate it aliases, plus an
 /// optional span-edit lowering addressed by payload key names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpToolSpec {
     pub behaves_like: String,
     pub span_edit: Option<SpanEditMap>,
@@ -284,14 +286,16 @@ fn req_str_keys(input: &Value, keys: &[&str]) -> Result<String, ToolInputError> 
 }
 
 /// A before/after content pair lowered from an edit-shaped tool call (tools.py Hunk).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hunk {
     pub old: String,
     pub new: String,
 }
 
 /// One replacement within a MultiEdit call, in application order (tools.py EditSpan).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditSpan {
     pub old: String,
     pub new: String,
@@ -335,7 +339,8 @@ fn edit_spans(edits: &Value) -> Result<Vec<EditSpan>, ToolInputError> {
     Err(ToolInputError::Malformed("edits not iterable".to_string()))
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BashCall {
     pub name: String,
     pub raw: Value,
@@ -345,7 +350,8 @@ pub struct BashCall {
     pub run_in_background: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditCall {
     pub name: String,
     pub raw: Value,
@@ -355,7 +361,8 @@ pub struct EditCall {
     pub replace_all: Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultiEditCall {
     pub name: String,
     pub raw: Value,
@@ -363,7 +370,8 @@ pub struct MultiEditCall {
     pub edits: Vec<EditSpan>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteCall {
     pub name: String,
     pub raw: Value,
@@ -371,7 +379,8 @@ pub struct WriteCall {
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadCall {
     pub name: String,
     pub raw: Value,
@@ -380,7 +389,8 @@ pub struct ReadCall {
     pub limit: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotebookEditCall {
     pub name: String,
     pub raw: Value,
@@ -390,7 +400,8 @@ pub struct NotebookEditCall {
     pub edit_mode: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrepCall {
     pub name: String,
     pub raw: Value,
@@ -401,7 +412,8 @@ pub struct GrepCall {
     pub output_mode: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GlobCall {
     pub name: String,
     pub raw: Value,
@@ -409,7 +421,8 @@ pub struct GlobCall {
     pub path: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskCall {
     pub name: String,
     pub raw: Value,
@@ -420,7 +433,8 @@ pub struct TaskCall {
     pub run_in_background: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowCall {
     pub name: String,
     pub raw: Value,
@@ -431,7 +445,8 @@ pub struct WorkflowCall {
     pub resume_from_run_id: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillCall {
     pub name: String,
     pub raw: Value,
@@ -439,7 +454,8 @@ pub struct SkillCall {
     pub args: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskCreateCall {
     pub name: String,
     pub raw: Value,
@@ -447,7 +463,8 @@ pub struct TaskCreateCall {
     pub description: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskUpdateCall {
     pub name: String,
     pub raw: Value,
@@ -457,7 +474,8 @@ pub struct TaskUpdateCall {
     pub description: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExitPlanModeCall {
     pub name: String,
     pub raw: Value,
@@ -466,7 +484,8 @@ pub struct ExitPlanModeCall {
 
 /// A codex code-mode `exec` call: `source` is its free-form program, kept verbatim
 /// and never JSON-decoded; `raw` is the original string input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodeModeCall {
     pub name: String,
     pub raw: Value,
@@ -474,7 +493,8 @@ pub struct CodeModeCall {
 }
 
 /// How one file of an apply_patch envelope is edited (tools.py PatchEdit.kind).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum PatchEditKind {
     Add,
     Update,
@@ -494,7 +514,8 @@ impl PatchEditKind {
 /// One file's edit within a codex apply_patch envelope. `hunks` is empty for a
 /// deletion and holds one addition hunk for an added file; `move_path` is the
 /// rename target when the file is moved.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatchEdit {
     pub file_path: String,
     pub kind: PatchEditKind,
@@ -504,7 +525,8 @@ pub struct PatchEdit {
 
 /// A codex apply_patch call: one `PatchEdit` per file in the envelope. A malformed
 /// envelope yields no edits (never an error); `raw` is the original envelope string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyPatchCall {
     pub name: String,
     pub raw: Value,
@@ -513,7 +535,8 @@ pub struct ApplyPatchCall {
 
 /// A codex update_plan call: `plan` is the plan-step array and `explanation` the
 /// optional narration, decoded from the JSON-string arguments; `raw` is that string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdatePlanCall {
     pub name: String,
     pub raw: Value,
@@ -524,7 +547,8 @@ pub struct UpdatePlanCall {
 /// A codex write_stdin call: `chars` is the text written to the target session's
 /// stdin and `session_id` its identifier, decoded from the JSON-string arguments;
 /// `raw` is that string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteStdinCall {
     pub name: String,
     pub raw: Value,
@@ -538,7 +562,8 @@ pub struct WriteStdinCall {
 /// whose spec carries a span-edit lowering. The payload carries no pre-image;
 /// registrations are process-local (the standalone Rust CLI never sees them — the
 /// intended semantic for an embedding-driven registry).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpanEditCall {
     pub name: String,
     pub raw: Value,
@@ -546,7 +571,8 @@ pub struct SpanEditCall {
     pub new: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OtherCall {
     pub name: String,
     pub raw: Value,
@@ -554,7 +580,8 @@ pub struct OtherCall {
 }
 
 /// The typed tool-call hierarchy (tools.py ToolCall union).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ToolCall {
     Bash(BashCall),
     Edit(EditCall),

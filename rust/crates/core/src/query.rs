@@ -372,7 +372,7 @@ impl<'a> WindowTurn<'a> {
             .tool_uses
             .iter()
             .filter(|use_| {
-                let pos = positions[use_.event_uuid];
+                let pos = positions[&(use_.event_uuid.as_ptr() as usize)];
                 self.lo <= pos && pos < self.hi
             })
             .collect()
@@ -381,11 +381,11 @@ impl<'a> WindowTurn<'a> {
 
 /// `{meta.uuid: index}` over a turn's events (query.py `trim_turn` positions): every
 /// event advances the index, only meta-bearing ones are keyed.
-fn turn_positions<'a>(turn: &'a Turn<'a>) -> HashMap<&'a str, usize> {
+fn turn_positions<'a>(turn: &'a Turn<'a>) -> HashMap<usize, usize> {
     turn.events
         .iter()
         .enumerate()
-        .filter_map(|(i, e)| e.meta().map(|m| (m.uuid.as_str(), i)))
+        .filter_map(|(i, e)| e.meta().map(|m| (m.uuid.as_ptr() as usize, i)))
         .collect()
 }
 
@@ -401,6 +401,21 @@ impl<'a> Session<'a> {
         Session {
             turns: lift.turns.iter().map(WindowTurn::full).collect(),
         }
+    }
+
+    pub(crate) fn turn_views(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (usize, &'a str, &'a [&'a Entry], Vec<&'a ToolUse<'a>>)>
+           + ExactSizeIterator
+           + '_ {
+        self.turns.iter().map(|turn| {
+            (
+                turn.turn.index,
+                turn.prompt(),
+                turn.events(),
+                turn.tool_uses(),
+            )
+        })
     }
 
     fn events_iter(&self) -> impl Iterator<Item = &'a Entry> + '_ {
@@ -423,10 +438,10 @@ impl<'a> Session<'a> {
     }
 
     /// `{meta.uuid: index}` over the window's flattened events (query.py `event_positions`).
-    fn event_positions(&self) -> HashMap<&'a str, usize> {
+    fn event_positions(&self) -> HashMap<usize, usize> {
         self.events_iter()
             .enumerate()
-            .filter_map(|(i, e)| e.meta().map(|m| (m.uuid.as_str(), i)))
+            .filter_map(|(i, e)| e.meta().map(|m| (m.uuid.as_ptr() as usize, i)))
             .collect()
     }
 
@@ -439,7 +454,7 @@ impl<'a> Session<'a> {
     }
 
     /// The sub-window over the flattened event index range `[start, stop)` (query.py `windowed`).
-    fn windowed(&self, start: usize, stop: usize) -> Session<'a> {
+    pub(crate) fn windowed(&self, start: usize, stop: usize) -> Session<'a> {
         let mut turns = Vec::new();
         let mut base = 0usize;
         for wt in &self.turns {
@@ -470,7 +485,7 @@ impl<'a> Session<'a> {
                     && file
                         .is_none_or(|f| use_.call.file_paths().into_iter().any(|p| p.contains(f)))
             })
-            .map(|use_| positions[use_.event_uuid])
+            .map(|use_| positions[&(use_.event_uuid.as_ptr() as usize)])
             .max();
         match last {
             Some(mx) => self.windowed(mx + 1, self.len()),
@@ -486,7 +501,7 @@ impl<'a> Session<'a> {
             .all_items
             .iter()
             .filter(|use_| tool_name_matches(use_.call.name(), tool))
-            .map(|use_| positions[use_.event_uuid])
+            .map(|use_| positions[&(use_.event_uuid.as_ptr() as usize)])
             .max();
         match last {
             Some(mx) => self.windowed(0, mx),
@@ -585,7 +600,8 @@ impl<'a> Session<'a> {
         let positions = self.event_positions();
         let expanded = expand_tool_names(&invalidated_by.join("|"));
         !self.tool_calls().all_items.iter().any(|use_| {
-            positions[use_.event_uuid] > last && matches_names(use_.call.name(), &expanded)
+            positions[&(use_.event_uuid.as_ptr() as usize)] > last
+                && matches_names(use_.call.name(), &expanded)
         })
     }
 
@@ -603,7 +619,11 @@ impl<'a> Session<'a> {
                 _ => None,
             })
             .collect();
-        let start = texts.len().saturating_sub(n);
+        let start = if n == 0 {
+            0
+        } else {
+            texts.len().saturating_sub(n)
+        };
         texts[start..]
             .iter()
             .filter(|t| !t.is_empty())

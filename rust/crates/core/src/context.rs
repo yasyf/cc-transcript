@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::activity::{LiftedSession, ToolUse, Turn};
-use crate::ids::{encode_string, tool_digest, EventRef};
+use crate::ids::{tool_digest, EventRef};
 use crate::parse::parse_questions;
 use crate::render::{clip, human_queued_prompt, render_tool_call, render_turn, Budget};
-use crate::toolcall::{parse_tool_call, parse_tool_result, ToolResult};
+use crate::toolcall::{parse_tool_result, ToolResult};
 use crate::types::{ContentBlock, Entry, Question, ToolUseBlock};
 use crate::value::{field, field_bool, field_str};
 
@@ -166,7 +166,16 @@ impl ContextWindow {
     /// Serialize to the `cc-transcript.context/2` wire schema, byte-stably —
     /// `json.dumps(..., ensure_ascii=False, separators=(",", ":"), sort_keys=True)`.
     pub fn to_json(&self) -> String {
-        let mut out = String::new();
+        self.to_json_bounded(usize::MAX)
+            .expect("unlimited context writer")
+    }
+
+    pub(crate) fn to_json_bounded(&self, limit: usize) -> Result<String, SchemaError> {
+        let mut out = JsonSink {
+            bytes: Vec::new(),
+            limit,
+            exceeded: false,
+        };
         out.push_str("{\"after\":");
         push_turn_refs(&self.after, &mut out);
         out.push_str(",\"anchor\":");
@@ -189,7 +198,10 @@ impl ContextWindow {
             None => out.push_str("null"),
         }
         out.push('}');
-        out
+        if out.exceeded {
+            return Err(SchemaError("context output limit".to_owned()));
+        }
+        Ok(String::from_utf8(out.bytes).expect("JSON UTF-8"))
     }
 
     /// Deserialize a window persisted by [`ContextWindow::to_json`], rejecting any
@@ -319,7 +331,51 @@ fn ref_from(value: &Value) -> Option<EventRef> {
     })
 }
 
-fn push_turn_refs(items: &[TurnRef], out: &mut String) {
+struct JsonSink {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl JsonSink {
+    fn push_str(&mut self, text: &str) {
+        if text.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+        }
+        if !self.exceeded {
+            self.bytes.extend_from_slice(text.as_bytes());
+        }
+    }
+
+    fn push(&mut self, ch: char) {
+        self.push_str(ch.encode_utf8(&mut [0; 4]));
+    }
+}
+
+impl std::io::Write for JsonSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+        }
+        if self.exceeded {
+            return Err(std::io::Error::other("context output limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_string(text: &str, out: &mut JsonSink) {
+    if sonic_rs::to_writer(&mut *out, &text).is_err() {
+        out.exceeded = true;
+    }
+}
+
+fn push_turn_refs(items: &[TurnRef], out: &mut JsonSink) {
     out.push('[');
     for (i, tr) in items.iter().enumerate() {
         if i > 0 {
@@ -330,7 +386,7 @@ fn push_turn_refs(items: &[TurnRef], out: &mut String) {
     out.push(']');
 }
 
-fn push_turn_ref(tr: &TurnRef, out: &mut String) {
+fn push_turn_ref(tr: &TurnRef, out: &mut JsonSink) {
     out.push_str("{\"preview\":");
     encode_string(&tr.preview, out);
     if let Some(previews) = &tr.previews {
@@ -362,7 +418,7 @@ fn push_turn_ref(tr: &TurnRef, out: &mut String) {
     out.push_str("]}");
 }
 
-fn push_ref(r: &EventRef, out: &mut String) {
+fn push_ref(r: &EventRef, out: &mut JsonSink) {
     out.push_str("{\"event_uuid\":");
     encode_string(&r.event_uuid, out);
     out.push_str(",\"session_id\":");
@@ -375,7 +431,7 @@ fn push_ref(r: &EventRef, out: &mut String) {
     out.push('}');
 }
 
-fn push_preview(preview: &Preview, out: &mut String) {
+fn push_preview(preview: &Preview, out: &mut JsonSink) {
     match preview {
         Preview::Text { text } => {
             out.push_str("{\"kind\":\"text\",\"text\":");
@@ -416,7 +472,7 @@ fn push_preview(preview: &Preview, out: &mut String) {
     }
 }
 
-fn push_question(q: &PreviewQuestion, out: &mut String) {
+fn push_question(q: &PreviewQuestion, out: &mut JsonSink) {
     out.push_str("{\"header\":");
     match &q.header {
         Some(h) => encode_string(h, out),
@@ -436,7 +492,7 @@ fn push_question(q: &PreviewQuestion, out: &mut String) {
     out.push('}');
 }
 
-fn push_str_map(map: &BTreeMap<String, String>, out: &mut String) {
+fn push_str_map(map: &BTreeMap<String, String>, out: &mut JsonSink) {
     out.push('{');
     for (i, (k, v)) in map.iter().enumerate() {
         if i > 0 {
@@ -496,7 +552,7 @@ fn turn_of<'a>(lift: &'a LiftedSession<'a>, anchor: &EventRef) -> Option<&'a Tur
     })
 }
 
-fn turn_ref(turn: &Turn, budget: &Budget) -> TurnRef {
+pub(crate) fn turn_ref(turn: &Turn, budget: &Budget) -> TurnRef {
     TurnRef {
         role: if turn.prompt.is_empty() {
             Role::Assistant
@@ -586,7 +642,7 @@ fn preview_of_call(tu: &ToolUseBlock, use_: &ToolUse, budget: &Budget) -> Previe
     Preview::ToolCall {
         name: tu.name.clone(),
         digest: tool_digest(&tu.name, &tu.input).expect("tool input digests"),
-        summary: render_tool_call(&parse_tool_call(&tu.name, &tu.input), budget),
+        summary: render_tool_call(&use_.call, budget),
     }
 }
 

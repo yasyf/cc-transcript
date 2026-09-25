@@ -96,7 +96,7 @@ fn opens_turn(user: &UserEntry) -> bool {
 
 /// The index opening the current turn: the last turn-opening user entry, or 0
 /// when no prompt qualifies (activity.py ``from_events`` turn 0).
-fn current_turn_start(entries: &[Entry]) -> usize {
+fn current_turn_start(entries: &[&Entry]) -> usize {
     entries
         .iter()
         .rposition(|entry| matches!(entry, Entry::User(user) if opens_turn(user)))
@@ -149,7 +149,12 @@ struct Notifications {
 }
 
 impl Notifications {
+    #[cfg(test)]
     fn from_entries(entries: &[Entry]) -> Self {
+        Self::from_entry_refs(&entries.iter().collect::<Vec<_>>())
+    }
+
+    fn from_entry_refs(entries: &[&Entry]) -> Self {
         let mut queued: Vec<String> = Vec::new();
         let mut delivered: Vec<String> = Vec::new();
         let mut enqueued: Vec<String> = Vec::new();
@@ -226,12 +231,16 @@ fn delivered_text(entry: &Entry) -> Option<String> {
 /// undelivered notification alone sets ``is_waiting`` with no pending item —
 /// a resumed session's orphan has no launch to point at.
 pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivity {
+    session_activity_refs(&entries.iter().collect::<Vec<_>>(), opts)
+}
+
+pub fn session_activity_refs(entries: &[&Entry], opts: &ActivityOpts) -> SessionActivity {
     let results: HashMap<&str, &ToolResultBlock> = entries
         .iter()
-        .flat_map(Entry::tool_results)
+        .flat_map(|entry| entry.tool_results())
         .map(|result| (result.tool_use_id.as_str(), result))
         .collect();
-    let notifications = Notifications::from_entries(entries);
+    let notifications = Notifications::from_entry_refs(entries);
     let turn_start = current_turn_start(entries);
 
     let mut is_waiting = notifications.has_pending();
@@ -272,14 +281,15 @@ pub fn session_activity(entries: &[Entry], opts: &ActivityOpts) -> SessionActivi
         pending,
         last_event_epoch: entries
             .iter()
-            .filter_map(Entry::meta)
+            .filter_map(|entry| entry.meta())
             .map(|meta| meta.timestamp.timestamp())
             .max(),
     }
 }
 
 /// A before/after content pair lowered from an edit-shaped call (tools.py Hunk).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hunk {
     pub old: String,
     pub new: String,
@@ -476,7 +486,7 @@ pub fn parse_show_hunks(diff: &str) -> Vec<Hunk> {
         .collect()
 }
 
-fn lower_edit(call: &ToolCall) -> Vec<(String, Vec<Hunk>)> {
+pub(crate) fn lower_edit(call: &ToolCall) -> Vec<(String, Vec<Hunk>)> {
     call.edits()
         .into_iter()
         .map(|(path, hunks)| {

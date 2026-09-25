@@ -197,6 +197,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "anyio" },
+    { name = "pydantic" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -222,6 +223,7 @@ requires-dist = [
     { name = "model2vec", marker = "extra == 'judge'", specifier = ">=0.8.2" },
     { name = "numpy", marker = "extra == 'judge'", specifier = ">=1.26" },
     { name = "orjson", specifier = ">=3.10" },
+    { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "spawnllm", marker = "extra == 'llm'", specifier = ">=0.5.4,<0.6" },

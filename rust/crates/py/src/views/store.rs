@@ -71,6 +71,7 @@ impl EventRef {
 /// parsed ``--print`` envelope.
 #[derive(Clone)]
 pub(crate) enum BlockHost {
+    Owned(Arc<Vec<ContentBlock>>),
     Entry(EventRef),
     Print(Arc<PrintResult>, usize),
 }
@@ -78,6 +79,7 @@ pub(crate) enum BlockHost {
 impl BlockHost {
     pub fn blocks(&self) -> &[ContentBlock] {
         match self {
+            BlockHost::Owned(blocks) => blocks,
             BlockHost::Entry(r) => r.entry().blocks(),
             BlockHost::Print(pr, msg) => match &pr.messages[*msg].body {
                 PrintBody::Assistant { blocks, .. } => blocks,

@@ -17,6 +17,8 @@ mod nlp;
 mod python;
 mod render;
 mod score;
+mod snapshot_decode;
+mod snapshots;
 mod sqlite;
 mod toolcall;
 mod views;

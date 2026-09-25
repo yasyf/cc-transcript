@@ -28,6 +28,9 @@ jobs:
       - name: Sync (dev + judge + llm)
         run: uv sync --extra dev --extra judge --extra llm
 
+      - name: Check snapshot schemas
+        run: uv run python scripts/snapshot_contract.py cc_transcript/snapshot_schema --check
+
       - name: Type check (ty)
         continue-on-error: true
         run: uv run ty check cc_transcript
@@ -40,6 +43,11 @@ jobs:
       - name: Generate the bench corpus (.fixtures)
         run: uv run python scripts/gen_corpus.py
 
+      - name: Test native Python bridge
+        env:
+          PYO3_PYTHON: .venv/bin/python
+        run: cargo test -p cc-transcript-py --lib
+
       - name: Test (pytest)
         run: uv run pytest
 
@@ -50,6 +58,36 @@ jobs:
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/python -c "import cc_transcript; assert cc_transcript.parse(b'').path is None"
+
+      - name: Upload tested wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-transcript-linux-${{ github.sha }}
+          path: dist/*.whl
+
+  snapshot-wheel:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build exact-source macOS wheel
+        run: uv build --wheel
+      - name: Test public snapshot API against wheel
+        run: |
+          uv venv .snapshot-smoke
+          uv pip install --python .snapshot-smoke/bin/python dist/*.whl pytest
+          mkdir .snapshot-tests
+          cp tests/test_snapshots.py .snapshot-tests/
+          cd .snapshot-tests
+          ../.snapshot-smoke/bin/python -I -m pytest --confcutdir=. --import-mode=importlib test_snapshots.py
+      - name: Upload tested wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-transcript-macos-${{ github.sha }}
+          path: dist/*.whl
 
   swift:
     runs-on: macos-15

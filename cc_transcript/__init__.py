@@ -23,6 +23,14 @@ from importlib import import_module
 EXPORTS: dict[str, str] = {
     name: module
     for module, names in {
+        "cc_transcript.snapshots": (
+            "CallContext",
+            "CancellationToken",
+            "SnapshotIncomplete",
+            "TranscriptSnapshot",
+            "TranscriptStore",
+            "decode_projection",
+        ),
         "cc_transcript.ids": (
             "EventRef",
             "EventUuid",

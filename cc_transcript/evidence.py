@@ -21,7 +21,7 @@ from cc_transcript.models import AssistantEvent, ToolUseBlock
 from cc_transcript.tools import Hunk
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from cc_transcript.activity import Edit, SessionActivity
@@ -93,7 +93,15 @@ def match_corrections(activity: SessionActivity, edit: Edit, *, lookahead_turns:
     )
 
 
-def git_corrections(repo: Path, hunk: Hunk, *, path: str, since: datetime, max_commits: int = 5) -> tuple[GitFix, ...]:
+def git_corrections(
+    repo: Path,
+    hunk: Hunk,
+    *,
+    path: str,
+    since: datetime,
+    max_commits: int = 5,
+    git_runner: Callable[..., str | None] | None = None,
+) -> tuple[GitFix, ...]:
     """Corrections to ``hunk`` found in ``repo``'s git history.
 
     Pickaxes (``git log -S``) for the longest non-empty line of ``hunk.new``
@@ -101,14 +109,16 @@ def git_corrections(repo: Path, hunk: Hunk, *, path: str, since: datetime, max_c
     diff into hunks. Read-only by construction — ``rev-parse``, ``log``, and
     ``show`` only. Discovery-level failures — ``rev-parse`` or ``log``
     failing, git being absent, or a timeout — yield ``()``; a failed ``show``
-    skips just that commit and keeps the rest.
+    skips just that commit and keeps the rest. Exceptions from a supplied
+    ``git_runner`` propagate to the caller.
     """
     line = max((stripped for raw in hunk.new.splitlines() if (stripped := raw.strip())), key=len, default="")
     if not line:
         return ()
-    if (inside := run_git(repo, "rev-parse", "--is-inside-work-tree")) is None or inside.strip() != "true":
+    runner = run_git if git_runner is None else git_runner
+    if (inside := runner(repo, "rev-parse", "--is-inside-work-tree")) is None or inside.strip() != "true":
         return ()
-    log = run_git(
+    log = runner(
         repo,
         "log",
         f"--since={since.isoformat()}",
@@ -123,7 +133,7 @@ def git_corrections(repo: Path, hunk: Hunk, *, path: str, since: datetime, max_c
     fixes: list[GitFix] = []
     for row in log.splitlines():
         commit, _, committed = row.partition(" ")
-        if (diff := run_git(repo, "show", "--format=", "--unified=0", commit, "--", path)) is None:
+        if (diff := runner(repo, "show", "--format=", "--unified=0", commit, "--", path)) is None:
             continue
         if hunks := parse_show_hunks(diff):
             fixes.append(
@@ -145,6 +155,7 @@ def harvest_pairs(
     lookahead_turns: int = 120,
     max_candidates: int = 12,
     repo: Path | None = None,
+    git_runner: Callable[..., str | None] | None = None,
 ) -> tuple[CandidatePair, ...]:
     """Harvests incorrect-edit/correction pairs around ``anchor``.
 
@@ -159,7 +170,7 @@ def harvest_pairs(
         distinct from :class:`~cc_transcript.discovery.TranscriptExpiredError`.
     """
     return tuple(
-        harvest_one(activity, edit, lookahead_turns=lookahead_turns, repo=repo)
+        harvest_one(activity, edit, lookahead_turns=lookahead_turns, repo=repo, git_runner=git_runner)
         for edit in activity.edits_before(anchor, lookback_turns=lookback_turns)[:max_candidates]
     )
 
@@ -170,13 +181,20 @@ def overlap_between(incorrect: tuple[Hunk, ...], correction: tuple[Hunk, ...]) -
     )
 
 
-def harvest_one(activity: SessionActivity, edit: Edit, *, lookahead_turns: int, repo: Path | None) -> CandidatePair:
+def harvest_one(
+    activity: SessionActivity,
+    edit: Edit,
+    *,
+    lookahead_turns: int,
+    repo: Path | None,
+    git_runner: Callable[..., str | None] | None = None,
+) -> CandidatePair:
     if matches := match_corrections(activity, edit, lookahead_turns=lookahead_turns):
         return matches[0]
     if (
         repo is not None
         and (hunk := pickaxe_hunk(edit)) is not None
-        and (fixes := git_corrections(repo, hunk, path=edit.file_path, since=edit.ts))
+        and (fixes := git_corrections(repo, hunk, path=edit.file_path, since=edit.ts, git_runner=git_runner))
     ):
         overlap, fix = max(((overlap_between(edit.hunks, fix.hunks), fix) for fix in fixes), key=lambda s: s[0])
         return CandidatePair(incorrect=edit, correction=fix, overlap=overlap)

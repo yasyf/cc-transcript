@@ -1042,6 +1042,8 @@ fn noise_spec_json() -> &'static str {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    crate::snapshot_decode::add_functions(m)?;
+    crate::snapshots::add_functions(m)?;
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_bytes_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;

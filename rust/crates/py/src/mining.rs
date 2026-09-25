@@ -1,10 +1,12 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::mem::size_of;
 
 use chrono::{DateTime, Datelike, FixedOffset};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyIterator, PyString};
 use regex::Regex;
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
@@ -21,6 +23,10 @@ use cc_transcript_core::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
     ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
+use cc_transcript_core::snapshot::{
+    Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
+};
+use cc_transcript_core::snapshot_memory::value_charge;
 use cc_transcript_core::types::{
     matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock,
     UserEntry,
@@ -102,6 +108,7 @@ struct CompiledCallableFormat {
     name: String,
     pattern: Py<PyAny>,
     extract: Py<PyAny>,
+    bounded: bool,
 }
 
 struct CompiledReviewSpec {
@@ -349,8 +356,33 @@ pub fn attach_callable_formats(
             name,
             pattern,
             extract,
+            bounded: false,
         })
         .collect();
+}
+
+pub fn attach_bounded_callable_formats(
+    spec: &mut CompiledMiningSpec,
+    formats: Vec<(String, Py<PyAny>, Py<PyAny>, bool)>,
+) -> PyResult<()> {
+    spec.review.callable_formats = formats
+        .into_iter()
+        .map(|(name, pattern, extract, bounded)| {
+            if !bounded {
+                return Err(crate::snapshots::error(SnapshotError::new(
+                    Status::Incomplete,
+                    format!("unbounded mining callback: {name}"),
+                )));
+            }
+            Ok(CompiledCallableFormat {
+                name,
+                pattern,
+                extract,
+                bounded,
+            })
+        })
+        .collect::<PyResult<_>>()?;
+    Ok(())
 }
 
 fn word_count(text: &str) -> usize {
@@ -470,9 +502,59 @@ fn score_user_message(
     )
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MiningUsage {
+    pub events: usize,
+    pub input_bytes: usize,
+    pub items: usize,
+    pub output_bytes: usize,
+}
+
+struct MiningBudget {
+    limits: WorkLimits,
+    cancel: Cancellation,
+    usage: Cell<MiningUsage>,
+}
+
+impl MiningBudget {
+    fn check(&self) -> PyResult<()> {
+        self.cancel
+            .check(self.limits.deadline_unix_ms)
+            .map_err(crate::snapshots::error)
+    }
+
+    fn preflight(&self, bytes: usize) -> PyResult<()> {
+        self.check()?;
+        let usage = self.usage.get();
+        if usage.items >= self.limits.max_items
+            || bytes
+                > self
+                    .limits
+                    .max_output_bytes
+                    .saturating_sub(usage.output_bytes)
+        {
+            return Err(crate::snapshots::error(SnapshotError::new(
+                Status::OutputLimit,
+                "mining output budget exceeded",
+            )));
+        }
+        Ok(())
+    }
+
+    fn reserve(&self, bytes: usize) -> PyResult<()> {
+        self.preflight(bytes)?;
+        let mut usage = self.usage.get();
+        usage.items += 1;
+        usage.output_bytes += bytes;
+        self.usage.set(usage);
+        Ok(())
+    }
+}
+
 struct Events<'a> {
     entries: Vec<&'a Entry>,
     texts: Vec<String>,
+    budget: Option<MiningBudget>,
 }
 
 impl<'a> Events<'a> {
@@ -486,11 +568,31 @@ impl<'a> Events<'a> {
                 _ => String::new(),
             })
             .collect();
-        Events { entries, texts }
+        Events {
+            entries,
+            texts,
+            budget: None,
+        }
     }
 
     fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn check(&self) -> PyResult<()> {
+        self.budget.as_ref().map_or(Ok(()), MiningBudget::check)
+    }
+
+    fn preflight(&self, bytes: usize) -> PyResult<()> {
+        self.budget
+            .as_ref()
+            .map_or(Ok(()), |budget| budget.preflight(bytes))
+    }
+
+    fn reserve(&self, bytes: usize) -> PyResult<()> {
+        self.budget
+            .as_ref()
+            .map_or(Ok(()), |budget| budget.reserve(bytes))
     }
 
     /// Nearest preceding assistant index (mining/signals.py nearest_assistant_index).
@@ -624,6 +726,7 @@ fn denial_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
 #[allow(clippy::too_many_arguments)]
 fn build_signal_dict<'py>(
     py: Python<'py>,
+    events: &Events<'_>,
     kind: &str,
     detector: &str,
     meta: &EntryMeta,
@@ -632,8 +735,18 @@ fn build_signal_dict<'py>(
     trigger_index: Option<i64>,
     sig: &CandidateSig,
     lower_bound: Option<i64>,
-    evidence: Bound<'py, PyDict>,
+    evidence_bytes: usize,
+    evidence: impl FnOnce() -> PyResult<Bound<'py, PyDict>>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let strings = kind.len()
+        + detector.len()
+        + meta.session_id.len()
+        + meta.uuid.len()
+        + text.len()
+        + meta.version.as_ref().map_or(0, String::len)
+        + sig.reasons.iter().map(String::len).sum::<usize>()
+        + evidence_bytes;
+    events.reserve(4096usize.saturating_add(strings.saturating_mul(6)))?;
     let d = PyDict::new(py);
     d.set_item("kind", kind)?;
     d.set_item("detector", detector)?;
@@ -650,7 +763,7 @@ fn build_signal_dict<'py>(
     signal.set_item("durable", sig.durable)?;
     d.set_item("signal", signal)?;
     d.set_item("lower_bound", lower_bound)?;
-    d.set_item("evidence", evidence)?;
+    d.set_item("evidence", evidence()?)?;
     Ok(d)
 }
 
@@ -683,6 +796,7 @@ fn iter_user_message<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         let text = &events.texts[index];
         if text.trim().is_empty() || is_bare_interrupt_marker(text) {
@@ -692,6 +806,7 @@ fn iter_user_message<'py>(
         let sig = score_user_message(&spec.user_message, text, index as i64, trigger);
         out.push(build_signal_dict(
             py,
+            events,
             TRANSCRIPT_MESSAGE,
             DETECTOR_TRANSCRIPT_MESSAGE,
             &user.meta,
@@ -700,7 +815,8 @@ fn iter_user_message<'py>(
             trigger,
             &sig,
             None,
-            PyDict::new(py),
+            0,
+            || Ok(PyDict::new(py)),
         )?);
     }
     Ok(())
@@ -714,6 +830,7 @@ fn iter_plan_rejection<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         for result in denial_results(user) {
             let Some(use_block) = uses.get(result.tool_use_id.as_str()) else {
@@ -729,6 +846,7 @@ fn iter_plan_rejection<'py>(
             let sig = calibrated(&spec.calibrated, &text, "embedded_text");
             out.push(build_signal_dict(
                 py,
+                events,
                 PLAN_REVIEW,
                 DETECTOR_EXIT_PLAN_REJECTION,
                 &user.meta,
@@ -737,7 +855,8 @@ fn iter_plan_rejection<'py>(
                 trigger,
                 &sig,
                 None,
-                PyDict::new(py),
+                0,
+                || Ok(PyDict::new(py)),
             )?);
         }
     }
@@ -752,6 +871,7 @@ fn iter_plan_reentry<'py>(
 ) -> PyResult<()> {
     let mut seen: HashSet<&str> = HashSet::new();
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::Mode(mode) = entry else { continue };
         if mode.value != "plan" {
             continue;
@@ -772,6 +892,7 @@ fn iter_plan_reentry<'py>(
         let sig = calibrated(&spec.calibrated, text, "reentry_after_edit");
         out.push(build_signal_dict(
             py,
+            events,
             PLAN_REVIEW,
             DETECTOR_PLAN_REENTRY,
             &user.meta,
@@ -780,7 +901,8 @@ fn iter_plan_reentry<'py>(
             trigger,
             &sig,
             Some(edit),
-            PyDict::new(py),
+            0,
+            || Ok(PyDict::new(py)),
         )?);
     }
     Ok(())
@@ -795,6 +917,7 @@ fn iter_tool_denial<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         for block in denial_results(user) {
             let paired = uses.get(block.tool_use_id.as_str()).copied();
@@ -808,13 +931,12 @@ fn iter_tool_denial<'py>(
                 continue;
             };
             let trigger = events.nearest_assistant_index(index);
-            let evidence = PyDict::new(py);
-            if let Some(use_block) = paired {
-                evidence.set_item("tool", &use_block.name)?;
-                evidence.set_item("file_path", use_block.file_path.as_deref())?;
-            }
+            let evidence_bytes = paired.map_or(0, |tool| {
+                tool.name.len() + tool.file_path.as_ref().map_or(0, String::len)
+            });
             out.push(build_signal_dict(
                 py,
+                events,
                 INTERRUPT_REJECTION,
                 DETECTOR_DENIAL,
                 &user.meta,
@@ -823,7 +945,15 @@ fn iter_tool_denial<'py>(
                 trigger,
                 &scored.signal,
                 None,
-                evidence,
+                evidence_bytes,
+                || {
+                    let evidence = PyDict::new(py);
+                    if let Some(use_block) = paired {
+                        evidence.set_item("tool", &use_block.name)?;
+                        evidence.set_item("file_path", use_block.file_path.as_deref())?;
+                    }
+                    Ok(evidence)
+                },
             )?);
         }
     }
@@ -837,6 +967,7 @@ fn iter_interrupt<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         if !marker_in(user) {
             continue;
@@ -847,6 +978,7 @@ fn iter_interrupt<'py>(
         let trigger = events.nearest_assistant_index(index);
         out.push(build_signal_dict(
             py,
+            events,
             INTERRUPT_REJECTION,
             DETECTOR_INTERRUPT,
             &user.meta,
@@ -855,7 +987,8 @@ fn iter_interrupt<'py>(
             trigger,
             &scored.signal,
             None,
-            PyDict::new(py),
+            0,
+            || Ok(PyDict::new(py)),
         )?);
     }
     Ok(())
@@ -868,8 +1001,8 @@ struct ReviewComment {
     comment: String,
 }
 
-struct ScanText {
-    text: String,
+struct ScanText<'a> {
+    text: &'a str,
     provenance: &'static str,
     trigger_index: Option<i64>,
 }
@@ -890,39 +1023,34 @@ fn classify_provenance(
 
 /// review_scan_texts (mining/signals.py review_scan_texts): the typed user text
 /// plus each surfaced or claude tool-result, gated by the surfaces set.
-fn review_scan_texts(
-    events: &Events<'_>,
-    user: &UserEntry,
+fn review_scan_texts<'a>(
+    events: &'a Events<'_>,
+    user: &'a UserEntry,
     index: usize,
-    spec: &CompiledMiningSpec,
-    uses: &HashMap<&str, &ToolUseBlock>,
-) -> Vec<ScanText> {
+    spec: &'a CompiledMiningSpec,
+    uses: &'a HashMap<&str, &ToolUseBlock>,
+) -> impl Iterator<Item = ScanText<'a>> + 'a {
     let surfaces = &spec.review.surfaces;
-    let mut scans = Vec::new();
-    let text = &events.texts[index];
-    if surfaces.contains("typed") && !text.trim().is_empty() {
-        scans.push(ScanText {
-            text: text.clone(),
-            provenance: "typed",
-            trigger_index: events.nearest_assistant_index(index),
-        });
-    }
-    for block in user.tool_results() {
-        let tool_name = uses
-            .get(block.tool_use_id.as_str())
-            .map(|tu| tu.name.as_str());
-        let provenance =
-            classify_provenance(&spec.subagent_tools, tool_name, user.meta.is_sidechain);
-        if provenance == "typed" || !surfaces.contains(provenance) {
-            continue;
-        }
-        scans.push(ScanText {
-            text: block.content.clone(),
-            provenance,
-            trigger_index: None,
-        });
-    }
-    scans
+    let text = events.texts[index].as_str();
+    let typed = (surfaces.contains("typed") && !text.trim().is_empty()).then(|| ScanText {
+        text,
+        provenance: "typed",
+        trigger_index: events.nearest_assistant_index(index),
+    });
+    typed
+        .into_iter()
+        .chain(user.tool_results().filter_map(move |block| {
+            let tool_name = uses
+                .get(block.tool_use_id.as_str())
+                .map(|tool| tool.name.as_str());
+            let provenance =
+                classify_provenance(&spec.subagent_tools, tool_name, user.meta.is_sidechain);
+            (provenance != "typed" && surfaces.contains(provenance)).then_some(ScanText {
+                text: &block.content,
+                provenance,
+                trigger_index: None,
+            })
+        }))
 }
 
 /// first (mining/formats.py first): the first present, non-null alias value.
@@ -1042,74 +1170,59 @@ fn findings<'a>(payload: &'a Value, keys: &[String], acc: &mut Vec<&'a Value>) {
     }
 }
 
-/// StructuredFormat.extract (mining/formats.py StructuredFormat.extract): the
-/// review comments for every finding object that carries a comment value.
-fn extract_structured_format(
-    payload: &Value,
-    fmt: &CompiledStructuredFormat,
-) -> Result<Vec<ReviewComment>, String> {
-    let mut found = Vec::new();
-    findings(payload, &fmt.finding_keys, &mut found);
-    found
-        .into_iter()
-        .filter(|obj| obj.is_object())
-        .filter(|obj| first(obj, &fmt.comment_keys).is_some())
-        .map(|obj| review_comment(obj, fmt))
-        .collect()
-}
-
-/// regex_review_comments (mining/spec.py regex_review_comments): one comment per
-/// regex match. Comment groups are stripped first, unmatched or stripped-empty
-/// groups are skipped, and the rest join with the format's separator; line groups
-/// are stripped then parsed, with unparseable values yielding None.
-fn regex_review_comments(fmt: &CompiledRegexFormat, text: &str) -> Vec<ReviewComment> {
-    fmt.regex
-        .captures_iter(text)
-        .map(|caps| {
-            let group = |index: Option<usize>| {
-                index
-                    .and_then(|i| caps.get(i))
-                    .map(|m| m.as_str().to_string())
-            };
-            let int_group =
-                |index: Option<usize>| group(index).and_then(|v| v.trim().parse::<i64>().ok());
-            ReviewComment {
-                file: group(fmt.file_group),
-                line_start: int_group(fmt.line_start_group),
-                line_end: int_group(fmt.line_end_group),
-                comment: fmt
-                    .comment_groups
-                    .iter()
-                    .filter_map(|&i| caps.get(i))
-                    .map(|m| m.as_str().trim())
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(&fmt.join),
-            }
-        })
-        .collect()
-}
-
-/// review_comments (mining/signals.py review_comments): regex formats, then
-/// callable formats, then structured formats, in order. Callable formats invoke
-/// their Python pattern and extractor via the pyo3 side-channel, single-threaded
-/// on the calling thread under the held GIL, propagating any PyErr.
-fn review_comments<'py>(
+fn visit_review_comments<'py>(
     py: Python<'py>,
     spec: &CompiledMiningSpec,
     text: &str,
-) -> PyResult<Vec<(String, ReviewComment)>> {
-    let mut out: Vec<(String, ReviewComment)> = spec
-        .review
-        .regex_formats
-        .iter()
-        .flat_map(|fmt| {
-            regex_review_comments(fmt, text)
-                .into_iter()
-                .map(move |c| (fmt.name.clone(), c))
-        })
-        .collect();
+    events: &Events<'_>,
+    mut emit: impl FnMut(&str, ReviewComment) -> PyResult<()>,
+) -> PyResult<()> {
+    for fmt in &spec.review.regex_formats {
+        for caps in fmt.regex.captures_iter(text) {
+            let bytes = fmt
+                .comment_groups
+                .iter()
+                .filter_map(|&index| caps.get(index))
+                .map(|value| value.as_str().len())
+                .sum::<usize>()
+                .saturating_add(
+                    fmt.file_group
+                        .and_then(|index| caps.get(index))
+                        .map_or(0, |value| value.as_str().len()),
+                )
+                .saturating_add(fmt.join.len().saturating_mul(fmt.comment_groups.len()))
+                .saturating_add(fmt.name.len());
+            events.preflight(4096usize.saturating_add(bytes.saturating_mul(6)))?;
+            let group = |index: Option<usize>| {
+                index
+                    .and_then(|index| caps.get(index))
+                    .map(|value| value.as_str().to_string())
+            };
+            let int_group = |index: Option<usize>| {
+                index
+                    .and_then(|index| caps.get(index))
+                    .and_then(|value| value.as_str().trim().parse::<i64>().ok())
+            };
+            emit(
+                &fmt.name,
+                ReviewComment {
+                    file: group(fmt.file_group),
+                    line_start: int_group(fmt.line_start_group),
+                    line_end: int_group(fmt.line_end_group),
+                    comment: fmt
+                        .comment_groups
+                        .iter()
+                        .filter_map(|&index| caps.get(index))
+                        .map(|value| value.as_str().trim())
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(&fmt.join),
+                },
+            )?;
+        }
+    }
     for fmt in &spec.review.callable_formats {
+        events.preflight(0)?;
         if fmt
             .pattern
             .bind(py)
@@ -1118,31 +1231,69 @@ fn review_comments<'py>(
         {
             continue;
         }
-        for item in fmt.extract.bind(py).call1((text,))?.try_iter()? {
-            let comment = item?;
-            out.push((
-                fmt.name.clone(),
+        let extracted = fmt.extract.bind(py).call1((text,))?;
+        if events.budget.is_some() && extracted.cast::<PyIterator>().is_err() {
+            return Err(crate::snapshots::error(SnapshotError::new(
+                Status::Incomplete,
+                format!(
+                    "bounded mining callback {} must return an iterator",
+                    fmt.name
+                ),
+            )));
+        }
+        let mut iterator = extracted.try_iter()?;
+        loop {
+            events.preflight(0)?;
+            let Some(item) = iterator.next() else { break };
+            let item = item?;
+            let comment = item.getattr("comment")?;
+            let file = item.getattr("file")?;
+            let bytes = comment
+                .cast::<PyString>()?
+                .to_str()?
+                .len()
+                .saturating_add(if file.is_none() {
+                    0
+                } else {
+                    file.cast::<PyString>()?.to_str()?.len()
+                })
+                .saturating_add(fmt.name.len());
+            events.preflight(4096usize.saturating_add(bytes.saturating_mul(6)))?;
+            emit(
+                &fmt.name,
                 ReviewComment {
-                    file: comment.getattr("file")?.extract()?,
-                    line_start: comment.getattr("line_start")?.extract()?,
-                    line_end: comment.getattr("line_end")?.extract()?,
-                    comment: comment.getattr("comment")?.extract()?,
+                    file: file.extract()?,
+                    line_start: item.getattr("line_start")?.extract()?,
+                    line_end: item.getattr("line_end")?.extract()?,
+                    comment: comment.extract()?,
                 },
-            ));
+            )?;
         }
     }
     if !spec.review.structured_formats.is_empty() {
+        events.check()?;
         if let Ok(payload) = sonic_rs::from_str::<Value>(text) {
             for fmt in &spec.review.structured_formats {
-                for comment in extract_structured_format(&payload, fmt)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?
+                let mut found = Vec::new();
+                findings(&payload, &fmt.finding_keys, &mut found);
+                for obj in found
+                    .into_iter()
+                    .filter(|obj| obj.is_object())
+                    .filter(|obj| first(obj, &fmt.comment_keys).is_some())
                 {
-                    out.push((fmt.name.clone(), comment));
+                    let bytes = value_charge(obj)
+                        .opaque_dom_accounted_bytes
+                        .saturating_add(fmt.name.len());
+                    events.preflight(4096usize.saturating_add(bytes.saturating_mul(6)))?;
+                    emit(
+                        &fmt.name,
+                        review_comment(obj, fmt).map_err(PyValueError::new_err)?,
+                    )?;
                 }
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn iter_review_comment<'py>(
@@ -1153,18 +1304,17 @@ fn iter_review_comment<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         for scan in review_scan_texts(events, user, index, spec, uses) {
-            for (fmt_name, comment) in review_comments(py, spec, &scan.text)? {
-                let evidence = PyDict::new(py);
-                evidence.set_item("format", &fmt_name)?;
-                evidence.set_item("file", &comment.file)?;
-                evidence.set_item("line_start", comment.line_start)?;
-                evidence.set_item("line_end", comment.line_end)?;
-                evidence.set_item("provenance", scan.provenance)?;
+            visit_review_comments(py, spec, scan.text, events, |fmt_name, comment| {
                 let sig = calibrated(&spec.calibrated, &comment.comment, "format_match");
+                let evidence_bytes = fmt_name.len()
+                    + comment.file.as_ref().map_or(0, String::len)
+                    + scan.provenance.len();
                 out.push(build_signal_dict(
                     py,
+                    events,
                     REVIEW_COMMENT,
                     DETECTOR_REVIEW_COMMENT,
                     &user.meta,
@@ -1173,9 +1323,19 @@ fn iter_review_comment<'py>(
                     scan.trigger_index,
                     &sig,
                     None,
-                    evidence,
+                    evidence_bytes,
+                    || {
+                        let evidence = PyDict::new(py);
+                        evidence.set_item("format", fmt_name)?;
+                        evidence.set_item("file", &comment.file)?;
+                        evidence.set_item("line_start", comment.line_start)?;
+                        evidence.set_item("line_end", comment.line_end)?;
+                        evidence.set_item("provenance", scan.provenance)?;
+                        Ok(evidence)
+                    },
                 )?);
-            }
+                Ok(())
+            })?;
         }
     }
     Ok(())
@@ -1383,6 +1543,7 @@ fn iter_ask_user_question<'py>(
     out: &mut Vec<Bound<'py, PyDict>>,
 ) -> PyResult<()> {
     for (index, entry) in events.entries.iter().enumerate() {
+        events.check()?;
         let Entry::User(user) = entry else { continue };
         for block in user.tool_results() {
             let Some(use_block) = uses.get(block.tool_use_id.as_str()) else {
@@ -1408,6 +1569,13 @@ fn iter_ask_user_question<'py>(
             };
             let trigger = events.nearest_assistant_index(index);
             for pair in pairs {
+                let candidate_bytes = pair.question.question.len()
+                    + pair.question.header.as_ref().map_or(0, String::len)
+                    + pair.question.labels.iter().map(String::len).sum::<usize>()
+                    + pair.answer.map_or(0, str::len)
+                    + pair.preview.map_or(0, str::len)
+                    + pair.notes.map_or(0, str::len);
+                events.preflight(4096usize.saturating_add(candidate_bytes.saturating_mul(6)))?;
                 let (picked, option_pick) = resolve_pick(pair.answer, &pair.question.labels);
                 let recommended = picked.iter().any(|label| label.contains("(Recommended)"));
                 let Some(text) = pair.notes.or(pair.answer) else {
@@ -1418,21 +1586,14 @@ fn iter_ask_user_question<'py>(
                 } else {
                     calibrated(&spec.calibrated, text, "freeform_answer")
                 };
-                let evidence = PyDict::new(py);
-                evidence.set_item("question", &pair.question.question)?;
-                evidence.set_item("header", pair.question.header.as_deref())?;
-                evidence.set_item("multi_select", pair.question.multi_select)?;
-                evidence.set_item("option_pick", option_pick)?;
-                evidence.set_item("picked_labels", picked)?;
-                evidence.set_item("recommended_pick", recommended)?;
-                if let Some(preview) = pair.preview {
-                    evidence.set_item("preview", preview)?;
-                }
-                if let Some(notes) = pair.notes {
-                    evidence.set_item("notes", notes)?;
-                }
+                let evidence_bytes = pair.question.question.len()
+                    + pair.question.header.as_ref().map_or(0, String::len)
+                    + picked.iter().map(String::len).sum::<usize>()
+                    + pair.preview.map_or(0, str::len)
+                    + pair.notes.map_or(0, str::len);
                 out.push(build_signal_dict(
                     py,
+                    events,
                     QUESTION_ANSWER,
                     DETECTOR_ASK_USER_QUESTION,
                     &user.meta,
@@ -1441,7 +1602,23 @@ fn iter_ask_user_question<'py>(
                     trigger,
                     &sig,
                     None,
-                    evidence,
+                    evidence_bytes,
+                    || {
+                        let evidence = PyDict::new(py);
+                        evidence.set_item("question", &pair.question.question)?;
+                        evidence.set_item("header", pair.question.header.as_deref())?;
+                        evidence.set_item("multi_select", pair.question.multi_select)?;
+                        evidence.set_item("option_pick", option_pick)?;
+                        evidence.set_item("picked_labels", picked)?;
+                        evidence.set_item("recommended_pick", recommended)?;
+                        if let Some(preview) = pair.preview {
+                            evidence.set_item("preview", preview)?;
+                        }
+                        if let Some(notes) = pair.notes {
+                            evidence.set_item("notes", notes)?;
+                        }
+                        Ok(evidence)
+                    },
                 )?);
             }
         }
@@ -1461,6 +1638,82 @@ pub fn mine_events<'py>(
         .map(|event| view_entry(event, "mine"))
         .collect::<PyResult<Vec<_>>>()?;
     mine_events_impl(py, &Events::new(entries), spec)
+}
+
+pub fn mine_snapshot<'py>(
+    py: Python<'py>,
+    snapshot: &TranscriptSnapshot,
+    spec: &CompiledMiningSpec,
+    limits: WorkLimits,
+    cancel: &Cancellation,
+    usage: &mut MiningUsage,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    *usage = MiningUsage::default();
+    if spec
+        .review
+        .callable_formats
+        .iter()
+        .any(|format| !format.bounded)
+    {
+        return Err(crate::snapshots::error(SnapshotError::new(
+            Status::Incomplete,
+            "mining callback is not registered as bounded",
+        )));
+    }
+    py.detach(|| {
+        for chunk in &snapshot.chunks {
+            for charge in &chunk.entry_charges {
+                cancel.check(limits.deadline_unix_ms)?;
+                if usage.events == limits.max_events {
+                    return Err(cc_transcript_core::snapshot::SnapshotError::new(
+                        cc_transcript_core::snapshot::Status::EntryLimit,
+                        "mining input event budget exceeded",
+                    ));
+                }
+                let bytes = charge
+                    .owned_capacity_bytes
+                    .saturating_add(charge.opaque_dom_accounted_bytes)
+                    .saturating_add(size_of::<Entry>() + size_of::<&Entry>() + size_of::<String>());
+                if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
+                    return Err(cc_transcript_core::snapshot::SnapshotError::new(
+                        cc_transcript_core::snapshot::Status::SourceLimit,
+                        "mining input byte budget exceeded",
+                    ));
+                }
+                usage.events += 1;
+                usage.input_bytes += bytes;
+            }
+        }
+        Ok(())
+    })
+    .map_err(crate::snapshots::error)?;
+    let budget = MiningBudget {
+        limits,
+        cancel: cancel.clone(),
+        usage: Cell::new(*usage),
+    };
+    let mut entries = Vec::with_capacity(usage.events);
+    let mut texts = Vec::with_capacity(usage.events);
+    for entry in snapshot
+        .chunks
+        .iter()
+        .flat_map(|chunk| chunk.entries.iter())
+    {
+        budget.check()?;
+        entries.push(entry);
+        texts.push(match entry {
+            Entry::User(user) => user.content.text(),
+            _ => String::new(),
+        });
+    }
+    let events = Events {
+        entries,
+        texts,
+        budget: Some(budget),
+    };
+    let result = mine_events_impl(py, &events, spec);
+    *usage = events.budget.as_ref().unwrap().usage.get();
+    result
 }
 
 /// Borrows the shared `Entry` behind a native event view — the no-round-trip

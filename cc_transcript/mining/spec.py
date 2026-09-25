@@ -37,7 +37,7 @@ from cc_transcript.mining.formats import FINDING_KEYS, ReviewComment, Structured
 from cc_transcript.tools import expand_tool_names
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from typing import Any
 
     from cc_transcript.mining.signals import MiningSignal
@@ -229,11 +229,13 @@ class CallableReviewFormat:
         name: The format's identifier.
         pattern: A pattern that matches when the format is present in a text.
         extract: Parses a matching text into its review comments.
+        bounded: The owner audited this extractor to yield incrementally from bounded input.
     """
 
     name: str
     pattern: re.Pattern[str]
-    extract: Callable[[str], tuple[ReviewComment, ...]]
+    extract: Callable[[str], Iterable[ReviewComment]]
+    bounded: bool = False
 
 
 ReviewFormat = RegexReviewFormat | CallableReviewFormat
