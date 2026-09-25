@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from cc_transcript import _native
@@ -69,7 +70,7 @@ from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from typing import Any
 
 TOOL_ALIASES: dict[str, str] = {
@@ -150,6 +151,15 @@ class FallbackCall:
     name: str
     raw: Mapping[str, Any]
     error: str | None = field(default=None, compare=False, repr=False)
+
+    def matches(self, spec: str) -> bool:
+        """Match this non-JSON call against the ambient tool registry."""
+        return tool_name_matches(self.name, spec)
+
+    @property
+    def name_matcher(self) -> Callable[[str], bool]:
+        """A name matcher that does not retain this call's raw input."""
+        return partial(tool_name_matches, self.name)
 
     @property
     def digest(self) -> ToolDigest:

@@ -247,7 +247,12 @@ class SessionActivity:
         if (turn := self.turn_of(anchor)) is None:
             return ()
         anchor_pos = position_in(turn, anchor)
-        prior = [edit for t in self.turns[max(0, turn.index - lookback_turns) : turn.index] for edit in t.edits]
+        prior = [
+            edit
+            for t in self.turns
+            if max(0, turn.index - lookback_turns) <= t.index < turn.index
+            for edit in t.edits
+        ]
         same_turn = [edit for edit in turn.edits if position_in(turn, edit.ref) < anchor_pos]
         return tuple(reversed(prior + same_turn))
 
@@ -265,7 +270,8 @@ class SessionActivity:
         ]
         later = [
             edit
-            for t in self.turns[turn.index + 1 : turn.index + 1 + lookahead_turns]
+            for t in self.turns
+            if turn.index < t.index <= turn.index + lookahead_turns
             for edit in t.edits
             if edit.file_path == file_path
         ]

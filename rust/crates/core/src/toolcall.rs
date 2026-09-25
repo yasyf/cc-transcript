@@ -7,8 +7,12 @@
 //! queries, and AskUserQuestionResult.questions all read it); it is `compare=False`
 //! Python-side, and the content digest lives in `ids`, not here.
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, RwLock};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
+use std::sync::{Arc, LazyLock, RwLock};
+
+use sha2::{Digest, Sha256};
 
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
@@ -78,7 +82,8 @@ fn requires_object_input(canonical: &str) -> bool {
 }
 
 /// The payload key names an MCP tool's span-edit lowering reads — never values.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpanEditMap {
     pub path: String,
     pub content: String,
@@ -87,48 +92,184 @@ pub struct SpanEditMap {
 
 /// A registered MCP tool's behavior: the built-in gate it aliases, plus an
 /// optional span-edit lowering addressed by payload key names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpToolSpec {
     pub behaves_like: String,
     pub span_edit: Option<SpanEditMap>,
 }
 
-// Process-local: the standalone Rust CLI never populates it (an embedding-driven
-// registry), so parsing there keeps the pre-registry OtherCall behavior.
-static MCP_REGISTRY: LazyLock<RwLock<HashMap<String, McpToolSpec>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolRegistryDefinition {
+    name: String,
+    behaves_like: String,
+    span_edit: Option<SpanEditMap>,
+}
+
+fn registry_token<'a>(value: Option<&'a Value>, label: &str) -> Result<&'a str, String> {
+    let token = value
+        .and_then(JsonValueTrait::as_str)
+        .ok_or_else(|| format!("tool registry {label} must be a string"))?;
+    if token.is_empty() || token.chars().take(257).count() > 256 {
+        return Err(format!(
+            "tool registry {label} must contain 1..256 characters"
+        ));
+    }
+    Ok(token)
+}
+
+#[derive(Debug)]
+pub struct ToolRegistrySnapshot {
+    specs: HashMap<String, McpToolSpec>,
+    fingerprint: String,
+}
+
+impl ToolRegistrySnapshot {
+    pub fn from_specs(specs: HashMap<String, McpToolSpec>) -> Arc<Self> {
+        let value = sonic_rs::to_value(&specs).expect("tool registry serialization");
+        let canonical = crate::ids::canonical_json(&value).expect("tool registry canonicalization");
+        Arc::new(Self {
+            specs,
+            fingerprint: format!("{:x}", Sha256::digest(canonical.as_bytes())),
+        })
+    }
+
+    pub fn from_specs_json(value: &Value) -> Result<Arc<Self>, String> {
+        let definitions = value
+            .as_array()
+            .ok_or_else(|| "tool registry definitions must be a list".to_string())?;
+        if definitions.len() > 256 {
+            return Err("tool registry cannot contain more than 256 definitions".to_string());
+        }
+        let mut names = HashSet::with_capacity(definitions.len());
+        for definition in definitions {
+            let name = registry_token(field(definition, "name"), "name")?;
+            if !names.insert(name) {
+                return Err(format!("duplicate tool registry definition: {name}"));
+            }
+            registry_token(field(definition, "behaves_like"), "behaves_like")?;
+            let span = field(definition, "span_edit")
+                .ok_or_else(|| "tool registry span_edit is required".to_string())?;
+            if !span.is_null() {
+                registry_token(field(span, "path"), "span_edit.path")?;
+                registry_token(field(span, "content"), "span_edit.content")?;
+                let delete = field(span, "delete")
+                    .ok_or_else(|| "tool registry span_edit.delete is required".to_string())?;
+                if !delete.is_null() {
+                    registry_token(Some(delete), "span_edit.delete")?;
+                }
+            }
+        }
+        let definitions: Vec<ToolRegistryDefinition> =
+            sonic_rs::from_value(value).map_err(|error| error.to_string())?;
+        Ok(Self::from_specs(
+            definitions
+                .into_iter()
+                .map(|definition| {
+                    (
+                        definition.name,
+                        McpToolSpec {
+                            behaves_like: definition.behaves_like,
+                            span_edit: definition.span_edit,
+                        },
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    pub fn capture_scoped() -> Option<Arc<Self>> {
+        REGISTRY_OVERRIDE.with(|current| current.borrow().clone())
+    }
+
+    pub fn capture_current() -> Arc<Self> {
+        Self::capture_scoped()
+            .unwrap_or_else(|| MCP_REGISTRY.read().expect("mcp registry lock").clone())
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn accounted_allocations(&self) -> Vec<(usize, usize)> {
+        let bytes = size_of::<Self>()
+            + self.fingerprint.capacity()
+            + self.specs.capacity() * size_of::<(String, McpToolSpec)>()
+            + self
+                .specs
+                .iter()
+                .map(|(name, spec)| {
+                    name.capacity()
+                        + spec.behaves_like.capacity()
+                        + spec.span_edit.as_ref().map_or(0, |map| {
+                            map.path.capacity()
+                                + map.content.capacity()
+                                + map.delete.as_ref().map_or(0, String::capacity)
+                        })
+                })
+                .sum::<usize>();
+        vec![(self as *const Self as usize, bytes)]
+    }
+}
+
+static MCP_REGISTRY: LazyLock<RwLock<Arc<ToolRegistrySnapshot>>> =
+    LazyLock::new(|| RwLock::new(ToolRegistrySnapshot::from_specs(HashMap::new())));
+
+thread_local! {
+    static REGISTRY_OVERRIDE: RefCell<Option<Arc<ToolRegistrySnapshot>>> = const { RefCell::new(None) };
+}
+
+struct RegistryScope {
+    previous: Option<Arc<ToolRegistrySnapshot>>,
+}
+
+impl Drop for RegistryScope {
+    fn drop(&mut self) {
+        REGISTRY_OVERRIDE.with(|current| {
+            current.replace(self.previous.take());
+        });
+    }
+}
+
+pub fn with_registry<R>(registry: Arc<ToolRegistrySnapshot>, operation: impl FnOnce() -> R) -> R {
+    let _scope = RegistryScope {
+        previous: REGISTRY_OVERRIDE.with(|current| current.replace(Some(registry))),
+    };
+    operation()
+}
 
 /// Registers `tool` (a bare MCP segment) with `spec`; last write wins.
 pub fn register_mcp_tool(tool: String, spec: McpToolSpec) {
-    MCP_REGISTRY
-        .write()
-        .expect("mcp registry lock")
-        .insert(tool, spec);
+    let mut current = MCP_REGISTRY.write().expect("mcp registry lock");
+    let mut specs = current.specs.clone();
+    specs.insert(tool, spec);
+    *current = ToolRegistrySnapshot::from_specs(specs);
 }
 
 /// Unregisters `tool`, returning whether it was registered.
 pub fn unregister_mcp_tool(tool: &str) -> bool {
-    MCP_REGISTRY
-        .write()
-        .expect("mcp registry lock")
-        .remove(tool)
-        .is_some()
+    let mut current = MCP_REGISTRY.write().expect("mcp registry lock");
+    if !current.specs.contains_key(tool) {
+        return false;
+    }
+    let mut specs = current.specs.clone();
+    specs.remove(tool);
+    *current = ToolRegistrySnapshot::from_specs(specs);
+    true
 }
 
 /// Resolves a bare MCP tool segment to the built-in edit gate it behaves like.
 pub fn mcp_tool_alias(tool: &str) -> Option<String> {
-    MCP_REGISTRY
-        .read()
-        .expect("mcp registry lock")
+    ToolRegistrySnapshot::capture_current()
+        .specs
         .get(tool)
         .map(|spec| spec.behaves_like.clone())
 }
 
-// The span-edit lowering registered for a bare MCP tool segment, if any.
 fn registered_span_edit(tool: &str) -> Option<SpanEditMap> {
-    MCP_REGISTRY
-        .read()
-        .expect("mcp registry lock")
+    ToolRegistrySnapshot::capture_current()
+        .specs
         .get(tool)
         .and_then(|spec| spec.span_edit.clone())
 }
@@ -284,14 +425,16 @@ fn req_str_keys(input: &Value, keys: &[&str]) -> Result<String, ToolInputError> 
 }
 
 /// A before/after content pair lowered from an edit-shaped tool call (tools.py Hunk).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hunk {
     pub old: String,
     pub new: String,
 }
 
 /// One replacement within a MultiEdit call, in application order (tools.py EditSpan).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditSpan {
     pub old: String,
     pub new: String,
@@ -335,7 +478,8 @@ fn edit_spans(edits: &Value) -> Result<Vec<EditSpan>, ToolInputError> {
     Err(ToolInputError::Malformed("edits not iterable".to_string()))
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BashCall {
     pub name: String,
     pub raw: Value,
@@ -345,7 +489,8 @@ pub struct BashCall {
     pub run_in_background: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditCall {
     pub name: String,
     pub raw: Value,
@@ -355,7 +500,8 @@ pub struct EditCall {
     pub replace_all: Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultiEditCall {
     pub name: String,
     pub raw: Value,
@@ -363,7 +509,8 @@ pub struct MultiEditCall {
     pub edits: Vec<EditSpan>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteCall {
     pub name: String,
     pub raw: Value,
@@ -371,7 +518,8 @@ pub struct WriteCall {
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadCall {
     pub name: String,
     pub raw: Value,
@@ -380,7 +528,8 @@ pub struct ReadCall {
     pub limit: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotebookEditCall {
     pub name: String,
     pub raw: Value,
@@ -390,7 +539,8 @@ pub struct NotebookEditCall {
     pub edit_mode: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrepCall {
     pub name: String,
     pub raw: Value,
@@ -401,7 +551,8 @@ pub struct GrepCall {
     pub output_mode: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GlobCall {
     pub name: String,
     pub raw: Value,
@@ -409,7 +560,8 @@ pub struct GlobCall {
     pub path: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskCall {
     pub name: String,
     pub raw: Value,
@@ -420,7 +572,8 @@ pub struct TaskCall {
     pub run_in_background: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowCall {
     pub name: String,
     pub raw: Value,
@@ -431,7 +584,8 @@ pub struct WorkflowCall {
     pub resume_from_run_id: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillCall {
     pub name: String,
     pub raw: Value,
@@ -439,7 +593,8 @@ pub struct SkillCall {
     pub args: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskCreateCall {
     pub name: String,
     pub raw: Value,
@@ -447,7 +602,8 @@ pub struct TaskCreateCall {
     pub description: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskUpdateCall {
     pub name: String,
     pub raw: Value,
@@ -457,7 +613,8 @@ pub struct TaskUpdateCall {
     pub description: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExitPlanModeCall {
     pub name: String,
     pub raw: Value,
@@ -466,7 +623,8 @@ pub struct ExitPlanModeCall {
 
 /// A codex code-mode `exec` call: `source` is its free-form program, kept verbatim
 /// and never JSON-decoded; `raw` is the original string input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodeModeCall {
     pub name: String,
     pub raw: Value,
@@ -474,7 +632,8 @@ pub struct CodeModeCall {
 }
 
 /// How one file of an apply_patch envelope is edited (tools.py PatchEdit.kind).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum PatchEditKind {
     Add,
     Update,
@@ -494,7 +653,8 @@ impl PatchEditKind {
 /// One file's edit within a codex apply_patch envelope. `hunks` is empty for a
 /// deletion and holds one addition hunk for an added file; `move_path` is the
 /// rename target when the file is moved.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatchEdit {
     pub file_path: String,
     pub kind: PatchEditKind,
@@ -504,7 +664,8 @@ pub struct PatchEdit {
 
 /// A codex apply_patch call: one `PatchEdit` per file in the envelope. A malformed
 /// envelope yields no edits (never an error); `raw` is the original envelope string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyPatchCall {
     pub name: String,
     pub raw: Value,
@@ -513,7 +674,8 @@ pub struct ApplyPatchCall {
 
 /// A codex update_plan call: `plan` is the plan-step array and `explanation` the
 /// optional narration, decoded from the JSON-string arguments; `raw` is that string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdatePlanCall {
     pub name: String,
     pub raw: Value,
@@ -524,7 +686,8 @@ pub struct UpdatePlanCall {
 /// A codex write_stdin call: `chars` is the text written to the target session's
 /// stdin and `session_id` its identifier, decoded from the JSON-string arguments;
 /// `raw` is that string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteStdinCall {
     pub name: String,
     pub raw: Value,
@@ -538,7 +701,8 @@ pub struct WriteStdinCall {
 /// whose spec carries a span-edit lowering. The payload carries no pre-image;
 /// registrations are process-local (the standalone Rust CLI never sees them — the
 /// intended semantic for an embedding-driven registry).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpanEditCall {
     pub name: String,
     pub raw: Value,
@@ -546,7 +710,8 @@ pub struct SpanEditCall {
     pub new: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OtherCall {
     pub name: String,
     pub raw: Value,
@@ -554,7 +719,8 @@ pub struct OtherCall {
 }
 
 /// The typed tool-call hierarchy (tools.py ToolCall union).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ToolCall {
     Bash(BashCall),
     Edit(EditCall),
@@ -1576,9 +1742,9 @@ pub fn expand_tool_names(spec: &str) -> std::collections::HashSet<String> {
                 .map(|alias| alias.to_string()),
         );
     }
-    let registered: Vec<String> = MCP_REGISTRY
-        .read()
-        .expect("mcp registry lock")
+    let registry = ToolRegistrySnapshot::capture_current();
+    let registered: Vec<String> = registry
+        .specs
         .iter()
         .filter(|(_, spec)| set.contains(&spec.behaves_like))
         .map(|(name, _)| name.clone())
@@ -1590,7 +1756,9 @@ pub fn expand_tool_names(spec: &str) -> std::collections::HashSet<String> {
 /// Parity: tools.py tool_name_matches — the expand_tool_names set feeds the shared
 /// types::matches_names primitive, which closes over the native bare-MCP aliases.
 pub fn tool_name_matches(actual: &str, spec: &str) -> bool {
-    crate::types::matches_names(actual, &expand_tool_names(spec))
+    with_registry(ToolRegistrySnapshot::capture_current(), || {
+        crate::types::matches_names(actual, &expand_tool_names(spec))
+    })
 }
 
 /// Parity: tools.py mcp_access.
@@ -2088,5 +2256,203 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn snapshot_spec(behaves_like: &str, span_edit: bool) -> McpToolSpec {
+        McpToolSpec {
+            behaves_like: behaves_like.to_string(),
+            span_edit: span_edit.then(|| SpanEditMap {
+                path: "path".to_string(),
+                content: "content".to_string(),
+                delete: Some("delete".to_string()),
+            }),
+        }
+    }
+
+    #[test]
+    fn registry_snapshot_is_immutable_across_default_mutations() {
+        let tool = "syn_registry_snapshot";
+        register_mcp_tool(tool.to_string(), snapshot_spec("Edit", true));
+        let pinned = ToolRegistrySnapshot::capture_current();
+        with_registry(pinned.clone(), || {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                register_mcp_tool(tool.to_string(), snapshot_spec("Write", false));
+                sender.send(()).unwrap();
+            });
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a pinned registry scope must not block default updates");
+            writer.join().unwrap();
+            assert!(Arc::ptr_eq(
+                &pinned,
+                &ToolRegistrySnapshot::capture_current()
+            ));
+            assert_eq!(mcp_tool_alias(tool).as_deref(), Some("Edit"));
+            assert!(tool_name_matches(
+                "mcp__fixture__syn_registry_snapshot",
+                "Edit"
+            ));
+            assert!(!tool_name_matches(
+                "mcp__fixture__syn_registry_snapshot",
+                "Write"
+            ));
+            assert!(crate::types::matches_names(
+                "mcp__fixture__syn_registry_snapshot",
+                &HashSet::from(["Edit".to_string()]),
+            ));
+            match parse_tool_call(
+                "mcp__fixture__syn_registry_snapshot",
+                &obj(r#"{"path":"a.py","content":"pinned"}"#),
+            ) {
+                ToolCall::SpanEdit(call) => assert_eq!(call.new.as_deref(), Some("pinned")),
+                other => panic!("{other:?}"),
+            }
+            assert!(unregister_mcp_tool(tool));
+            assert_eq!(mcp_tool_alias(tool).as_deref(), Some("Edit"));
+        });
+        assert_eq!(mcp_tool_alias(tool), None);
+    }
+
+    #[test]
+    fn registry_scope_restores_nested_and_panicking_operations() {
+        let first = ToolRegistrySnapshot::from_specs(HashMap::from([(
+            "syn_nested_registry".to_string(),
+            snapshot_spec("Edit", true),
+        )]));
+        let second = ToolRegistrySnapshot::from_specs(HashMap::from([(
+            "syn_nested_registry".to_string(),
+            snapshot_spec("Read", false),
+        )]));
+        with_registry(first.clone(), || {
+            with_registry(second.clone(), || {
+                assert_eq!(
+                    mcp_tool_alias("syn_nested_registry").as_deref(),
+                    Some("Read")
+                );
+            });
+            assert_eq!(
+                mcp_tool_alias("syn_nested_registry").as_deref(),
+                Some("Edit")
+            );
+            let failure = std::panic::catch_unwind(|| {
+                with_registry(second, || panic!("fixture unwind"));
+            });
+            assert!(failure.is_err());
+            assert!(Arc::ptr_eq(
+                &first,
+                &ToolRegistrySnapshot::capture_current()
+            ));
+            assert_eq!(
+                mcp_tool_alias("syn_nested_registry").as_deref(),
+                Some("Edit")
+            );
+        });
+        assert_eq!(mcp_tool_alias("syn_nested_registry"), None);
+    }
+
+    #[test]
+    fn registry_scopes_are_isolated_between_threads() {
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for behavior in ["Edit", "Read"] {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let registry = ToolRegistrySnapshot::from_specs(HashMap::from([(
+                        "syn_thread_registry".to_string(),
+                        snapshot_spec(behavior, false),
+                    )]));
+                    with_registry(registry, || {
+                        barrier.wait();
+                        assert_eq!(
+                            mcp_tool_alias("syn_thread_registry").as_deref(),
+                            Some(behavior)
+                        );
+                        assert!(tool_name_matches(
+                            "mcp__fixture__syn_thread_registry",
+                            behavior
+                        ));
+                    });
+                    assert_eq!(mcp_tool_alias("syn_thread_registry"), None);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn registry_fingerprint_covers_exact_definitions_independent_of_order() {
+        let first = ToolRegistrySnapshot::from_specs_json(&obj(r#"[
+            {"name":"writer","behaves_like":"Edit","span_edit":{"path":"file","content":"body","delete":null}},
+            {"name":"reader","behaves_like":"Read","span_edit":null}
+        ]"#)).unwrap();
+        let reordered = ToolRegistrySnapshot::from_specs_json(&obj(r#"[
+            {"span_edit":null,"behaves_like":"Read","name":"reader"},
+            {"span_edit":{"delete":null,"content":"body","path":"file"},"behaves_like":"Edit","name":"writer"}
+        ]"#)).unwrap();
+        let changed = ToolRegistrySnapshot::from_specs_json(&obj(r#"[
+            {"name":"writer","behaves_like":"Edit","span_edit":{"path":"file","content":"changed","delete":null}},
+            {"name":"reader","behaves_like":"Read","span_edit":null}
+        ]"#)).unwrap();
+        assert_eq!(first.fingerprint(), reordered.fingerprint());
+        assert_ne!(first.fingerprint(), changed.fingerprint());
+        assert_eq!(first.fingerprint().len(), 64);
+        assert_eq!(
+            ToolRegistrySnapshot::from_specs_json(&obj("[]"))
+                .unwrap()
+                .fingerprint(),
+            ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint(),
+        );
+    }
+
+    #[test]
+    fn registry_definitions_reject_duplicates_unknown_fields_and_invalid_tokens() {
+        for raw in [
+            r#"{}"#,
+            r#"[{"name":"duplicate","behaves_like":"Edit","span_edit":null},{"name":"duplicate","behaves_like":"Read","span_edit":null}]"#,
+            r#"[{"name":"x","behaves_like":"Edit","span_edit":null,"unexpected":true}]"#,
+            r#"[{"name":"","behaves_like":"Edit","span_edit":null}]"#,
+            r#"[{"name":"x","behaves_like":"Edit","span_edit":{"path":"p","content":"c"}}]"#,
+            r#"[{"name":"x","behaves_like":false,"span_edit":null}]"#,
+        ] {
+            assert!(
+                ToolRegistrySnapshot::from_specs_json(&obj(raw)).is_err(),
+                "{raw}"
+            );
+        }
+        let definitions: Vec<Value> = (0..257)
+            .map(|index| {
+                sonic_rs::json!({
+                    "name": format!("tool{index}"), "behaves_like": "Edit", "span_edit": null,
+                })
+            })
+            .collect();
+        assert!(
+            ToolRegistrySnapshot::from_specs_json(&sonic_rs::to_value(&definitions).unwrap())
+                .is_err()
+        );
+        let oversized = sonic_rs::json!([{
+            "name": "x".repeat(257), "behaves_like": "Edit", "span_edit": null,
+        }]);
+        assert!(ToolRegistrySnapshot::from_specs_json(&oversized).is_err());
+    }
+
+    #[test]
+    fn registry_allocation_identity_is_shared_and_counts_string_capacity() {
+        let small = HashMap::from([("syn_allocation".to_string(), snapshot_spec("Edit", true))]);
+        let mut large = small.clone();
+        large
+            .get_mut("syn_allocation")
+            .unwrap()
+            .behaves_like
+            .reserve(4096);
+        let small = ToolRegistrySnapshot::from_specs(small);
+        let large = ToolRegistrySnapshot::from_specs(large);
+        assert_eq!(small.fingerprint(), large.fingerprint());
+        assert_eq!(
+            small.accounted_allocations(),
+            small.clone().accounted_allocations()
+        );
+        assert_eq!(small.accounted_allocations().len(), 1);
+        assert!(large.accounted_allocations()[0].1 > small.accounted_allocations()[0].1 + 4000);
     }
 }

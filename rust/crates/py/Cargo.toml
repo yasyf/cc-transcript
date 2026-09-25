@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
+jsonschema = { version = "0.56", default-features = false }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 cc-transcript-core = { path = "../core" }
 cc-transcript-cli = { path = "../cli" }
 pyo3 = { version = "0.28", features = ["abi3-py313", "chrono", "multiple-pymethods"] }

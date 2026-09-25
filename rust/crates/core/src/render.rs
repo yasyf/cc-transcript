@@ -442,12 +442,33 @@ pub fn render_tool_call(call: &ToolCall, budget: &Budget) -> String {
 /// `result:`/`failed:` head naming the call, its content on `> ` lines, and a
 /// `call i/n`/`result i/n` ordinal on calls batched in one message.
 pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
+    render_turn_parts(
+        &turn.prompt,
+        &turn.events,
+        &turn
+            .tool_uses
+            .iter()
+            .map(|tool_use| &tool_use.call)
+            .collect::<Vec<_>>(),
+        budget,
+        tool_results,
+    )
+}
+
+pub fn render_turn_parts(
+    prompt: &str,
+    events: &[&Entry],
+    tool_calls: &[&ToolCall],
+    budget: &Budget,
+    tool_results: bool,
+) -> String {
+    let mut typed_calls = tool_calls.iter();
     let mut parts: Vec<String> = Vec::new();
-    if !turn.prompt.is_empty() {
-        parts.push(format!("user: {}", clip(&turn.prompt, budget.turn_chars)));
+    if !prompt.is_empty() {
+        parts.push(format!("user: {}", clip(&prompt, budget.turn_chars)));
     }
     let mut calls: HashMap<&str, CallLabel<'_>> = HashMap::new();
-    for &event in &turn.events {
+    for &event in events {
         match event {
             Entry::Assistant(assistant) => {
                 let batch = assistant
@@ -468,7 +489,7 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
                                 ordinal: (tool_results && batch > 1).then_some((ordinal, batch)),
                             };
                             let rendered = render_tool_call(
-                                &parse_tool_call(&tool_use.name, &tool_use.input),
+                                typed_calls.next().expect("lifted tool call"),
                                 budget,
                             );
                             parts.push(match label.ordinal {

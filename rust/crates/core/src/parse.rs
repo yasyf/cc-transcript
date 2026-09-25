@@ -582,7 +582,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
 // arrays) are skipped; a JSON object that fails the typed parse (e.g. a missing
 // required field) fails the whole file — whole-file parity with PythonBackend,
 // which decodes every line, skips non-objects, then parses the rest.
-fn parse_line<F: Fn(&Entry) -> bool>(
+pub(crate) fn parse_line<F: Fn(&Entry) -> bool>(
     line: &[u8],
     lines: &mut Vec<Entry>,
     keep: &F,

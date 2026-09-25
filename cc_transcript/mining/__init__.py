@@ -46,7 +46,7 @@ from cc_transcript.mining.confidence import (
     strong,
     weak,
 )
-from cc_transcript.mining.engine import mine, rehydrate_signal
+from cc_transcript.mining.engine import mine, mine_snapshot, register_snapshot_policy, rehydrate_signal
 from cc_transcript.mining.formats import ReviewComment, StructuredFormat
 from cc_transcript.mining.sampling import sample_windows
 from cc_transcript.mining.signals import (
