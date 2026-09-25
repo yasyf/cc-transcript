@@ -298,6 +298,7 @@ struct Lease {
     snapshot: Arc<TranscriptSnapshot>,
     classifier: Value,
     expires: u64,
+    absolute_deadline: u64,
     exposed: bool,
     registry_generation: String,
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
@@ -415,7 +416,6 @@ struct LabelSlot {
     preparation: crate::snapshot_labels::LabelPreparation,
     source_handle: Value,
     accounted: usize,
-    max_stage_bytes: usize,
     expires: u64,
     admission: String,
 }
@@ -623,6 +623,11 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Result<&'a str, SnapshotError> 
         .ok_or_else(|| invalid(format!("missing string {key}")))
 }
 
+fn classifier_eq(left: &Value, right: &Value) -> Result<bool, SnapshotError> {
+    Ok(str_field(left, "id")? == str_field(right, "id")?
+        && str_field(left, "version")? == str_field(right, "version")?)
+}
+
 fn number(value: &Value, key: &str) -> Result<usize, SnapshotError> {
     value
         .get(key)
@@ -761,15 +766,33 @@ impl NativeStore {
         self.default_registry.clone()
     }
 
-    pub fn register_tool_registry(&self, specs: &Value) -> Result<String, SnapshotError> {
+    pub fn register_tool_registry(
+        &self,
+        specs: &Value,
+        context: &Value,
+    ) -> Result<String, SnapshotError> {
+        self.authority(context, None)?;
+        let charge = crate::snapshot_memory::value_charge(specs);
+        let reserve = (charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
+            .saturating_mul(4)
+            .saturating_add(64 * 1024);
+        let mut reservation = self.reserve_projection(context, reserve)?;
         let registry =
             crate::toolcall::ToolRegistrySnapshot::from_specs_json(specs).map_err(invalid)?;
         let fingerprint = registry.fingerprint().to_owned();
         let allocations = registry.accounted_allocations();
-        let bytes: usize = allocations.iter().map(|(_, bytes)| *bytes).sum();
+        let bytes = allocations.iter().map(|(_, bytes)| *bytes).sum::<usize>()
+            + allocations.capacity() * size_of::<(usize, usize)>()
+            + size_of::<RegistryRecord>()
+            + fingerprint.capacity();
         let mut state = self.state.lock().expect("snapshot state");
         if !state.registries.contains_key(&fingerprint) {
-            self.admit_memory(&mut state, &json!({"admission":"hook"}), bytes)?;
+            if bytes > reservation.bytes {
+                return Err(SnapshotError::new(
+                    Status::RetainedLimit,
+                    "tool registry allocation exceeds reservation",
+                ));
+            }
             state.registries.insert(
                 fingerprint.clone(),
                 RegistryRecord {
@@ -777,6 +800,8 @@ impl NativeStore {
                     allocations,
                 },
             );
+            state.transient_bytes -= bytes;
+            reservation.bytes -= bytes;
         }
         Ok(fingerprint)
     }
@@ -1032,10 +1057,12 @@ impl NativeStore {
             ));
         }
         let mut state = self.state.lock().expect("snapshot state");
-        self.lease(&state, source_handle, context)?;
+        let absolute_deadline = self
+            .lease(&state, source_handle, context)?
+            .absolute_deadline;
         let id = snapshot.id.clone();
         state.generations.insert(id.clone(), generation);
-        let data = match self.issue(&mut state, snapshot, classifier, context) {
+        let data = match self.issue(&mut state, snapshot, classifier, context, absolute_deadline) {
             Ok(data) => data,
             Err(error) => {
                 state.generations.remove(&id);
@@ -1147,7 +1174,6 @@ impl NativeStore {
                 preparation,
                 source_handle: handle.clone(),
                 accounted: 0,
-                max_stage_bytes,
                 expires,
                 admission: str_field(context, "admission")?.to_owned(),
             },
@@ -1405,7 +1431,7 @@ impl NativeStore {
                         result: None,
                     }),
                     accounted: AtomicUsize::new(0),
-                    deadline: (now_ms() + self.config.preparation).min(bounds.deadline_unix_ms),
+                    deadline: now_ms() + self.config.preparation,
                     complete: AtomicBool::new(false),
                 });
                 state
@@ -1703,7 +1729,16 @@ impl NativeStore {
                     + delivery.cursor.as_ref().map_or(0, String::capacity)
             })
             .sum();
+        let registry_metadata = state.registries.capacity() * size_of::<(String, RegistryRecord)>()
+            + state
+                .registries
+                .iter()
+                .map(|(key, record)| {
+                    key.capacity() + record.allocations.capacity() * size_of::<(usize, usize)>()
+                })
+                .sum::<usize>();
         let metadata = delivery_bytes
+            + registry_metadata
             + state
                 .generations
                 .values()
@@ -1823,6 +1858,7 @@ impl NativeStore {
         snapshot: Arc<TranscriptSnapshot>,
         classifier: Value,
         context: &Value,
+        absolute_deadline: u64,
     ) -> Result<Value, SnapshotError> {
         let cap = if str_field(context, "admission")? == "hook" {
             self.config.leases
@@ -1840,15 +1876,24 @@ impl NativeStore {
             .get(str_field(context, "registry_generation")?)
             .map(|record| Arc::clone(&record.snapshot))
             .ok_or_else(|| invalid("tool registry generation is not registered with this owner"))?;
+        let now = now_ms();
+        if now >= absolute_deadline {
+            return Err(SnapshotError::new(
+                Status::Deadline,
+                "lease preparation deadline expired",
+            ));
+        }
+        let expires = (now + self.config.ttl).min(absolute_deadline);
         let token = self.token("lease");
-        let description = self.description(&snapshot, &classifier, &token);
+        let description = self.description(&snapshot, &classifier, &token, expires);
         state.leases.insert(
             token,
             Lease {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 snapshot,
                 classifier,
-                expires: now_ms() + self.config.ttl,
+                expires,
+                absolute_deadline,
                 exposed: false,
                 registry_generation: str_field(context, "registry_generation")?.to_owned(),
                 registry,
@@ -1857,7 +1902,13 @@ impl NativeStore {
         Ok(json!({"kind": "acquired", "description": description}))
     }
 
-    fn description(&self, snapshot: &TranscriptSnapshot, classifier: &Value, lease: &str) -> Value {
+    fn description(
+        &self,
+        snapshot: &TranscriptSnapshot,
+        classifier: &Value,
+        lease: &str,
+        expires: u64,
+    ) -> Value {
         json!({"handle": {"owner_epoch": self.owner_epoch, "snapshot_id": snapshot.id, "generation": snapshot.id, "lease_id": lease},
             "canonical_path": snapshot.canonical_path.to_string_lossy().as_ref(),
             "source_id": format!("{}:{}", snapshot.stamp.identity.device, snapshot.stamp.identity.inode),
@@ -1866,7 +1917,7 @@ impl NativeStore {
             "provider": snapshot.provider.as_str(), "parser_version": PARSER_VERSION,
             "source_bytes": snapshot.stamp.size, "committed_bytes": snapshot.committed_bytes,
             "event_count": snapshot.event_count, "turn_count": snapshot.activity.turn_count(),
-            "classifier": classifier, "provisional_tail": snapshot.provisional_tail})
+            "classifier": classifier, "provisional_tail": snapshot.provisional_tail,"lease_expires_unix_ms":expires})
     }
 
     pub fn pin(
@@ -1899,6 +1950,7 @@ impl NativeStore {
                     &lease.snapshot,
                     &lease.classifier,
                     str_field(handle, "lease_id")?,
+                    lease.expires,
                 ),
             )
         };
@@ -2553,15 +2605,18 @@ impl NativeStore {
                     .ok_or_else(|| invalid("missing handle"))?;
                 let snapshot = self.pin(handle, context)?;
                 let mut state = self.state.lock().expect("snapshot state");
-                let classifier = self.lease(&state, handle, context)?.classifier.clone();
+                let lease = self.lease(&state, handle, context)?;
+                let classifier = lease.classifier.clone();
+                let absolute_deadline = lease.absolute_deadline;
+                let current_expiry = lease.expires;
                 match operation {
                     "retain" => Ok((
-                        self.issue(&mut state, snapshot, classifier, context)?,
+                        self.issue(&mut state, snapshot, classifier, context, absolute_deadline)?,
                         None,
                         None,
                     )),
                     "renew" => {
-                        let expires = now_ms() + self.config.ttl;
+                        let expires = (now_ms() + self.config.ttl).min(absolute_deadline);
                         state
                             .leases
                             .get_mut(str_field(handle, "lease_id")?)
@@ -2574,7 +2629,7 @@ impl NativeStore {
                         ))
                     }
                     _ => Ok((
-                        json!({"kind": "acquired", "description": self.description(&snapshot, &classifier, str_field(handle, "lease_id")?)}),
+                        json!({"kind": "acquired", "description": self.description(&snapshot, &classifier, str_field(handle, "lease_id")?,current_expiry)}),
                         None,
                         None,
                     )),
@@ -2582,7 +2637,11 @@ impl NativeStore {
             }
             "release" => {
                 let kind = str_field(request, "kind")?;
-                if kind != "cursor" || request.get("owner_epoch").is_some() {
+                if kind != "cursor"
+                    || request
+                        .get("owner_epoch")
+                        .is_some_and(|epoch| !epoch.is_null())
+                {
                     if str_field(request, "owner_epoch")? != self.owner_epoch {
                         return Err(SnapshotError::new(
                             Status::StaleHandle,
@@ -3119,6 +3178,7 @@ impl NativeStore {
                 snapshot,
                 waiter.classifier.clone(),
                 &waiter.context,
+                waiter.deadline,
             )?;
             state.waiters.remove(token);
             Self::prune(&mut state);
@@ -3575,9 +3635,7 @@ impl NativeStore {
             .ok_or_else(|| invalid("missing root handle"))?
             .clone();
         let (root, description) = self.pin_scope(&root_handle, context)?;
-        if sonic_rs::to_vec(&view["classifier"]).ok()
-            != sonic_rs::to_vec(&description["classifier"]).ok()
-        {
+        if !classifier_eq(&view["classifier"], &description["classifier"])? {
             return Err(invalid("view classifier differs from root generation"));
         }
         let mut tasks = Vec::new();
@@ -3781,6 +3839,31 @@ impl NativeStore {
         Ok(())
     }
 
+    fn renew_graph_members(&self, graph: &mut GraphCursor) -> Result<(), SnapshotError> {
+        let mut state = self.state.lock().expect("snapshot state");
+        self.lease(&state, &graph.root_handle, &graph.context)?;
+        for node in graph
+            .nodes
+            .iter_mut()
+            .skip(1)
+            .filter(|node| !node.transferred)
+        {
+            let handle = &node.description["handle"];
+            let lease = self.lease(&state, handle, &graph.context)?;
+            let expires = (now_ms() + self.config.ttl)
+                .min(lease.absolute_deadline)
+                .min(graph.remaining.deadline_unix_ms);
+            state
+                .leases
+                .get_mut(str_field(handle, "lease_id")?)
+                .expect("validated lease")
+                .expires = expires;
+            node.description
+                .insert("lease_expires_unix_ms", json!(expires));
+        }
+        Ok(())
+    }
+
     fn graph_work(
         &self,
         graph: &mut GraphCursor,
@@ -3789,6 +3872,7 @@ impl NativeStore {
     ) -> Result<GraphYield, SnapshotError> {
         cancel.check(graph.remaining.deadline_unix_ms)?;
         self.pin_scope(&graph.root_handle, &graph.context)?;
+        self.renew_graph_members(graph)?;
         let kind = str_field(&graph.request["query"], "kind")?.to_owned();
         let membership = kind == "sidechain_membership";
         let inputs = kind == "deep_predicate_inputs";
@@ -4140,9 +4224,7 @@ impl NativeStore {
             .get("handle")
             .ok_or_else(|| invalid("missing view handle"))?;
         let (snapshot, description) = self.pin_scope(handle, context)?;
-        if sonic_rs::to_vec(&view["classifier"]).ok()
-            != sonic_rs::to_vec(&description["classifier"]).ok()
-        {
+        if !classifier_eq(&view["classifier"], &description["classifier"])? {
             return Err(invalid("view classifier differs from leased generation"));
         }
         let mut page = bound;
@@ -4730,6 +4812,25 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         cancel.check(cursor.remaining.deadline_unix_ms)?;
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            for session in &mut cursor.sessions {
+                if session["status"].as_str() != Some("ok") {
+                    continue;
+                }
+                let handle = &session["description"]["handle"];
+                let lease = self.lease(&state, handle, &cursor.context)?;
+                let expires = (now_ms() + self.config.ttl)
+                    .min(lease.absolute_deadline)
+                    .min(cursor.remaining.deadline_unix_ms);
+                state
+                    .leases
+                    .get_mut(str_field(handle, "lease_id")?)
+                    .expect("validated lease")
+                    .expires = expires;
+                session["description"].insert("lease_expires_unix_ms", json!(expires));
+            }
+        }
         while cursor.next < cursor.ids.len() {
             let id = &cursor.ids[cursor.next];
             let Some(path) = cursor.paths.get(id) else {
@@ -5561,6 +5662,7 @@ mod tests {
         store
             .register_tool_registry(
                 &json!([{"name":"fetch","behaves_like":"Read","span_edit":null}]),
+                &context("a"),
             )
             .unwrap()
     }
@@ -5853,6 +5955,98 @@ mod tests {
         assert_eq!(failed.status, Status::LeaseLimit);
         let state = store.state.lock().unwrap();
         assert_eq!(state.generations.len(), generations);
+        assert_eq!(state.transient_bytes, 0);
+    }
+    #[test]
+    fn cursor_release_accepts_null_epoch_but_lease_release_does_not() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let pending = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+        let response=store.request(&json!({"schema":SCHEMA,"id":"release-cursor","operation":"release","kind":"cursor","owner_epoch":null,"token":pending["cursor"]}),&owner,&Cancellation::default());
+        assert_eq!(response["status"].as_str(), Some("ok"));
+        assert_eq!(response["data"]["released"].as_bool(), Some(true));
+        let response=store.request(&json!({"schema":SCHEMA,"id":"release-lease","operation":"release","kind":"lease","owner_epoch":null,"token":"missing"}),&owner,&Cancellation::default());
+        assert_eq!(response["status"].as_str(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn expiry_metadata_and_renewal_respect_original_preparation_deadline() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let handle = handle(&root).clone();
+        let cap = now_ms() + 10_000;
+        {
+            let mut state = store.state.lock().unwrap();
+            let lease = state
+                .leases
+                .get_mut(handle["lease_id"].as_str().unwrap())
+                .unwrap();
+            lease.absolute_deadline = cap;
+            lease.expires = now_ms() + 1000;
+        }
+        let renew = store.request(
+            &json!({"schema":SCHEMA,"id":"renew","operation":"renew","handle":handle}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(renew["data"]["expires_unix_ms"].as_u64(), Some(cap));
+        let description = store.request(
+            &json!({"schema":SCHEMA,"id":"describe-expiry","operation":"describe","handle":handle}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            description["data"]["description"]["lease_expires_unix_ms"].as_u64(),
+            Some(cap)
+        );
+        let retained = store.request(
+            &json!({"schema":SCHEMA,"id":"retain-capped","operation":"retain","handle":handle}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            retained["data"]["description"]["lease_expires_unix_ms"].as_u64(),
+            Some(cap)
+        );
+    }
+    #[test]
+    fn registry_registration_uses_trusted_admission_and_preserves_cached_identity() {
+        let store = NativeStore::new(
+            &json!({"max_retained_bytes":8*1024*1024,"reserved_hook_accounted_bytes":8*1024*1024}),
+        )
+        .unwrap();
+        let hook = context("owner");
+        let mut review = hook.clone();
+        review.insert("admission", json!("review"));
+        let specs = json!([{"name":"fetch","behaves_like":"Read","span_edit":null}]);
+        assert_eq!(
+            store
+                .register_tool_registry(&specs, &review)
+                .unwrap_err()
+                .status,
+            Status::RetainedLimit
+        );
+        let fingerprint = store.register_tool_registry(&specs, &hook).unwrap();
+        let first = {
+            let state = store.state.lock().unwrap();
+            Arc::clone(&state.registries[&fingerprint].snapshot)
+        };
+        assert_eq!(
+            store.register_tool_registry(&specs, &hook).unwrap(),
+            fingerprint
+        );
+        let state = store.state.lock().unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &state.registries[&fingerprint].snapshot
+        ));
         assert_eq!(state.transient_bytes, 0);
     }
 }

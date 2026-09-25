@@ -354,10 +354,16 @@ impl NativeSnapshotStore {
         self.inner.default_registry_generation()
     }
 
-    fn register_tool_registry(&self, py: Python<'_>, specs_json: &str) -> PyResult<String> {
+    fn register_tool_registry(
+        &self,
+        py: Python<'_>,
+        specs_json: &str,
+        context_json: &str,
+    ) -> PyResult<String> {
         py.detach(|| {
+            let context = validated(context_json, &SCHEMAS.context)?;
             let specs = validated(specs_json, &SCHEMAS.tool_registry)?;
-            self.inner.register_tool_registry(&specs)
+            self.inner.register_tool_registry(&specs, &context)
         })
         .map_err(error)
     }

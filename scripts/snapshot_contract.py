@@ -64,6 +64,7 @@ class EventRef(WireModel):
 
 class Description(WireModel):
     handle: Handle
+    lease_expires_unix_ms: Positive
     canonical_path: PathText
     source_id: Token
     device: Decimal

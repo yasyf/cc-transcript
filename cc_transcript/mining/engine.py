@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from cc_transcript.mining.signals import MiningSignal
     from cc_transcript.mining.spec import MiningSpec
     from cc_transcript.models import TranscriptEvent
+    from cc_transcript.snapshots import TranscriptSnapshot, TranscriptStore
 
 
 def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[MiningSignal]:
@@ -50,6 +51,19 @@ def mine(events: Sequence[TranscriptEvent], spec: MiningSpec) -> Iterator[Mining
     callable_formats = [(fmt.name, fmt.pattern, fmt.extract) for fmt in spec.review.callable_formats]
     payloads = _native.mine_events(list(events), mining_spec_to_json(spec), callable_formats)
     return (rehydrate_signal(payload) for payload in payloads)
+
+
+def mine_snapshot(snapshot: TranscriptSnapshot, spec: MiningSpec) -> Iterator[MiningSignal]:
+    """Mine a pinned owner view within its remaining work and materialization budgets."""
+    formats = [(fmt.name, fmt.pattern, fmt.extract, fmt.bounded) for fmt in spec.review.callable_formats]
+    payloads = snapshot.mine_json(mining_spec_to_json(spec), formats)
+    return (rehydrate_signal(payload) for payload in payloads)
+
+
+def register_snapshot_policy(store: TranscriptStore, policy_id: str, version: str, spec: MiningSpec) -> None:
+    """Register a fixed mining policy with the shared transcript owner."""
+    formats = [(fmt.name, fmt.pattern, fmt.extract, fmt.bounded) for fmt in spec.review.callable_formats]
+    store.register_mining_policy_json(policy_id, version, mining_spec_to_json(spec), formats)
 
 
 def rehydrate_signal(payload: Mapping[str, Any]) -> MiningSignal:

@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use sonic_rs::Value;
 
-use cc_transcript_core::activity::Turn;
 use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::render::{self, Budget};
-use cc_transcript_core::toolcall::parse_tool_call;
-use cc_transcript_core::types::{tool_use_index, Entry};
+use cc_transcript_core::toolcall::{parse_tool_call, ToolCall};
+use cc_transcript_core::types::{tool_use_index, ContentBlock, Entry};
 use cc_transcript_core::value::normalize_last_wins;
 
 use crate::mining::view_entry;
@@ -63,7 +63,6 @@ pub(crate) fn render_tool_call_view(
     ))
 }
 
-// render.render_turn over view_entry-borrowed events; render_turn reads only prompt + events.
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 pub(crate) fn render_turn_from_events(
@@ -78,22 +77,36 @@ pub(crate) fn render_turn_from_events(
         .iter()
         .map(|event| view_entry(event, "render_turn_from_events"))
         .collect::<PyResult<Vec<_>>>()?;
-    let turn = Turn {
-        index: 0,
-        prompt,
-        started_at: None,
-        ended_at: None,
-        events: entries,
-        tool_uses: Vec::new(),
-    };
-    Ok(render::render_turn(
-        &turn,
+    let calls = ordered_tool_calls(&events, &entries)?;
+    Ok(render::render_turn_parts(
+        &prompt,
+        &entries,
+        &calls.iter().map(Arc::as_ref).collect::<Vec<_>>(),
         &Budget {
             turn_chars,
             tool_chars,
         },
         tool_results,
     ))
+}
+
+fn ordered_tool_calls(
+    events: &[Bound<'_, PyAny>],
+    entries: &[&Entry],
+) -> PyResult<Vec<Arc<ToolCall>>> {
+    let mut calls = Vec::new();
+    for (event, entry) in events.iter().zip(entries) {
+        if let Entry::Assistant(assistant) = entry {
+            let blocks = event.getattr("blocks")?;
+            for (index, block) in assistant.blocks.iter().enumerate() {
+                if matches!(block, ContentBlock::ToolUse(_)) {
+                    let call = blocks.get_item(index)?.getattr("call")?;
+                    calls.push(Arc::clone(&call.cast::<ToolCallBaseView>()?.get().call));
+                }
+            }
+        }
+    }
+    Ok(calls)
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
@@ -152,4 +165,85 @@ pub(crate) fn render_stats(
             .map_err(parse_err)?;
         Ok(render::render_stats(&render::collect_stats(&transcripts)))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cc_transcript_core::toolcall::{
+        with_registry, McpToolSpec, SpanEditMap, ToolRegistrySnapshot,
+    };
+
+    fn event<'py>(py: Python<'py>, content: Value) -> Bound<'py, PyAny> {
+        let source = sonic_rs::json!({
+            "type":"assistant", "uuid":"a", "sessionId":"s", "timestamp":"2026-01-02T03:04:05Z",
+            "message":{"role":"assistant","model":"claude","content":content}
+        })
+        .to_string();
+        let entries = Arc::new(parse_transcript_bytes(source.as_bytes()).unwrap().entries);
+        crate::views::events::event_view(py, &entries, 0).unwrap()
+    }
+
+    #[test]
+    fn event_only_turn_preserves_prose_and_typed_call_order() {
+        Python::initialize();
+        Python::attach(|py| {
+            let event = event(
+                py,
+                sonic_rs::json!([
+                    {"type":"text","text":"editing"},
+                    {"type":"tool_use","id":"t1","name":"Edit","input":{
+                        "file_path":"/a.py","old_string":"x = 1","new_string":"x = 2"
+                    }},
+                    {"type":"text","text":"checking"},
+                    {"type":"tool_use","id":"t2","name":"Bash","input":{"command":"echo done"}},
+                    {"type":"text","text":"done"}
+                ]),
+            );
+            assert_eq!(
+                render_turn_from_events("fix the bug".to_string(), vec![event], 700, 1500, false).unwrap(),
+                "user: fix the bug\nassistant: editing\nEdit /a.py\n- x = 1\n+ x = 2\nassistant: checking\necho done\nassistant: done"
+            );
+        });
+    }
+
+    #[test]
+    fn event_only_turn_keeps_captured_registry_for_lazy_calls() {
+        Python::initialize();
+        Python::attach(|py| {
+            let pinned = ToolRegistrySnapshot::from_specs(HashMap::from([(
+                "syn_render_pinned".to_string(),
+                McpToolSpec {
+                    behaves_like: "Edit".to_string(),
+                    span_edit: Some(SpanEditMap {
+                        path: "path".to_string(),
+                        content: "content".to_string(),
+                        delete: None,
+                    }),
+                },
+            )]));
+            let event = with_registry(pinned, || {
+                event(
+                    py,
+                    sonic_rs::json!([
+                        {"type":"tool_use","id":"t","name":"mcp__fixture__syn_render_pinned",
+                         "input":{"path":"a.py","content":"pinned"}}
+                    ]),
+                )
+            });
+            with_registry(ToolRegistrySnapshot::from_specs(HashMap::new()), || {
+                let events = vec![event];
+                let entries = events
+                    .iter()
+                    .map(|event| view_entry(event, "test").unwrap())
+                    .collect::<Vec<_>>();
+                let calls = ordered_tool_calls(&events, &entries).unwrap();
+                assert!(matches!(calls[0].as_ref(), ToolCall::SpanEdit(_)));
+                assert_eq!(
+                    render_turn_from_events(String::new(), events, 700, 1500, false).unwrap(),
+                    "mcp__fixture__syn_render_pinned({\"path\":\"a.py\",\"content\":\"pinned\"})"
+                );
+            });
+        });
+    }
 }

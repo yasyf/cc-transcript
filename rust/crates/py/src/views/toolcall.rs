@@ -1500,3 +1500,42 @@ pub(crate) fn add_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(mcp_access, m)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn name_matcher_retains_registry_without_retaining_raw_call() {
+        Python::initialize();
+        Python::attach(|py| {
+            let registry = toolcall::ToolRegistrySnapshot::from_specs(HashMap::from([(
+                "syn_matcher_retention".to_string(),
+                McpToolSpec {
+                    behaves_like: "Edit".to_string(),
+                    span_edit: Some(SpanEditMap {
+                        path: "path".to_string(),
+                        content: "body".to_string(),
+                        delete: None,
+                    }),
+                },
+            )]));
+            let call = Arc::new(toolcall::with_registry(Arc::clone(&registry), || {
+                toolcall::parse_tool_call(
+                    "mcp__fixture__syn_matcher_retention",
+                    &sonic_rs::json!({"path":"a.py","body":"x".repeat(128_000)}),
+                )
+            }));
+            let view =
+                toolcall::with_registry(registry, || call_view(py, Arc::clone(&call)).unwrap());
+            let before = Arc::strong_count(&call);
+            let matcher = view.getattr("name_matcher").unwrap();
+            assert_eq!(Arc::strong_count(&call), before);
+            drop(view);
+            assert_eq!(Arc::strong_count(&call), 1);
+            assert!(matcher.call1(("Edit",)).unwrap().extract::<bool>().unwrap());
+            assert!(!matcher.call1(("Read",)).unwrap().extract::<bool>().unwrap());
+        });
+    }
+}

@@ -217,9 +217,9 @@ def test_classifier_facts_use_all_source_users_and_first_event_positions(tmp_pat
 
 def test_tool_registry_identity_is_definition_bound() -> None:
     store = TranscriptStore({})
-    assert store.register_tool_registry([]) == context()["registry_generation"]
+    assert store.register_tool_registry([], context=context()) == context()["registry_generation"]
     spec = {"name": "read_source", "behaves_like": "Read", "span_edit": None}
-    first = store.register_tool_registry([spec])
-    assert first == store.register_tool_registry([spec])
+    first = store.register_tool_registry([spec], context=context())
+    assert first == store.register_tool_registry([spec], context=context())
     assert first != context()["registry_generation"]
-    assert first != store.register_tool_registry([{**spec, "behaves_like": "Edit"}])
+    assert first != store.register_tool_registry([{**spec, "behaves_like": "Edit"}], context=context())

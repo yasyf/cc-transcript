@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from math import isfinite
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
+from typing import Any, Literal, TypedDict, overload
 
 import orjson
 
@@ -16,10 +16,6 @@ from cc_transcript.context import ContextWindow
 from cc_transcript.ids import EventRef, SessionId
 from cc_transcript.models import TranscriptEvent, UserEvent
 from cc_transcript.query import FileRef, PredicateInputs
-
-if TYPE_CHECKING:
-    from cc_transcript.mining.signals import MiningSignal
-    from cc_transcript.mining.spec import MiningSpec
 
 
 class UserAuthority(TypedDict):
@@ -142,9 +138,7 @@ def decode_projection(
         case "cc-transcript.event/1" | "cc-transcript.sidechain/1":
             return payloads
         case "cc-transcript.mining-signal/1":
-            from cc_transcript.mining.engine import rehydrate_signal
-
-            return [rehydrate_signal(payload) for payload in payloads]
+            return payloads
         case "cc-transcript.tool-use/1":
             return [_tool(payload) for payload in payloads]
         case "cc-transcript.turn/1":
@@ -234,13 +228,10 @@ class TranscriptSnapshot:
     def classifier_facts(self, prefix: str, *, event_limit: int = 50) -> Mapping[str, bool]:
         return orjson.loads(_call(self._native.classifier_facts, prefix, event_limit))
 
-    def mine(self, spec: MiningSpec) -> Iterator[MiningSignal]:
-        from cc_transcript.mining.engine import rehydrate_signal
-        from cc_transcript.mining.spec import mining_spec_to_json
-
-        formats = [(fmt.name, fmt.pattern, fmt.extract, fmt.bounded) for fmt in spec.review.callable_formats]
-        payloads = _call(self._native.mine, mining_spec_to_json(spec), formats)
-        return (rehydrate_signal(payload) for payload in payloads)
+    def mine_json(
+        self, spec_json: str, callable_formats: Sequence[tuple[str, Any, Any, bool]]
+    ) -> list[Mapping[str, Any]]:
+        return _call(self._native.mine, spec_json, list(callable_formats))
 
     def capture(
         self,
@@ -272,8 +263,8 @@ class TranscriptStore:
         for (policy_id, version), predicate in (policies or {}).items():
             self.register_classifier(policy_id, version, predicate)
 
-    def register_tool_registry(self, specs: Sequence[Mapping[str, Any]]) -> str:
-        return _call(self._native.register_tool_registry, _json(specs))
+    def register_tool_registry(self, specs: Sequence[Mapping[str, Any]], *, context: CallContext) -> str:
+        return _call(self._native.register_tool_registry, _json(specs), _json(context))
 
     def register_classifier(self, policy_id: str, version: str, predicate: Callable[[TranscriptEvent], bool]) -> None:
         def classify(events: Sequence[TranscriptEvent]) -> list[bool]:
@@ -281,11 +272,14 @@ class TranscriptStore:
 
         _call(self._native.register_classifier, policy_id, version, classify)
 
-    def register_mining_policy(self, policy_id: str, version: str, spec: MiningSpec) -> None:
-        from cc_transcript.mining.spec import mining_spec_to_json
-
-        formats = [(fmt.name, fmt.pattern, fmt.extract, fmt.bounded) for fmt in spec.review.callable_formats]
-        _call(self._native.register_mining_policy, policy_id, version, mining_spec_to_json(spec), formats)
+    def register_mining_policy_json(
+        self,
+        policy_id: str,
+        version: str,
+        spec_json: str,
+        callable_formats: Sequence[tuple[str, Any, Any, bool]],
+    ) -> None:
+        _call(self._native.register_mining_policy, policy_id, version, spec_json, list(callable_formats))
 
     @property
     def owner_epoch(self) -> str:

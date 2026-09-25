@@ -445,20 +445,24 @@ pub fn render_turn(turn: &Turn, budget: &Budget, tool_results: bool) -> String {
     render_turn_parts(
         &turn.prompt,
         &turn.events,
-        &turn.tool_uses.iter().collect::<Vec<_>>(),
+        &turn
+            .tool_uses
+            .iter()
+            .map(|tool_use| &tool_use.call)
+            .collect::<Vec<_>>(),
         budget,
         tool_results,
     )
 }
 
-pub(crate) fn render_turn_parts(
+pub fn render_turn_parts(
     prompt: &str,
     events: &[&Entry],
-    tool_uses: &[&crate::activity::ToolUse],
+    tool_calls: &[&ToolCall],
     budget: &Budget,
     tool_results: bool,
 ) -> String {
-    let mut typed_calls = tool_uses.iter();
+    let mut typed_calls = tool_calls.iter();
     let mut parts: Vec<String> = Vec::new();
     if !prompt.is_empty() {
         parts.push(format!("user: {}", clip(&prompt, budget.turn_chars)));
@@ -485,7 +489,7 @@ pub(crate) fn render_turn_parts(
                                 ordinal: (tool_results && batch > 1).then_some((ordinal, batch)),
                             };
                             let rendered = render_tool_call(
-                                &typed_calls.next().expect("lifted tool call").call,
+                                typed_calls.next().expect("lifted tool call"),
                                 budget,
                             );
                             parts.push(match label.ordinal {

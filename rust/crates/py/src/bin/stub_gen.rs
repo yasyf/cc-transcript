@@ -113,7 +113,7 @@ fn render() -> pyo3_stub_gen::Result<(std::path::PathBuf, String)> {
 
     let mut rendered = String::new();
     write!(rendered, "{merged}")?;
-    rendered.push_str("\nclass SnapshotOperationError(RuntimeError):\n    ...\n");
+    rendered.push_str("\nclass SnapshotOperationError(RuntimeError):\n    @property\n    def __weakref__(self) -> object: ...\n");
 
     // Override type_reprs are verbatim fully-qualified names; the renderer's
     // header imports internal modules as `from cc_transcript import <mod>`.

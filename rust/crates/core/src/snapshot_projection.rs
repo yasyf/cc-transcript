@@ -1317,7 +1317,13 @@ fn render_query(
         let parts: Vec<_> = session
             .turn_views()
             .map(|(_, prompt, events, uses)| {
-                render::render_turn_parts(prompt, events, &uses, &budget, tool_results)
+                render::render_turn_parts(
+                    prompt,
+                    events,
+                    &uses.iter().map(|use_| &use_.call).collect::<Vec<_>>(),
+                    &budget,
+                    tool_results,
+                )
             })
             .filter(|text| !text.is_empty())
             .collect();

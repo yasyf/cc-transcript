@@ -555,7 +555,7 @@ mod tests {
         let Entry::Assistant(assistant) = &mut calls else {
             panic!()
         };
-        let ContentBlock::ToolUse(second) = &mut assistant.content[1] else {
+        let ContentBlock::ToolUse(second) = &mut assistant.blocks[1] else {
             panic!()
         };
         second.id = "edit".into();
