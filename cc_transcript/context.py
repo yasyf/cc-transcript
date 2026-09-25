@@ -21,7 +21,7 @@ from cc_transcript.models import Question
 from cc_transcript.render import Budget, clip, render_turn
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from typing import Any
 
     from cc_transcript.activity import Turn
@@ -158,17 +158,7 @@ class ContextWindow:
             away — callers fall back to :meth:`render_preview`, never
             hydrate-or-fail.
         """
-        try:
-            activity = SessionActivity.from_session(self.anchor.session_id)
-        except TranscriptExpiredError:
-            return None
-        turns: list[Turn] = []
-        for turn_ref in window_refs(self):
-            resolved = [turn for ref in turn_ref.refs if (turn := activity.turn_of(ref)) is not None]
-            if len(resolved) != len(turn_ref.refs) or not resolved:
-                return None
-            turns.append(resolved[0])
-        return HydratedWindow(window=self, turns=tuple(turns))
+        return hydrate_windows((self,))[0]
 
     def to_json(self) -> str:
         """Serialize to the ``cc-transcript.context/2`` wire schema, byte-stably.
@@ -259,11 +249,65 @@ def capture_window(
     Raises:
         ValueError: When ``anchor`` does not resolve within ``raw``.
     """
-    return ContextWindow.from_json(
-        _native.context_capture_window(
-            raw, anchor.session_id, anchor.event_uuid, anchor.tool_use_id, before, after, preview_chars
+    return capture_windows(raw, (anchor,), before=before, after=after, preview_chars=preview_chars)[0]
+
+
+def capture_windows(
+    raw: bytes,
+    anchors: Sequence[EventRef],
+    *,
+    before: int = 6,
+    after: int = 2,
+    preview_chars: int = 200,
+) -> list[ContextWindow]:
+    """Capture ordered windows with one parse and one activity lift per session.
+
+    Uses the same budgets and anchor resolution as :func:`capture_window`.
+    An empty batch returns without parsing; any unresolved anchor raises
+    ValueError for the entire batch.
+    """
+    return [
+        ContextWindow.from_json(data)
+        for data in _native.context_capture_windows(
+            raw,
+            [(anchor.session_id, anchor.event_uuid, anchor.tool_use_id) for anchor in anchors],
+            before,
+            after,
+            preview_chars,
         )
-    )
+    ]
+
+
+def hydrate_windows(windows: Sequence[ContextWindow]) -> list[HydratedWindow | None]:
+    """Resolve an ordered batch, loading each session at most once.
+
+    Missing transcripts and compacted references yield None at that window's
+    position. The batch owns its reads; no parsed-session cache persists
+    between calls, so a later call observes transcript changes.
+    """
+    sessions: dict[SessionId, list[tuple[int, ContextWindow]]] = {}
+    for index, window in enumerate(windows):
+        sessions.setdefault(window.anchor.session_id, []).append((index, window))
+    hydrated: list[HydratedWindow | None] = [None] * len(windows)
+    for session_id, batch in sessions.items():
+        try:
+            activity = SessionActivity.from_session(session_id)
+        except TranscriptExpiredError:
+            continue
+        for index, window in batch:
+            hydrated[index] = hydrate_from_activity(window, activity)
+        del activity
+    return hydrated
+
+
+def hydrate_from_activity(window: ContextWindow, activity: SessionActivity) -> HydratedWindow | None:
+    turns: list[Turn] = []
+    for turn_ref in window_refs(window):
+        resolved = [turn for ref in turn_ref.refs if (turn := activity.turn_of(ref)) is not None]
+        if len(resolved) != len(turn_ref.refs) or not resolved:
+            return None
+        turns.append(resolved[0])
+    return HydratedWindow(window=window, turns=tuple(turns))
 
 
 def window_refs(window: ContextWindow) -> tuple[TurnRef, ...]:

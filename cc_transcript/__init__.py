@@ -234,6 +234,8 @@ EXPORTS: dict[str, str] = {
             "SchemaError",
             "TurnRef",
             "capture_window",
+            "capture_windows",
+            "hydrate_windows",
         ),
         "cc_transcript.render": ("Budget", "render_session", "render_tool_call", "render_turn"),
         "cc_transcript.notifications": ("Notifications",),

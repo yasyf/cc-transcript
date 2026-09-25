@@ -1073,6 +1073,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(activity_overlap_between, m)?)?;
     m.add_function(wrap_pyfunction!(activity_parse_show_hunks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_capture_window, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::context::context_capture_windows,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(crate::context::context_render_preview, m)?)?;
     m.add_function(wrap_pyfunction!(query_session, m)?)?;

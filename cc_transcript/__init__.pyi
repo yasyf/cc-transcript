@@ -54,6 +54,8 @@ from cc_transcript.context import (
     SchemaError as SchemaError,
     TurnRef as TurnRef,
     capture_window as capture_window,
+    capture_windows as capture_windows,
+    hydrate_windows as hydrate_windows,
 )
 
 from cc_transcript.corrections import (
@@ -467,6 +469,7 @@ __all__ = [
     "build_spec",
     "canonical_json",
     "capture_window",
+    "capture_windows",
     "command_prefix_counts",
     "command_prefixes",
     "cost_of",
@@ -491,6 +494,7 @@ __all__ = [
     "harvest_pairs",
     "hunk_overlap",
     "hunks_of",
+    "hydrate_windows",
     "keep",
     "keep_only",
     "labels_for",

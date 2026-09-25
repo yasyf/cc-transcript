@@ -120,6 +120,7 @@ __all__ = [
     "command_parse",
     "command_prefixes",
     "context_capture_window",
+    "context_capture_windows",
     "context_render_preview",
     "context_roundtrip",
     "cost_of_json",
@@ -2329,6 +2330,8 @@ def command_parse(command: builtins.str) -> dict[str, typing.Any]: ...
 def command_prefixes(commands: typing.Sequence[builtins.str]) -> builtins.list[builtins.list[builtins.str]]: ...
 
 def context_capture_window(raw: bytes, session_id: builtins.str, anchor_uuid: builtins.str, anchor_tool_use_id: typing.Optional[builtins.str], before: builtins.int, after: builtins.int, preview_chars: builtins.int) -> builtins.str: ...
+
+def context_capture_windows(raw: bytes, anchors: typing.Sequence[tuple[builtins.str, builtins.str, typing.Optional[builtins.str]]], before: builtins.int, after: builtins.int, preview_chars: builtins.int) -> builtins.list[builtins.str]: ...
 
 def context_render_preview(data: builtins.str, turn_chars: builtins.int) -> builtins.str: ...
 
