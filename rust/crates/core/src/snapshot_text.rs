@@ -339,6 +339,16 @@ pub fn prose_page(
         {
             continue;
         }
+        if usage.items == limits.max_items {
+            if page.rows.is_empty() {
+                return Err(SnapshotError::new(
+                    Status::OutputLimit,
+                    "narrow text item budget exhausted",
+                ));
+            }
+            page.next = Some(index);
+            break;
+        }
         let mut row = ProseRow {
             event_index: index,
             role,

@@ -631,7 +631,17 @@ mod tests {
         let cancel = Cancellation::default();
         let mut reservations = Vec::new();
         for prompt in ["short".to_owned(), "x".repeat(256 * 1024)] {
-            let mut entries = vec![user(0, &prompt)];
+            let blocks = prompt
+                .as_bytes()
+                .chunks(64 * 1024)
+                .map(|chunk| json!({"type":"text","text":std::str::from_utf8(chunk).unwrap()}))
+                .collect::<Vec<_>>();
+            let first = parse_entry(json!({
+                "type":"user","uuid":"u0","sessionId":"s",
+                "timestamp":"2026-01-02T03:04:05Z","message":{"content":blocks}
+            }))
+            .unwrap();
+            let mut entries = vec![first];
             entries.extend((1..PAGE_EVENTS).map(assistant));
             entries.push(user(PAGE_EVENTS, "next"));
             let mut stage =

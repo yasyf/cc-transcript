@@ -152,3 +152,20 @@ def test_prose_byte_pages_preserve_rows_beyond_one_wire_page(tmp_path: Path) -> 
         assert [row["event_index"] for row in rows] == list(range(20))
         assert all(row["text"] == f"{index}:" + "x" * 80_000 for index, row in enumerate(rows))
         assert 1024 * 1024 < snapshot.work["materialized_output_bytes"] < 4 * 1024 * 1024
+
+
+def test_prose_item_page_exposes_early_match_before_exhausted_continuation(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(event(0, "MARKER") + b"".join(event(index, f"line {index}") for index in range(1, 256)))
+    store = TranscriptStore({"max_read_bytes_per_step": 256 * 1024, "max_events_per_step": 256})
+    description = acquire(store, path)
+    with store.borrow_snapshot(description["handle"], context=context(), cancellation=CancellationToken(), limits=LIMITS, deadline_unix_ms=deadline()) as snapshot:
+        assert snapshot.source_facts(first_user_contains="MARKER")["first_user_contains"]
+        rows = snapshot.prose_rows()
+        assert next(rows)["text"] == "MARKER"
+        assert [next(rows)["event_index"] for _ in range(254)] == list(range(1, 255))
+        assert snapshot.work["items"] == 256
+        with pytest.raises(SnapshotIncomplete) as failure:
+            next(rows)
+        assert failure.value.status == "output_limit"
+        assert snapshot.work["items"] == 256
