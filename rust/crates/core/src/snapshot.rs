@@ -762,6 +762,18 @@ impl NativeStore {
         })
     }
 
+    pub fn scan_limits(&self) -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: self.config.read_step,
+            max_events: self.config.event_step,
+            max_items: self.config.event_step,
+            max_output_bytes: self.config.output,
+            max_discovery_entries: self.config.event_step,
+            max_sources: self.config.page_items,
+            deadline_unix_ms: now_ms().saturating_add(self.config.preparation),
+        }
+    }
+
     pub fn default_registry_generation(&self) -> String {
         self.default_registry.clone()
     }
@@ -4651,7 +4663,8 @@ impl NativeStore {
             }
             let metadata = std::fs::metadata(&path).map_err(io_error)?;
             let stamp = SourceStamp::of(&metadata);
-            if !scan.seen.insert(stamp.identity) {
+            if !scan.seen.insert(stamp.identity)
+                && scan.request.get("preserve_aliases").and_then(Value::as_bool) != Some(true) {
                 continue;
             }
             scan.sources += 1;

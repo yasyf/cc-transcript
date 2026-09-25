@@ -18,6 +18,9 @@ use output::CliExit;
 /// (cli.py watch_ catches KeyboardInterrupt); outside watch it means exit 130.
 pub static WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static WATCH_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static SCAN_CANCELLATION: std::sync::Mutex<
+    Option<cc_transcript_core::snapshot::Cancellation>,
+> = std::sync::Mutex::new(None);
 
 /// The real SIGINT handler spike C mandates: with the GIL detached, Python-side
 /// KeyboardInterrupt delivery never fires, so the Rust side owns the signal.
@@ -25,6 +28,12 @@ pub fn install_sigint_handler() {
     let _ = ctrlc::set_handler(|| {
         if WATCH_ACTIVE.load(Ordering::SeqCst) {
             WATCH_INTERRUPTED.store(true, Ordering::SeqCst);
+        } else if let Some(cancel) = SCAN_CANCELLATION
+            .lock()
+            .expect("scan cancellation")
+            .as_ref()
+        {
+            cancel.cancel();
         } else {
             std::process::exit(130);
         }
@@ -194,6 +203,12 @@ pub enum Cmd {
     /// Search transcript events for a regex pattern.
     Grep {
         pattern: String,
+        #[arg(long = "pattern", requires = "scan_json")]
+        patterns: Vec<String>,
+        #[arg(long, conflicts_with = "json")]
+        scan_json: bool,
+        #[command(flatten)]
+        scan_limits: commands::grep::ScanOptions,
         paths: Vec<PathBuf>,
         #[command(flatten)]
         discovery: DiscoveryOpts,
@@ -545,6 +560,9 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
         }),
         Cmd::Grep {
             pattern,
+            patterns,
+            scan_json,
+            scan_limits,
             paths,
             discovery,
             corpus,
@@ -561,6 +579,9 @@ fn dispatch(cmd: Cmd) -> Result<(), CliExit> {
             json,
         } => commands::grep::run(commands::grep::GrepArgs {
             pattern,
+            patterns,
+            scan_json,
+            scan_limits,
             paths,
             discovery,
             corpus,

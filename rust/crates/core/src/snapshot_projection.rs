@@ -782,7 +782,7 @@ fn output_limit() -> SnapshotError {
     SnapshotError::new(Status::OutputLimit, "projection text exceeds output budget")
 }
 
-fn text_plan_size(parts: &[&str], max_bytes: usize) -> Result<usize, SnapshotError> {
+pub(crate) fn text_plan_size(parts: &[&str], max_bytes: usize) -> Result<usize, SnapshotError> {
     let mut remaining = max_bytes.checked_sub(2).ok_or_else(output_limit)?;
     for part in parts {
         for ch in part.chars() {
@@ -846,7 +846,7 @@ fn string_page(plans: &[Vec<&str>], next: usize, work: &Work) -> Result<Projecti
     )
 }
 
-fn joined_event_parts(event: &Entry) -> Vec<&str> {
+pub(crate) fn joined_event_parts(event: &Entry) -> Vec<&str> {
     match event {
         Entry::User(user) => match &user.content {
             UserContent::Plain(text) => return vec![text],
@@ -867,7 +867,7 @@ fn joined_event_parts(event: &Entry) -> Vec<&str> {
     parts
 }
 
-fn strip_parts(parts: &mut Vec<&str>) {
+pub(crate) fn strip_parts(parts: &mut Vec<&str>) {
     let Some(first) = parts
         .iter()
         .position(|part| !crate::pystr::lstrip(part).is_empty())

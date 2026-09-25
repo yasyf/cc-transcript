@@ -10,11 +10,11 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset};
 
-use crate::activity::{lift_session, ToolUse};
+use crate::activity::{lift_session, tool_result_metadata, ToolUse};
 use crate::command;
-use crate::protocol::{embedded_user_text, DENIAL_KIND_USER_REJECTED};
+use crate::protocol::embedded_user_text;
 use crate::toolcall::{mcp_access, mcp_parts, ToolCall};
-use crate::types::{Entry, ToolResultBlock};
+use crate::types::Entry;
 
 /// One tool call flattened for analytics, lifted from a parsed session (facts.py `ToolFact`).
 #[derive(Debug, Clone)]
@@ -48,16 +48,6 @@ pub struct McpServerSummary {
     pub tools: Vec<(String, usize)>,
 }
 
-/// Denial flag and embedded user-rejection text carried by a tool result.
-fn denial_fields(result: Option<&ToolResultBlock>) -> (bool, Option<String>) {
-    match result {
-        Some(block) if block.denial_kind.as_deref() == Some(DENIAL_KIND_USER_REJECTED) => {
-            (true, embedded_user_text(&block.content))
-        }
-        _ => (false, None),
-    }
-}
-
 /// Splits an MCP tool name into its server, tool, and access parts.
 fn mcp_split(name: &str) -> (Option<String>, Option<String>, Option<String>) {
     match mcp_parts(name) {
@@ -79,7 +69,11 @@ fn fact_of(use_: &ToolUse, session_id: &str, path: &str) -> ToolFact {
         ToolCall::Bash(bash) => (Some(bash.command.clone()), command::prefixes(&bash.command)),
         _ => (None, Vec::new()),
     };
-    let (denied, user_said) = denial_fields(use_.result);
+    let metadata = tool_result_metadata(use_.ts, use_.result, use_.result_ts);
+    let user_said = use_
+        .result
+        .filter(|_| metadata.denied)
+        .and_then(|result| embedded_user_text(&result.content));
     ToolFact {
         ts: use_.ts,
         session_id: session_id.to_string(),
@@ -94,11 +88,11 @@ fn fact_of(use_: &ToolUse, session_id: &str, path: &str) -> ToolFact {
         mcp_access,
         file_path: call.file_paths().first().map(|path| (*path).to_string()),
         file_paths: call.file_paths().iter().map(|p| p.to_string()).collect(),
-        is_error: use_.result.is_some_and(|r| r.is_error),
-        denied,
+        is_error: metadata.is_error,
+        denied: metadata.denied,
         denial_kind: use_.result.and_then(|r| r.denial_kind.clone()),
         user_said,
-        duration_ms: use_.duration_ms(),
+        duration_ms: metadata.duration_ms,
     }
 }
 

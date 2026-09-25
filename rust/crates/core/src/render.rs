@@ -18,8 +18,8 @@ use crate::toolcall::{
     parse_tool_call, parse_tool_result, AskUserQuestionResult, ToolCall, ToolResult,
 };
 use crate::types::{
-    joined_text, ApiError, AssistantEntry, AttachmentDetail, Attribution, CacheCreation,
-    CompactBoundary, ContentBlock, Entry, EntryMeta, HookInfo, ModelRefusalFallback,
+    joined_text, ApiError, AssistantEntry, AttachmentDetail, AttachmentEntry, Attribution,
+    CacheCreation, CompactBoundary, ContentBlock, Entry, EntryMeta, HookInfo, ModelRefusalFallback,
     PreservedMessages, PreservedSegment, ServerToolUse, StopHookSummary, SystemDetail,
     ToolResultBlock, TurnDuration, Usage, UserEntry,
 };
@@ -209,12 +209,16 @@ fn format_number(value: &Value, pad_exp: bool) -> String {
 
 // str(int) over a JSON integer lexeme: JSON forbids leading zeros and '+', so only a
 // signed zero ("-0") needs normalizing.
-fn py_int(lexeme: &str) -> String {
+fn integer_lexeme(lexeme: &str) -> &str {
     if lexeme.trim_start_matches('-').bytes().all(|b| b == b'0') {
-        "0".to_string()
+        "0"
     } else {
-        lexeme.to_string()
+        lexeme
     }
+}
+
+fn py_int(lexeme: &str) -> String {
+    integer_lexeme(lexeme).to_owned()
 }
 
 // pad_exp=true: Python repr(float) layout. false: installed-orjson layout (fixed
@@ -821,6 +825,232 @@ fn block_payload(block: &ContentBlock, width: usize, thinking: bool) -> String {
         ContentBlock::Fallback(f) => format!("fallback {}->{}", f.from_model, f.to_model),
         ContentBlock::Other { ty, .. } => ty.clone(),
     }
+}
+
+fn search_limit() -> crate::snapshot::SnapshotError {
+    crate::snapshot::SnapshotError::new(
+        crate::snapshot::Status::Incomplete,
+        "searchable event exceeds projection budget",
+    )
+}
+
+fn search_add(
+    total: &mut usize,
+    bytes: usize,
+    limit: usize,
+) -> Result<(), crate::snapshot::SnapshotError> {
+    *total = total
+        .checked_add(bytes)
+        .filter(|total| *total <= limit)
+        .ok_or_else(search_limit)?;
+    Ok(())
+}
+
+fn orjson_bound(value: &Value, limit: usize) -> Result<usize, crate::snapshot::SnapshotError> {
+    let mut total = 0;
+    match value.get_type() {
+        JsonType::Null => search_add(&mut total, 4, limit)?,
+        JsonType::Boolean => search_add(
+            &mut total,
+            if value.as_bool().unwrap() { 4 } else { 5 },
+            limit,
+        )?,
+        JsonType::Number => {
+            let bytes = match value.as_raw_number() {
+                Some(raw)
+                    if !raw
+                        .as_str()
+                        .bytes()
+                        .any(|ch| matches!(ch, b'.' | b'e' | b'E')) =>
+                {
+                    integer_lexeme(raw.as_str()).len()
+                }
+                _ => format_number(value, false).len(),
+            };
+            search_add(&mut total, bytes, limit)?;
+        }
+        JsonType::String => {
+            total = crate::snapshot_projection::text_plan_size(&[value.as_str().unwrap()], limit)
+                .map_err(|_| search_limit())?;
+        }
+        JsonType::Array => {
+            search_add(&mut total, 2, limit)?;
+            for (index, item) in value.as_array().unwrap().iter().enumerate() {
+                if index != 0 {
+                    search_add(&mut total, 1, limit)?;
+                }
+                let bytes = orjson_bound(item, limit - total)?;
+                search_add(&mut total, bytes, limit)?;
+            }
+        }
+        JsonType::Object => {
+            search_add(&mut total, 2, limit)?;
+            for (index, (key, item)) in crate::value::deduped_pairs(value.as_object().unwrap())
+                .into_iter()
+                .enumerate()
+            {
+                if index != 0 {
+                    search_add(&mut total, 1, limit)?;
+                }
+                let bytes = crate::snapshot_projection::text_plan_size(&[key], limit - total)
+                    .map_err(|_| search_limit())?;
+                search_add(&mut total, bytes, limit)?;
+                search_add(&mut total, 1, limit)?;
+                let bytes = orjson_bound(item, limit - total)?;
+                search_add(&mut total, bytes, limit)?;
+            }
+        }
+    }
+    Ok(total)
+}
+
+pub(crate) fn tool_haystack_bound(
+    block: &ContentBlock,
+    limit: usize,
+) -> Result<usize, crate::snapshot::SnapshotError> {
+    let mut total = 0;
+    match block {
+        ContentBlock::ToolUse(tool) => {
+            search_add(&mut total, tool.name.len(), limit)?;
+            search_add(&mut total, 1, limit)?;
+            let bytes = orjson_bound(&tool.input, limit - total)?;
+            search_add(&mut total, bytes, limit)?;
+        }
+        ContentBlock::ToolResult(result) => search_add(&mut total, result.content.len(), limit)?,
+        _ => unreachable!("tool haystack requires a tool block"),
+    }
+    Ok(total)
+}
+
+fn attachment_haystack_bound(
+    attachment: &AttachmentEntry,
+    limit: usize,
+) -> Result<usize, crate::snapshot::SnapshotError> {
+    let mut parts = vec![attachment.attachment_type.as_str(), " "];
+    let mut json = None;
+    let mut numeric = String::new();
+    fn first<'a>(items: &[&'a Option<String>]) -> Option<&'a str> {
+        items
+            .iter()
+            .find_map(|item| item.as_deref().filter(|text| !text.is_empty()))
+    }
+    match &attachment.detail {
+        AttachmentDetail::HookSuccess(h) => {
+            parts.extend(first(&[&h.content, &h.stdout, &h.command]))
+        }
+        AttachmentDetail::HookNonBlockingError(h) => {
+            parts.extend(first(&[&h.stderr, &h.stdout, &h.command]))
+        }
+        AttachmentDetail::HookBlockingError(h) => {
+            json = h.blocking_error.as_ref().filter(|value| truthy(value))
+        }
+        AttachmentDetail::HookCancelled(h) => parts.extend(first(&[&h.command])),
+        AttachmentDetail::HookAdditionalContext(h) => {
+            for (index, text) in h.content.iter().enumerate() {
+                if index != 0 {
+                    parts.push(" ");
+                }
+                parts.push(text);
+            }
+        }
+        AttachmentDetail::AsyncHookResponse(h) => parts.extend(first(&[&h.stdout, &h.stderr])),
+        AttachmentDetail::QueuedCommand(q) => parts.extend(first(&[&q.prompt])),
+        AttachmentDetail::DeferredToolsDelta(delta) => {
+            numeric = format!(
+                "+{} −{}",
+                delta.added_names.len(),
+                delta.removed_names.len()
+            );
+        }
+        AttachmentDetail::Other(raw) => json = Some(raw),
+    }
+    if !numeric.is_empty() {
+        parts.push(&numeric);
+    }
+    if let Some(value) = json {
+        let prefix = crate::pystr::lstrip(&attachment.attachment_type);
+        let mut total = 0;
+        if !prefix.is_empty() {
+            search_add(&mut total, prefix.len(), limit)?;
+            search_add(&mut total, 1, limit)?;
+        }
+        let bytes = orjson_bound(value, limit - total)?;
+        search_add(&mut total, bytes, limit)?;
+        return Ok(total);
+    }
+    crate::snapshot_projection::strip_parts(&mut parts);
+    let mut total = 0;
+    for part in parts {
+        search_add(&mut total, part.len(), limit)?;
+    }
+    Ok(total)
+}
+
+pub(crate) fn haystack_bound(
+    event: &Entry,
+    where_text: bool,
+    where_thinking: bool,
+    where_tools: bool,
+    limit: usize,
+) -> Result<usize, crate::snapshot::SnapshotError> {
+    let mut total = 0;
+    let mut pieces = 0;
+    let mut add_piece = |bytes: usize| -> Result<(), crate::snapshot::SnapshotError> {
+        if bytes != 0 {
+            if pieces != 0 {
+                search_add(&mut total, 1, limit)?;
+            }
+            search_add(&mut total, bytes, limit)?;
+            pieces += 1;
+        }
+        Ok(())
+    };
+    match event {
+        Entry::User(_) | Entry::Assistant(_) => {
+            if where_text {
+                let mut bytes = 0;
+                for part in crate::snapshot_projection::joined_event_parts(event) {
+                    search_add(&mut bytes, part.len(), limit)?;
+                }
+                add_piece(bytes)?;
+            }
+            if where_thinking {
+                for block in event.blocks() {
+                    if let ContentBlock::Thinking(text) = block {
+                        add_piece(text.len())?;
+                    }
+                }
+            }
+            if where_tools {
+                for block in event.blocks() {
+                    if matches!(
+                        block,
+                        ContentBlock::ToolUse(_) | ContentBlock::ToolResult(_)
+                    ) {
+                        add_piece(tool_haystack_bound(block, limit)?)?;
+                    }
+                }
+            }
+        }
+        Entry::System(system) if where_text => {
+            search_add(&mut total, system.subtype.len(), limit)?;
+            if let Some(content) = system.content.as_ref().filter(|text| !text.is_empty()) {
+                search_add(&mut total, 2, limit)?;
+                search_add(&mut total, content.len(), limit)?;
+            }
+        }
+        Entry::Mode(mode) if where_text => {
+            search_add(&mut total, mode.channel.as_str().len(), limit)?;
+            search_add(&mut total, 1, limit)?;
+            search_add(&mut total, mode.value.len(), limit)?;
+        }
+        Entry::Other(other) if where_text => search_add(&mut total, other.ty.len(), limit)?,
+        Entry::Attachment(attachment) if where_text => {
+            return attachment_haystack_bound(attachment, limit)
+        }
+        _ => {}
+    }
+    Ok(total)
 }
 
 /// The searchable text of an event, scoped to the requested areas (render.py haystack).

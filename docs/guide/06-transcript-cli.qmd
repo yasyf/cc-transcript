@@ -316,3 +316,32 @@ the bundled Claude Code plugin teaches Claude to run, so an agent can answer
 the `uvx` quick reference, see the
 [README](https://github.com/yasyf/cc-transcript#readme); for every flag and the
 underlying functions, see the [API reference](../../reference/index.qmd).
+
+
+## Search several patterns in one bounded scan
+
+Pass repeated `--pattern` flags with `--scan-json` to share source preparation:
+
+```sh
+cc-transcript grep alpha --pattern beta --pattern gamma --root ./transcripts --scan-json --max-matches 3
+```
+
+Each pattern gets its own three-event quota. An event matching two patterns
+appears once with both pattern IDs. The response includes source paths, event
+indices, snapshot generations, per-pattern counts, work counters and an explicit
+completion status. A zero count establishes absence only when `outcome.complete`
+is true. Reaching the quotas stops opening further sources and reports
+`result_limit`; it does not claim that the remaining history was searched.
+
+Grep applies finite read, event, discovery, source, output and time budgets.
+Use `--max-read-bytes`, `--max-events`, `--max-discovery-entries`, `--max-sources`,
+`--max-output-bytes` and `--timeout-ms` to set them. `--all` removes the ordinary
+file-selection limit, and `--max-matches 0` removes result quotas; work budgets
+still apply. A work limit or failed source makes the scan incomplete and exits
+with status 3. A completed scan without matches retains status 1.
+
+`grep --corpus` uses the same work limits while reading the existing extract.
+Its path and line provenance identify that extract. They cannot recover the
+original events lost by window extraction and deduplication. The `corpus` writer
+still performs a full preparation pass; its unchanged cost is separate from
+bounded searching. Independent CLI invocations do not share in-memory snapshots.
