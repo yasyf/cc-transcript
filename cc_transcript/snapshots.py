@@ -124,10 +124,20 @@ def _turn(payload: Mapping[str, Any]) -> Turn:
 
 
 def decode_projection(
-    record_schema: str, records_json: Sequence[str], *, max_bytes: int = 16 * 1024 * 1024
+    record_schema: str,
+    records_json: Sequence[str],
+    *,
+    max_bytes: int = 16 * 1024 * 1024,
+    tool_registry: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[Any]:
     """Decode bounded owned records without rereading source transcript bytes."""
-    payloads = _call(_native.decode_snapshot_projection, record_schema, list(records_json), max_bytes)
+    payloads = _call(
+        _native.decode_snapshot_projection,
+        record_schema,
+        list(records_json),
+        max_bytes,
+        None if tool_registry is None else _json(tool_registry),
+    )
     match record_schema:
         case "cc-transcript.event/1" | "cc-transcript.sidechain/1":
             return payloads
@@ -145,6 +155,7 @@ def decode_projection(
             return [
                 PredicateInputs(
                     calls=payload["calls"],
+                    name_matchers=payload["name_matchers"],
                     commands=payload["commands"],
                     skills=payload["skills"],
                     edited_files=tuple(FileRef(**file) for file in payload["edited_files"]),
@@ -220,6 +231,9 @@ class TranscriptSnapshot:
         )
         return SessionActivity(SessionId(payload["session_id"]), tuple(_turn(turn) for turn in payload["turns"]))
 
+    def classifier_facts(self, prefix: str, *, event_limit: int = 50) -> Mapping[str, bool]:
+        return orjson.loads(_call(self._native.classifier_facts, prefix, event_limit))
+
     def mine(self, spec: MiningSpec) -> Iterator[MiningSignal]:
         from cc_transcript.mining.engine import rehydrate_signal
         from cc_transcript.mining.spec import mining_spec_to_json
@@ -258,6 +272,9 @@ class TranscriptStore:
         for (policy_id, version), predicate in (policies or {}).items():
             self.register_classifier(policy_id, version, predicate)
 
+    def register_tool_registry(self, specs: Sequence[Mapping[str, Any]]) -> str:
+        return _call(self._native.register_tool_registry, _json(specs))
+
     def register_classifier(self, policy_id: str, version: str, predicate: Callable[[TranscriptEvent], bool]) -> None:
         def classify(events: Sequence[TranscriptEvent]) -> list[bool]:
             return [isinstance(event, UserEvent) and predicate(event) for event in events]
@@ -281,6 +298,39 @@ class TranscriptStore:
         self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
     ) -> Mapping[str, Any]:
         return orjson.loads(_call(self._native.request, _json(request), _json(context), cancellation._native))
+
+    def prepare_classifier(
+        self,
+        handle: Mapping[str, str],
+        classifier: Mapping[str, str],
+        *,
+        context: CallContext,
+        cancellation: CancellationToken,
+        limits: Mapping[str, int],
+        deadline_unix_ms: int,
+    ) -> Mapping[str, Any]:
+        return orjson.loads(
+            _call(
+                self._native.prepare_classifier,
+                _json(handle),
+                _json(classifier),
+                _json(context),
+                cancellation._native,
+                _json({"limits": limits, "deadline_unix_ms": deadline_unix_ms}),
+            )
+        )
+
+    def submit_classifier(
+        self,
+        cursor: str,
+        labels: Sequence[bool],
+        *,
+        context: CallContext,
+        cancellation: CancellationToken,
+    ) -> Mapping[str, Any]:
+        return orjson.loads(
+            _call(self._native.submit_classifier, cursor, list(labels), _json(context), cancellation._native)
+        )
 
     def discard_response(self, response: Mapping[str, Any], *, context: CallContext) -> None:
         _call(self._native.discard_response, _json(response), _json(context))

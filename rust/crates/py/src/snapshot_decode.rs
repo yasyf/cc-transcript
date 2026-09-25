@@ -1,19 +1,18 @@
-use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use cc_transcript_core::activity::{Hunk, ToolUse};
+use cc_transcript_core::activity::Hunk;
 use cc_transcript_core::snapshot::{Cancellation, SnapshotError, TranscriptSnapshot, WorkLimits};
 use cc_transcript_core::snapshot_codec::{self, RefRecord, ToolUseRecord, TurnRecord};
 use cc_transcript_core::snapshot_projection::{bounded_turn_range_with_usage, ProjectionUsage};
-use cc_transcript_core::types::{ContentBlock, Entry, ToolResultBlock};
+use cc_transcript_core::types::{ContentBlock, Entry};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::views::blocks::block_view;
 use crate::views::events::event_view;
-use crate::views::store::{BlockHost, EventRef};
+use crate::views::store::BlockHost;
 use crate::views::toolcall::{call_view, HunkView};
 
 use crate::snapshots::error;
@@ -171,9 +170,51 @@ pub(crate) fn decode_snapshot_events<'py>(
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
-#[pyfunction]
+#[pyfunction(signature = (record_schema, records, max_bytes, tool_registry_json=None))]
 #[gen_stub(override_return_type(type_repr = "list[typing.Any]", imports = ("typing",)))]
 pub(crate) fn decode_snapshot_projection<'py>(
+    py: Python<'py>,
+    record_schema: &str,
+    records: Vec<String>,
+    max_bytes: usize,
+    tool_registry_json: Option<&str>,
+) -> PyResult<Bound<'py, PyList>> {
+    let registry = tool_registry_json
+        .map(|text| {
+            py.detach(|| {
+                if text.len() > snapshot_codec::MAX_RECORD_BYTES {
+                    return Err(cc_transcript_core::snapshot::SnapshotError::new(
+                        cc_transcript_core::snapshot::Status::SourceLimit,
+                        "registry input byte limit",
+                    ));
+                }
+                let value: sonic_rs::Value = sonic_rs::from_str(text).map_err(|error| {
+                    cc_transcript_core::snapshot::SnapshotError::new(
+                        cc_transcript_core::snapshot::Status::InvalidRequest,
+                        error.to_string(),
+                    )
+                })?;
+                cc_transcript_core::toolcall::ToolRegistrySnapshot::from_specs_json(&value).map_err(
+                    |reason| {
+                        cc_transcript_core::snapshot::SnapshotError::new(
+                            cc_transcript_core::snapshot::Status::InvalidRequest,
+                            reason,
+                        )
+                    },
+                )
+            })
+            .map_err(error)
+        })
+        .transpose()?;
+    match registry {
+        Some(registry) => cc_transcript_core::toolcall::with_registry(registry, || {
+            decode_projection_inner(py, record_schema, records, max_bytes)
+        }),
+        None => decode_projection_inner(py, record_schema, records, max_bytes),
+    }
+}
+
+fn decode_projection_inner<'py>(
     py: Python<'py>,
     record_schema: &str,
     records: Vec<String>,
@@ -247,6 +288,20 @@ pub(crate) fn decode_snapshot_projection<'py>(
                 .into_iter()
                 .map(|record| {
                     let payload = PyDict::new(py);
+                    let registry =
+                        cc_transcript_core::toolcall::ToolRegistrySnapshot::capture_scoped();
+                    let matchers = record
+                        .calls
+                        .iter()
+                        .map(|(name, _)| {
+                            crate::views::toolcall::tool_name_matcher(
+                                py,
+                                name.clone(),
+                                registry.clone(),
+                            )
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    payload.set_item("name_matchers", PyTuple::new(py, matchers)?)?;
                     let calls = record
                         .calls
                         .into_iter()
@@ -276,45 +331,6 @@ pub(crate) fn decode_snapshot_projection<'py>(
     }
 }
 
-fn source_event(snapshot: &TranscriptSnapshot, position: usize) -> EventRef {
-    let chunk_index = snapshot
-        .chunks
-        .partition_point(|chunk| chunk.start <= position)
-        - 1;
-    let chunk = &snapshot.chunks[chunk_index];
-    EventRef {
-        entries: Arc::clone(&chunk.entries),
-        idx: position - chunk.start,
-    }
-}
-
-fn owner_tool_payload<'py>(
-    py: Python<'py>,
-    session_id: &str,
-    use_: ToolUse,
-    result: Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyDict>> {
-    let payload = PyDict::new(py);
-    payload.set_item(
-        "ref",
-        reference(
-            py,
-            RefRecord {
-                session_id: session_id.to_owned(),
-                event_uuid: use_.event_uuid.to_owned(),
-                tool_use_id: use_.tool_use_id.to_owned(),
-            },
-        )?,
-    )?;
-    payload.set_item("call", call_view(py, Arc::new(use_.call))?)?;
-    payload.set_item("result", result)?;
-    payload.set_item("result_ts", use_.result_ts)?;
-    payload.set_item("edits", edits(py, use_.edits)?)?;
-    payload.set_item("turn_index", use_.turn_index)?;
-    payload.set_item("ts", use_.ts)?;
-    Ok(payload)
-}
-
 #[derive(Default)]
 pub(crate) struct ActivityUsage {
     pub read_bytes: usize,
@@ -330,8 +346,9 @@ pub(crate) fn snapshot_activity_payload<'py>(
     limits: &WorkLimits,
     cancel: &Cancellation,
     usage: &mut ActivityUsage,
+    reserve: impl FnOnce(usize) -> Result<(), SnapshotError> + Send,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let activity = py
+    let detached = py
         .detach(|| -> Result<_, SnapshotError> {
             let mut projection_usage = ProjectionUsage::default();
             let activity = bounded_turn_range_with_usage(
@@ -340,6 +357,7 @@ pub(crate) fn snapshot_activity_payload<'py>(
                 limits,
                 cancel,
                 &mut projection_usage,
+                reserve,
             );
             usage.read_bytes = projection_usage.read_bytes;
             usage.events = projection_usage.events;
@@ -350,7 +368,41 @@ pub(crate) fn snapshot_activity_payload<'py>(
                 limits.max_output_bytes,
             )?;
             let mut remaining = limits.max_output_bytes - overhead;
-            for (ordinal, turn) in activity.turns.iter().enumerate() {
+            let wires: Vec<_> = activity
+                .turns
+                .iter()
+                .map(|turn| {
+                    let start = snapshot
+                        .activity
+                        .turn_bounds(turn.index)
+                        .expect("projected turn")
+                        .start;
+                    snapshot_codec::TurnWire {
+                        codec: snapshot_codec::TURN_CODEC,
+                        index: turn.index,
+                        prompt: &turn.prompt,
+                        started_at: turn.started_at,
+                        ended_at: turn.ended_at,
+                        events: turn
+                            .events
+                            .iter()
+                            .enumerate()
+                            .map(|(offset, event)| {
+                                snapshot_codec::EventWire::new(start + offset, event)
+                            })
+                            .collect(),
+                        tool_uses: turn
+                            .tool_uses
+                            .iter()
+                            .map(|use_| {
+                                snapshot_codec::ToolUseWire::new(use_, &snapshot.session_id)
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+            for (ordinal, wire) in wires.iter().enumerate() {
+                cancel.check(limits.deadline_unix_ms)?;
                 if ordinal != 0 {
                     remaining = remaining.checked_sub(1).ok_or_else(|| {
                         SnapshotError::new(
@@ -359,89 +411,23 @@ pub(crate) fn snapshot_activity_payload<'py>(
                         )
                     })?;
                 }
+                remaining -= snapshot_codec::encoded_size(wire, remaining)?;
+            }
+            let mut records = Vec::with_capacity(wires.len());
+            for wire in wires {
                 cancel.check(limits.deadline_unix_ms)?;
-                let start = snapshot
-                    .activity
-                    .turn_bounds(turn.index)
-                    .expect("projected turn")
-                    .start;
-                let wire = snapshot_codec::TurnWire {
-                    codec: snapshot_codec::TURN_CODEC,
-                    index: turn.index,
-                    prompt: &turn.prompt,
-                    started_at: turn.started_at,
-                    ended_at: turn.ended_at,
-                    events: turn
-                        .events
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, event)| {
-                            snapshot_codec::EventWire::new(start + offset, event)
-                        })
-                        .collect(),
-                    tool_uses: turn
-                        .tool_uses
-                        .iter()
-                        .map(|use_| snapshot_codec::ToolUseWire::new(use_, &snapshot.session_id))
-                        .collect(),
-                };
-                remaining -= snapshot_codec::encoded_size(&wire, remaining)?;
+                records.push(snapshot_codec::encode(&wire, limits.max_output_bytes)?);
             }
             usage.output_bytes = limits.max_output_bytes - remaining;
-            Ok(activity)
+            snapshot_codec::decode_turns(&records, limits.max_output_bytes)
         })
         .map_err(error)?;
-    let mut output = Vec::with_capacity(activity.turns.len());
-    for turn in activity.turns {
-        cancel.check(limits.deadline_unix_ms).map_err(error)?;
-        let mut results = HashMap::<*const ToolResultBlock, (EventRef, usize)>::new();
-        for position in snapshot.activity.result_events(turn.index) {
-            let event = source_event(snapshot, position);
-            for (block_index, block) in snapshot.entry(position).blocks().iter().enumerate() {
-                if let ContentBlock::ToolResult(result) = block {
-                    results.insert(
-                        result as *const ToolResultBlock,
-                        (event.clone(), block_index),
-                    );
-                }
-            }
-        }
-        let bounds = snapshot
-            .activity
-            .turn_bounds(turn.index)
-            .expect("projected turn");
-        let events = bounds
-            .map(|position| {
-                let event = source_event(snapshot, position);
-                event_view(py, &event.entries, event.idx)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        let mut tools = Vec::with_capacity(turn.tool_uses.len());
-        for use_ in turn.tool_uses {
-            let result = match use_.result {
-                Some(result) => {
-                    let (event, block) = results
-                        .get(&(result as *const ToolResultBlock))
-                        .expect("indexed tool result");
-                    block_view(py, &BlockHost::Entry(event.clone()), *block)?
-                }
-                None => py.None().into_bound(py),
-            };
-            tools.push(owner_tool_payload(py, &snapshot.session_id, use_, result)?);
-        }
-        let payload = PyDict::new(py);
-        payload.set_item("index", turn.index)?;
-        payload.set_item("prompt", turn.prompt)?;
-        payload.set_item("started_at", turn.started_at)?;
-        payload.set_item("ended_at", turn.ended_at)?;
-        payload.set_item("events", PyTuple::new(py, events)?)?;
-        payload.set_item("tool_uses", PyTuple::new(py, tools)?)?;
-        output.push(payload);
-    }
     cancel.check(limits.deadline_unix_ms).map_err(error)?;
+    let turns = detached_turns(py, detached)?;
     let payload = PyDict::new(py);
     payload.set_item("session_id", &snapshot.session_id)?;
-    payload.set_item("turns", PyTuple::new(py, output)?)?;
+    payload.set_item("turns", PyTuple::new(py, turns)?)?;
+    cancel.check(limits.deadline_unix_ms).map_err(error)?;
     Ok(payload)
 }
 
@@ -493,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_activity_shares_chunks_and_enforces_caps_before_payloads() {
+    fn owner_activity_detaches_selected_events_and_enforces_caps_before_payloads() {
         use cc_transcript_core::gateway::Provider;
         use cc_transcript_core::snapshot::{EntryChunk, SourceIdentity, SourceStamp};
         use cc_transcript_core::snapshot_activity::ActivityIndex;
@@ -542,7 +528,8 @@ mod tests {
                 0..snapshot.activity.turn_count(),
                 &limits,
                 &Cancellation::default(),
-                &mut ActivityUsage::default()
+                &mut ActivityUsage::default(),
+                |_| Ok(())
             )
             .is_err());
             assert_eq!(Arc::strong_count(&snapshot.chunks[0].entries), owners);
@@ -554,6 +541,7 @@ mod tests {
                 &limits,
                 &Cancellation::default(),
                 &mut ActivityUsage::default(),
+                |_| Ok(()),
             )
             .unwrap();
             let turns = payload.get_item("turns").unwrap().unwrap();
@@ -561,7 +549,8 @@ mod tests {
             let events = first.get_item("events").unwrap();
             let event = events.get_item(0).unwrap();
             let view = event.extract::<PyRef<UserEventView>>().unwrap();
-            assert!(Arc::ptr_eq(&view.r.entries, &snapshot.chunks[0].entries));
+            assert!(!Arc::ptr_eq(&view.r.entries, &snapshot.chunks[0].entries));
+            assert_eq!(Arc::strong_count(&snapshot.chunks[0].entries), owners);
         });
     }
 
@@ -572,7 +561,8 @@ mod tests {
             assert!(decode_snapshot_events(py, records(), 0).is_err());
             assert!(decode_snapshot_events(py, vec!["{".into()], MAX_RECORD_BYTES).is_err());
             assert!(
-                decode_snapshot_projection(py, "unknown", Vec::new(), MAX_RECORD_BYTES).is_err()
+                decode_snapshot_projection(py, "unknown", Vec::new(), MAX_RECORD_BYTES, None)
+                    .is_err()
             );
         });
     }

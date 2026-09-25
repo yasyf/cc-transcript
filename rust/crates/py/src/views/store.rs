@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use cc_transcript_core::toolcall::ToolRegistrySnapshot;
+
 use cc_transcript_core::types::{
     AssistantEntry, AttachmentEntry, ContentBlock, Entry, EntryMeta, ModeEntry, OtherEntry,
     PrintBody, PrintResult, SystemEntry, Usage, UserContent, UserEntry,
@@ -11,9 +13,18 @@ use cc_transcript_core::types::{
 pub(crate) struct EventRef {
     pub entries: Arc<Vec<Entry>>,
     pub idx: usize,
+    pub registry: Option<Arc<ToolRegistrySnapshot>>,
 }
 
 impl EventRef {
+    pub fn new(entries: Arc<Vec<Entry>>, idx: usize) -> Self {
+        Self {
+            entries,
+            idx,
+            registry: ToolRegistrySnapshot::capture_scoped(),
+        }
+    }
+
     pub fn entry(&self) -> &Entry {
         &self.entries[self.idx]
     }
@@ -77,6 +88,13 @@ pub(crate) enum BlockHost {
 }
 
 impl BlockHost {
+    pub fn registry(&self) -> Option<Arc<ToolRegistrySnapshot>> {
+        match self {
+            Self::Entry(event) if event.registry.is_some() => event.registry.clone(),
+            _ => ToolRegistrySnapshot::capture_scoped(),
+        }
+    }
+
     pub fn blocks(&self) -> &[ContentBlock] {
         match self {
             BlockHost::Owned(blocks) => blocks,
@@ -94,9 +112,26 @@ impl BlockHost {
 pub(crate) struct BlockRef {
     pub host: BlockHost,
     pub block: usize,
+    pub registry: Option<Arc<ToolRegistrySnapshot>>,
+}
+
+pub(crate) fn with_view_registry<R>(
+    registry: &Option<Arc<ToolRegistrySnapshot>>,
+    operation: impl FnOnce() -> R,
+) -> R {
+    match registry {
+        Some(registry) => {
+            cc_transcript_core::toolcall::with_registry(Arc::clone(registry), operation)
+        }
+        None => operation(),
+    }
 }
 
 impl BlockRef {
+    pub fn with_registry<R>(&self, operation: impl FnOnce() -> R) -> R {
+        with_view_registry(&self.registry, operation)
+    }
+
     pub fn block(&self) -> &ContentBlock {
         &self.host.blocks()[self.block]
     }

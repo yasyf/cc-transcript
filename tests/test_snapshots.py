@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ def context(claimant: str = "test") -> CallContext:
         "claimant": claimant,
         "admission": "hook",
         "authority": {"kind": "user", "effective_uid": str(os.geteuid())},
-        "registry_generation": "1",
+        "registry_generation": sha256(b"{}").hexdigest(),
     }
 
 
@@ -161,3 +162,64 @@ def test_cancellation_reaches_scope_and_keeps_usage(tmp_path: Path) -> None:
             snapshot.checkpoint()
         assert failure.value.status == "cancelled"
         assert snapshot.usage["requests_cancelled"] == 1
+
+
+def test_external_classifier_labels_are_generation_bound(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(event(index) for index in range(3)))
+    store = TranscriptStore({})
+    original = acquire(store, path)
+    token = CancellationToken()
+    page = store.prepare_classifier(
+        original["handle"],
+        {"id": "test-policy", "version": "1"},
+        context=context(),
+        cancellation=token,
+        limits=LIMITS,
+        deadline_unix_ms=deadline(),
+    )
+    assert not page["complete"]
+    events = decode_projection(page["record_schema"], page["records_json"])
+    assert [record.meta.uuid for record in events] == ["u0", "u1", "u2"]
+    result = store.submit_classifier(page["cursor"], [True, False, True], context=context(), cancellation=token)
+    assert result["complete"], result
+    description = result["description"]
+    assert description["classifier"] != {"id": "test-policy", "version": "1"}
+    assert description["handle"]["generation"] != original["handle"]["generation"]
+    with store.borrow_snapshot(
+        description["handle"], context=context(), cancellation=token, limits=LIMITS, deadline_unix_ms=deadline()
+    ) as snapshot:
+        assert len(snapshot.activity(description["classifier"]).turns) == 2
+    with pytest.raises(SnapshotIncomplete):
+        store.submit_classifier(page["cursor"], [True, False, True], context=context(), cancellation=token)
+
+
+def test_classifier_facts_use_all_source_users_and_first_event_positions(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(event(0, " ordinary ") + event(1, "\u001c<system_instruction> instruction"))
+    store = TranscriptStore({})
+    description = acquire(store, path)
+    with store.borrow_snapshot(
+        description["handle"],
+        context=context(),
+        cancellation=CancellationToken(),
+        limits=LIMITS,
+        deadline_unix_ms=deadline(),
+    ) as snapshot:
+        assert snapshot.classifier_facts("<system_instruction>", event_limit=1) == {
+            "has_users": True,
+            "all_users_sidechain": False,
+            "has_user_prefix": False,
+        }
+        assert snapshot.classifier_facts("<system_instruction>", event_limit=2)["has_user_prefix"]
+        assert snapshot.usage["source_bytes_read"] == 0
+
+
+def test_tool_registry_identity_is_definition_bound() -> None:
+    store = TranscriptStore({})
+    assert store.register_tool_registry([]) == context()["registry_generation"]
+    spec = {"name": "read_source", "behaves_like": "Read", "span_edit": None}
+    first = store.register_tool_registry([spec])
+    assert first == store.register_tool_registry([spec])
+    assert first != context()["registry_generation"]
+    assert first != store.register_tool_registry([{**spec, "behaves_like": "Edit"}])

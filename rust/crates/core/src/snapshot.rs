@@ -146,6 +146,8 @@ pub struct EntryChunk {
     pub start: usize,
     pub charge: MemoryCharge,
     pub entry_charges: Vec<MemoryCharge>,
+    pub user_count: usize,
+    pub sidechain_user_count: usize,
 }
 
 impl EntryChunk {
@@ -159,11 +161,21 @@ impl EntryChunk {
             charge += *entry_charge;
         }
         charge.owned_capacity_bytes += entry_charges.capacity() * size_of::<MemoryCharge>();
+        let user_count = entries
+            .iter()
+            .filter(|entry| matches!(entry, Entry::User(_)))
+            .count();
+        let sidechain_user_count = entries
+            .iter()
+            .filter(|entry| matches!(entry,Entry::User(user) if user.meta.is_sidechain))
+            .count();
         Self {
             entries: Arc::new(entries),
             start,
             charge,
             entry_charges,
+            user_count,
+            sidechain_user_count,
         }
     }
 }
@@ -286,6 +298,9 @@ struct Lease {
     snapshot: Arc<TranscriptSnapshot>,
     classifier: Value,
     expires: u64,
+    exposed: bool,
+    registry_generation: String,
+    registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
 }
 
 #[derive(Clone)]
@@ -307,6 +322,8 @@ struct LoadSlot {
     id: String,
     path: PathBuf,
     stamp: SourceStamp,
+    registry_generation: String,
+    registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
     work: Mutex<Load>,
     accounted: AtomicUsize,
     deadline: u64,
@@ -331,6 +348,7 @@ struct Load {
     sealed: bool,
     prefix_fence: Vec<u8>,
     previous: Option<Arc<TranscriptSnapshot>>,
+    previous_index_compatible: bool,
     prefix_checked: bool,
     fence: Vec<u8>,
     committed: u64,
@@ -342,6 +360,8 @@ struct Load {
 #[derive(Clone)]
 struct ProjectionCursor {
     claimant: String,
+    registry_generation: String,
+    admission: String,
     request: Value,
     limits: WorkLimits,
     next: usize,
@@ -356,6 +376,7 @@ struct DiscoveryCursor {
     roots: Vec<PathBuf>,
     directories: Vec<std::fs::ReadDir>,
     seen: HashSet<SourceIdentity>,
+    seen_directories: HashSet<SourceIdentity>,
     examined: usize,
     sources: usize,
     emitted: usize,
@@ -388,6 +409,22 @@ struct Checkpoint {
     inventory: HashMap<String, Value>,
     expires: u64,
     accounted: usize,
+}
+
+struct LabelSlot {
+    preparation: crate::snapshot_labels::LabelPreparation,
+    source_handle: Value,
+    accounted: usize,
+    max_stage_bytes: usize,
+    expires: u64,
+    admission: String,
+}
+
+struct Delivery {
+    claimant: String,
+    leases: Vec<String>,
+    cursor: Option<String>,
+    expires: u64,
 }
 
 struct GraphNode {
@@ -439,6 +476,7 @@ struct GraphCursor {
     root_checked: bool,
     projection_at: usize,
     pending_record: Option<(usize, String)>,
+    published_members: Vec<usize>,
     expires: u64,
     accounted: usize,
 }
@@ -467,16 +505,23 @@ struct ClassifierProgress {
     events: usize,
 }
 
+struct RegistryRecord {
+    snapshot: Arc<crate::toolcall::ToolRegistrySnapshot>,
+    allocations: Vec<(usize, usize)>,
+}
+
 struct GenerationRecord {
     snapshot: Weak<TranscriptSnapshot>,
+    registry_generation: String,
     entries: Vec<(usize, MemoryCharge)>,
     indexes: Vec<(usize, usize)>,
 }
 
 impl GenerationRecord {
-    fn new(snapshot: &Arc<TranscriptSnapshot>) -> Self {
+    fn new(snapshot: &Arc<TranscriptSnapshot>, registry_generation: &str) -> Self {
         Self {
             snapshot: Arc::downgrade(snapshot),
+            registry_generation: registry_generation.to_owned(),
             entries: snapshot.accounted_allocations(),
             indexes: snapshot.activity.accounted_allocations(),
         }
@@ -493,11 +538,16 @@ struct StoreState {
     generations: HashMap<String, GenerationRecord>,
     classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
     graphs: HashMap<String, GraphCursor>,
+    deliveries: HashMap<String, Delivery>,
+    labels: HashMap<String, LabelSlot>,
+    registries: HashMap<String, RegistryRecord>,
     discoveries: HashMap<String, DiscoveryCursor>,
     checkpoints: HashMap<String, Checkpoint>,
     resolutions: HashMap<String, ResolutionCursor>,
     escaped_chunks: HashMap<usize, (Weak<Vec<Entry>>, MemoryCharge)>,
     counters: [u64; 18],
+    transient_bytes: usize,
+    owned: crate::snapshot_owned::OwnedProjections,
 }
 
 pub type ClassifierCallback =
@@ -516,12 +566,30 @@ pub type PolicyCallback = dyn Fn(
 pub struct NativeStore {
     config: Config,
     pub owner_epoch: String,
+    default_registry: String,
     seed: [u8; 32],
     sequence: AtomicUsize,
     state: Mutex<StoreState>,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
     policies: Mutex<HashMap<String, Arc<PolicyCallback>>>,
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
+    #[cfg(test)]
+    read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+pub(crate) struct ProjectionReservation<'a> {
+    store: &'a NativeStore,
+    bytes: usize,
+}
+
+impl Drop for ProjectionReservation<'_> {
+    fn drop(&mut self) {
+        self.store
+            .state
+            .lock()
+            .expect("snapshot state")
+            .transient_bytes -= self.bytes;
+    }
 }
 
 struct WaiterClaim<'a> {
@@ -661,16 +729,552 @@ impl NativeStore {
             .and_then(|mut file| file.read_exact(&mut seed))
             .map_err(io_error)?;
         let owner_epoch = format!("{:x}", Sha256::digest(seed));
+        let captured = crate::toolcall::ToolRegistrySnapshot::capture_current();
+        let default_registry = captured.fingerprint().to_owned();
+        let builtin = crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new());
+        let mut state = StoreState::default();
+        for registry in [captured, builtin] {
+            state
+                .registries
+                .entry(registry.fingerprint().to_owned())
+                .or_insert_with(|| RegistryRecord {
+                    allocations: registry.accounted_allocations(),
+                    snapshot: registry,
+                });
+        }
         Ok(Self {
             config,
             owner_epoch,
+            default_registry,
             seed,
             sequence: AtomicUsize::new(1),
-            state: Mutex::new(StoreState::default()),
+            state: Mutex::new(state),
             classifiers: Mutex::new(HashMap::new()),
             policies: Mutex::new(HashMap::new()),
             classified: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            read_hook: Mutex::new(None),
         })
+    }
+
+    pub fn default_registry_generation(&self) -> String {
+        self.default_registry.clone()
+    }
+
+    pub fn register_tool_registry(&self, specs: &Value) -> Result<String, SnapshotError> {
+        let registry =
+            crate::toolcall::ToolRegistrySnapshot::from_specs_json(specs).map_err(invalid)?;
+        let fingerprint = registry.fingerprint().to_owned();
+        let allocations = registry.accounted_allocations();
+        let bytes: usize = allocations.iter().map(|(_, bytes)| *bytes).sum();
+        let mut state = self.state.lock().expect("snapshot state");
+        if !state.registries.contains_key(&fingerprint) {
+            self.admit_memory(&mut state, &json!({"admission":"hook"}), bytes)?;
+            state.registries.insert(
+                fingerprint.clone(),
+                RegistryRecord {
+                    snapshot: registry,
+                    allocations,
+                },
+            );
+        }
+        Ok(fingerprint)
+    }
+
+    fn registry(
+        &self,
+        context: &Value,
+    ) -> Result<Arc<crate::toolcall::ToolRegistrySnapshot>, SnapshotError> {
+        self.state
+            .lock()
+            .expect("snapshot state")
+            .registries
+            .get(str_field(context, "registry_generation")?)
+            .map(|record| Arc::clone(&record.snapshot))
+            .ok_or_else(|| invalid("tool registry generation is not registered with this owner"))
+    }
+
+    pub fn registry_for_scope(
+        &self,
+        handle: &Value,
+        context: &Value,
+    ) -> Result<Arc<crate::toolcall::ToolRegistrySnapshot>, SnapshotError> {
+        let state = self.state.lock().expect("snapshot state");
+        Ok(Arc::clone(&self.lease(&state, handle, context)?.registry))
+    }
+
+    pub(crate) fn owned_token(&self) -> String {
+        format!("domain-projection:{}", self.token("owned-domain"))
+    }
+
+    pub(crate) fn owned_handle_expiry(
+        &self,
+        handles: &[Value],
+        context: &Value,
+        deadline: u64,
+    ) -> Result<u64, SnapshotError> {
+        for handle in handles {
+            self.pin_scope(handle, context)?;
+        }
+        let state = self.state.lock().expect("snapshot state");
+        let mut expires = (now_ms() + self.config.ttl).min(deadline);
+        for handle in handles {
+            expires = expires.min(self.lease(&state, handle, context)?.expires);
+        }
+        Ok(expires)
+    }
+
+    pub(crate) fn reserve_projection(
+        &self,
+        context: &Value,
+        bytes: usize,
+    ) -> Result<ProjectionReservation<'_>, SnapshotError> {
+        let mut state = self.state.lock().expect("snapshot state");
+        Self::prune(&mut state);
+        self.admit_memory(&mut state, context, bytes)?;
+        state.transient_bytes += bytes;
+        Ok(ProjectionReservation { store: self, bytes })
+    }
+
+    fn extend_projection_reservation(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        context: &Value,
+        bytes: usize,
+    ) -> Result<(), SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) {
+            return Err(invalid("projection reservation belongs to another owner"));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        self.admit_memory(&mut state, context, bytes)?;
+        state.transient_bytes += bytes;
+        reservation.bytes += bytes;
+        Ok(())
+    }
+
+    pub(crate) fn with_owned<T>(
+        &self,
+        operation: impl FnOnce(&mut crate::snapshot_owned::OwnedProjections) -> Result<T, SnapshotError>,
+    ) -> Result<T, SnapshotError> {
+        let mut state = self.state.lock().expect("snapshot state");
+        Self::prune(&mut state);
+        operation(&mut state.owned)
+    }
+
+    pub(crate) fn take_owned<T>(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        retained_bytes: usize,
+        operation: impl FnOnce(&mut crate::snapshot_owned::OwnedProjections) -> Result<T, SnapshotError>,
+    ) -> Result<T, SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) {
+            return Err(invalid("projection reservation belongs to another owner"));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        let result = operation(&mut state.owned)?;
+        state.transient_bytes += retained_bytes;
+        reservation.bytes += retained_bytes;
+        Ok(result)
+    }
+
+    pub(crate) fn publish_owned_bound<T>(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        retained_bytes: usize,
+        handles: &[Value],
+        context: &Value,
+        deadline: u64,
+        operation: impl FnOnce(&mut crate::snapshot_owned::OwnedProjections) -> Result<T, SnapshotError>,
+    ) -> Result<T, SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) || retained_bytes > reservation.bytes {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "owned publication bytes were not reserved",
+            ));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        if now_ms() >= deadline {
+            return Err(SnapshotError::new(
+                Status::Deadline,
+                "owned projection deadline expired",
+            ));
+        }
+        for handle in handles {
+            self.lease(&state, handle, context)?;
+        }
+        let result = operation(&mut state.owned)?;
+        state.transient_bytes -= retained_bytes;
+        reservation.bytes -= retained_bytes;
+        Ok(result)
+    }
+
+    pub(crate) fn publish_owned<T>(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        retained_bytes: usize,
+        operation: impl FnOnce(&mut crate::snapshot_owned::OwnedProjections) -> Result<T, SnapshotError>,
+    ) -> Result<T, SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) || retained_bytes > reservation.bytes {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "owned publication bytes were not reserved",
+            ));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        let result = operation(&mut state.owned)?;
+        state.transient_bytes -= retained_bytes;
+        reservation.bytes -= retained_bytes;
+        Ok(result)
+    }
+
+    fn label_reply(
+        &self,
+        mut reply: Value,
+        context: &Value,
+        work: crate::snapshot_labels::LabelUsage,
+        activity_lifts: usize,
+    ) -> Result<Value, SnapshotError> {
+        let mut usage = [0u64; 18];
+        usage[6] = activity_lifts as u64;
+        reply.insert("work",json!({"events":work.events,"input_bytes":work.input_bytes,"items":work.items,"output_bytes":work.output_bytes}));
+        reply.insert("usage", usage_value(&usage));
+        self.track_delivery(&reply, context, true);
+        for _ in 0..3 {
+            match encoded_size(&reply, MAX_REPLY_BYTES) {
+                Ok(bytes) => usage[13] = bytes as u64,
+                Err(error) => {
+                    self.discard_response(&reply, context)?;
+                    return Err(error);
+                }
+            }
+            reply.insert("usage", usage_value(&usage));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        for (total, own) in state.counters.iter_mut().zip(usage.iter()) {
+            *total += own;
+        }
+        Ok(reply)
+    }
+
+    fn publish_label(
+        &self,
+        token: String,
+        mut slot: LabelSlot,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<(), SnapshotError> {
+        let handle_charge = crate::snapshot_memory::value_charge(&slot.source_handle);
+        slot.accounted = slot.preparation.accounted_bytes()
+            + size_of::<LabelSlot>()
+            + token.capacity()
+            + handle_charge.owned_capacity_bytes
+            + handle_charge.opaque_dom_accounted_bytes;
+        if slot.accounted > reservation.bytes {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "classifier retained bytes exceed reservation",
+            ));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        let lease = self.lease(&state, &slot.source_handle, context)?;
+        slot.expires = slot.expires.min(lease.expires);
+        if slot.expires <= now_ms() {
+            return Err(SnapshotError::new(
+                Status::Deadline,
+                "classifier preparation expired",
+            ));
+        }
+        if state.labels.len() >= self.lease_cap(context)? {
+            return Err(SnapshotError::new(
+                Status::LeaseLimit,
+                "classifier cursor admission exhausted",
+            ));
+        }
+        state.transient_bytes -= slot.accounted;
+        reservation.bytes -= slot.accounted;
+        state.labels.insert(token, slot);
+        Ok(())
+    }
+
+    fn publish_label_generation(
+        &self,
+        snapshot: Arc<TranscriptSnapshot>,
+        generation: GenerationRecord,
+        classifier: Value,
+        source_handle: &Value,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<Value, SnapshotError> {
+        let shared: HashSet<_> = snapshot
+            .chunks
+            .iter()
+            .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+            .collect();
+        let retained = generation
+            .entries
+            .iter()
+            .filter(|(id, _)| !shared.contains(id))
+            .map(|(_, charge)| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
+            .sum::<usize>()
+            + generation
+                .indexes
+                .iter()
+                .map(|(_, bytes)| *bytes)
+                .sum::<usize>()
+            + generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
+            + generation.indexes.capacity() * size_of::<(usize, usize)>()
+            + size_of::<GenerationRecord>()
+            + snapshot.id.capacity();
+        if retained > reservation.bytes {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "derived classifier publication exceeds reservation",
+            ));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        self.lease(&state, source_handle, context)?;
+        let id = snapshot.id.clone();
+        state.generations.insert(id.clone(), generation);
+        let data = match self.issue(&mut state, snapshot, classifier, context) {
+            Ok(data) => data,
+            Err(error) => {
+                state.generations.remove(&id);
+                return Err(error);
+            }
+        };
+        state.transient_bytes -= retained;
+        reservation.bytes -= retained;
+        Ok(data)
+    }
+
+    pub fn prepare_classifier(
+        &self,
+        handle: &Value,
+        classifier: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        bounds: WorkLimits,
+    ) -> Result<Value, SnapshotError> {
+        let result = self.prepare_classifier_inner(handle, classifier, context, cancel, bounds);
+        if let Err(error) = &result {
+            self.state.lock().expect("snapshot state").counters[if error.status == Status::Cancelled
+            {
+                11
+            } else {
+                12
+            }] += 1;
+        }
+        result
+    }
+
+    fn prepare_classifier_inner(
+        &self,
+        handle: &Value,
+        classifier: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        mut bounds: WorkLimits,
+    ) -> Result<Value, SnapshotError> {
+        cancel.check(bounds.deadline_unix_ms)?;
+        let source = self.pin(handle, context)?;
+        bounds.deadline_unix_ms = bounds
+            .deadline_unix_ms
+            .min(now_ms() + self.config.preparation);
+        bounds.max_output_bytes = bounds.max_output_bytes.min(self.config.output);
+        let binding = crate::snapshot_labels::LabelBinding {
+            owner_epoch: self.owner_epoch.clone(),
+            claimant: str_field(context, "claimant")?.to_owned(),
+            physical_generation: source.id.clone(),
+            classifier_id: str_field(classifier, "id")?.to_owned(),
+            classifier_version: str_field(classifier, "version")?.to_owned(),
+            registry_generation: str_field(context, "registry_generation")?.to_owned(),
+            execution_id: self.token("label-execution"),
+        };
+        let entry_bytes: usize = source
+            .chunks
+            .iter()
+            .map(|chunk| {
+                chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
+            })
+            .sum();
+        let max_stage_bytes = entry_bytes
+            .saturating_mul(4)
+            .saturating_add(source.event_count.saturating_mul(512))
+            .saturating_add(16 * 1024)
+            .min(self.config.retained);
+        let mut reservation = self.reserve_projection(
+            context,
+            crate::snapshot_labels::LabelPreparation::initial_reservation_bytes(&binding),
+        )?;
+        let expires = self.owned_handle_expiry(
+            std::slice::from_ref(handle),
+            context,
+            bounds.deadline_unix_ms,
+        )?;
+        let mut preparation = crate::snapshot_labels::LabelPreparation::new(
+            source,
+            binding.clone(),
+            bounds,
+            max_stage_bytes,
+        )?;
+        if preparation.source().event_count == 0 {
+            let work = preparation.usage();
+            let classifier = preparation.derived_classifier();
+            let snapshot = preparation.finish(&binding, cancel)?;
+            let generation = GenerationRecord::new(&snapshot, &binding.registry_generation);
+            let data = self.publish_label_generation(
+                snapshot,
+                generation,
+                classifier,
+                handle,
+                context,
+                &mut reservation,
+            )?;
+            return self.label_reply(
+                json!({"complete":true,"cursor":null,"description":data["description"]}),
+                context,
+                work,
+                0,
+            );
+        }
+        let token = format!("classifier:{}", self.token("label-page"));
+        let page = preparation.next_page(token.clone(), &binding, cancel)?;
+        let work = preparation.usage();
+        let reply = json!({"complete":false,"cursor":page.cursor,"record_schema":page.record_schema,"records_json":page.records_json,"event_start":page.event_start});
+        self.publish_label(
+            token,
+            LabelSlot {
+                preparation,
+                source_handle: handle.clone(),
+                accounted: 0,
+                max_stage_bytes,
+                expires,
+                admission: str_field(context, "admission")?.to_owned(),
+            },
+            context,
+            &mut reservation,
+        )?;
+        self.label_reply(reply, context, work, 0)
+    }
+
+    pub fn submit_classifier(
+        &self,
+        cursor: &str,
+        labels: &[bool],
+        context: &Value,
+        cancel: &Cancellation,
+    ) -> Result<Value, SnapshotError> {
+        let result = self.submit_classifier_inner(cursor, labels, context, cancel);
+        if let Err(error) = &result {
+            self.state.lock().expect("snapshot state").counters[if error.status == Status::Cancelled
+            {
+                11
+            } else {
+                12
+            }] += 1;
+        }
+        result
+    }
+
+    fn submit_classifier_inner(
+        &self,
+        cursor: &str,
+        labels: &[bool],
+        context: &Value,
+        cancel: &Cancellation,
+    ) -> Result<Value, SnapshotError> {
+        self.authority(context, None)?;
+        let (source_handle, deadline) = {
+            let mut state = self.state.lock().expect("snapshot state");
+            Self::prune(&mut state);
+            let slot = state.labels.get(cursor).ok_or_else(|| {
+                SnapshotError::new(Status::StaleCursor, "classifier cursor expired or consumed")
+            })?;
+            if slot.preparation.binding().claimant != str_field(context, "claimant")? {
+                return Err(SnapshotError::new(
+                    Status::PermissionDenied,
+                    "classifier cursor claimant differs",
+                ));
+            }
+            if slot.admission != str_field(context, "admission")? {
+                return Err(SnapshotError::new(
+                    Status::StaleCursor,
+                    "classifier admission differs",
+                ));
+            }
+            if slot.preparation.binding().registry_generation
+                != str_field(context, "registry_generation")?
+            {
+                return Err(SnapshotError::new(
+                    Status::StaleCursor,
+                    "classifier registry generation differs",
+                ));
+            }
+            (
+                slot.source_handle.clone(),
+                slot.preparation.remaining_limits().deadline_unix_ms,
+            )
+        };
+        if let Err(error) = cancel.check(deadline) {
+            self.release_cursor(cursor, context)?;
+            return Err(error);
+        }
+        self.pin(&source_handle, context)?;
+        let mut reservation = self.reserve_projection(context, 0)?;
+        let mut slot = {
+            let mut state = self.state.lock().expect("snapshot state");
+            self.lease(&state, &source_handle, context)?;
+            let slot = state.labels.remove(cursor).ok_or_else(|| {
+                SnapshotError::new(Status::StaleCursor, "classifier cursor already consumed")
+            })?;
+            state.transient_bytes += slot.accounted;
+            reservation.bytes += slot.accounted;
+            slot
+        };
+        let working = slot.preparation.next_operation_reservation_bytes();
+        self.extend_projection_reservation(&mut reservation, context, working)?;
+        let binding = slot.preparation.binding().clone();
+        let before = slot.preparation.usage();
+        let registry = self.registry_for_scope(&source_handle, context)?;
+        let complete = crate::toolcall::with_registry(registry, || {
+            slot.preparation.submit(cursor, labels, &binding, cancel)
+        })?;
+        if complete {
+            let work = slot.preparation.usage();
+            let classifier = slot.preparation.derived_classifier();
+            let snapshot = slot.preparation.finish(&binding, cancel)?;
+            let generation = GenerationRecord::new(&snapshot, &binding.registry_generation);
+            let data = self.publish_label_generation(
+                snapshot,
+                generation,
+                classifier,
+                &source_handle,
+                context,
+                &mut reservation,
+            )?;
+            self.label_reply(
+                json!({"complete":true,"cursor":null,"description":data["description"]}),
+                context,
+                work,
+                work.activity_lifts - before.activity_lifts,
+            )
+        } else {
+            let token = format!("classifier:{}", self.token("label-page"));
+            let page = slot
+                .preparation
+                .next_page(token.clone(), &binding, cancel)?;
+            let work = slot.preparation.usage();
+            let reply = json!({"complete":false,"cursor":page.cursor,"record_schema":page.record_schema,"records_json":page.records_json,"event_start":page.event_start});
+            slot.expires =
+                self.owned_handle_expiry(std::slice::from_ref(&source_handle), context, deadline)?;
+            self.publish_label(token, slot, context, &mut reservation)?;
+            self.label_reply(
+                reply,
+                context,
+                work,
+                work.activity_lifts - before.activity_lifts,
+            )
+        }
     }
 
     pub fn record_transport(&self, bytes: usize) {
@@ -721,7 +1325,17 @@ impl NativeStore {
     ) -> Result<ClassifierProgress, SnapshotError> {
         let id = str_field(classifier, "id")?;
         let version = str_field(classifier, "version")?;
-        if id == "native" && version == "1" {
+        let native = id == "native" && version == "1";
+        let registry = str_field(context, "registry_generation")?;
+        if native
+            && self
+                .state
+                .lock()
+                .expect("snapshot state")
+                .generations
+                .get(&snapshot.id)
+                .is_some_and(|generation| generation.registry_generation == registry)
+        {
             return Ok(ClassifierProgress {
                 snapshot: Some(snapshot),
                 read_bytes: 0,
@@ -729,13 +1343,20 @@ impl NativeStore {
             });
         }
         let classifier_key = sonic_rs::to_string(&json!([id, version])).expect("classifier key");
-        let callback = self
-            .classifiers
-            .lock()
-            .expect("classifiers")
-            .get(&classifier_key)
-            .cloned()
-            .ok_or_else(|| invalid("classifier version is not registered with this owner"))?;
+        let callback = if native {
+            None
+        } else {
+            Some(
+                self.classifiers
+                    .lock()
+                    .expect("classifiers")
+                    .get(&classifier_key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        invalid("classifier version is not registered with this owner")
+                    })?,
+            )
+        };
         let key = sonic_rs::to_string(&json!([
             snapshot.id,
             classifier_key,
@@ -843,12 +1464,17 @@ impl NativeStore {
             slot.accounted.fetch_add(reserve, Ordering::AcqRel);
         }
         if stop > start {
-            let flags = callback(&snapshot.chunks, start..stop)?;
-            if flags.len() != stop - start {
-                return Err(invalid("classifier returned a mismatched flag count"));
-            }
+            let flags = if let Some(callback) = &callback {
+                let flags = callback(&snapshot.chunks, start..stop)?;
+                if flags.len() != stop - start {
+                    return Err(invalid("classifier returned a mismatched flag count"));
+                }
+                Some(flags)
+            } else {
+                None
+            };
             stage.activity = std::mem::take(&mut stage.activity)
-                .append_tail(&snapshot.range(start..stop), Some(&flags));
+                .append_tail(&snapshot.range(start..stop), flags.as_deref());
             stage.indexed = stop;
             usage[6] += 1;
         }
@@ -877,7 +1503,7 @@ impl NativeStore {
             fence: snapshot.fence.clone(),
             event_count: snapshot.event_count,
         });
-        let generation = GenerationRecord::new(&derived);
+        let generation = GenerationRecord::new(&derived, registry);
         {
             let mut state = self.state.lock().expect("snapshot state");
             state.generations.insert(derived.id.clone(), generation);
@@ -948,6 +1574,10 @@ impl NativeStore {
 
     fn prune(state: &mut StoreState) {
         let now = now_ms();
+        state
+            .deliveries
+            .retain(|_, delivery| delivery.expires > now);
+        state.owned.prune(now);
         let expired_graphs: Vec<_> = state
             .graphs
             .iter()
@@ -1016,6 +1646,13 @@ impl NativeStore {
                 }
             }
         }
+        for registry in state.registries.values() {
+            for (id, bytes) in &registry.allocations {
+                if allocations.insert(*id) {
+                    indexes += bytes;
+                }
+            }
+        }
         for (chunk, charge) in state.escaped_chunks.values() {
             if let Some(chunk) = chunk.upgrade() {
                 if allocations.insert(Arc::as_ptr(&chunk) as usize) {
@@ -1023,6 +1660,7 @@ impl NativeStore {
                 }
             }
         }
+        let label_bytes: usize = state.labels.values().map(|slot| slot.accounted).sum();
         let classifier_bytes: usize = state
             .classifier_stages
             .values()
@@ -1053,14 +1691,28 @@ impl NativeStore {
             })
             .sum();
         let graph_bytes: usize = state.graphs.values().map(|graph| graph.accounted).sum();
-        let metadata = state
-            .generations
-            .values()
-            .map(|record| {
-                record.entries.capacity() * size_of::<(usize, MemoryCharge)>()
-                    + record.indexes.capacity() * size_of::<(usize, usize)>()
+        let delivery_bytes: usize = state
+            .deliveries
+            .iter()
+            .map(|(key, delivery)| {
+                key.capacity()
+                    + size_of::<Delivery>()
+                    + delivery.claimant.capacity()
+                    + delivery.leases.capacity() * size_of::<String>()
+                    + delivery.leases.iter().map(String::capacity).sum::<usize>()
+                    + delivery.cursor.as_ref().map_or(0, String::capacity)
             })
-            .sum::<usize>()
+            .sum();
+        let metadata = delivery_bytes
+            + state
+                .generations
+                .values()
+                .map(|record| {
+                    record.registry_generation.capacity()
+                        + record.entries.capacity() * size_of::<(usize, MemoryCharge)>()
+                        + record.indexes.capacity() * size_of::<(usize, usize)>()
+                })
+                .sum::<usize>()
             + size_of::<StoreState>()
             + state.leases.capacity() * size_of::<(String, Lease)>()
             + state.waiters.capacity() * size_of::<(String, Waiter)>()
@@ -1071,7 +1723,11 @@ impl NativeStore {
             + state
                 .leases
                 .iter()
-                .map(|(key, lease)| key.capacity() + lease.claimant.capacity())
+                .map(|(key, lease)| {
+                    key.capacity()
+                        + lease.claimant.capacity()
+                        + lease.registry_generation.capacity()
+                })
                 .sum::<usize>()
             + state
                 .waiters
@@ -1108,8 +1764,8 @@ impl NativeStore {
                 })
                 .sum::<usize>();
         json!({"retained_entry_capacity_bytes": entries, "retained_index_capacity_bytes": indexes,
-            "retained_projection_bytes": projections + discovery_bytes + graph_bytes + metadata, "pending_input_capacity_bytes": pending + classifier_bytes,
-            "retained_total_accounted_bytes": entries + indexes + pending + classifier_bytes + projections + discovery_bytes + graph_bytes + metadata,
+            "retained_projection_bytes": projections + discovery_bytes + graph_bytes + metadata + state.owned.accounted_bytes(), "pending_input_capacity_bytes": pending + classifier_bytes + label_bytes + state.transient_bytes,
+            "retained_total_accounted_bytes": entries + indexes + pending + classifier_bytes + label_bytes + projections + discovery_bytes + graph_bytes + metadata + state.transient_bytes + state.owned.accounted_bytes(),
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": snapshots.len()})
     }
 
@@ -1119,10 +1775,6 @@ impl NativeStore {
         context: &Value,
         additional: usize,
     ) -> Result<(), SnapshotError> {
-        self.classified
-            .lock()
-            .expect("classified snapshots")
-            .retain(|_, snapshot| Arc::strong_count(snapshot) > 1);
         let cap = if str_field(context, "admission")? == "hook" {
             self.config.retained
         } else {
@@ -1132,6 +1784,10 @@ impl NativeStore {
             .saturating_add(additional)
             > cap
         {
+            self.classified
+                .lock()
+                .expect("classified snapshots")
+                .retain(|_, snapshot| Arc::strong_count(snapshot) > 1);
             let leased: HashSet<_> = state
                 .leases
                 .values()
@@ -1179,6 +1835,11 @@ impl NativeStore {
                 "lease admission exhausted",
             ));
         }
+        let registry = state
+            .registries
+            .get(str_field(context, "registry_generation")?)
+            .map(|record| Arc::clone(&record.snapshot))
+            .ok_or_else(|| invalid("tool registry generation is not registered with this owner"))?;
         let token = self.token("lease");
         let description = self.description(&snapshot, &classifier, &token);
         state.leases.insert(
@@ -1188,6 +1849,9 @@ impl NativeStore {
                 snapshot,
                 classifier,
                 expires: now_ms() + self.config.ttl,
+                exposed: false,
+                registry_generation: str_field(context, "registry_generation")?.to_owned(),
+                registry,
             },
         );
         Ok(json!({"kind": "acquired", "description": description}))
@@ -1262,6 +1926,7 @@ impl NativeStore {
             .get(str_field(handle, "lease_id")?)
             .ok_or_else(stale)?;
         if lease.claimant != str_field(context, "claimant")?
+            || lease.registry_generation != str_field(context, "registry_generation")?
             || lease.snapshot.id != str_field(handle, "snapshot_id")?
             || lease.snapshot.id != str_field(handle, "generation")?
             || lease.expires <= now_ms()
@@ -1274,6 +1939,16 @@ impl NativeStore {
     pub fn request(&self, request: &Value, context: &Value, cancel: &Cancellation) -> Value {
         let mut usage = [0u64; 18];
         let id = request.get("id").cloned().unwrap_or(json!("invalid"));
+        let _reply_reservation = match self
+            .reserve_projection(context, MAX_REPLY_BYTES.saturating_mul(2))
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                usage[12] = 1;
+                self.state.lock().expect("snapshot state").counters[12] += 1;
+                return json!({"schema":SCHEMA,"id":id,"status":error.status.as_str(),"complete":false,"data":null,"cursor":null,"reason":error.reason,"usage":usage_value(&usage)});
+            }
+        };
         let output_limit = request
             .get("limits")
             .and_then(|value| value.get("max_output_bytes"))
@@ -1320,59 +1995,82 @@ impl NativeStore {
             .unwrap_or(self.config.output)
             .min(self.config.output)
             .min(MAX_DATA_BYTES);
-        let outcome = self
-            .dispatch(request, context, cancel, &mut usage)
-            .and_then(|(mut data, cursor, reason)| {
-                let bytes = encoded_size(&data, output_limit)?;
-                if bytes > output_limit {
-                    if let Some(token) = &cursor {
-                        self.detach(&json!({"cursor":token}), context);
-                    }
-                    if data.get("kind").and_then(Value::as_str) == Some("acquired")
-                        && request.get("operation").and_then(Value::as_str) != Some("describe")
+        let dispatched = if matches!(
+            request.get("operation").and_then(Value::as_str),
+            Some("release" | "stats")
+        ) {
+            self.dispatch(request, context, cancel, &mut usage)
+        } else {
+            self.registry(context).and_then(|registry| {
+                crate::toolcall::with_registry(registry, || {
+                    self.dispatch(request, context, cancel, &mut usage)
+                })
+            })
+        };
+        let outcome = dispatched.and_then(|(mut data, cursor, reason)| {
+            let bytes=match encoded_size(&data,output_limit) {
+                Ok(bytes)=>bytes,
+                Err(error)=> {
+                    let pending=json!({"id":id,"status":if reason.is_some(){"incomplete"}else{"ok"},"data":data,"cursor":cursor});
+                    self.track_delivery(&pending,context,request.get("operation").and_then(Value::as_str)!=Some("describe"));
+                    self.discard_response(&pending,context)?;
+                    return Err(error);
+                }
+            };
+            if bytes > output_limit {
+                if let Some(token) = &cursor {
+                    self.detach(&json!({"cursor":token}), context);
+                }
+                if data.get("kind").and_then(Value::as_str) == Some("acquired")
+                    && request.get("operation").and_then(Value::as_str) != Some("describe")
+                {
+                    if let Some(token) = data
+                        .get("description")
+                        .and_then(|value| value.get("handle"))
+                        .and_then(|value| value.get("lease_id"))
+                        .and_then(Value::as_str)
                     {
-                        if let Some(token) = data
-                            .get("description")
-                            .and_then(|value| value.get("handle"))
-                            .and_then(|value| value.get("lease_id"))
-                            .and_then(Value::as_str)
-                        {
-                            self.state
-                                .lock()
-                                .expect("snapshot state")
-                                .leases
-                                .remove(token);
-                        }
-                    }
-                    return Err(SnapshotError::new(
-                        Status::OutputLimit,
-                        "response data exceeds output budget",
-                    ));
-                }
-                if data.get("kind").and_then(Value::as_str) == Some("loading") {
-                    if let Some(token) = &cursor {
-                        let mut state = self.state.lock().expect("snapshot state");
-                        if let Some(waiter) = state.waiters.get_mut(token) {
-                            if bytes > waiter.limits.max_output_bytes {
-                                return Err(SnapshotError::new(
-                                    Status::OutputLimit,
-                                    "reservation output budget exhausted",
-                                ));
-                            }
-                            waiter.limits.max_output_bytes -= bytes;
-                            data["reservation"]["remaining_work"]
-                                .insert("max_output_bytes", json!(waiter.limits.max_output_bytes));
-                        }
+                        self.state
+                            .lock()
+                            .expect("snapshot state")
+                            .leases
+                            .remove(token);
                     }
                 }
-                Ok((data, cursor, reason))
-            });
+                return Err(SnapshotError::new(
+                    Status::OutputLimit,
+                    "response data exceeds output budget",
+                ));
+            }
+            if data.get("kind").and_then(Value::as_str) == Some("loading") {
+                if let Some(token) = &cursor {
+                    let mut state = self.state.lock().expect("snapshot state");
+                    if let Some(waiter) = state.waiters.get_mut(token) {
+                        if bytes > waiter.limits.max_output_bytes {
+                            return Err(SnapshotError::new(
+                                Status::OutputLimit,
+                                "reservation output budget exhausted",
+                            ));
+                        }
+                        waiter.limits.max_output_bytes -= bytes;
+                        data["reservation"]["remaining_work"]
+                            .insert("max_output_bytes", json!(waiter.limits.max_output_bytes));
+                    }
+                }
+            }
+            Ok((data, cursor, reason))
+        });
         let mut response = match outcome {
             Ok((data, cursor, reason)) => json!({"schema": SCHEMA, "id": id,
                 "status": if reason.is_some() { "incomplete" } else { "ok" }, "complete": reason.is_none(),
                 "data": data, "cursor": cursor, "reason": reason, "usage": usage_value(&usage)}),
             Err(error) => {
-                self.detach(request, context);
+                if matches!(
+                    error.status,
+                    Status::Cancelled | Status::Deadline | Status::OutputLimit
+                ) {
+                    self.detach(request, context);
+                }
                 usage[if error.status == Status::Cancelled {
                     11
                 } else {
@@ -1395,11 +2093,258 @@ impl NativeStore {
             }
             response.insert("usage", usage_value(&usage));
         }
+        self.track_delivery(
+            &response,
+            context,
+            request.get("operation").and_then(Value::as_str) != Some("describe"),
+        );
         let mut state = self.state.lock().expect("snapshot state");
         for (total, own) in state.counters.iter_mut().zip(usage.iter()) {
             *total += own;
         }
         response
+    }
+
+    fn response_handles(response: &Value) -> Result<Vec<String>, SnapshotError> {
+        let mut result = Vec::new();
+        let data = response.get("data").unwrap_or(response);
+        let mut add = |description: &Value| {
+            if let Some(token) = description
+                .get("handle")
+                .and_then(|handle| handle.get("lease_id"))
+                .and_then(Value::as_str)
+            {
+                result.push(token.to_owned());
+            }
+        };
+        if data.get("kind").is_none() && data.get("description").is_some() {
+            add(&data["description"]);
+        }
+        match data.get("kind").and_then(Value::as_str) {
+            Some("acquired") => add(&data["description"]),
+            Some("resolved") => {
+                if let Some(sessions) = data["sessions"].as_array() {
+                    for session in sessions.iter() {
+                        add(&session["description"]);
+                    }
+                }
+            }
+            Some("records")
+                if data["record_schema"].as_str() == Some("cc-transcript.sidechain/1") =>
+            {
+                if let Some(records) = data["records_json"].as_array() {
+                    for record in records.iter() {
+                        let value: Value = sonic_rs::from_str(
+                            record
+                                .as_str()
+                                .ok_or_else(|| invalid("invalid sidechain record"))?,
+                        )
+                        .map_err(|error| invalid(error.to_string()))?;
+                        add(&value["description"]);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(result)
+    }
+
+    fn response_cursor(response: &Value) -> Option<&str> {
+        response.get("cursor").and_then(Value::as_str).or_else(|| {
+            response
+                .get("data")
+                .and_then(|data| data.get("cursor"))
+                .and_then(Value::as_str)
+        })
+    }
+
+    fn delivery_key(
+        &self,
+        response: &Value,
+        context: &Value,
+        handles: &[String],
+    ) -> Result<String, SnapshotError> {
+        let cursor = Self::response_cursor(response).unwrap_or("");
+        let helper_cursor =
+            cursor.starts_with("domain-projection:") || cursor.starts_with("classifier:");
+        let data = response.get("data").unwrap_or(response);
+        let label_result = data
+            .get("description")
+            .and_then(|description| description.get("handle"))
+            .and_then(|handle| handle.get("snapshot_id"))
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("labels:"));
+        let helper = helper_cursor || label_result;
+        let mut digest = Sha256::new();
+        digest.update(self.seed);
+        for value in [
+            str_field(context, "claimant")?,
+            if helper {
+                ""
+            } else {
+                response.get("id").and_then(Value::as_str).unwrap_or("")
+            },
+            if helper {
+                ""
+            } else {
+                response.get("status").and_then(Value::as_str).unwrap_or("")
+            },
+            cursor,
+        ] {
+            digest.update(value.len().to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        if !helper_cursor {
+            for handle in handles {
+                digest.update(handle.len().to_le_bytes());
+                digest.update(handle.as_bytes());
+            }
+        }
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
+    pub(crate) fn track_delivery(&self, response: &Value, context: &Value, may_issue: bool) {
+        let Ok(handles) = Self::response_handles(response) else {
+            return;
+        };
+        let Ok(key) = self.delivery_key(response, context, &handles) else {
+            return;
+        };
+        let Ok(claimant) = str_field(context, "claimant") else {
+            return;
+        };
+        let cursor = Self::response_cursor(response).map(str::to_owned);
+        let mut state = self.state.lock().expect("snapshot state");
+        let mut leases = Vec::new();
+        if may_issue {
+            for handle in handles {
+                if let Some(lease) = state.leases.get_mut(&handle) {
+                    if lease.claimant == claimant && !lease.exposed {
+                        lease.exposed = true;
+                        leases.push(handle);
+                    }
+                }
+            }
+        }
+        if leases.is_empty() && cursor.is_none() {
+            state.deliveries.remove(&key);
+            return;
+        }
+        if state.deliveries.len() >= self.config.leases.saturating_mul(4) {
+            if let Some(oldest) = state
+                .deliveries
+                .iter()
+                .min_by_key(|(_, delivery)| delivery.expires)
+                .map(|(token, _)| token.clone())
+            {
+                state.deliveries.remove(&oldest);
+            }
+        }
+        state.deliveries.insert(
+            key,
+            Delivery {
+                claimant: claimant.to_owned(),
+                leases,
+                cursor,
+                expires: now_ms() + self.config.ttl,
+            },
+        );
+    }
+
+    pub fn discard_response(
+        &self,
+        response: &Value,
+        context: &Value,
+    ) -> Result<bool, SnapshotError> {
+        self.authority(context, None)?;
+        let handles = Self::response_handles(response)?;
+        let key = self.delivery_key(response, context, &handles)?;
+        let delivery = {
+            let mut state = self.state.lock().expect("snapshot state");
+            state.deliveries.remove(&key)
+        };
+        let Some(delivery) = delivery else {
+            return Ok(false);
+        };
+        if delivery.claimant != str_field(context, "claimant")? {
+            return Err(SnapshotError::new(
+                Status::PermissionDenied,
+                "response claimant differs",
+            ));
+        }
+        if let Some(cursor) = delivery.cursor {
+            self.release_cursor(&cursor, context)?;
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        for token in delivery.leases {
+            if state
+                .leases
+                .get(&token)
+                .is_some_and(|lease| lease.claimant == delivery.claimant)
+            {
+                state.leases.remove(&token);
+                state.owned.release_lease(&token);
+            }
+        }
+        Self::prune(&mut state);
+        Ok(true)
+    }
+
+    fn release_cursor(&self, token: &str, context: &Value) -> Result<bool, SnapshotError> {
+        let claimant = str_field(context, "claimant")?;
+        let mut state = self.state.lock().expect("snapshot state");
+        let foreign = state
+            .labels
+            .get(token)
+            .is_some_and(|slot| slot.preparation.binding().claimant != claimant)
+            || state
+                .graphs
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .projections
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .discoveries
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .resolutions
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .checkpoints
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .waiters
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant);
+        if foreign {
+            return Err(SnapshotError::new(
+                Status::StaleCursor,
+                "cursor claimant differs",
+            ));
+        }
+        let mut released = state.labels.remove(token).is_some();
+        released |= state.projections.remove(token).is_some();
+        released |= state.discoveries.remove(token).is_some();
+        released |= state.checkpoints.remove(token).is_some();
+        released |= state.waiters.remove(token).is_some();
+        if let Some(graph) = state.graphs.remove(token) {
+            Self::release_graph_state(&mut state, &graph);
+            released = true;
+        }
+        if let Some(resolution) = state.resolutions.remove(token) {
+            if let Some(pending) = resolution.pending {
+                state.waiters.remove(&pending);
+            }
+            released = true;
+        }
+        released |= state.owned.discard_cursor(token, claimant)?;
+        Self::prune(&mut state);
+        Ok(released)
     }
 
     fn detach(&self, request: &Value, context: &Value) {
@@ -1462,15 +2407,45 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         self.authority(context, None)?;
-        cancel.check(u64::MAX)?;
         if str_field(request, "schema")? != SCHEMA {
             return Err(invalid("unsupported snapshot schema"));
         }
         let operation = str_field(request, "operation")?;
+        if operation != "resume" {
+            cancel.check(u64::MAX)?;
+        }
         match operation {
             "acquire" => self.acquire(request, context, cancel, usage),
             "resume" => {
                 let cursor = str_field(request, "cursor")?;
+                let registry = str_field(context, "registry_generation")?;
+                let admission = str_field(context, "admission")?;
+                {
+                    let state = self.state.lock().expect("snapshot state");
+                    let differs = state.waiters.get(cursor).is_some_and(|waiter| {
+                        waiter.context["registry_generation"].as_str() != Some(registry)
+                            || waiter.context["admission"].as_str() != Some(admission)
+                    }) || state.graphs.get(cursor).is_some_and(|graph| {
+                        graph.context["registry_generation"].as_str() != Some(registry)
+                            || graph.context["admission"].as_str() != Some(admission)
+                    }) || state.discoveries.get(cursor).is_some_and(|scan| {
+                        scan.context["registry_generation"].as_str() != Some(registry)
+                            || scan.context["admission"].as_str() != Some(admission)
+                    }) || state.resolutions.get(cursor).is_some_and(|scan| {
+                        scan.context["registry_generation"].as_str() != Some(registry)
+                            || scan.context["admission"].as_str() != Some(admission)
+                    }) || state.projections.get(cursor).is_some_and(|projection| {
+                        projection.registry_generation != registry
+                            || projection.admission != admission
+                    });
+                    if differs {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "cursor registry or admission differs",
+                        ));
+                    }
+                }
+                cancel.check(u64::MAX)?;
                 let (waiter, projection) = {
                     let mut state = self.state.lock().expect("snapshot state");
                     Self::prune(&mut state);
@@ -1606,13 +2581,23 @@ impl NativeStore {
                 }
             }
             "release" => {
-                if str_field(request, "owner_epoch")? != self.owner_epoch {
-                    return Err(SnapshotError::new(
-                        Status::StaleHandle,
-                        "owner epoch differs",
-                    ));
+                let kind = str_field(request, "kind")?;
+                if kind != "cursor" || request.get("owner_epoch").is_some() {
+                    if str_field(request, "owner_epoch")? != self.owner_epoch {
+                        return Err(SnapshotError::new(
+                            Status::StaleHandle,
+                            "owner epoch differs",
+                        ));
+                    }
                 }
                 let token = str_field(request, "token")?;
+                if str_field(request, "kind")? == "cursor" {
+                    return Ok((
+                        json!({"kind":"released","released":self.release_cursor(token,context)?}),
+                        None,
+                        None,
+                    ));
+                }
                 let claimant = str_field(context, "claimant")?;
                 let mut state = self.state.lock().expect("snapshot state");
                 let released = match str_field(request, "kind")? {
@@ -1627,7 +2612,14 @@ impl NativeStore {
                                 "lease claimant differs",
                             ));
                         }
-                        state.leases.remove(token).is_some()
+                        let released = state.leases.remove(token).is_some();
+                        if released {
+                            state.owned.release_lease(token);
+                            state.labels.retain(|_, slot| {
+                                slot.source_handle["lease_id"].as_str() != Some(token)
+                            });
+                        }
+                        released
                     }
                     "reservation" => {
                         if state
@@ -1679,6 +2671,7 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let limits = limits(request)?;
+        let registry = self.registry(context)?;
         cancel.check(limits.deadline_unix_ms)?;
         let classifier = request
             .get("classifier")
@@ -1778,6 +2771,15 @@ impl NativeStore {
                             && old.stamp.size < stamp.size
                     })
                     .cloned();
+                let previous_index_compatible = previous.as_ref().is_some_and(|previous| {
+                    state
+                        .generations
+                        .get(&previous.id)
+                        .is_some_and(|generation| {
+                            generation.registry_generation
+                                == str_field(context, "registry_generation").unwrap_or("")
+                        })
+                });
                 if cached.is_none() {
                     usage[if previous.is_some() { 5 } else { 4 }] += 1;
                 }
@@ -1785,6 +2787,8 @@ impl NativeStore {
                     id: self.token("load"),
                     path: path.clone(),
                     stamp,
+                    registry_generation: str_field(context, "registry_generation")?.to_owned(),
+                    registry,
                     accounted: AtomicUsize::new(0),
                     deadline: now + self.config.preparation,
                     work: Mutex::new(Load {
@@ -1806,6 +2810,7 @@ impl NativeStore {
                         sealed: false,
                         prefix_fence: Vec::new(),
                         previous,
+                        previous_index_compatible,
                         prefix_checked: false,
                         fence: Vec::new(),
                         committed: 0,
@@ -1945,16 +2950,18 @@ impl NativeStore {
             let before_events = usage[3];
             let before_indexed = load.indexed;
             let checked_prefix = load.prefix_checked;
-            let result = self.step(
-                &slot,
-                &mut load,
-                read_bound,
-                events_bound,
-                waiter.limits.max_events.saturating_sub(waiter.used_events),
-                cancel,
-                waiter.deadline,
-                usage,
-            );
+            let result = crate::toolcall::with_registry(Arc::clone(&slot.registry), || {
+                self.step(
+                    &slot,
+                    &mut load,
+                    read_bound,
+                    events_bound,
+                    waiter.limits.max_events.saturating_sub(waiter.used_events),
+                    cancel,
+                    waiter.deadline,
+                    usage,
+                )
+            });
             waiter.used_bytes += (usage[1] - before_bytes) as usize;
             waiter.used_events += (usage[3] - before_events) as usize
                 + if checked_prefix == load.prefix_checked {
@@ -1962,7 +2969,10 @@ impl NativeStore {
                 } else {
                     0
                 };
-            let generation = load.result.as_ref().map(GenerationRecord::new);
+            let generation = load
+                .result
+                .as_ref()
+                .map(|snapshot| GenerationRecord::new(snapshot, &slot.registry_generation));
             let pending_charge = if generation.is_some() {
                 0
             } else {
@@ -2131,6 +3141,16 @@ impl NativeStore {
         }
     }
 
+    fn before_source_read(&self) {
+        #[cfg(test)]
+        {
+            let hook = self.read_hook.lock().expect("read hook").take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
     fn matches_prefix(current: SourceStamp, pinned: SourceStamp) -> bool {
         current == pinned || current.identity == pinned.identity && current.size > pinned.size
     }
@@ -2175,6 +3195,7 @@ impl NativeStore {
                 .map_err(io_error)?;
             let start = load.origin_fence.len();
             load.origin_fence.resize(start + count, 0);
+            self.before_source_read();
             load.file
                 .read_exact(&mut load.origin_fence[start..])
                 .map_err(io_error)?;
@@ -2206,6 +3227,7 @@ impl NativeStore {
                     .map_err(io_error)?;
                 let start = load.prefix_fence.len();
                 load.prefix_fence.resize(start + count, 0);
+                self.before_source_read();
                 load.file
                     .read_exact(&mut load.prefix_fence[start..])
                     .map_err(io_error)?;
@@ -2226,7 +3248,7 @@ impl NativeStore {
                     load.pending_start = previous.committed_bytes;
                     load.provider = Some(Provider::Claude);
                     load.session_id = Some(previous.session_id.clone());
-                    if !previous.provisional_tail {
+                    if !previous.provisional_tail && load.previous_index_compatible {
                         load.activity = previous.activity.as_ref().clone();
                         load.indexed = previous.event_count;
                     }
@@ -2270,6 +3292,7 @@ impl NativeStore {
                 let count = (slot.stamp.size - load.offset).min(read_bound as u64) as usize;
                 let start = load.pending.len();
                 load.pending.resize(start + count, 0);
+                self.before_source_read();
                 load.file
                     .read_exact(&mut load.pending[start..])
                     .map_err(io_error)?;
@@ -2458,6 +3481,7 @@ impl NativeStore {
                 .map_err(io_error)?;
             let start = load.seal_fence.len();
             load.seal_fence.resize(start + count, 0);
+            self.before_source_read();
             load.file
                 .read_exact(&mut load.seal_fence[start..])
                 .map_err(io_error)?;
@@ -2599,6 +3623,7 @@ impl NativeStore {
             root_checked: false,
             projection_at: 0,
             pending_record: None,
+            published_members: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(bounds.deadline_unix_ms),
             accounted: 0,
         };
@@ -2622,6 +3647,13 @@ impl NativeStore {
         request
     }
 
+    fn rollback_graph_page(state: &mut StoreState, graph: &mut GraphCursor) {
+        for index in graph.published_members.drain(..) {
+            graph.nodes[index].transferred = false;
+        }
+        Self::release_graph_state(state, graph);
+    }
+
     fn graph_step(
         &self,
         token: &str,
@@ -2629,69 +3661,87 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let result = self.graph_work(&mut graph, cancel, usage);
-        match result {
+        let (data, complete) = match self.graph_work(&mut graph, cancel, usage) {
+            Ok(GraphYield::Complete(data)) => (data, true),
+            Ok(GraphYield::Pending(data)) => (data, false),
             Err(error) => {
-                Self::release_graph_state(&mut self.state.lock().expect("snapshot state"), &graph);
-                Err(error)
+                Self::rollback_graph_page(
+                    &mut self.state.lock().expect("snapshot state"),
+                    &mut graph,
+                );
+                return Err(error);
             }
-            Ok(GraphYield::Complete(data)) => {
-                Self::release_graph_state(&mut self.state.lock().expect("snapshot state"), &graph);
-                Ok((data, None, None))
+        };
+        let output = match encoded_size(&data, graph.remaining.max_output_bytes.min(MAX_DATA_BYTES))
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                Self::rollback_graph_page(
+                    &mut self.state.lock().expect("snapshot state"),
+                    &mut graph,
+                );
+                return Err(error);
             }
-            Ok(GraphYield::Pending(data)) => {
-                let output =
-                    encoded_size(&data, graph.remaining.max_output_bytes.min(MAX_DATA_BYTES))?;
-                graph.remaining.max_output_bytes =
-                    graph.remaining.max_output_bytes.saturating_sub(output);
-                graph.expires = (now_ms() + self.config.ttl).min(graph.remaining.deadline_unix_ms);
-                let request_charge = crate::snapshot_memory::value_charge(&graph.request);
-                graph.accounted = size_of::<GraphCursor>()
-                    + request_charge.owned_capacity_bytes
-                    + request_charge.opaque_dom_accounted_bytes
-                    + graph.nodes.capacity() * size_of::<GraphNode>()
-                    + graph
-                        .nodes
+        };
+        graph.remaining.max_output_bytes = graph.remaining.max_output_bytes.saturating_sub(output);
+        graph.expires = (now_ms() + self.config.ttl).min(graph.remaining.deadline_unix_ms);
+        if !complete {
+            let charge = crate::snapshot_memory::value_charge(&graph.request);
+            graph.accounted = size_of::<GraphCursor>()
+                + charge.owned_capacity_bytes
+                + charge.opaque_dom_accounted_bytes
+                + graph.nodes.capacity() * size_of::<GraphNode>()
+                + graph
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        let charge = crate::snapshot_memory::value_charge(&node.description);
+                        node.path.as_os_str().len()
+                            + charge.owned_capacity_bytes
+                            + charge.opaque_dom_accounted_bytes
+                    })
+                    .sum::<usize>()
+                + graph.tasks.capacity() * size_of::<GraphTask>()
+                + graph
+                    .pending_record
+                    .as_ref()
+                    .map_or(0, |(_, record)| record.capacity())
+                + graph.listing.as_ref().map_or(0, |listing| {
+                    listing
+                        .children
                         .iter()
-                        .map(|node| {
-                            let charge = crate::snapshot_memory::value_charge(&node.description);
-                            node.path.as_os_str().len()
-                                + charge.owned_capacity_bytes
-                                + charge.opaque_dom_accounted_bytes
-                        })
+                        .map(|path| path.as_os_str().len())
                         .sum::<usize>()
-                    + graph.tasks.capacity() * size_of::<GraphTask>()
-                    + graph
-                        .pending_record
-                        .as_ref()
-                        .map_or(0, |(_, record)| record.capacity())
-                    + graph.listing.as_ref().map_or(0, |listing| {
-                        listing
-                            .children
-                            .iter()
-                            .map(|path| path.as_os_str().len())
-                            .sum::<usize>()
-                    });
-                let mut state = self.state.lock().expect("snapshot state");
-                if state.graphs.len() >= self.lease_cap(&graph.context)? {
-                    Self::release_graph_state(&mut state, &graph);
-                    return Err(SnapshotError::new(
-                        Status::LeaseLimit,
-                        "graph cursor admission exhausted",
-                    ));
-                }
-                if let Err(error) = self.admit_memory(&mut state, &graph.context, graph.accounted) {
-                    Self::release_graph_state(&mut state, &graph);
-                    return Err(error);
-                }
-                state.graphs.insert(token.to_owned(), graph);
-                Ok((
-                    data,
-                    Some(token.to_owned()),
-                    Some("graph work incomplete".to_owned()),
-                ))
-            }
+                });
         }
+        let mut state = self.state.lock().expect("snapshot state");
+        if let Err(error) = self.lease(&state, &graph.root_handle, &graph.context) {
+            Self::rollback_graph_page(&mut state, &mut graph);
+            return Err(error);
+        }
+        if complete {
+            graph.published_members.clear();
+            Self::release_graph_state(&mut state, &graph);
+            return Ok((data, None, None));
+        }
+        if state.graphs.len() >= self.lease_cap(&graph.context)? {
+            Self::rollback_graph_page(&mut state, &mut graph);
+            return Err(SnapshotError::new(
+                Status::LeaseLimit,
+                "graph cursor admission exhausted",
+            ));
+        }
+        if let Err(error) = self.admit_memory(&mut state, &graph.context, graph.accounted) {
+            Self::rollback_graph_page(&mut state, &mut graph);
+            return Err(error);
+        }
+        graph.published_members.clear();
+        state.graphs.insert(token.to_owned(), graph);
+        Ok((
+            data,
+            Some(token.to_owned()),
+            Some("graph work incomplete".to_owned()),
+        ))
     }
 
     fn graph_add_source(
@@ -2853,7 +3903,13 @@ impl NativeStore {
                         .file_stem()
                         .expect("sidechain filename")
                         .to_string_lossy()
-                        .trim_start_matches("agent-")
+                        .strip_prefix("agent-")
+                        .unwrap_or_else(|| {
+                            path.file_stem()
+                                .expect("sidechain filename")
+                                .to_str()
+                                .unwrap_or("")
+                        })
                         .to_owned();
                     graph.tasks.push(GraphTask::Visit {
                         path,
@@ -2970,6 +4026,12 @@ impl NativeStore {
                 self.validate_scope(&node.description["handle"], &graph.context)?;
                 self.authority(&graph.context, Some(&node.snapshot.canonical_path))?;
                 if membership {
+                    if node.snapshot.session_id.len() > 256 {
+                        return Err(SnapshotError::new(
+                            Status::OutputLimit,
+                            "graph session identity exceeds record bound",
+                        ));
+                    }
                     let record = json!({"path":node.path.to_string_lossy().as_ref(),"session_id":node.snapshot.session_id,"provider":node.snapshot.provider.as_str(),"depth":node.depth,"spawned_by":node.spawned_by,"description":node.description});
                     encoded_size(&record, MAX_DATA_BYTES)?;
                     graph.projection_at += 1;
@@ -3036,6 +4098,7 @@ impl NativeStore {
             output_bytes += record_bytes + 1;
             if membership {
                 graph.nodes[index].transferred = true;
+                graph.published_members.push(index);
             }
             records.push(record);
         }
@@ -3076,7 +4139,12 @@ impl NativeStore {
         let handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing view handle"))?;
-        let snapshot = self.pin(handle, context)?;
+        let (snapshot, description) = self.pin_scope(handle, context)?;
+        if sonic_rs::to_vec(&view["classifier"]).ok()
+            != sonic_rs::to_vec(&description["classifier"]).ok()
+        {
+            return Err(invalid("view classifier differs from leased generation"));
+        }
         let mut page = bound;
         page.max_output_bytes = page.max_output_bytes.min(MAX_DATA_BYTES);
         page.max_items = page.max_items.min(self.config.page_items);
@@ -3152,6 +4220,8 @@ impl NativeStore {
                     token.clone(),
                     ProjectionCursor {
                         claimant: str_field(context, "claimant")?.to_owned(),
+                        registry_generation: str_field(context, "registry_generation")?.to_owned(),
+                        admission: str_field(context, "admission")?.to_owned(),
                         request: request.clone(),
                         limits: bound,
                         next,
@@ -3329,6 +4399,7 @@ impl NativeStore {
             roots: paths,
             directories: Vec::new(),
             seen: HashSet::new(),
+            seen_directories: HashSet::new(),
             examined: 0,
             sources: 0,
             emitted: 0,
@@ -3383,6 +4454,12 @@ impl NativeStore {
                 self.authority(&scan.context, Some(&path))?;
                 let metadata = std::fs::metadata(&path).map_err(io_error)?;
                 if metadata.is_dir() {
+                    if !scan
+                        .seen_directories
+                        .insert(SourceStamp::of(&metadata).identity)
+                    {
+                        continue;
+                    }
                     scan.directories
                         .push(std::fs::read_dir(path).map_err(io_error)?);
                     continue;
@@ -3401,15 +4478,18 @@ impl NativeStore {
                 let entry = entry.map_err(io_error)?;
                 scan.examined += 1;
                 usage[17] += 1;
-                let ty = entry.file_type().map_err(io_error)?;
-                if ty.is_dir() {
-                    scan.roots.push(entry.path());
+                let path = entry.path();
+                let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                self.authority(&scan.context, Some(&canonical))?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+                if metadata.is_dir() {
+                    scan.roots.push(canonical);
                     continue;
                 }
-                if !ty.is_file() {
+                if !metadata.is_file() {
                     continue;
                 }
-                entry.path()
+                path
             };
             if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
@@ -3561,12 +4641,21 @@ impl NativeStore {
             let path = std::fs::canonicalize(root.as_str().ok_or_else(|| invalid("invalid root"))?)
                 .map_err(io_error)?;
             self.authority(context, Some(&path))?;
-            stack.push(path);
+            stack.push(PathBuf::from(root.as_str().expect("validated root")));
         }
         let mut found = HashMap::new();
         let mut complete = true;
         let mut identities = HashSet::new();
+        let mut directories = HashSet::new();
         'walk: while let Some(path) = stack.pop() {
+            let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+            self.authority(context, Some(&canonical))?;
+            let root_metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            if root_metadata.is_dir()
+                && !directories.insert(SourceStamp::of(&root_metadata).identity)
+            {
+                continue;
+            }
             let paths: Box<dyn Iterator<Item = Result<PathBuf, std::io::Error>>> =
                 if std::fs::metadata(&path).map_err(io_error)?.is_file() {
                     Box::new(std::iter::once(Ok(path)))
@@ -3587,7 +4676,9 @@ impl NativeStore {
                 }
                 usage[17] += 1;
                 let path = path.map_err(io_error)?;
-                let metadata = std::fs::symlink_metadata(&path).map_err(io_error)?;
+                let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                self.authority(context, Some(&canonical))?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 if metadata.is_dir() {
                     stack.push(path);
                     continue;
@@ -3757,6 +4848,10 @@ impl NativeStore {
 }
 
 #[cfg(test)]
+#[path = "snapshot_regressions.rs"]
+mod regression_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -3804,7 +4899,7 @@ mod tests {
     }
 
     fn context(claimant: &str) -> Value {
-        json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":"1"})
+        json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
     }
 
     fn store() -> NativeStore {
@@ -4198,5 +5293,566 @@ mod tests {
         let state = store.state.lock().unwrap();
         assert_eq!(state.counters[4], 1);
         assert_eq!(state.counters[1], pinned_size + 128);
+    }
+    fn graph_request(
+        root: &Value,
+        query: Value,
+        attachments: Vec<String>,
+        selectors: Value,
+    ) -> Value {
+        let template = acquire(Path::new("/unused"));
+        json!({"schema":SCHEMA,"id":"graph-query","operation":"query","view":{"handle":handle(root),"classifier":{"id":"native","version":"1"},"selectors":selectors,"attachments":attachments},"query":query,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+    }
+
+    fn graph_records(store: &NativeStore, request: &Value, owner: &Value) -> Vec<Value> {
+        let mut response = store.request(request, owner, &Cancellation::default());
+        let mut records = Vec::new();
+        for _ in 0..150 {
+            if let Some(items) = response["data"]
+                .get("records_json")
+                .and_then(Value::as_array)
+            {
+                for item in items.iter() {
+                    records.push(sonic_rs::from_str(item.as_str().unwrap()).unwrap());
+                }
+            }
+            if response["status"].as_str() == Some("ok") {
+                return records;
+            }
+            assert_eq!(
+                response["status"].as_str(),
+                Some("incomplete"),
+                "{response:?}"
+            );
+            let cursor = response["cursor"]
+                .as_str()
+                .expect("bounded graph continuation")
+                .to_owned();
+            response = store.request(
+                &json!({"schema":SCHEMA,"id":"graph-next","operation":"resume","cursor":cursor}),
+                owner,
+                &Cancellation::default(),
+            );
+        }
+        panic!("graph did not finish");
+    }
+
+    #[test]
+    fn classifier_continuation_coalesces_without_repeating_successful_batches() {
+        let source = Source::new(
+            &(0..5)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let store = store();
+        let a = context("a");
+        let b = context("b");
+        let _native = finish(
+            &store,
+            store.request(&acquire(&source.path), &a, &Cancellation::default()),
+            &a,
+        );
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&batches);
+        store
+            .register_classifier(
+                "staged",
+                "1",
+                Arc::new(move |_, range| {
+                    recorded.lock().unwrap().push(range.clone());
+                    Ok(vec![true; range.len()])
+                }),
+            )
+            .unwrap();
+        let mut request = acquire(&source.path);
+        request.insert("classifier", json!({"id":"staged","version":"1"}));
+        let first = store.request(&request, &a, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"));
+        let second = store.request(&request, &b, &Cancellation::default());
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        let failed=store.request(&json!({"schema":SCHEMA,"id":"cancel-classifier","operation":"resume","cursor":first["cursor"]}),&a,&cancelled);
+        assert_eq!(failed["status"].as_str(), Some("cancelled"));
+        let completed = finish(&store, second, &b);
+        assert_eq!(store.pin(handle(&completed), &b).unwrap().event_count, 5);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..4, 4..5]);
+    }
+
+    #[test]
+    fn graph_walk_is_sorted_dfs_then_attachments_and_deduplicates_physical_aliases() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        let a = children.join("agent-a.jsonl");
+        let b = children.join("agent-b.jsonl");
+        std::fs::write(&a, format!("{}\n", user("a"))).unwrap();
+        std::fs::write(&b, format!("{}\n", user("b"))).unwrap();
+        let grandchildren = children.join("agent-a/subagents");
+        std::fs::create_dir_all(&grandchildren).unwrap();
+        std::fs::write(
+            grandchildren.join("agent-z.jsonl"),
+            format!("{}\n", user("z")),
+        )
+        .unwrap();
+        let attachment = source.directory.join("external.jsonl");
+        std::fs::write(&attachment, format!("{}\n", user("external"))).unwrap();
+        let alias = source.directory.join("alias.jsonl");
+        std::fs::hard_link(&b, &alias).unwrap();
+        let store=NativeStore::new(&json!({"max_read_bytes_per_step":128,"max_events_per_step":2,"max_items_per_page":2,"max_leases":16,"reserved_hook_leases":1,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let records = graph_records(
+            &store,
+            &graph_request(
+                &root,
+                json!({"kind":"sidechain_membership","order":"forward"}),
+                vec![
+                    alias.to_string_lossy().into_owned(),
+                    attachment.to_string_lossy().into_owned(),
+                ],
+                json!([]),
+            ),
+            &owner,
+        );
+        let names: Vec<_> = records
+            .iter()
+            .map(|record| {
+                Path::new(record["path"].as_str().unwrap())
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "agent-a.jsonl",
+                "agent-z.jsonl",
+                "agent-b.jsonl",
+                "external.jsonl"
+            ]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["depth"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1, 1]
+        );
+        assert!(records[3]["spawned_by"].is_null());
+        for record in records {
+            assert!(store.pin(&record["description"]["handle"], &owner).is_ok());
+        }
+    }
+
+    #[test]
+    fn graph_predicates_use_whole_children_and_local_queries_ignore_attachments() {
+        let source = Source::new(&format!("{}\n{}\n", user("root-first"), user("root-last")));
+        let child = source.directory.join("external.jsonl");
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"child.rs"}}]}}"#;
+        std::fs::write(
+            &child,
+            format!("{}\n{tool}\n{}\n", user("child-first"), user("child-last")),
+        )
+        .unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let attachments = vec![child.to_string_lossy().into_owned()];
+        let local = store.request(
+            &graph_request(
+                &root,
+                json!({"kind":"has_read","pattern":"child.rs","subagents":false}),
+                attachments.clone(),
+                json!([{"kind":"current_turn"}]),
+            ),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(local["status"].as_str(), Some("ok"));
+        assert_eq!(local["data"]["value"].as_bool(), Some(false));
+        let request = graph_request(
+            &root,
+            json!({"kind":"has_read","pattern":"child.rs","subagents":true}),
+            attachments,
+            json!([{"kind":"current_turn"}]),
+        );
+        let result = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(result["status"].as_str(), Some("ok"));
+        assert_eq!(result["data"]["value"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn symlink_file_roots_resolve_and_directory_cycles_terminate() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let physical = source.directory.join("physical.jsonl");
+        std::fs::rename(&source.path, &physical).unwrap();
+        std::os::unix::fs::symlink(&physical, &source.path).unwrap();
+        std::os::unix::fs::symlink(&source.directory, source.directory.join("cycle")).unwrap();
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let resolve = json!({"schema":SCHEMA,"id":"resolve-link","operation":"resolve","session_ids":["s"],"roots":[source.path.to_string_lossy().as_ref()],"classifier":{"id":"native","version":"1"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let resolved = finish(
+            &store,
+            store.request(&resolve, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(resolved["status"].as_str(), Some("ok"));
+        assert_eq!(
+            resolved["data"]["sessions"][0]["status"].as_str(),
+            Some("ok")
+        );
+        let discover = json!({"schema":SCHEMA,"id":"discover-cycle","operation":"discover","roots":[source.directory.to_string_lossy().as_ref()],"checkpoint":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let discovered = finish(
+            &store,
+            store.request(&discover, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(discovered["status"].as_str(), Some("ok"));
+        let state = store.state.lock().unwrap();
+        assert!(state.counters[17] < 10);
+        assert_eq!(
+            state.checkpoints.values().next().unwrap().inventory.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn incomplete_graph_never_returns_a_false_predicate() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        std::fs::write(children.join("agent-a.jsonl"), format!("{}\n", user("a"))).unwrap();
+        std::fs::write(children.join("agent-b.jsonl"), format!("{}\n", user("b"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut request = graph_request(
+            &root,
+            json!({"kind":"has_tool","pattern":"Read","subagents":true}),
+            Vec::new(),
+            json!([]),
+        );
+        request["limits"].insert("max_discovery_entries", json!(1));
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(response["status"].as_str(), Some("incomplete"));
+        assert!(response["data"].is_null());
+        assert!(response["cursor"].is_null());
+    }
+    fn register_changed_registry(store: &NativeStore) -> String {
+        store
+            .register_tool_registry(
+                &json!([{"name":"fetch","behaves_like":"Read","span_edit":null}]),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn resume_registry_and_admission_changes_do_not_consume_waiter() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = store();
+        let owner = context("a");
+        let response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+        let cursor = response["cursor"].as_str().unwrap().to_owned();
+        let mut changed = owner.clone();
+        changed.insert(
+            "registry_generation",
+            json!(register_changed_registry(&store)),
+        );
+        let resume =
+            json!({"schema":SCHEMA,"id":"changed-resume","operation":"resume","cursor":cursor});
+        let before = store.state.lock().unwrap().counters[1];
+        assert_eq!(
+            store.request(&resume, &changed, &Cancellation::default())["status"].as_str(),
+            Some("stale_cursor")
+        );
+        let mut changed_role = owner.clone();
+        changed_role.insert("admission", json!("review"));
+        assert_eq!(
+            store.request(&resume, &changed_role, &Cancellation::default())["status"].as_str(),
+            Some("stale_cursor")
+        );
+        assert_eq!(store.state.lock().unwrap().counters[1], before);
+        assert!(store.state.lock().unwrap().waiters.contains_key(&cursor));
+        let completed = finish(
+            &store,
+            store.request(&resume, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert!(store.pin(handle(&completed), &owner).is_ok());
+    }
+
+    #[test]
+    fn resolution_registry_change_is_rejected_before_the_next_source_stage() {
+        let source = Source::new(&format!("{}\n", user("first")));
+        let other = source.directory.join("t.jsonl");
+        std::fs::write(
+            &other,
+            format!(
+                "{}\n",
+                user("second").replace("\"sessionId\":\"s\"", "\"sessionId\":\"t\"")
+            ),
+        )
+        .unwrap();
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"resolve-stages","operation":"resolve","session_ids":["s","t"],"roots":[source.directory.to_string_lossy().as_ref()],"classifier":{"id":"native","version":"1"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let started = store.request(&request, &owner, &Cancellation::default());
+        let cursor = started["cursor"].as_str().unwrap().to_owned();
+        let mut changed = owner.clone();
+        changed.insert(
+            "registry_generation",
+            json!(register_changed_registry(&store)),
+        );
+        let resume =
+            json!({"schema":SCHEMA,"id":"resume-resolve","operation":"resume","cursor":cursor});
+        assert_eq!(
+            store.request(&resume, &changed, &Cancellation::default())["status"].as_str(),
+            Some("stale_cursor")
+        );
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .resolutions
+            .contains_key(&cursor));
+        let completed = finish(
+            &store,
+            store.request(&resume, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(completed["status"].as_str(), Some("ok"));
+        assert_eq!(completed["data"]["sessions"].as_array().unwrap().len(), 2);
+        for session in completed["data"]["sessions"].as_array().unwrap().iter() {
+            assert_eq!(session["status"].as_str(), Some("ok"));
+        }
+    }
+
+    #[test]
+    fn registry_change_reindexes_cached_chunks_without_reading_source_again() {
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"mcp__example__fetch","input":{"file_path":"file.rs"}}]}}"#;
+        let source = Source::new(&format!("{}\n{tool}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let first = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let before = store.state.lock().unwrap().counters[1];
+        let mut changed = owner.clone();
+        changed.insert(
+            "registry_generation",
+            json!(register_changed_registry(&store)),
+        );
+        let second = finish(
+            &store,
+            store.request(&acquire(&source.path), &changed, &Cancellation::default()),
+            &changed,
+        );
+        let prior = store.pin(handle(&first), &owner).unwrap();
+        let next = store.pin(handle(&second), &changed).unwrap();
+        assert_eq!(store.state.lock().unwrap().counters[1], before);
+        assert!(Arc::ptr_eq(&prior.chunks[0], &next.chunks[0]));
+        assert_ne!(prior.id, next.id);
+        let old_query = graph_request(
+            &first,
+            json!({"kind":"has_tool","pattern":"Read","subagents":false}),
+            Vec::new(),
+            json!([]),
+        );
+        let new_query = graph_request(
+            &second,
+            json!({"kind":"has_tool","pattern":"Read","subagents":false}),
+            Vec::new(),
+            json!([]),
+        );
+        assert_eq!(
+            store.request(&old_query, &owner, &Cancellation::default())["data"]["value"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            store.request(&new_query, &changed, &Cancellation::default())["data"]["value"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn old_registry_cleanup_releases_only_undelivered_new_handles() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let first = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let second = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+        let mut changed = owner.clone();
+        changed.insert(
+            "registry_generation",
+            json!(register_changed_registry(&store)),
+        );
+        assert!(store.discard_response(&second, &changed).unwrap());
+        assert!(store.pin(handle(&second), &owner).is_err());
+        assert!(store.pin(handle(&first), &owner).is_ok());
+        let describe=store.request(&json!({"schema":SCHEMA,"id":"describe","operation":"describe","handle":handle(&first)}),&owner,&Cancellation::default());
+        assert!(!store.discard_response(&describe, &changed).unwrap());
+        assert!(store.pin(handle(&first), &owner).is_ok());
+        let release=store.request(&json!({"schema":SCHEMA,"id":"release-old","operation":"release","kind":"lease","owner_epoch":store.owner_epoch,"token":handle(&first)["lease_id"]}),&changed,&Cancellation::default());
+        assert_eq!(release["data"]["released"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn wrapped_domain_cursor_delivery_has_the_same_cleanup_identity() {
+        let store = store();
+        let owner = context("a");
+        let cursor = store.owned_token();
+        store.track_delivery(&json!({"cursor":cursor}), &owner, false);
+        let wrapped =
+            json!({"id":"outer","status":"incomplete","data":{"metadata":{}},"cursor":cursor});
+        assert!(store.discard_response(&wrapped, &owner).unwrap());
+        assert!(!store.discard_response(&wrapped, &owner).unwrap());
+    }
+
+    #[test]
+    fn external_classifier_preparations_bind_execution_and_rotate_cursors() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let classifier = json!({"id":"application","version":"1"});
+        let page = store
+            .prepare_classifier(
+                handle(&root),
+                &classifier,
+                &owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        let cursor = page["cursor"].as_str().unwrap().to_owned();
+        let mut changed = owner.clone();
+        changed.insert(
+            "registry_generation",
+            json!(register_changed_registry(&store)),
+        );
+        assert_eq!(
+            store
+                .submit_classifier(&cursor, &[true, false], &changed, &Cancellation::default())
+                .unwrap_err()
+                .status,
+            Status::StaleCursor
+        );
+        assert!(store.state.lock().unwrap().labels.contains_key(&cursor));
+        let complete = store
+            .submit_classifier(&cursor, &[true, false], &owner, &Cancellation::default())
+            .unwrap();
+        assert_eq!(complete["complete"].as_bool(), Some(true));
+        assert!(store
+            .submit_classifier(&cursor, &[true, false], &owner, &Cancellation::default())
+            .is_err());
+        let derived = store
+            .pin(&complete["description"]["handle"], &owner)
+            .unwrap();
+        assert_eq!(derived.event_count, 2);
+        assert!(derived.id.starts_with("labels:"));
+        assert_eq!(derived.activity.turn_count(), 1);
+        let page2 = store
+            .prepare_classifier(
+                handle(&root),
+                &classifier,
+                &owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        assert_ne!(page2["cursor"].as_str(), Some(cursor.as_str()));
+        let released=store.request(&json!({"schema":SCHEMA,"id":"release-labels","operation":"release","kind":"cursor","token":page2["cursor"]}),&changed,&Cancellation::default());
+        assert_eq!(released["data"]["released"].as_bool(), Some(true));
+        assert!(store
+            .pin(&complete["description"]["handle"], &owner)
+            .is_ok());
+    }
+    #[test]
+    fn label_publication_transfers_quota_and_lease_failure_rolls_back_generation() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store=NativeStore::new(&json!({"max_leases":2,"reserved_hook_leases":1,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let classifier = json!({"id":"application","version":"1"});
+        let page = store
+            .prepare_classifier(
+                handle(&root),
+                &classifier,
+                &owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        let complete = store
+            .submit_classifier(
+                page["cursor"].as_str().unwrap(),
+                &[true],
+                &owner,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(complete["complete"].as_bool(), Some(true));
+        assert_eq!(store.state.lock().unwrap().transient_bytes, 0);
+        let reservation = store.reserve_projection(&owner, 1024 * 1024).unwrap();
+        drop(reservation);
+        let page = store
+            .prepare_classifier(
+                handle(&root),
+                &classifier,
+                &owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        let generations = store.state.lock().unwrap().generations.len();
+        let failed = store
+            .submit_classifier(
+                page["cursor"].as_str().unwrap(),
+                &[true],
+                &owner,
+                &Cancellation::default(),
+            )
+            .unwrap_err();
+        assert_eq!(failed.status, Status::LeaseLimit);
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.generations.len(), generations);
+        assert_eq!(state.transient_bytes, 0);
     }
 }

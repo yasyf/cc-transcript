@@ -5,16 +5,17 @@ use cc_transcript_core::snapshot::{
     Cancellation, NativeStore, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
     SCHEMA,
 };
+use cc_transcript_core::toolcall::{with_registry, ToolRegistrySnapshot};
 use cc_transcript_core::{snapshot_codec, snapshot_projection};
 use jsonschema::Validator;
 use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyBool, PyList, PyString, PyTuple};
 use serde_json::Value as SchemaValue;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::mining;
-use crate::snapshot_decode::{snapshot_activity_payload, ActivityUsage};
+use crate::snapshot_decode::{decode_snapshot_events, snapshot_activity_payload, ActivityUsage};
 use crate::views::events::event_view;
 
 pyo3::create_exception!(_native, SnapshotOperationError, PyRuntimeError);
@@ -32,6 +33,10 @@ struct Schemas {
     anchor: Validator,
     render: Validator,
     scope_limits: Validator,
+    publication: Validator,
+    usage: Validator,
+    work: Validator,
+    tool_registry: Validator,
 }
 
 fn compile(schema: &SchemaValue) -> Validator {
@@ -48,6 +53,12 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
     };
     Schemas {
         request: compile(&request),
+        tool_registry: compile(
+            &serde_json::from_str(include_str!(
+                "../../../../cc_transcript/snapshot_schema/tool_registry.schema.json"
+            ))
+            .expect("tool registry schema JSON"),
+        ),
         context: compile(
             &serde_json::from_str(include_str!(
                 "../../../../cc_transcript/snapshot_schema/context.schema.json"
@@ -64,6 +75,31 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
         classifier: definition("Classifier"),
         anchor: definition("EventRef"),
         render: definition("HydrationBudget"),
+        publication: compile(&serde_json::json!({
+            "$schema":request["$schema"],"$defs":request["$defs"],
+            "type":"object","additionalProperties":false,
+            "required":["id","deadline_unix_ms","limits","view"],
+            "properties":{
+                "id":request["$defs"]["Acquire"]["properties"]["id"],
+                "deadline_unix_ms":request["$defs"]["Acquire"]["properties"]["deadline_unix_ms"],
+                "limits":{"$ref":"#/$defs/Limits"},
+                "view":{"type":"object","additionalProperties":false,"required":["handle"],
+                    "properties":{"handle":{"$ref":"#/$defs/Handle"}}}
+            }
+        })),
+        usage: {
+            let response: SchemaValue = serde_json::from_str(include_str!(
+                "../../../../cc_transcript/snapshot_schema/response.schema.json"
+            ))
+            .expect("response schema JSON");
+            compile(
+                &serde_json::json!({"$schema":response["$schema"],"$defs":response["$defs"],"$ref":"#/$defs/Usage"}),
+            )
+        },
+        work: compile(&serde_json::json!({
+            "type":"object","required":["read_bytes","events","items","output_bytes"],
+            "additionalProperties":{"type":"integer","minimum":0,"maximum":9_007_199_254_740_991_u64}
+        })),
         scope_limits: compile(&serde_json::json!({
             "$schema": request["$schema"], "$defs": request["$defs"],
             "type": "object", "additionalProperties": false,
@@ -314,6 +350,18 @@ impl NativeSnapshotStore {
         .map_err(error)
     }
 
+    fn default_registry_generation(&self) -> String {
+        self.inner.default_registry_generation()
+    }
+
+    fn register_tool_registry(&self, py: Python<'_>, specs_json: &str) -> PyResult<String> {
+        py.detach(|| {
+            let specs = validated(specs_json, &SCHEMAS.tool_registry)?;
+            self.inner.register_tool_registry(&specs)
+        })
+        .map_err(error)
+    }
+
     fn owner_epoch(&self) -> String {
         self.inner.owner_epoch.clone()
     }
@@ -338,6 +386,135 @@ impl NativeSnapshotStore {
         .map_err(error)
     }
 
+    fn discard_response(
+        &self,
+        py: Python<'_>,
+        response_json: &str,
+        context_json: &str,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            let response = parse(response_json, MAX_INPUT_BYTES)?;
+            let context = validated(context_json, &SCHEMAS.context)?;
+            self.inner.discard_response(&response, &context).map(|_| ())
+        })
+        .map_err(error)
+    }
+
+    fn publish_projection<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+        metadata_json: &str,
+        field: &str,
+        records_json: &Bound<'py, PyList>,
+        usage_json: &str,
+        work_json: &str,
+    ) -> PyResult<Bound<'py, PyString>> {
+        use cc_transcript_core::snapshot_owned::{MAX_OWNED_BYTES, MAX_OWNED_RECORDS};
+        let length = records_json.len();
+        if length > MAX_OWNED_RECORDS {
+            return Err(error(SnapshotError::new(
+                Status::OutputLimit,
+                "too many owned records",
+            )));
+        }
+        let (request, context, metadata, usage, work) = py
+            .detach(|| {
+                Ok::<_, SnapshotError>((
+                    validated(request_json, &SCHEMAS.publication)?,
+                    validated(context_json, &SCHEMAS.context)?,
+                    parse(metadata_json, MAX_INPUT_BYTES)?,
+                    validated(usage_json, &SCHEMAS.usage)?,
+                    validated(work_json, &SCHEMAS.work)?,
+                ))
+            })
+            .map_err(error)?;
+        let deadline = request
+            .get("deadline_unix_ms")
+            .and_then(Value::as_u64)
+            .expect("validated deadline");
+        cancel.inner.check(deadline).map_err(error)?;
+        let pointer_bytes =
+            length * (std::mem::size_of::<Bound<'_, PyString>>() + std::mem::size_of::<&str>());
+        let _pointers = py
+            .detach(|| {
+                self.inner
+                    .reserve_owned_input(&context, &cancel.inner, pointer_bytes)
+            })
+            .map_err(error)?;
+        if records_json.len() > length {
+            return Err(error(invalid("record list grew during admission")));
+        }
+        let mut strings = Vec::with_capacity(length);
+        let mut characters = 0usize;
+        for record in records_json.iter() {
+            let record = record.cast_into_exact::<PyString>()?;
+            characters = characters.checked_add(record.len()?).ok_or_else(|| {
+                error(SnapshotError::new(
+                    Status::OutputLimit,
+                    "owned record length overflow",
+                ))
+            })?;
+            if characters > MAX_OWNED_BYTES {
+                return Err(error(SnapshotError::new(
+                    Status::OutputLimit,
+                    "owned records exceed byte limit",
+                )));
+            }
+            strings.push(record);
+        }
+        let _utf8 = py
+            .detach(|| {
+                self.inner
+                    .reserve_owned_input(&context, &cancel.inner, characters * 4)
+            })
+            .map_err(error)?;
+        cancel.inner.check(deadline).map_err(error)?;
+        let records = strings
+            .iter()
+            .map(|record| record.to_str())
+            .collect::<PyResult<Vec<_>>>()?;
+        let reply = py
+            .detach(|| {
+                self.inner.publish_projection(
+                    &request,
+                    &context,
+                    &cancel.inner,
+                    &metadata,
+                    field,
+                    &records,
+                    &usage,
+                    &work,
+                )
+            })
+            .map_err(error)?;
+        Ok(PyString::new(py, reply.json()))
+    }
+
+    fn resume_projection<'py>(
+        &self,
+        py: Python<'py>,
+        cursor: &str,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+    ) -> PyResult<Option<Bound<'py, PyString>>> {
+        if cursor.len() > 4096 {
+            return Err(error(invalid("projection cursor exceeds byte limit")));
+        }
+        let context = py
+            .detach(|| validated(context_json, &SCHEMAS.context))
+            .map_err(error)?;
+        let reply = py
+            .detach(|| {
+                self.inner
+                    .resume_projection(cursor, &context, &cancel.inner)
+            })
+            .map_err(error)?;
+        Ok(reply.as_ref().map(|reply| PyString::new(py, reply.json())))
+    }
+
     fn borrow(
         &self,
         py: Python<'_>,
@@ -352,11 +529,13 @@ impl NativeSnapshotStore {
             let limits = scope_limits(&validated(limits_json, &SCHEMAS.scope_limits)?);
             cancel.inner.check(limits.deadline_unix_ms)?;
             let (snapshot, description) = self.inner.pin_scope(&handle, &context)?;
+            let registry = self.inner.registry_for_scope(&handle, &context)?;
             cancel.inner.check(limits.deadline_unix_ms)?;
             Ok(NativeSnapshotScope {
                 owner: Arc::clone(&self.inner),
                 context,
                 snapshot: Some(snapshot),
+                registry,
                 description,
                 handle,
                 limits,
@@ -367,6 +546,66 @@ impl NativeSnapshotStore {
                 failures: 0,
                 cancellations: 0,
             })
+        })
+        .map_err(error)
+    }
+
+    fn prepare_classifier(
+        &self,
+        py: Python<'_>,
+        handle_json: &str,
+        classifier_json: &str,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+        limits_json: &str,
+    ) -> PyResult<String> {
+        py.detach(|| {
+            let handle = validated(handle_json, &SCHEMAS.handle)?;
+            let classifier = validated(classifier_json, &SCHEMAS.classifier)?;
+            let context = validated(context_json, &SCHEMAS.context)?;
+            let limits = scope_limits(&validated(limits_json, &SCHEMAS.scope_limits)?);
+            let response = self.inner.prepare_classifier(
+                &handle,
+                &classifier,
+                &context,
+                &cancel.inner,
+                limits,
+            )?;
+            snapshot_codec::encode(&response, MAX_INPUT_BYTES)
+        })
+        .map_err(error)
+    }
+
+    fn submit_classifier(
+        &self,
+        py: Python<'_>,
+        cursor: &str,
+        labels: &Bound<'_, PyList>,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+    ) -> PyResult<String> {
+        if labels.len() > snapshot_codec::MAX_RECORDS {
+            return Err(error(invalid("classifier label page exceeds item limit")));
+        }
+        if cursor.len() > 4096 {
+            return Err(error(invalid("classifier cursor exceeds byte limit")));
+        }
+        cancel.inner.check(u64::MAX).map_err(error)?;
+        let labels = labels
+            .iter()
+            .map(|label| {
+                label
+                    .cast_into_exact::<PyBool>()
+                    .map_err(PyErr::from)?
+                    .extract::<bool>()
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        py.detach(|| {
+            let context = validated(context_json, &SCHEMAS.context)?;
+            let response =
+                self.inner
+                    .submit_classifier(cursor, &labels, &context, &cancel.inner)?;
+            snapshot_codec::encode(&response, MAX_INPUT_BYTES)
         })
         .map_err(error)
     }
@@ -523,6 +762,7 @@ pub(crate) struct NativeSnapshotScope {
     context: Value,
     materialized_output_bytes: usize,
     snapshot: Option<Arc<TranscriptSnapshot>>,
+    registry: Arc<ToolRegistrySnapshot>,
     description: Value,
     handle: Value,
     limits: WorkLimits,
@@ -534,6 +774,16 @@ pub(crate) struct NativeSnapshotScope {
 }
 
 impl NativeSnapshotScope {
+    fn remaining(&self) -> WorkLimits {
+        let mut remaining = self.used.remaining(self.limits);
+        remaining.max_output_bytes = remaining.max_output_bytes.min(
+            self.limits
+                .max_output_bytes
+                .saturating_sub(self.materialized_output_bytes),
+        );
+        remaining
+    }
+
     fn checked_snapshot(&self, py: Python<'_>) -> Result<Arc<TranscriptSnapshot>, SnapshotError> {
         self.cancel.check(self.limits.deadline_unix_ms)?;
         py.detach(|| self.owner.validate_scope(&self.handle, &self.context))?;
@@ -590,7 +840,7 @@ impl NativeSnapshotScope {
         let snapshot = self
             .checked_snapshot(py)
             .map_err(|failure| self.failure(failure))?;
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         if limits.max_events == 0
             || limits.max_items == 0
             || limits.max_read_bytes == 0
@@ -604,14 +854,16 @@ impl NativeSnapshotScope {
         let mut usage = snapshot_projection::ProjectionUsage::default();
         let result = py.detach(|| {
             validate(&request, &SCHEMAS.request)?;
-            snapshot_projection::project_with_usage(
-                &snapshot,
-                &request,
-                &limits,
-                &self.cancel,
-                0,
-                &mut usage,
-            )
+            with_registry(Arc::clone(&self.registry), || {
+                snapshot_projection::project_with_usage(
+                    &snapshot,
+                    &request,
+                    &limits,
+                    &self.cancel,
+                    0,
+                    &mut usage,
+                )
+            })
         });
         self.charge(ScopeWork {
             read_bytes: usage.read_bytes,
@@ -644,9 +896,7 @@ impl NativeSnapshotScope {
             .map_err(|failure| self.failure(failure))?;
         self.materialized_output_bytes =
             self.materialized_output_bytes.saturating_add(encoded.len());
-        self.cancel
-            .check(self.limits.deadline_unix_ms)
-            .map_err(|failure| self.failure(failure))?;
+        self.checkpoint(py)?;
         Ok(encoded)
     }
 }
@@ -700,12 +950,13 @@ impl NativeSnapshotScope {
 
     fn description(&mut self, py: Python<'_>) -> PyResult<String> {
         self.checkpoint(py)?;
-        let limit = self.used.remaining(self.limits).max_output_bytes;
+        let limit = self.remaining().max_output_bytes;
         let encoded = py
             .detach(|| snapshot_codec::encode(&self.description, limit))
             .map_err(|failure| self.failure(failure))?;
         self.materialized_output_bytes =
             self.materialized_output_bytes.saturating_add(encoded.len());
+        self.checkpoint(py)?;
         Ok(encoded)
     }
 
@@ -737,7 +988,7 @@ impl NativeSnapshotScope {
             items: 1,
             output_bytes: 0,
         })?;
-        let limit = self.used.remaining(self.limits).max_output_bytes;
+        let limit = self.remaining().max_output_bytes;
         let output_bytes = py
             .detach(|| {
                 snapshot_codec::encoded_size(
@@ -746,10 +997,84 @@ impl NativeSnapshotScope {
                 )
             })
             .map_err(|failure| self.failure(failure))?;
+        let staging_bytes = charge
+            .owned_capacity_bytes
+            .saturating_add(charge.opaque_dom_accounted_bytes)
+            .saturating_add(std::mem::size_of::<cc_transcript_core::types::Entry>())
+            .saturating_mul(2)
+            .saturating_add(output_bytes.saturating_mul(3))
+            .saturating_add(8192);
+        let owner = Arc::clone(&self.owner);
+        let _reservation = py
+            .detach(|| owner.reserve_owned_input(&self.context, &self.cancel, staging_bytes))
+            .map_err(|failure| self.failure(failure))?;
+        let record = py
+            .detach(|| {
+                snapshot_codec::encode(
+                    &snapshot_codec::EventWire::new(index, &chunk.entries[local]),
+                    limit,
+                )
+            })
+            .map_err(|failure| self.failure(failure))?;
         self.materialized_output_bytes =
-            self.materialized_output_bytes.saturating_add(output_bytes);
+            self.materialized_output_bytes.saturating_add(record.len());
+        let events = with_registry(Arc::clone(&self.registry), || {
+            decode_snapshot_events(py, vec![record], limit)
+        })
+        .map_err(|failure| self.python_failure(py, failure))?;
+        let event = events.get_item(0)?;
         self.checkpoint(py)?;
-        event_view(py, &chunk.entries, local)
+        Ok(event)
+    }
+
+    #[pyo3(signature = (prefix, event_limit=50))]
+    fn classifier_facts(
+        &mut self,
+        py: Python<'_>,
+        prefix: &str,
+        event_limit: usize,
+    ) -> PyResult<String> {
+        let snapshot = self
+            .checked_snapshot(py)
+            .map_err(|failure| self.failure(failure))?;
+        if prefix.len() > self.remaining().max_read_bytes.min(MAX_INPUT_BYTES) {
+            return Err(self.failure(SnapshotError::new(
+                Status::SourceLimit,
+                "classifier prefix exceeds input budget",
+            )));
+        }
+        self.charge(ScopeWork {
+            read_bytes: prefix.len(),
+            items: 1,
+            ..ScopeWork::default()
+        })?;
+        let limits = self.remaining();
+        let mut usage = snapshot_projection::ProjectionUsage::default();
+        let value = py.detach(|| {
+            with_registry(Arc::clone(&self.registry), || {
+                snapshot_projection::classifier_facts(
+                    &snapshot,
+                    prefix,
+                    event_limit,
+                    &limits,
+                    &self.cancel,
+                    &mut usage,
+                )
+            })
+        });
+        self.charge(ScopeWork {
+            read_bytes: usage.read_bytes,
+            events: usage.events,
+            ..ScopeWork::default()
+        })?;
+        let value = value.map_err(|failure| self.failure(failure))?;
+        let encoded = py
+            .detach(|| snapshot_codec::encode(&value, limits.max_output_bytes))
+            .map_err(|failure| self.failure(failure))?;
+        self.materialized_output_bytes =
+            self.materialized_output_bytes.saturating_add(encoded.len());
+        self.checkpoint(py)?;
+        Ok(encoded)
     }
 
     #[pyo3(signature = (classifier_json, anchor_json=None, lookback=40, lookahead=120))]
@@ -796,10 +1121,28 @@ impl NativeSnapshotScope {
             }
             None => 0..snapshot.activity.turn_count(),
         };
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         let mut usage = ActivityUsage::default();
-        let payload =
-            snapshot_activity_payload(py, &snapshot, turns, &limits, &self.cancel, &mut usage);
+        let owner = Arc::clone(&self.owner);
+        let owner_ref = owner.as_ref();
+        let context = self.context.clone();
+        let cancellation = self.cancel.clone();
+        let mut reservation = None;
+        let payload = with_registry(Arc::clone(&self.registry), || {
+            snapshot_activity_payload(
+                py,
+                &snapshot,
+                turns,
+                &limits,
+                &self.cancel,
+                &mut usage,
+                |bytes| {
+                    reservation =
+                        Some(owner_ref.reserve_owned_input(&context, &cancellation, bytes)?);
+                    Ok(())
+                },
+            )
+        });
         self.charge(ScopeWork {
             read_bytes: usage.read_bytes,
             events: usage.events,
@@ -809,7 +1152,9 @@ impl NativeSnapshotScope {
         self.materialized_output_bytes = self
             .materialized_output_bytes
             .saturating_add(usage.output_bytes);
-        payload.map_err(|failure| self.python_failure(py, failure))
+        let payload = payload.map_err(|failure| self.python_failure(py, failure))?;
+        self.checkpoint(py)?;
+        Ok(payload)
     }
 
     fn mine<'py>(
@@ -821,7 +1166,7 @@ impl NativeSnapshotScope {
         let snapshot = self
             .checked_snapshot(py)
             .map_err(|failure| self.failure(failure))?;
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         if spec_json.len() > limits.max_read_bytes.min(MAX_INPUT_BYTES) {
             return Err(self.failure(SnapshotError::new(
                 Status::SourceLimit,
@@ -837,9 +1182,11 @@ impl NativeSnapshotScope {
             .map_err(|reason| self.failure(invalid(reason)))?;
         mining::attach_bounded_callable_formats(&mut spec, callable_formats)
             .map_err(|failure| self.python_failure(py, failure))?;
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         let mut usage = mining::MiningUsage::default();
-        let result = mining::mine_snapshot(py, &snapshot, &spec, limits, &self.cancel, &mut usage);
+        let result = with_registry(Arc::clone(&self.registry), || {
+            mining::mine_snapshot(py, &snapshot, &spec, limits, &self.cancel, &mut usage)
+        });
         self.charge(ScopeWork {
             read_bytes: usage.input_bytes,
             events: usage.events,
@@ -849,7 +1196,9 @@ impl NativeSnapshotScope {
         self.materialized_output_bytes = self
             .materialized_output_bytes
             .saturating_add(usage.output_bytes);
-        result.map_err(|failure| self.python_failure(py, failure))
+        let result = result.map_err(|failure| self.python_failure(py, failure))?;
+        self.checkpoint(py)?;
+        Ok(result)
     }
 
     #[pyo3(signature = (anchors_json, before=6, after=2, preview_chars=200))]
@@ -862,7 +1211,7 @@ impl NativeSnapshotScope {
         preview_chars: usize,
     ) -> PyResult<String> {
         self.checkpoint(py)?;
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         let anchors = py
             .detach(|| parse(anchors_json, limits.max_read_bytes))
             .map_err(|failure| self.failure(failure))?;
@@ -880,7 +1229,7 @@ impl NativeSnapshotScope {
         render_json: &str,
     ) -> PyResult<String> {
         self.checkpoint(py)?;
-        let limits = self.used.remaining(self.limits);
+        let limits = self.remaining();
         let windows = py
             .detach(|| parse(windows_json, limits.max_read_bytes))
             .map_err(|failure| self.failure(failure))?;
@@ -1041,6 +1390,8 @@ mod tests {
             let path = directory.join("s.jsonl");
             std::fs::write(&path, concat!(
                 r#"{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":"preserve bounded owner view"}}"#,
+                "\n",
+                r#"{"type":"user","uuid":"v","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":"second bounded owner view"}}"#,
                 "\n"
             )).unwrap();
             let uid: u64 = py
@@ -1050,11 +1401,11 @@ mod tests {
                 .unwrap()
                 .extract()
                 .unwrap();
-            let context = json!({"claimant":"test","admission":"hook","authority":{"kind":"user","effective_uid":uid.to_string()},"registry_generation":"1"}).to_string();
+            let store = NativeSnapshotStore::new(py, "{}").unwrap();
+            let context = json!({"claimant":"test","admission":"hook","authority":{"kind":"user","effective_uid":uid.to_string()},"registry_generation":store.default_registry_generation()}).to_string();
             let deadline = cc_transcript_core::snapshot::now_ms() + 30_000;
             let generous = json!({"max_read_bytes":1024*1024,"max_events":100,"max_items":100,"max_output_bytes":1024*1024,"max_discovery_entries":100,"max_sources":10});
             let cancellation = SnapshotCancellation::new();
-            let store = NativeSnapshotStore::new(py, "{}").unwrap();
             let request = json!({"schema":SCHEMA,"id":"acquire","operation":"acquire","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"limits":generous,"deadline_unix_ms":deadline});
             let mut response: Value = sonic_rs::from_str(
                 &store
@@ -1116,8 +1467,96 @@ mod tests {
                     &cancellation,
                 )
                 .unwrap();
+            let snapshot = scope.snapshot.as_ref().unwrap();
+            let first_bytes = snapshot_codec::encoded_size(
+                &snapshot_codec::EventWire::new(0, snapshot.entry(0)),
+                snapshot_codec::MAX_RECORD_BYTES,
+            )
+            .unwrap();
+            let second_bytes = snapshot_codec::encoded_size(
+                &snapshot_codec::EventWire::new(1, snapshot.entry(1)),
+                snapshot_codec::MAX_RECORD_BYTES,
+            )
+            .unwrap();
+            let cap = first_bytes + second_bytes - 1;
+            assert!(first_bytes < cap && second_bytes < cap);
+            let mut aggregate = generous.clone();
+            aggregate.insert("max_output_bytes", json!(cap));
+            let mut aggregate_scope = store
+                .borrow(
+                    py,
+                    &handle,
+                    &context,
+                    &json!({"limits":aggregate,"deadline_unix_ms":deadline}).to_string(),
+                    &cancellation,
+                )
+                .unwrap();
+            let original_count =
+                Arc::strong_count(&aggregate_scope.snapshot.as_ref().unwrap().chunks[0].entries);
+            let first = aggregate_scope.event(py, 0).unwrap();
+            assert_eq!(
+                Arc::strong_count(&aggregate_scope.snapshot.as_ref().unwrap().chunks[0].entries),
+                original_count
+            );
+            let first_view = first
+                .extract::<PyRef<crate::views::events::UserEventView>>()
+                .unwrap();
+            assert_eq!(first_view.r.entries.len(), 1);
+            assert!(!Arc::ptr_eq(
+                &first_view.r.entries,
+                &aggregate_scope.snapshot.as_ref().unwrap().chunks[0].entries
+            ));
+            drop(first_view);
+            let count =
+                Arc::strong_count(&aggregate_scope.snapshot.as_ref().unwrap().chunks[0].entries);
+            let failure = aggregate_scope.event(py, 1).unwrap_err();
+            assert!(failure.is_instance_of::<SnapshotOperationError>(py));
+            assert_eq!(
+                Arc::strong_count(&aggregate_scope.snapshot.as_ref().unwrap().chunks[0].entries),
+                count
+            );
+            assert_eq!(aggregate_scope.materialized_output_bytes, first_bytes);
+            assert_eq!(aggregate_scope.used.output_bytes, 0);
+            assert!(aggregate_scope.remaining().max_output_bytes < second_bytes);
+            aggregate_scope.close();
+            drop(first);
             let event = scope.event(py, 0).unwrap();
-            let release = json!({"schema":SCHEMA,"id":"release","operation":"release","handle":sonic_rs::from_str::<Value>(&handle).unwrap()});
+            let publication = json!({"id":"domain-test","deadline_unix_ms":deadline,"limits":generous,
+                "view":{"handle":sonic_rs::from_str::<Value>(&handle).unwrap()}});
+            let records = PyList::new(py, [r#"{"message":"snowman ☃"}"#]).unwrap();
+            let reply = store
+                .publish_projection(
+                    py,
+                    &publication.to_string(),
+                    &context,
+                    &cancellation,
+                    r#"{"min_confidence":0.65}"#,
+                    "candidates",
+                    &records,
+                    &scope.usage(),
+                    &scope.work(),
+                )
+                .unwrap();
+            let page: Value = sonic_rs::from_str(reply.to_str().unwrap()).unwrap();
+            assert_eq!(page.get("complete").and_then(Value::as_bool), Some(true));
+            assert_eq!(
+                page.get("metadata")
+                    .unwrap()
+                    .get("min_confidence")
+                    .and_then(Value::as_f64),
+                Some(0.65)
+            );
+            assert_eq!(
+                page.get("records_json").unwrap().as_array().unwrap()[0].as_str(),
+                Some(r#"{"message":"snowman ☃"}"#)
+            );
+            assert!(store
+                .resume_projection(py, "not-domain", &context, &cancellation)
+                .unwrap()
+                .is_none());
+
+            let handle_value: Value = sonic_rs::from_str(&handle).unwrap();
+            let release = json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"lease","token":handle_value.get("lease_id").unwrap(),"owner_epoch":handle_value.get("owner_epoch").unwrap()});
             store
                 .request(py, &release.to_string(), &context, &cancellation)
                 .unwrap();

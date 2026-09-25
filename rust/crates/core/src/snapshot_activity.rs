@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, ToolUse, Turn};
-use crate::snapshot_memory::value_charge;
+use crate::snapshot_memory::{block_charge, value_charge, MemoryCharge};
 use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{ContentBlock, Entry};
 
@@ -38,6 +38,7 @@ struct CachedTurn {
 struct ResultPosition {
     event: usize,
     ordinal: usize,
+    charge: MemoryCharge,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,7 +104,11 @@ impl ActivityIndex {
                     }
                     Arc::make_mut(&mut next.results).insert(
                         result.tool_use_id.clone(),
-                        ResultPosition { event, ordinal },
+                        ResultPosition {
+                            event,
+                            ordinal,
+                            charge: block_charge(block),
+                        },
                     );
                 }
             }
@@ -242,6 +247,19 @@ impl ActivityIndex {
         )
     }
 
+    pub fn repeated_result_bytes(&self, index: usize) -> usize {
+        self.turns
+            .get(index)
+            .into_iter()
+            .flat_map(|turn| turn.calls.iter())
+            .filter_map(|call| self.results.get(&call.id))
+            .fold(0usize, |total, result| {
+                total
+                    .saturating_add(result.charge.owned_capacity_bytes)
+                    .saturating_add(result.charge.opaque_dom_accounted_bytes)
+            })
+    }
+
     pub fn result_events(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
         self.turns
             .get(index)
@@ -357,6 +375,78 @@ impl ActivityIndex {
             .map(|(_, bytes)| bytes)
             .sum()
     }
+
+    pub fn append_container_reservation_bytes(
+        &self,
+        entries: usize,
+        calls: usize,
+        results: usize,
+    ) -> usize {
+        let growth = |capacity: usize, needed: usize, width: usize| {
+            if needed > capacity {
+                needed
+                    .max(capacity)
+                    .saturating_mul(2)
+                    .max(8)
+                    .saturating_mul(width)
+            } else {
+                0
+            }
+        };
+        let uuid_copy = if Arc::strong_count(&self.uuids) > 1 {
+            self.uuids.capacity() * size_of::<(String, usize)>()
+                + self.uuids.keys().map(String::capacity).sum::<usize>()
+        } else {
+            0
+        };
+        let result_copy = if Arc::strong_count(&self.results) > 1 {
+            self.results.capacity() * size_of::<(String, ResultPosition)>()
+                + self.results.keys().map(String::capacity).sum::<usize>()
+        } else {
+            0
+        };
+        let turn_copy = if Arc::strong_count(&self.turns) > 1 {
+            self.turns.capacity() * size_of::<Arc<CachedTurn>>()
+        } else {
+            0
+        };
+        let open_turn = self.turns.last().map_or(0, |turn| {
+            growth(
+                turn.calls.capacity(),
+                turn.calls.len().saturating_add(calls),
+                size_of::<Arc<CachedCall>>(),
+            ) + if Arc::strong_count(turn) > 1 || Arc::strong_count(&self.turns) > 1 {
+                size_of::<CachedTurn>()
+                    + turn.prompt.capacity()
+                    + turn.calls.capacity() * size_of::<Arc<CachedCall>>()
+            } else {
+                0
+            }
+        });
+        uuid_copy
+            .saturating_add(result_copy)
+            .saturating_add(turn_copy)
+            .saturating_add(open_turn)
+            .saturating_add(growth(
+                self.uuids.capacity(),
+                self.uuids.len().saturating_add(entries),
+                size_of::<(String, usize)>(),
+            ))
+            .saturating_add(growth(
+                self.results.capacity(),
+                self.results.len().saturating_add(results),
+                size_of::<(String, ResultPosition)>(),
+            ))
+            .saturating_add(growth(
+                self.turns.capacity(),
+                self.turns.len().saturating_add(entries),
+                size_of::<Arc<CachedTurn>>(),
+            ))
+            .saturating_add(entries.saturating_mul(size_of::<CachedTurn>()))
+            .saturating_add(
+                calls.saturating_mul(size_of::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>()),
+            )
+    }
 }
 
 fn call_bytes(call: &ToolCall, opaque_dom_accounted_bytes: usize) -> usize {
@@ -457,6 +547,33 @@ mod tests {
         let projected = index.project("s", entries, &(0..index.turn_count()).collect::<Vec<_>>());
         let expected = lift_session_refs("s", entries, flags);
         assert_eq!(format!("{projected:?}"), format!("{expected:?}"));
+    }
+
+    #[test]
+    fn repeated_result_charge_counts_each_owned_result_copy() {
+        let mut calls = tools();
+        let Entry::Assistant(assistant) = &mut calls else {
+            panic!()
+        };
+        let ContentBlock::ToolUse(second) = &mut assistant.content[1] else {
+            panic!()
+        };
+        second.id = "edit".into();
+        let mut response = results();
+        let Entry::User(user) = &mut response else {
+            panic!()
+        };
+        let crate::types::UserContent::Blocks(blocks) = &mut user.content else {
+            panic!()
+        };
+        let ContentBlock::ToolResult(result) = &mut blocks[1] else {
+            panic!()
+        };
+        result.tool_use_result = Some(sonic_rs::json!(vec![0; 4096]));
+        let entries = [calls, response];
+        let refs: Vec<_> = entries.iter().collect();
+        let index = ActivityIndex::new(&refs, None);
+        assert!(index.repeated_result_bytes(0) >= 2 * 4096 * size_of::<sonic_rs::Value>());
     }
 
     #[test]

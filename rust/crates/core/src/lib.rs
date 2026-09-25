@@ -33,7 +33,9 @@ pub mod schema;
 pub mod snapshot;
 pub mod snapshot_activity;
 pub mod snapshot_codec;
+pub mod snapshot_labels;
 pub mod snapshot_memory;
+pub mod snapshot_owned;
 pub mod snapshot_projection;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;

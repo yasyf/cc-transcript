@@ -249,8 +249,10 @@ impl ToolUseBlockView {
     ))]
     fn call(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cached = self.call_cache.get_or_try_init(py, || {
-            let tool_use = self.tool_use();
-            crate::views::toolcall::parse_call_view(py, &tool_use.name, &tool_use.input)
+            self.r.with_registry(|| {
+                let tool_use = self.tool_use();
+                crate::views::toolcall::parse_call_view(py, &tool_use.name, &tool_use.input)
+            })
         })?;
         Ok(cached.clone_ref(py))
     }
@@ -421,6 +423,7 @@ pub(crate) fn block_view<'py>(
     let r = BlockRef {
         host: host.clone(),
         block: idx,
+        registry: host.registry(),
     };
     match r.block() {
         ContentBlock::Text(_) => Ok(Bound::new(py, TextBlockView { r })?.into_any()),
@@ -477,4 +480,104 @@ pub(crate) fn assistant_block_views<'py>(
         .map(|idx| block_view(py, host, idx))
         .collect::<PyResult<Vec<_>>>()?;
     PyTuple::new(py, views)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use cc_transcript_core::gateway::parse_transcript_bytes;
+    use cc_transcript_core::toolcall::{
+        register_mcp_tool, unregister_mcp_tool, with_registry, McpToolSpec, SpanEditMap,
+        ToolRegistrySnapshot,
+    };
+
+    fn edit_spec() -> McpToolSpec {
+        McpToolSpec {
+            behaves_like: "Edit".to_string(),
+            span_edit: Some(SpanEditMap {
+                path: "path".to_string(),
+                content: "content".to_string(),
+                delete: None,
+            }),
+        }
+    }
+
+    fn event<'py>(py: Python<'py>, name: &str) -> Bound<'py, PyAny> {
+        let source = sonic_rs::json!({
+            "type":"assistant", "uuid":"a", "sessionId":"s", "timestamp":"2026-01-02T03:04:05Z",
+            "message":{"role":"assistant","model":"claude","content":[{
+                "type":"tool_use","id":"t","name":name,"input":{"path":"a.py","content":"pinned"}
+            }]}
+        })
+        .to_string();
+        let entries = Arc::new(parse_transcript_bytes(source.as_bytes()).unwrap().entries);
+        crate::views::events::event_view(py, &entries, 0).unwrap()
+    }
+
+    #[test]
+    fn lazy_tool_getter_and_matches_keep_event_registry_after_scope_exit() {
+        Python::initialize();
+        Python::attach(|py| {
+            let pinned = ToolRegistrySnapshot::from_specs(HashMap::from([(
+                "syn_lazy_pinned".to_string(),
+                edit_spec(),
+            )]));
+            let other = ToolRegistrySnapshot::from_specs(HashMap::from([(
+                "syn_lazy_pinned".to_string(),
+                McpToolSpec {
+                    behaves_like: "Read".to_string(),
+                    span_edit: None,
+                },
+            )]));
+            let event = with_registry(pinned, || event(py, "mcp__fixture__syn_lazy_pinned"));
+            let block = with_registry(Arc::clone(&other), || {
+                event.getattr("blocks").unwrap().get_item(0).unwrap()
+            });
+            let call = with_registry(other, || block.getattr("call").unwrap());
+            assert_eq!(
+                call.getattr("new").unwrap().extract::<String>().unwrap(),
+                "pinned"
+            );
+            assert!(call
+                .call_method1("matches", ("Edit",))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            assert!(!call
+                .call_method1("matches", ("Read",))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            assert!(call.is(&block.getattr("call").unwrap()));
+        });
+    }
+
+    #[test]
+    fn unscoped_lazy_tool_views_keep_ambient_registry_behavior() {
+        Python::initialize();
+        Python::attach(|py| {
+            let event = event(py, "mcp__fixture__syn_lazy_ambient");
+            let block = event.getattr("blocks").unwrap().get_item(0).unwrap();
+            register_mcp_tool("syn_lazy_ambient".to_string(), edit_spec());
+            let call = block.getattr("call").unwrap();
+            assert_eq!(
+                call.getattr("new").unwrap().extract::<String>().unwrap(),
+                "pinned"
+            );
+            assert!(call
+                .call_method1("matches", ("Edit",))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            assert!(unregister_mcp_tool("syn_lazy_ambient"));
+            assert!(!call
+                .call_method1("matches", ("Edit",))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+        });
+    }
 }

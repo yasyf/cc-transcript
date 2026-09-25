@@ -522,10 +522,7 @@ pub(crate) fn event_view<'py>(
     entries: &Arc<Vec<Entry>>,
     idx: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let r = EventRef {
-        entries: Arc::clone(entries),
-        idx,
-    };
+    let r = EventRef::new(Arc::clone(entries), idx);
     match r.entry() {
         Entry::User(_) => Ok(Bound::new(py, UserEventView { r })?.into_any()),
         Entry::Assistant(_) => Ok(Bound::new(py, AssistantEventView { r })?.into_any()),

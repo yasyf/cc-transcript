@@ -34,9 +34,7 @@ from cc_transcript.tools import (
     SkillCall,
     TaskCall,
     edits_of,
-    expand_tool_names,
     file_paths_of,
-    matches_names,
     tool_name_matches,
 )
 
@@ -401,7 +399,7 @@ class ToolCallQuery:
 
     def named(self, spec: str) -> ToolCallQuery:
         """Calls whose tool name matches a pipe spec, honoring aliases and MCP suffixes."""
-        return self.where(lambda use: tool_name_matches(use.call.name, spec))
+        return self.where(lambda use: use.call.matches(spec))
 
     def touching(self, *globs: str) -> ToolCallQuery:
         """Calls targeting a file that matches any glob."""
@@ -612,7 +610,7 @@ class Session:
         matches = [
             positions[use.ref.event_uuid]
             for use in self.tool_calls.with_errors
-            if tool_name_matches(use.call.name, tool)
+            if use.call.matches(tool)
             and (file is None or any(file in path for path in file_paths_of(use.call)))
         ]
         return windowed(self, max(matches) + 1, len(self)) if matches else windowed(self, 0, 0)
@@ -626,7 +624,7 @@ class Session:
         matches = [
             positions[use.ref.event_uuid]
             for use in self.tool_calls.with_errors
-            if tool_name_matches(use.call.name, tool)
+            if use.call.matches(tool)
         ]
         return windowed(self, 0, max(matches)) if matches else self
 
@@ -738,9 +736,9 @@ class Session:
         if last is None:
             return False
         positions = event_positions(self.turns)
-        expanded = expand_tool_names("|".join(invalidated_by))
+        invalidating = "|".join(invalidated_by)
         return not any(
-            positions[use.ref.event_uuid] > last and matches_names(use.call.name, expanded)
+            positions[use.ref.event_uuid] > last and use.call.matches(invalidating)
             for use in self.tool_calls.with_errors
         )
 
@@ -873,6 +871,7 @@ class PredicateInputs:
     edited_files: tuple[FileRef, ...]
     skills: tuple[str, ...]
     answers: dict[tuple[str, object], bool] = field(default_factory=dict, compare=False, repr=False)
+    name_matchers: tuple[Callable[[str], bool], ...] | None = field(default=None, compare=False, repr=False)
 
     MAX_ANSWERS: ClassVar[int] = 256
 
@@ -882,6 +881,7 @@ class PredicateInputs:
         calls = session.tool_calls
         return cls(
             calls=tuple((use.call.name, tuple(file_paths_of(use.call))) for use in calls.items),
+            name_matchers=tuple(use.call.name_matcher for use in calls.items),
             commands=session.commands(),
             edited_files=session.edited_files,
             skills=tuple(call.skill for use in calls.named("Skill") if isinstance(call := use.call, SkillCall)),
@@ -901,8 +901,13 @@ class PredicateInputs:
 
     def files(self, spec: str) -> tuple[FileRef, ...]:
         """The files targeted by calls matching the pipe spec ``spec``, one entry per path."""
-        matching = {name for name in self.tool_names if tool_name_matches(name, spec)}
-        return tuple(FileRef(path) for name, paths in self.calls if name in matching for path in paths)
+        return tuple(FileRef(path) for _, paths in self.matching_calls(spec) for path in paths)
+
+    def matching_calls(self, spec: str) -> Iterator[tuple[str, tuple[str, ...]]]:
+        if self.name_matchers is None:
+            yield from (call for call in self.calls if tool_name_matches(call[0], spec))
+            return
+        yield from (call for call, matches in zip(self.calls, self.name_matchers, strict=True) if matches(spec))
 
     def answer(self, query: tuple[str, object], compute: Callable[[], bool]) -> bool:
         if (known := self.answers.get(query)) is None:
@@ -912,7 +917,7 @@ class PredicateInputs:
         return known
 
     def has_tool(self, name: str) -> bool:
-        return any(tool_name_matches(tool, name) for tool in self.tool_names)
+        return next(self.matching_calls(name), None) is not None
 
     def has_command(self, argv: tuple[str, ...]) -> bool:
         return self.answer(

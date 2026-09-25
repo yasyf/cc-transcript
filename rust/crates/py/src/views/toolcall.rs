@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyFrozenSet, PyMapping, PyTuple};
+use pyo3::types::{PyCFunction, PyDict, PyFrozenSet, PyMapping, PyTuple};
 use sonic_rs::Value;
 
 use cc_transcript_core::ids;
@@ -12,6 +12,7 @@ use cc_transcript_core::value::normalize_last_wins;
 use crate::toolcall::tool_input_error;
 use crate::views::convert::{json_to_py, opt_json};
 use crate::views::dunder::view_dunders;
+use crate::views::store::with_view_registry;
 
 /// Common shape of every typed tool call.
 ///
@@ -29,11 +30,26 @@ use crate::views::dunder::view_dunders;
 )]
 pub(crate) struct ToolCallBaseView {
     pub call: Arc<ToolCall>,
+    pub registry: Option<Arc<toolcall::ToolRegistrySnapshot>>,
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl ToolCallBaseView {
+    /// Match aliases using the captured registry, or ambient definitions for an unscoped call.
+    fn matches(&self, spec: &str) -> bool {
+        with_view_registry(&self.registry, || {
+            toolcall::tool_name_matches(self.call.name(), spec)
+        })
+    }
+
+    /// A name matcher retaining registry metadata without retaining this call's raw input.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Callable[[str], bool]", imports = ("typing",)))]
+    fn name_matcher<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCFunction>> {
+        tool_name_matcher(py, self.call.name().to_owned(), self.registry.clone())
+    }
+
     #[getter]
     fn name(&self, _py: Python<'_>) -> PyResult<String> {
         Ok(self.call.name().to_string())
@@ -1065,9 +1081,33 @@ view_dunders!(
     match_args = []
 );
 
+pub(crate) fn tool_name_matcher<'py>(
+    py: Python<'py>,
+    name: String,
+    registry: Option<Arc<toolcall::ToolRegistrySnapshot>>,
+) -> PyResult<Bound<'py, PyCFunction>> {
+    PyCFunction::new_closure(
+        py,
+        None,
+        None,
+        move |args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>| -> PyResult<bool> {
+            if kwargs.is_some_and(|kwargs| !kwargs.is_empty()) {
+                return Err(PyTypeError::new_err(
+                    "name matcher accepts one positional tool spec",
+                ));
+            }
+            let (spec,): (String,) = args.extract()?;
+            Ok(with_view_registry(&registry, || {
+                toolcall::tool_name_matches(&name, &spec)
+            }))
+        },
+    )
+}
+
 pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<Bound<'py, PyAny>> {
     let base = ToolCallBaseView {
         call: Arc::clone(&call),
+        registry: toolcall::ToolRegistrySnapshot::capture_scoped(),
     };
     let init = PyClassInitializer::from(base);
     match &*call {

@@ -617,6 +617,21 @@ class StoreConfig(WireModel):
     reserved_hook_accounted_bytes: Positive = 512 * 1024 * 1024
 
 
+class SpanEditDefinition(WireModel):
+    path: Token
+    content: Token
+    delete: Token | None
+
+
+class ToolDefinition(WireModel):
+    name: Token
+    behaves_like: Token
+    span_edit: SpanEditDefinition | None
+
+
+TOOL_REGISTRY = TypeAdapter(Annotated[list[ToolDefinition], Field(max_length=256)])
+
+
 CONTEXT = TypeAdapter(CallContext)
 CONFIG = TypeAdapter(StoreConfig)
 
@@ -630,7 +645,13 @@ def main() -> None:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    for name, adapter in (("request", REQUEST), ("response", RESPONSE), ("context", CONTEXT), ("config", CONFIG)):
+    for name, adapter in (
+        ("request", REQUEST),
+        ("response", RESPONSE),
+        ("context", CONTEXT),
+        ("config", CONFIG),
+        ("tool_registry", TOOL_REGISTRY),
+    ):
         path = args.directory / f"{name}.schema.json"
         contents = (
             json.dumps(

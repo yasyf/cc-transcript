@@ -262,6 +262,7 @@ pub fn bounded_turn_range<'a>(
         limits,
         cancel,
         &mut ProjectionUsage::default(),
+        |_| Ok(()),
     )
 }
 
@@ -277,6 +278,7 @@ pub fn bounded_turn_range_with_usage<'a>(
     limits: &WorkLimits,
     cancel: &Cancellation,
     usage: &mut ProjectionUsage,
+    before_materialize: impl FnOnce(usize) -> Result<(), SnapshotError>,
 ) -> Result<LiftedSession<'a>, SnapshotError> {
     let mut work = Work::new(snapshot, limits, cancel);
     let result = (|| {
@@ -312,6 +314,19 @@ pub fn bounded_turn_range_with_usage<'a>(
                 "activity materialization limit",
             ));
         }
+        let repeated_result_bytes = turns.clone().fold(0usize, |total, index| {
+            total.saturating_add(snapshot.activity.repeated_result_bytes(index))
+        });
+        let staging_bytes = retained_projection
+            .saturating_mul(2)
+            .saturating_add(
+                work.events
+                    .saturating_mul(std::mem::size_of::<Entry>())
+                    .saturating_mul(2),
+            )
+            .saturating_add(limits.max_output_bytes.saturating_mul(2))
+            .saturating_add(repeated_result_bytes.saturating_mul(2));
+        before_materialize(staging_bytes)?;
         let mut selected = Vec::with_capacity(turns.len());
         for index in turns {
             selected.push(work.turn(index)?);
@@ -1677,9 +1692,105 @@ fn probe(work: &mut Work, request: &Value) -> Result<Projection, SnapshotError> 
     )
 }
 
+fn user_prefix(content: &crate::types::UserContent, prefix: &str) -> bool {
+    let characters: Box<dyn Iterator<Item = char> + '_> = match content {
+        crate::types::UserContent::Plain(text) => Box::new(text.chars()),
+        crate::types::UserContent::Blocks(blocks) => Box::new(
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    if let ContentBlock::Text(text) = block {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .enumerate()
+                .flat_map(|(index, text)| {
+                    (index != 0).then_some(' ').into_iter().chain(text.chars())
+                }),
+        ),
+    };
+    let mut characters = characters.skip_while(|character| crate::pystr::is_space(*character));
+    let mut trailing_space = false;
+    for expected in prefix.chars() {
+        if characters.next() != Some(expected) {
+            return false;
+        }
+        trailing_space = crate::pystr::is_space(expected);
+    }
+    !trailing_space || characters.any(|character| !crate::pystr::is_space(character))
+}
+
+pub fn classifier_facts(
+    snapshot: &TranscriptSnapshot,
+    prefix: &str,
+    event_limit: usize,
+    limits: &WorkLimits,
+    cancel: &Cancellation,
+    usage: &mut ProjectionUsage,
+) -> Result<Value, SnapshotError> {
+    let mut work = Work::new(snapshot, limits, cancel);
+    let result = (|| {
+        cancel.check(limits.deadline_unix_ms)?;
+        if limits.max_items == 0 {
+            return Err(SnapshotError::new(Status::Incomplete, "item_limit"));
+        }
+        let mut users = 0usize;
+        let mut sidechain_users = 0usize;
+        for chunk in &snapshot.chunks {
+            cancel.check(limits.deadline_unix_ms)?;
+            users = users.saturating_add(chunk.user_count);
+            sidechain_users = sidechain_users.saturating_add(chunk.sidechain_user_count);
+        }
+        let mut has_user_prefix = false;
+        for index in 0..snapshot.event_count.min(event_limit) {
+            work.charge_range(index..index + 1)?;
+            if let Entry::User(user) = snapshot.entry(index) {
+                if user_prefix(&user.content, prefix) {
+                    has_user_prefix = true;
+                    break;
+                }
+            }
+        }
+        let value = json!({"has_users":users != 0,"all_users_sidechain":users != 0 && users == sidechain_users,"has_user_prefix":has_user_prefix});
+        snapshot_codec::encoded_size(&value, limits.max_output_bytes)?;
+        Ok(value)
+    })();
+    usage.read_bytes = work.bytes;
+    usage.events = work.events;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_user_prefix_matches_joined_python_strip() {
+        use crate::types::UserContent;
+        for text in ["", " a ", "\u{1c}<system_instruction> x", " a b  "] {
+            for prefix in ["", "a", "a ", "a b ", "<system_instruction>"] {
+                let content = UserContent::Plain(text.into());
+                assert_eq!(
+                    user_prefix(&content, prefix),
+                    crate::pystr::strip(&content.text()).starts_with(prefix)
+                );
+            }
+        }
+        let content = UserContent::Blocks(vec![
+            ContentBlock::Text(" ".into()),
+            ContentBlock::Text("a".into()),
+            ContentBlock::Text("b  ".into()),
+        ]);
+        for prefix in ["", "a", "a ", "a b", "a b "] {
+            assert_eq!(
+                user_prefix(&content, prefix),
+                crate::pystr::strip(&content.text()).starts_with(prefix)
+            );
+        }
+    }
+
     use crate::gateway::Provider;
     use crate::parse::parse_entry;
     use crate::snapshot::{EntryChunk, SourceIdentity, SourceStamp};

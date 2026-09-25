@@ -379,6 +379,14 @@ impl HeapCharge for ContentBlock {
     }
 }
 
+pub fn block_charge(block: &ContentBlock) -> MemoryCharge {
+    block.heap_charge()
+        + MemoryCharge {
+            owned_capacity_bytes: size_of::<ContentBlock>(),
+            opaque_dom_accounted_bytes: 0,
+        }
+}
+
 pub fn entry_charge(entry: &Entry) -> MemoryCharge {
     entry.heap_charge()
 }
