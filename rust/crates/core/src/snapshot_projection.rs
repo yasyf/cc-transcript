@@ -1563,7 +1563,12 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             )
         }
         "tool_count" => {
-            let calls = session.tool_calls().named(string(query, "name")?);
+            let calls = session.tool_calls();
+            let calls = if field(query, "name")?.is_null() {
+                calls
+            } else {
+                calls.named(string(query, "name")?)
+            };
             let calls = match string(query, "errors")? {
                 "exclude" => calls,
                 "include" => calls.with_errors(),
@@ -1624,23 +1629,26 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             reverse,
             work,
         ),
-        "tool_calls" => record_page(
-            session
-                .tool_calls()
-                .with_errors()
-                .items()
-                .into_iter()
-                .map(|use_| {
+        "tool_calls" => {
+            let calls = session.tool_calls().with_errors();
+            let calls = if query.get("name").is_some_and(|name| !name.is_null()) {
+                calls.named(string(query, "name")?)
+            } else {
+                calls
+            };
+            record_page(
+                calls.items().into_iter().map(|use_| {
                     snapshot_codec::encode(
                         &ToolUseWire::new(use_, &work.snapshot.session_id),
                         work.limits.max_output_bytes,
                     )
                 }),
-            "cc-transcript.tool-use/1",
-            next,
-            reverse,
-            work,
-        ),
+                "cc-transcript.tool-use/1",
+                next,
+                reverse,
+                work,
+            )
+        },
         "files_touched" | "edited_files" => {
             let files = if kind == "files_touched" {
                 session.files_touched()
@@ -1660,7 +1668,7 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 work,
             )
         }
-        "deep_predicate_inputs" => predicate_inputs_query(&session,next,work),
+        "predicate_inputs" | "deep_predicate_inputs" => predicate_inputs_query(&session,next,work),
         "sidechain_membership" => Err(invalid("sidechain_membership requires host snapshot composition")),
         "pending_named_task" => scalar(json!(session.current_turn().tool_calls().named("Task").items().iter().any(|use_| {
             use_.result.is_none() && matches!(&use_.call,ToolCall::Task(call) if call.agent_name.as_ref().is_some_and(json_truthy))
@@ -2322,21 +2330,23 @@ mod tests {
             tool("a", "read", "Read", json!({"file_path":"a.rs"})),
             tool("b", "skill", "Skill", json!({"skill":"review"})),
         ]);
-        let result = run(
-            &snap,
-            &request(
-                json!({"kind":"deep_predicate_inputs","order":"forward"}),
-                json!([]),
-            ),
-        );
-        let raw = result.data["records_json"][0].as_str().unwrap();
-        let decoded =
-            crate::snapshot_codec::decode_predicate_inputs(&[raw.to_owned()], 1024 * 1024).unwrap();
-        assert_eq!(
-            decoded[0].calls[0],
-            ("Read".to_owned(), vec!["a.rs".to_owned()])
-        );
-        assert_eq!(decoded[0].skills, ["review"]);
+        for kind in ["predicate_inputs", "deep_predicate_inputs"] {
+            let result = run(
+                &snap,
+                &request(json!({"kind":kind,"order":"forward"}), json!([])),
+            );
+            assert!(result.complete);
+            assert_eq!(result.data["records_json"].as_array().unwrap().len(), 1);
+            let raw = result.data["records_json"][0].as_str().unwrap();
+            let decoded =
+                crate::snapshot_codec::decode_predicate_inputs(&[raw.to_owned()], 1024 * 1024)
+                    .unwrap();
+            assert_eq!(
+                decoded[0].calls[0],
+                ("Read".to_owned(), vec!["a.rs".to_owned()])
+            );
+            assert_eq!(decoded[0].skills, ["review"]);
+        }
     }
 
     #[test]

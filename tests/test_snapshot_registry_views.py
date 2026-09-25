@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from cc_transcript.query import PredicateInputs, Session
 from cc_transcript.snapshots import CancellationToken, TranscriptStore, decode_projection
 from cc_transcript.tools import SpanEditCall, register_mcp_tool, unregister_mcp_tool
@@ -96,7 +98,8 @@ def test_lazy_events_and_call_queries_use_the_pinned_registry(tmp_path: Path) ->
         unregister_mcp_tool(TOOL)
 
 
-def test_predicate_projection_decoder_captures_explicit_registry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["predicate_inputs", "deep_predicate_inputs"])
+def test_predicate_projection_decoder_captures_explicit_registry(tmp_path: Path, kind: str) -> None:
     path = tmp_path / "s.jsonl"
     source(path)
     store = TranscriptStore({})
@@ -107,7 +110,7 @@ def test_predicate_projection_decoder_captures_explicit_registry(tmp_path: Path)
         request(
             "query",
             view={"handle": description["handle"], "classifier": CLASSIFIER, "selectors": [], "attachments": []},
-            query={"kind": "deep_predicate_inputs", "order": "forward"},
+            query={"kind": kind, "order": "forward"},
             limits=LIMITS,
             deadline_unix_ms=deadline(),
         ),
@@ -120,5 +123,33 @@ def test_predicate_projection_decoder_captures_explicit_registry(tmp_path: Path)
     try:
         assert any(inputs.has_tool("Edit") for inputs in records)
         assert not any(inputs.has_tool("Read") for inputs in records)
+    finally:
+        unregister_mcp_tool(TOOL)
+
+
+def test_named_tool_projection_uses_captured_registry(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    source(path)
+    store = TranscriptStore({})
+    bound = context()
+    bound["registry_generation"] = store.register_tool_registry(SPECS, context=bound)
+    description = acquire_with_context(store, path, bound)
+    register_mcp_tool(TOOL, "Read")
+    try:
+        for name, expected in [("Edit", 1), ("Read", 0)]:
+            reply = store.request(
+                request(
+                    "query",
+                    view={"handle": description["handle"], "classifier": CLASSIFIER, "selectors": [], "attachments": []},
+                    query={"kind": "tool_calls", "order": "forward", "name": name},
+                    limits=LIMITS,
+                    deadline_unix_ms=deadline(),
+                ),
+                context=bound,
+                cancellation=CancellationToken(),
+            )
+            assert reply["status"] == "ok", reply
+            assert reply["complete"] is True
+            assert len(reply["data"]["records_json"]) == expected
     finally:
         unregister_mcp_tool(TOOL)

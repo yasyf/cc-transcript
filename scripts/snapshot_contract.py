@@ -168,7 +168,7 @@ class InputRegex(WireModel):
 
 class ToolCount(WireModel):
     kind: Literal["tool_count"]
-    name: Token
+    name: Token | None
     input_regex: InputRegex | None
     errors: Literal["exclude", "include", "only"]
 
@@ -191,13 +191,25 @@ class Page(WireModel):
     kind: Literal[
         "turns",
         "events",
-        "tool_calls",
         "files_touched",
         "edited_files",
+        "predicate_inputs",
         "deep_predicate_inputs",
         "sidechain_membership",
     ]
     order: Literal["forward", "reverse"]
+
+
+class ToolCalls(WireModel):
+    kind: Literal["tool_calls"]
+    order: Literal["forward", "reverse"]
+    name: Token | None = None
+
+
+class DirectSidechains(WireModel):
+    kind: Literal["direct_sidechains"]
+    order: Literal["forward"]
+    dispatch_ids: Annotated[list[Token], Field(max_length=256)]
 
 
 class Prompts(WireModel):
@@ -241,6 +253,8 @@ Query = Annotated[
     | NamedCount
     | Scalar
     | Page
+    | ToolCalls
+    | DirectSidechains
     | Prompts
     | AssistantText
     | SignalTexts
