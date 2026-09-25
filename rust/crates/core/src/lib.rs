@@ -28,6 +28,8 @@ pub mod pystr;
 pub mod query;
 pub mod render;
 pub mod rng;
+pub mod scan;
+pub mod scan_grep;
 #[cfg(feature = "sqlite")]
 pub mod schema;
 pub mod snapshot;

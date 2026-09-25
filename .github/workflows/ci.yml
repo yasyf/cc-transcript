@@ -39,6 +39,30 @@ jobs:
       - name: Generate the bench corpus (.fixtures)
         run: uv run python scripts/gen_corpus.py
 
+      - name: Measure bounded grep fixture work
+        run: |
+          uv run --no-sync python - <<'PYPROBE'
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          command = [str(Path(sys.executable).parent / "cc-transcript"), "grep", "zzzz_no_such_pattern_xyzzy", "--root", ".fixtures/corpus", "--scan-json"]
+          profiles = {
+              "interactive": [],
+              "completion_oracle": ["--max-read-bytes", "268435456", "--max-events", "262144", "--timeout-ms", "120000"],
+          }
+          for name, flags in profiles.items():
+              result = subprocess.run([*command, *flags], capture_output=True, text=True, timeout=125)
+              print(json.dumps({"profile": name, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}), flush=True)
+              payload = json.loads(result.stdout)
+              assert payload["counts"] == [0]
+              if name == "interactive":
+                  assert result.returncode == 3 and not payload["outcome"]["complete"]
+              else:
+                  assert result.returncode == 1 and payload["outcome"]["complete"]
+          PYPROBE
+
       - name: Test native Python bridge
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python

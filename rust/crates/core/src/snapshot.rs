@@ -592,6 +592,106 @@ impl Drop for ProjectionReservation<'_> {
     }
 }
 
+pub(crate) struct ProjectionArena<'a> {
+    state: Arc<Mutex<ProjectionArenaState<'a>>>,
+}
+
+struct ProjectionArenaState<'a> {
+    reservation: ProjectionReservation<'a>,
+    context: Value,
+    live: usize,
+    peak: usize,
+    admissions: usize,
+}
+
+pub struct ProjectionAllocation<'a> {
+    arena: Arc<Mutex<ProjectionArenaState<'a>>>,
+    bytes: usize,
+}
+
+impl Drop for ProjectionAllocation<'_> {
+    fn drop(&mut self) {
+        let mut state = self.arena.lock().expect("projection arena");
+        state.live = state
+            .live
+            .checked_sub(self.bytes)
+            .expect("balanced projection allocations");
+    }
+}
+
+impl<'a> ProjectionArena<'a> {
+    pub(crate) fn new(store: &'a NativeStore, context: Value) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ProjectionArenaState {
+                reservation: ProjectionReservation { store, bytes: 0 },
+                context,
+                live: 0,
+                peak: 0,
+                admissions: 0,
+            })),
+        }
+    }
+
+    pub(crate) fn allocate(&self, bytes: usize) -> Result<ProjectionAllocation<'a>, SnapshotError> {
+        self.grow(bytes)?;
+        Ok(ProjectionAllocation {
+            arena: self.state.clone(),
+            bytes,
+        })
+    }
+
+    pub(crate) fn extend(
+        &self,
+        allocation: &mut ProjectionAllocation<'a>,
+        bytes: usize,
+    ) -> Result<(), SnapshotError> {
+        if !Arc::ptr_eq(&self.state, &allocation.arena) {
+            return Err(invalid("projection allocation belongs to another arena"));
+        }
+        let total = allocation
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("projection allocation overflow"))?;
+        self.grow(bytes)?;
+        allocation.bytes = total;
+        Ok(())
+    }
+
+    fn grow(&self, bytes: usize) -> Result<(), SnapshotError> {
+        let mut state = self.state.lock().expect("projection arena");
+        let required = state
+            .live
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("projection arena overflow"))?;
+        if required > state.reservation.bytes {
+            let preferred = required
+                .checked_next_power_of_two()
+                .unwrap_or(required)
+                .max(4096);
+            let ProjectionArenaState {
+                reservation,
+                context,
+                ..
+            } = &mut *state;
+            reservation.store.grow_projection_capacity(
+                reservation,
+                context,
+                required,
+                preferred,
+            )?;
+            state.admissions += 1;
+        }
+        state.live = required;
+        state.peak = state.peak.max(required);
+        Ok(())
+    }
+
+    pub(crate) fn counters(&self) -> (usize, usize, usize) {
+        let state = self.state.lock().expect("projection arena");
+        (state.reservation.bytes, state.peak, state.admissions)
+    }
+}
+
 struct WaiterClaim<'a> {
     store: &'a NativeStore,
     token: &'a str,
@@ -762,6 +862,18 @@ impl NativeStore {
         })
     }
 
+    pub fn scan_limits(&self) -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: self.config.read_step,
+            max_events: self.config.event_step,
+            max_items: self.config.event_step,
+            max_output_bytes: self.config.output,
+            max_discovery_entries: self.config.event_step,
+            max_sources: self.config.page_items,
+            deadline_unix_ms: now_ms().saturating_add(self.config.preparation),
+        }
+    }
+
     pub fn default_registry_generation(&self) -> String {
         self.default_registry.clone()
     }
@@ -806,7 +918,7 @@ impl NativeStore {
         Ok(fingerprint)
     }
 
-    fn registry(
+    pub(crate) fn registry(
         &self,
         context: &Value,
     ) -> Result<Arc<crate::toolcall::ToolRegistrySnapshot>, SnapshotError> {
@@ -861,7 +973,7 @@ impl NativeStore {
         Ok(ProjectionReservation { store: self, bytes })
     }
 
-    fn extend_projection_reservation(
+    pub(crate) fn extend_projection_reservation(
         &self,
         reservation: &mut ProjectionReservation<'_>,
         context: &Value,
@@ -874,6 +986,30 @@ impl NativeStore {
         self.admit_memory(&mut state, context, bytes)?;
         state.transient_bytes += bytes;
         reservation.bytes += bytes;
+        Ok(())
+    }
+
+    fn grow_projection_capacity(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        context: &Value,
+        required: usize,
+        preferred: usize,
+    ) -> Result<(), SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) {
+            return Err(invalid("projection reservation belongs to another owner"));
+        }
+        let mut state = self.state.lock().expect("snapshot state");
+        Self::prune(&mut state);
+        let additional = required - reservation.bytes;
+        self.admit_memory(&mut state, context, additional)?;
+        let cap = self.memory_cap(context)?;
+        let used = number(&Self::gauges(&state), "retained_total_accounted_bytes")?;
+        let available = cap.saturating_sub(used);
+        let preferred_growth = preferred.saturating_sub(reservation.bytes);
+        let growth = preferred_growth.min(available);
+        state.transient_bytes += growth;
+        reservation.bytes += growth;
         Ok(())
     }
 
@@ -1814,17 +1950,21 @@ impl NativeStore {
         number(&Self::gauges(&state), "retained_total_accounted_bytes").unwrap()
     }
 
+    fn memory_cap(&self, context: &Value) -> Result<usize, SnapshotError> {
+        Ok(if str_field(context, "admission")? == "hook" {
+            self.config.retained
+        } else {
+            self.config.retained.saturating_sub(self.config.hook_bytes)
+        })
+    }
+
     fn admit_memory(
         &self,
         state: &mut StoreState,
         context: &Value,
         additional: usize,
     ) -> Result<(), SnapshotError> {
-        let cap = if str_field(context, "admission")? == "hook" {
-            self.config.retained
-        } else {
-            self.config.retained.saturating_sub(self.config.hook_bytes)
-        };
+        let cap = self.memory_cap(context)?;
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
             > cap
@@ -4672,6 +4812,15 @@ impl NativeStore {
                 self.authority(&scan.context, Some(&canonical))?;
                 let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 if metadata.is_dir() {
+                    if scan
+                        .request
+                        .get("follow_directory_symlinks")
+                        .and_then(Value::as_bool)
+                        == Some(false)
+                        && entry.file_type().map_err(io_error)?.is_symlink()
+                    {
+                        continue;
+                    }
                     scan.roots.push(canonical);
                     continue;
                 }
@@ -4693,7 +4842,13 @@ impl NativeStore {
             }
             let metadata = std::fs::metadata(&path).map_err(io_error)?;
             let stamp = SourceStamp::of(&metadata);
-            if !scan.seen.insert(stamp.identity) {
+            if !scan.seen.insert(stamp.identity)
+                && scan
+                    .request
+                    .get("preserve_aliases")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
                 continue;
             }
             scan.sources += 1;

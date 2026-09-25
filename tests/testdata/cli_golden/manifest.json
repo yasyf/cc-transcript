@@ -217,7 +217,11 @@
       "grep",
       "zzzz_no_such_pattern_xyzzy",
       "--root",
-      ".fixtures/corpus"
+      ".fixtures/corpus",
+      "--max-read-bytes",
+      "268435456",
+      "--max-events",
+      "262144"
     ],
     "exit_code": 1,
     "stderr_bytes": 0,

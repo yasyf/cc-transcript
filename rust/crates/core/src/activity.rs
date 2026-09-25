@@ -313,16 +313,42 @@ pub struct ToolUse<'a> {
     pub edits: Vec<(String, Vec<Hunk>)>,
 }
 
+pub(crate) fn tool_duration_ms(
+    start: DateTime<FixedOffset>,
+    end: Option<DateTime<FixedOffset>>,
+) -> Option<i64> {
+    end.map(|end| {
+        let micros = (end - start)
+            .num_microseconds()
+            .expect("duration fits i64 microseconds");
+        ((micros as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolResultMetadata {
+    pub is_error: bool,
+    pub denied: bool,
+    pub duration_ms: Option<i64>,
+}
+
+pub fn tool_result_metadata(
+    start: DateTime<FixedOffset>,
+    result: Option<&ToolResultBlock>,
+    end: Option<DateTime<FixedOffset>>,
+) -> ToolResultMetadata {
+    ToolResultMetadata {
+        is_error: result.is_some_and(|result| result.is_error),
+        denied: result.is_some_and(|result| {
+            result.denial_kind.as_deref() == Some(crate::protocol::DENIAL_KIND_USER_REJECTED)
+        }),
+        duration_ms: tool_duration_ms(start, end),
+    }
+}
+
 impl ToolUse<'_> {
-    /// Milliseconds from the call to its result, or None without a result
-    /// timestamp (activity.py ToolUse.duration_ms).
     pub fn duration_ms(&self) -> Option<i64> {
-        self.result_ts.map(|rt| {
-            let micros = (rt - self.ts)
-                .num_microseconds()
-                .expect("duration fits i64 microseconds");
-            ((micros as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
-        })
+        tool_duration_ms(self.ts, self.result_ts)
     }
 }
 
