@@ -990,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_small_sources_release_staging_without_consuming_byte_work() {
+    fn repeated_small_sources_reuse_staging_without_consuming_byte_work() {
         let source = snapshot(&(0..100).map(|_| user("none")).collect::<Vec<_>>());
         let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
         let mut budget = budget(&owner);
@@ -1016,5 +1016,27 @@ mod tests {
         assert_eq!(budget.progress.projection_bytes - before, per_source * 32);
         assert_eq!(budget.progress.staging_peak_reserved_bytes, peak);
         assert!(budget.progress.projection_bytes < budget.limits.max_read_bytes);
+    }
+    #[test]
+    fn many_growing_matches_amortize_global_staging_admissions() {
+        let source = snapshot(
+            &(1..=512)
+                .map(|size| user(&"x".repeat(size)))
+                .collect::<Vec<_>>(),
+        );
+        let owner = crate::snapshot::NativeStore::new(&json!({})).unwrap();
+        let mut budget = budget(&owner);
+        budget.limits.max_read_bytes = 4 * 1024 * 1024;
+        budget.limits.max_events = 8192;
+        let mut grep = reducer(&[("x", None)], options(), &mut budget);
+        let before = budget.progress.staging_admissions;
+        let result = grep
+            .scan_source(&source, &mut budget, &Cancellation::default())
+            .unwrap();
+        assert_eq!(result.hits.len(), 512);
+        assert!(budget.progress.staging_admissions - before <= 12);
+        assert!(
+            budget.progress.staging_peak_live_bytes <= budget.progress.staging_peak_reserved_bytes
+        );
     }
 }

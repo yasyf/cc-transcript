@@ -341,7 +341,7 @@ fn discovery_timestamps_keep_legacy_float_ordering() {
 }
 
 #[test]
-fn staging_uses_the_shared_owner_pool_and_releases_between_operations() {
+fn staging_retains_shared_capacity_until_last_arena_guard_drops() {
     let store = NativeStore::new(
         &json!({"max_retained_bytes":16*1024*1024,"reserved_hook_accounted_bytes":0}),
     )
@@ -349,19 +349,22 @@ fn staging_uses_the_shared_owner_pool_and_releases_between_operations() {
     let mut first = ScanBudget::new(&store, limits());
     let mut second = ScanBudget::new(&store, limits());
     let cancel = Cancellation::default();
-    let before = gauges(&store, &first.context)["pending_input_capacity_bytes"]
-        .as_u64()
-        .unwrap();
+    let before = store.retained_accounted_bytes();
     let held = first.reserve_staging(12 * 1024 * 1024, &cancel).unwrap();
     assert_eq!(first.progress.projection_bytes, 0);
     assert_eq!(first.remaining().max_read_bytes, limits().max_read_bytes);
+    assert_eq!(first.progress.staging_peak_reserved_bytes, 12 * 1024 * 1024);
     assert_eq!(
-        gauges(&store, &first.context)["pending_input_capacity_bytes"]
-            .as_u64()
+        second
+            .reserve_staging(8 * 1024 * 1024, &cancel)
+            .err()
             .unwrap()
-            - before,
-        12 * 1024 * 1024
+            .status,
+        Status::RetainedLimit
     );
+    assert_eq!(second.progress.staging_admissions, 0);
+    drop(first);
+    assert_eq!(store.retained_accounted_bytes() - before, 12 * 1024 * 1024);
     assert_eq!(
         second
             .reserve_staging(8 * 1024 * 1024, &cancel)
@@ -377,11 +380,51 @@ fn staging_uses_the_shared_owner_pool_and_releases_between_operations() {
         drop(transient);
     }
     assert_eq!(second.progress.projection_bytes, 32);
-    assert_eq!(second.progress.staging_peak_reserved_bytes, 8 * 1024 * 1024);
+    assert_eq!(second.progress.staging_admissions, 1);
+    assert_eq!(store.retained_accounted_bytes() - before, 8 * 1024 * 1024);
+    drop(second);
+    assert_eq!(store.retained_accounted_bytes(), before);
+}
+
+#[test]
+fn staging_growth_is_amortized_for_retained_hits_and_growing_events() {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let mut hits = budget.reserve_staging(0, &cancel).unwrap();
+    for size in 1..=16_384 {
+        budget.extend_staging(&mut hits, 8, &cancel).unwrap();
+        let event = budget.reserve_staging(size, &cancel).unwrap();
+        drop(event);
+    }
+    assert!(budget.progress.staging_admissions <= 7);
+    assert_eq!(budget.progress.staging_peak_live_bytes, 16_384 * 9);
+    assert_eq!(budget.progress.staging_peak_reserved_bytes, 262_144);
+    assert_eq!(budget.progress.projection_bytes, 0);
+}
+
+#[test]
+fn staging_rejects_foreign_guards_and_cancellation_without_mutation() {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut first = ScanBudget::new(&store, limits());
+    let mut second = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let mut held = first.reserve_staging(1, &cancel).unwrap();
     assert_eq!(
-        gauges(&store, &second.context)["pending_input_capacity_bytes"]
-            .as_u64()
-            .unwrap(),
-        before
+        second
+            .extend_staging(&mut held, 1, &cancel)
+            .unwrap_err()
+            .status,
+        Status::InvalidRequest
     );
+    assert_eq!(second.progress.staging_admissions, 0);
+    cancel.cancel();
+    assert_eq!(
+        first
+            .extend_staging(&mut held, 1, &cancel)
+            .unwrap_err()
+            .status,
+        Status::Cancelled
+    );
+    assert_eq!(first.progress.staging_peak_live_bytes, 1);
 }

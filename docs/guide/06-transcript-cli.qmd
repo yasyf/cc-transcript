@@ -349,6 +349,9 @@ bounded searching. Independent CLI invocations do not share in-memory snapshots.
 
 Work counters separate source reads and logical projected payload bytes from
 `staging_peak_reserved_bytes`, the conservative peak allocation reservation.
-Temporary allocation reservations are released through the shared snapshot
-owner when each operation finishes; they do not consume the cumulative byte
-work allowance. A larger completed-query budget must be supplied explicitly.
+An arena reuses temporary capacity and keeps its reservation charged to the
+shared snapshot owner until the scan and all allocation guards are dropped.
+`staging_peak_live_bytes` records live allocation headroom;
+`staging_admissions` counts global capacity increases. Reserved slack remains
+charged globally. These reservations do not consume cumulative byte work.
+A larger completed-query budget must be supplied explicitly.

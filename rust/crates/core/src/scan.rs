@@ -1,12 +1,10 @@
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use serde::Serialize;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::snapshot::{
-    Cancellation, NativeStore, ProjectionReservation, SnapshotError, Status, TranscriptSnapshot,
+    Cancellation, NativeStore, ProjectionArena, SnapshotError, Status, TranscriptSnapshot,
     WorkLimits, SCHEMA,
 };
 
@@ -20,6 +18,8 @@ pub struct ScanProgress {
     pub examined_events: usize,
     pub projection_bytes: usize,
     pub staging_peak_reserved_bytes: usize,
+    pub staging_peak_live_bytes: usize,
+    pub staging_admissions: usize,
     pub output_bytes: usize,
     pub source_opens: usize,
     pub cache_hits: usize,
@@ -30,25 +30,10 @@ pub struct ScanBudget<'store> {
     pub progress: ScanProgress,
     store: &'store NativeStore,
     context: Value,
-    staging_current: Rc<Cell<usize>>,
+    staging: ProjectionArena<'store>,
 }
 
-pub struct StagingReservation<'store> {
-    shared: ProjectionReservation<'store>,
-    current: Rc<Cell<usize>>,
-    bytes: usize,
-}
-
-impl Drop for StagingReservation<'_> {
-    fn drop(&mut self) {
-        self.current.set(
-            self.current
-                .get()
-                .checked_sub(self.bytes)
-                .expect("balanced staging reservations"),
-        );
-    }
-}
+pub type StagingReservation<'store> = crate::snapshot::ProjectionAllocation<'store>;
 
 impl<'store> ScanBudget<'store> {
     pub fn new(store: &'store NativeStore, limits: WorkLimits) -> Self {
@@ -58,8 +43,8 @@ impl<'store> ScanBudget<'store> {
             limits,
             progress: ScanProgress::default(),
             store,
+            staging: ProjectionArena::new(store, context.clone()),
             context,
-            staging_current: Rc::new(Cell::new(0)),
         }
     }
 
@@ -75,20 +60,9 @@ impl<'store> ScanBudget<'store> {
         cancel: &Cancellation,
     ) -> Result<StagingReservation<'store>, SnapshotError> {
         self.checkpoint(cancel)?;
-        let current = self
-            .staging_current
-            .get()
-            .checked_add(bytes)
-            .ok_or_else(|| incomplete("staging reservation overflow"))?;
-        let shared = self.store.reserve_projection(&self.context, bytes)?;
-        self.staging_current.set(current);
-        self.progress.staging_peak_reserved_bytes =
-            self.progress.staging_peak_reserved_bytes.max(current);
-        Ok(StagingReservation {
-            shared,
-            current: self.staging_current.clone(),
-            bytes,
-        })
+        let reservation = self.staging.allocate(bytes)?;
+        self.record_staging();
+        Ok(reservation)
     }
 
     pub fn extend_staging(
@@ -98,25 +72,16 @@ impl<'store> ScanBudget<'store> {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
-        if !Rc::ptr_eq(&self.staging_current, &reservation.current) {
-            return Err(invalid("staging reservation belongs to another scan"));
-        }
-        let current = self
-            .staging_current
-            .get()
-            .checked_add(bytes)
-            .ok_or_else(|| incomplete("staging reservation overflow"))?;
-        let total = reservation
-            .bytes
-            .checked_add(bytes)
-            .ok_or_else(|| incomplete("staging reservation overflow"))?;
-        self.store
-            .extend_projection_reservation(&mut reservation.shared, &self.context, bytes)?;
-        reservation.bytes = total;
-        self.staging_current.set(current);
-        self.progress.staging_peak_reserved_bytes =
-            self.progress.staging_peak_reserved_bytes.max(current);
+        self.staging.extend(reservation, bytes)?;
+        self.record_staging();
         Ok(())
+    }
+
+    fn record_staging(&mut self) {
+        let (reserved, live, admissions) = self.staging.counters();
+        self.progress.staging_peak_reserved_bytes = reserved;
+        self.progress.staging_peak_live_bytes = live;
+        self.progress.staging_admissions = admissions;
     }
 
     pub fn checkpoint(&self, cancel: &Cancellation) -> Result<(), SnapshotError> {
