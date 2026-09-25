@@ -1091,17 +1091,7 @@ mod tests {
             NativeStore::new(&json!({"max_retained_bytes":cap,"reserved_hook_accounted_bytes":0}))
                 .unwrap();
         let context = json!({"claimant":"owner","admission":"hook","authority":{"kind":"user","effective_uid":unsafe{libc::geteuid()}.to_string()},"registry_generation":store.default_registry_generation()});
-        let accounted = || {
-            let stats = store.request(
-                &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
-                &context,
-                &Cancellation::default(),
-            );
-            assert_eq!(stats["status"].as_str(), Some("ok"), "{stats:?}");
-            stats["data"]["gauges"]["retained_total_accounted_bytes"]
-                .as_u64()
-                .unwrap() as usize
-        };
+        let accounted = || store.retained_accounted_bytes();
         let baseline = accounted();
         assert!(baseline > 0);
         let remaining = cap.checked_sub(baseline).unwrap();
