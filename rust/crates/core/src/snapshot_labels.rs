@@ -578,6 +578,85 @@ mod tests {
     }
 
     #[test]
+    fn page_reservations_ignore_unseen_tail_and_final_stage_ceiling() {
+        let binding = binding("run1");
+        let cancel = Cancellation::default();
+        let mut bound = limits();
+        bound.max_output_bytes = 2048;
+        let mut short = LabelPreparation::new(
+            source(vec![user(0, "first")]),
+            binding.clone(),
+            bound,
+            8 * 1024 * 1024,
+        )
+        .unwrap();
+        let mut extended = LabelPreparation::new(
+            source(vec![user(0, "first"), user(1, &"x".repeat(64 * 1024))]),
+            binding.clone(),
+            bound,
+            256 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_ne!(short.max_stage_bytes, extended.max_stage_bytes);
+        assert_ne!(short.source.event_count, extended.source.event_count);
+        assert_eq!(
+            LabelPreparation::initial_reservation_bytes(short.binding()),
+            LabelPreparation::initial_reservation_bytes(extended.binding())
+        );
+        assert_eq!(
+            short.next_operation_reservation_bytes(),
+            extended.next_operation_reservation_bytes()
+        );
+        let short_page = short.next_page("page1".into(), &binding, &cancel).unwrap();
+        let extended_page = extended
+            .next_page("page1".into(), &binding, &cancel)
+            .unwrap();
+        assert_eq!(short_page.records_json.len(), 1);
+        assert_eq!(short_page.records_json, extended_page.records_json);
+        assert_eq!(short.pending.as_ref().unwrap().span, 0..1);
+        assert_eq!(extended.pending.as_ref().unwrap().span, 0..1);
+        assert_eq!(
+            short.next_operation_reservation_bytes(),
+            extended.next_operation_reservation_bytes()
+        );
+        assert!(short.submit("page1", &[true], &binding, &cancel).unwrap());
+        assert!(!extended
+            .submit("page1", &[true], &binding, &cancel)
+            .unwrap());
+    }
+
+    #[test]
+    fn next_label_page_does_not_reserve_the_retained_prompt_again() {
+        let binding = binding("run1");
+        let cancel = Cancellation::default();
+        let mut reservations = Vec::new();
+        for prompt in ["short".to_owned(), "x".repeat(256 * 1024)] {
+            let mut entries = vec![user(0, &prompt)];
+            entries.extend((1..PAGE_EVENTS).map(assistant));
+            entries.push(user(PAGE_EVENTS, "next"));
+            let mut stage =
+                LabelPreparation::new(source(entries), binding.clone(), limits(), 8 * 1024 * 1024)
+                    .unwrap();
+            let first = stage.next_page("page1".into(), &binding, &cancel).unwrap();
+            assert_eq!(first.records_json.len(), 1);
+            assert!(!stage.submit("page1", &[true], &binding, &cancel).unwrap());
+            assert_eq!(stage.activity.entry_count(), PAGE_EVENTS);
+            assert!(stage.activity.accounted_bytes() > prompt.len());
+            let next = stage.next_page("page2".into(), &binding, &cancel).unwrap();
+            assert_eq!(next.event_start, PAGE_EVENTS);
+            assert_eq!(next.records_json.len(), 1);
+            assert_eq!(
+                stage.pending.as_ref().unwrap().span,
+                PAGE_EVENTS..PAGE_EVENTS + 1
+            );
+            assert!(stage.activity.append_container_reservation_bytes(1, 0, 0) < 4096);
+            reservations.push(stage.next_operation_reservation_bytes());
+            assert!(stage.submit("page2", &[true], &binding, &cancel).unwrap());
+        }
+        assert_eq!(reservations[0], reservations[1]);
+    }
+
+    #[test]
     fn pages_only_user_events_and_maps_labels_to_original_positions() {
         let source = source(vec![
             assistant(0),
