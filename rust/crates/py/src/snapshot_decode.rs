@@ -207,6 +207,38 @@ pub(crate) fn decode_snapshot_projection<'py>(
                 .collect::<PyResult<Vec<_>>>()?;
             PyList::new(py, payloads)
         }
+        "cc-transcript.mining-signal/1" => {
+            let records = py
+                .detach(|| snapshot_codec::decode_mining_signals(&records, max_bytes))
+                .map_err(error)?;
+            let values = records
+                .iter()
+                .map(|record| crate::views::convert::json_to_py(py, record))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, values)
+        }
+        "cc-transcript.sidechain/1" => {
+            let records = py
+                .detach(|| snapshot_codec::decode_sidechains(&records, max_bytes))
+                .map_err(error)?;
+            let payloads = records
+                .into_iter()
+                .map(|record| {
+                    let payload = PyDict::new(py);
+                    payload.set_item("path", record.path)?;
+                    payload.set_item("session_id", record.session_id)?;
+                    payload.set_item("provider", record.provider)?;
+                    payload.set_item("depth", record.depth)?;
+                    payload.set_item("spawned_by", record.spawned_by)?;
+                    payload.set_item(
+                        "description",
+                        crate::views::convert::json_to_py(py, &record.description)?,
+                    )?;
+                    Ok(payload)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, payloads)
+        }
         "cc-transcript.predicate-inputs/1" => {
             let records = py
                 .detach(|| snapshot_codec::decode_predicate_inputs(&records, max_bytes))

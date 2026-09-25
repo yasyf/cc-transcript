@@ -370,7 +370,8 @@ impl std::io::Write for JsonSink {
 }
 
 fn encode_string(text: &str, out: &mut JsonSink) {
-    if sonic_rs::to_writer(&mut *out, &text).is_err() {
+    let remaining = out.limit.saturating_sub(out.bytes.len());
+    if crate::snapshot_codec::write_json(&mut *out, &text, remaining).is_err() {
         out.exceeded = true;
     }
 }

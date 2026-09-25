@@ -82,7 +82,7 @@ fn encoded(value: &Value, limit: usize) -> Result<String, SnapshotError> {
         bytes: Vec::new(),
         limit,
     };
-    sonic_rs::to_writer(&mut writer, value).map_err(|_| {
+    snapshot_codec::write_json(&mut writer, value, limit).map_err(|_| {
         SnapshotError::new(
             Status::OutputLimit,
             "projection exceeds serialized output limit",
@@ -113,11 +113,12 @@ fn finish(
     limits: &WorkLimits,
     next: Option<usize>,
 ) -> Result<Projection, SnapshotError> {
-    sonic_rs::to_writer(
+    snapshot_codec::write_json(
         &mut OutputCounter {
             remaining: limits.max_output_bytes,
         },
         &data,
+        limits.max_output_bytes,
     )
     .map_err(|_| {
         SnapshotError::new(
@@ -769,12 +770,14 @@ fn output_limit() -> SnapshotError {
 fn text_plan_size(parts: &[&str], max_bytes: usize) -> Result<usize, SnapshotError> {
     let mut remaining = max_bytes.checked_sub(2).ok_or_else(output_limit)?;
     for part in parts {
-        let allowance = remaining.checked_add(2).ok_or_else(output_limit)?;
-        let mut counter = OutputCounter {
-            remaining: allowance,
-        };
-        sonic_rs::to_writer(&mut counter, part).map_err(|_| output_limit())?;
-        remaining -= allowance - counter.remaining - 2;
+        for ch in part.chars() {
+            let bytes = match ch {
+                '"' | '\\' | '\u{08}' | '\u{0c}' | '\n' | '\r' | '\t' => 2,
+                ch if (ch as u32) < 0x20 => 6,
+                ch => ch.len_utf8(),
+            };
+            remaining = remaining.checked_sub(bytes).ok_or_else(output_limit)?;
+        }
     }
     Ok(max_bytes - remaining)
 }
@@ -969,12 +972,12 @@ fn assistant_query(
     range: Range<usize>,
     query: &Value,
 ) -> Result<Projection, SnapshotError> {
-    let count = count(query, "count")?;
+    let message_limit = count(query, "count")?;
     let max_chars = count(query, "max_per_message")?;
     let mut messages = Vec::new();
     let mut scanned = 0;
     for index in range.rev() {
-        if count != 0 && scanned == count {
+        if message_limit != 0 && scanned == message_limit {
             break;
         }
         work.charge_range(index..index + 1)?;
@@ -1252,7 +1255,8 @@ fn checked_render<T>(
             let mut names = std::collections::HashMap::new();
             for position in bounds {
                 let entry = work.snapshot.entry(position);
-                sonic_rs::to_writer(&mut input, entry).map_err(|_| output_limit())?;
+                snapshot_codec::write_json(&mut input, entry, work.limits.max_output_bytes)
+                    .map_err(|_| output_limit())?;
                 for block in entry.blocks() {
                     match block {
                         ContentBlock::ToolUse(tool) => {
@@ -1260,17 +1264,22 @@ fn checked_render<T>(
                         }
                         ContentBlock::ToolResult(result) => {
                             if let Some(name) = names.get(result.tool_use_id.as_str()) {
-                                sonic_rs::to_writer(&mut input, name)
-                                    .map_err(|_| output_limit())?;
+                                snapshot_codec::write_json(
+                                    &mut input,
+                                    name,
+                                    work.limits.max_output_bytes,
+                                )
+                                .map_err(|_| output_limit())?;
                             }
                         }
                         _ => {}
                     }
                 }
             }
-            sonic_rs::to_writer(
+            snapshot_codec::write_json(
                 &mut input,
                 work.snapshot.activity.prompt(index).expect("view turn"),
+                work.limits.max_output_bytes,
             )
             .map_err(|_| output_limit())?;
         }
@@ -1360,7 +1369,21 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
         return Err(invalid("subagents require host snapshot composition"));
     }
     let kind = string(query, "kind")?;
-    let range = selected_range(work, request)?;
+    let mut range = selected_range(work, request)?;
+    if kind == "pending_named_task" && !range.is_empty() {
+        let turn = work
+            .snapshot
+            .activity
+            .turn_of_event(range.end - 1)
+            .expect("view turn");
+        range.start = range.start.max(
+            work.snapshot
+                .activity
+                .turn_bounds(turn)
+                .expect("view turn")
+                .start,
+        );
+    }
     match kind {
         "user_text" | "first_prompt" | "prompts" => return prompt_query(work, range, query, next),
         "assistant_text" => return assistant_query(work, range, query),
@@ -1968,6 +1991,235 @@ mod tests {
         );
         assert_eq!(prompts.data["values"].as_array().unwrap().len(), 1);
         assert_eq!(prompts.data["values"][0].as_str(), Some("prompt"));
+    }
+
+    #[test]
+    fn text_and_render_admission_precede_the_producer() {
+        use std::cell::Cell;
+        let visits = Cell::new(0);
+        let text = "x".repeat(32768);
+        let produced = with_text_budget(&[&text], 128, || {
+            visits.set(visits.get() + 1);
+            text.clone()
+        });
+        assert!(matches!(produced,Err(error) if error.status==Status::OutputLimit));
+        assert_eq!(visits.get(), 0);
+        let snap = snapshot(&[user("u", &text)]);
+        let mut cap = limits();
+        cap.max_output_bytes = 128;
+        let cancel = Cancellation::default();
+        let mut work = Work::new(&snap, &cap, &cancel);
+        let produced = checked_render(&mut work, &(0..1), |_| {
+            visits.set(visits.get() + 1);
+            Ok(())
+        });
+        assert!(matches!(produced,Err(error) if error.status==Status::OutputLimit));
+        assert_eq!(visits.get(), 0);
+        let req = request(json!({"kind":"user_text"}), json!([]));
+        assert!(
+            matches!(project(&snap,&req,&cap,&cancel,0),Err(error) if error.status==Status::OutputLimit)
+        );
+    }
+
+    #[test]
+    fn text_preflight_counts_escaping_and_keeps_unicode_prefixes() {
+        let parts = ["\n\t\u{0}", "\"\\😀"];
+        let text = parts.concat();
+        let exact = sonic_rs::to_string(&text).unwrap().len();
+        assert_eq!(text_plan_size(&parts, exact).unwrap(), exact);
+        assert!(text_plan_size(&parts, exact - 1).is_err());
+        let snap = snapshot(&[
+            json!({"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"model":"test","content":[{"type":"text","text":"  😀"},{"type":"text","text":"é end  "}]}}),
+        ]);
+        let result = run(
+            &snap,
+            &request(
+                json!({"kind":"assistant_text","count":1,"max_per_message":3}),
+                json!([]),
+            ),
+        );
+        assert_eq!(result.data["value"].as_str(), Some("😀 é"));
+    }
+
+    #[test]
+    fn assistant_prefix_does_not_materialize_discarded_text() {
+        let snap = snapshot(&[
+            json!({"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"model":"test","content":[{"type":"text","text":"x".repeat(32768)}]}}),
+        ]);
+        let mut cap = limits();
+        cap.max_output_bytes = 128;
+        let result = project(
+            &snap,
+            &request(
+                json!({"kind":"assistant_text","count":1,"max_per_message":3}),
+                json!([]),
+            ),
+            &cap,
+            &Cancellation::default(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(result.data["value"].as_str(), Some("xxx"));
+    }
+
+    #[test]
+    fn workflow_text_keeps_message_and_block_separators() {
+        let snap = snapshot(&[
+            json!({"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":[{"type":"text","text":"alpha"},{"type":"text","text":"beta"}]}}),
+            json!({"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"text","text":"gamma"}]}}),
+        ]);
+        for (mode, pattern) in [
+            ("contains", "beta\ngamma"),
+            ("regex", r"alpha beta\ngamma$"),
+        ] {
+            let result = run(
+                &snap,
+                &request(
+                    json!({"kind":"workflow_text","mode":mode,"pattern":pattern}),
+                    json!([]),
+                ),
+            );
+            assert_eq!(result.data["value"].as_bool(), Some(true));
+        }
+    }
+
+    #[test]
+    fn named_pending_tasks_are_limited_to_current_view_turn() {
+        let snap = snapshot(&[
+            user("u", "old"),
+            tool(
+                "old-task",
+                "old",
+                "Task",
+                json!({"prompt":"work","name":"teammate"}),
+            ),
+            user("v", "current"),
+            tool("new-task", "new", "Task", json!({"prompt":"work"})),
+        ]);
+        let result = run(
+            &snap,
+            &request(json!({"kind":"pending_named_task"}), json!([])),
+        );
+        assert_eq!(result.data["value"].as_bool(), Some(false));
+        let result = run(
+            &snap,
+            &request(
+                json!({"kind":"pending_named_task"}),
+                json!([{"kind":"event_range","start":0,"stop":2}]),
+            ),
+        );
+        assert_eq!(result.data["value"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn signal_texts_preserve_typed_prose_order_and_count_texts() {
+        let snap = snapshot(&[
+            user("u", "human"),
+            json!({"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[
+                {"type":"text","text":"visible"},{"type":"thinking","thinking":"thought"},
+                {"type":"tool_use","id":"task","name":"TaskCreate","input":{"subject":"task","description":"details"}},
+                {"type":"tool_use","id":"report","name":"ReportFindings","input":{"findings":[{"summary":"finding","failure_scenario":"failure"},{"summary":"second"}]}},
+                {"type":"tool_use","id":"todo","name":"TodoWrite","input":{"todos":[{"content":"todo","subject":"subject"}]}}
+            ]}}),
+        ]);
+        let all = run(
+            &snap,
+            &request(
+                json!({"kind":"signal_texts","window":"current_turn","origin":"any"}),
+                json!([]),
+            ),
+        );
+        let actual: Vec<_> = all.data["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                "human",
+                "visible",
+                "thought",
+                "task details",
+                "finding failure",
+                "second",
+                "todo subject"
+            ]
+        );
+        let last = run(
+            &snap,
+            &request(
+                json!({"kind":"signal_texts","window":3,"origin":"assistant"}),
+                json!([]),
+            ),
+        );
+        let actual: Vec<_> = last.data["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(actual, ["finding failure", "second", "todo subject"]);
+    }
+
+    #[test]
+    fn signal_texts_exclude_harness_and_relay_messages() {
+        let snap = snapshot(&[
+            user("u", "human"),
+            json!({"type":"user","uuid":"meta","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","isMeta":true,"message":{"content":"metadata"}}),
+            json!({"type":"user","uuid":"summary","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","isCompactSummary":true,"message":{"content":"summary"}}),
+            user(
+                "relay",
+                "<teammate-message teammate_id=\"peer\">relay</teammate-message>",
+            ),
+        ]);
+        let result = run(
+            &snap,
+            &request(
+                json!({"kind":"signal_texts","window":10,"origin":"any"}),
+                json!([]),
+            ),
+        );
+        let actual: Vec<_> = result.data["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(actual, ["human"]);
+        let zero = run(
+            &snap,
+            &request(
+                json!({"kind":"signal_texts","window":0,"origin":"any"}),
+                json!([]),
+            ),
+        );
+        assert!(zero.data["values"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_predicate_inputs_match_cached_session_semantics() {
+        let snap = snapshot(&[
+            user("u", "read"),
+            tool("a", "read", "Read", json!({"file_path":"a.rs"})),
+            tool("b", "skill", "Skill", json!({"skill":"review"})),
+        ]);
+        let result = run(
+            &snap,
+            &request(
+                json!({"kind":"deep_predicate_inputs","order":"forward"}),
+                json!([]),
+            ),
+        );
+        let raw = result.data["records_json"][0].as_str().unwrap();
+        let decoded =
+            crate::snapshot_codec::decode_predicate_inputs(&[raw.to_owned()], 1024 * 1024).unwrap();
+        assert_eq!(
+            decoded[0].calls[0],
+            ("Read".to_owned(), vec!["a.rs".to_owned()])
+        );
+        assert_eq!(decoded[0].skills, ["review"]);
     }
 
     #[test]

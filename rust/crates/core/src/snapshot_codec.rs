@@ -137,6 +137,79 @@ pub struct PredicateInputsRecord {
     pub skills: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SidechainRecord {
+    pub path: String,
+    pub session_id: String,
+    pub provider: String,
+    pub depth: usize,
+    pub spawned_by: Option<String>,
+    pub description: sonic_rs::Value,
+}
+
+struct JsonWriter<'a, W> {
+    inner: &'a mut W,
+    scratch: Vec<u8>,
+    remaining: usize,
+}
+
+impl<W: Write> Write for JsonWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(io::Error::other("JSON output byte limit"));
+        }
+        let written = self.inner.write(bytes)?;
+        self.remaining -= written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> sonic_rs::writer::WriteExt for JsonWriter<'_, W> {
+    fn reserve_with(&mut self, additional: usize) -> io::Result<&mut [std::mem::MaybeUninit<u8>]> {
+        if additional > self.remaining {
+            return Err(io::Error::other(
+                "JSON serialization reservation exceeds byte limit",
+            ));
+        }
+        if self.scratch.capacity() < additional {
+            self.scratch = Vec::with_capacity(additional);
+        }
+        Ok(&mut self.scratch.spare_capacity_mut()[..additional])
+    }
+
+    unsafe fn flush_len(&mut self, additional: usize) -> io::Result<()> {
+        if additional > self.remaining || additional > self.scratch.capacity() {
+            return Err(io::Error::other("JSON output byte limit"));
+        }
+        // WriteExt's caller initialized these reserved bytes before flushing.
+        unsafe { self.scratch.set_len(additional) };
+        self.inner.write_all(&self.scratch)?;
+        self.remaining -= additional;
+        self.scratch.clear();
+        Ok(())
+    }
+}
+
+pub fn write_json<W: Write, T: Serialize + ?Sized>(
+    writer: &mut W,
+    value: &T,
+    max_bytes: usize,
+) -> Result<(), sonic_rs::Error> {
+    sonic_rs::to_writer(
+        &mut JsonWriter {
+            inner: writer,
+            scratch: Vec::new(),
+            remaining: max_bytes,
+        },
+        value,
+    )
+}
+
 struct LimitedWriter {
     bytes: Vec<u8>,
     max_bytes: usize,
@@ -164,7 +237,7 @@ pub fn encode<T: Serialize + ?Sized>(
         bytes: Vec::new(),
         max_bytes: max_bytes.min(MAX_RECORD_BYTES),
     };
-    sonic_rs::to_writer(&mut out, record)
+    write_json(&mut out, record, max_bytes.min(MAX_RECORD_BYTES))
         .map_err(|error| SnapshotError::new(Status::OutputLimit, error.to_string()))?;
     Ok(String::from_utf8(out.bytes).expect("JSON is UTF-8"))
 }
@@ -190,7 +263,7 @@ pub fn encoded_size<T: Serialize + ?Sized>(
     }
     let limit = max_bytes.min(MAX_RECORD_BYTES);
     let mut out = Counter { remaining: limit };
-    sonic_rs::to_writer(&mut out, record)
+    write_json(&mut out, record, max_bytes.min(MAX_RECORD_BYTES))
         .map_err(|error| SnapshotError::new(Status::OutputLimit, error.to_string()))?;
     Ok(limit - out.remaining)
 }
@@ -292,9 +365,49 @@ pub fn decode_predicate_inputs(
     decode(records, max_bytes)
 }
 
+pub fn decode_mining_signals(
+    records: &[String],
+    max_bytes: usize,
+) -> Result<Vec<sonic_rs::Value>, SnapshotError> {
+    decode(records, max_bytes)
+}
+
+pub fn decode_sidechains(
+    records: &[String],
+    max_bytes: usize,
+) -> Result<Vec<SidechainRecord>, SnapshotError> {
+    decode(records, max_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_rejects_reservation_before_allocating_scratch() {
+        use sonic_rs::writer::WriteExt;
+        let mut output = Vec::new();
+        let mut writer = JsonWriter {
+            inner: &mut output,
+            scratch: Vec::new(),
+            remaining: 8,
+        };
+        assert!(writer.reserve_with(9).is_err());
+        assert_eq!(writer.scratch.capacity(), 0);
+        assert_eq!(writer.remaining, 8);
+        assert!(writer.inner.is_empty());
+    }
+
+    #[test]
+    fn writer_bounds_escaped_output_and_preserves_raw_numbers() {
+        let value: sonic_rs::Value =
+            sonic_rs::from_str(r#"{"value":9007199254740990.5,"text":"a\nb"}"#).unwrap();
+        let encoded = encode(&value, 1024).unwrap();
+        assert!(encoded.contains("9007199254740990.5"));
+        assert!(encoded.contains(r#"a\nb"#));
+        assert!(encode(&value, 8).is_err());
+    }
+
     use crate::activity::lift_session;
     use crate::parse::parse_entry;
     use sonic_rs::{json, JsonValueTrait, Value};

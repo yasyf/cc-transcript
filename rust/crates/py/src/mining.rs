@@ -1024,11 +1024,11 @@ fn classify_provenance(
 /// review_scan_texts (mining/signals.py review_scan_texts): the typed user text
 /// plus each surfaced or claude tool-result, gated by the surfaces set.
 fn review_scan_texts<'a>(
-    events: &'a Events<'_>,
+    events: &'a Events<'a>,
     user: &'a UserEntry,
     index: usize,
     spec: &'a CompiledMiningSpec,
-    uses: &'a HashMap<&str, &ToolUseBlock>,
+    uses: &'a HashMap<&'a str, &'a ToolUseBlock>,
 ) -> impl Iterator<Item = ScanText<'a>> + 'a {
     let surfaces = &spec.review.surfaces;
     let text = events.texts[index].as_str();
@@ -1660,58 +1660,65 @@ pub fn mine_snapshot<'py>(
             "mining callback is not registered as bounded",
         )));
     }
-    py.detach(|| {
-        for chunk in &snapshot.chunks {
-            for charge in &chunk.entry_charges {
-                cancel.check(limits.deadline_unix_ms)?;
-                if usage.events == limits.max_events {
-                    return Err(cc_transcript_core::snapshot::SnapshotError::new(
-                        cc_transcript_core::snapshot::Status::EntryLimit,
-                        "mining input event budget exceeded",
-                    ));
+    let (entries, texts) = py
+        .detach(|| {
+            cancel.check(limits.deadline_unix_ms)?;
+            for chunk in &snapshot.chunks {
+                for charge in &chunk.entry_charges {
+                    cancel.check(limits.deadline_unix_ms)?;
+                    if usage.events == limits.max_events {
+                        return Err(cc_transcript_core::snapshot::SnapshotError::new(
+                            cc_transcript_core::snapshot::Status::EntryLimit,
+                            "mining input event budget exceeded",
+                        ));
+                    }
+                    let bytes = charge
+                        .owned_capacity_bytes
+                        .saturating_add(charge.opaque_dom_accounted_bytes)
+                        .saturating_add(
+                            size_of::<Entry>() + size_of::<&Entry>() + size_of::<String>(),
+                        );
+                    if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
+                        return Err(cc_transcript_core::snapshot::SnapshotError::new(
+                            cc_transcript_core::snapshot::Status::SourceLimit,
+                            "mining input byte budget exceeded",
+                        ));
+                    }
+                    usage.events += 1;
+                    usage.input_bytes += bytes;
                 }
-                let bytes = charge
-                    .owned_capacity_bytes
-                    .saturating_add(charge.opaque_dom_accounted_bytes)
-                    .saturating_add(size_of::<Entry>() + size_of::<&Entry>() + size_of::<String>());
-                if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
-                    return Err(cc_transcript_core::snapshot::SnapshotError::new(
-                        cc_transcript_core::snapshot::Status::SourceLimit,
-                        "mining input byte budget exceeded",
-                    ));
-                }
-                usage.events += 1;
-                usage.input_bytes += bytes;
             }
-        }
-        Ok(())
-    })
-    .map_err(crate::snapshots::error)?;
+            let mut entries = Vec::with_capacity(usage.events);
+            let mut texts = Vec::with_capacity(usage.events);
+            for entry in snapshot
+                .chunks
+                .iter()
+                .flat_map(|chunk| chunk.entries.iter())
+            {
+                cancel.check(limits.deadline_unix_ms)?;
+                entries.push(entry);
+                texts.push(match entry {
+                    Entry::User(user) => user.content.text(),
+                    _ => String::new(),
+                });
+            }
+            Ok((entries, texts))
+        })
+        .map_err(crate::snapshots::error)?;
     let budget = MiningBudget {
         limits,
         cancel: cancel.clone(),
         usage: Cell::new(*usage),
     };
-    let mut entries = Vec::with_capacity(usage.events);
-    let mut texts = Vec::with_capacity(usage.events);
-    for entry in snapshot
-        .chunks
-        .iter()
-        .flat_map(|chunk| chunk.entries.iter())
-    {
-        budget.check()?;
-        entries.push(entry);
-        texts.push(match entry {
-            Entry::User(user) => user.content.text(),
-            _ => String::new(),
-        });
-    }
     let events = Events {
         entries,
         texts,
         budget: Some(budget),
     };
-    let result = mine_events_impl(py, &events, spec);
+    let result = mine_events_impl(py, &events, spec).and_then(|result| {
+        events.check()?;
+        Ok(result)
+    });
     *usage = events.budget.as_ref().unwrap().usage.get();
     result
 }

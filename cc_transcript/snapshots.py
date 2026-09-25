@@ -114,8 +114,12 @@ def decode_projection(
     """Decode bounded owned records without rereading source transcript bytes."""
     payloads = _call(_native.decode_snapshot_projection, record_schema, list(records_json), max_bytes)
     match record_schema:
-        case "cc-transcript.event/1":
+        case "cc-transcript.event/1" | "cc-transcript.sidechain/1":
             return payloads
+        case "cc-transcript.mining-signal/1":
+            from cc_transcript.mining.engine import rehydrate_signal
+
+            return [rehydrate_signal(payload) for payload in payloads]
         case "cc-transcript.tool-use/1":
             return [_tool(payload) for payload in payloads]
         case "cc-transcript.turn/1":
@@ -241,6 +245,13 @@ class TranscriptStore:
                 return [isinstance(event, UserEvent) and predicate(event) for event in events]
 
             self._native.register_classifier(policy_id, version, classify)
+
+    @property
+    def owner_epoch(self) -> str:
+        return self._native.owner_epoch()
+
+    def record_transport(self, byte_count: int) -> None:
+        self._native.record_transport(byte_count)
 
     def request(
         self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext

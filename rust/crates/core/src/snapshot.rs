@@ -390,6 +390,83 @@ struct Checkpoint {
     accounted: usize,
 }
 
+struct GraphNode {
+    path: PathBuf,
+    depth: usize,
+    spawned_by: Option<String>,
+    snapshot: Arc<TranscriptSnapshot>,
+    description: Value,
+    transferred: bool,
+}
+
+enum GraphTask {
+    Visit {
+        path: PathBuf,
+        depth: usize,
+        spawned_by: Option<String>,
+    },
+    List {
+        parent: PathBuf,
+        depth: usize,
+    },
+}
+
+struct GraphListing {
+    entries: std::fs::ReadDir,
+    children: Vec<PathBuf>,
+    depth: usize,
+}
+
+struct GraphPending {
+    token: String,
+    path: PathBuf,
+    depth: usize,
+    spawned_by: Option<String>,
+}
+
+struct GraphCursor {
+    claimant: String,
+    context: Value,
+    request: Value,
+    root_handle: Value,
+    remaining: WorkLimits,
+    nodes: Vec<GraphNode>,
+    seen: HashSet<SourceIdentity>,
+    tasks: Vec<GraphTask>,
+    listing: Option<GraphListing>,
+    pending: Option<GraphPending>,
+    prepared: bool,
+    root_checked: bool,
+    projection_at: usize,
+    pending_record: Option<(usize, String)>,
+    expires: u64,
+    accounted: usize,
+}
+
+enum GraphYield {
+    Pending(Value),
+    Complete(Value),
+}
+
+struct ClassifierStage {
+    activity: ActivityIndex,
+    indexed: usize,
+    result: Option<Arc<TranscriptSnapshot>>,
+}
+
+struct ClassifierSlot {
+    work: Mutex<ClassifierStage>,
+    accounted: AtomicUsize,
+    deadline: u64,
+    complete: AtomicBool,
+}
+
+struct ClassifierProgress {
+    snapshot: Option<Arc<TranscriptSnapshot>>,
+    read_bytes: usize,
+    events: usize,
+}
+
 struct GenerationRecord {
     snapshot: Weak<TranscriptSnapshot>,
     entries: Vec<(usize, MemoryCharge)>,
@@ -414,6 +491,8 @@ struct StoreState {
     waiters: HashMap<String, Waiter>,
     projections: HashMap<String, ProjectionCursor>,
     generations: HashMap<String, GenerationRecord>,
+    classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
+    graphs: HashMap<String, GraphCursor>,
     discoveries: HashMap<String, DiscoveryCursor>,
     checkpoints: HashMap<String, Checkpoint>,
     resolutions: HashMap<String, ResolutionCursor>,
@@ -443,7 +522,6 @@ pub struct NativeStore {
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
     policies: Mutex<HashMap<String, Arc<PolicyCallback>>>,
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
-    classification_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 struct WaiterClaim<'a> {
@@ -512,7 +590,7 @@ fn encoded_size(value: &Value, limit: usize) -> Result<usize, SnapshotError> {
         }
     }
     let mut counter = Counter { bytes: 0, limit };
-    sonic_rs::to_writer(&mut counter, value)
+    crate::snapshot_codec::write_json(&mut counter, value, limit)
         .map_err(|_| SnapshotError::new(Status::OutputLimit, "encoded reply exceeds page bound"))?;
     Ok(counter.bytes)
 }
@@ -592,7 +670,6 @@ impl NativeStore {
             classifiers: Mutex::new(HashMap::new()),
             policies: Mutex::new(HashMap::new()),
             classified: Mutex::new(HashMap::new()),
-            classification_locks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -641,11 +718,15 @@ impl NativeStore {
         cancel: &Cancellation,
         bounds: &WorkLimits,
         usage: &mut [u64; 18],
-    ) -> Result<Arc<TranscriptSnapshot>, SnapshotError> {
+    ) -> Result<ClassifierProgress, SnapshotError> {
         let id = str_field(classifier, "id")?;
         let version = str_field(classifier, "version")?;
         if id == "native" && version == "1" {
-            return Ok(snapshot);
+            return Ok(ClassifierProgress {
+                snapshot: Some(snapshot),
+                read_bytes: 0,
+                events: 0,
+            });
         }
         let classifier_key = sonic_rs::to_string(&json!([id, version])).expect("classifier key");
         let callback = self
@@ -655,26 +736,12 @@ impl NativeStore {
             .get(&classifier_key)
             .cloned()
             .ok_or_else(|| invalid("classifier version is not registered with this owner"))?;
-        let key = format!(
-            "{}\0{}\0{}",
+        let key = sonic_rs::to_string(&json!([
             snapshot.id,
             classifier_key,
             str_field(context, "registry_generation")?
-        );
-        let lane = {
-            let mut locks = self
-                .classification_locks
-                .lock()
-                .expect("classification locks");
-            locks.retain(|_, lane| Arc::strong_count(lane) > 1);
-            Arc::clone(
-                locks
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(Mutex::new(()))),
-            )
-        };
-        let _classification = lane.lock().expect("classification lane");
-        cancel.check(bounds.deadline_unix_ms)?;
+        ]))
+        .expect("classified key");
         if let Some(derived) = self
             .classified
             .lock()
@@ -682,40 +749,121 @@ impl NativeStore {
             .get(&key)
             .cloned()
         {
-            return Ok(derived);
+            return Ok(ClassifierProgress {
+                snapshot: Some(derived),
+                read_bytes: 0,
+                events: 0,
+            });
         }
-        let mut activity = ActivityIndex::default();
-        let mut charged_bytes = 0usize;
-        let mut charged_events = 0usize;
-        for start in (0..snapshot.event_count).step_by(self.config.event_step) {
-            cancel.check(bounds.deadline_unix_ms)?;
-            let stop = (start + self.config.event_step).min(snapshot.event_count);
-            for position in start..stop {
-                let at = snapshot
-                    .chunks
-                    .partition_point(|chunk| chunk.start <= position)
-                    - 1;
-                let chunk = &snapshot.chunks[at];
-                let charge = chunk.entry_charges[position - chunk.start];
-                charged_bytes = charged_bytes
-                    .saturating_add(charge.owned_capacity_bytes)
-                    .saturating_add(charge.opaque_dom_accounted_bytes);
-                charged_events += 1;
-                if charged_bytes > bounds.max_read_bytes || charged_events > bounds.max_events {
+        let slot = {
+            let mut state = self.state.lock().expect("snapshot state");
+            Self::prune(&mut state);
+            if let Some(slot) = state.classifier_stages.get(&key) {
+                Arc::clone(slot)
+            } else {
+                let cap = if str_field(context, "admission")? == "hook" {
+                    self.config.loads
+                } else {
+                    self.config.loads.saturating_sub(self.config.hook_loads)
+                };
+                if state.classifier_stages.len() >= cap {
                     return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "classifier work budget exhausted before callback",
+                        Status::RetainedLimit,
+                        "classifier preparation admission exhausted",
                     ));
                 }
+                self.admit_memory(
+                    &mut state,
+                    context,
+                    size_of::<ClassifierSlot>() + size_of::<ClassifierStage>(),
+                )?;
+                let slot = Arc::new(ClassifierSlot {
+                    work: Mutex::new(ClassifierStage {
+                        activity: ActivityIndex::default(),
+                        indexed: 0,
+                        result: None,
+                    }),
+                    accounted: AtomicUsize::new(0),
+                    deadline: (now_ms() + self.config.preparation).min(bounds.deadline_unix_ms),
+                    complete: AtomicBool::new(false),
+                });
+                state
+                    .classifier_stages
+                    .insert(key.clone(), Arc::clone(&slot));
+                slot
             }
-            let block = callback(&snapshot.chunks, start..stop)?;
-            if block.len() != stop - start {
+        };
+        cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
+        let Ok(mut stage) = slot.work.try_lock() else {
+            return Ok(ClassifierProgress {
+                snapshot: None,
+                read_bytes: 0,
+                events: 0,
+            });
+        };
+        if let Some(result) = &stage.result {
+            return Ok(ClassifierProgress {
+                snapshot: Some(Arc::clone(result)),
+                read_bytes: 0,
+                events: 0,
+            });
+        }
+        let start = stage.indexed;
+        let stop = snapshot
+            .event_count
+            .min(start + self.config.event_step.min(bounds.max_events));
+        if start < snapshot.event_count && stop == start {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "classifier event budget exhausted",
+            ));
+        }
+        let mut bytes = 0usize;
+        for position in start..stop {
+            let at = snapshot
+                .chunks
+                .partition_point(|chunk| chunk.start <= position)
+                - 1;
+            let chunk = &snapshot.chunks[at];
+            let charge = chunk.entry_charges[position - chunk.start];
+            bytes = bytes
+                .saturating_add(charge.owned_capacity_bytes)
+                .saturating_add(charge.opaque_dom_accounted_bytes);
+            if bytes > bounds.max_read_bytes {
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "classifier read budget exhausted before callback",
+                ));
+            }
+        }
+        let reserve = bytes.saturating_mul(2).saturating_add(stop - start);
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            self.admit_memory(&mut state, context, reserve)?;
+            slot.accounted.fetch_add(reserve, Ordering::AcqRel);
+        }
+        if stop > start {
+            let flags = callback(&snapshot.chunks, start..stop)?;
+            if flags.len() != stop - start {
                 return Err(invalid("classifier returned a mismatched flag count"));
             }
-            activity = activity.append_tail(&snapshot.range(start..stop), Some(&block));
+            stage.activity = std::mem::take(&mut stage.activity)
+                .append_tail(&snapshot.range(start..stop), Some(&flags));
+            stage.indexed = stop;
             usage[6] += 1;
         }
-        let activity = Arc::new(activity);
+        slot.accounted.store(
+            stage.activity.accounted_bytes() + size_of::<ClassifierStage>(),
+            Ordering::Release,
+        );
+        cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
+        if stop < snapshot.event_count {
+            return Ok(ClassifierProgress {
+                snapshot: None,
+                read_bytes: bytes,
+                events: stop - start,
+            });
+        }
         let derived = Arc::new(TranscriptSnapshot {
             id: self.token("classified"),
             canonical_path: snapshot.canonical_path.clone(),
@@ -723,21 +871,30 @@ impl NativeStore {
             provider: snapshot.provider,
             session_id: snapshot.session_id.clone(),
             chunks: snapshot.chunks.clone(),
-            activity,
+            activity: Arc::new(std::mem::take(&mut stage.activity)),
             committed_bytes: snapshot.committed_bytes,
             provisional_tail: snapshot.provisional_tail,
             fence: snapshot.fence.clone(),
             event_count: snapshot.event_count,
         });
-        let additional = derived.activity.accounted_bytes();
         let generation = GenerationRecord::new(&derived);
-        let mut state = self.state.lock().expect("snapshot state");
-        self.admit_memory(&mut state, context, additional)?;
-        state.generations.insert(derived.id.clone(), generation);
-        drop(state);
-        let mut classified = self.classified.lock().expect("classified snapshots");
-        classified.retain(|_, existing| Arc::strong_count(existing) > 1);
-        Ok(Arc::clone(classified.entry(key).or_insert(derived)))
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            state.generations.insert(derived.id.clone(), generation);
+            slot.accounted.store(0, Ordering::Release);
+            self.admit_memory(&mut state, context, 0)?;
+        }
+        stage.result = Some(Arc::clone(&derived));
+        slot.complete.store(true, Ordering::Release);
+        self.classified
+            .lock()
+            .expect("classified snapshots")
+            .insert(key, Arc::clone(&derived));
+        Ok(ClassifierProgress {
+            snapshot: Some(derived),
+            read_bytes: bytes,
+            events: stop - start,
+        })
     }
 
     fn token(&self, kind: &str) -> String {
@@ -791,6 +948,21 @@ impl NativeStore {
 
     fn prune(state: &mut StoreState) {
         let now = now_ms();
+        let expired_graphs: Vec<_> = state
+            .graphs
+            .iter()
+            .filter(|(_, graph)| graph.expires <= now || graph.remaining.deadline_unix_ms <= now)
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in expired_graphs {
+            if let Some(graph) = state.graphs.remove(&token) {
+                Self::release_graph_state(state, &graph);
+            }
+        }
+        state.classifier_stages.retain(|_, slot| {
+            Arc::strong_count(slot) > 1
+                || slot.deadline > now && !slot.complete.load(Ordering::Acquire)
+        });
         state
             .discoveries
             .retain(|_, cursor| cursor.expires > now && cursor.limits.deadline_unix_ms > now);
@@ -851,6 +1023,11 @@ impl NativeStore {
                 }
             }
         }
+        let classifier_bytes: usize = state
+            .classifier_stages
+            .values()
+            .map(|slot| slot.accounted.load(Ordering::Acquire))
+            .sum();
         let pending: usize = state
             .loads
             .values()
@@ -875,6 +1052,7 @@ impl NativeStore {
                         .opaque_dom_accounted_bytes
             })
             .sum();
+        let graph_bytes: usize = state.graphs.values().map(|graph| graph.accounted).sum();
         let metadata = state
             .generations
             .values()
@@ -930,8 +1108,8 @@ impl NativeStore {
                 })
                 .sum::<usize>();
         json!({"retained_entry_capacity_bytes": entries, "retained_index_capacity_bytes": indexes,
-            "retained_projection_bytes": projections + discovery_bytes + metadata, "pending_input_capacity_bytes": pending,
-            "retained_total_accounted_bytes": entries + indexes + pending + projections + discovery_bytes + metadata,
+            "retained_projection_bytes": projections + discovery_bytes + graph_bytes + metadata, "pending_input_capacity_bytes": pending + classifier_bytes,
+            "retained_total_accounted_bytes": entries + indexes + pending + classifier_bytes + projections + discovery_bytes + graph_bytes + metadata,
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": snapshots.len()})
     }
 
@@ -1131,6 +1309,12 @@ impl NativeStore {
                                     .get(token)
                                     .map(|cursor| cursor.remaining.max_output_bytes)
                             })
+                            .or_else(|| {
+                                state
+                                    .graphs
+                                    .get(token)
+                                    .map(|graph| graph.remaining.max_output_bytes)
+                            })
                     })
             })
             .unwrap_or(self.config.output)
@@ -1227,6 +1411,15 @@ impl NativeStore {
         };
         let mut state = self.state.lock().expect("snapshot state");
         if state
+            .graphs
+            .get(token)
+            .is_some_and(|graph| graph.claimant == claimant)
+        {
+            if let Some(graph) = state.graphs.remove(token) {
+                Self::release_graph_state(&mut state, &graph);
+            }
+        }
+        if state
             .waiters
             .get(token)
             .is_some_and(|waiter| waiter.claimant == claimant)
@@ -1317,6 +1510,22 @@ impl NativeStore {
                 if let Some(mut resolution) = resolution {
                     resolution.context = context.clone();
                     return self.resolve_step(cursor, resolution, cancel, usage);
+                }
+                let graph = {
+                    let mut state = self.state.lock().expect("snapshot state");
+                    if state.graphs.get(cursor).is_some_and(|graph| {
+                        graph.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "graph cursor claimant differs",
+                        ));
+                    }
+                    state.graphs.remove(cursor)
+                };
+                if let Some(mut graph) = graph {
+                    graph.context = context.clone();
+                    return self.graph_step(cursor, graph, cancel, usage);
                 }
                 if let Some(mut waiter) = waiter {
                     if waiter.claimant != str_field(context, "claimant")? {
@@ -1451,6 +1660,9 @@ impl NativeStore {
                     None,
                 ))
             }
+            "query" if Self::is_graph_request(request) => {
+                self.graph(request, context, cancel, usage)
+            }
             "query" | "capture" | "activity_probe" | "hydrate" | "mine" => {
                 self.project_request(request, context, cancel, limits(request)?, 0)
             }
@@ -1519,22 +1731,13 @@ impl NativeStore {
         let waiter = {
             let mut state = self.state.lock().expect("snapshot state");
             Self::prune(&mut state);
-            if let Some(snapshot) = state
+            let cached = state
                 .latest
                 .get(&stamp.identity)
                 .filter(|snapshot| snapshot.stamp == stamp)
-                .cloned()
-            {
+                .cloned();
+            if cached.is_some() {
                 usage[7] += 1;
-                drop(state);
-                let snapshot =
-                    self.classify(snapshot, &classifier, context, cancel, &limits, usage)?;
-                let mut state = self.state.lock().expect("snapshot state");
-                return Ok((
-                    self.issue(&mut state, snapshot, classifier, context)?,
-                    None,
-                    None,
-                ));
             }
             let slot = if let Some(slot) = state.loads.get(&stamp.identity) {
                 if slot.stamp != stamp {
@@ -1560,7 +1763,11 @@ impl NativeStore {
                 self.admit_memory(
                     &mut state,
                     context,
-                    self.config.read_step.min(stamp.size as usize),
+                    if cached.is_some() {
+                        size_of::<LoadSlot>()
+                    } else {
+                        self.config.read_step.min(stamp.size as usize)
+                    },
                 )?;
                 let previous = state
                     .latest
@@ -1571,7 +1778,9 @@ impl NativeStore {
                             && old.stamp.size < stamp.size
                     })
                     .cloned();
-                usage[if previous.is_some() { 5 } else { 4 }] += 1;
+                if cached.is_none() {
+                    usage[if previous.is_some() { 5 } else { 4 }] += 1;
+                }
                 let slot = Arc::new(LoadSlot {
                     id: self.token("load"),
                     path: path.clone(),
@@ -1601,7 +1810,7 @@ impl NativeStore {
                         fence: Vec::new(),
                         committed: 0,
                         provisional: false,
-                        result: None,
+                        result: cached,
                         failure: None,
                     }),
                 });
@@ -1863,7 +2072,7 @@ impl NativeStore {
                 .max_events
                 .saturating_sub(waiter.used_events);
             classifier_bounds.deadline_unix_ms = waiter.deadline;
-            let snapshot = self.classify(
+            let classified = self.classify(
                 snapshot,
                 &waiter.classifier,
                 &waiter.context,
@@ -1871,6 +2080,23 @@ impl NativeStore {
                 &classifier_bounds,
                 usage,
             )?;
+            waiter.used_bytes += classified.read_bytes;
+            waiter.used_events += classified.events;
+            let Some(snapshot) = classified.snapshot else {
+                waiter.expires = (now_ms() + self.config.ttl).min(waiter.deadline);
+                waiter.busy = false;
+                let mut state = self.state.lock().expect("snapshot state");
+                if !state.waiters.contains_key(token) {
+                    return Err(SnapshotError::new(
+                        Status::Cancelled,
+                        "reservation released during classification",
+                    ));
+                }
+                state.waiters.insert(token.to_owned(), waiter.clone());
+                drop(state);
+                claim.keep = true;
+                return Ok(self.loading(token, &waiter, "classifier preparation incomplete"));
+            };
             let mut state = self.state.lock().expect("snapshot state");
             if !state.waiters.contains_key(token) {
                 return Err(SnapshotError::new(
@@ -2104,8 +2330,9 @@ impl NativeStore {
                 usage[15] += 1;
                 usage[16] += load.pending.len() as u64;
                 usage[2] += load.pending.len() as u64;
-                let parsed = parse_transcript_bytes(&load.pending)
-                    .map_err(|error| SnapshotError::new(Status::ParseError, error.to_string()))?;
+                let parsed = parse_transcript_bytes(&load.pending).map_err(|error| {
+                    SnapshotError::new(Status::ParseError, format!("{error:?}"))
+                })?;
                 usage[3] += parsed.entries.len() as u64;
                 if parsed.entries.len() > lowering_events {
                     return Err(SnapshotError::new(
@@ -2140,7 +2367,7 @@ impl NativeStore {
                     }
                     crate::parse::parse_line(&load.pending[consumed..end], &mut entries, &|_| true)
                         .map_err(|error| {
-                            SnapshotError::new(Status::ParseError, error.to_string())
+                            SnapshotError::new(Status::ParseError, format!("{error:?}"))
                         })?;
                     let fresh = &load.pending[consumed..=end];
                     if fresh.len() >= 64 {
@@ -2187,7 +2414,7 @@ impl NativeStore {
                 if !load.pending.is_empty() {
                     let mut tail = Vec::new();
                     crate::parse::parse_line(&load.pending, &mut tail, &|_| true).map_err(
-                        |error| SnapshotError::new(Status::ParseError, error.to_string()),
+                        |error| SnapshotError::new(Status::ParseError, format!("{error:?}")),
                     )?;
                     usage[2] += load.pending.len() as u64;
                     usage[3] += 1;
@@ -2282,6 +2509,556 @@ impl NativeStore {
         Ok(())
     }
 
+    fn is_graph_request(request: &Value) -> bool {
+        request.get("query").is_some_and(|query| {
+            query.get("subagents").and_then(Value::as_bool) == Some(true)
+                || matches!(
+                    query.get("kind").and_then(Value::as_str),
+                    Some("deep_predicate_inputs" | "sidechain_membership")
+                )
+        })
+    }
+
+    fn release_graph_state(state: &mut StoreState, graph: &GraphCursor) {
+        if let Some(pending) = &graph.pending {
+            state.waiters.remove(&pending.token);
+        }
+        for node in graph.nodes.iter().skip(1).filter(|node| !node.transferred) {
+            if let Some(token) = node.description["handle"]["lease_id"].as_str() {
+                if state
+                    .leases
+                    .get(token)
+                    .is_some_and(|lease| lease.claimant == graph.claimant)
+                {
+                    state.leases.remove(token);
+                }
+            }
+        }
+    }
+
+    fn graph(
+        &self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let bounds = limits(request)?;
+        cancel.check(bounds.deadline_unix_ms)?;
+        let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
+        let root_handle = view
+            .get("handle")
+            .ok_or_else(|| invalid("missing root handle"))?
+            .clone();
+        let (root, description) = self.pin_scope(&root_handle, context)?;
+        if sonic_rs::to_vec(&view["classifier"]).ok()
+            != sonic_rs::to_vec(&description["classifier"]).ok()
+        {
+            return Err(invalid("view classifier differs from root generation"));
+        }
+        let mut tasks = Vec::new();
+        let attachments = view
+            .get("attachments")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("missing attachments"))?;
+        for attachment in attachments.iter().rev() {
+            tasks.push(GraphTask::Visit {
+                path: PathBuf::from(
+                    attachment
+                        .as_str()
+                        .ok_or_else(|| invalid("invalid attachment"))?,
+                ),
+                depth: 1,
+                spawned_by: None,
+            });
+        }
+        tasks.push(GraphTask::List {
+            parent: root.canonical_path.clone(),
+            depth: 1,
+        });
+        let identity = root.stamp.identity;
+        let graph = GraphCursor {
+            claimant: str_field(context, "claimant")?.to_owned(),
+            context: context.clone(),
+            request: request.clone(),
+            root_handle,
+            remaining: bounds,
+            nodes: vec![GraphNode {
+                path: root.canonical_path.clone(),
+                depth: 0,
+                spawned_by: None,
+                snapshot: root,
+                description,
+                transferred: false,
+            }],
+            seen: HashSet::from([identity]),
+            tasks,
+            listing: None,
+            pending: None,
+            prepared: false,
+            root_checked: false,
+            projection_at: 0,
+            pending_record: None,
+            expires: (now_ms() + self.config.ttl).min(bounds.deadline_unix_ms),
+            accounted: 0,
+        };
+        self.graph_step(&self.token("graph"), graph, cancel, usage)
+    }
+
+    fn graph_member_request(graph: &GraphCursor, index: usize) -> Value {
+        let mut request = graph.request.clone();
+        request["view"].insert("attachments", json!([]));
+        request["view"].insert("handle", graph.nodes[index].description["handle"].clone());
+        request["view"].insert(
+            "classifier",
+            graph.nodes[index].description["classifier"].clone(),
+        );
+        if index > 0 {
+            request["view"].insert("selectors", json!([]));
+        }
+        if request["query"].get("subagents").is_some() {
+            request["query"].insert("subagents", json!(false));
+        }
+        request
+    }
+
+    fn graph_step(
+        &self,
+        token: &str,
+        mut graph: GraphCursor,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let result = self.graph_work(&mut graph, cancel, usage);
+        match result {
+            Err(error) => {
+                Self::release_graph_state(&mut self.state.lock().expect("snapshot state"), &graph);
+                Err(error)
+            }
+            Ok(GraphYield::Complete(data)) => {
+                Self::release_graph_state(&mut self.state.lock().expect("snapshot state"), &graph);
+                Ok((data, None, None))
+            }
+            Ok(GraphYield::Pending(data)) => {
+                let output =
+                    encoded_size(&data, graph.remaining.max_output_bytes.min(MAX_DATA_BYTES))?;
+                graph.remaining.max_output_bytes =
+                    graph.remaining.max_output_bytes.saturating_sub(output);
+                graph.expires = (now_ms() + self.config.ttl).min(graph.remaining.deadline_unix_ms);
+                let request_charge = crate::snapshot_memory::value_charge(&graph.request);
+                graph.accounted = size_of::<GraphCursor>()
+                    + request_charge.owned_capacity_bytes
+                    + request_charge.opaque_dom_accounted_bytes
+                    + graph.nodes.capacity() * size_of::<GraphNode>()
+                    + graph
+                        .nodes
+                        .iter()
+                        .map(|node| {
+                            let charge = crate::snapshot_memory::value_charge(&node.description);
+                            node.path.as_os_str().len()
+                                + charge.owned_capacity_bytes
+                                + charge.opaque_dom_accounted_bytes
+                        })
+                        .sum::<usize>()
+                    + graph.tasks.capacity() * size_of::<GraphTask>()
+                    + graph
+                        .pending_record
+                        .as_ref()
+                        .map_or(0, |(_, record)| record.capacity())
+                    + graph.listing.as_ref().map_or(0, |listing| {
+                        listing
+                            .children
+                            .iter()
+                            .map(|path| path.as_os_str().len())
+                            .sum::<usize>()
+                    });
+                let mut state = self.state.lock().expect("snapshot state");
+                if state.graphs.len() >= self.lease_cap(&graph.context)? {
+                    Self::release_graph_state(&mut state, &graph);
+                    return Err(SnapshotError::new(
+                        Status::LeaseLimit,
+                        "graph cursor admission exhausted",
+                    ));
+                }
+                if let Err(error) = self.admit_memory(&mut state, &graph.context, graph.accounted) {
+                    Self::release_graph_state(&mut state, &graph);
+                    return Err(error);
+                }
+                state.graphs.insert(token.to_owned(), graph);
+                Ok((
+                    data,
+                    Some(token.to_owned()),
+                    Some("graph work incomplete".to_owned()),
+                ))
+            }
+        }
+    }
+
+    fn graph_add_source(
+        &self,
+        graph: &mut GraphCursor,
+        path: PathBuf,
+        depth: usize,
+        spawned_by: Option<String>,
+        data: &Value,
+    ) -> Result<(), SnapshotError> {
+        let description = data
+            .get("description")
+            .ok_or_else(|| invalid("acquire returned no source description"))?
+            .clone();
+        let snapshot = self.pin(&description["handle"], &graph.context)?;
+        let identity = snapshot.stamp.identity;
+        if !graph.seen.insert(identity) {
+            self.state
+                .lock()
+                .expect("snapshot state")
+                .leases
+                .remove(str_field(&description["handle"], "lease_id")?);
+            return Ok(());
+        }
+        graph.nodes.push(GraphNode {
+            path: path.clone(),
+            depth,
+            spawned_by,
+            snapshot,
+            description,
+            transferred: false,
+        });
+        graph.tasks.push(GraphTask::List {
+            parent: path,
+            depth: depth + 1,
+        });
+        Ok(())
+    }
+
+    fn graph_work(
+        &self,
+        graph: &mut GraphCursor,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<GraphYield, SnapshotError> {
+        cancel.check(graph.remaining.deadline_unix_ms)?;
+        self.pin_scope(&graph.root_handle, &graph.context)?;
+        let kind = str_field(&graph.request["query"], "kind")?.to_owned();
+        let membership = kind == "sidechain_membership";
+        let inputs = kind == "deep_predicate_inputs";
+        let boolean = !membership && !inputs;
+        if boolean && !graph.root_checked {
+            let request = Self::graph_member_request(graph, 0);
+            let mut bounds = graph.remaining;
+            bounds.max_output_bytes = bounds.max_output_bytes.min(MAX_DATA_BYTES);
+            let projection = crate::snapshot_projection::project(
+                &graph.nodes[0].snapshot,
+                &request,
+                &bounds,
+                cancel,
+                0,
+            )?;
+            graph.remaining.max_read_bytes = graph
+                .remaining
+                .max_read_bytes
+                .saturating_sub(projection.read_bytes);
+            graph.remaining.max_events =
+                graph.remaining.max_events.saturating_sub(projection.events);
+            if !projection.complete {
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "root predicate work incomplete",
+                ));
+            }
+            graph.root_checked = true;
+            if projection.data["value"].as_bool() == Some(true) {
+                return Ok(GraphYield::Complete(projection.data));
+            }
+        }
+        if let Some(pending) = graph.pending.take() {
+            self.authority(
+                &graph.context,
+                Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
+            )?;
+            let waiter = {
+                let mut state = self.state.lock().expect("snapshot state");
+                let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
+                    SnapshotError::new(Status::StaleCursor, "graph source reservation expired")
+                })?;
+                waiter.context = graph.context.clone();
+                waiter.clone()
+            };
+            let before_bytes = usage[1];
+            let before_events = usage[3];
+            let outcome = self.advance(&pending.token, waiter, cancel, usage)?;
+            graph.remaining.max_read_bytes = graph
+                .remaining
+                .max_read_bytes
+                .saturating_sub((usage[1] - before_bytes) as usize);
+            graph.remaining.max_events = graph
+                .remaining
+                .max_events
+                .saturating_sub((usage[3] - before_events) as usize);
+            if outcome.1.is_some() {
+                graph.pending = Some(pending);
+            } else {
+                self.graph_add_source(
+                    graph,
+                    pending.path,
+                    pending.depth,
+                    pending.spawned_by,
+                    &outcome.0,
+                )?;
+            }
+            return Ok(GraphYield::Pending(Value::new_null()));
+        }
+        let mut examined = 0usize;
+        while !graph.prepared && examined < self.config.event_step {
+            cancel.check(graph.remaining.deadline_unix_ms)?;
+            if let Some(mut listing) = graph.listing.take() {
+                loop {
+                    if examined >= self.config.event_step {
+                        graph.listing = Some(listing);
+                        return Ok(GraphYield::Pending(Value::new_null()));
+                    }
+                    let Some(entry) = listing.entries.next() else {
+                        break;
+                    };
+                    if graph.remaining.max_discovery_entries == 0 {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "graph discovery budget exhausted",
+                        ));
+                    }
+                    graph.remaining.max_discovery_entries -= 1;
+                    examined += 1;
+                    usage[17] += 1;
+                    let entry = entry.map_err(io_error)?;
+                    let path = entry.path();
+                    let name = entry.file_name();
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "jsonl")
+                        && !name.to_string_lossy().starts_with("._")
+                    {
+                        if listing.children.len() + graph.nodes.len() > graph.remaining.max_sources
+                        {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "graph source discovery budget exhausted",
+                            ));
+                        }
+                        listing.children.push(path);
+                    }
+                }
+                listing.children.sort();
+                for path in listing.children.into_iter().rev() {
+                    let spawned_by = path
+                        .file_stem()
+                        .expect("sidechain filename")
+                        .to_string_lossy()
+                        .trim_start_matches("agent-")
+                        .to_owned();
+                    graph.tasks.push(GraphTask::Visit {
+                        path,
+                        depth: listing.depth,
+                        spawned_by: Some(spawned_by),
+                    });
+                }
+                continue;
+            }
+            let Some(task) = graph.tasks.pop() else {
+                graph.prepared = true;
+                break;
+            };
+            match task {
+                GraphTask::List { parent, depth } => {
+                    let directory = parent
+                        .parent()
+                        .ok_or_else(|| invalid("source has no parent"))?
+                        .join(
+                            parent
+                                .file_stem()
+                                .ok_or_else(|| invalid("source has no stem"))?,
+                        )
+                        .join("subagents");
+                    match std::fs::canonicalize(&directory) {
+                        Ok(canonical) => {
+                            self.authority(&graph.context, Some(&canonical))?;
+                            graph.listing = Some(GraphListing {
+                                entries: std::fs::read_dir(&directory).map_err(io_error)?,
+                                children: Vec::new(),
+                                depth,
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(io_error(error)),
+                    }
+                }
+                GraphTask::Visit {
+                    path,
+                    depth,
+                    spawned_by,
+                } => {
+                    let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                    self.authority(&graph.context, Some(&canonical))?;
+                    let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+                    if !metadata.is_file() {
+                        return Err(invalid("graph source must be a file"));
+                    }
+                    if graph.seen.contains(&SourceStamp::of(&metadata).identity) {
+                        continue;
+                    }
+                    if graph.nodes.len() >= graph.remaining.max_sources {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "graph source budget exhausted",
+                        ));
+                    }
+                    let bounds = graph.remaining;
+                    let acquire = json!({"schema":SCHEMA,"id":"graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":bounds.deadline_unix_ms,
+                        "limits":{"max_read_bytes":bounds.max_read_bytes,"max_events":bounds.max_events,"max_items":bounds.max_items,"max_output_bytes":bounds.max_output_bytes,"max_discovery_entries":bounds.max_discovery_entries,"max_sources":bounds.max_sources}});
+                    let before_bytes = usage[1];
+                    let before_events = usage[3];
+                    let outcome = self.acquire(&acquire, &graph.context, cancel, usage)?;
+                    graph.remaining.max_read_bytes = graph
+                        .remaining
+                        .max_read_bytes
+                        .saturating_sub((usage[1] - before_bytes) as usize);
+                    graph.remaining.max_events = graph
+                        .remaining
+                        .max_events
+                        .saturating_sub((usage[3] - before_events) as usize);
+                    if let Some(token) = outcome.1 {
+                        graph.pending = Some(GraphPending {
+                            token,
+                            path,
+                            depth,
+                            spawned_by,
+                        });
+                    } else {
+                        self.graph_add_source(graph, path, depth, spawned_by, &outcome.0)?;
+                    }
+                    return Ok(GraphYield::Pending(Value::new_null()));
+                }
+            }
+        }
+        if !graph.prepared {
+            return Ok(GraphYield::Pending(Value::new_null()));
+        }
+        let total = if membership || boolean {
+            graph.nodes.len() - 1
+        } else {
+            graph.nodes.len()
+        };
+        let reverse =
+            graph.request["query"].get("order").and_then(Value::as_str) == Some("reverse");
+        let mut records = Vec::new();
+        let mut output_bytes = 128usize;
+        let page_limit = self.config.page_items.min(graph.remaining.max_items);
+        while graph.projection_at < total || graph.pending_record.is_some() {
+            cancel.check(graph.remaining.deadline_unix_ms)?;
+            if records.len() >= page_limit {
+                break;
+            }
+            let (index, record) = if let Some(pending) = graph.pending_record.take() {
+                pending
+            } else {
+                let position = if reverse {
+                    total - 1 - graph.projection_at
+                } else {
+                    graph.projection_at
+                };
+                let index = position + usize::from(membership || boolean);
+                let node = &graph.nodes[index];
+                self.validate_scope(&node.description["handle"], &graph.context)?;
+                self.authority(&graph.context, Some(&node.snapshot.canonical_path))?;
+                if membership {
+                    let record = json!({"path":node.path.to_string_lossy().as_ref(),"session_id":node.snapshot.session_id,"provider":node.snapshot.provider.as_str(),"depth":node.depth,"spawned_by":node.spawned_by,"description":node.description});
+                    encoded_size(&record, MAX_DATA_BYTES)?;
+                    graph.projection_at += 1;
+                    (
+                        index,
+                        sonic_rs::to_string(&record).map_err(|error| invalid(error.to_string()))?,
+                    )
+                } else {
+                    let request = Self::graph_member_request(graph, index);
+                    let mut bounds = graph.remaining;
+                    bounds.max_items = 1;
+                    bounds.max_output_bytes = bounds.max_output_bytes.min(MAX_DATA_BYTES);
+                    let projection = crate::snapshot_projection::project(
+                        &node.snapshot,
+                        &request,
+                        &bounds,
+                        cancel,
+                        0,
+                    )?;
+                    graph.remaining.max_read_bytes = graph
+                        .remaining
+                        .max_read_bytes
+                        .saturating_sub(projection.read_bytes);
+                    graph.remaining.max_events =
+                        graph.remaining.max_events.saturating_sub(projection.events);
+                    if !projection.complete {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "graph member projection incomplete",
+                        ));
+                    }
+                    graph.projection_at += 1;
+                    if boolean {
+                        if projection.data["value"].as_bool() == Some(true) {
+                            return Ok(GraphYield::Complete(projection.data));
+                        }
+                        if graph.projection_at >= total {
+                            break;
+                        }
+                        continue;
+                    }
+                    (
+                        index,
+                        projection.data["records_json"][0]
+                            .as_str()
+                            .ok_or_else(|| invalid("predicate member returned no record"))?
+                            .to_owned(),
+                    )
+                }
+            };
+            let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)?;
+            if output_bytes.saturating_add(record_bytes)
+                > graph.remaining.max_output_bytes.min(MAX_DATA_BYTES)
+            {
+                graph.pending_record = Some((index, record));
+                if records.is_empty() {
+                    return Err(SnapshotError::new(
+                        Status::OutputLimit,
+                        "graph record exceeds remaining output budget",
+                    ));
+                }
+                break;
+            }
+            output_bytes += record_bytes + 1;
+            if membership {
+                graph.nodes[index].transferred = true;
+            }
+            records.push(record);
+        }
+        if boolean {
+            return Ok(GraphYield::Complete(json!({"kind":"scalar","value":false})));
+        }
+        let data = json!({"kind":"records","record_schema":if membership {"cc-transcript.sidechain/1"} else {"cc-transcript.predicate-inputs/1"},"records_json":records});
+        graph.remaining.max_items = graph
+            .remaining
+            .max_items
+            .saturating_sub(data["records_json"].as_array().expect("records").len());
+        if graph.projection_at >= total && graph.pending_record.is_none() {
+            Ok(GraphYield::Complete(data))
+        } else if graph.remaining.max_items == 0 {
+            Err(SnapshotError::new(
+                Status::Incomplete,
+                "graph item budget exhausted",
+            ))
+        } else {
+            Ok(GraphYield::Pending(data))
+        }
+    }
+
     fn project_request(
         &self,
         request: &Value,
@@ -2321,7 +3098,9 @@ impl NativeStore {
                 .ok_or_else(|| invalid("policy version is not registered with this owner"))?;
             callback(snapshot, request, &page, cancel, next)?
         } else {
-            crate::snapshot_projection::project(&snapshot, request, &page, cancel, next)?
+            let mut local = request.clone();
+            local["view"].insert("attachments", json!([]));
+            crate::snapshot_projection::project(&snapshot, &local, &page, cancel, next)?
         };
         self.projection_result(request, context, bound, projection)
     }
