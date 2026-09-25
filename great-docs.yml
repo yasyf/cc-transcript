@@ -309,8 +309,6 @@ reference:
       - HydratedWindow
       - TurnRef
       - capture_window
-      - capture_windows
-      - hydrate_windows
       - SchemaError
   - title: Rendering
     desc: The one renderer — budget-bounded turns, tool calls, and sessions; truncation happens only here.
