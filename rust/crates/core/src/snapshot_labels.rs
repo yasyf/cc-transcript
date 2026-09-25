@@ -126,13 +126,6 @@ impl LabelPreparation {
             + 7
     }
 
-    pub fn operation_reservation_bytes(max_stage_bytes: usize) -> usize {
-        max_stage_bytes
-            .saturating_mul(2)
-            .saturating_add(PAGE_BYTES.saturating_mul(4))
-            .saturating_add(PAGE_EVENTS * (size_of::<String>() + size_of::<usize>()))
-    }
-
     pub fn new(
         source: Arc<TranscriptSnapshot>,
         binding: LabelBinding,
