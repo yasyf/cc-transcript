@@ -3641,7 +3641,7 @@ impl NativeStore {
             query.get("subagents").and_then(Value::as_bool) == Some(true)
                 || matches!(
                     query.get("kind").and_then(Value::as_str),
-                    Some("deep_predicate_inputs" | "sidechain_membership")
+                    Some("deep_predicate_inputs" | "sidechain_membership" | "direct_sidechains")
                 )
         })
     }
@@ -3685,12 +3685,33 @@ impl NativeStore {
         if !classifier_eq(&view["classifier"], &description["classifier"])? {
             return Err(invalid("view classifier differs from root generation"));
         }
+        let direct = str_field(&request["query"], "kind")? == "direct_sidechains";
+        let selected = if direct {
+            let ids = request["query"]
+                .get("dispatch_ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("missing dispatch ids"))?;
+            if ids.len() > 256
+                || ids.iter().any(|id| {
+                    id.as_str()
+                        .is_none_or(|id| id.is_empty() || id.chars().count() > 256)
+                })
+            {
+                return Err(invalid("direct sidechain dispatch ids exceed their bound"));
+            }
+            if str_field(&request["query"], "order")? != "forward" {
+                return Err(invalid("direct sidechains require forward order"));
+            }
+            !ids.is_empty()
+        } else {
+            true
+        };
         let mut tasks = Vec::new();
         let attachments = view
             .get("attachments")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing attachments"))?;
-        for attachment in attachments.iter().rev() {
+        for attachment in attachments.iter().rev().filter(|_| !direct) {
             tasks.push(GraphTask::Visit {
                 path: PathBuf::from(
                     attachment
@@ -3701,10 +3722,12 @@ impl NativeStore {
                 spawned_by: None,
             });
         }
-        tasks.push(GraphTask::List {
-            parent: root.canonical_path.clone(),
-            depth: 1,
-        });
+        if selected {
+            tasks.push(GraphTask::List {
+                parent: root.canonical_path.clone(),
+                depth: 1,
+            });
+        }
         let identity = root.stamp.identity;
         let graph = GraphCursor {
             claimant: str_field(context, "claimant")?.to_owned(),
@@ -3866,7 +3889,9 @@ impl NativeStore {
             graph.remaining.deadline_unix_ms,
         )?;
         let identity = snapshot.stamp.identity;
-        if !graph.seen.insert(identity) {
+        if !graph.seen.insert(identity)
+            && graph.request["query"]["kind"].as_str() != Some("direct_sidechains")
+        {
             self.state
                 .lock()
                 .expect("snapshot state")
@@ -3882,10 +3907,12 @@ impl NativeStore {
             description,
             transferred: false,
         });
-        graph.tasks.push(GraphTask::List {
-            parent: path,
-            depth: depth + 1,
-        });
+        if graph.request["query"]["kind"].as_str() != Some("direct_sidechains") {
+            graph.tasks.push(GraphTask::List {
+                parent: path,
+                depth: depth + 1,
+            });
+        }
         Ok(())
     }
 
@@ -3931,7 +3958,8 @@ impl NativeStore {
         )?;
         self.renew_graph_members(graph)?;
         let kind = str_field(&graph.request["query"], "kind")?.to_owned();
-        let membership = kind == "sidechain_membership";
+        let direct = kind == "direct_sidechains";
+        let membership = direct || kind == "sidechain_membership";
         let inputs = kind == "deep_predicate_inputs";
         let boolean = !membership && !inputs;
         if boolean && !graph.root_checked {
@@ -4028,6 +4056,20 @@ impl NativeStore {
                         .is_some_and(|extension| extension == "jsonl")
                         && !name.to_string_lossy().starts_with("._")
                     {
+                        if direct {
+                            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                                continue;
+                            };
+                            let id = stem.strip_prefix("agent-").unwrap_or(stem);
+                            if !graph.request["query"]["dispatch_ids"]
+                                .as_array()
+                                .expect("validated dispatch ids")
+                                .iter()
+                                .any(|selected| selected.as_str() == Some(id))
+                            {
+                                continue;
+                            }
+                        }
                         if listing.children.len() + graph.nodes.len() > graph.remaining.max_sources
                         {
                             return Err(SnapshotError::new(
@@ -4099,7 +4141,7 @@ impl NativeStore {
                     if !metadata.is_file() {
                         return Err(invalid("graph source must be a file"));
                     }
-                    if graph.seen.contains(&SourceStamp::of(&metadata).identity) {
+                    if !direct && graph.seen.contains(&SourceStamp::of(&metadata).identity) {
                         continue;
                     }
                     if graph.nodes.len() >= graph.remaining.max_sources {
@@ -5623,6 +5665,200 @@ mod tests {
         for record in records {
             assert!(store.pin(&record["description"]["handle"], &owner).is_ok());
         }
+    }
+
+    #[test]
+    fn direct_sidechains_skip_unselected_sources_descendants_and_attachments() {
+        let source = Source::new(&format!("{}\n{}\n", user("before"), user("current")));
+        let children = source.directory.join("s/subagents");
+        let descendants = children.join("agent-chosen/subagents");
+        std::fs::create_dir_all(&descendants).unwrap();
+        std::fs::write(
+            children.join("agent-chosen.jsonl"),
+            format!("{}\n{}\n", user("child-first"), user("child-last")),
+        )
+        .unwrap();
+        std::fs::write(children.join("agent-unselected.jsonl"), "not JSON\n").unwrap();
+        std::fs::write(descendants.join("agent-broken.jsonl"), "not JSON\n").unwrap();
+        let attachment = source.directory.join("broken.jsonl");
+        std::fs::write(&attachment, "not JSON\n").unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let before = store.state.lock().unwrap().counters[0];
+        let records = graph_records(
+            &store,
+            &graph_request(
+                &root,
+                json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":["chosen"]}),
+                vec![attachment.to_string_lossy().into_owned()],
+                json!([{"kind":"current_turn"}]),
+            ),
+            &owner,
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["spawned_by"].as_str(), Some("chosen"));
+        assert_eq!(records[0]["depth"].as_u64(), Some(1));
+        assert_eq!(
+            records[0]["description"]["classifier"]["id"].as_str(),
+            Some("native")
+        );
+        assert_eq!(
+            store
+                .pin(&records[0]["description"]["handle"], &owner)
+                .unwrap()
+                .event_count,
+            2
+        );
+        assert_eq!(store.state.lock().unwrap().counters[0] - before, 1);
+    }
+
+    #[test]
+    fn empty_direct_sidechains_do_not_inspect_child_sources() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        std::fs::write(children.join("agent-broken.jsonl"), "not JSON\n").unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let before = store.state.lock().unwrap().counters;
+        let records = graph_records(
+            &store,
+            &graph_request(
+                &root,
+                json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":[]}),
+                vec![source
+                    .directory
+                    .join("absent.jsonl")
+                    .to_string_lossy()
+                    .into_owned()],
+                json!([]),
+            ),
+            &owner,
+        );
+        assert!(records.is_empty());
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[17], before[17]);
+        assert_eq!(store.state.lock().unwrap().leases.len(), 1);
+    }
+
+    #[test]
+    fn direct_sidechains_preserve_dispatch_aliases_with_shared_source_chunks() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        let first = children.join("agent-a.jsonl");
+        std::fs::write(&first, format!("{}\n", user("child"))).unwrap();
+        std::fs::hard_link(&first, children.join("agent-b.jsonl")).unwrap();
+        let store = NativeStore::new(&json!({"max_items_per_page":1,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let records = graph_records(
+            &store,
+            &graph_request(
+                &root,
+                json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":["b","a"]}),
+                Vec::new(),
+                json!([]),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["spawned_by"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        let first = store
+            .pin(&records[0]["description"]["handle"], &owner)
+            .unwrap();
+        let second = store
+            .pin(&records[1]["description"]["handle"], &owner)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first.chunks[0], &second.chunks[0]));
+        assert_ne!(
+            records[0]["description"]["handle"]["lease_id"],
+            records[1]["description"]["handle"]["lease_id"]
+        );
+    }
+
+    #[test]
+    fn direct_sidechain_discovery_limit_cannot_report_missing() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        std::fs::write(children.join("agent-unselected.jsonl"), "not JSON\n").unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut request = graph_request(
+            &root,
+            json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":["missing"]}),
+            Vec::new(),
+            json!([]),
+        );
+        request["limits"].insert("max_discovery_entries", json!(0));
+        let result = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(result["status"].as_str(), Some("incomplete"));
+        assert_eq!(result["complete"].as_bool(), Some(false));
+        assert!(result["cursor"].is_null());
+        assert!(result["data"].is_null());
+        assert_eq!(store.state.lock().unwrap().leases.len(), 1);
+    }
+
+    #[test]
+    fn direct_sidechain_failure_releases_prepared_members() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let children = source.directory.join("s/subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        std::fs::write(
+            children.join("agent-a.jsonl"),
+            format!("{}\n", user("child")),
+        )
+        .unwrap();
+        std::fs::write(children.join("agent-b.jsonl"), "{\"type\":\"user\"}\n").unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let request = graph_request(
+            &root,
+            json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":["a","b"]}),
+            Vec::new(),
+            json!([]),
+        );
+        let result = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(result["status"].as_str(), Some("parse_error"));
+        assert_eq!(result["complete"].as_bool(), Some(false));
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.leases.len(), 1);
+        assert!(state.graphs.is_empty());
     }
 
     #[test]
