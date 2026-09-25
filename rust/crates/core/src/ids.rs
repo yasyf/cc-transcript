@@ -148,6 +148,14 @@ pub(crate) fn encode_string(text: &str, out: &mut String) {
 
 pub(crate) fn encode_string_to(text: &str, out: &mut impl std::fmt::Write) -> std::fmt::Result {
     out.write_char('"')?;
+    encode_string_contents_to(text, out)?;
+    out.write_char('"')
+}
+
+pub(crate) fn encode_string_contents_to(
+    text: &str,
+    out: &mut impl std::fmt::Write,
+) -> std::fmt::Result {
     for ch in text.chars() {
         match ch {
             '"' => out.write_str("\\\"")?,
@@ -161,7 +169,7 @@ pub(crate) fn encode_string_to(text: &str, out: &mut impl std::fmt::Write) -> st
             c => out.write_char(c)?,
         }
     }
-    out.write_char('"')
+    Ok(())
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {

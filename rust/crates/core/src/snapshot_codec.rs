@@ -2,6 +2,7 @@ use std::io::{self, Write};
 
 use chrono::{DateTime, FixedOffset};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sonic_rs::format::Formatter;
 
 use crate::activity::{Hunk, ToolUse};
 use crate::snapshot::{SnapshotError, Status};
@@ -148,9 +149,48 @@ pub struct SidechainRecord {
     pub description: sonic_rs::Value,
 }
 
+struct StringWriter<'a, W: ?Sized> {
+    inner: &'a mut W,
+    error: Option<io::Error>,
+}
+
+impl<W: Write + ?Sized> std::fmt::Write for StringWriter<'_, W> {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.inner.write_all(value.as_bytes()).map_err(|error| {
+            self.error = Some(error);
+            std::fmt::Error
+        })
+    }
+}
+
+#[derive(Clone)]
+struct StreamingFormatter;
+
+impl Formatter for StreamingFormatter {
+    fn write_string_fast<W>(
+        &mut self,
+        writer: &mut W,
+        value: &str,
+        need_quote: bool,
+    ) -> io::Result<()>
+    where
+        W: ?Sized + sonic_rs::writer::WriteExt,
+    {
+        let mut output = StringWriter {
+            inner: writer,
+            error: None,
+        };
+        let result = if need_quote {
+            crate::ids::encode_string_to(value, &mut output)
+        } else {
+            crate::ids::encode_string_contents_to(value, &mut output)
+        };
+        result.map_err(|_| output.error.expect("string writer reported an I/O failure"))
+    }
+}
+
 struct JsonWriter<'a, W> {
     inner: &'a mut W,
-    scratch: Vec<u8>,
     remaining: usize,
 }
 
@@ -170,28 +210,16 @@ impl<W: Write> Write for JsonWriter<'_, W> {
 }
 
 impl<W: Write> sonic_rs::writer::WriteExt for JsonWriter<'_, W> {
-    fn reserve_with(&mut self, additional: usize) -> io::Result<&mut [std::mem::MaybeUninit<u8>]> {
-        if additional > self.remaining {
-            return Err(io::Error::other(
-                "JSON serialization reservation exceeds byte limit",
-            ));
-        }
-        if self.scratch.capacity() < additional {
-            self.scratch = Vec::with_capacity(additional);
-        }
-        Ok(&mut self.scratch.spare_capacity_mut()[..additional])
+    fn reserve_with(&mut self, _additional: usize) -> io::Result<&mut [std::mem::MaybeUninit<u8>]> {
+        Err(io::Error::other(
+            "streaming JSON writer does not reserve scratch",
+        ))
     }
 
-    unsafe fn flush_len(&mut self, additional: usize) -> io::Result<()> {
-        if additional > self.remaining || additional > self.scratch.capacity() {
-            return Err(io::Error::other("JSON output byte limit"));
-        }
-        // WriteExt's caller initialized these reserved bytes before flushing.
-        unsafe { self.scratch.set_len(additional) };
-        self.inner.write_all(&self.scratch)?;
-        self.remaining -= additional;
-        self.scratch.clear();
-        Ok(())
+    unsafe fn flush_len(&mut self, _additional: usize) -> io::Result<()> {
+        Err(io::Error::other(
+            "streaming JSON writer does not flush scratch",
+        ))
     }
 }
 
@@ -200,14 +228,13 @@ pub fn write_json<W: Write, T: Serialize + ?Sized>(
     value: &T,
     max_bytes: usize,
 ) -> Result<(), sonic_rs::Error> {
-    sonic_rs::to_writer(
-        &mut JsonWriter {
+    value.serialize(&mut sonic_rs::Serializer::with_formatter(
+        JsonWriter {
             inner: writer,
-            scratch: Vec::new(),
             remaining: max_bytes,
         },
-        value,
-    )
+        StreamingFormatter,
+    ))
 }
 
 struct LimitedWriter {
@@ -384,18 +411,92 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writer_rejects_reservation_before_allocating_scratch() {
+    fn writer_does_not_allocate_scratch() {
         use sonic_rs::writer::WriteExt;
         let mut output = Vec::new();
         let mut writer = JsonWriter {
             inner: &mut output,
-            scratch: Vec::new(),
             remaining: 8,
         };
-        assert!(writer.reserve_with(9).is_err());
-        assert_eq!(writer.scratch.capacity(), 0);
+        assert!(writer.reserve_with(1).is_err());
         assert_eq!(writer.remaining, 8);
         assert!(writer.inner.is_empty());
+    }
+
+    #[test]
+    fn writer_accepts_large_ascii_at_actual_encoded_boundary() {
+        for length in [19, 256 * 1024, MAX_RECORD_BYTES - 2] {
+            let value = "a".repeat(length);
+            let expected = sonic_rs::to_string(&value).unwrap();
+            assert_eq!(encode(&value, expected.len()).unwrap(), expected);
+            assert_eq!(
+                encoded_size(&value, expected.len()).unwrap(),
+                expected.len()
+            );
+            assert_eq!(
+                encode(&value, expected.len() - 1).unwrap_err().status,
+                Status::OutputLimit
+            );
+        }
+    }
+
+    #[test]
+    fn writer_preserves_escapes_and_unicode_at_actual_encoded_boundary() {
+        let value = format!(
+            "{}{}{}",
+            "a".repeat(1023),
+            "🌊\u{0000}\u{0008}\u{000c}\n\r\t\\\"".repeat(4096),
+            "終"
+        );
+        let expected = sonic_rs::to_string(&value).unwrap();
+        assert_eq!(encode(&value, expected.len()).unwrap(), expected);
+        assert_eq!(
+            encoded_size(&value, expected.len()).unwrap(),
+            expected.len()
+        );
+        assert!(encode(&value, expected.len() - 1).is_err());
+        let decoded: String = sonic_rs::from_str(&expected).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn streaming_string_failure_preserves_the_output_error() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "disconnected writer",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = JsonWriter {
+            inner: &mut Broken,
+            remaining: 100,
+        };
+        let error = StreamingFormatter
+            .write_string_fast(&mut writer, "text", true)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(error.to_string(), "disconnected writer");
+        assert_eq!(writer.remaining, 100);
+    }
+
+    #[test]
+    fn writer_preserves_numeric_value_tokens_and_display_fragments() {
+        let raw = r#"[9007199254740990.5,18446744073709551616,-18446744073709551617,1e999,-0,1.0000000000000000000001]"#;
+        let value: sonic_rs::Value = sonic_rs::from_str(raw).unwrap();
+        let expected = sonic_rs::to_string(&value).unwrap();
+        let encoded = encode(&value, expected.len()).unwrap();
+        assert_eq!(encoded, expected);
+        let decoded: sonic_rs::Value = sonic_rs::from_str(&encoded).unwrap();
+        assert_eq!(sonic_rs::to_string(&decoded).unwrap(), expected);
+        let timestamp = DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z").unwrap();
+        let expected = sonic_rs::to_string(&timestamp).unwrap();
+        assert_eq!(encode(&timestamp, expected.len()).unwrap(), expected);
     }
 
     #[test]

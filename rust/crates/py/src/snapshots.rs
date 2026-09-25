@@ -6,7 +6,7 @@ use cc_transcript_core::snapshot::{
     SCHEMA,
 };
 use cc_transcript_core::toolcall::{with_registry, ToolRegistrySnapshot};
-use cc_transcript_core::{snapshot_codec, snapshot_projection};
+use cc_transcript_core::{snapshot_codec, snapshot_projection, snapshot_text};
 use jsonschema::Validator;
 use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
@@ -972,6 +972,84 @@ impl NativeSnapshotScope {
         self.checked_snapshot(py)
             .map(|snapshot| snapshot.event_count)
             .map_err(|failure| self.failure(failure))
+    }
+
+    fn source_facts(&mut self, py: Python<'_>, first_user_contains: &str) -> PyResult<String> {
+        let snapshot = self
+            .checked_snapshot(py)
+            .map_err(|failure| self.failure(failure))?;
+        let limits = self.remaining();
+        if first_user_contains.len() > limits.max_read_bytes.min(MAX_INPUT_BYTES) {
+            return Err(self.failure(SnapshotError::new(
+                Status::SourceLimit,
+                "source fact token exceeds input budget",
+            )));
+        }
+        let owner = Arc::clone(&self.owner);
+        let _reservation = py
+            .detach(|| {
+                owner.reserve_owned_input(
+                    &self.context,
+                    &self.cancel,
+                    snapshot_text::staging_bytes(&limits, first_user_contains.len()),
+                )
+            })
+            .map_err(|failure| self.failure(failure))?;
+        let mut usage = snapshot_text::TextUsage::default();
+        let result = py.detach(|| {
+            snapshot_text::source_facts(
+                &snapshot,
+                first_user_contains,
+                &limits,
+                &self.cancel,
+                &mut usage,
+            )
+        });
+        self.charge(ScopeWork {
+            read_bytes: usage.read_bytes,
+            events: usage.events,
+            items: usage.items,
+            output_bytes: 0,
+        })?;
+        self.materialized_output_bytes = self
+            .materialized_output_bytes
+            .saturating_add(usage.output_bytes);
+        let result = result.map_err(|failure| self.failure(failure))?;
+        self.checkpoint(py)?;
+        Ok(result)
+    }
+
+    fn prose_page(&mut self, py: Python<'_>, start: usize) -> PyResult<String> {
+        let snapshot = self
+            .checked_snapshot(py)
+            .map_err(|failure| self.failure(failure))?;
+        let limits = self.remaining();
+        let owner = Arc::clone(&self.owner);
+        let _reservation = py
+            .detach(|| {
+                owner.reserve_owned_input(
+                    &self.context,
+                    &self.cancel,
+                    snapshot_text::staging_bytes(&limits, 0),
+                )
+            })
+            .map_err(|failure| self.failure(failure))?;
+        let mut usage = snapshot_text::TextUsage::default();
+        let result = py.detach(|| {
+            snapshot_text::prose_page(&snapshot, start, &limits, &self.cancel, &mut usage)
+        });
+        self.charge(ScopeWork {
+            read_bytes: usage.read_bytes,
+            events: usage.events,
+            items: usage.items,
+            output_bytes: 0,
+        })?;
+        self.materialized_output_bytes = self
+            .materialized_output_bytes
+            .saturating_add(usage.output_bytes);
+        let result = result.map_err(|failure| self.failure(failure))?;
+        self.checkpoint(py)?;
+        Ok(result)
     }
 
     fn event<'py>(&mut self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyAny>> {

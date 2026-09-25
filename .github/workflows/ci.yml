@@ -90,10 +90,11 @@ jobs:
         run: |
           uv venv .snapshot-smoke
           uv pip install --python .snapshot-smoke/bin/python dist/*.whl pytest
-          mkdir .snapshot-tests
-          cp tests/test_snapshots.py .snapshot-tests/
+          mkdir -p .snapshot-tests/tests
+          touch .snapshot-tests/tests/__init__.py
+          cp tests/test_snapshots.py tests/test_snapshot_metadata_prose.py .snapshot-tests/tests/
           cd .snapshot-tests
-          ../.snapshot-smoke/bin/python -I -m pytest --confcutdir=. --import-mode=importlib test_snapshots.py
+          ../.snapshot-smoke/bin/python -I -m pytest --confcutdir=. --import-mode=importlib tests/test_snapshots.py tests/test_snapshot_metadata_prose.py
       - name: Upload tested wheel
         uses: actions/upload-artifact@v7
         with:
