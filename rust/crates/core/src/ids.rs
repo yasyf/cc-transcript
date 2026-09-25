@@ -142,24 +142,26 @@ fn es_number(value: f64) -> Result<String, String> {
     Ok(ryu_js::Buffer::new().format_finite(value).to_string())
 }
 
-// Parity: canonical_parts str arm — json.dumps(s, ensure_ascii=False): escape " \
-// and C0 controls (short escapes else lowercase \u00xx), raw UTF-8 otherwise.
 pub(crate) fn encode_string(text: &str, out: &mut String) {
-    out.push('"');
+    encode_string_to(text, out).expect("writing to String is infallible");
+}
+
+pub(crate) fn encode_string_to(text: &str, out: &mut impl std::fmt::Write) -> std::fmt::Result {
+    out.write_char('"')?;
     for ch in text.chars() {
         match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32).unwrap(),
-            c => out.push(c),
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\u{08}' => out.write_str("\\b")?,
+            '\u{0c}' => out.write_str("\\f")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
+            c => out.write_char(c)?,
         }
     }
-    out.push('"');
+    out.write_char('"')
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {

@@ -2,7 +2,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use cc_transcript_core::snapshot::{
-    Cancellation, NativeStore, SnapshotError, Status, TranscriptSnapshot, WorkLimits, SCHEMA,
+    Cancellation, NativeStore, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
+    SCHEMA,
 };
 use cc_transcript_core::{snapshot_codec, snapshot_projection};
 use jsonschema::Validator;
@@ -10,7 +11,7 @@ use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use serde_json::Value as SchemaValue;
-use sonic_rs::{json, JsonValueTrait, Value};
+use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::mining;
 use crate::snapshot_decode::{snapshot_activity_payload, ActivityUsage};
@@ -29,6 +30,7 @@ struct Schemas {
     handle: Validator,
     classifier: Validator,
     anchor: Validator,
+    render: Validator,
     scope_limits: Validator,
 }
 
@@ -61,6 +63,7 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
         handle: definition("Handle"),
         classifier: definition("Classifier"),
         anchor: definition("EventRef"),
+        render: definition("HydrationBudget"),
         scope_limits: compile(&serde_json::json!({
             "$schema": request["$schema"], "$defs": request["$defs"],
             "type": "object", "additionalProperties": false,
@@ -75,6 +78,36 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
 
 pub(crate) fn error(error: SnapshotError) -> PyErr {
     SnapshotOperationError::new_err((error.status.as_str(), error.reason))
+}
+
+fn core_failure(py: Python<'_>, failure: PyErr) -> SnapshotError {
+    if failure.is_instance_of::<SnapshotOperationError>(py) {
+        if let Ok((status, reason)) = failure
+            .value(py)
+            .getattr("args")
+            .and_then(|args| args.extract::<(String, String)>())
+        {
+            let status = match status.as_str() {
+                "incomplete" => Status::Incomplete,
+                "missing" => Status::Missing,
+                "changed" => Status::Changed,
+                "source_limit" => Status::SourceLimit,
+                "entry_limit" => Status::EntryLimit,
+                "retained_limit" => Status::RetainedLimit,
+                "lease_limit" => Status::LeaseLimit,
+                "output_limit" => Status::OutputLimit,
+                "deadline" => Status::Deadline,
+                "cancelled" => Status::Cancelled,
+                "parse_error" => Status::ParseError,
+                "permission_denied" => Status::PermissionDenied,
+                "stale_handle" => Status::StaleHandle,
+                "stale_cursor" => Status::StaleCursor,
+                _ => Status::InvalidRequest,
+            };
+            return SnapshotError::new(status, reason);
+        }
+    }
+    invalid(format!("mining policy failed: {failure}"))
 }
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
@@ -98,17 +131,91 @@ fn validate(value: &Value, schema: &Validator) -> Result<(), SnapshotError> {
         .map_err(|_| invalid("input does not match snapshot schema"))
 }
 
-fn normalize_numbers(value: &mut SchemaValue) {
+fn exact_integer(text: &str) -> Result<i64, SnapshotError> {
+    const MAX_SAFE: u64 = 9_007_199_254_740_991;
+    let (negative, unsigned) = text
+        .strip_prefix('-')
+        .map_or((false, text), |rest| (true, rest));
+    let (coefficient, exponent) = unsigned.split_once(['e', 'E']).unwrap_or((unsigned, "0"));
+    let fractional = coefficient
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    let digits: String = coefficient.chars().filter(|&digit| digit != '.').collect();
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    let significant = digits.trim_end_matches('0');
+    let trailing = digits.len() - significant.len();
+    let exponent: i64 = exponent
+        .parse()
+        .map_err(|_| invalid("integer exponent exceeds safe range"))?;
+    let scale = exponent
+        .checked_add(trailing as i64)
+        .and_then(|value| value.checked_sub(fractional as i64))
+        .ok_or_else(|| invalid("integer exponent exceeds safe range"))?;
+    if scale < 0 {
+        return Err(invalid("fractional metadata number"));
+    }
+    if scale > 16 || significant.len().saturating_add(scale as usize) > 16 {
+        return Err(invalid("metadata integer exceeds safe range"));
+    }
+    let mut value: u64 = significant
+        .parse()
+        .map_err(|_| invalid("invalid metadata integer"))?;
+    for _ in 0..scale {
+        value *= 10;
+    }
+    if value > MAX_SAFE {
+        return Err(invalid("metadata integer exceeds safe range"));
+    }
+    Ok(if negative {
+        -(value as i64)
+    } else {
+        value as i64
+    })
+}
+
+fn normalize_numbers(value: &mut SchemaValue) -> Result<(), SnapshotError> {
     match value {
-        SchemaValue::Array(values) => values.iter_mut().for_each(normalize_numbers),
-        SchemaValue::Object(values) => values.values_mut().for_each(normalize_numbers),
-        SchemaValue::Number(number) if number.is_f64() => {
-            let value = number.as_f64().expect("JSON number");
-            if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 {
-                *number = serde_json::Number::from(value as i64);
+        SchemaValue::Array(values) => {
+            for value in values {
+                normalize_numbers(value)?;
             }
         }
+        SchemaValue::Object(values) => {
+            for value in values.values_mut() {
+                normalize_numbers(value)?;
+            }
+        }
+        SchemaValue::Number(number) => {
+            *number = serde_json::Number::from(exact_integer(&number.to_string())?);
+        }
         _ => {}
+    }
+    Ok(())
+}
+
+fn native_value(value: &SchemaValue) -> Value {
+    match value {
+        SchemaValue::Null => json!(null),
+        SchemaValue::Bool(value) => json!(value),
+        SchemaValue::String(value) => json!(value),
+        SchemaValue::Number(value) => json!(value.as_i64().expect("normalized metadata integer")),
+        SchemaValue::Array(values) => {
+            let mut array = sonic_rs::Array::with_capacity(values.len());
+            for value in values {
+                array.push(native_value(value));
+            }
+            array.into_value()
+        }
+        SchemaValue::Object(values) => {
+            let mut object = sonic_rs::Object::with_capacity(values.len());
+            for (key, value) in values {
+                object.insert(key.as_str(), native_value(value));
+            }
+            object.into_value()
+        }
     }
 }
 
@@ -121,11 +228,11 @@ fn validated(text: &str, schema: &Validator) -> Result<Value, SnapshotError> {
     }
     let mut value: SchemaValue =
         serde_json::from_str(text).map_err(|_| invalid("malformed JSON input"))?;
-    normalize_numbers(&mut value);
+    normalize_numbers(&mut value)?;
     schema
         .validate(&value)
         .map_err(|_| invalid("input does not match snapshot schema"))?;
-    sonic_rs::to_value(&value).map_err(|_| invalid("invalid JSON value"))
+    Ok(native_value(&value))
 }
 
 fn count(value: &Value, key: &str) -> usize {
@@ -207,6 +314,14 @@ impl NativeSnapshotStore {
         .map_err(error)
     }
 
+    fn owner_epoch(&self) -> String {
+        self.inner.owner_epoch.clone()
+    }
+
+    fn record_transport(&self, py: Python<'_>, bytes: usize) {
+        py.detach(|| self.inner.record_transport(bytes));
+    }
+
     fn request(
         &self,
         py: Python<'_>,
@@ -254,6 +369,63 @@ impl NativeSnapshotStore {
             })
         })
         .map_err(error)
+    }
+
+    fn register_mining_policy(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        version: &str,
+        spec_json: &str,
+        callable_formats: Vec<(String, Py<PyAny>, Py<PyAny>, bool)>,
+    ) -> PyResult<()> {
+        validate(&json!({"id":id,"version":version}), &SCHEMAS.classifier).map_err(error)?;
+        if spec_json.len() > MAX_INPUT_BYTES {
+            return Err(error(SnapshotError::new(
+                Status::SourceLimit,
+                "mining spec exceeds input limit",
+            )));
+        }
+        let mut spec = py
+            .detach(|| mining::compile_spec(spec_json))
+            .map_err(|reason| error(invalid(reason)))?;
+        mining::attach_bounded_callable_formats(&mut spec, callable_formats)?;
+        let spec = Arc::new(spec);
+        self.inner.register_policy(id, version, Arc::new(move |snapshot, request, limits, cancel, next| {
+            if next != 0 {
+                return Err(SnapshotError::new(Status::StaleCursor, "mining policy has no partial cursor"));
+            }
+            let view = request.get("view").ok_or_else(|| invalid("missing mining view"))?;
+            if ["selectors", "attachments"].iter().any(|key| view.get(*key).and_then(Value::as_array).is_some_and(|values| !values.is_empty())) {
+                return Err(SnapshotError::new(Status::Incomplete, "registered mining requires a complete source view"));
+            }
+            let mut limits = *limits;
+            limits.max_items = limits.max_items.min(snapshot_codec::MAX_RECORDS);
+            let mut usage = mining::MiningUsage::default();
+            let records = Python::attach(|py| -> Result<Vec<String>, SnapshotError> {
+                let payloads = mining::mine_snapshot(py, &snapshot, &spec, limits, cancel, &mut usage)
+                    .map_err(|failure| core_failure(py, failure))?;
+                let encoder = py.import("json").and_then(|module| module.getattr("dumps"))
+                    .map_err(|failure| core_failure(py, failure))?;
+                let mut remaining = limits.max_output_bytes;
+                let mut records = Vec::with_capacity(payloads.len());
+                for payload in payloads {
+                    cancel.check(limits.deadline_unix_ms)?;
+                    let record: String = encoder.call1((payload,)).and_then(|value| value.extract())
+                        .map_err(|failure| core_failure(py, failure))?;
+                    if record.len() > snapshot_codec::MAX_RECORD_BYTES || record.len() > remaining {
+                        return Err(SnapshotError::new(Status::OutputLimit, "mining record exceeds output budget"));
+                    }
+                    remaining -= record.len();
+                    records.push(record);
+                }
+                Ok(records)
+            })?;
+            let data = json!({"kind":"records","record_schema":"cc-transcript.mining-signal/1","records_json":records});
+            snapshot_codec::encoded_size(&data, limits.max_output_bytes)?;
+            Ok(Projection { read_bytes:usage.input_bytes, events:usage.events, items:usage.items,
+                data, complete:true, next:None, reason:None })
+        })).map_err(error)
     }
 
     fn register_classifier(
@@ -712,8 +884,14 @@ impl NativeSnapshotScope {
         let windows = py
             .detach(|| parse(windows_json, limits.max_read_bytes))
             .map_err(|failure| self.failure(failure))?;
+        if render_json.len() > limits.max_read_bytes {
+            return Err(self.failure(SnapshotError::new(
+                Status::SourceLimit,
+                "render parameters exceed input budget",
+            )));
+        }
         let render = py
-            .detach(|| parse(render_json, limits.max_read_bytes))
+            .detach(|| validated(render_json, &SCHEMAS.render))
             .map_err(|failure| self.failure(failure))?;
         let snapshot = self
             .checked_snapshot(py)
@@ -803,9 +981,36 @@ mod tests {
             );
         }
         let mut value = serde_json::json!({"record_json":"{\"n\":1.0}","n":1.0});
-        normalize_numbers(&mut value);
+        normalize_numbers(&mut value).unwrap();
         assert_eq!(value["record_json"].as_str(), Some("{\"n\":1.0}"));
         assert_eq!(value["n"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn lexical_fraction_and_safe_integer_limits_are_exact() {
+        for token in [
+            "9007199254740990.5",
+            "1.00000000000000001",
+            "9007199254740992",
+            "1e1000000",
+            "1e-1000000",
+            "NaN",
+        ] {
+            let input = format!("{{\"max_entry_bytes\":{token}}}");
+            assert!(validated(&input, &SCHEMAS.config).is_err(), "{token}");
+        }
+        for (token, expected) in [
+            ("1.0", 1),
+            ("1e0", 1),
+            ("1000e-3", 1),
+            ("9.007199254740991e15", 9_007_199_254_740_991),
+            ("0e999999999999999999999", 0),
+            ("-0.0e-999999999999999999999", 0),
+        ] {
+            let mut value: SchemaValue = serde_json::from_str(token).unwrap();
+            normalize_numbers(&mut value).unwrap();
+            assert_eq!(value.as_i64(), Some(expected), "{token}");
+        }
     }
 
     #[test]

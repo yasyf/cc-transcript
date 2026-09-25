@@ -427,7 +427,7 @@ mod tests {
         let records = vec![
             user("same", "one"),
             event(
-                json!({"type":"assistant","uuid":"same","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"a.rs"}}],"model":"model","usage":{"input_tokens":7,"output_tokens":9}}}),
+                json!({"type":"assistant","uuid":"same","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"a.rs"}}],"model":"model","usage":{"input_tokens":7,"output_tokens":9,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}),
             ),
             event(
                 json!({"type":"system","uuid":"sys","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","subtype":"turn_duration","durationMs":123,"content":"system text"}),

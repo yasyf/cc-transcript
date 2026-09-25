@@ -1082,6 +1082,16 @@
     },
     "Release": {
       "additionalProperties": false,
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "lease",
+              "reservation"
+            ]
+          }
+        }
+      },
       "properties": {
         "id": {
           "maxLength": 256,
@@ -1092,7 +1102,8 @@
         "kind": {
           "enum": [
             "lease",
-            "reservation"
+            "reservation",
+            "cursor"
           ],
           "title": "Kind",
           "type": "string"
@@ -1103,10 +1114,18 @@
           "type": "string"
         },
         "owner_epoch": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Owner Epoch",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Epoch"
         },
         "schema": {
           "const": "cc-transcript.snapshot/1",
@@ -1124,10 +1143,19 @@
         "schema",
         "id",
         "operation",
-        "owner_epoch",
         "kind",
         "token"
       ],
+      "then": {
+        "properties": {
+          "owner_epoch": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_epoch"
+        ]
+      },
       "title": "Release",
       "type": "object"
     },

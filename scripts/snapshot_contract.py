@@ -277,9 +277,15 @@ class Resume(Envelope):
 
 
 class Release(Envelope):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"kind": {"enum": ["lease", "reservation"]}}},
+            "then": {"required": ["owner_epoch"], "properties": {"owner_epoch": {"type": "string"}}},
+        }
+    )
     operation: Literal["release"]
-    owner_epoch: Token
-    kind: Literal["lease", "reservation"]
+    owner_epoch: Token | None = None
+    kind: Literal["lease", "reservation", "cursor"]
     token: Token
 
 

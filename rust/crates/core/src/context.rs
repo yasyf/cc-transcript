@@ -352,26 +352,19 @@ impl JsonSink {
     }
 }
 
-impl std::io::Write for JsonSink {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-            self.exceeded = true;
-        }
+impl std::fmt::Write for JsonSink {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.push_str(text);
         if self.exceeded {
-            return Err(std::io::Error::other("context output limit"));
+            Err(std::fmt::Error)
+        } else {
+            Ok(())
         }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
 fn encode_string(text: &str, out: &mut JsonSink) {
-    let remaining = out.limit.saturating_sub(out.bytes.len());
-    if crate::snapshot_codec::write_json(&mut *out, &text, remaining).is_err() {
+    if crate::ids::encode_string_to(text, out).is_err() {
         out.exceeded = true;
     }
 }

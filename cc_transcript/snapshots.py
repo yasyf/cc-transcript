@@ -101,11 +101,26 @@ class CancellationToken:
 
 
 def _tool(payload: Mapping[str, Any]) -> ToolUse:
-    return ToolUse(**{**payload, "ref": EventRef(**payload["ref"])})
+    return ToolUse(
+        ref=EventRef(**payload["ref"]),
+        call=payload["call"],
+        result=payload["result"],
+        result_ts=payload["result_ts"],
+        edits=payload["edits"],
+        turn_index=payload["turn_index"],
+        ts=payload["ts"],
+    )
 
 
 def _turn(payload: Mapping[str, Any]) -> Turn:
-    return Turn(**{**payload, "tool_uses": tuple(_tool(tool) for tool in payload["tool_uses"])})
+    return Turn(
+        index=payload["index"],
+        prompt=payload["prompt"],
+        started_at=payload["started_at"],
+        ended_at=payload["ended_at"],
+        events=payload["events"],
+        tool_uses=tuple(_tool(tool) for tool in payload["tool_uses"]),
+    )
 
 
 def decode_projection(
@@ -129,7 +144,10 @@ def decode_projection(
         case "cc-transcript.predicate-inputs/1":
             return [
                 PredicateInputs(
-                    **{**payload, "edited_files": tuple(FileRef(**file) for file in payload["edited_files"])}
+                    calls=payload["calls"],
+                    commands=payload["commands"],
+                    skills=payload["skills"],
+                    edited_files=tuple(FileRef(**file) for file in payload["edited_files"]),
                 )
                 for payload in payloads
             ]
@@ -238,13 +256,19 @@ class TranscriptStore:
     ) -> None:
         self._native = _native.NativeSnapshotStore(_json(config))
         for (policy_id, version), predicate in (policies or {}).items():
+            self.register_classifier(policy_id, version, predicate)
 
-            def classify(
-                events: Sequence[TranscriptEvent], predicate: Callable[[TranscriptEvent], bool] = predicate
-            ) -> list[bool]:
-                return [isinstance(event, UserEvent) and predicate(event) for event in events]
+    def register_classifier(self, policy_id: str, version: str, predicate: Callable[[TranscriptEvent], bool]) -> None:
+        def classify(events: Sequence[TranscriptEvent]) -> list[bool]:
+            return [isinstance(event, UserEvent) and predicate(event) for event in events]
 
-            self._native.register_classifier(policy_id, version, classify)
+        _call(self._native.register_classifier, policy_id, version, classify)
+
+    def register_mining_policy(self, policy_id: str, version: str, spec: MiningSpec) -> None:
+        from cc_transcript.mining.spec import mining_spec_to_json
+
+        formats = [(fmt.name, fmt.pattern, fmt.extract, fmt.bounded) for fmt in spec.review.callable_formats]
+        _call(self._native.register_mining_policy, policy_id, version, mining_spec_to_json(spec), formats)
 
     @property
     def owner_epoch(self) -> str:
@@ -257,6 +281,52 @@ class TranscriptStore:
         self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
     ) -> Mapping[str, Any]:
         return orjson.loads(_call(self._native.request, _json(request), _json(context), cancellation._native))
+
+    def discard_response(self, response: Mapping[str, Any], *, context: CallContext) -> None:
+        _call(self._native.discard_response, _json(response), _json(context))
+
+    def publish_projection(
+        self,
+        request: Mapping[str, Any],
+        *,
+        context: CallContext,
+        cancellation: CancellationToken,
+        metadata: Mapping[str, Any],
+        field: str,
+        records_json: Sequence[str],
+        usage: Mapping[str, int],
+        work: Mapping[str, int],
+    ) -> Mapping[str, Any]:
+        return orjson.loads(
+            _call(
+                self._native.publish_projection,
+                _json(
+                    {
+                        "id": request["id"],
+                        "deadline_unix_ms": request["deadline_unix_ms"],
+                        "limits": request["limits"],
+                        "view": {"handle": request["view"]["handle"]},
+                    }
+                ),
+                _json(context),
+                cancellation._native,
+                _json(metadata),
+                field,
+                list(records_json),
+                _json(usage),
+                _json(work),
+            )
+        )
+
+    def resume_projection(
+        self,
+        cursor: str,
+        *,
+        context: CallContext,
+        cancellation: CancellationToken,
+    ) -> Mapping[str, Any] | None:
+        result = _call(self._native.resume_projection, cursor, _json(context), cancellation._native)
+        return None if result is None else orjson.loads(result)
 
     @contextmanager
     def borrow_snapshot(
