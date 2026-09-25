@@ -2168,14 +2168,18 @@ impl NativeStore {
     pub fn request(&self, request: &Value, context: &Value, cancel: &Cancellation) -> Value {
         let mut usage = [0u64; 18];
         let id = request.get("id").cloned().unwrap_or(json!("invalid"));
-        let _reply_reservation = match self
-            .reserve_projection(context, MAX_REPLY_BYTES.saturating_mul(2))
+        let _reply_reservation = if request.get("operation").and_then(Value::as_str)
+            == Some("release")
         {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                usage[12] = 1;
-                self.state.lock().expect("snapshot state").counters[12] += 1;
-                return json!({"schema":SCHEMA,"id":id,"status":error.status.as_str(),"complete":false,"data":null,"cursor":null,"reason":error.reason,"usage":usage_value(&usage)});
+            None
+        } else {
+            match self.reserve_projection(context, MAX_REPLY_BYTES.saturating_mul(2)) {
+                Ok(reservation) => Some(reservation),
+                Err(error) => {
+                    usage[12] = 1;
+                    self.state.lock().expect("snapshot state").counters[12] += 1;
+                    return json!({"schema":SCHEMA,"id":id,"status":error.status.as_str(),"complete":false,"data":null,"cursor":null,"reason":error.reason,"usage":usage_value(&usage)});
+                }
             }
         };
         let output_limit = request
@@ -2819,6 +2823,7 @@ impl NativeStore {
                 }
             }
             "release" => {
+                str_field(context, "admission")?;
                 let kind = str_field(request, "kind")?;
                 if kind != "cursor"
                     || request
@@ -6433,6 +6438,43 @@ mod tests {
         assert_eq!(response["data"]["released"].as_bool(), Some(true));
         let response=store.request(&json!({"schema":SCHEMA,"id":"release-lease","operation":"release","kind":"lease","owner_epoch":null,"token":"missing"}),&owner,&Cancellation::default());
         assert_eq!(response["status"].as_str(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn lease_release_frees_evidence_when_reply_reservation_is_exhausted() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let acquired = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let handle = handle(&acquired).clone();
+        let available = store.config.retained - store.retained_accounted_bytes();
+        let pressure = store.reserve_projection(&owner, available).unwrap();
+        let stats = store.request(
+            &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(stats["status"].as_str(), Some("retained_limit"));
+        let release = json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"lease","owner_epoch":store.owner_epoch,"token":handle["lease_id"]});
+        let mut invalid_admission = owner.clone();
+        invalid_admission.insert("admission", json!(null));
+        let invalid = store.request(&release, &invalid_admission, &Cancellation::default());
+        assert_eq!(invalid["status"].as_str(), Some("invalid_request"));
+        let denied = store.request(&release, &context("b"), &Cancellation::default());
+        assert_eq!(denied["status"].as_str(), Some("stale_handle"));
+        let released = store.request(&release, &owner, &Cancellation::default());
+        assert_eq!(released["status"].as_str(), Some("ok"));
+        assert_eq!(released["data"]["released"].as_bool(), Some(true));
+        assert_eq!(
+            store.validate_scope(&handle, &owner).unwrap_err().status,
+            Status::StaleHandle
+        );
+        drop(pressure);
+        assert_eq!(store.state.lock().unwrap().transient_bytes, 0);
     }
 
     #[test]
