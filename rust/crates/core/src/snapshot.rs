@@ -1808,6 +1808,12 @@ impl NativeStore {
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": snapshots.len()})
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_accounted_bytes(&self) -> usize {
+        let state = self.state.lock().expect("snapshot store");
+        number(&Self::gauges(&state), "retained_total_accounted_bytes").unwrap()
+    }
+
     fn admit_memory(
         &self,
         state: &mut StoreState,
