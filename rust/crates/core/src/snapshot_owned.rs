@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn retained_admission_precedes_copy_callback_and_uses_global_pool() {
-        let cap = 4096;
+        let cap: usize = 4096;
         let store =
             NativeStore::new(&json!({"max_retained_bytes":cap,"reserved_hook_accounted_bytes":0}))
                 .unwrap();
