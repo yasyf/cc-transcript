@@ -1103,7 +1103,11 @@ impl NativeStore {
         mut bounds: WorkLimits,
     ) -> Result<Value, SnapshotError> {
         cancel.check(bounds.deadline_unix_ms)?;
-        let source = self.pin(handle, context)?;
+        let (source, description) =
+            self.pin_scope_for_work(handle, context, bounds.deadline_unix_ms)?;
+        bounds.deadline_unix_ms = bounds
+            .deadline_unix_ms
+            .min(number(&description, "lease_expires_unix_ms")? as u64);
         bounds.deadline_unix_ms = bounds
             .deadline_unix_ms
             .min(now_ms() + self.config.preparation);
@@ -1958,6 +1962,33 @@ impl NativeStore {
         Ok((snapshot, description))
     }
 
+    pub fn pin_scope_for_work(
+        &self,
+        handle: &Value,
+        context: &Value,
+        deadline: u64,
+    ) -> Result<(Arc<TranscriptSnapshot>, Value), SnapshotError> {
+        if deadline <= now_ms() {
+            return Err(SnapshotError::new(
+                Status::Deadline,
+                "borrow deadline expired",
+            ));
+        }
+        let (snapshot, _) = self.pin_scope(handle, context)?;
+        let mut state = self.state.lock().expect("snapshot state");
+        let lease = self.lease(&state, handle, context)?;
+        let expires = lease.expires.max(deadline.min(lease.absolute_deadline));
+        let classifier = lease.classifier.clone();
+        let token = str_field(handle, "lease_id")?;
+        state
+            .leases
+            .get_mut(token)
+            .expect("validated lease")
+            .expires = expires;
+        let description = self.description(&snapshot, &classifier, token, expires);
+        Ok((snapshot, description))
+    }
+
     fn lease<'a>(
         &self,
         state: &'a StoreState,
@@ -2325,7 +2356,11 @@ impl NativeStore {
             ));
         }
         if let Some(cursor) = delivery.cursor {
-            self.release_cursor(&cursor, context)?;
+            match self.release_cursor(&cursor, context) {
+                Ok(_) => {}
+                Err(error) if error.status == Status::StaleCursor => {}
+                Err(error) => return Err(error),
+            }
         }
         let mut state = self.state.lock().expect("snapshot state");
         for token in delivery.leases {
@@ -2616,7 +2651,9 @@ impl NativeStore {
                         None,
                     )),
                     "renew" => {
-                        let expires = (now_ms() + self.config.ttl).min(absolute_deadline);
+                        let expires = (now_ms() + self.config.ttl)
+                            .min(absolute_deadline)
+                            .max(current_expiry);
                         state
                             .leases
                             .get_mut(str_field(handle, "lease_id")?)
@@ -3627,14 +3664,18 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let bounds = limits(request)?;
+        let mut bounds = limits(request)?;
         cancel.check(bounds.deadline_unix_ms)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         let root_handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing root handle"))?
             .clone();
-        let (root, description) = self.pin_scope(&root_handle, context)?;
+        let (root, description) =
+            self.pin_scope_for_work(&root_handle, context, bounds.deadline_unix_ms)?;
+        bounds.deadline_unix_ms = bounds
+            .deadline_unix_ms
+            .min(number(&description, "lease_expires_unix_ms")? as u64);
         if !classifier_eq(&view["classifier"], &description["classifier"])? {
             return Err(invalid("view classifier differs from root generation"));
         }
@@ -3810,11 +3851,14 @@ impl NativeStore {
         spawned_by: Option<String>,
         data: &Value,
     ) -> Result<(), SnapshotError> {
-        let description = data
+        let acquired = data
             .get("description")
-            .ok_or_else(|| invalid("acquire returned no source description"))?
-            .clone();
-        let snapshot = self.pin(&description["handle"], &graph.context)?;
+            .ok_or_else(|| invalid("acquire returned no source description"))?;
+        let (snapshot, description) = self.pin_scope_for_work(
+            &acquired["handle"],
+            &graph.context,
+            graph.remaining.deadline_unix_ms,
+        )?;
         let identity = snapshot.stamp.identity;
         if !graph.seen.insert(identity) {
             self.state
@@ -3850,9 +3894,12 @@ impl NativeStore {
         {
             let handle = &node.description["handle"];
             let lease = self.lease(&state, handle, &graph.context)?;
-            let expires = (now_ms() + self.config.ttl)
-                .min(lease.absolute_deadline)
-                .min(graph.remaining.deadline_unix_ms);
+            let expires = lease.expires.max(
+                graph
+                    .remaining
+                    .deadline_unix_ms
+                    .min(lease.absolute_deadline),
+            );
             state
                 .leases
                 .get_mut(str_field(handle, "lease_id")?)
@@ -3871,7 +3918,11 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<GraphYield, SnapshotError> {
         cancel.check(graph.remaining.deadline_unix_ms)?;
-        self.pin_scope(&graph.root_handle, &graph.context)?;
+        self.pin_scope_for_work(
+            &graph.root_handle,
+            &graph.context,
+            graph.remaining.deadline_unix_ms,
+        )?;
         self.renew_graph_members(graph)?;
         let kind = str_field(&graph.request["query"], "kind")?.to_owned();
         let membership = kind == "sidechain_membership";
@@ -4223,7 +4274,11 @@ impl NativeStore {
         let handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing view handle"))?;
-        let (snapshot, description) = self.pin_scope(handle, context)?;
+        let (snapshot, description) =
+            self.pin_scope_for_work(handle, context, bound.deadline_unix_ms)?;
+        bound.deadline_unix_ms = bound
+            .deadline_unix_ms
+            .min(number(&description, "lease_expires_unix_ms")? as u64);
         if !classifier_eq(&view["classifier"], &description["classifier"])? {
             return Err(invalid("view classifier differs from leased generation"));
         }
@@ -4335,7 +4390,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        bound: WorkLimits,
+        mut bound: WorkLimits,
         next: usize,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let handles = request
@@ -4348,12 +4403,16 @@ impl NativeStore {
             .ok_or_else(|| invalid("missing windows_json"))?;
         let mut sessions = HashMap::new();
         for handle in handles.iter() {
-            let snapshot = self.pin(
+            let (snapshot, description) = self.pin_scope_for_work(
                 handle
                     .get("handle")
                     .ok_or_else(|| invalid("missing handle"))?,
                 context,
+                bound.deadline_unix_ms,
             )?;
+            bound.deadline_unix_ms = bound
+                .deadline_unix_ms
+                .min(number(&description, "lease_expires_unix_ms")? as u64);
             let session = str_field(handle, "session_id")?;
             if session != snapshot.session_id {
                 return Err(invalid("hydration session differs from handle"));
@@ -4820,9 +4879,12 @@ impl NativeStore {
                 }
                 let handle = &session["description"]["handle"];
                 let lease = self.lease(&state, handle, &cursor.context)?;
-                let expires = (now_ms() + self.config.ttl)
-                    .min(lease.absolute_deadline)
-                    .min(cursor.remaining.deadline_unix_ms);
+                let expires = lease.expires.max(
+                    cursor
+                        .remaining
+                        .deadline_unix_ms
+                        .min(lease.absolute_deadline),
+                );
                 state
                     .leases
                     .get_mut(str_field(handle, "lease_id")?)
@@ -4881,7 +4943,11 @@ impl NativeStore {
             cursor.pending = outcome.1;
             if cursor.pending.is_none() {
                 let handle = &outcome.0["description"]["handle"];
-                let resolved = self.pin(handle, &cursor.context)?;
+                let (resolved, description) = self.pin_scope_for_work(
+                    handle,
+                    &cursor.context,
+                    cursor.remaining.deadline_unix_ms,
+                )?;
                 if resolved.session_id != *id {
                     self.state
                         .lock()
@@ -4893,7 +4959,9 @@ impl NativeStore {
                         "candidate source session differs from requested identity",
                     ));
                 }
-                cursor.sessions.push(json!({"session_id":id,"status":"ok","description":outcome.0.get("description")}));
+                cursor
+                    .sessions
+                    .push(json!({"session_id":id,"status":"ok","description":description}));
                 cursor.next += 1;
             }
             break;
@@ -5555,7 +5623,7 @@ mod tests {
     fn graph_predicates_use_whole_children_and_local_queries_ignore_attachments() {
         let source = Source::new(&format!("{}\n{}\n", user("root-first"), user("root-last")));
         let child = source.directory.join("external.jsonl");
-        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"child.rs"}}]}}"#;
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"child.rs"}}]}}"#;
         std::fs::write(
             &child,
             format!("{}\n{tool}\n{}\n", user("child-first"), user("child-last")),
@@ -5751,7 +5819,7 @@ mod tests {
 
     #[test]
     fn registry_change_reindexes_cached_chunks_without_reading_source_again() {
-        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"content":[{"type":"tool_use","id":"read","name":"mcp__example__fetch","input":{"file_path":"file.rs"}}]}}"#;
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"mcp__example__fetch","input":{"file_path":"file.rs"}}]}}"#;
         let source = Source::new(&format!("{}\n{tool}\n", user("a")));
         let store = store();
         let owner = context("a");
@@ -5829,7 +5897,7 @@ mod tests {
     fn wrapped_domain_cursor_delivery_has_the_same_cleanup_identity() {
         let store = store();
         let owner = context("a");
-        let cursor = store.owned_token();
+        let cursor = format!("{}:0", store.owned_token());
         store.track_delivery(&json!({"cursor":cursor}), &owner, false);
         let wrapped =
             json!({"id":"outer","status":"incomplete","data":{"metadata":{}},"cursor":cursor});
@@ -6016,6 +6084,53 @@ mod tests {
             Some(cap)
         );
     }
+    #[test]
+    fn active_borrow_extends_to_original_cap_without_delaying_revocation() {
+        let source = Source::new(&format!("{}\n", user("a")));
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let handle = handle(&root).clone();
+        let cap = now_ms() + 90_000;
+        {
+            let mut state = store.state.lock().unwrap();
+            let lease = state
+                .leases
+                .get_mut(handle["lease_id"].as_str().unwrap())
+                .unwrap();
+            lease.absolute_deadline = cap;
+            lease.expires = now_ms() + 1000;
+        }
+        let (_, description) = store
+            .pin_scope_for_work(&handle, &owner, cap + 30_000)
+            .unwrap();
+        assert_eq!(description["lease_expires_unix_ms"].as_u64(), Some(cap));
+        let renewed = store.request(
+            &json!({"schema":SCHEMA,"id":"renew-active","operation":"renew","handle":handle}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(renewed["data"]["expires_unix_ms"].as_u64(), Some(cap));
+        let (_, shorter) = store
+            .pin_scope_for_work(&handle, &owner, now_ms() + 5000)
+            .unwrap();
+        assert_eq!(shorter["lease_expires_unix_ms"].as_u64(), Some(cap));
+        let released = store.request(
+            &json!({"schema":SCHEMA,"id":"revoke-active","operation":"release","kind":"lease","owner_epoch":store.owner_epoch,"token":handle["lease_id"]}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(released["data"]["released"].as_bool(), Some(true));
+        assert_eq!(
+            store.validate_scope(&handle, &owner).unwrap_err().status,
+            Status::StaleHandle
+        );
+    }
+
     #[test]
     fn registry_registration_uses_trusted_admission_and_preserves_cached_identity() {
         let store = NativeStore::new(

@@ -1086,27 +1086,51 @@ mod tests {
 
     #[test]
     fn retained_admission_precedes_copy_callback_and_uses_global_pool() {
+        let cap = 4096;
         let store =
-            NativeStore::new(&json!({"max_retained_bytes":4096,"reserved_hook_accounted_bytes":0}))
+            NativeStore::new(&json!({"max_retained_bytes":cap,"reserved_hook_accounted_bytes":0}))
                 .unwrap();
-        let context = json!({"claimant":"owner","admission":"hook"});
+        let context = json!({"claimant":"owner","admission":"hook","authority":{"kind":"user","effective_uid":unsafe{libc::geteuid()}.to_string()},"registry_generation":store.default_registry_generation()});
+        let accounted = || {
+            let stats = store.request(
+                &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
+                &context,
+                &Cancellation::default(),
+            );
+            assert_eq!(stats["status"].as_str(), Some("ok"), "{stats:?}");
+            stats["data"]["gauges"]["retained_total_accounted_bytes"]
+                .as_u64()
+                .unwrap() as usize
+        };
+        let baseline = accounted();
+        assert!(baseline > 0);
+        let remaining = cap.checked_sub(baseline).unwrap();
+        assert!(remaining >= 2);
+        let first = remaining / 2 + 1;
+        let second = remaining - first + 1;
         let copies = Cell::new(0);
-        let result = admitted(&store, &context, 8192, || {
+        let result = admitted(&store, &context, remaining + 1, || {
             copies.set(copies.get() + 1);
             Ok(vec!["copied".to_owned()])
         });
         assert!(matches!(result,Err(error)if error.status==Status::RetainedLimit));
         assert_eq!(copies.get(), 0);
         let guard = store
-            .reserve_owned_input(&context, &Cancellation::default(), 3000)
+            .reserve_owned_input(&context, &Cancellation::default(), first)
             .unwrap();
+        assert_eq!(accounted(), baseline + first);
         assert!(
-            matches!(store.reserve_owned_input(&context,&Cancellation::default(),2000),Err(error)if error.status==Status::RetainedLimit)
+            matches!(store.reserve_owned_input(&context,&Cancellation::default(),second),Err(error)if error.status==Status::RetainedLimit)
         );
+        assert_eq!(accounted(), baseline + first);
         drop(guard);
-        assert!(store
-            .reserve_owned_input(&context, &Cancellation::default(), 2000)
-            .is_ok());
+        assert_eq!(accounted(), baseline);
+        let guard = store
+            .reserve_owned_input(&context, &Cancellation::default(), second)
+            .unwrap();
+        assert_eq!(accounted(), baseline + second);
+        drop(guard);
+        assert_eq!(accounted(), baseline);
     }
 
     #[test]

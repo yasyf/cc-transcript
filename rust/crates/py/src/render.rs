@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -13,6 +12,8 @@ use cc_transcript_core::value::normalize_last_wins;
 
 use crate::mining::view_entry;
 use crate::views::convert::parse_err;
+use crate::views::events::AssistantEventView;
+use crate::views::store::with_view_registry;
 use crate::views::toolcall::ToolCallBaseView;
 
 // The tool_use_id -> tool name join the renderer keys on (filterspec.tool_names).
@@ -81,7 +82,7 @@ pub(crate) fn render_turn_from_events(
     Ok(render::render_turn_parts(
         &prompt,
         &entries,
-        &calls.iter().map(Arc::as_ref).collect::<Vec<_>>(),
+        &calls.iter().collect::<Vec<_>>(),
         &Budget {
             turn_chars,
             tool_chars,
@@ -90,20 +91,18 @@ pub(crate) fn render_turn_from_events(
     ))
 }
 
-fn ordered_tool_calls(
-    events: &[Bound<'_, PyAny>],
-    entries: &[&Entry],
-) -> PyResult<Vec<Arc<ToolCall>>> {
+fn ordered_tool_calls(events: &[Bound<'_, PyAny>], entries: &[&Entry]) -> PyResult<Vec<ToolCall>> {
     let mut calls = Vec::new();
     for (event, entry) in events.iter().zip(entries) {
         if let Entry::Assistant(assistant) = entry {
-            let blocks = event.getattr("blocks")?;
-            for (index, block) in assistant.blocks.iter().enumerate() {
-                if matches!(block, ContentBlock::ToolUse(_)) {
-                    let call = blocks.get_item(index)?.getattr("call")?;
-                    calls.push(Arc::clone(&call.cast::<ToolCallBaseView>()?.get().call));
+            let view = event.cast::<AssistantEventView>()?.get();
+            with_view_registry(&view.r.registry, || {
+                for block in &assistant.blocks {
+                    if let ContentBlock::ToolUse(tool_use) = block {
+                        calls.push(parse_tool_call(&tool_use.name, &tool_use.input));
+                    }
                 }
-            }
+            });
         }
     }
     Ok(calls)
@@ -173,6 +172,7 @@ mod tests {
     use cc_transcript_core::toolcall::{
         with_registry, McpToolSpec, SpanEditMap, ToolRegistrySnapshot,
     };
+    use std::sync::Arc;
 
     fn event<'py>(py: Python<'py>, content: Value) -> Bound<'py, PyAny> {
         let source = sonic_rs::json!({
@@ -208,6 +208,28 @@ mod tests {
     }
 
     #[test]
+    fn event_only_turn_renders_malformed_known_tool_as_raw_input() {
+        Python::initialize();
+        Python::attach(|py| {
+            let input = sonic_rs::json!({"file_path":"/a.py"});
+            let event = event(
+                py,
+                sonic_rs::json!([
+                    {"type":"tool_use","id":"t","name":"Edit","input":input.clone()}
+                ]),
+            );
+            let rendered =
+                render_turn_from_events(String::new(), vec![event], 700, 1500, false).unwrap();
+            let raw = rendered
+                .strip_prefix("Edit(")
+                .unwrap()
+                .strip_suffix(')')
+                .unwrap();
+            assert_eq!(sonic_rs::from_str::<Value>(raw).unwrap(), input);
+        });
+    }
+
+    #[test]
     fn event_only_turn_keeps_captured_registry_for_lazy_calls() {
         Python::initialize();
         Python::attach(|py| {
@@ -222,12 +244,13 @@ mod tests {
                     }),
                 },
             )]));
+            let input = sonic_rs::json!({"path":"a.py","content":"pinned"});
             let event = with_registry(pinned, || {
                 event(
                     py,
                     sonic_rs::json!([
                         {"type":"tool_use","id":"t","name":"mcp__fixture__syn_render_pinned",
-                         "input":{"path":"a.py","content":"pinned"}}
+                         "input":input.clone()}
                     ]),
                 )
             });
@@ -238,11 +261,15 @@ mod tests {
                     .map(|event| view_entry(event, "test").unwrap())
                     .collect::<Vec<_>>();
                 let calls = ordered_tool_calls(&events, &entries).unwrap();
-                assert!(matches!(calls[0].as_ref(), ToolCall::SpanEdit(_)));
-                assert_eq!(
-                    render_turn_from_events(String::new(), events, 700, 1500, false).unwrap(),
-                    "mcp__fixture__syn_render_pinned({\"path\":\"a.py\",\"content\":\"pinned\"})"
-                );
+                assert!(matches!(&calls[0], ToolCall::SpanEdit(_)));
+                let rendered =
+                    render_turn_from_events(String::new(), events, 700, 1500, false).unwrap();
+                let raw = rendered
+                    .strip_prefix("mcp__fixture__syn_render_pinned(")
+                    .unwrap()
+                    .strip_suffix(')')
+                    .unwrap();
+                assert_eq!(sonic_rs::from_str::<Value>(raw).unwrap(), input);
             });
         });
     }

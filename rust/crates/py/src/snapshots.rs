@@ -534,7 +534,9 @@ impl NativeSnapshotStore {
             let context = validated(context_json, &SCHEMAS.context)?;
             let limits = scope_limits(&validated(limits_json, &SCHEMAS.scope_limits)?);
             cancel.inner.check(limits.deadline_unix_ms)?;
-            let (snapshot, description) = self.inner.pin_scope(&handle, &context)?;
+            let (snapshot, description) =
+                self.inner
+                    .pin_scope_for_work(&handle, &context, limits.deadline_unix_ms)?;
             let registry = self.inner.registry_for_scope(&handle, &context)?;
             cancel.inner.check(limits.deadline_unix_ms)?;
             Ok(NativeSnapshotScope {
