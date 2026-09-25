@@ -353,7 +353,8 @@ fn staging_retains_shared_capacity_until_last_arena_guard_drops() {
     let held = first.reserve_staging(12 * 1024 * 1024, &cancel).unwrap();
     assert_eq!(first.progress.projection_bytes, 0);
     assert_eq!(first.remaining().max_read_bytes, limits().max_read_bytes);
-    assert_eq!(first.progress.staging_peak_reserved_bytes, 12 * 1024 * 1024);
+    let reserved = first.progress.staging_peak_reserved_bytes;
+    assert!(reserved >= 12 * 1024 * 1024);
     assert_eq!(
         second
             .reserve_staging(8 * 1024 * 1024, &cancel)
@@ -364,7 +365,7 @@ fn staging_retains_shared_capacity_until_last_arena_guard_drops() {
     );
     assert_eq!(second.progress.staging_admissions, 0);
     drop(first);
-    assert_eq!(store.retained_accounted_bytes() - before, 12 * 1024 * 1024);
+    assert_eq!(store.retained_accounted_bytes() - before, reserved);
     assert_eq!(
         second
             .reserve_staging(8 * 1024 * 1024, &cancel)
@@ -427,4 +428,24 @@ fn staging_rejects_foreign_guards_and_cancellation_without_mutation() {
         Status::Cancelled
     );
     assert_eq!(first.progress.staging_peak_live_bytes, 1);
+}
+
+#[test]
+fn staging_growth_near_shared_cap_admits_available_slack_once() {
+    let store = NativeStore::new(
+        &json!({"max_retained_bytes":16*1024*1024,"reserved_hook_accounted_bytes":0}),
+    )
+    .unwrap();
+    let mut first = ScanBudget::new(&store, limits());
+    let mut second = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let _other_client = first.reserve_staging(8 * 1024 * 1024, &cancel).unwrap();
+    let mut held = second.reserve_staging(3 * 1024 * 1024, &cancel).unwrap();
+    for _ in 0..4096 {
+        second.extend_staging(&mut held, 1024, &cancel).unwrap();
+    }
+    assert_eq!(second.progress.staging_admissions, 2);
+    assert!(second.progress.staging_peak_reserved_bytes >= 7 * 1024 * 1024);
+    assert!(second.progress.staging_peak_reserved_bytes < 8 * 1024 * 1024);
+    assert!(store.retained_accounted_bytes() <= 16 * 1024 * 1024);
 }

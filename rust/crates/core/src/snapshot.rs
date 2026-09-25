@@ -1007,11 +1007,7 @@ impl NativeStore {
         let used = number(&Self::gauges(&state), "retained_total_accounted_bytes")?;
         let available = cap.saturating_sub(used);
         let preferred_growth = preferred.saturating_sub(reservation.bytes);
-        let growth = if preferred_growth <= available {
-            preferred_growth
-        } else {
-            additional
-        };
+        let growth = preferred_growth.min(available);
         state.transient_bytes += growth;
         reservation.bytes += growth;
         Ok(())
