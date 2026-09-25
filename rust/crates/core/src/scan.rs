@@ -75,8 +75,17 @@ impl ScanBudget {
     ) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
         let remaining = self.remaining();
-        if bytes > remaining.max_read_bytes || events > remaining.max_events {
-            return Err(incomplete("projection work budget exhausted"));
+        if bytes > remaining.max_read_bytes {
+            return Err(incomplete(format!(
+                "projection byte budget exhausted: requested {bytes}, remaining {}",
+                remaining.max_read_bytes
+            )));
+        }
+        if events > remaining.max_events {
+            return Err(incomplete(format!(
+                "projection event budget exhausted: requested {events}, remaining {}",
+                remaining.max_events
+            )));
         }
         self.progress.projection_bytes += bytes;
         self.progress.examined_events += events;
