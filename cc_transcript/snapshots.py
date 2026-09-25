@@ -36,6 +36,23 @@ class CallContext(TypedDict):
     registry_generation: str
 
 
+class SourceFacts(TypedDict):
+    """Source metadata and an exact match against the first user message."""
+
+    cwds: list[str]
+    first_user_contains: bool
+
+
+class ProseRow(TypedDict):
+    """Logical message text and flags without the event's tool payloads."""
+
+    event_index: int
+    role: Literal["user", "assistant"]
+    text: str
+    is_sidechain: bool
+    is_meta: bool
+
+
 class SnapshotIncomplete(RuntimeError):
     """A bounded operation did not establish a complete answer."""
 
@@ -227,6 +244,28 @@ class TranscriptSnapshot:
 
     def classifier_facts(self, prefix: str, *, event_limit: int = 50) -> Mapping[str, bool]:
         return orjson.loads(_call(self._native.classifier_facts, prefix, event_limit))
+
+    def source_facts(self, *, first_user_contains: str) -> SourceFacts:
+        """Return distinct cwds in source order and a substring match in the first user text.
+
+        User flags do not change which message is first. Missing user text and an
+        empty token return false. Limits apply to metadata and logical text read.
+        """
+        return orjson.loads(_call(self._native.source_facts, first_user_contains))
+
+    def prose_rows(self) -> Iterator[ProseRow]:
+        """Yield exact user and assistant text with original positions and flags.
+
+        Blank text is omitted. Each native page contains at most 256 source events,
+        and every page consumes the borrow scope's cumulative limits.
+        """
+        position = 0
+        while True:
+            page = orjson.loads(_call(self._native.prose_page, position))
+            yield from page["rows"]
+            if page["next"] is None:
+                return
+            position = page["next"]
 
     def mine_json(
         self, spec_json: str, callable_formats: Sequence[tuple[str, Any, Any, bool]]
