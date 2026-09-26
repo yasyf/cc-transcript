@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -285,6 +285,7 @@ const COUNTERS: [&str; 18] = [
 #[derive(Clone)]
 struct Config {
     retained: usize,
+    prepared_fact_memory: usize,
     source: usize,
     entry: usize,
     output: usize,
@@ -334,7 +335,7 @@ struct LoadSlot {
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
     work: Mutex<Load>,
     accounted: AtomicUsize,
-    deadline: u64,
+    deadline: AtomicU64,
 }
 
 struct Load {
@@ -517,7 +518,21 @@ struct PendingPreparedSource {
     token: String,
     path: PathBuf,
     stamp: SourceStamp,
-    depth: usize,
+}
+
+#[derive(Clone)]
+struct PreparedSourceRef {
+    path: PathBuf,
+    stamp: SourceStamp,
+}
+
+#[derive(Clone)]
+struct WarmMembership {
+    members: Vec<PreparedSourceRef>,
+    sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
+    revision: String,
+    complete: bool,
+    expires: u64,
 }
 
 struct PreparedBuild {
@@ -535,9 +550,8 @@ struct PreparedBuild {
     located: HashMap<String, PathBuf>,
     tasks: Vec<GraphTask>,
     listing: Option<GraphListing>,
-    pending: Option<PendingPreparedSource>,
     seen: HashSet<SourceIdentity>,
-    sources: Vec<Arc<crate::snapshot_prepared::PreparedFacts>>,
+    sources: Vec<PreparedSourceRef>,
     stamps: Vec<(PathBuf, SourceStamp)>,
     expires: u64,
 }
@@ -545,9 +559,12 @@ struct PreparedBuild {
 struct PreparedQueryCursor {
     claimant: String,
     graph_id: String,
-    root_record: String,
+    query: Value,
+    pending: Option<PendingPreparedSource>,
+    root_record: Option<String>,
     next: usize,
     page_output_bytes: usize,
+    remaining: WorkLimits,
     expires: u64,
 }
 
@@ -564,7 +581,7 @@ struct PreparedGraph {
     revision: String,
     stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
-    sources: Vec<Arc<crate::snapshot_prepared::PreparedFacts>>,
+    sources: Vec<PreparedSourceRef>,
     remaining: WorkLimits,
     expires: u64,
     accounted: usize,
@@ -675,6 +692,7 @@ impl GenerationRecord {
 struct StoreState {
     latest: HashMap<SourceIdentity, Arc<TranscriptSnapshot>>,
     loads: HashMap<SourceIdentity, Arc<LoadSlot>>,
+    prepared_loads: HashMap<SourceIdentity, (Arc<LoadSlot>, u64)>,
     leases: HashMap<String, Lease>,
     waiters: HashMap<String, Waiter>,
     projections: HashMap<String, ProjectionCursor>,
@@ -685,6 +703,7 @@ struct StoreState {
     prepared_builds: HashMap<String, PreparedBuild>,
     prepared_queries: HashMap<String, PreparedQueryCursor>,
     prepared_facts: HashMap<SourceIdentity, CachedPreparedFacts>,
+    warm_memberships: HashMap<String, WarmMembership>,
     deliveries: HashMap<String, Delivery>,
     labels: HashMap<String, LabelSlot>,
     registries: HashMap<String, RegistryRecord>,
@@ -714,6 +733,7 @@ pub type PolicyCallback = dyn Fn(
 
 pub struct NativeStore {
     config: Config,
+    prepared_disk: crate::snapshot_prepared_disk::PreparedDiskCache,
     pub owner_epoch: String,
     default_registry: String,
     seed: [u8; 32],
@@ -950,6 +970,7 @@ impl NativeStore {
         };
         let config = Config {
             retained: get("max_retained_bytes", 1024 * 1024 * 1024),
+            prepared_fact_memory: get("max_prepared_fact_memory_bytes", 128 * 1024 * 1024),
             source: get("max_source_bytes", 512 * 1024 * 1024),
             entry: get("max_entry_bytes", 64 * 1024 * 1024),
             output: get("max_projection_bytes", 16 * 1024 * 1024),
@@ -965,6 +986,7 @@ impl NativeStore {
             hook_bytes: get("reserved_hook_accounted_bytes", 512 * 1024 * 1024),
         };
         if config.retained == 0
+            || config.prepared_fact_memory == 0
             || config.entry == 0
             || config.read_step == 0
             || config.event_step == 0
@@ -998,6 +1020,10 @@ impl NativeStore {
         }
         Ok(Self {
             config,
+            prepared_disk: crate::snapshot_prepared_disk::PreparedDiskCache::new(
+                &owner_epoch,
+                get("max_prepared_disk_bytes", 2 * 1024 * 1024 * 1024),
+            )?,
             owner_epoch,
             default_registry,
             seed,
@@ -1896,9 +1922,19 @@ impl NativeStore {
         state
             .prepared_graphs
             .retain(|_, graph| graph.lock().expect("prepared graph").expires > now);
-        state
+        let expired_queries: Vec<_> = state
             .prepared_queries
-            .retain(|_, cursor| cursor.expires > now);
+            .iter()
+            .filter(|(_, cursor)| cursor.expires <= now)
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in expired_queries {
+            if let Some(query) = state.prepared_queries.remove(&token) {
+                if let Some(pending) = query.pending {
+                    state.waiters.remove(&pending.token);
+                }
+            }
+        }
         let expired_builds: Vec<_> = state
             .prepared_builds
             .iter()
@@ -1956,8 +1992,15 @@ impl NativeStore {
             .values()
             .map(|w| w.load.stamp.identity)
             .collect();
+        state
+            .prepared_loads
+            .retain(|_, (_, touched)| touched.saturating_add(30 * 60_000) > now);
+        state
+            .warm_memberships
+            .retain(|_, membership| membership.expires > now);
         state.loads.retain(|id, slot| {
-            (active.contains(id) && slot.deadline > now) || Arc::strong_count(slot) > 1
+            (active.contains(id) && slot.deadline.load(Ordering::Acquire) > now)
+                || Arc::strong_count(slot) > 1
         });
     }
 
@@ -2039,7 +2082,11 @@ impl NativeStore {
             + state
                 .prepared_queries
                 .values()
-                .map(|cursor| size_of::<PreparedQueryCursor>() + cursor.root_record.capacity())
+                .map(|cursor| {
+                    size_of::<PreparedQueryCursor>()
+                        + cursor.root_record.as_ref().map_or(0, String::capacity)
+                        + crate::snapshot_memory::value_charge(&cursor.query).owned_capacity_bytes
+                })
                 .sum::<usize>()
             + state
                 .prepared_builds
@@ -2047,8 +2094,7 @@ impl NativeStore {
                 .map(|cursor| {
                     size_of::<PreparedBuild>()
                         + cursor.tasks.capacity() * size_of::<GraphTask>()
-                        + cursor.sources.capacity()
-                            * size_of::<Arc<crate::snapshot_prepared::PreparedFacts>>()
+                        + cursor.sources.capacity() * size_of::<PreparedSourceRef>()
                 })
                 .sum::<usize>()
             + Self::prepared_fact_bytes(state);
@@ -2793,7 +2839,12 @@ impl NativeStore {
         }
         let mut released = state.labels.remove(token).is_some();
         released |= state.projections.remove(token).is_some();
-        released |= state.prepared_queries.remove(token).is_some();
+        if let Some(query) = state.prepared_queries.remove(token) {
+            if let Some(pending) = query.pending {
+                state.waiters.remove(&pending.token);
+            }
+            released = true;
+        }
         if let Some(build) = state.prepared_builds.remove(token) {
             Self::release_prepared_build_state(&mut state, &build);
             released = true;
@@ -2825,6 +2876,17 @@ impl NativeStore {
             return;
         };
         let mut state = self.state.lock().expect("snapshot state");
+        if state
+            .prepared_queries
+            .get(token)
+            .is_some_and(|query| query.claimant == claimant)
+        {
+            if let Some(query) = state.prepared_queries.remove(token) {
+                if let Some(pending) = query.pending {
+                    state.waiters.remove(&pending.token);
+                }
+            }
+        }
         if state
             .graphs
             .get(token)
@@ -3024,7 +3086,7 @@ impl NativeStore {
                     state.prepared_queries.remove(cursor)
                 };
                 if let Some(query) = prepared_query {
-                    return self.prepared_input_page(cursor, query, context, cancel);
+                    return self.prepared_query_page(cursor, query, context, cancel, usage);
                 }
                 let graph = {
                     let mut state = self.state.lock().expect("snapshot state");
@@ -3186,9 +3248,19 @@ impl NativeStore {
                             ));
                         }
                         let released = state.prepared_graphs.remove(token).is_some();
-                        state
+                        let discarded: Vec<_> = state
                             .prepared_queries
-                            .retain(|_, cursor| cursor.graph_id != token);
+                            .iter()
+                            .filter(|(_, cursor)| cursor.graph_id == token)
+                            .map(|(query_token, _)| query_token.clone())
+                            .collect();
+                        for query_token in discarded {
+                            if let Some(query) = state.prepared_queries.remove(&query_token) {
+                                if let Some(pending) = query.pending {
+                                    state.waiters.remove(&pending.token);
+                                }
+                            }
+                        }
                         released
                     }
                     "reservation" => {
@@ -3223,7 +3295,8 @@ impl NativeStore {
                 ))
             }
             "prepare_graph" => self.prepare_graph(request, context, cancel, usage),
-            "query_graph" => self.query_graph(request, context, cancel),
+            "query_graph" => self.query_graph(request, context, cancel, usage),
+            "warm_registered" => self.warm_registered(request, context, cancel, usage),
             "query" if Self::is_graph_request(request) => {
                 self.graph(request, context, cancel, usage)
             }
@@ -3363,7 +3436,7 @@ impl NativeStore {
                     registry_generation: str_field(context, "registry_generation")?.to_owned(),
                     registry,
                     accounted: AtomicUsize::new(0),
-                    deadline: now + self.config.preparation,
+                    deadline: AtomicU64::new(now + self.config.preparation),
                     work: Mutex::new(Load {
                         file,
                         path,
@@ -3401,7 +3474,9 @@ impl NativeStore {
                     "reservation admission exhausted",
                 ));
             }
-            let deadline = limits.deadline_unix_ms.min(slot.deadline);
+            let deadline = limits
+                .deadline_unix_ms
+                .min(slot.deadline.load(Ordering::Acquire));
             let waiter = Waiter {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 load: slot,
@@ -6622,6 +6697,8 @@ mod tests {
             1
         );
         let after_prepare = store.state.lock().unwrap().counters;
+        assert_eq!(after_prepare[1], 0);
+        let mut after_first = after_prepare;
         for query in [
             json!({"kind":"has_tool","pattern":"Read","subagents":true}),
             json!({"kind":"has_read","pattern":"missing","subagents":true}),
@@ -6629,10 +6706,14 @@ mod tests {
             let response = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":query,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
             assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
             assert_eq!(response["data"]["value"].as_bool(), Some(false));
+            if after_first[1] == after_prepare[1] {
+                after_first = store.state.lock().unwrap().counters;
+            }
         }
         let after_queries = store.state.lock().unwrap().counters;
-        assert_eq!(after_queries[1], after_prepare[1]);
-        assert_eq!(after_queries[15], after_prepare[15]);
+        assert!(after_first[1] > after_prepare[1]);
+        assert_eq!(after_queries[1], after_first[1]);
+        assert_eq!(after_queries[15], after_first[15]);
         let prepared_again = finish(
             &store,
             store.request(&prepare, &owner, &Cancellation::default()),
@@ -6644,8 +6725,9 @@ mod tests {
             "{prepared_again:?}"
         );
         let after_again = store.state.lock().unwrap().counters;
-        assert_eq!(after_again[1], after_prepare[1]);
-        assert_eq!(after_again[15], after_prepare[15]);
+        assert_eq!(after_again[1], after_first[1]);
+        assert_eq!(after_again[15], after_first[15]);
+        assert_eq!(store.prepared_disk.stats().writes, 1);
         let state = store.state.lock().unwrap();
         let first_id = graph["graph_id"].as_str().unwrap();
         let second_id = prepared_again["data"]["handle"]["graph_id"]
@@ -6654,6 +6736,72 @@ mod tests {
         let first = state.prepared_graphs[first_id].lock().unwrap();
         let second = state.prepared_graphs[second_id].lock().unwrap();
         assert!(Arc::ptr_eq(&first.root_facts, &second.root_facts));
+    }
+
+    #[test]
+    fn root_positive_query_does_not_open_registered_sources() {
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/root"}}]}}"#;
+        let source = Source::new(&format!("{}\n{tool}\n", user("root")));
+        let ids: Vec<_> = (0..929).map(|index| format!("thread-{index:04}")).collect();
+        for (index, id) in ids.iter().enumerate() {
+            let file = File::create(source.directory.join(format!("{id}.jsonl"))).unwrap();
+            file.set_len(if index == 0 { 39_922_816 } else { 889_173 })
+                .unwrap();
+        }
+        let store = NativeStore::new(&json!({
+            "max_events_per_step":2048,
+            "max_retained_bytes":32*1024*1024,
+            "reserved_hook_accounted_bytes":4096,
+            "max_leases":16,
+            "reserved_hook_leases":1
+        }))
+        .unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_read_bytes", json!(1024));
+        template["limits"].insert("max_events", json!(1024));
+        template["limits"].insert("max_items", json!(1024));
+        template["limits"].insert("max_discovery_entries", json!(2048));
+        template["limits"].insert("max_sources", json!(1024));
+        let before = store.state.lock().unwrap().counters;
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let cold = store.request(&prepare, &owner, &Cancellation::default());
+        assert_eq!(cold["status"].as_str(), Some("incomplete"), "{cold:?}");
+        assert_eq!(
+            cold["usage"]["discovery_entries_examined"].as_u64(),
+            Some(0)
+        );
+        let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        assert_eq!(warm["data"]["complete"].as_bool(), Some(false));
+        assert!(
+            warm["usage"]["discovery_entries_examined"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert_eq!(
+            graph["usage"]["discovery_entries_examined"].as_u64(),
+            Some(0)
+        );
+        let result = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
+        assert_eq!(result["data"]["value"].as_bool(), Some(true));
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[1]);
+        assert_eq!(store.prepared_disk.stats().writes, 0);
     }
 
     #[test]
@@ -6724,7 +6872,6 @@ mod tests {
         template["limits"].insert("max_events", json!(4096));
         let prepare = finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
         assert_eq!(prepare["status"].as_str(), Some("ok"), "{prepare:?}");
-        let before = store.state.lock().unwrap().counters;
         let mut page = store.request(&json!({"schema":SCHEMA,"id":"inputs","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
         let mut records = Vec::new();
         for _ in 0..10 {
@@ -6745,6 +6892,7 @@ mod tests {
         assert_eq!(records.len(), 259);
         assert!(records[1].contains("echo 0"), "{}", records[1]);
         assert!(records[258].contains("echo 257"));
+        let after_first = store.state.lock().unwrap().counters;
         let repeated = store.request(&json!({"schema":SCHEMA,"id":"repeat","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
         assert_eq!(repeated["status"].as_str(), Some("incomplete"));
         let cancelled = Cancellation::default();
@@ -6758,12 +6906,12 @@ mod tests {
             "{still_usable:?}"
         );
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[1], before[1]);
-        assert_eq!(after[15], before[15]);
+        assert_eq!(after[1], after_first[1]);
+        assert_eq!(after[15], after_first[15]);
     }
 
     #[test]
-    fn incomplete_preparation_reuses_finished_sources_until_complete() {
+    fn bounded_queries_reuse_finished_sources_until_complete() {
         let source = Source::new(&format!("{}\n", user("root")));
         let paths: Vec<_> = (0..6)
             .map(|index| {
@@ -6781,8 +6929,15 @@ mod tests {
         );
         let baseline = store.state.lock().unwrap().counters;
         let mut template = acquire(&source.path);
-        template["limits"].insert("max_read_bytes", json!(600));
-        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        template["limits"].insert("max_read_bytes", json!(250));
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let request = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let mut prior = 0;
         let mut complete = false;
         for _ in 0..8 {
@@ -6794,14 +6949,14 @@ mod tests {
                     &Cancellation::default(),
                 );
             }
-            let cached = store.state.lock().unwrap().prepared_facts.len();
+            let cached = store.prepared_disk.stats().entries;
             if result["status"].as_str() == Some("ok") {
-                assert_eq!(cached, 7);
+                assert_eq!(cached, 6);
                 complete = true;
                 break;
             }
             assert_eq!(result["status"].as_str(), Some("incomplete"), "{result:?}");
-            assert!(cached > prior, "preparation must make progress");
+            assert!(cached > prior, "bounded query must make progress");
             prior = cached;
         }
         assert!(complete);
@@ -6878,7 +7033,9 @@ mod tests {
         );
         let baseline = store.state.lock().unwrap().counters;
         let template = acquire(&source.path);
-        let first = store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        let graph = store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let first = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
         assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
         assert!(first["cursor"].as_str().is_some());
         let after = store.state.lock().unwrap().counters;
@@ -6889,6 +7046,7 @@ mod tests {
         );
         let done = finish_prepared(&store, first, &owner);
         assert_eq!(done["status"].as_str(), Some("ok"), "{done:?}");
+        assert_eq!(done["data"]["value"].as_bool(), Some(false));
     }
 
     #[test]
@@ -6925,28 +7083,30 @@ mod tests {
         template["limits"].insert("max_sources", json!(1024));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let baseline = store.state.lock().unwrap().counters;
+        let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert_eq!(store.state.lock().unwrap().counters[1], baseline[1]);
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let mut completed = false;
         let mut attempts = 0;
         for _ in 0..10 {
             let before = store.state.lock().unwrap().counters;
             let reply = finish_prepared(
                 &store,
-                store.request(&prepare, &owner, &Cancellation::default()),
+                store.request(&query, &owner, &Cancellation::default()),
                 &owner,
             );
             let after = store.state.lock().unwrap().counters;
             assert!(after[1] - before[1] <= 32 * 1024);
             attempts += 1;
             if reply["status"].as_str() == Some("ok") {
-                let graph_id = reply["data"]["handle"]["graph_id"].as_str().unwrap();
-                assert_eq!(
-                    store.state.lock().unwrap().prepared_graphs[graph_id]
-                        .lock()
-                        .unwrap()
-                        .sources
-                        .len(),
-                    923
-                );
+                assert_eq!(reply["data"]["value"].as_bool(), Some(false));
                 completed = true;
                 break;
             }
@@ -6961,11 +7121,11 @@ mod tests {
     }
 
     #[test]
-    fn prepared_graph_rejects_oversized_source_before_reading_it() {
+    fn prepared_graph_resumes_source_larger_than_each_call_budget() {
         let source = Source::new(&format!("{}\n", user("root")));
         let large = source.directory.join("large.jsonl");
         std::fs::write(&large, format!("{}\n", user(&"x".repeat(64 * 1024)))).unwrap();
-        let store = store();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let owner = context("a");
         let root = finish(
             &store,
@@ -6973,21 +7133,180 @@ mod tests {
             &owner,
         );
         let mut template = acquire(&source.path);
-        template["limits"].insert("max_read_bytes", json!(32 * 1024));
+        template["limits"].insert("max_read_bytes", json!(16 * 1024));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[large.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let before = store.state.lock().unwrap().counters;
-        for _ in 0..2 {
-            let reply = store.request(&prepare, &owner, &Cancellation::default());
+        let mut completed = false;
+        for _ in 0..8 {
+            let reply = finish_prepared(
+                &store,
+                store.request(&query, &owner, &Cancellation::default()),
+                &owner,
+            );
+            if reply["status"].as_str() == Some("ok") {
+                assert_eq!(reply["data"]["value"].as_bool(), Some(false));
+                completed = true;
+                break;
+            }
             assert_eq!(reply["status"].as_str(), Some("incomplete"), "{reply:?}");
             assert!(reply["cursor"].as_str().is_none());
         }
+        assert!(completed);
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[0], before[0]);
-        assert_eq!(after[1], before[1]);
+        assert_eq!(
+            after[1] - before[1],
+            std::fs::metadata(&large).unwrap().len()
+        );
+        assert_eq!(store.prepared_disk.stats().writes, 1);
     }
 
     #[test]
-    fn changed_prepared_facts_remain_accounted_while_prior_graph_is_pinned() {
+    fn registered_warmer_resumes_large_source_and_writes_facts_once() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let large = source.directory.join("thread-large.jsonl");
+        let small = source.directory.join("thread-small.jsonl");
+        std::fs::write(&large, format!("{}\n", user(&"x".repeat(20 * 1024)))).unwrap();
+        std::fs::write(&small, format!("{}\n", user("small"))).unwrap();
+        let source_bytes =
+            std::fs::metadata(&large).unwrap().len() + std::fs::metadata(&small).unwrap().len();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":["thread-large","thread-small"],"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        request["limits"].insert("max_read_bytes", json!(8192));
+        let before = store.state.lock().unwrap().counters;
+        let mut completed = false;
+        for attempt in 0..5 {
+            let reply = store.request(&request, &owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert!(reply["usage"]["source_bytes_read"].as_u64().unwrap() <= 8192);
+            if attempt > 0 {
+                assert_eq!(
+                    reply["usage"]["discovery_entries_examined"].as_u64(),
+                    Some(0)
+                );
+            }
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                assert_eq!(reply["data"]["next_index"].as_u64(), Some(2));
+                completed = true;
+                break;
+            }
+            request.insert("start_index", reply["data"]["next_index"].clone());
+            request.insert(
+                "membership_revision",
+                reply["data"]["membership_revision"].clone(),
+            );
+        }
+        assert!(completed);
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[1] - before[1], source_bytes);
+        assert_eq!(store.prepared_disk.stats().writes, 2);
+        request.insert("start_index", json!(0));
+        let warm = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        assert_eq!(warm["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(warm["usage"]["source_bytes_read"].as_u64(), Some(0));
+        assert_eq!(warm["data"]["fact_cache_writes"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn registered_warmer_rejects_changed_or_reordered_membership() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let first = source.directory.join("thread-a.jsonl");
+        let second = source.directory.join("thread-b.jsonl");
+        std::fs::write(&first, format!("{}\n", user("a"))).unwrap();
+        std::fs::write(&second, format!("{}\n", user("b"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":["thread-a","thread-b"],"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        request["limits"].insert(
+            "max_read_bytes",
+            json!(std::fs::metadata(&first).unwrap().len() + 1),
+        );
+        let partial = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(partial["status"].as_str(), Some("ok"), "{partial:?}");
+        assert_eq!(partial["data"]["next_index"].as_u64(), Some(1));
+        request.insert("start_index", json!(1));
+        request.insert(
+            "membership_revision",
+            partial["data"]["membership_revision"].clone(),
+        );
+        request.insert("thread_ids", json!(["thread-b", "thread-a"]));
+        let reordered = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(
+            reordered["status"].as_str(),
+            Some("changed"),
+            "{reordered:?}"
+        );
+        request.insert("thread_ids", json!(["thread-a", "thread-b"]));
+        std::fs::write(&first, format!("{}\n", user("changed-longer"))).unwrap();
+        let changed = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(changed["status"].as_str(), Some("changed"), "{changed:?}");
+    }
+
+    #[test]
+    fn disk_facts_complete_queries_when_memory_fact_budget_is_smaller() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let mut paths = Vec::new();
+        let mut source_bytes = 0u64;
+        for index in 0..3 {
+            let path = source.directory.join(format!("external-{index}.jsonl"));
+            let content = format!(
+                r#"{{"type":"user","uuid":"external-{index}","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{}"}}}}"#,
+                "x".repeat(64 * 1024)
+            );
+            std::fs::write(&path, format!("{content}\n")).unwrap();
+            source_bytes += std::fs::metadata(&path).unwrap().len();
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"max_prepared_fact_memory_bytes":32*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let before = store.state.lock().unwrap().counters;
+        let first = finish_prepared(
+            &store,
+            store.request(&query, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(first["data"]["value"].as_bool(), Some(false));
+        let after_first = store.state.lock().unwrap().counters;
+        assert_eq!(after_first[1] - before[1], source_bytes);
+        assert_eq!(store.prepared_disk.stats().writes, 3);
+        let second = finish_prepared(
+            &store,
+            store.request(&query, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        assert_eq!(second["data"]["value"].as_bool(), Some(false));
+        let after_second = store.state.lock().unwrap().counters;
+        assert_eq!(after_second[1], after_first[1]);
+        assert_eq!(store.prepared_disk.stats().writes, 3);
+    }
+
+    #[test]
+    fn changed_prepared_facts_use_separate_disk_revisions() {
         let source = Source::new(&format!("{}\n", user("root")));
         let attachment = source.directory.join("large.jsonl");
         let write = |text: &str| {
@@ -7009,6 +7328,17 @@ mod tests {
             &owner,
         );
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        let query = |graph: &Value| {
+            finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            )
+        };
+        assert_eq!(
+            query(&first["data"]["handle"])["status"].as_str(),
+            Some("ok")
+        );
         write(&"b".repeat(56 * 1024));
         let second = finish_prepared(
             &store,
@@ -7016,15 +7346,15 @@ mod tests {
             &owner,
         );
         assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
-        let with_prior = NativeStore::prepared_fact_bytes(&store.state.lock().unwrap());
-        let old_handle = &first["data"]["handle"];
-        let released = store.request(&json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"graph","token":old_handle["graph_id"],"owner_epoch":old_handle["owner_epoch"]}), &owner, &Cancellation::default());
-        assert_eq!(released["status"].as_str(), Some("ok"), "{released:?}");
-        let without_prior = NativeStore::prepared_fact_bytes(&store.state.lock().unwrap());
-        assert!(
-            with_prior > without_prior + 48 * 1024,
-            "{with_prior} <= {without_prior}"
+        assert_eq!(
+            query(&second["data"]["handle"])["status"].as_str(),
+            Some("ok")
         );
+        assert_eq!(
+            query(&first["data"]["handle"])["status"].as_str(),
+            Some("changed")
+        );
+        assert_eq!(store.prepared_disk.stats().writes, 2);
     }
 
     #[test]
@@ -7041,8 +7371,15 @@ mod tests {
         );
         let template = acquire(&source.path);
         let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
-        let first = store.request(&request, &owner, &Cancellation::default());
-        let second = store.request(&request, &owner, &Cancellation::default());
+        let graph = finish_prepared(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = store.request(&query, &owner, &Cancellation::default());
+        let second = store.request(&query, &owner, &Cancellation::default());
         assert_eq!(first["status"].as_str(), Some("incomplete"));
         assert_eq!(second["status"].as_str(), Some("incomplete"));
         let cancelled = Cancellation::default();
@@ -7064,8 +7401,13 @@ mod tests {
     #[test]
     fn prepared_graph_rejects_authority_change_on_resume_query_and_release() {
         let source = Source::new(&format!("{}\n", user("root")));
-        let attachment = source.directory.join("external.jsonl");
-        std::fs::write(&attachment, format!("{}\n", user("external"))).unwrap();
+        let paths: Vec<_> = (0..10)
+            .map(|index| {
+                let path = source.directory.join(format!("external-{index}.jsonl"));
+                std::fs::write(&path, format!("{}\n", user(&format!("external-{index}")))).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
         let store = store();
         let owner = context("a");
         let root = finish(
@@ -7074,7 +7416,7 @@ mod tests {
             &owner,
         );
         let template = acquire(&source.path);
-        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let first = store.request(&request, &owner, &Cancellation::default());
         assert_eq!(first["status"].as_str(), Some("incomplete"));
         let mut narrowed = owner.clone();
@@ -7103,6 +7445,12 @@ mod tests {
             Some("stale_handle"),
             "{denied:?}"
         );
+        let warmed = finish_prepared(
+            &store,
+            store.request(&query, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(warmed["status"].as_str(), Some("ok"), "{warmed:?}");
         let release = json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"graph","token":graph["graph_id"],"owner_epoch":graph["owner_epoch"]});
         let denied = store.request(&release, &narrowed, &Cancellation::default());
         assert_eq!(
@@ -7123,8 +7471,19 @@ mod tests {
             Some("ok"),
             "{narrowed_graph:?}"
         );
+        let narrowed_query = json!({"schema":SCHEMA,"id":"narrowed-query","operation":"query_graph","handle":narrowed_graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let narrowed_result = finish_prepared(
+            &store,
+            store.request(&narrowed_query, &narrowed, &Cancellation::default()),
+            &narrowed,
+        );
+        assert_eq!(
+            narrowed_result["status"].as_str(),
+            Some("ok"),
+            "{narrowed_result:?}"
+        );
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[0] - before[0], 1);
+        assert_eq!(after[0] - before[0], 10);
     }
 
     #[test]

@@ -96,7 +96,8 @@
               "resolved": "#/$defs/Resolved",
               "scalar": "#/$defs/ScalarResult",
               "stats": "#/$defs/StatsResult",
-              "strings": "#/$defs/StringsResult"
+              "strings": "#/$defs/StringsResult",
+              "warmed_registry": "#/$defs/WarmedRegistryResult"
             },
             "propertyName": "kind"
           },
@@ -106,6 +107,9 @@
             },
             {
               "$ref": "#/$defs/PreparedGraphResult"
+            },
+            {
+              "$ref": "#/$defs/WarmedRegistryResult"
             },
             {
               "$ref": "#/$defs/Loading"
@@ -692,7 +696,8 @@
                   "resolved": "#/$defs/Resolved",
                   "scalar": "#/$defs/ScalarResult",
                   "stats": "#/$defs/StatsResult",
-                  "strings": "#/$defs/StringsResult"
+                  "strings": "#/$defs/StringsResult",
+                  "warmed_registry": "#/$defs/WarmedRegistryResult"
                 },
                 "propertyName": "kind"
               },
@@ -702,6 +707,9 @@
                 },
                 {
                   "$ref": "#/$defs/PreparedGraphResult"
+                },
+                {
+                  "$ref": "#/$defs/WarmedRegistryResult"
                 },
                 {
                   "$ref": "#/$defs/Loading"
@@ -1403,6 +1411,68 @@
         "tool_registry_generation"
       ],
       "title": "WaitingResult",
+      "type": "object"
+    },
+    "WarmedRegistryResult": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "fact_cache_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Fact Cache Bytes",
+          "type": "integer"
+        },
+        "fact_cache_write_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Fact Cache Write Bytes",
+          "type": "integer"
+        },
+        "fact_cache_writes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Fact Cache Writes",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "warmed_registry",
+          "title": "Kind",
+          "type": "string"
+        },
+        "membership_revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Membership Revision",
+          "type": "string"
+        },
+        "next_index": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Next Index",
+          "type": "integer"
+        },
+        "owner_epoch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Owner Epoch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "owner_epoch",
+        "membership_revision",
+        "next_index",
+        "complete",
+        "fact_cache_bytes",
+        "fact_cache_write_bytes",
+        "fact_cache_writes"
+      ],
+      "title": "WarmedRegistryResult",
       "type": "object"
     }
   },

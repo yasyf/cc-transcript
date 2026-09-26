@@ -48,11 +48,13 @@ fn call_paths(call: &Value) -> Result<&sonic_rs::Array, SnapshotError> {
         .ok_or_else(|| invalid("prepared call paths missing"))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct OverrideEvent {
     pub text: String,
     pub tools: Vec<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PreparedFacts {
     pub inputs: Value,
     pub has_error: bool,
@@ -63,6 +65,25 @@ pub struct PreparedFacts {
 impl PreparedFacts {
     pub fn accounted_bytes(&self) -> usize {
         self.accounted
+    }
+
+    pub fn refresh_accounted(&mut self) {
+        let input_charge = crate::snapshot_memory::value_charge(&self.inputs);
+        let override_charge = self.override_events.as_ref().map_or(0, |events| {
+            events.capacity() * std::mem::size_of::<OverrideEvent>()
+                + events
+                    .iter()
+                    .map(|event| {
+                        event.text.capacity()
+                            + event.tools.capacity() * std::mem::size_of::<String>()
+                            + event.tools.iter().map(String::capacity).sum::<usize>()
+                    })
+                    .sum::<usize>()
+        });
+        self.accounted = std::mem::size_of::<Self>()
+            + input_charge.owned_capacity_bytes
+            + input_charge.opaque_dom_accounted_bytes
+            + override_charge;
     }
 
     pub fn query(&self, query: &Value) -> Result<Value, SnapshotError> {

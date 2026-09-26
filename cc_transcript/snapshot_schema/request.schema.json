@@ -2258,6 +2258,105 @@
       "title": "View",
       "type": "object"
     },
+    "WarmRegistered": {
+      "additionalProperties": false,
+      "properties": {
+        "classifier": {
+          "$ref": "#/$defs/Classifier"
+        },
+        "deadline_unix_ms": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "title": "Deadline Unix Ms",
+          "type": "integer"
+        },
+        "direct_paths": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "pattern": "^/",
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "title": "Direct Paths",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "membership_revision": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Membership Revision"
+        },
+        "operation": {
+          "const": "warm_registered",
+          "title": "Operation",
+          "type": "string"
+        },
+        "roots": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "pattern": "^/",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Roots",
+          "type": "array"
+        },
+        "schema": {
+          "const": "cc-transcript.snapshot/1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "start_index": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Start Index",
+          "type": "integer"
+        },
+        "thread_ids": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "title": "Thread Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "deadline_unix_ms",
+        "limits",
+        "operation",
+        "classifier",
+        "thread_ids",
+        "roots",
+        "direct_paths",
+        "start_index",
+        "membership_revision"
+      ],
+      "title": "WarmRegistered",
+      "type": "object"
+    },
     "WorkflowText": {
       "additionalProperties": false,
       "properties": {
@@ -2308,7 +2407,8 @@
       "resolve": "#/$defs/Resolve",
       "resume": "#/$defs/Resume",
       "retain": "#/$defs/Retain",
-      "stats": "#/$defs/Stats"
+      "stats": "#/$defs/Stats",
+      "warm_registered": "#/$defs/WarmRegistered"
     },
     "propertyName": "operation"
   },
@@ -2357,6 +2457,9 @@
     },
     {
       "$ref": "#/$defs/QueryGraph"
+    },
+    {
+      "$ref": "#/$defs/WarmRegistered"
     },
     {
       "$ref": "#/$defs/ActivityProbe"

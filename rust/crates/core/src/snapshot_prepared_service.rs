@@ -3,9 +3,6 @@ impl NativeStore {
         if let Some(token) = &build.location_cursor {
             state.locates.remove(token);
         }
-        if let Some(pending) = &build.pending {
-            state.waiters.remove(&pending.token);
-        }
     }
 
     fn prepared_fact_bytes(state: &StoreState) -> usize {
@@ -22,15 +19,12 @@ impl NativeStore {
         for graph in state.prepared_graphs.values() {
             let graph = graph.lock().expect("prepared graph");
             add(&graph.root_facts);
-            for facts in graph.root_slices.values().chain(graph.sources.iter()) {
+            for facts in graph.root_slices.values() {
                 add(facts);
             }
         }
         for build in state.prepared_builds.values() {
             add(&build.root_facts);
-            for facts in &build.sources {
-                add(facts);
-            }
         }
         bytes
     }
@@ -59,7 +53,7 @@ impl NativeStore {
         }
         state.prepared_facts.remove(&stamp.identity);
         let accounted = facts.accounted_bytes();
-        let budget = self.config.retained.min(128 * 1024 * 1024);
+        let budget = self.config.retained.min(self.config.prepared_fact_memory);
         let mut used = Self::prepared_fact_bytes(&state);
         while accounted > budget.saturating_sub(used) {
             let oldest = state
@@ -145,6 +139,21 @@ impl NativeStore {
             return Err(invalid("prepared graph source must be a file"));
         }
         let stamp = SourceStamp::of(&metadata);
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            if let Some((slot, touched)) = state.prepared_loads.get_mut(&stamp.identity) {
+                if slot.stamp == stamp {
+                    slot.deadline.store(
+                        now_ms().saturating_add(self.config.preparation),
+                        Ordering::Release,
+                    );
+                    *touched = now_ms();
+                } else {
+                    state.prepared_loads.remove(&stamp.identity);
+                    state.loads.remove(&stamp.identity);
+                }
+            }
+        }
         let registry_generation = str_field(context, "registry_generation")?;
         if let Some(facts) = {
             let mut state = self.state.lock().expect("snapshot state");
@@ -166,16 +175,46 @@ impl NativeStore {
             usage[7] += 1;
             return Ok((stamp, PreparedSourceOutcome::Ready(stamp, facts)));
         }
-        if (stamp.size as usize).saturating_add(128) > remaining.max_read_bytes {
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+            stamp,
+            registry_generation,
+            str_field(context, "admission")?,
+            &context["authority"],
+            &json!({"id":"native","version":"1"}),
+        )?;
+        match self.prepared_disk.lookup(&key)? {
+            crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                usage[7] += 1;
+                return Ok((
+                    stamp,
+                    PreparedSourceOutcome::Ready(stamp, Arc::new(facts)),
+                ));
+            }
+            crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "prepared facts revision was evicted",
+                ));
+            }
+            crate::snapshot_prepared_disk::DiskLookup::Miss => {}
+        }
+        if self.config.read_step.min(stamp.size as usize) > remaining.max_read_bytes {
             return Err(SnapshotError::new(
                 Status::Incomplete,
                 "prepared graph read budget exhausted",
             ));
         }
-        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":remaining.max_read_bytes,"max_events":remaining.max_events,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
+        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":self.config.source,"max_events":1_000_000,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
         let before_bytes = usage[1];
         let before_events = usage[3];
-        let outcome = self.acquire(&acquire, context, cancel, usage)?;
+        let outcome = self.acquire(&acquire, context, cancel, usage);
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            if let Some(slot) = state.loads.get(&stamp.identity).cloned() {
+                state.prepared_loads.insert(stamp.identity, (slot, now_ms()));
+            }
+        }
+        let outcome = outcome?;
         remaining.max_read_bytes = remaining
             .max_read_bytes
             .saturating_sub((usage[1] - before_bytes) as usize);
@@ -198,6 +237,12 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<PreparedSourceOutcome, SnapshotError> {
+        if self.config.read_step.min(pending.stamp.size as usize) > remaining.max_read_bytes {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "prepared graph read budget exhausted",
+            ));
+        }
         self.authority(
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
@@ -246,13 +291,83 @@ impl NativeStore {
         }
         let (facts, _, _) = prepared?;
         drop(snapshot);
-        self.cache_prepared_facts(
+        let classifier = json!({"id":"native","version":"1"});
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             stamp,
-            Arc::new(facts),
-            &json!({"id":"native","version":"1"}),
-            context,
-        )
-        .map(|facts| PreparedSourceOutcome::Ready(stamp, facts))
+            str_field(context, "registry_generation")?,
+            str_field(context, "admission")?,
+            &context["authority"],
+            &classifier,
+        )?;
+        self.prepared_disk.insert(&key, &facts)?;
+        let facts = Arc::new(facts);
+        let facts = match self.cache_prepared_facts(stamp, Arc::clone(&facts), &classifier, context) {
+            Ok(cached) => cached,
+            Err(error) if error.status == Status::RetainedLimit => facts,
+            Err(error) => return Err(error),
+        };
+        self.state
+            .lock()
+            .expect("snapshot state")
+            .prepared_loads
+            .remove(&stamp.identity);
+        Ok(PreparedSourceOutcome::Ready(stamp, facts))
+    }
+
+    fn warm_membership_key(
+        request: &Value,
+        context: &Value,
+    ) -> Result<String, SnapshotError> {
+        let binding = json!({
+            "thread_ids": request["thread_ids"],
+            "roots": request["roots"],
+            "direct_paths": request["direct_paths"],
+            "registry_generation": context["registry_generation"],
+            "admission": context["admission"],
+            "authority": context["authority"],
+        });
+        let canonical = crate::ids::canonical_json(&binding)
+            .map_err(|error| invalid(error.to_string()))?;
+        Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
+    }
+
+    fn validate_warm_membership(
+        &self,
+        membership: &WarmMembership,
+        context: &Value,
+    ) -> Result<bool, SnapshotError> {
+        for source in &membership.members {
+            let canonical = match std::fs::canonicalize(&source.path) {
+                Ok(canonical) => canonical,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(io_error(error)),
+            };
+            self.authority(context, Some(&canonical))?;
+            if canonical != source.path
+                || SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?)
+                    != source.stamp
+            {
+                return Ok(false);
+            }
+        }
+        for (path, stamp) in &membership.sidechain_dirs {
+            let canonical = match std::fs::canonicalize(path) {
+                Ok(canonical) => canonical,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if stamp.is_some() {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                Err(error) => return Err(io_error(error)),
+            };
+            self.authority(context, Some(&canonical))?;
+            let current = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+            if stamp.is_none_or(|stamp| current != stamp) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn prepare_graph(
@@ -295,6 +410,86 @@ impl NativeStore {
         if ids.len() > 1024 || roots.len() > 64 || direct.len() > 1024 {
             return Err(invalid("prepared registry input exceeds its bound"));
         }
+        if !ids.is_empty() {
+            let key = Self::warm_membership_key(request, context)?;
+            let membership = self
+                .state
+                .lock()
+                .expect("snapshot state")
+                .warm_memberships
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| {
+                    SnapshotError::new(Status::Incomplete, "registered membership is not warmed")
+                })?;
+            if !membership.complete || !self.validate_warm_membership(&membership, context)? {
+                self.state
+                    .lock()
+                    .expect("snapshot state")
+                    .warm_memberships
+                    .remove(&key);
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "registered membership changed or is incomplete",
+                ));
+            }
+            let root_facts =
+                self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+            let sources: Vec<_> = membership
+                .members
+                .into_iter()
+                .filter(|source| source.stamp.identity != root.stamp.identity)
+                .collect();
+            let mut stamps = vec![(root.canonical_path.clone(), root.stamp)];
+            stamps.extend(
+                sources
+                    .iter()
+                    .map(|source| (source.path.clone(), source.stamp)),
+            );
+            let mut digest = Sha256::new();
+            for (path, stamp) in &stamps {
+                digest.update(path.as_os_str().as_encoded_bytes());
+                digest.update(stamp.revision().as_bytes());
+            }
+            let revision = format!("{:x}", digest.finalize());
+            let graph_id = self.token("prepared-graph");
+            let accounted = size_of::<PreparedGraph>()
+                + sources.capacity() * size_of::<PreparedSourceRef>();
+            let graph = PreparedGraph {
+                claimant: str_field(context, "claimant")?.to_owned(),
+                registry_generation: str_field(context, "registry_generation")?.to_owned(),
+                admission: str_field(context, "admission")?.to_owned(),
+                authority: context["authority"].clone(),
+                root,
+                root_handle: root_handle.clone(),
+                classifier: view["classifier"].clone(),
+                root_facts,
+                root_slices: HashMap::new(),
+                revision: revision.clone(),
+                stamps,
+                validated: true,
+                sources,
+                remaining,
+                expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
+                accounted,
+            };
+            let mut state = self.state.lock().expect("snapshot state");
+            Self::prune(&mut state);
+            if state.prepared_graphs.len() >= self.lease_cap(context)? {
+                return Err(SnapshotError::new(
+                    Status::LeaseLimit,
+                    "prepared graph admission exhausted",
+                ));
+            }
+            state
+                .prepared_graphs
+                .insert(graph_id.clone(), Arc::new(Mutex::new(graph)));
+            return Ok((
+                json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
+                None,
+                None,
+            ));
+        }
         let root_facts =
             self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
         let build = PreparedBuild {
@@ -312,7 +507,6 @@ impl NativeStore {
             located: HashMap::new(),
             tasks: Vec::new(),
             listing: None,
-            pending: None,
             seen: HashSet::from([root.stamp.identity]),
             sources: Vec::new(),
             stamps: vec![(root.canonical_path.clone(), root.stamp)],
@@ -441,40 +635,6 @@ impl NativeStore {
                 depth: 1,
             });
         }
-        if let Some(mut pending) = build.pending.take() {
-            let outcome = match self.resume_prepared_source(
-                &pending,
-                context,
-                &mut build.remaining,
-                cancel,
-                usage,
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    self.state
-                        .lock()
-                        .expect("snapshot state")
-                        .waiters
-                        .remove(&pending.token);
-                    return Err(error);
-                }
-            };
-            match outcome {
-                PreparedSourceOutcome::Pending(source_cursor) => {
-                    pending.token = source_cursor;
-                    build.pending = Some(pending);
-                    return self.store_prepared_build(token, build);
-                }
-                PreparedSourceOutcome::Ready(stamp, facts) => {
-                    build.stamps.push((pending.path.clone(), stamp));
-                    build.sources.push(facts);
-                    build.tasks.push(GraphTask::List {
-                        parent: pending.path,
-                        depth: pending.depth + 1,
-                    });
-                }
-            }
-        }
         let mut examined = 0usize;
         while examined < 8 {
             cancel.check(build.remaining.deadline_unix_ms)?;
@@ -567,32 +727,16 @@ impl NativeStore {
                             "prepared graph source budget exhausted",
                         ));
                     }
-                    let (stamp, outcome) = self.prepared_source(
-                        &canonical,
-                        context,
-                        &mut build.remaining,
-                        cancel,
-                        usage,
-                    )?;
-                    match outcome {
-                        PreparedSourceOutcome::Ready(stamp, facts) => {
-                            build.stamps.push((canonical.clone(), stamp));
-                            build.sources.push(facts);
-                            build.tasks.push(GraphTask::List {
-                                parent: canonical,
-                                depth: depth + 1,
-                            });
-                        }
-                        PreparedSourceOutcome::Pending(source_cursor) => {
-                            build.pending = Some(PendingPreparedSource {
-                                token: source_cursor,
-                                path: canonical,
-                                stamp,
-                                depth,
-                            });
-                            return self.store_prepared_build(token, build);
-                        }
-                    }
+                    let stamp = SourceStamp::of(&metadata);
+                    build.stamps.push((canonical.clone(), stamp));
+                    build.sources.push(PreparedSourceRef {
+                        path: canonical.clone(),
+                        stamp,
+                    });
+                    build.tasks.push(GraphTask::List {
+                        parent: canonical,
+                        depth: depth + 1,
+                    });
                 }
             }
         }
@@ -607,7 +751,7 @@ impl NativeStore {
         let revision = format!("{:x}", digest.finalize());
         let graph_id = self.token("prepared-graph");
         let accounted = size_of::<PreparedGraph>()
-            + build.sources.capacity() * size_of::<Arc<crate::snapshot_prepared::PreparedFacts>>();
+            + build.sources.capacity() * size_of::<PreparedSourceRef>();
         let graph = PreparedGraph {
             claimant: build.claimant,
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -664,6 +808,299 @@ impl NativeStore {
         ))
     }
 
+    fn build_warm_membership(
+        &self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+        remaining: &mut WorkLimits,
+    ) -> Result<WarmMembership, SnapshotError> {
+        let ids = request["thread_ids"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered roots"))?;
+        let direct = request["direct_paths"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered direct paths"))?;
+        let mut located = HashMap::new();
+        if !ids.is_empty() {
+            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":remaining.max_read_bytes,"max_events":remaining.max_events,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
+            let before = usage[17];
+            let mut outcome = self.locate(&location, context, cancel, usage)?;
+            loop {
+                for item in outcome.0["sessions"]
+                    .as_array()
+                    .ok_or_else(|| invalid("invalid registered location result"))?
+                {
+                    match str_field(item, "status")? {
+                        "ok" => {
+                            located.insert(
+                                str_field(item, "session_id")?.to_owned(),
+                                PathBuf::from(str_field(item, "path")?),
+                            );
+                        }
+                        "missing" => {}
+                        "incomplete" => {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "registered location incomplete",
+                            ));
+                        }
+                        _ => return Err(invalid("invalid registered location status")),
+                    }
+                }
+                if let Some(cursor) = outcome.1 {
+                    outcome = self.dispatch(
+                        &json!({"schema":SCHEMA,"id":"warm-registered-locate-resume","operation":"resume","cursor":cursor}),
+                        context,
+                        cancel,
+                        usage,
+                    )?;
+                    continue;
+                }
+                if outcome.2.is_some() {
+                    return Err(SnapshotError::new(
+                        Status::Incomplete,
+                        "registered location incomplete",
+                    ));
+                }
+                break;
+            }
+            remaining.max_discovery_entries = remaining
+                .max_discovery_entries
+                .saturating_sub((usage[17] - before) as usize);
+        }
+        let mut members = Vec::new();
+        let mut seen = HashSet::new();
+        for path in ids
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(|id| located.get(id).cloned())
+            .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
+        {
+            let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+            self.authority(context, Some(&canonical))?;
+            let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            if !metadata.is_file() {
+                return Err(invalid("registered source must be a file"));
+            }
+            let stamp = SourceStamp::of(&metadata);
+            if seen.insert(stamp.identity) {
+                members.push(PreparedSourceRef {
+                    path: canonical,
+                    stamp,
+                });
+            }
+        }
+        let mut sidechain_dirs = Vec::new();
+        let mut examined = 0usize;
+        while examined < members.len() {
+            cancel.check(remaining.deadline_unix_ms)?;
+            if members.len() > remaining.max_sources {
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "registered source bound exhausted",
+                ));
+            }
+            let source = &members[examined];
+            let directory = source
+                .path
+                .parent()
+                .ok_or_else(|| invalid("registered source has no parent"))?
+                .join(
+                    source
+                        .path
+                        .file_stem()
+                        .ok_or_else(|| invalid("registered source has no stem"))?,
+                )
+                .join("subagents");
+            let canonical = match std::fs::canonicalize(&directory) {
+                Ok(canonical) => canonical,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    sidechain_dirs.push((directory, None));
+                    examined += 1;
+                    continue;
+                }
+                Err(error) => return Err(io_error(error)),
+            };
+            self.authority(context, Some(&canonical))?;
+            let directory_stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+            sidechain_dirs.push((canonical.clone(), Some(directory_stamp)));
+            let mut children = Vec::new();
+            for entry in std::fs::read_dir(&canonical).map_err(io_error)? {
+                if remaining.max_discovery_entries == 0 {
+                    return Err(SnapshotError::new(
+                        Status::Incomplete,
+                        "registered sidechain discovery budget exhausted",
+                    ));
+                }
+                remaining.max_discovery_entries -= 1;
+                usage[17] += 1;
+                let entry = entry.map_err(io_error)?;
+                let path = entry.path();
+                if path.extension().is_some_and(|extension| extension == "jsonl")
+                    && !entry.file_name().to_string_lossy().starts_with("._")
+                {
+                    children.push(path);
+                }
+            }
+            children.sort();
+            for path in children {
+                let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                self.authority(context, Some(&canonical))?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+                if !metadata.is_file() {
+                    return Err(invalid("registered sidechain must be a file"));
+                }
+                let stamp = SourceStamp::of(&metadata);
+                if seen.insert(stamp.identity) {
+                    members.push(PreparedSourceRef {
+                        path: canonical,
+                        stamp,
+                    });
+                }
+            }
+            examined += 1;
+        }
+        let mut digest = Sha256::new();
+        for source in &members {
+            digest.update(source.path.as_os_str().as_encoded_bytes());
+            digest.update(source.stamp.revision().as_bytes());
+        }
+        Ok(WarmMembership {
+            members,
+            sidechain_dirs,
+            revision: format!("{:x}", digest.finalize()),
+            complete: located.len() == ids.len(),
+            expires: now_ms().saturating_add(30 * 60_000),
+        })
+    }
+
+    fn warm_registered(
+        &self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let mut remaining = limits(request)?;
+        if request["classifier"] != json!({"id":"native","version":"1"}) {
+            return Err(invalid("registered warming requires the native classifier"));
+        }
+        let ids = request["thread_ids"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered roots"))?;
+        let direct = request["direct_paths"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered direct paths"))?;
+        if ids.len() > 1024 || roots.len() > 64 || direct.len() > 1024 {
+            return Err(invalid("registered warming input exceeds its bound"));
+        }
+        let key = Self::warm_membership_key(request, context)?;
+        let cached = self
+            .state
+            .lock()
+            .expect("snapshot state")
+            .warm_memberships
+            .get(&key)
+            .cloned();
+        let membership = if let Some(cached) = cached {
+            if self.validate_warm_membership(&cached, context)? {
+                cached
+            } else {
+                self.state
+                    .lock()
+                    .expect("snapshot state")
+                    .warm_memberships
+                    .remove(&key);
+                self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
+            }
+        } else {
+            self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
+        };
+        if !membership.complete {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "registered membership is incomplete",
+            ));
+        }
+        {
+            let mut state = self.state.lock().expect("snapshot state");
+            Self::prune(&mut state);
+            if !state.warm_memberships.contains_key(&key) {
+                if state.warm_memberships.len() >= 32 {
+                    let oldest = state
+                        .warm_memberships
+                        .iter()
+                        .min_by_key(|(_, membership)| membership.expires)
+                        .map(|(key, _)| key.clone())
+                        .expect("full warm membership cache");
+                    state.warm_memberships.remove(&oldest);
+                }
+                state.warm_memberships.insert(key, membership.clone());
+            }
+        }
+        let members = &membership.members;
+        let membership_revision = &membership.revision;
+        let start = number(request, "start_index")?;
+        if start > members.len() {
+            return Err(invalid("registered warming index exceeds membership"));
+        }
+        if start > 0
+            && request["membership_revision"].as_str() != Some(membership_revision.as_str())
+        {
+            return Err(SnapshotError::new(
+                Status::Changed,
+                "registered warming membership changed",
+            ));
+        }
+        let mut next = start;
+        let mut steps = 0usize;
+        while next < members.len() && steps < 8 {
+            cancel.check(remaining.deadline_unix_ms)?;
+            let source = &members[next];
+            match self.prepared_source(&source.path, context, &mut remaining, cancel, usage) {
+                Ok((stamp, PreparedSourceOutcome::Ready(_, _))) => {
+                    if stamp != source.stamp {
+                        return Err(SnapshotError::new(
+                            Status::Changed,
+                            "registered source changed",
+                        ));
+                    }
+                    next += 1;
+                }
+                Ok((_, PreparedSourceOutcome::Pending(token))) => {
+                    self.state
+                        .lock()
+                        .expect("snapshot state")
+                        .waiters
+                        .remove(&token);
+                    break;
+                }
+                Err(error)
+                    if error.status == Status::Incomplete
+                        && error.reason == "prepared graph read budget exhausted" =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+            steps += 1;
+        }
+        let disk = self.prepared_disk.stats();
+        Ok((
+            json!({"kind":"warmed_registry","owner_epoch":self.owner_epoch,"membership_revision":membership_revision,"next_index":next,"complete":next==members.len(),"fact_cache_bytes":disk.bytes,"fact_cache_write_bytes":disk.write_bytes,"fact_cache_writes":disk.writes}),
+            None,
+            None,
+        ))
+    }
+
     fn validate_prepared_root(
         &self,
         graph: &Arc<Mutex<PreparedGraph>>,
@@ -688,12 +1125,13 @@ impl NativeStore {
         Ok(())
     }
 
-    fn prepared_input_page(
+    fn prepared_query_page(
         &self,
         token: &str,
         mut cursor: PreparedQueryCursor,
         context: &Value,
         cancel: &Cancellation,
+        usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         if cursor.claimant != str_field(context, "claimant")? {
             return Err(SnapshotError::new(
@@ -710,78 +1148,172 @@ impl NativeStore {
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleCursor, "prepared graph expired"))?;
         self.validate_prepared_root(&graph, context)?;
-        let mut graph = graph.lock().expect("prepared graph");
-        if graph.admission != str_field(context, "admission")?
-            || graph.authority != context["authority"]
-            || graph.registry_generation != str_field(context, "registry_generation")?
-        {
-            return Err(SnapshotError::new(
-                Status::StaleHandle,
-                "prepared graph context differs",
-            ));
-        }
-        cancel.check(graph.remaining.deadline_unix_ms)?;
-        let total = graph.sources.len() + 1;
-        let page_limit = self.config.page_items.min(graph.remaining.max_items);
-        let output_limit = cursor
-            .page_output_bytes
-            .min(graph.remaining.max_output_bytes)
-            .min(MAX_DATA_BYTES);
-        if page_limit == 0 || output_limit < 128 {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "prepared input page budget exhausted",
-            ));
-        }
+        let sources = {
+            let graph = graph.lock().expect("prepared graph");
+            if graph.admission != str_field(context, "admission")?
+                || graph.authority != context["authority"]
+                || graph.registry_generation != str_field(context, "registry_generation")?
+            {
+                return Err(SnapshotError::new(
+                    Status::StaleHandle,
+                    "prepared graph context differs",
+                ));
+            }
+            graph.sources.clone()
+        };
+        let inputs = cursor.root_record.is_some();
+        let total = sources.len() + usize::from(inputs);
         let mut records = Vec::new();
         let mut bytes = 128usize;
-        while cursor.next < total && records.len() < page_limit {
-            cancel.check(graph.remaining.deadline_unix_ms)?;
-            let record = if cursor.next == 0 {
-                cursor.root_record.clone()
-            } else {
-                sonic_rs::to_string(&graph.sources[cursor.next - 1].inputs)
-                    .map_err(|error| invalid(error.to_string()))?
-            };
-            let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)? + 1;
-            if bytes + record_bytes > output_limit {
-                if records.is_empty() {
+        let mut steps = 0usize;
+        let page_items = self.config.page_items.min(cursor.remaining.max_items);
+        let output_limit = cursor
+            .page_output_bytes
+            .min(cursor.remaining.max_output_bytes)
+            .min(MAX_DATA_BYTES);
+        if output_limit < 128 || inputs && page_items == 0 {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "prepared query output budget exhausted",
+            ));
+        }
+        while cursor.next < total && steps < 8 && (!inputs || records.len() < page_items) {
+            cancel.check(cursor.remaining.deadline_unix_ms)?;
+            if inputs && cursor.next == 0 {
+                let record = cursor.root_record.as_ref().expect("input root record").clone();
+                let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)? + 1;
+                if bytes + record_bytes > output_limit {
                     return Err(SnapshotError::new(
                         Status::OutputLimit,
                         "prepared input record exceeds page bound",
                     ));
                 }
-                break;
+                bytes += record_bytes;
+                records.push(record);
+                cursor.next += 1;
+                continue;
             }
-            bytes += record_bytes;
-            records.push(record);
+            let source = &sources[cursor.next - usize::from(inputs)];
+            self.authority(context, Some(&source.path))?;
+            let metadata = std::fs::metadata(&source.path).map_err(io_error)?;
+            if SourceStamp::of(&metadata) != source.stamp {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "prepared graph source changed",
+                ));
+            }
+            let outcome = if let Some(mut pending) = cursor.pending.take() {
+                if pending.path != source.path || pending.stamp != source.stamp {
+                    return Err(invalid("prepared query source cursor differs"));
+                }
+                match self.resume_prepared_source(
+                    &pending,
+                    context,
+                    &mut cursor.remaining,
+                    cancel,
+                    usage,
+                ) {
+                    Ok(PreparedSourceOutcome::Pending(next)) => {
+                        pending.token = next;
+                        cursor.pending = Some(pending);
+                        steps += 1;
+                        continue;
+                    }
+                    Ok(ready) => ready,
+                    Err(error) => {
+                        self.state
+                            .lock()
+                            .expect("snapshot state")
+                            .waiters
+                            .remove(&pending.token);
+                        return Err(error);
+                    }
+                }
+            } else {
+                match self.prepared_source(
+                    &source.path,
+                    context,
+                    &mut cursor.remaining,
+                    cancel,
+                    usage,
+                )? {
+                    (_, PreparedSourceOutcome::Pending(source_cursor)) => {
+                        cursor.pending = Some(PendingPreparedSource {
+                            token: source_cursor,
+                            path: source.path.clone(),
+                            stamp: source.stamp,
+                        });
+                        steps += 1;
+                        continue;
+                    }
+                    (_, ready) => ready,
+                }
+            };
+            let PreparedSourceOutcome::Ready(stamp, facts) = outcome else {
+                return Err(invalid("prepared source did not finish"));
+            };
+            if stamp != source.stamp {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "prepared source revision changed",
+                ));
+            }
+            if inputs {
+                let record = sonic_rs::to_string(&facts.inputs)
+                    .map_err(|error| invalid(error.to_string()))?;
+                let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)? + 1;
+                if bytes + record_bytes > output_limit {
+                    if records.is_empty() {
+                        return Err(SnapshotError::new(
+                            Status::OutputLimit,
+                            "prepared input record exceeds page bound",
+                        ));
+                    }
+                    break;
+                }
+                bytes += record_bytes;
+                records.push(record);
+            } else if facts.query(&cursor.query)?["value"].as_bool() == Some(true) {
+                let data = json!({"kind":"scalar","value":true});
+                encoded_size(&data, output_limit)?;
+                return Ok((data, None, None));
+            }
             cursor.next += 1;
+            steps += 1;
         }
-        let data = json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records});
-        let encoded = encoded_size(&data, output_limit)?;
-        graph.remaining.max_output_bytes = graph.remaining.max_output_bytes.saturating_sub(encoded);
-        graph.remaining.max_items = graph
-            .remaining
-            .max_items
-            .saturating_sub(data["records_json"].as_array().expect("records").len());
-        let complete = cursor.next == total;
-        drop(graph);
-        if complete {
+        if cursor.next == total {
+            let data = if inputs {
+                json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
+            } else {
+                json!({"kind":"scalar","value":false})
+            };
+            encoded_size(&data, output_limit)?;
             return Ok((data, None, None));
         }
+        let data = if inputs {
+            json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
+        } else {
+            Value::new_null()
+        };
+        let encoded = encoded_size(&data, output_limit)?;
+        cursor.remaining.max_output_bytes = cursor.remaining.max_output_bytes.saturating_sub(encoded);
+        cursor.remaining.max_items = cursor.remaining.max_items.saturating_sub(
+            data.get("records_json")
+                .and_then(Value::as_array)
+                .map_or(0, |items| items.len()),
+        );
         let mut state = self.state.lock().expect("snapshot state");
         if !state.prepared_graphs.contains_key(&cursor.graph_id) {
+            return Err(SnapshotError::new(Status::StaleCursor, "prepared graph released"));
+        }
+        if state.prepared_queries.len() >= self.lease_cap(context)? {
             return Err(SnapshotError::new(
-                Status::StaleCursor,
-                "prepared graph released",
+                Status::LeaseLimit,
+                "prepared query admission exhausted",
             ));
         }
         state.prepared_queries.insert(token.to_owned(), cursor);
-        Ok((
-            data,
-            Some(token.to_owned()),
-            Some("prepared input page incomplete".to_owned()),
-        ))
+        Ok((data, Some(token.to_owned()), Some("prepared query page incomplete".to_owned())))
     }
 
     fn query_graph(
@@ -789,6 +1321,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
+        usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let handle = request
             .get("handle")
@@ -870,14 +1403,7 @@ impl NativeStore {
         ) {
             return Err(invalid("unsupported prepared graph query"));
         }
-        let mut bounds = graph.remaining;
-        let request_bounds = limits(request)?;
-        bounds.max_output_bytes = bounds
-            .max_output_bytes
-            .min(request_bounds.max_output_bytes)
-            .min(MAX_DATA_BYTES);
-        bounds.max_items = bounds.max_items.min(request_bounds.max_items);
-        bounds.deadline_unix_ms = bounds.deadline_unix_ms.min(request_bounds.deadline_unix_ms);
+        let bounds = limits(request)?;
         cancel.check(bounds.deadline_unix_ms)?;
         let selectors = request
             .get("selectors")
@@ -895,7 +1421,7 @@ impl NativeStore {
                         "prepared root selector cache exhausted",
                     ));
                 }
-                let mut fact_limits = graph.remaining;
+                let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = graph.root.event_count;
                 let (facts, _, _) = crate::snapshot_projection::prepare_facts(
@@ -909,41 +1435,28 @@ impl NativeStore {
                 facts
             }
         };
-        if kind == "deep_predicate_inputs" {
-            let root_record = sonic_rs::to_string(&root_facts.inputs)
-                .map_err(|error| invalid(error.to_string()))?;
-            let cursor = PreparedQueryCursor {
-                claimant: graph.claimant.clone(),
-                graph_id: token.to_owned(),
-                root_record,
-                next: 0,
-                page_output_bytes: request_bounds.max_output_bytes.min(MAX_DATA_BYTES),
-                expires: graph.expires,
-            };
-            drop(graph);
-            return self.prepared_input_page(
-                &self.token("prepared-query"),
-                cursor,
-                context,
-                cancel,
-            );
+        if kind != "deep_predicate_inputs" && root_facts.query(query)?["value"].as_bool() == Some(true) {
+            let data = json!({"kind":"scalar","value":true});
+            encoded_size(&data, bounds.max_output_bytes)?;
+            return Ok((data, None, None));
         }
-        let mut value = root_facts.query(query)?["value"]
-            .as_bool()
-            .ok_or_else(|| invalid("root predicate answer missing"))?;
-        if !value {
-            for source in &graph.sources {
-                cancel.check(bounds.deadline_unix_ms)?;
-                if source.query(query)?["value"].as_bool() == Some(true) {
-                    value = true;
-                    break;
-                }
-            }
-        }
-        let data = json!({"kind":"scalar","value":value});
-        let bytes = encoded_size(&data, bounds.max_output_bytes)?;
-        graph.remaining.max_output_bytes = graph.remaining.max_output_bytes.saturating_sub(bytes);
-        graph.remaining.max_items = graph.remaining.max_items.saturating_sub(1);
-        Ok((data, None, None))
+        let root_record = if kind == "deep_predicate_inputs" {
+            Some(sonic_rs::to_string(&root_facts.inputs).map_err(|error| invalid(error.to_string()))?)
+        } else {
+            None
+        };
+        let cursor = PreparedQueryCursor {
+            claimant: graph.claimant.clone(),
+            graph_id: token.to_owned(),
+            query: query.clone(),
+            pending: None,
+            root_record,
+            next: 0,
+            page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
+            remaining: bounds,
+            expires: graph.expires,
+        };
+        drop(graph);
+        self.prepared_query_page(&self.token("prepared-query"), cursor, context, cancel, usage)
     }
 }

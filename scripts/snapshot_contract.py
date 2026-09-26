@@ -428,6 +428,16 @@ class QueryGraph(WorkRequest):
     query: PreparedQuery
 
 
+class WarmRegistered(WorkRequest):
+    operation: Literal["warm_registered"]
+    classifier: Classifier
+    thread_ids: Annotated[list[Token], Field(max_length=1024)]
+    roots: Annotated[list[PathText], Field(max_length=64)]
+    direct_paths: Annotated[list[PathText], Field(max_length=1024)]
+    start_index: Count
+    membership_revision: Token | None
+
+
 class QueryRequest(WorkRequest):
     operation: Literal["query"]
     view: PreparedView
@@ -463,6 +473,7 @@ Request = Annotated[
     | QueryRequest
     | PrepareGraph
     | QueryGraph
+    | WarmRegistered
     | ActivityProbe
     | Stats,
     Field(discriminator="operation"),
@@ -504,6 +515,17 @@ class Gauges(WireModel):
 class PreparedGraphResult(WireModel):
     kind: Literal["prepared_graph"]
     handle: GraphHandle
+
+
+class WarmedRegistryResult(WireModel):
+    kind: Literal["warmed_registry"]
+    owner_epoch: Token
+    membership_revision: Token
+    next_index: Count
+    complete: bool
+    fact_cache_bytes: Count
+    fact_cache_write_bytes: Count
+    fact_cache_writes: Count
 
 
 class Acquired(WireModel):
@@ -619,6 +641,7 @@ class StatsResult(WireModel):
 Result = Annotated[
     Acquired
     | PreparedGraphResult
+    | WarmedRegistryResult
     | Loading
     | Resolved
     | Located
@@ -709,6 +732,8 @@ class CallContext(WireModel):
 
 class StoreConfig(WireModel):
     max_retained_bytes: Positive = MAX_RETAINED_BYTES
+    max_prepared_fact_memory_bytes: Positive = 128 * 1024 * 1024
+    max_prepared_disk_bytes: Positive = 2 * 1024 * 1024 * 1024
     max_source_bytes: Positive = MAX_SOURCE_BYTES
     max_entry_bytes: Positive = MAX_ENTRY_BYTES
     max_projection_bytes: Positive = MAX_PROJECTION_BYTES
