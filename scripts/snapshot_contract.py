@@ -523,6 +523,8 @@ class WarmedRegistryResult(WireModel):
     membership_revision: Token
     next_index: Count
     complete: bool
+    source_offset: Count
+    source_size: Count
     fact_cache_bytes: Count
     fact_cache_write_bytes: Count
     fact_cache_writes: Count
@@ -726,6 +728,7 @@ Authority = Annotated[UserAuthority | RestrictedAuthority, Field(discriminator="
 class CallContext(WireModel):
     claimant: Token
     admission: Literal["hook", "review"]
+    work_class: Literal["foreground", "background"] = "foreground"
     authority: Authority
     registry_generation: Token
 

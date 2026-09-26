@@ -1460,6 +1460,18 @@
           "minLength": 1,
           "title": "Owner Epoch",
           "type": "string"
+        },
+        "source_offset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Source Offset",
+          "type": "integer"
+        },
+        "source_size": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Source Size",
+          "type": "integer"
         }
       },
       "required": [
@@ -1468,6 +1480,8 @@
         "membership_revision",
         "next_index",
         "complete",
+        "source_offset",
+        "source_size",
         "fact_cache_bytes",
         "fact_cache_write_bytes",
         "fact_cache_writes"

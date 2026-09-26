@@ -287,7 +287,37 @@ impl NativeStore {
         {
             let mut state = self.state.lock().expect("snapshot state");
             state.leases.remove(str_field(handle, "lease_id")?);
-            state.latest.remove(&stamp.identity);
+            let recent_codex = snapshot.provider == Provider::Codex
+                && snapshot.codex_raw.is_some()
+                && (now_ms() as i128 * 1_000_000).saturating_sub(stamp.mtime_ns)
+                    <= 30 * 60 * 1_000_000_000;
+            if recent_codex {
+                state.recent_codex.insert(stamp.identity, now_ms());
+                let mut raw_bytes: usize = state
+                    .recent_codex
+                    .keys()
+                    .filter_map(|identity| state.latest.get(identity))
+                    .filter_map(|snapshot| snapshot.codex_raw.as_ref())
+                    .map(|raw| raw.len())
+                    .sum();
+                while raw_bytes > 128 * 1024 * 1024 {
+                    let oldest = state
+                        .recent_codex
+                        .iter()
+                        .min_by_key(|(_, touched)| *touched)
+                        .map(|(identity, _)| *identity)
+                        .expect("raw codex cache exceeds bound");
+                    state.recent_codex.remove(&oldest);
+                    if let Some(snapshot) = state.latest.remove(&oldest) {
+                        raw_bytes = raw_bytes.saturating_sub(
+                            snapshot.codex_raw.as_ref().map_or(0, |raw| raw.len()),
+                        );
+                    }
+                }
+            } else {
+                state.recent_codex.remove(&stamp.identity);
+                state.latest.remove(&stamp.identity);
+            }
         }
         let (facts, _, _) = prepared?;
         drop(snapshot);
@@ -987,6 +1017,9 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut remaining = limits(request)?;
+        if context["work_class"].as_str() != Some("background") {
+            return Err(invalid("registered warming requires background work class"));
+        }
         if request["classifier"] != json!({"id":"native","version":"1"}) {
             return Err(invalid("registered warming requires the native classifier"));
         }
@@ -1094,8 +1127,23 @@ impl NativeStore {
             steps += 1;
         }
         let disk = self.prepared_disk.stats();
+        let (source_offset, source_size) = if let Some(source) = members.get(next) {
+            let load = self
+                .state
+                .lock()
+                .expect("snapshot state")
+                .prepared_loads
+                .get(&source.stamp.identity)
+                .map(|(slot, _)| Arc::clone(slot));
+            (
+                load.map_or(0, |slot| slot.work.lock().expect("source load").offset),
+                source.stamp.size,
+            )
+        } else {
+            (0, 0)
+        };
         Ok((
-            json!({"kind":"warmed_registry","owner_epoch":self.owner_epoch,"membership_revision":membership_revision,"next_index":next,"complete":next==members.len(),"fact_cache_bytes":disk.bytes,"fact_cache_write_bytes":disk.write_bytes,"fact_cache_writes":disk.writes}),
+            json!({"kind":"warmed_registry","owner_epoch":self.owner_epoch,"membership_revision":membership_revision,"next_index":next,"complete":next==members.len(),"source_offset":source_offset,"source_size":source_size,"fact_cache_bytes":disk.bytes,"fact_cache_write_bytes":disk.write_bytes,"fact_cache_writes":disk.writes}),
             None,
             None,
         ))

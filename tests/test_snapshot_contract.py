@@ -56,6 +56,13 @@ def test_ordinary_query_cannot_carry_attachment_paths() -> None:
         REQUEST.validate_python(query_with_attachments(1))
 
 
+def test_query_cannot_select_background_work_class() -> None:
+    payload = query_with_attachments(0)
+    payload["work_class"] = "background"
+    with pytest.raises(ValidationError, match="work_class"):
+        REQUEST.validate_python(payload)
+
+
 def test_deep_query_requires_complete_prepared_handle() -> None:
     payload = query_with_attachments(0)
     payload.pop("view")

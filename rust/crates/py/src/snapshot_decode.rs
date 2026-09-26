@@ -509,6 +509,7 @@ mod tests {
             provisional_tail: false,
             fence: Vec::new(),
             event_count: 2,
+            codex_raw: None,
         };
         let mut limits = WorkLimits {
             max_read_bytes: MAX_RECORD_BYTES,

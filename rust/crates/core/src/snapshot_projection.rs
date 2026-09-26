@@ -1953,6 +1953,7 @@ mod tests {
             provisional_tail: false,
             fence: Vec::new(),
             event_count: count,
+            codex_raw: None,
         }
     }
 
