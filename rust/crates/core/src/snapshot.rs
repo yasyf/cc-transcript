@@ -3937,6 +3937,13 @@ impl NativeStore {
         }
     }
 
+    fn graph_exposes_members(graph: &GraphCursor) -> bool {
+        matches!(
+            graph.request["query"]["kind"].as_str(),
+            Some("sidechain_membership" | "direct_sidechains")
+        )
+    }
+
     fn graph(
         &self,
         request: &Value,
@@ -4181,6 +4188,17 @@ impl NativeStore {
             description,
             transferred: false,
         });
+        if !Self::graph_exposes_members(graph) {
+            self.state
+                .lock()
+                .expect("snapshot state")
+                .leases
+                .remove(str_field(
+                    &graph.nodes.last().expect("added graph node").description["handle"],
+                    "lease_id",
+                )?)
+                .expect("validated internal graph lease");
+        }
         if graph.request["query"]["kind"].as_str() != Some("direct_sidechains") {
             graph.tasks.push(GraphTask::List {
                 parent: path,
@@ -4193,6 +4211,9 @@ impl NativeStore {
     fn renew_graph_members(&self, graph: &mut GraphCursor) -> Result<(), SnapshotError> {
         let mut state = self.state.lock().expect("snapshot state");
         self.lease(&state, &graph.root_handle, &graph.context)?;
+        if !Self::graph_exposes_members(graph) {
+            return Ok(());
+        }
         for node in graph
             .nodes
             .iter_mut()
@@ -4216,6 +4237,60 @@ impl NativeStore {
                 .insert("lease_expires_unix_ms", json!(expires));
         }
         Ok(())
+    }
+
+    fn advance_graph_source(
+        &self,
+        graph: &mut GraphCursor,
+        pending: GraphPending,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+        work: &mut usize,
+        work_stop: usize,
+    ) -> Result<bool, SnapshotError> {
+        self.authority(
+            &graph.context,
+            Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
+        )?;
+        let token = pending.token.clone();
+        graph.pending = Some(pending);
+        loop {
+            if *work >= work_stop {
+                return Ok(false);
+            }
+            *work += 1;
+            let waiter = {
+                let mut state = self.state.lock().expect("snapshot state");
+                let waiter = state.waiters.get_mut(&token).ok_or_else(|| {
+                    SnapshotError::new(Status::StaleCursor, "graph source reservation expired")
+                })?;
+                waiter.context = graph.context.clone();
+                waiter.clone()
+            };
+            let before_bytes = usage[1];
+            let before_events = usage[3];
+            let outcome = self.advance(&token, waiter, cancel, usage)?;
+            graph.remaining.max_read_bytes = graph
+                .remaining
+                .max_read_bytes
+                .saturating_sub((usage[1] - before_bytes) as usize);
+            graph.remaining.max_events = graph
+                .remaining
+                .max_events
+                .saturating_sub((usage[3] - before_events) as usize);
+            if outcome.1.is_some() {
+                continue;
+            }
+            let pending = graph.pending.take().expect("completed graph source");
+            self.graph_add_source(
+                graph,
+                pending.path,
+                pending.depth,
+                pending.spawned_by,
+                &outcome.0,
+            )?;
+            return Ok(true);
+        }
     }
 
     fn graph_work(
@@ -4264,49 +4339,25 @@ impl NativeStore {
                 return Ok(GraphYield::Complete(projection.data));
             }
         }
-        if let Some(pending) = graph.pending.take() {
-            self.authority(
-                &graph.context,
-                Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
-            )?;
-            let waiter = {
-                let mut state = self.state.lock().expect("snapshot state");
-                let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
-                    SnapshotError::new(Status::StaleCursor, "graph source reservation expired")
-                })?;
-                waiter.context = graph.context.clone();
-                waiter.clone()
-            };
-            let before_bytes = usage[1];
-            let before_events = usage[3];
-            let outcome = self.advance(&pending.token, waiter, cancel, usage)?;
-            graph.remaining.max_read_bytes = graph
-                .remaining
-                .max_read_bytes
-                .saturating_sub((usage[1] - before_bytes) as usize);
-            graph.remaining.max_events = graph
-                .remaining
-                .max_events
-                .saturating_sub((usage[3] - before_events) as usize);
-            if outcome.1.is_some() {
-                graph.pending = Some(pending);
-            } else {
-                self.graph_add_source(
-                    graph,
-                    pending.path,
-                    pending.depth,
-                    pending.spawned_by,
-                    &outcome.0,
-                )?;
-            }
-            return Ok(GraphYield::Pending(Value::new_null()));
-        }
+        let work_stop = self.config.event_step.min(self.config.page_items);
         let mut examined = 0usize;
-        while !graph.prepared && examined < self.config.event_step {
+        if let Some(pending) = graph.pending.take() {
+            if !self.advance_graph_source(
+                graph,
+                pending,
+                cancel,
+                usage,
+                &mut examined,
+                work_stop,
+            )? {
+                return Ok(GraphYield::Pending(Value::new_null()));
+            }
+        }
+        while !graph.prepared && examined < work_stop {
             cancel.check(graph.remaining.deadline_unix_ms)?;
             if let Some(mut listing) = graph.listing.take() {
                 loop {
-                    if examined >= self.config.event_step {
+                    if examined >= work_stop {
                         graph.listing = Some(listing);
                         return Ok(GraphYield::Pending(Value::new_null()));
                     }
@@ -4409,6 +4460,7 @@ impl NativeStore {
                     depth,
                     spawned_by,
                 } => {
+                    examined += 1;
                     let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
                     self.authority(&graph.context, Some(&canonical))?;
                     let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
@@ -4439,16 +4491,24 @@ impl NativeStore {
                         .max_events
                         .saturating_sub((usage[3] - before_events) as usize);
                     if let Some(token) = outcome.1 {
-                        graph.pending = Some(GraphPending {
-                            token,
-                            path,
-                            depth,
-                            spawned_by,
-                        });
+                        if !self.advance_graph_source(
+                            graph,
+                            GraphPending {
+                                token,
+                                path,
+                                depth,
+                                spawned_by,
+                            },
+                            cancel,
+                            usage,
+                            &mut examined,
+                            work_stop,
+                        )? {
+                            return Ok(GraphYield::Pending(Value::new_null()));
+                        }
                     } else {
                         self.graph_add_source(graph, path, depth, spawned_by, &outcome.0)?;
                     }
-                    return Ok(GraphYield::Pending(Value::new_null()));
                 }
             }
         }
@@ -4465,8 +4525,12 @@ impl NativeStore {
         let mut records = Vec::new();
         let mut output_bytes = 128usize;
         let page_limit = self.config.page_items.min(graph.remaining.max_items);
+        let mut projected = 0usize;
         while graph.projection_at < total || graph.pending_record.is_some() {
             cancel.check(graph.remaining.deadline_unix_ms)?;
+            if boolean && projected >= self.config.page_items {
+                return Ok(GraphYield::Pending(Value::new_null()));
+            }
             if records.len() >= page_limit {
                 break;
             }
@@ -4480,7 +4544,9 @@ impl NativeStore {
                 };
                 let index = position + usize::from(membership || boolean);
                 let node = &graph.nodes[index];
-                self.validate_scope(&node.description["handle"], &graph.context)?;
+                if membership {
+                    self.validate_scope(&node.description["handle"], &graph.context)?;
+                }
                 self.authority(&graph.context, Some(&node.snapshot.canonical_path))?;
                 if membership {
                     if node.snapshot.session_id.len() > 256 {
@@ -4522,6 +4588,7 @@ impl NativeStore {
                     }
                     graph.projection_at += 1;
                     if boolean {
+                        projected += 1;
                         if projection.data["value"].as_bool() == Some(true) {
                             return Ok(GraphYield::Complete(projection.data));
                         }
@@ -6378,6 +6445,67 @@ mod tests {
         for record in records {
             assert!(store.pin(&record["description"]["handle"], &owner).is_ok());
         }
+    }
+
+    #[test]
+    fn graph_predicate_scans_918_attachments_without_retaining_member_leases() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachments: Vec<_> = (0..918)
+            .map(|index| {
+                let path = source
+                    .directory
+                    .join(format!("attachment-{index:04}.jsonl"));
+                std::fs::write(&path, format!("{}\n", user(&format!("attachment-{index}"))))
+                    .unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        let store = NativeStore::new(&json!({
+            "max_retained_bytes":128*1024*1024,
+            "reserved_hook_accounted_bytes":4096,
+            "max_leases":256,
+            "reserved_hook_leases":1,
+            "max_events_per_step":256
+        }))
+        .unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut request = graph_request(
+            &root,
+            json!({"kind":"has_read","pattern":"absent.rs","subagents":true}),
+            attachments,
+            json!([]),
+        );
+        request["limits"].insert("max_sources", json!(1024));
+        request["limits"].insert("max_discovery_entries", json!(1024));
+        request["limits"].insert("max_events", json!(4096));
+        request["limits"].insert("max_read_bytes", json!(8 * 1024 * 1024));
+        request["limits"].insert("max_items", json!(1024));
+        request.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let mut reply = store.request(&request, &owner, &Cancellation::default());
+        let mut peak_leases = store.state.lock().unwrap().leases.len();
+        for _ in 0..1200 {
+            if reply["status"].as_str() != Some("incomplete") {
+                break;
+            }
+            let cursor = reply["cursor"]
+                .as_str()
+                .unwrap_or_else(|| panic!("bounded graph continuation: {reply:?}"));
+            reply = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                &owner,
+                &Cancellation::default(),
+            );
+            peak_leases = peak_leases.max(store.state.lock().unwrap().leases.len());
+        }
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        assert_eq!(reply["data"]["value"].as_bool(), Some(false));
+        assert!(peak_leases <= 2, "peak leases: {peak_leases}");
+        assert_eq!(store.state.lock().unwrap().leases.len(), 1);
     }
 
     #[test]

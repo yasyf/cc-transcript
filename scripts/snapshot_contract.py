@@ -123,7 +123,7 @@ class View(WireModel):
     handle: Handle
     classifier: Classifier
     selectors: Annotated[list[Selector], Field(max_length=64)]
-    attachments: Annotated[list[PathText], Field(max_length=256)]
+    attachments: Annotated[list[PathText], Field(max_length=1024)]
 
 
 class ToolPredicate(WireModel):
