@@ -546,6 +546,25 @@ struct WarmMembership {
     expires: u64,
 }
 
+impl WarmMembership {
+    fn accounted_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.revision.capacity()
+            + self.members.capacity() * size_of::<PreparedSourceRef>()
+            + self
+                .members
+                .iter()
+                .map(|source| source.path.as_os_str().len())
+                .sum::<usize>()
+            + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + self
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+    }
+}
+
 struct PreparedBuild {
     claimant: String,
     context: Value,
@@ -564,6 +583,7 @@ struct PreparedBuild {
     seen: HashSet<SourceIdentity>,
     sources: Vec<PreparedSourceRef>,
     stamps: Vec<(PathBuf, SourceStamp)>,
+    sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
     expires: u64,
 }
 
@@ -593,6 +613,7 @@ struct PreparedGraph {
     stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
     sources: Vec<PreparedSourceRef>,
+    sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
     remaining: WorkLimits,
     expires: u64,
     accounted: usize,
@@ -2202,6 +2223,14 @@ impl NativeStore {
                             .sum::<usize>()
                 })
                 .sum::<usize>()
+            + state.prepared_loads.capacity() * size_of::<(SourceIdentity, (Arc<LoadSlot>, u64))>()
+            + state.recent_codex.capacity() * size_of::<(SourceIdentity, u64)>()
+            + state.warm_memberships.capacity() * size_of::<(String, WarmMembership)>()
+            + state
+                .warm_memberships
+                .iter()
+                .map(|(key, membership)| key.capacity() + membership.accounted_bytes())
+                .sum::<usize>()
             + state.locations.capacity() * size_of::<(String, LocatedPath)>()
             + state
                 .locations
@@ -3666,6 +3695,7 @@ impl NativeStore {
                     })
                     .collect();
                 let charge = load.pending.capacity()
+                    + load.codex_raw.as_ref().map_or(0, |raw| raw.capacity())
                     + load.origin_fence.capacity()
                     + load.seal_fence.capacity()
                     + load.prefix_fence.capacity()
@@ -6913,6 +6943,81 @@ mod tests {
     }
 
     #[test]
+    fn prepared_negative_rechecks_sidechain_membership() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let child = source.directory.join("child.jsonl");
+        std::fs::write(&child, format!("{}\n", user("child"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[child.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let subagents = source.directory.join("child/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(
+            subagents.join("agent-new.jsonl"),
+            format!("{}\n", user("new")),
+        )
+        .unwrap();
+        let query = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(query["status"].as_str(), Some("changed"), "{query:?}");
+    }
+
+    #[test]
+    fn cached_unregistered_source_cannot_answer_another_graph() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/only-a"}}]}}"#;
+        let a = source.directory.join("a.jsonl");
+        let b = source.directory.join("b.jsonl");
+        std::fs::write(&a, format!("{}\n{tool}\n", user("a"))).unwrap();
+        std::fs::write(&b, format!("{}\n", user("b"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let prepare = |path: &Path| {
+            finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[path.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            )
+        };
+        let query = |graph: &Value| {
+            finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            )
+        };
+        let graph_a = prepare(&a);
+        assert_eq!(graph_a["status"].as_str(), Some("ok"), "{graph_a:?}");
+        let found = query(&graph_a["data"]["handle"]);
+        assert_eq!(found["data"]["value"].as_bool(), Some(true));
+        let graph_b = prepare(&b);
+        assert_eq!(graph_b["status"].as_str(), Some("ok"), "{graph_b:?}");
+        let absent = query(&graph_b["data"]["handle"]);
+        assert_eq!(absent["status"].as_str(), Some("ok"), "{absent:?}");
+        assert_eq!(absent["data"]["value"].as_bool(), Some(false));
+    }
+
+    #[test]
     fn prepared_input_pages_keep_order_without_more_source_reads() {
         let source = Source::new(&format!("{}\n", user("root")));
         let mut paths = Vec::new();
@@ -7284,6 +7389,12 @@ mod tests {
         assert_eq!(warm["data"]["complete"].as_bool(), Some(true));
         assert_eq!(warm["usage"]["source_bytes_read"].as_u64(), Some(0));
         assert_eq!(warm["data"]["fact_cache_writes"].as_u64(), Some(2));
+        let mut other_claimant = context("another-session");
+        other_claimant.insert("work_class", json!("background"));
+        let shared = store.request(&request, &other_claimant, &Cancellation::default());
+        assert_eq!(shared["status"].as_str(), Some("ok"), "{shared:?}");
+        assert_eq!(shared["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(shared["usage"]["source_bytes_read"].as_u64(), Some(0));
     }
 
     #[test]

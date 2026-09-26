@@ -568,6 +568,16 @@ impl PreparedDiskCache {
         }
     }
 
+    pub fn has_entry(&self, key: &PreparedDiskKey) -> Result<bool, SnapshotError> {
+        self.check_dir()?;
+        Ok(self
+            .state
+            .lock()
+            .expect("prepared facts disk state")
+            .entries
+            .contains_key(&key.digest))
+    }
+
     pub fn insert(
         &self,
         key: &PreparedDiskKey,

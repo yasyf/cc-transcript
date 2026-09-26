@@ -366,7 +366,16 @@ impl NativeStore {
         membership: &WarmMembership,
         context: &Value,
     ) -> Result<bool, SnapshotError> {
-        for source in &membership.members {
+        Ok(self.validate_source_stamps(&membership.members, context)?
+            && self.validate_sidechain_dirs(&membership.sidechain_dirs, context)?)
+    }
+
+    fn validate_source_stamps(
+        &self,
+        sources: &[PreparedSourceRef],
+        context: &Value,
+    ) -> Result<bool, SnapshotError> {
+        for source in sources {
             let canonical = match std::fs::canonicalize(&source.path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -380,7 +389,15 @@ impl NativeStore {
                 return Ok(false);
             }
         }
-        for (path, stamp) in &membership.sidechain_dirs {
+        Ok(true)
+    }
+
+    fn validate_sidechain_dirs(
+        &self,
+        sidechain_dirs: &[(PathBuf, Option<SourceStamp>)],
+        context: &Value,
+    ) -> Result<bool, SnapshotError> {
+        for (path, stamp) in sidechain_dirs {
             let canonical = match std::fs::canonicalize(path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -484,7 +501,14 @@ impl NativeStore {
             let revision = format!("{:x}", digest.finalize());
             let graph_id = self.token("prepared-graph");
             let accounted = size_of::<PreparedGraph>()
-                + sources.capacity() * size_of::<PreparedSourceRef>();
+                + sources.capacity() * size_of::<PreparedSourceRef>()
+                + membership.sidechain_dirs.capacity()
+                    * size_of::<(PathBuf, Option<SourceStamp>)>()
+                + membership
+                    .sidechain_dirs
+                    .iter()
+                    .map(|(path, _)| path.as_os_str().len())
+                    .sum::<usize>();
             let graph = PreparedGraph {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -497,8 +521,9 @@ impl NativeStore {
                 root_slices: HashMap::new(),
                 revision: revision.clone(),
                 stamps,
-                validated: true,
+                validated: false,
                 sources,
+                sidechain_dirs: membership.sidechain_dirs,
                 remaining,
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
                 accounted,
@@ -540,6 +565,7 @@ impl NativeStore {
             seen: HashSet::from([root.stamp.identity]),
             sources: Vec::new(),
             stamps: vec![(root.canonical_path.clone(), root.stamp)],
+            sidechain_dirs: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
         };
         self.prepare_graph_step(&self.token("prepared-build"), build, cancel, usage)
@@ -729,10 +755,17 @@ impl NativeStore {
                         .join("subagents");
                     let canonical = match std::fs::canonicalize(&directory) {
                         Ok(canonical) => canonical,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            build.sidechain_dirs.push((directory, None));
+                            continue;
+                        }
                         Err(error) => return Err(io_error(error)),
                     };
                     self.authority(context, Some(&canonical))?;
+                    build.sidechain_dirs.push((
+                        canonical.clone(),
+                        Some(SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?)),
+                    ));
                     build.listing = Some(GraphListing {
                         entries: std::fs::read_dir(&directory).map_err(io_error)?,
                         children: Vec::new(),
@@ -781,7 +814,13 @@ impl NativeStore {
         let revision = format!("{:x}", digest.finalize());
         let graph_id = self.token("prepared-graph");
         let accounted = size_of::<PreparedGraph>()
-            + build.sources.capacity() * size_of::<PreparedSourceRef>();
+            + build.sources.capacity() * size_of::<PreparedSourceRef>()
+            + build.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + build
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>();
         let graph = PreparedGraph {
             claimant: build.claimant,
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -796,6 +835,7 @@ impl NativeStore {
             stamps: build.stamps,
             validated: false,
             sources: build.sources,
+            sidechain_dirs: build.sidechain_dirs,
             remaining: build.remaining,
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
             accounted,
@@ -1076,6 +1116,11 @@ impl NativeStore {
                         .expect("full warm membership cache");
                     state.warm_memberships.remove(&oldest);
                 }
+                self.admit_memory(
+                    &mut state,
+                    context,
+                    membership.accounted_bytes() + key.capacity(),
+                )?;
                 state.warm_memberships.insert(key, membership.clone());
             }
         }
@@ -1126,6 +1171,24 @@ impl NativeStore {
             }
             steps += 1;
         }
+        let complete = next == members.len();
+        if complete {
+            for source in members {
+                let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+                    source.stamp,
+                    str_field(context, "registry_generation")?,
+                    str_field(context, "admission")?,
+                    &context["authority"],
+                    &request["classifier"],
+                )?;
+                if !self.prepared_disk.has_entry(&key)? {
+                    return Err(SnapshotError::new(
+                        Status::RetainedLimit,
+                        "prepared facts cache cannot retain complete membership",
+                    ));
+                }
+            }
+        }
         let disk = self.prepared_disk.stats();
         let (source_offset, source_size) = if let Some(source) = members.get(next) {
             let load = self
@@ -1143,7 +1206,7 @@ impl NativeStore {
             (0, 0)
         };
         Ok((
-            json!({"kind":"warmed_registry","owner_epoch":self.owner_epoch,"membership_revision":membership_revision,"next_index":next,"complete":next==members.len(),"source_offset":source_offset,"source_size":source_size,"fact_cache_bytes":disk.bytes,"fact_cache_write_bytes":disk.write_bytes,"fact_cache_writes":disk.writes}),
+            json!({"kind":"warmed_registry","owner_epoch":self.owner_epoch,"membership_revision":membership_revision,"next_index":next,"complete":complete,"source_offset":source_offset,"source_size":source_size,"fact_cache_bytes":disk.bytes,"fact_cache_write_bytes":disk.write_bytes,"fact_cache_writes":disk.writes}),
             None,
             None,
         ))
@@ -1164,7 +1227,13 @@ impl NativeStore {
             )
         };
         let (root, description) = self.pin_scope_for_work(&handle, context, deadline)?;
-        if root.stamp != stamp || !classifier_eq(&classifier, &description["classifier"])? {
+        let current = SourceStamp::of(&std::fs::metadata(&root.canonical_path).map_err(|_| {
+            SnapshotError::new(Status::Changed, "prepared graph root disappeared")
+        })?);
+        if root.stamp != stamp
+            || current != stamp
+            || !classifier_eq(&classifier, &description["classifier"])?
+        {
             return Err(SnapshotError::new(
                 Status::Changed,
                 "prepared root generation changed",
@@ -1196,7 +1265,7 @@ impl NativeStore {
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleCursor, "prepared graph expired"))?;
         self.validate_prepared_root(&graph, context)?;
-        let sources = {
+        let (sources, sidechain_dirs) = {
             let graph = graph.lock().expect("prepared graph");
             if graph.admission != str_field(context, "admission")?
                 || graph.authority != context["authority"]
@@ -1207,7 +1276,7 @@ impl NativeStore {
                     "prepared graph context differs",
                 ));
             }
-            graph.sources.clone()
+            (graph.sources.clone(), graph.sidechain_dirs.clone())
         };
         let inputs = cursor.root_record.is_some();
         let total = sources.len() + usize::from(inputs);
@@ -1330,6 +1399,14 @@ impl NativeStore {
             steps += 1;
         }
         if cursor.next == total {
+            if !self.validate_source_stamps(&sources, context)?
+                || !self.validate_sidechain_dirs(&sidechain_dirs, context)?
+            {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "prepared graph sidechain membership changed",
+                ));
+            }
             let data = if inputs {
                 json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
             } else {
