@@ -201,7 +201,7 @@ pub struct TranscriptSnapshot {
     pub fence: Vec<u8>,
     pub event_count: usize,
     pub codex_raw: Option<Arc<Vec<u8>>>,
-    codex_append: Option<Arc<CodexAppendIndex>>,
+    pub(crate) codex_append: Option<Arc<CodexAppendIndex>>,
 }
 
 impl TranscriptSnapshot {
