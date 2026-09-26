@@ -3699,7 +3699,9 @@ impl NativeStore {
             let decode_source = if load.provider == Some(Provider::Codex) {
                 slot.stamp.size as usize
             } else {
-                self.config.entry.min(slot.stamp.size as usize)
+                self.config
+                    .entry
+                    .min(load.pending.len().saturating_add(read_bound))
             };
             let reservation = read_bound.saturating_add(decode_source.saturating_mul(4));
             {

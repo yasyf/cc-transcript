@@ -209,6 +209,21 @@ mod root_warm_tests {
     }
 
     #[test]
+    fn large_claude_source_reserves_only_one_read_step() {
+        let (directory, path) = source(1024);
+        File::create(&path).unwrap().set_len(16 * 1024 * 1024).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":32*1024*1024,"max_source_bytes":32*1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":16*1024*1024,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let request = warm_request(&path, 8 * 1024 * 1024);
+        let context = context("step-reservation");
+        let first = store.request(&request, &context, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        let second = store.request(&request, &context, &Cancellation::default());
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        assert!(second["data"]["source_offset"].as_u64().unwrap() > 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn warms_large_root_across_bounded_calls_without_rereading_source() {
         let (directory, path) = source(12 * 1024 * 1024);
         let source_size = std::fs::metadata(&path).unwrap().len();
@@ -386,7 +401,7 @@ mod root_warm_tests {
     fn two_hundred_megabyte_root_completes_in_three_second_steps() {
         let (directory, path) = source(202 * 1024 * 1024);
         let source_size = std::fs::metadata(&path).unwrap().len();
-        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":1536*1024*1024,"max_source_bytes":512*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":1024*1024*1024,"max_source_bytes":512*1024*1024,"reserved_hook_accounted_bytes":512*1024*1024,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("ci-large-root");
         let mut request = warm_request(&path, 8 * 1024 * 1024);
         let started = std::time::Instant::now();
