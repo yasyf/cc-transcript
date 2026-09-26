@@ -2357,6 +2357,57 @@
       "title": "WarmRegistered",
       "type": "object"
     },
+    "WarmRoot": {
+      "additionalProperties": false,
+      "properties": {
+        "classifier": {
+          "$ref": "#/$defs/Classifier"
+        },
+        "deadline_unix_ms": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "title": "Deadline Unix Ms",
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "operation": {
+          "const": "warm_root",
+          "title": "Operation",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^/",
+          "title": "Path",
+          "type": "string"
+        },
+        "schema": {
+          "const": "cc-transcript.snapshot/1",
+          "title": "Schema",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "deadline_unix_ms",
+        "limits",
+        "operation",
+        "path",
+        "classifier"
+      ],
+      "title": "WarmRoot",
+      "type": "object"
+    },
     "WorkflowText": {
       "additionalProperties": false,
       "properties": {
@@ -2408,7 +2459,8 @@
       "resume": "#/$defs/Resume",
       "retain": "#/$defs/Retain",
       "stats": "#/$defs/Stats",
-      "warm_registered": "#/$defs/WarmRegistered"
+      "warm_registered": "#/$defs/WarmRegistered",
+      "warm_root": "#/$defs/WarmRoot"
     },
     "propertyName": "operation"
   },
@@ -2460,6 +2512,9 @@
     },
     {
       "$ref": "#/$defs/WarmRegistered"
+    },
+    {
+      "$ref": "#/$defs/WarmRoot"
     },
     {
       "$ref": "#/$defs/ActivityProbe"

@@ -438,6 +438,12 @@ class WarmRegistered(WorkRequest):
     membership_revision: Token | None
 
 
+class WarmRoot(WorkRequest):
+    operation: Literal["warm_root"]
+    path: PathText
+    classifier: Classifier
+
+
 class QueryRequest(WorkRequest):
     operation: Literal["query"]
     view: PreparedView
@@ -474,6 +480,7 @@ Request = Annotated[
     | PrepareGraph
     | QueryGraph
     | WarmRegistered
+    | WarmRoot
     | ActivityProbe
     | Stats,
     Field(discriminator="operation"),
@@ -528,6 +535,16 @@ class WarmedRegistryResult(WireModel):
     fact_cache_bytes: Count
     fact_cache_write_bytes: Count
     fact_cache_writes: Count
+
+
+class WarmedRootResult(WireModel):
+    kind: Literal["warmed_root"]
+    owner_epoch: Token
+    source_revision: Token
+    source_offset: Count
+    source_size: Count
+    complete: bool
+    facts_complete: bool
 
 
 class Acquired(WireModel):
@@ -644,6 +661,7 @@ Result = Annotated[
     Acquired
     | PreparedGraphResult
     | WarmedRegistryResult
+    | WarmedRootResult
     | Loading
     | Resolved
     | Located

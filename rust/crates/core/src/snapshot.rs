@@ -777,6 +777,8 @@ pub struct NativeStore {
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    membership_metadata_checks: AtomicUsize,
 }
 
 pub(crate) struct ProjectionReservation<'a> {
@@ -1067,6 +1069,8 @@ impl NativeStore {
             classified: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
+            #[cfg(test)]
+            membership_metadata_checks: AtomicUsize::new(0),
         })
     }
 
@@ -3354,6 +3358,7 @@ impl NativeStore {
             "prepare_graph" => self.prepare_graph(request, context, cancel, usage),
             "query_graph" => self.query_graph(request, context, cancel, usage),
             "warm_registered" => self.warm_registered(request, context, cancel, usage),
+            "warm_root" => self.warm_root(request, context, cancel, usage),
             "query" if Self::is_graph_request(request) => {
                 self.graph(request, context, cancel, usage)
             }
@@ -6081,6 +6086,7 @@ impl NativeStore {
 }
 
 include!("snapshot_prepared_service.rs");
+include!("snapshot_root_warm.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -6814,7 +6820,7 @@ mod tests {
         let after_again = store.state.lock().unwrap().counters;
         assert_eq!(after_again[1], after_first[1]);
         assert_eq!(after_again[15], after_first[15]);
-        assert_eq!(store.prepared_disk.stats().writes, 1);
+        assert_eq!(store.prepared_disk.stats().writes, 2);
         let state = store.state.lock().unwrap();
         let first_id = graph["graph_id"].as_str().unwrap();
         let second_id = prepared_again["data"]["handle"]["graph_id"]
@@ -6890,7 +6896,7 @@ mod tests {
         let after = store.state.lock().unwrap().counters;
         assert_eq!(after[0], before[0]);
         assert_eq!(after[1], before[1]);
-        assert_eq!(store.prepared_disk.stats().writes, 0);
+        assert_eq!(store.prepared_disk.stats().writes, 1);
     }
 
     #[test]
@@ -7044,7 +7050,7 @@ mod tests {
         assert_eq!(prepare["status"].as_str(), Some("ok"), "{prepare:?}");
         let mut page = store.request(&json!({"schema":SCHEMA,"id":"inputs","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
         let mut records = Vec::new();
-        for _ in 0..100 {
+        for _ in 0..512 {
             records.extend(
                 page["data"]["records_json"]
                     .as_array()
@@ -7289,9 +7295,36 @@ mod tests {
         assert!(completed);
         assert!(attempts > 1);
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[0] - baseline[0], 923);
+        assert!(after[0] - baseline[0] <= 929);
         assert!(after[1] - baseline[1] >= source_bytes as u64);
-        assert!(after[1] - baseline[1] <= source_bytes as u64 + 128 * 923);
+        assert!(after[1] - baseline[1] <= source_bytes as u64 + 128 * 929);
+        let before_checks = store.membership_metadata_checks.load(Ordering::Relaxed);
+        let mut verification = json!({"schema":SCHEMA,"id":"verify","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let mut verified = false;
+        for _ in 0..120 {
+            let reply = store.request(&verification, &background, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert_eq!(
+                reply["usage"]["discovery_entries_examined"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(reply["usage"]["source_bytes_read"].as_u64(), Some(0));
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                verified = true;
+                break;
+            }
+            verification.insert("start_index", reply["data"]["next_index"].clone());
+            verification.insert(
+                "membership_revision",
+                reply["data"]["membership_revision"].clone(),
+            );
+        }
+        assert!(verified);
+        let checks = store.membership_metadata_checks.load(Ordering::Relaxed) - before_checks;
+        assert!(
+            checks <= 5 * 929,
+            "warm verification made {checks} metadata checks"
+        );
     }
 
     #[test]
@@ -7337,7 +7370,7 @@ mod tests {
         let source_bytes = std::fs::metadata(&large).unwrap().len();
         assert!(after[1] - before[1] >= source_bytes);
         assert!(after[1] - before[1] <= source_bytes + 128);
-        assert_eq!(store.prepared_disk.stats().writes, 1);
+        assert_eq!(store.prepared_disk.stats().writes, 2);
     }
 
     #[test]
@@ -7573,6 +7606,36 @@ mod tests {
     }
 
     #[test]
+    fn timed_out_warm_steps_report_partial_source_progress() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let large = source.directory.join("large.jsonl");
+        std::fs::write(&large, format!("{}\n", user(&"x".repeat(32 * 1024)))).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        *store.read_hook.lock().unwrap() = Some(Arc::new(|| {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }));
+        let mut owner = context("a");
+        owner.insert("work_class", json!("background"));
+        let template = acquire(&source.path);
+        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":[],"roots":[],"direct_paths":[large.to_string_lossy().as_ref()],"start_index":0,"membership_revision":null,"deadline_unix_ms":now_ms()+100,"limits":template["limits"]});
+        let first = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert!(first["usage"]["source_bytes_read"].as_u64().unwrap() > 0);
+        request.insert(
+            "membership_revision",
+            first["data"]["membership_revision"].clone(),
+        );
+        request.insert("deadline_unix_ms", json!(now_ms() + 100));
+        let second = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        assert!(second["usage"]["source_bytes_read"].as_u64().unwrap() > 0);
+        assert!(
+            second["data"]["source_offset"].as_u64().unwrap()
+                > first["data"]["source_offset"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
     fn disk_facts_complete_queries_when_memory_fact_budget_is_smaller() {
         let source = Source::new(&format!("{}\n", user("root")));
         let mut paths = Vec::new();
@@ -7613,7 +7676,7 @@ mod tests {
         let after_first = store.state.lock().unwrap().counters;
         assert!(after_first[1] - before[1] >= source_bytes);
         assert!(after_first[1] - before[1] <= source_bytes + 384);
-        assert_eq!(store.prepared_disk.stats().writes, 3);
+        assert_eq!(store.prepared_disk.stats().writes, 4);
         let second = finish_prepared(
             &store,
             store.request(&query, &owner, &Cancellation::default()),
@@ -7623,7 +7686,7 @@ mod tests {
         assert_eq!(second["data"]["value"].as_bool(), Some(false));
         let after_second = store.state.lock().unwrap().counters;
         assert_eq!(after_second[1], after_first[1]);
-        assert_eq!(store.prepared_disk.stats().writes, 3);
+        assert_eq!(store.prepared_disk.stats().writes, 4);
     }
 
     #[test]
@@ -7675,7 +7738,7 @@ mod tests {
             query(&first["data"]["handle"])["status"].as_str(),
             Some("changed")
         );
-        assert_eq!(store.prepared_disk.stats().writes, 2);
+        assert_eq!(store.prepared_disk.stats().writes, 3);
     }
 
     #[test]

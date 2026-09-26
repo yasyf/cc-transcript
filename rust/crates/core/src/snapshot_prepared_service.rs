@@ -115,12 +115,47 @@ impl NativeStore {
         } {
             return Ok(facts);
         }
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+            root.stamp,
+            registry_generation,
+            str_field(context, "admission")?,
+            &context["authority"],
+            classifier,
+        )?;
+        match self.prepared_disk.lookup(&key)? {
+            crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                let facts = Arc::new(facts);
+                return match self.cache_prepared_facts(
+                    root.stamp,
+                    Arc::clone(&facts),
+                    classifier,
+                    context,
+                ) {
+                    Ok(cached) => Ok(cached),
+                    Err(error) if error.status == Status::RetainedLimit => Ok(facts),
+                    Err(error) => Err(error),
+                };
+            }
+            crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                return Err(SnapshotError::new(
+                    Status::Incomplete,
+                    "prepared root facts revision was evicted",
+                ));
+            }
+            crate::snapshot_prepared_disk::DiskLookup::Miss => {}
+        }
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = root.event_count;
         let (facts, _, _) =
             crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
-        self.cache_prepared_facts(root.stamp, Arc::new(facts), classifier, context)
+        self.prepared_disk.insert(&key, &facts)?;
+        let facts = Arc::new(facts);
+        match self.cache_prepared_facts(root.stamp, Arc::clone(&facts), classifier, context) {
+            Ok(cached) => Ok(cached),
+            Err(error) if error.status == Status::RetainedLimit => Ok(facts),
+            Err(error) => Err(error),
+        }
     }
 
     fn prepared_source(
@@ -365,17 +400,30 @@ impl NativeStore {
         &self,
         membership: &WarmMembership,
         context: &Value,
+        cancel: &Cancellation,
+        deadline: u64,
     ) -> Result<bool, SnapshotError> {
-        Ok(self.validate_source_stamps(&membership.members, context)?
-            && self.validate_sidechain_dirs(&membership.sidechain_dirs, context)?)
+        Ok(self.validate_source_stamps(&membership.members, context, cancel, deadline)?
+            && self.validate_sidechain_dirs(
+                &membership.sidechain_dirs,
+                context,
+                cancel,
+                deadline,
+            )?)
     }
 
     fn validate_source_stamps(
         &self,
         sources: &[PreparedSourceRef],
         context: &Value,
+        cancel: &Cancellation,
+        deadline: u64,
     ) -> Result<bool, SnapshotError> {
         for source in sources {
+            #[cfg(test)]
+            self.membership_metadata_checks
+                .fetch_add(1, Ordering::Relaxed);
+            cancel.check(deadline)?;
             let canonical = match std::fs::canonicalize(&source.path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -396,8 +444,14 @@ impl NativeStore {
         &self,
         sidechain_dirs: &[(PathBuf, Option<SourceStamp>)],
         context: &Value,
+        cancel: &Cancellation,
+        deadline: u64,
     ) -> Result<bool, SnapshotError> {
         for (path, stamp) in sidechain_dirs {
+            #[cfg(test)]
+            self.membership_metadata_checks
+                .fetch_add(1, Ordering::Relaxed);
+            cancel.check(deadline)?;
             let canonical = match std::fs::canonicalize(path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -469,7 +523,14 @@ impl NativeStore {
                 .ok_or_else(|| {
                     SnapshotError::new(Status::Incomplete, "registered membership is not warmed")
                 })?;
-            if !membership.complete || !self.validate_warm_membership(&membership, context)? {
+            if !membership.complete
+                || !self.validate_warm_membership(
+                    &membership,
+                    context,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                )?
+            {
                 self.state
                     .lock()
                     .expect("snapshot state")
@@ -951,6 +1012,7 @@ impl NativeStore {
             .filter_map(|id| located.get(id).cloned())
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
+            cancel.check(remaining.deadline_unix_ms)?;
             let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
@@ -1001,6 +1063,7 @@ impl NativeStore {
             sidechain_dirs.push((canonical.clone(), Some(directory_stamp)));
             let mut children = Vec::new();
             for entry in std::fs::read_dir(&canonical).map_err(io_error)? {
+                cancel.check(remaining.deadline_unix_ms)?;
                 if remaining.max_discovery_entries == 0 {
                     return Err(SnapshotError::new(
                         Status::Incomplete,
@@ -1019,6 +1082,7 @@ impl NativeStore {
             }
             children.sort();
             for path in children {
+                cancel.check(remaining.deadline_unix_ms)?;
                 let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
                 self.authority(context, Some(&canonical))?;
                 let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
@@ -1075,6 +1139,7 @@ impl NativeStore {
         if ids.len() > 1024 || roots.len() > 64 || direct.len() > 1024 {
             return Err(invalid("registered warming input exceeds its bound"));
         }
+        let start = number(request, "start_index")?;
         let key = Self::warm_membership_key(request, context)?;
         let cached = self
             .state
@@ -1084,7 +1149,14 @@ impl NativeStore {
             .get(&key)
             .cloned();
         let membership = if let Some(cached) = cached {
-            if self.validate_warm_membership(&cached, context)? {
+            if start > 0
+                || self.validate_warm_membership(
+                    &cached,
+                    context,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                )?
+            {
                 cached
             } else {
                 self.state
@@ -1121,12 +1193,11 @@ impl NativeStore {
                     context,
                     membership.accounted_bytes() + key.capacity(),
                 )?;
-                state.warm_memberships.insert(key, membership.clone());
+                state.warm_memberships.insert(key.clone(), membership.clone());
             }
         }
         let members = &membership.members;
         let membership_revision = &membership.revision;
-        let start = number(request, "start_index")?;
         if start > members.len() {
             return Err(invalid("registered warming index exceeds membership"));
         }
@@ -1143,6 +1214,7 @@ impl NativeStore {
         while next < members.len() && steps < 8 {
             cancel.check(remaining.deadline_unix_ms)?;
             let source = &members[next];
+            let before_read = usage[1];
             match self.prepared_source(&source.path, context, &mut remaining, cancel, usage) {
                 Ok((stamp, PreparedSourceOutcome::Ready(_, _))) => {
                     if stamp != source.stamp {
@@ -1167,13 +1239,33 @@ impl NativeStore {
                 {
                     break;
                 }
+                Err(error) if error.status == Status::Deadline && usage[1] > before_read => {
+                    break;
+                }
                 Err(error) => return Err(error),
             }
             steps += 1;
         }
         let complete = next == members.len();
         if complete {
+            if !self.validate_warm_membership(
+                &membership,
+                context,
+                cancel,
+                remaining.deadline_unix_ms,
+            )? {
+                self.state
+                    .lock()
+                    .expect("snapshot state")
+                    .warm_memberships
+                    .remove(&key);
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered warming membership changed",
+                ));
+            }
             for source in members {
+                cancel.check(remaining.deadline_unix_ms)?;
                 let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
                     source.stamp,
                     str_field(context, "registry_generation")?,
@@ -1399,8 +1491,17 @@ impl NativeStore {
             steps += 1;
         }
         if cursor.next == total {
-            if !self.validate_source_stamps(&sources, context)?
-                || !self.validate_sidechain_dirs(&sidechain_dirs, context)?
+            if !self.validate_source_stamps(
+                &sources,
+                context,
+                cancel,
+                cursor.remaining.deadline_unix_ms,
+            )? || !self.validate_sidechain_dirs(
+                &sidechain_dirs,
+                context,
+                cancel,
+                cursor.remaining.deadline_unix_ms,
+            )?
             {
                 return Err(SnapshotError::new(
                     Status::Changed,

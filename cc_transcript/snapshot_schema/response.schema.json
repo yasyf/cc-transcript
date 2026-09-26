@@ -97,7 +97,8 @@
               "scalar": "#/$defs/ScalarResult",
               "stats": "#/$defs/StatsResult",
               "strings": "#/$defs/StringsResult",
-              "warmed_registry": "#/$defs/WarmedRegistryResult"
+              "warmed_registry": "#/$defs/WarmedRegistryResult",
+              "warmed_root": "#/$defs/WarmedRootResult"
             },
             "propertyName": "kind"
           },
@@ -110,6 +111,9 @@
             },
             {
               "$ref": "#/$defs/WarmedRegistryResult"
+            },
+            {
+              "$ref": "#/$defs/WarmedRootResult"
             },
             {
               "$ref": "#/$defs/Loading"
@@ -697,7 +701,8 @@
                   "scalar": "#/$defs/ScalarResult",
                   "stats": "#/$defs/StatsResult",
                   "strings": "#/$defs/StringsResult",
-                  "warmed_registry": "#/$defs/WarmedRegistryResult"
+                  "warmed_registry": "#/$defs/WarmedRegistryResult",
+                  "warmed_root": "#/$defs/WarmedRootResult"
                 },
                 "propertyName": "kind"
               },
@@ -710,6 +715,9 @@
                 },
                 {
                   "$ref": "#/$defs/WarmedRegistryResult"
+                },
+                {
+                  "$ref": "#/$defs/WarmedRootResult"
                 },
                 {
                   "$ref": "#/$defs/Loading"
@@ -1487,6 +1495,59 @@
         "fact_cache_writes"
       ],
       "title": "WarmedRegistryResult",
+      "type": "object"
+    },
+    "WarmedRootResult": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "facts_complete": {
+          "title": "Facts Complete",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "warmed_root",
+          "title": "Kind",
+          "type": "string"
+        },
+        "owner_epoch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Owner Epoch",
+          "type": "string"
+        },
+        "source_offset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Source Offset",
+          "type": "integer"
+        },
+        "source_revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "source_size": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Source Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "owner_epoch",
+        "source_revision",
+        "source_offset",
+        "source_size",
+        "complete",
+        "facts_complete"
+      ],
+      "title": "WarmedRootResult",
       "type": "object"
     }
   },
