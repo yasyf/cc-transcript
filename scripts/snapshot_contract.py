@@ -286,6 +286,12 @@ class Resolve(WorkRequest):
     classifier: Classifier
 
 
+class Locate(WorkRequest):
+    operation: Literal["locate"]
+    session_ids: Annotated[list[Token], Field(min_length=1, max_length=1024)]
+    roots: Annotated[list[PathText], Field(min_length=1, max_length=64)]
+
+
 class Resume(Envelope):
     operation: Literal["resume"]
     cursor: Token
@@ -380,6 +386,7 @@ class Stats(Envelope):
 Request = Annotated[
     Acquire
     | Resolve
+    | Locate
     | Discover
     | Resume
     | Release
@@ -447,6 +454,18 @@ class Resolution(WireModel):
 class Resolved(WireModel):
     kind: Literal["resolved"]
     sessions: Annotated[list[Resolution], Field(max_length=256)]
+
+
+class Location(WireModel):
+    session_id: Token
+    status: Literal["ok", "missing", "incomplete"]
+    path: PathText | None
+    revision: Token | None
+
+
+class Located(WireModel):
+    kind: Literal["located"]
+    sessions: Annotated[list[Location], Field(max_length=1024)]
 
 
 class DiscoveryEntry(WireModel):
@@ -530,6 +549,7 @@ Result = Annotated[
     Acquired
     | Loading
     | Resolved
+    | Located
     | Discovered
     | Released
     | Renewed
