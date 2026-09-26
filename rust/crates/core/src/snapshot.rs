@@ -559,7 +559,11 @@ struct CachedPreparedFacts {
 }
 
 enum PreparedSourceOutcome {
-    Ready(SourceStamp, Arc<crate::snapshot_prepared::PreparedFacts>),
+    Ready {
+        stamp: SourceStamp,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+        cached: bool,
+    },
     Pending(String),
 }
 
@@ -7438,6 +7442,38 @@ mod tests {
         assert!(
             checks <= 5 * 929,
             "warm verification made {checks} metadata checks"
+        );
+        let deadline = now_ms() + 750;
+        let started = std::time::Instant::now();
+        let before_query_bytes = store.state.lock().unwrap().counters[1];
+        for query in [
+            json!({"kind":"has_edit_to","values":["src/**"]}),
+            json!({"kind":"has_read","pattern":"missing","subagents":true}),
+        ] {
+            let mut reply = store.request(
+                &json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":query,"deadline_unix_ms":deadline,"limits":template["limits"]}),
+                &owner,
+                &Cancellation::default(),
+            );
+            let mut pages = 1;
+            while reply["status"].as_str() == Some("incomplete") {
+                let cursor = reply["cursor"].as_str().expect("cached query cursor");
+                reply = store.request(
+                    &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                    &owner,
+                    &Cancellation::default(),
+                );
+                pages += 1;
+            }
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert_eq!(reply["data"]["value"].as_bool(), Some(false));
+            assert!(pages <= 4, "cached query took {pages} pages");
+        }
+        assert_eq!(store.state.lock().unwrap().counters[1], before_query_bytes);
+        assert!(
+            started.elapsed().as_millis() < 750,
+            "two cached queries took {:?}",
+            started.elapsed()
         );
     }
 

@@ -208,7 +208,14 @@ impl NativeStore {
                 })
         } {
             usage[7] += 1;
-            return Ok((stamp, PreparedSourceOutcome::Ready(stamp, facts)));
+            return Ok((
+                stamp,
+                PreparedSourceOutcome::Ready {
+                    stamp,
+                    facts,
+                    cached: true,
+                },
+            ));
         }
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             stamp,
@@ -222,7 +229,11 @@ impl NativeStore {
                 usage[7] += 1;
                 return Ok((
                     stamp,
-                    PreparedSourceOutcome::Ready(stamp, Arc::new(facts)),
+                    PreparedSourceOutcome::Ready {
+                        stamp,
+                        facts: Arc::new(facts),
+                        cached: true,
+                    },
                 ));
             }
             crate::snapshot_prepared_disk::DiskLookup::Retired => {
@@ -376,7 +387,11 @@ impl NativeStore {
             .expect("snapshot state")
             .prepared_loads
             .remove(&stamp.identity);
-        Ok(PreparedSourceOutcome::Ready(stamp, facts))
+        Ok(PreparedSourceOutcome::Ready {
+            stamp,
+            facts,
+            cached: false,
+        })
     }
 
     fn warm_membership_key(
@@ -1247,7 +1262,7 @@ impl NativeStore {
             let mut rounds = 0;
             loop {
                 match outcome {
-                    PreparedSourceOutcome::Ready(stamp, _) => {
+                    PreparedSourceOutcome::Ready { stamp, .. } => {
                         if stamp != source.stamp {
                             return Err(SnapshotError::new(
                                 Status::Changed,
@@ -1440,6 +1455,8 @@ impl NativeStore {
         let mut records = Vec::new();
         let mut bytes = 128usize;
         let mut steps = 0usize;
+        let mut uncached_steps = 0usize;
+        let page_steps = if inputs { 8 } else { 256 };
         let page_items = self.config.page_items.min(cursor.remaining.max_items);
         let output_limit = cursor
             .page_output_bytes
@@ -1451,7 +1468,11 @@ impl NativeStore {
                 "prepared query output budget exhausted",
             ));
         }
-        while cursor.next < total && steps < 8 && (!inputs || records.len() < page_items) {
+        while cursor.next < total
+            && steps < page_steps
+            && uncached_steps < 8
+            && (!inputs || records.len() < page_items)
+        {
             cancel.check(cursor.remaining.deadline_unix_ms)?;
             if inputs && cursor.next == 0 {
                 let record = cursor.root_record.as_ref().expect("input root record").clone();
@@ -1491,6 +1512,7 @@ impl NativeStore {
                         pending.token = next;
                         cursor.pending = Some(pending);
                         steps += 1;
+                        uncached_steps += 1;
                         continue;
                     }
                     Ok(ready) => ready,
@@ -1518,12 +1540,18 @@ impl NativeStore {
                             stamp: source.stamp,
                         });
                         steps += 1;
+                        uncached_steps += 1;
                         continue;
                     }
                     (_, ready) => ready,
                 }
             };
-            let PreparedSourceOutcome::Ready(stamp, facts) = outcome else {
+            let PreparedSourceOutcome::Ready {
+                stamp,
+                facts,
+                cached,
+            } = outcome
+            else {
                 return Err(invalid("prepared source did not finish"));
             };
             if stamp != source.stamp {
@@ -1554,6 +1582,7 @@ impl NativeStore {
             }
             cursor.next += 1;
             steps += 1;
+            uncached_steps += usize::from(!cached);
         }
         if cursor.next == total {
             if !self.validate_source_stamps(
