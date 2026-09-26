@@ -425,6 +425,8 @@ impl LabelPreparation {
             provisional_tail: self.source.provisional_tail,
             fence: self.source.fence.clone(),
             event_count: self.source.event_count,
+            codex_raw: self.source.codex_raw.clone(),
+            codex_append: self.source.codex_append.clone(),
         }))
     }
 
@@ -550,6 +552,8 @@ mod tests {
             provisional_tail: false,
             fence: Vec::new(),
             event_count: count,
+            codex_raw: None,
+            codex_append: None,
         })
     }
 

@@ -1384,6 +1384,120 @@ fn predicate_inputs_query(
     )
 }
 
+pub fn prepare_facts(
+    snapshot: &TranscriptSnapshot,
+    selectors: &Value,
+    limits: &WorkLimits,
+    cancel: &Cancellation,
+) -> Result<(crate::snapshot_prepared::PreparedFacts, usize, usize), SnapshotError> {
+    prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024)
+}
+
+fn prepare_facts_limited(
+    snapshot: &TranscriptSnapshot,
+    selectors: &Value,
+    limits: &WorkLimits,
+    cancel: &Cancellation,
+    max_fact_bytes: usize,
+) -> Result<(crate::snapshot_prepared::PreparedFacts, usize, usize), SnapshotError> {
+    let request = json!({"view":{"attachments":[],"selectors":selectors}});
+    let mut work = Work::new(snapshot, limits, cancel);
+    let range = selected_range(&mut work, &request)?;
+    work.charge_range(range.clone())?;
+    let lift = lift_range(&mut work, &range)?;
+    let session = view(&lift, &range, snapshot);
+    let calls = session.tool_calls().items();
+    let inputs = json!({
+        "calls":calls.iter().map(|use_| json!([use_.call.name(),use_.call.file_paths()])).collect::<Vec<_>>(),
+        "commands":session.commands(),
+        "edited_files":calls.iter().flat_map(|use_| use_.edits.iter().map(|(path, _)| json!({"path":path}))).collect::<Vec<_>>(),
+        "skills":session.tool_calls().named("Skill").items().iter().filter_map(|use_| match &use_.call {
+            ToolCall::Skill(call) => Some(call.skill.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>()
+    });
+    if snapshot_codec::write_json(
+        &mut OutputCounter {
+            remaining: max_fact_bytes,
+        },
+        &inputs,
+        max_fact_bytes,
+    )
+    .is_err()
+    {
+        return Err(SnapshotError::new(
+            Status::Incomplete,
+            "prepared predicate facts exceed source bound",
+        ));
+    }
+    let mut override_events = Some(Vec::new());
+    let mut override_bytes = 0usize;
+    for entry in session.events() {
+        let (text, tools) = match entry {
+            Entry::User(user) => {
+                let mut text = user.content.text();
+                for result in user.tool_results() {
+                    text.push_str(&result.content);
+                }
+                (text, Vec::new())
+            }
+            Entry::Assistant(assistant) => (
+                crate::types::joined_text(&assistant.blocks),
+                assistant
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse(use_) => Some(use_.name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            Entry::System(system) => (system.content.clone().unwrap_or_default(), Vec::new()),
+            _ => (String::new(), Vec::new()),
+        };
+        override_bytes = override_bytes.saturating_add(text.len());
+        if override_bytes > max_fact_bytes {
+            override_events = None;
+            break;
+        }
+        override_events
+            .as_mut()
+            .expect("bounded override facts")
+            .push(crate::snapshot_prepared::OverrideEvent { text, tools });
+    }
+    let input_charge = crate::snapshot_memory::value_charge(&inputs);
+    let override_charge = override_events.as_ref().map_or(0, |events| {
+        events.capacity() * std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>()
+            + events
+                .iter()
+                .map(|event| {
+                    event.text.capacity()
+                        + event.tools.capacity() * std::mem::size_of::<String>()
+                        + event.tools.iter().map(String::capacity).sum::<usize>()
+                })
+                .sum::<usize>()
+    });
+    let accounted = std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
+        + input_charge.owned_capacity_bytes
+        + input_charge.opaque_dom_accounted_bytes
+        + override_charge;
+    Ok((
+        crate::snapshot_prepared::PreparedFacts {
+            inputs,
+            has_error: session
+                .tool_calls()
+                .with_errors()
+                .items()
+                .iter()
+                .any(|use_| use_.result.is_some_and(|result| result.is_error)),
+            override_events,
+            accounted,
+        },
+        work.bytes,
+        work.events,
+    ))
+}
+
 fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, SnapshotError> {
     let query = field(request, "query")?;
     if query.get("subagents").and_then(|v| v.as_bool()) == Some(true) {
@@ -1839,6 +1953,8 @@ mod tests {
             provisional_tail: false,
             fence: Vec::new(),
             event_count: count,
+            codex_raw: None,
+            codex_append: None,
         }
     }
 
@@ -1868,6 +1984,95 @@ mod tests {
 
     fn run(snapshot: &TranscriptSnapshot, request: &Value) -> Projection {
         project(snapshot, request, &limits(), &Cancellation::default(), 0).unwrap()
+    }
+
+    #[test]
+    fn prepared_predicates_match_local_session_projection() {
+        let snap = snapshot(&[
+            user("u0", "OVERRIDE"),
+            tool(
+                "read",
+                "read-id",
+                "Read",
+                json!({"file_path":"src/example.rs"}),
+            ),
+            json!({"type":"user","uuid":"read-result","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"read-id","content":"failed","is_error":true}]}}),
+            tool(
+                "edit",
+                "edit-id",
+                "Edit",
+                json!({"file_path":"src/change.rs","old_string":"a","new_string":"b"}),
+            ),
+            tool("bash", "bash-id", "Bash", json!({"command":"git status"})),
+            tool("skill", "skill-id", "Skill", json!({"skill":"repo:review"})),
+            user("u1", "OVERRIDE restored"),
+        ]);
+        let (facts, _, _) =
+            prepare_facts(&snap, &json!([]), &limits(), &Cancellation::default()).unwrap();
+        let queries = vec![
+            json!({"kind":"has_tool","pattern":"Read","subagents":true}),
+            json!({"kind":"has_tool","pattern":"Missing","subagents":true}),
+            json!({"kind":"has_read","pattern":"example.rs","subagents":true}),
+            json!({"kind":"has_read_glob","values":["**/*.rs"],"subagents":true}),
+            json!({"kind":"has_edit_to","values":["**/change.rs"],"subagents":true}),
+            json!({"kind":"has_skill","values":["repo:review"],"subagents":true}),
+            json!({"kind":"has_skill_suffix","values":["review"],"subagents":true}),
+            json!({"kind":"has_command_regex","pattern":"git status","subagents":true}),
+            json!({"kind":"has_error","subagents":true}),
+            json!({"kind":"has_edit","subagents":true}),
+            json!({"kind":"has_override","token":"OVERRIDE","invalidated_by":["Read"],"subagents":true}),
+            json!({"kind":"has_override","token":"absent","invalidated_by":["Read"],"subagents":true}),
+        ];
+        #[cfg(feature = "command")]
+        let queries = queries
+            .into_iter()
+            .chain(std::iter::once(
+                json!({"kind":"has_command","values":["git","status"],"subagents":true}),
+            ))
+            .collect::<Vec<_>>();
+        for query in queries {
+            let mut local = query.clone();
+            local.insert("subagents", json!(false));
+            let expected = run(&snap, &request(local, json!([])));
+            let actual = facts.query(&query).unwrap();
+            assert_eq!(actual["value"], expected.data["value"], "{query:?}");
+        }
+    }
+
+    #[test]
+    fn prepared_facts_accept_more_than_one_megabyte_of_compact_calls() {
+        let command = "x".repeat(600);
+        let calls = (0..2_000).map(|index| json!({"type":"tool_use","id":format!("bash-{index}"),"name":"Bash","input":{"command":format!("echo {index} {command}")}})).collect::<Vec<_>>();
+        let snap = snapshot(&[
+            user("u", "prompt"),
+            json!({"type":"assistant","uuid":"many","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":calls}}),
+        ]);
+        let mut bounds = limits();
+        bounds.max_read_bytes = 16 * 1024 * 1024;
+        let (facts, _, _) =
+            prepare_facts(&snap, &json!([]), &bounds, &Cancellation::default()).unwrap();
+        assert!(facts.accounted_bytes() > 1024 * 1024);
+        assert_eq!(
+            facts
+                .query(&json!({"kind":"has_command_regex","pattern":"echo 1999","subagents":true}))
+                .unwrap()["value"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn prepared_override_limit_is_incomplete_instead_of_false() {
+        let snap = snapshot(&[user("u", &"x".repeat(2048))]);
+        let mut bounded = limits();
+        bounded.max_output_bytes = 1024;
+        let (facts, _, _) =
+            prepare_facts_limited(&snap, &json!([]), &bounded, &Cancellation::default(), 1024)
+                .unwrap();
+        let result = facts.query(
+            &json!({"kind":"has_override","token":"missing","invalidated_by":[],"subagents":true}),
+        );
+        assert_eq!(result.unwrap_err().status, Status::Incomplete);
     }
 
     #[test]

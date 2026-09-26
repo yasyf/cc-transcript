@@ -74,7 +74,7 @@ pub fn lower(session: &CodexSession) -> CodexLowering {
     CodexLowering { entries, usage }
 }
 
-fn echo_sets(session: &CodexSession) -> (HashSet<String>, HashSet<String>) {
+pub(crate) fn echo_sets(session: &CodexSession) -> (HashSet<String>, HashSet<String>) {
     let mut user = HashSet::new();
     let mut assistant = HashSet::new();
     for entry in &session.entries {
@@ -139,7 +139,7 @@ fn usage_aggregate(session: &CodexSession) -> CodexUsageAggregate {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_entry(
+pub(crate) fn lower_entry(
     entry: &CodexEntry,
     pos: usize,
     prev: Option<&CodexEntry>,
@@ -343,7 +343,7 @@ fn synth_name(name: &str, namespace: Option<&str>) -> String {
     mcp_tool_name(name, namespace).unwrap_or_else(|| name.to_string())
 }
 
-fn blocks_text(blocks: &[Value]) -> String {
+pub(crate) fn blocks_text(blocks: &[Value]) -> String {
     blocks
         .iter()
         .filter_map(|block| field_str(block, "text"))

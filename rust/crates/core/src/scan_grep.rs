@@ -602,6 +602,8 @@ mod tests {
             provisional_tail: false,
             fence: Vec::new(),
             event_count,
+            codex_raw: None,
+            codex_append: None,
         }
     }
 

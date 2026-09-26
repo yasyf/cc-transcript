@@ -119,6 +119,20 @@ class EventRange(WireModel):
 Selector = Annotated[CurrentTurn | Prior | Recent | ToolBoundary | EventRange, Field(discriminator="kind")]
 
 
+class GraphHandle(WireModel):
+    graph_id: Token
+    owner_epoch: Token
+    revision: Token
+    complete: Literal[True]
+
+
+class PreparedView(WireModel):
+    handle: Handle
+    classifier: Classifier
+    selectors: Annotated[list[Selector], Field(max_length=64)]
+    attachments: Annotated[list[PathText], Field(max_length=0)]
+
+
 class View(WireModel):
     handle: Handle
     classifier: Classifier
@@ -300,13 +314,13 @@ class Resume(Envelope):
 class Release(Envelope):
     model_config = ConfigDict(
         json_schema_extra={
-            "if": {"properties": {"kind": {"enum": ["lease", "reservation"]}}},
+            "if": {"properties": {"kind": {"enum": ["lease", "reservation", "graph"]}}},
             "then": {"required": ["owner_epoch"], "properties": {"owner_epoch": {"type": "string"}}},
         }
     )
     operation: Literal["release"]
     owner_epoch: Token | None = None
-    kind: Literal["lease", "reservation", "cursor"]
+    kind: Literal["lease", "reservation", "cursor", "graph"]
     token: Token
 
 
@@ -364,9 +378,75 @@ class Hydrate(WorkRequest):
     render: HydrationBudget
 
 
+class PreparedInputs(WireModel):
+    kind: Literal["deep_predicate_inputs"]
+    order: Literal["forward"]
+
+
+class PreparedToolPredicate(WireModel):
+    kind: Literal["has_tool", "has_read", "has_command_regex"]
+    pattern: Text
+    subagents: Literal[True]
+
+
+class PreparedListPredicate(WireModel):
+    kind: Literal["has_command", "has_edit_to", "has_skill", "has_skill_suffix", "has_read_glob"]
+    values: Annotated[list[Text], Field(max_length=256)]
+    subagents: Literal[True]
+
+
+class PreparedOverridePredicate(WireModel):
+    kind: Literal["has_override"]
+    token: Text
+    invalidated_by: Annotated[list[Token], Field(max_length=256)]
+    subagents: Literal[True]
+
+
+class PreparedErrorPredicate(WireModel):
+    kind: Literal["has_error", "has_edit"]
+    subagents: Literal[True]
+
+
+PreparedQuery = Annotated[
+    PreparedInputs | PreparedToolPredicate | PreparedListPredicate | PreparedOverridePredicate | PreparedErrorPredicate,
+    Field(discriminator="kind"),
+]
+
+
+class PrepareGraph(WorkRequest):
+    operation: Literal["prepare_graph"]
+    view: PreparedView
+    thread_ids: Annotated[list[Token], Field(max_length=1024)]
+    roots: Annotated[list[PathText], Field(max_length=64)]
+    direct_paths: Annotated[list[PathText], Field(max_length=1024)]
+
+
+class QueryGraph(WorkRequest):
+    operation: Literal["query_graph"]
+    handle: GraphHandle
+    selectors: Annotated[list[Selector], Field(max_length=64)]
+    query: PreparedQuery
+
+
+class WarmRegistered(WorkRequest):
+    operation: Literal["warm_registered"]
+    classifier: Classifier
+    thread_ids: Annotated[list[Token], Field(max_length=1024)]
+    roots: Annotated[list[PathText], Field(max_length=64)]
+    direct_paths: Annotated[list[PathText], Field(max_length=1024)]
+    start_index: Count
+    membership_revision: Token | None
+
+
+class WarmRoot(WorkRequest):
+    operation: Literal["warm_root"]
+    path: PathText
+    classifier: Classifier
+
+
 class QueryRequest(WorkRequest):
     operation: Literal["query"]
-    view: View
+    view: PreparedView
     query: Query
 
 
@@ -397,6 +477,10 @@ Request = Annotated[
     | Capture
     | Hydrate
     | QueryRequest
+    | PrepareGraph
+    | QueryGraph
+    | WarmRegistered
+    | WarmRoot
     | ActivityProbe
     | Stats,
     Field(discriminator="operation"),
@@ -433,6 +517,34 @@ class Gauges(WireModel):
     active_leases: Count
     pending_loads: Count
     live_generations: Count
+
+
+class PreparedGraphResult(WireModel):
+    kind: Literal["prepared_graph"]
+    handle: GraphHandle
+
+
+class WarmedRegistryResult(WireModel):
+    kind: Literal["warmed_registry"]
+    owner_epoch: Token
+    membership_revision: Token
+    next_index: Count
+    complete: bool
+    source_offset: Count
+    source_size: Count
+    fact_cache_bytes: Count
+    fact_cache_write_bytes: Count
+    fact_cache_writes: Count
+
+
+class WarmedRootResult(WireModel):
+    kind: Literal["warmed_root"]
+    owner_epoch: Token
+    source_revision: Token
+    source_offset: Count
+    source_size: Count
+    complete: bool
+    facts_complete: bool
 
 
 class Acquired(WireModel):
@@ -547,6 +659,9 @@ class StatsResult(WireModel):
 
 Result = Annotated[
     Acquired
+    | PreparedGraphResult
+    | WarmedRegistryResult
+    | WarmedRootResult
     | Loading
     | Resolved
     | Located
@@ -631,12 +746,15 @@ Authority = Annotated[UserAuthority | RestrictedAuthority, Field(discriminator="
 class CallContext(WireModel):
     claimant: Token
     admission: Literal["hook", "review"]
+    work_class: Literal["foreground", "background"] = "foreground"
     authority: Authority
     registry_generation: Token
 
 
 class StoreConfig(WireModel):
     max_retained_bytes: Positive = MAX_RETAINED_BYTES
+    max_prepared_fact_memory_bytes: Positive = 128 * 1024 * 1024
+    max_prepared_disk_bytes: Positive = 2 * 1024 * 1024 * 1024
     max_source_bytes: Positive = MAX_SOURCE_BYTES
     max_entry_bytes: Positive = MAX_ENTRY_BYTES
     max_projection_bytes: Positive = MAX_PROJECTION_BYTES

@@ -38,6 +38,8 @@ pub mod snapshot_codec;
 pub mod snapshot_labels;
 pub mod snapshot_memory;
 pub mod snapshot_owned;
+pub mod snapshot_prepared;
+pub mod snapshot_prepared_disk;
 pub mod snapshot_projection;
 pub mod snapshot_text;
 #[cfg(feature = "sqlite")]

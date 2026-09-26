@@ -28,7 +28,6 @@ def query(
     operation: dict[str, Any],
     *,
     selectors: list[dict[str, Any]] | None = None,
-    attachments: list[str] | None = None,
     limits: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     return dict(store.request(
@@ -36,7 +35,7 @@ def query(
             "query",
             view={
                 "handle": description["handle"], "classifier": CLASSIFIER,
-                "selectors": selectors or [], "attachments": attachments or [],
+                "selectors": selectors or [], "attachments": [],
             },
             query=operation,
             limits=LIMITS if limits is None else limits,
@@ -47,7 +46,7 @@ def query(
     ))
 
 
-def test_local_predicate_inputs_use_selected_cached_calls_without_opening_attachments(tmp_path: Path) -> None:
+def test_local_predicate_inputs_use_selected_cached_calls(tmp_path: Path) -> None:
     path = tmp_path / "root.jsonl"
     path.write_bytes(
         event(0, "first")
@@ -64,7 +63,6 @@ def test_local_predicate_inputs_use_selected_cached_calls_without_opening_attach
     reply = query(
         store, description, {"kind": "predicate_inputs", "order": "forward"},
         selectors=[{"kind": "event_range", "start": 0, "stop": 2}],
-        attachments=[str(tmp_path / "must-not-open.jsonl")],
         limits={**LIMITS, "max_output_bytes": 4096},
     )
     assert reply["status"] == "ok", reply
@@ -162,7 +160,6 @@ def test_direct_sidechains_open_only_selected_children(tmp_path: Path) -> None:
     description = acquire(store, path)
     reply = query(
         store, description, {"kind": "direct_sidechains", "order": "forward", "dispatch_ids": ["Agent"]},
-        attachments=[str(tmp_path / "must-not-open.jsonl")],
     )
     records: list[dict[str, Any]] = []
     source_opens = 0
@@ -192,7 +189,6 @@ def test_empty_direct_sidechains_do_not_discover_or_open_sources(tmp_path: Path)
     description = acquire(store, path)
     reply = query(
         store, description, {"kind": "direct_sidechains", "order": "forward", "dispatch_ids": []},
-        attachments=[str(tmp_path / "must-not-open.jsonl")],
     )
     assert reply["status"] == "ok", reply
     assert reply["complete"] is True
