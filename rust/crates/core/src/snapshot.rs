@@ -201,10 +201,37 @@ pub struct TranscriptSnapshot {
     pub fence: Vec<u8>,
     pub event_count: usize,
     pub codex_raw: Option<Arc<Vec<u8>>>,
-    pub(crate) codex_append: Option<Arc<CodexAppendIndex>>,
+    codex_append: Option<Arc<CodexAppendIndex>>,
 }
 
 impl TranscriptSnapshot {
+    pub fn from_complete_entries(
+        id: String,
+        canonical_path: PathBuf,
+        stamp: SourceStamp,
+        provider: Provider,
+        session_id: String,
+        entries: Vec<Entry>,
+    ) -> Self {
+        let event_count = entries.len();
+        let activity = ActivityIndex::new(&entries.iter().collect::<Vec<_>>(), None);
+        Self {
+            id,
+            canonical_path,
+            stamp,
+            provider,
+            session_id,
+            chunks: vec![Arc::new(EntryChunk::new(0, entries))],
+            activity: Arc::new(activity),
+            committed_bytes: stamp.size,
+            provisional_tail: false,
+            fence: Vec::new(),
+            event_count,
+            codex_raw: None,
+            codex_append: None,
+        }
+    }
+
     pub fn entries(&self) -> Vec<&Entry> {
         self.chunks
             .iter()

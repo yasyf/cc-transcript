@@ -5,7 +5,7 @@ use cc_transcript_core::activity::Hunk;
 use cc_transcript_core::snapshot::{Cancellation, SnapshotError, TranscriptSnapshot, WorkLimits};
 use cc_transcript_core::snapshot_codec::{self, RefRecord, ToolUseRecord, TurnRecord};
 use cc_transcript_core::snapshot_projection::{bounded_turn_range_with_usage, ProjectionUsage};
-use cc_transcript_core::types::{ContentBlock, Entry};
+use cc_transcript_core::types::ContentBlock;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -481,18 +481,16 @@ mod tests {
     #[test]
     fn owner_activity_detaches_selected_events_and_enforces_caps_before_payloads() {
         use cc_transcript_core::gateway::Provider;
-        use cc_transcript_core::snapshot::{EntryChunk, SourceIdentity, SourceStamp};
-        use cc_transcript_core::snapshot_activity::ActivityIndex;
+        use cc_transcript_core::snapshot::{SourceIdentity, SourceStamp};
         let entries = snapshot_codec::decode_events(&records(), MAX_RECORD_BYTES)
             .unwrap()
             .into_iter()
             .map(|record| record.event)
             .collect::<Vec<_>>();
-        let activity = ActivityIndex::new(&entries.iter().collect::<Vec<_>>(), None);
-        let snapshot = TranscriptSnapshot {
-            id: "test".into(),
-            canonical_path: "/test.jsonl".into(),
-            stamp: SourceStamp {
+        let snapshot = TranscriptSnapshot::from_complete_entries(
+            "test".into(),
+            "/test.jsonl".into(),
+            SourceStamp {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 1,
@@ -501,16 +499,10 @@ mod tests {
                 mtime_ns: 0,
                 ctime_ns: 0,
             },
-            provider: Provider::Claude,
-            session_id: "s".into(),
-            chunks: vec![Arc::new(EntryChunk::new(0, entries))],
-            activity: Arc::new(activity),
-            committed_bytes: 0,
-            provisional_tail: false,
-            fence: Vec::new(),
-            event_count: 2,
-            codex_raw: None,
-        };
+            Provider::Claude,
+            "s".into(),
+            entries,
+        );
         let mut limits = WorkLimits {
             max_read_bytes: MAX_RECORD_BYTES,
             max_events: 100,
