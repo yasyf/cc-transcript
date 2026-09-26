@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::gateway::{parse_transcript_bytes, sniff_provider, Provider};
+use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -201,6 +201,7 @@ pub struct TranscriptSnapshot {
     pub fence: Vec<u8>,
     pub event_count: usize,
     pub codex_raw: Option<Arc<Vec<u8>>>,
+    pub(crate) codex_append: Option<Arc<CodexAppendIndex>>,
 }
 
 impl TranscriptSnapshot {
@@ -243,6 +244,15 @@ impl TranscriptSnapshot {
                 Arc::as_ptr(raw) as usize,
                 MemoryCharge {
                     owned_capacity_bytes: size_of::<Vec<u8>>() + raw.capacity(),
+                    opaque_dom_accounted_bytes: 0,
+                },
+            ));
+        }
+        if let Some(index) = &self.codex_append {
+            entries.push((
+                Arc::as_ptr(index) as usize,
+                MemoryCharge {
+                    owned_capacity_bytes: index.accounted_bytes(),
                     opaque_dom_accounted_bytes: 0,
                 },
             ));
@@ -357,6 +367,7 @@ struct Load {
     provider: Option<Provider>,
     chunks: Vec<Arc<EntryChunk>>,
     codex_raw: Option<Arc<Vec<u8>>>,
+    codex_append: Option<Arc<CodexAppendIndex>>,
     count: usize,
     activity: ActivityIndex,
     indexed: usize,
@@ -1882,6 +1893,7 @@ impl NativeStore {
             fence: snapshot.fence.clone(),
             event_count: snapshot.event_count,
             codex_raw: snapshot.codex_raw.clone(),
+            codex_append: snapshot.codex_append.clone(),
         });
         let generation = GenerationRecord::new(&derived, registry);
         {
@@ -3546,6 +3558,7 @@ impl NativeStore {
                         provider: None,
                         chunks: Vec::new(),
                         codex_raw: None,
+                        codex_append: None,
                         count: 0,
                         activity: ActivityIndex::default(),
                         indexed: 0,
@@ -3737,7 +3750,30 @@ impl NativeStore {
                     })
                     .collect();
                 let charge = load.pending.capacity()
-                    + load.codex_raw.as_ref().map_or(0, |raw| raw.capacity())
+                    + load.codex_raw.as_ref().map_or(0, |raw| {
+                        if load
+                            .previous
+                            .as_ref()
+                            .and_then(|previous| previous.codex_raw.as_ref())
+                            .is_some_and(|previous| Arc::ptr_eq(previous, raw))
+                        {
+                            0
+                        } else {
+                            raw.capacity()
+                        }
+                    })
+                    + load.codex_append.as_ref().map_or(0, |index| {
+                        if load
+                            .previous
+                            .as_ref()
+                            .and_then(|previous| previous.codex_append.as_ref())
+                            .is_some_and(|previous| Arc::ptr_eq(previous, index))
+                        {
+                            0
+                        } else {
+                            index.accounted_bytes()
+                        }
+                    })
                     + load.origin_fence.capacity()
                     + load.seal_fence.capacity()
                     + load.prefix_fence.capacity()
@@ -3993,16 +4029,19 @@ impl NativeStore {
                 let fence = std::mem::take(&mut load.prefix_fence);
                 if fence == prior_fence {
                     if previous.provider == Provider::Codex {
-                        load.pending = previous
-                            .codex_raw
-                            .as_ref()
-                            .expect("cached codex source")
-                            .as_ref()
-                            .clone();
+                        load.pending = Vec::new();
                         load.offset = previous.stamp.size;
-                        load.pending_start = 0;
+                        load.pending_start = previous.stamp.size;
                         load.provider = Some(Provider::Codex);
                         load.session_id = Some(previous.session_id.clone());
+                        load.chunks = previous.chunks.clone();
+                        load.count = previous.event_count;
+                        load.codex_raw = previous.codex_raw.clone();
+                        load.codex_append = previous.codex_append.clone();
+                        if load.previous_index_compatible {
+                            load.activity = previous.activity.as_ref().clone();
+                            load.indexed = previous.event_count;
+                        }
                     } else {
                         let keep = previous
                             .chunks
@@ -4110,42 +4149,7 @@ impl NativeStore {
                 if !eof {
                     return Ok(());
                 }
-                let source_events = memchr::memchr_iter(b'\n', &load.pending).count()
-                    + usize::from(!load.pending.ends_with(b"\n"));
-                if source_events > lowering_events {
-                    return Err(SnapshotError::new(
-                        Status::EntryLimit,
-                        "nonincremental provider lowering exceeds event work bound",
-                    ));
-                }
-                usage[15] += 1;
-                usage[16] += load.pending.len() as u64;
-                usage[2] += load.pending.len() as u64;
-                let parsed = parse_transcript_bytes(&load.pending).map_err(|error| {
-                    SnapshotError::new(Status::ParseError, format!("{error:?}"))
-                })?;
-                usage[3] += parsed.entries.len() as u64;
-                if parsed.entries.len() > lowering_events {
-                    return Err(SnapshotError::new(
-                        Status::EntryLimit,
-                        "lowered provider entries exceed work bound",
-                    ));
-                }
-                load.session_id = parsed
-                    .entries
-                    .iter()
-                    .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
-                load.count = parsed.entries.len();
-                load.chunks
-                    .push(Arc::new(EntryChunk::new(0, parsed.entries)));
-                load.committed = line_start as u64;
-                load.provisional = line_start < load.pending.len();
-                load.fence = load.pending[line_start.saturating_sub(64)..line_start].to_vec();
-                if load.pending.len() <= 64 * 1024 * 1024 {
-                    load.codex_raw = Some(Arc::new(std::mem::take(&mut load.pending)));
-                } else {
-                    load.pending.clear();
-                }
+                self.lower_codex_source(slot, load, lowering_events, usage)?;
             } else {
                 let mut entries = Vec::new();
                 let mut consumed = 0;
@@ -4301,6 +4305,7 @@ impl NativeStore {
             fence: load.fence.clone(),
             event_count: load.count,
             codex_raw: load.codex_raw.clone(),
+            codex_append: load.codex_append.clone(),
         }));
         load.pending = Vec::new();
         Ok(())
@@ -6124,6 +6129,7 @@ impl NativeStore {
 
 include!("snapshot_prepared_service.rs");
 include!("snapshot_root_warm.rs");
+include!("snapshot_codex_append.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -7204,7 +7210,7 @@ mod tests {
             }
             let cached = store.prepared_disk.stats().entries;
             if result["status"].as_str() == Some("ok") {
-                assert_eq!(cached, 6);
+                assert_eq!(cached, 7);
                 complete = true;
                 break;
             }
@@ -7599,9 +7605,7 @@ mod tests {
             assert!(read >= appended.len() as u64);
             assert!(read <= appended.len() as u64 + 256);
             let after_lowered = store.state.lock().unwrap().counters[16];
-            assert!(
-                after_lowered - before_lowered >= std::fs::metadata(&source.path).unwrap().len()
-            );
+            assert_eq!(after_lowered, before_lowered);
         }
     }
 

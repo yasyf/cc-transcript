@@ -1954,6 +1954,7 @@ mod tests {
             fence: Vec::new(),
             event_count: count,
             codex_raw: None,
+            codex_append: None,
         }
     }
 
