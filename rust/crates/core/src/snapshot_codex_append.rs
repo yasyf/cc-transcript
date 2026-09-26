@@ -363,6 +363,7 @@ impl NativeStore {
 #[cfg(test)]
 mod codex_append_tests {
     use super::*;
+    use crate::gateway::parse_transcript_bytes;
 
     struct Source {
         directory: PathBuf,
