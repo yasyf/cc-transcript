@@ -125,6 +125,18 @@ jobs:
           name: cc-transcript-macos-${{ github.sha }}
           path: dist/*.whl
 
+  large-root-benchmark:
+    if: contains(github.event.pull_request.labels.*.name, 'large-root-benchmark')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Test bounded large-root warming
+        run: cargo test --release -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
+
   swift:
     runs-on: macos-15
     steps:
@@ -153,10 +165,6 @@ jobs:
 
       - name: Test Rust core
         run: cargo test -p cc-transcript-core --no-default-features
-
-      - name: Test bounded large-root warming
-        if: contains(github.event.pull_request.labels.*.name, 'large-root-benchmark')
-        run: cargo test --release -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
 
       - name: Test Swift package against the committed xcframework
         run: swift test --package-path swift

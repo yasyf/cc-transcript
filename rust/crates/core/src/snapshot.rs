@@ -7594,9 +7594,9 @@ mod tests {
         assert!(first_bytes >= std::fs::metadata(&source.path).unwrap().len());
         for index in 0..3 {
             let appended = format!(
-                r#"{{"timestamp":"2026-01-02T03:04:0{}Z","type":"event_msg","payload":{{"type":"agent_message","message":"small-{index}"}}}}\n"#,
+                r#"{{"timestamp":"2026-01-02T03:04:0{}Z","type":"event_msg","payload":{{"type":"agent_message","message":"small-{index}"}}}}"#,
                 index + 7
-            );
+            ) + "\n";
             source.append(&appended);
             request.insert("start_index", json!(0));
             request.insert("membership_revision", Value::new_null());
