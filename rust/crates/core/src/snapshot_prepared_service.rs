@@ -233,13 +233,13 @@ impl NativeStore {
             }
             crate::snapshot_prepared_disk::DiskLookup::Miss => {}
         }
-        if self.config.read_step.min(stamp.size as usize) > remaining.max_read_bytes {
+        if remaining.max_read_bytes == 0 {
             return Err(SnapshotError::new(
                 Status::Incomplete,
                 "prepared graph read budget exhausted",
             ));
         }
-        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":self.config.source,"max_events":1_000_000,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
+        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":remaining.max_read_bytes,"max_events":remaining.max_events,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
         let before_bytes = usage[1];
         let before_events = usage[3];
         let outcome = self.acquire(&acquire, context, cancel, usage);
@@ -272,7 +272,7 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<PreparedSourceOutcome, SnapshotError> {
-        if self.config.read_step.min(pending.stamp.size as usize) > remaining.max_read_bytes {
+        if remaining.max_read_bytes == 0 {
             return Err(SnapshotError::new(
                 Status::Incomplete,
                 "prepared graph read budget exhausted",
@@ -1211,38 +1211,102 @@ impl NativeStore {
         }
         let mut next = start;
         let mut steps = 0usize;
-        while next < members.len() && steps < 8 {
+        'warming: while next < members.len() && steps < 8 {
             cancel.check(remaining.deadline_unix_ms)?;
             let source = &members[next];
             let before_read = usage[1];
-            match self.prepared_source(&source.path, context, &mut remaining, cancel, usage) {
-                Ok((stamp, PreparedSourceOutcome::Ready(_, _))) => {
-                    if stamp != source.stamp {
-                        return Err(SnapshotError::new(
-                            Status::Changed,
-                            "registered source changed",
-                        ));
-                    }
-                    next += 1;
-                }
-                Ok((_, PreparedSourceOutcome::Pending(token))) => {
-                    self.state
-                        .lock()
-                        .expect("snapshot state")
-                        .waiters
-                        .remove(&token);
-                    break;
-                }
+            let before_events = usage[3];
+            let (stamp, mut outcome) = match self.prepared_source(
+                &source.path,
+                context,
+                &mut remaining,
+                cancel,
+                usage,
+            ) {
+                Ok(outcome) => outcome,
                 Err(error)
                     if error.status == Status::Incomplete
                         && error.reason == "prepared graph read budget exhausted" =>
                 {
-                    break;
+                    break 'warming;
                 }
-                Err(error) if error.status == Status::Deadline && usage[1] > before_read => {
-                    break;
+                Err(error)
+                    if error.status == Status::Deadline
+                        && (usage[1] > before_read || usage[3] > before_events) =>
+                {
+                    break 'warming;
                 }
                 Err(error) => return Err(error),
+            };
+            if stamp != source.stamp {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered source changed",
+                ));
+            }
+            let mut rounds = 0;
+            loop {
+                match outcome {
+                    PreparedSourceOutcome::Ready(stamp, _) => {
+                        if stamp != source.stamp {
+                            return Err(SnapshotError::new(
+                                Status::Changed,
+                                "registered source changed",
+                            ));
+                        }
+                        next += 1;
+                        break;
+                    }
+                    PreparedSourceOutcome::Pending(token) => {
+                        if rounds == 16 {
+                            self.state
+                                .lock()
+                                .expect("snapshot state")
+                                .waiters
+                                .remove(&token);
+                            break 'warming;
+                        }
+                        let pending = PendingPreparedSource {
+                            token: token.clone(),
+                            path: source.path.clone(),
+                            stamp: source.stamp,
+                        };
+                        outcome = match self.resume_prepared_source(
+                            &pending,
+                            context,
+                            &mut remaining,
+                            cancel,
+                            usage,
+                        ) {
+                            Ok(outcome) => outcome,
+                            Err(error)
+                                if error.status == Status::Incomplete
+                                    && error.reason == "prepared graph read budget exhausted"
+                                    || error.status == Status::SourceLimit
+                                        && error.reason == "cumulative preparation work budget exhausted"
+                                    || error.status == Status::Deadline
+                                        && (usage[1] > before_read
+                                            || usage[3] > before_events) =>
+                            {
+                                self.state
+                                    .lock()
+                                    .expect("snapshot state")
+                                    .waiters
+                                    .remove(&token);
+                                break 'warming;
+                            }
+                            Err(error) => {
+                                self.state
+                                    .lock()
+                                    .expect("snapshot state")
+                                    .waiters
+                                    .remove(&token);
+                                return Err(error);
+                            }
+                        };
+                        rounds += 1;
+                    }
+                }
             }
             steps += 1;
         }
@@ -1348,6 +1412,7 @@ impl NativeStore {
                 "prepared query claimant differs",
             ));
         }
+        cancel.check(cursor.remaining.deadline_unix_ms)?;
         let graph = self
             .state
             .lock()
@@ -1521,6 +1586,7 @@ impl NativeStore {
         } else {
             Value::new_null()
         };
+        cancel.check(cursor.remaining.deadline_unix_ms)?;
         let encoded = encoded_size(&data, output_limit)?;
         cursor.remaining.max_output_bytes = cursor.remaining.max_output_bytes.saturating_sub(encoded);
         cursor.remaining.max_items = cursor.remaining.max_items.saturating_sub(
@@ -1529,6 +1595,7 @@ impl NativeStore {
                 .map_or(0, |items| items.len()),
         );
         let mut state = self.state.lock().expect("snapshot state");
+        cancel.check(cursor.remaining.deadline_unix_ms)?;
         if !state.prepared_graphs.contains_key(&cursor.graph_id) {
             return Err(SnapshotError::new(Status::StaleCursor, "prepared graph released"));
         }

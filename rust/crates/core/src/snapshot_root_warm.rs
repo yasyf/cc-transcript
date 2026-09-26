@@ -98,7 +98,7 @@ impl NativeStore {
         };
         let (data, cursor, _) = match outcome {
             Ok(outcome) => outcome,
-            Err(error) if error.status == Status::Deadline && usage[1] > 0 => {
+            Err(error) if error.status == Status::Deadline && (usage[1] > 0 || usage[3] > 0) => {
                 return Ok(progress(false));
             }
             Err(error) => return Err(error),

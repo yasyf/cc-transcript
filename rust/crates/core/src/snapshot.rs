@@ -735,6 +735,7 @@ struct StoreState {
     prepared_graphs: HashMap<String, Arc<Mutex<PreparedGraph>>>,
     prepared_builds: HashMap<String, PreparedBuild>,
     prepared_queries: HashMap<String, PreparedQueryCursor>,
+    expired_prepared_queries: HashMap<String, (String, u64)>,
     prepared_facts: HashMap<SourceIdentity, CachedPreparedFacts>,
     warm_memberships: HashMap<String, WarmMembership>,
     deliveries: HashMap<String, Delivery>,
@@ -1953,6 +1954,9 @@ impl NativeStore {
 
     fn prune(state: &mut StoreState) {
         let now = now_ms();
+        state
+            .expired_prepared_queries
+            .retain(|_, (_, expires)| *expires > now);
         let expired_codex: Vec<_> = state
             .recent_codex
             .iter()
@@ -1980,6 +1984,20 @@ impl NativeStore {
             if let Some(query) = state.prepared_queries.remove(&token) {
                 if let Some(pending) = query.pending {
                     state.waiters.remove(&pending.token);
+                }
+                if query.remaining.deadline_unix_ms <= now {
+                    if state.expired_prepared_queries.len() >= 1024 {
+                        let oldest = state
+                            .expired_prepared_queries
+                            .iter()
+                            .min_by_key(|(_, (_, expires))| expires)
+                            .map(|(token, _)| token.clone())
+                            .expect("full expired prepared query cache");
+                        state.expired_prepared_queries.remove(&oldest);
+                    }
+                    state
+                        .expired_prepared_queries
+                        .insert(token, (query.claimant, now.saturating_add(5_000)));
                 }
             }
         }
@@ -3148,6 +3166,25 @@ impl NativeStore {
                 };
                 if let Some(query) = prepared_query {
                     return self.prepared_query_page(cursor, query, context, cancel, usage);
+                }
+                if let Some((claimant, _)) = self
+                    .state
+                    .lock()
+                    .expect("snapshot state")
+                    .expired_prepared_queries
+                    .get(cursor)
+                    .cloned()
+                {
+                    if claimant != str_field(context, "claimant")? {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared query claimant differs",
+                        ));
+                    }
+                    return Err(SnapshotError::new(
+                        Status::Deadline,
+                        "prepared query deadline expired",
+                    ));
                 }
                 let graph = {
                     let mut state = self.state.lock().expect("snapshot state");
@@ -7087,6 +7124,47 @@ mod tests {
     }
 
     #[test]
+    fn expired_prepared_query_reports_deadline_after_pruning() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let paths: Vec<_> = (0..9)
+            .map(|index| {
+                let path = source.directory.join(format!("external-{index}.jsonl"));
+                std::fs::write(&path, format!("{}\n", user(&format!("u-{index}")))).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let page = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(page["status"].as_str(), Some("incomplete"), "{page:?}");
+        let token = page["cursor"].as_str().unwrap();
+        {
+            let mut state = store.state.lock().unwrap();
+            let cursor = state.prepared_queries.get_mut(token).unwrap();
+            cursor.expires = now_ms() - 1;
+            cursor.remaining.deadline_unix_ms = now_ms() - 1;
+        }
+        let resumed = store.request(
+            &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":token}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(resumed["status"].as_str(), Some("deadline"), "{resumed:?}");
+    }
+
+    #[test]
     fn bounded_queries_reuse_finished_sources_until_complete() {
         let source = Source::new(&format!("{}\n", user("root")));
         let paths: Vec<_> = (0..6)
@@ -7263,6 +7341,7 @@ mod tests {
         background.insert("work_class", json!("background"));
         let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &background, &Cancellation::default());
         assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        assert_eq!(warm["data"]["next_index"].as_u64(), Some(8));
         let after_warm = store.state.lock().unwrap().counters;
         let graph = finish_prepared(
             &store,
