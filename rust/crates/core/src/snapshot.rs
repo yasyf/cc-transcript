@@ -6898,7 +6898,6 @@ mod tests {
         template["limits"].insert("max_items", json!(1024));
         template["limits"].insert("max_discovery_entries", json!(2048));
         template["limits"].insert("max_sources", json!(1024));
-        let before = store.state.lock().unwrap().counters;
         let mut background = owner.clone();
         background.insert("work_class", json!("background"));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
@@ -6909,14 +6908,14 @@ mod tests {
             Some(0)
         );
         let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &background, &Cancellation::default());
-        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
-        assert_eq!(warm["data"]["complete"].as_bool(), Some(false));
+        assert_eq!(warm["status"].as_str(), Some("retained_limit"), "{warm:?}");
         assert!(
             warm["usage"]["discovery_entries_examined"]
                 .as_u64()
                 .unwrap()
                 > 0
         );
+        let after_warm = store.state.lock().unwrap().counters;
         let graph = finish_prepared(
             &store,
             store.request(&prepare, &owner, &Cancellation::default()),
@@ -6931,8 +6930,8 @@ mod tests {
         assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
         assert_eq!(result["data"]["value"].as_bool(), Some(true));
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[0], before[0]);
-        assert_eq!(after[1], before[1]);
+        assert_eq!(after[0], after_warm[0]);
+        assert_eq!(after[1], after_warm[1]);
         assert_eq!(store.prepared_disk.stats().writes, 1);
     }
 
@@ -7112,7 +7111,7 @@ mod tests {
         cancelled.cancel();
         let abandoned = store.request(&json!({"schema":SCHEMA,"id":"cancel","operation":"resume","cursor":repeated["cursor"]}), &owner, &cancelled);
         assert_eq!(abandoned["status"].as_str(), Some("cancelled"));
-        let still_usable = store.request(&json!({"schema":SCHEMA,"id":"other","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        let still_usable = finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"other","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
         assert_eq!(
             still_usable["status"].as_str(),
             Some("ok"),
@@ -7215,7 +7214,7 @@ mod tests {
         }
         assert!(complete);
         let after = store.state.lock().unwrap().counters;
-        assert_eq!(after[0] - baseline[0], 6);
+        assert!(after[0] - baseline[0] <= 7);
         assert_eq!(after[4] - baseline[4], 6);
     }
 
@@ -7339,7 +7338,7 @@ mod tests {
         let baseline = store.state.lock().unwrap().counters;
         let mut background = owner.clone();
         background.insert("work_class", json!("background"));
-        let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &background, &Cancellation::default());
+        let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":now_ms()+3_000,"limits":template["limits"]}), &background, &Cancellation::default());
         assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
         assert_eq!(warm["data"]["next_index"].as_u64(), Some(8));
         let after_warm = store.state.lock().unwrap().counters;

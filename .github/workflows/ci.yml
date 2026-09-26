@@ -156,7 +156,7 @@ jobs:
 
       - name: Test bounded large-root warming
         if: contains(github.event.pull_request.labels.*.name, 'large-root-benchmark')
-        run: cargo test -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
+        run: cargo test --release -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
 
       - name: Test Swift package against the committed xcframework
         run: swift test --package-path swift
