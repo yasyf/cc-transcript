@@ -89,6 +89,7 @@
               "hydrated": "#/$defs/Hydrated",
               "loading": "#/$defs/Loading",
               "located": "#/$defs/Located",
+              "prepared_graph": "#/$defs/PreparedGraphResult",
               "records": "#/$defs/RecordsResult",
               "released": "#/$defs/Released",
               "renewed": "#/$defs/Renewed",
@@ -102,6 +103,9 @@
           "oneOf": [
             {
               "$ref": "#/$defs/Acquired"
+            },
+            {
+              "$ref": "#/$defs/PreparedGraphResult"
             },
             {
               "$ref": "#/$defs/Loading"
@@ -513,6 +517,42 @@
       "title": "Gauges",
       "type": "object"
     },
+    "GraphHandle": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "const": true,
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "graph_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Graph Id",
+          "type": "string"
+        },
+        "owner_epoch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Owner Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "graph_id",
+        "owner_epoch",
+        "revision",
+        "complete"
+      ],
+      "title": "GraphHandle",
+      "type": "object"
+    },
     "Handle": {
       "additionalProperties": false,
       "properties": {
@@ -645,6 +685,7 @@
                   "hydrated": "#/$defs/Hydrated",
                   "loading": "#/$defs/Loading",
                   "located": "#/$defs/Located",
+                  "prepared_graph": "#/$defs/PreparedGraphResult",
                   "records": "#/$defs/RecordsResult",
                   "released": "#/$defs/Released",
                   "renewed": "#/$defs/Renewed",
@@ -658,6 +699,9 @@
               "oneOf": [
                 {
                   "$ref": "#/$defs/Acquired"
+                },
+                {
+                  "$ref": "#/$defs/PreparedGraphResult"
                 },
                 {
                   "$ref": "#/$defs/Loading"
@@ -840,6 +884,25 @@
         "revision"
       ],
       "title": "Location",
+      "type": "object"
+    },
+    "PreparedGraphResult": {
+      "additionalProperties": false,
+      "properties": {
+        "handle": {
+          "$ref": "#/$defs/GraphHandle"
+        },
+        "kind": {
+          "const": "prepared_graph",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "handle"
+      ],
+      "title": "PreparedGraphResult",
       "type": "object"
     },
     "RecordsResult": {

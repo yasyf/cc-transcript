@@ -498,6 +498,78 @@ struct Delivery {
     expires: u64,
 }
 
+struct CachedPreparedFacts {
+    stamp: SourceStamp,
+    registry_generation: String,
+    admission: String,
+    authority: Value,
+    classifier: Value,
+    facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    last_used: u64,
+}
+
+enum PreparedSourceOutcome {
+    Ready(SourceStamp, Arc<crate::snapshot_prepared::PreparedFacts>),
+    Pending(String),
+}
+
+struct PendingPreparedSource {
+    token: String,
+    path: PathBuf,
+    stamp: SourceStamp,
+    depth: usize,
+}
+
+struct PreparedBuild {
+    claimant: String,
+    context: Value,
+    request: Value,
+    root: Arc<TranscriptSnapshot>,
+    root_handle: Value,
+    classifier: Value,
+    root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    remaining: WorkLimits,
+    location_started: bool,
+    location_finished: bool,
+    location_cursor: Option<String>,
+    located: HashMap<String, PathBuf>,
+    tasks: Vec<GraphTask>,
+    listing: Option<GraphListing>,
+    pending: Option<PendingPreparedSource>,
+    seen: HashSet<SourceIdentity>,
+    sources: Vec<Arc<crate::snapshot_prepared::PreparedFacts>>,
+    stamps: Vec<(PathBuf, SourceStamp)>,
+    expires: u64,
+}
+
+struct PreparedQueryCursor {
+    claimant: String,
+    graph_id: String,
+    root_record: String,
+    next: usize,
+    page_output_bytes: usize,
+    expires: u64,
+}
+
+struct PreparedGraph {
+    claimant: String,
+    registry_generation: String,
+    admission: String,
+    authority: Value,
+    root: Arc<TranscriptSnapshot>,
+    root_handle: Value,
+    classifier: Value,
+    root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    root_slices: HashMap<String, Arc<crate::snapshot_prepared::PreparedFacts>>,
+    revision: String,
+    stamps: Vec<(PathBuf, SourceStamp)>,
+    validated: bool,
+    sources: Vec<Arc<crate::snapshot_prepared::PreparedFacts>>,
+    remaining: WorkLimits,
+    expires: u64,
+    accounted: usize,
+}
+
 struct GraphNode {
     path: PathBuf,
     depth: usize,
@@ -609,6 +681,10 @@ struct StoreState {
     generations: HashMap<String, GenerationRecord>,
     classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
     graphs: HashMap<String, GraphCursor>,
+    prepared_graphs: HashMap<String, Arc<Mutex<PreparedGraph>>>,
+    prepared_builds: HashMap<String, PreparedBuild>,
+    prepared_queries: HashMap<String, PreparedQueryCursor>,
+    prepared_facts: HashMap<SourceIdentity, CachedPreparedFacts>,
     deliveries: HashMap<String, Delivery>,
     labels: HashMap<String, LabelSlot>,
     registries: HashMap<String, RegistryRecord>,
@@ -1817,6 +1893,23 @@ impl NativeStore {
             .deliveries
             .retain(|_, delivery| delivery.expires > now);
         state.owned.prune(now);
+        state
+            .prepared_graphs
+            .retain(|_, graph| graph.lock().expect("prepared graph").expires > now);
+        state
+            .prepared_queries
+            .retain(|_, cursor| cursor.expires > now);
+        let expired_builds: Vec<_> = state
+            .prepared_builds
+            .iter()
+            .filter(|(_, cursor)| cursor.expires <= now)
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in expired_builds {
+            if let Some(build) = state.prepared_builds.remove(&token) {
+                Self::release_prepared_build_state(state, &build);
+            }
+        }
         let expired_graphs: Vec<_> = state
             .graphs
             .iter()
@@ -1933,7 +2026,32 @@ impl NativeStore {
                         .opaque_dom_accounted_bytes
             })
             .sum();
-        let graph_bytes: usize = state.graphs.values().map(|graph| graph.accounted).sum();
+        let graph_bytes: usize = state
+            .graphs
+            .values()
+            .map(|graph| graph.accounted)
+            .sum::<usize>()
+            + state
+                .prepared_graphs
+                .values()
+                .map(|graph| graph.lock().expect("prepared graph").accounted)
+                .sum::<usize>()
+            + state
+                .prepared_queries
+                .values()
+                .map(|cursor| size_of::<PreparedQueryCursor>() + cursor.root_record.capacity())
+                .sum::<usize>()
+            + state
+                .prepared_builds
+                .values()
+                .map(|cursor| {
+                    size_of::<PreparedBuild>()
+                        + cursor.tasks.capacity() * size_of::<GraphTask>()
+                        + cursor.sources.capacity()
+                            * size_of::<Arc<crate::snapshot_prepared::PreparedFacts>>()
+                })
+                .sum::<usize>()
+            + Self::prepared_fact_bytes(state);
         let delivery_bytes: usize = state
             .deliveries
             .iter()
@@ -2636,6 +2754,14 @@ impl NativeStore {
                 .get(token)
                 .is_some_and(|cursor| cursor.claimant != claimant)
             || state
+                .prepared_builds
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
+                .prepared_queries
+                .get(token)
+                .is_some_and(|cursor| cursor.claimant != claimant)
+            || state
                 .projections
                 .get(token)
                 .is_some_and(|cursor| cursor.claimant != claimant)
@@ -2667,6 +2793,11 @@ impl NativeStore {
         }
         let mut released = state.labels.remove(token).is_some();
         released |= state.projections.remove(token).is_some();
+        released |= state.prepared_queries.remove(token).is_some();
+        if let Some(build) = state.prepared_builds.remove(token) {
+            Self::release_prepared_build_state(&mut state, &build);
+            released = true;
+        }
         released |= state.discoveries.remove(token).is_some();
         released |= state.checkpoints.remove(token).is_some();
         released |= state.waiters.remove(token).is_some();
@@ -2851,6 +2982,50 @@ impl NativeStore {
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, cancel, usage);
                 }
+                let prepared_build = {
+                    let mut state = self.state.lock().expect("snapshot state");
+                    if state.prepared_builds.get(cursor).is_some_and(|build| {
+                        build.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared build claimant differs",
+                        ));
+                    }
+                    state.prepared_builds.remove(cursor)
+                };
+                if let Some(mut build) = prepared_build {
+                    if build.context["authority"] != context["authority"]
+                        || build.context["admission"] != context["admission"]
+                        || build.context["registry_generation"] != context["registry_generation"]
+                    {
+                        Self::release_prepared_build_state(
+                            &mut self.state.lock().expect("snapshot state"),
+                            &build,
+                        );
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared build context differs",
+                        ));
+                    }
+                    build.context = context.clone();
+                    return self.prepare_graph_step(cursor, build, cancel, usage);
+                }
+                let prepared_query = {
+                    let mut state = self.state.lock().expect("snapshot state");
+                    if state.prepared_queries.get(cursor).is_some_and(|query| {
+                        query.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared query claimant differs",
+                        ));
+                    }
+                    state.prepared_queries.remove(cursor)
+                };
+                if let Some(query) = prepared_query {
+                    return self.prepared_input_page(cursor, query, context, cancel);
+                }
                 let graph = {
                     let mut state = self.state.lock().expect("snapshot state");
                     if state.graphs.get(cursor).is_some_and(|graph| {
@@ -2996,6 +3171,26 @@ impl NativeStore {
                         }
                         released
                     }
+                    "graph" => {
+                        if state.prepared_graphs.get(token).is_some_and(|graph| {
+                            let graph = graph.lock().expect("prepared graph");
+                            graph.claimant != claimant
+                                || graph.admission != str_field(context, "admission").unwrap_or("")
+                                || graph.registry_generation
+                                    != str_field(context, "registry_generation").unwrap_or("")
+                                || graph.authority != context["authority"]
+                        }) {
+                            return Err(SnapshotError::new(
+                                Status::StaleHandle,
+                                "prepared graph claimant differs",
+                            ));
+                        }
+                        let released = state.prepared_graphs.remove(token).is_some();
+                        state
+                            .prepared_queries
+                            .retain(|_, cursor| cursor.graph_id != token);
+                        released
+                    }
                     "reservation" => {
                         if state
                             .waiters
@@ -3027,6 +3222,8 @@ impl NativeStore {
                     None,
                 ))
             }
+            "prepare_graph" => self.prepare_graph(request, context, cancel, usage),
+            "query_graph" => self.query_graph(request, context, cancel),
             "query" if Self::is_graph_request(request) => {
                 self.graph(request, context, cancel, usage)
             }
@@ -5726,6 +5923,8 @@ impl NativeStore {
     }
 }
 
+include!("snapshot_prepared_service.rs");
+
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
 mod regression_tests;
@@ -5803,6 +6002,23 @@ mod tests {
             );
         }
         panic!("preparation did not finish");
+    }
+
+    fn finish_prepared(store: &NativeStore, mut response: Value, context: &Value) -> Value {
+        for _ in 0..4096 {
+            if response["status"].as_str() != Some("incomplete") {
+                return response;
+            }
+            let Some(cursor) = response["cursor"].as_str() else {
+                return response;
+            };
+            response = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                context,
+                &Cancellation::default(),
+            );
+        }
+        panic!("prepared graph did not finish");
     }
 
     fn handle(response: &Value) -> &Value {
@@ -6373,6 +6589,494 @@ mod tests {
         let completed = finish(&store, second, &b);
         assert_eq!(store.pin(handle(&completed), &b).unwrap().event_count, 5);
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..4, 4..5]);
+    }
+
+    #[test]
+    fn prepared_graph_reuses_one_source_across_queries_and_events() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachment = source.directory.join("external.jsonl");
+        std::fs::write(&attachment, format!("{}\n", user("external"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let direct_paths = vec![attachment.to_string_lossy().into_owned(); 923];
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":direct_paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let prepared = finish(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
+        let graph = prepared["data"]["handle"].clone();
+        assert_eq!(
+            store.state.lock().unwrap().prepared_graphs[graph["graph_id"].as_str().unwrap()]
+                .lock()
+                .unwrap()
+                .sources
+                .len(),
+            1
+        );
+        let after_prepare = store.state.lock().unwrap().counters;
+        for query in [
+            json!({"kind":"has_tool","pattern":"Read","subagents":true}),
+            json!({"kind":"has_read","pattern":"missing","subagents":true}),
+        ] {
+            let response = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":query,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(response["data"]["value"].as_bool(), Some(false));
+        }
+        let after_queries = store.state.lock().unwrap().counters;
+        assert_eq!(after_queries[1], after_prepare[1]);
+        assert_eq!(after_queries[15], after_prepare[15]);
+        let prepared_again = finish(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            prepared_again["status"].as_str(),
+            Some("ok"),
+            "{prepared_again:?}"
+        );
+        let after_again = store.state.lock().unwrap().counters;
+        assert_eq!(after_again[1], after_prepare[1]);
+        assert_eq!(after_again[15], after_prepare[15]);
+        let state = store.state.lock().unwrap();
+        let first_id = graph["graph_id"].as_str().unwrap();
+        let second_id = prepared_again["data"]["handle"]["graph_id"]
+            .as_str()
+            .unwrap();
+        let first = state.prepared_graphs[first_id].lock().unwrap();
+        let second = state.prepared_graphs[second_id].lock().unwrap();
+        assert!(Arc::ptr_eq(&first.root_facts, &second.root_facts));
+    }
+
+    #[test]
+    fn prepared_graph_rejects_changed_source_and_reuses_other_revisions() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let changed = source.directory.join("changed.jsonl");
+        let stable = source.directory.join("stable.jsonl");
+        std::fs::write(&changed, format!("{}\n", user("before"))).unwrap();
+        std::fs::write(&stable, format!("{}\n", user("stable"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[changed.to_string_lossy().as_ref(),stable.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = finish(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        let old_handle = first["data"]["handle"].clone();
+        let before = store.state.lock().unwrap().counters;
+        std::fs::write(&changed, format!("{}\n", user("after-longer"))).unwrap();
+        let query = |graph: &Value| {
+            store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default())
+        };
+        let stale = query(&old_handle);
+        assert_eq!(stale["status"].as_str(), Some("changed"), "{stale:?}");
+        let second = finish(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        let fresh = query(&second["data"]["handle"]);
+        assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0] - before[0], 1);
+        assert!(after[1] > before[1]);
+    }
+
+    #[test]
+    fn prepared_input_pages_keep_order_without_more_source_reads() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let mut paths = Vec::new();
+        for index in 0..258 {
+            let path = source.directory.join(format!("external-{index:03}.jsonl"));
+            let tool = format!(
+                r#"{{"type":"assistant","uuid":"tool-{index}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"bash-{index}","name":"Bash","input":{{"command":"echo {index}"}}}}]}}}}"#
+            );
+            std::fs::write(&path, format!("{}\n{tool}\n", user(&format!("u-{index}")))).unwrap();
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_sources", json!(512));
+        template["limits"].insert("max_items", json!(1024));
+        template["limits"].insert("max_events", json!(4096));
+        let prepare = finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
+        assert_eq!(prepare["status"].as_str(), Some("ok"), "{prepare:?}");
+        let before = store.state.lock().unwrap().counters;
+        let mut page = store.request(&json!({"schema":SCHEMA,"id":"inputs","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        let mut records = Vec::new();
+        for _ in 0..10 {
+            records.extend(
+                page["data"]["records_json"]
+                    .as_array()
+                    .expect("records")
+                    .iter()
+                    .map(|item| item.as_str().unwrap().to_owned()),
+            );
+            if page["status"].as_str() == Some("ok") {
+                break;
+            }
+            assert_eq!(page["status"].as_str(), Some("incomplete"), "{page:?}");
+            page = store.request(&json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":page["cursor"]}), &owner, &Cancellation::default());
+        }
+        assert_eq!(page["status"].as_str(), Some("ok"), "{page:?}");
+        assert_eq!(records.len(), 259);
+        assert!(records[1].contains("echo 0"), "{}", records[1]);
+        assert!(records[258].contains("echo 257"));
+        let repeated = store.request(&json!({"schema":SCHEMA,"id":"repeat","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(repeated["status"].as_str(), Some("incomplete"));
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        let abandoned = store.request(&json!({"schema":SCHEMA,"id":"cancel","operation":"resume","cursor":repeated["cursor"]}), &owner, &cancelled);
+        assert_eq!(abandoned["status"].as_str(), Some("cancelled"));
+        let still_usable = store.request(&json!({"schema":SCHEMA,"id":"other","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(
+            still_usable["status"].as_str(),
+            Some("ok"),
+            "{still_usable:?}"
+        );
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[1], before[1]);
+        assert_eq!(after[15], before[15]);
+    }
+
+    #[test]
+    fn incomplete_preparation_reuses_finished_sources_until_complete() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let paths: Vec<_> = (0..6)
+            .map(|index| {
+                let path = source.directory.join(format!("external-{index}.jsonl"));
+                std::fs::write(&path, format!("{}\n", user(&format!("u-{index}")))).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let baseline = store.state.lock().unwrap().counters;
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_read_bytes", json!(600));
+        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let mut prior = 0;
+        let mut complete = false;
+        for _ in 0..8 {
+            let mut result = store.request(&request, &owner, &Cancellation::default());
+            while let Some(cursor) = result["cursor"].as_str() {
+                result = store.request(
+                    &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                    &owner,
+                    &Cancellation::default(),
+                );
+            }
+            let cached = store.state.lock().unwrap().prepared_facts.len();
+            if result["status"].as_str() == Some("ok") {
+                assert_eq!(cached, 7);
+                complete = true;
+                break;
+            }
+            assert_eq!(result["status"].as_str(), Some("incomplete"), "{result:?}");
+            assert!(cached > prior, "preparation must make progress");
+            prior = cached;
+        }
+        assert!(complete);
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0] - baseline[0], 6);
+        assert_eq!(after[4] - baseline[4], 6);
+    }
+
+    #[test]
+    fn prepared_deep_queries_preserve_root_window_and_whole_child() {
+        let root_tool = r#"{"type":"assistant","uuid":"root-tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read-root","name":"Read","input":{"file_path":"root.rs"}}]}}"#;
+        let child_tool = r#"{"type":"assistant","uuid":"child-tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read-child","name":"Read","input":{"file_path":"child.rs"}}]}}"#;
+        let source = Source::new(&format!(
+            "{}\n{root_tool}\n{}\n",
+            user("first"),
+            user("last")
+        ));
+        let child = source.directory.join("external.jsonl");
+        std::fs::write(&child, format!("{}\n{child_tool}\n", user("child"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let prepared = finish(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[child.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
+        assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
+        let selectors = json!([{"kind":"current_turn"}]);
+        for pattern in ["root.rs", "child.rs"] {
+            let query = json!({"kind":"has_read","pattern":pattern,"subagents":true});
+            let old = finish(
+                &store,
+                store.request(
+                    &graph_request(
+                        &root,
+                        query.clone(),
+                        vec![child.to_string_lossy().into_owned()],
+                        selectors.clone(),
+                    ),
+                    &owner,
+                    &Cancellation::default(),
+                ),
+                &owner,
+            );
+            let new = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":prepared["data"]["handle"],"selectors":selectors,"query":query,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+            assert_eq!(new["status"].as_str(), Some("ok"), "{new:?}");
+            assert_eq!(new["data"]["value"], old["data"]["value"]);
+        }
+        let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap();
+        let state = store.state.lock().unwrap();
+        assert_eq!(
+            state.prepared_graphs[graph_id]
+                .lock()
+                .unwrap()
+                .root_slices
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_large_source_reads_one_step_per_page() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachment = source.directory.join("large.jsonl");
+        std::fs::write(&attachment, format!("{}\n", format!(r#"{{"type":"user","uuid":"large","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{}"}}}}"#, "x".repeat(64 * 1024)))).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024,"max_events_per_step":2,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let baseline = store.state.lock().unwrap().counters;
+        let template = acquire(&source.path);
+        let first = store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        assert!(first["cursor"].as_str().is_some());
+        let after = store.state.lock().unwrap().counters;
+        assert!(
+            after[1] - baseline[1] <= 1024,
+            "first page read {} bytes",
+            after[1] - baseline[1]
+        );
+        let done = finish_prepared(&store, first, &owner);
+        assert_eq!(done["status"].as_str(), Some("ok"), "{done:?}");
+    }
+
+    #[test]
+    fn changed_prepared_facts_remain_accounted_while_prior_graph_is_pinned() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachment = source.directory.join("large.jsonl");
+        let write = |text: &str| {
+            std::fs::write(&attachment, format!("{}\n", format!(r#"{{"type":"user","uuid":"large","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{text}"}}}}"#))).unwrap()
+        };
+        write(&"a".repeat(48 * 1024));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = finish_prepared(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        write(&"b".repeat(56 * 1024));
+        let second = finish_prepared(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        let with_prior = NativeStore::prepared_fact_bytes(&store.state.lock().unwrap());
+        let old_handle = &first["data"]["handle"];
+        let released = store.request(&json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"graph","token":old_handle["graph_id"],"owner_epoch":old_handle["owner_epoch"]}), &owner, &Cancellation::default());
+        assert_eq!(released["status"].as_str(), Some("ok"), "{released:?}");
+        let without_prior = NativeStore::prepared_fact_bytes(&store.state.lock().unwrap());
+        assert!(
+            with_prior > without_prior + 48 * 1024,
+            "{with_prior} <= {without_prior}"
+        );
+    }
+
+    #[test]
+    fn cancelling_one_prepared_waiter_keeps_another_source_load() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachment = source.directory.join("large.jsonl");
+        std::fs::write(&attachment, format!("{}\n", format!(r#"{{"type":"user","uuid":"large","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{}"}}}}"#, "x".repeat(32 * 1024)))).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024,"max_events_per_step":2,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = store.request(&request, &owner, &Cancellation::default());
+        let second = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"));
+        assert_eq!(second["status"].as_str(), Some("incomplete"));
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        let rejected = store.request(
+            &json!({"schema":SCHEMA,"id":"cancel","operation":"resume","cursor":first["cursor"]}),
+            &owner,
+            &cancelled,
+        );
+        assert_eq!(
+            rejected["status"].as_str(),
+            Some("cancelled"),
+            "{rejected:?}"
+        );
+        let done = finish_prepared(&store, second, &owner);
+        assert_eq!(done["status"].as_str(), Some("ok"), "{done:?}");
+    }
+
+    #[test]
+    fn prepared_graph_rejects_authority_change_on_resume_query_and_release() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let attachment = source.directory.join("external.jsonl");
+        std::fs::write(&attachment, format!("{}\n", user("external"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[attachment.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"));
+        let mut narrowed = owner.clone();
+        narrowed.insert("authority", json!({"kind":"restricted_roots","effective_uid":unsafe { libc::geteuid() }.to_string(),"roots":[source.directory.to_string_lossy().as_ref()]}));
+        let denied = store.request(
+            &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":first["cursor"]}),
+            &narrowed,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            denied["status"].as_str(),
+            Some("stale_cursor"),
+            "{denied:?}"
+        );
+        let complete = finish_prepared(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(complete["status"].as_str(), Some("ok"), "{complete:?}");
+        let graph = &complete["data"]["handle"];
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph,"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let denied = store.request(&query, &narrowed, &Cancellation::default());
+        assert_eq!(
+            denied["status"].as_str(),
+            Some("stale_handle"),
+            "{denied:?}"
+        );
+        let release = json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"graph","token":graph["graph_id"],"owner_epoch":graph["owner_epoch"]});
+        let denied = store.request(&release, &narrowed, &Cancellation::default());
+        assert_eq!(
+            denied["status"].as_str(),
+            Some("stale_handle"),
+            "{denied:?}"
+        );
+        let allowed = store.request(&release, &owner, &Cancellation::default());
+        assert_eq!(allowed["status"].as_str(), Some("ok"), "{allowed:?}");
+        let before = store.state.lock().unwrap().counters;
+        let narrowed_graph = finish_prepared(
+            &store,
+            store.request(&request, &narrowed, &Cancellation::default()),
+            &narrowed,
+        );
+        assert_eq!(
+            narrowed_graph["status"].as_str(),
+            Some("ok"),
+            "{narrowed_graph:?}"
+        );
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0] - before[0], 1);
+    }
+
+    #[test]
+    fn prepared_root_facts_are_keyed_by_classifier() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let store = store();
+        let owner = context("a");
+        store
+            .register_classifier(
+                "none",
+                "1",
+                Arc::new(|_, range| Ok(vec![false; range.len()])),
+            )
+            .unwrap();
+        let native = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut custom_request = acquire(&source.path);
+        custom_request.insert("classifier", json!({"id":"none","version":"1"}));
+        let custom = finish(
+            &store,
+            store.request(&custom_request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let prepare = |root: &Value, classifier: Value| {
+            finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(root),"classifier":classifier,"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner)
+        };
+        let first = prepare(&native, json!({"id":"native","version":"1"}));
+        let second = prepare(&custom, json!({"id":"none","version":"1"}));
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        let state = store.state.lock().unwrap();
+        let first_graph = state.prepared_graphs
+            [first["data"]["handle"]["graph_id"].as_str().unwrap()]
+        .lock()
+        .unwrap();
+        let second_graph = state.prepared_graphs
+            [second["data"]["handle"]["graph_id"].as_str().unwrap()]
+        .lock()
+        .unwrap();
+        assert!(!Arc::ptr_eq(
+            &first_graph.root_facts,
+            &second_graph.root_facts
+        ));
     }
 
     #[test]

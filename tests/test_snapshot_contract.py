@@ -35,7 +35,34 @@ def query_with_attachments(count: int) -> dict[str, object]:
     }
 
 
-def test_attachment_contract_accepts_active_session_and_rejects_overflow() -> None:
-    assert len(REQUEST.validate_python(query_with_attachments(918)).view.attachments) == 918
+def prepare_with_threads(count: int) -> dict[str, object]:
+    payload = query_with_attachments(0)
+    payload["operation"] = "prepare_graph"
+    payload.pop("query")
+    payload["thread_ids"] = [f"thread-{index}" for index in range(count)]
+    payload["roots"] = ["/sessions"]
+    payload["direct_paths"] = []
+    return payload
+
+
+def test_prepared_registry_accepts_active_session_and_rejects_overflow() -> None:
+    assert len(REQUEST.validate_python(prepare_with_threads(918)).thread_ids) == 918
+    with pytest.raises(ValidationError, match="thread_ids"):
+        REQUEST.validate_python(prepare_with_threads(1025))
+
+
+def test_ordinary_query_cannot_carry_attachment_paths() -> None:
     with pytest.raises(ValidationError, match="attachments"):
-        REQUEST.validate_python(query_with_attachments(1025))
+        REQUEST.validate_python(query_with_attachments(1))
+
+
+def test_deep_query_requires_complete_prepared_handle() -> None:
+    payload = query_with_attachments(0)
+    payload.pop("view")
+    payload["operation"] = "query_graph"
+    payload["selectors"] = []
+    payload["query"] = {"kind": "has_tool", "pattern": "Read", "subagents": True}
+    with pytest.raises(ValidationError, match="handle"):
+        REQUEST.validate_python(payload)
+    payload["handle"] = {"graph_id": "graph", "owner_epoch": "epoch", "revision": "revision", "complete": True}
+    assert REQUEST.validate_python(payload).handle.graph_id == "graph"
