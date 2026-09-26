@@ -6916,7 +6916,8 @@ mod tests {
             Some(0)
         );
         let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &background, &Cancellation::default());
-        assert_eq!(warm["status"].as_str(), Some("retained_limit"), "{warm:?}");
+        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        assert_eq!(warm["data"]["complete"].as_bool(), Some(false));
         assert!(
             warm["usage"]["discovery_entries_examined"]
                 .as_u64()
