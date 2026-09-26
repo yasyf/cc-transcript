@@ -6469,9 +6469,12 @@ mod tests {
         }))
         .unwrap();
         let owner = context("a");
+        let deadline = now_ms() + 120_000;
+        let mut root_request = acquire(&source.path);
+        root_request.insert("deadline_unix_ms", json!(deadline));
         let root = finish(
             &store,
-            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            store.request(&root_request, &owner, &Cancellation::default()),
             &owner,
         );
         let mut request = graph_request(
@@ -6485,7 +6488,7 @@ mod tests {
         request["limits"].insert("max_events", json!(4096));
         request["limits"].insert("max_read_bytes", json!(8 * 1024 * 1024));
         request["limits"].insert("max_items", json!(1024));
-        request.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        request.insert("deadline_unix_ms", json!(deadline));
         let mut reply = store.request(&request, &owner, &Cancellation::default());
         let mut peak_leases = store.state.lock().unwrap().leases.len();
         for _ in 0..1200 {
