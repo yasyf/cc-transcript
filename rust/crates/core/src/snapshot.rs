@@ -6892,6 +6892,101 @@ mod tests {
     }
 
     #[test]
+    fn prepared_registry_retries_advance_without_rereading_sources() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids: Vec<_> = (0..923).map(|index| format!("thread-{index:04}")).collect();
+        let mut source_bytes = 0usize;
+        for id in &ids {
+            let contents = format!("{}\n", user(id));
+            source_bytes += contents.len();
+            std::fs::write(source.directory.join(format!("{id}.jsonl")), contents).unwrap();
+        }
+        let store = NativeStore::new(&json!({
+            "max_read_bytes_per_step":4096,
+            "max_events_per_step":2048,
+            "max_retained_bytes":32*1024*1024,
+            "reserved_hook_accounted_bytes":4096,
+            "max_leases":16,
+            "reserved_hook_leases":1
+        }))
+        .unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut template = acquire(&source.path);
+        template.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        template["limits"].insert("max_read_bytes", json!(32 * 1024));
+        template["limits"].insert("max_events", json!(1024));
+        template["limits"].insert("max_items", json!(1024));
+        template["limits"].insert("max_discovery_entries", json!(2048));
+        template["limits"].insert("max_sources", json!(1024));
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let baseline = store.state.lock().unwrap().counters;
+        let mut completed = false;
+        let mut attempts = 0;
+        for _ in 0..10 {
+            let before = store.state.lock().unwrap().counters;
+            let reply = finish_prepared(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            let after = store.state.lock().unwrap().counters;
+            assert!(after[1] - before[1] <= 32 * 1024);
+            attempts += 1;
+            if reply["status"].as_str() == Some("ok") {
+                let graph_id = reply["data"]["handle"]["graph_id"].as_str().unwrap();
+                assert_eq!(
+                    store.state.lock().unwrap().prepared_graphs[graph_id]
+                        .lock()
+                        .unwrap()
+                        .sources
+                        .len(),
+                    923
+                );
+                completed = true;
+                break;
+            }
+            assert_eq!(reply["status"].as_str(), Some("incomplete"), "{reply:?}");
+            assert!(reply["cursor"].as_str().is_none());
+        }
+        assert!(completed);
+        assert!(attempts > 1);
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0] - baseline[0], 923);
+        assert_eq!(after[1] - baseline[1], source_bytes as u64);
+    }
+
+    #[test]
+    fn prepared_graph_rejects_oversized_source_before_reading_it() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let large = source.directory.join("large.jsonl");
+        std::fs::write(&large, format!("{}\n", user(&"x".repeat(64 * 1024)))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_read_bytes", json!(32 * 1024));
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[large.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let before = store.state.lock().unwrap().counters;
+        for _ in 0..2 {
+            let reply = store.request(&prepare, &owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("incomplete"), "{reply:?}");
+            assert!(reply["cursor"].as_str().is_none());
+        }
+        let after = store.state.lock().unwrap().counters;
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[1]);
+    }
+
+    #[test]
     fn changed_prepared_facts_remain_accounted_while_prior_graph_is_pinned() {
         let source = Source::new(&format!("{}\n", user("root")));
         let attachment = source.directory.join("large.jsonl");
