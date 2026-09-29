@@ -1,6 +1,7 @@
 //! Target discovery and parsing shared by every transcript command (cli.py's
 //! discover / resolve_targets / parse_transcripts / scope_note plumbing).
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_transcript_core::discovery::{find_in, mtime_secs};
@@ -26,23 +27,26 @@ pub struct Targets {
     pub total: usize,
 }
 
-fn project_matches(path: &Path, root: &Path, project: Option<&str>) -> bool {
-    let Some(project) = project else { return true };
-    let Ok(rel) = path.strip_prefix(root) else {
-        return false;
-    };
-    let parts: Vec<_> = rel.components().collect();
-    parts[..parts.len().saturating_sub(1)]
-        .iter()
-        .any(|part| part.as_os_str().to_string_lossy().contains(project))
-}
-
 /// Newest-first discovery under `root` (cli.py discover): find_in order, project
 /// filtered, stable-sorted by mtime descending.
 pub fn discover(root: &Path, project: Option<&str>, contains: Option<&str>) -> Vec<(PathBuf, f64)> {
-    let mut found: Vec<(PathBuf, f64)> = find_in(root, contains, None, None)
-        .into_iter()
-        .filter(|(path, _)| project_matches(path, root, project))
+    let roots = if let Some(project) = project {
+        fs::read_dir(root)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .filter(|entry| entry.file_name().to_string_lossy().contains(project))
+                    .map(|entry| entry.path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![root.to_path_buf()]
+    };
+    let mut found: Vec<(PathBuf, f64)> = roots
+        .iter()
+        .flat_map(|root| find_in(root, contains, None, None))
         .collect();
     found.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("mtimes are finite"));
     found
@@ -236,4 +240,25 @@ pub fn py_path(arg: &str) -> PathBuf {
         (false, false) => joined,
     };
     PathBuf::from(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discover;
+
+    #[test]
+    fn project_discovery_only_walks_matching_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let wanted = root.path().join("wanted-project");
+        let other = root.path().join("other-project");
+        std::fs::create_dir(&wanted).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(wanted.join("match.jsonl"), "{}").unwrap();
+        std::fs::write(other.join("match.jsonl"), "{}").unwrap();
+
+        let found = discover(root.path(), Some("wanted"), None);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, wanted.join("match.jsonl"));
+    }
 }
