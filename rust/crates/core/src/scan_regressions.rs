@@ -86,6 +86,42 @@ fn exhausted_discovery_does_not_read_a_body() {
 }
 
 #[test]
+fn project_filter_skips_other_directories_before_the_scan() {
+    let fixture = Fixture::new();
+    let wanted = fixture.0.join("wanted-project");
+    let other = fixture.0.join("other-project");
+    std::fs::create_dir(&wanted).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let event = "{\"type\":\"user\",\"uuid\":\"a\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"match\"}}\n";
+    for name in ["first.jsonl", "second.jsonl"] {
+        std::fs::write(wanted.join(name), event).unwrap();
+    }
+    for index in 0..10 {
+        std::fs::write(other.join(format!("{index}.jsonl")), event).unwrap();
+    }
+    let mut bound = limits();
+    bound.max_items = 1;
+    bound.max_discovery_entries = 6;
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut scan = ScanSession::new(&store, bound, Cancellation::default());
+    let plan = ScanPlan {
+        project: Some("wanted".to_owned()),
+        ..fixture.plan(vec![])
+    };
+    let mut visited = Vec::new();
+    let result = scan.run(&plan, |path, _, _, _| {
+        visited.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        Ok(ScanControl::Continue)
+    });
+    assert!(result.complete, "{:?}", result.reason);
+    assert_eq!(result.selected_sources, 2);
+    assert_eq!(result.available_sources, 2);
+    assert!(result.progress.discovery_entries <= 6);
+    visited.sort();
+    assert_eq!(visited, ["first.jsonl", "second.jsonl"]);
+}
+
+#[test]
 fn explicit_paths_keep_their_order() {
     let fixture = Fixture::new();
     let a = fixture.source("a.jsonl", "a");

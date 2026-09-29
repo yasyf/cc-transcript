@@ -292,8 +292,46 @@ impl<'a> ScanSession<'a> {
         }
         let canonical_root =
             std::fs::canonicalize(&plan.root).map_err(|error| incomplete(error.to_string()))?;
+        let roots = if let Some(project) = &plan.project {
+            let mut roots = Vec::new();
+            for entry in
+                std::fs::read_dir(&plan.root).map_err(|error| incomplete(error.to_string()))?
+            {
+                self.budget.checkpoint(&self.cancel)?;
+                self.budget.progress.discovery_entries += 1;
+                if self.budget.progress.discovery_entries > self.budget.limits.max_discovery_entries
+                {
+                    return Err(incomplete("project discovery budget exhausted"));
+                }
+                let entry = entry.map_err(|error| incomplete(error.to_string()))?;
+                if entry
+                    .file_type()
+                    .map_err(|error| incomplete(error.to_string()))?
+                    .is_dir()
+                    && entry.file_name().to_string_lossy().contains(project)
+                {
+                    roots.push(entry.path());
+                }
+            }
+            roots
+        } else {
+            vec![plan.root.clone()]
+        };
+        if roots.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
         let mut request = self.bounded_request("discover");
-        request.insert("roots", json!([plan.root.to_string_lossy().as_ref()]));
+        request.insert(
+            "roots",
+            json!(roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()),
+        );
+        request["limits"].insert(
+            "max_items",
+            json!(self.budget.remaining().max_discovery_entries),
+        );
         request.insert("preserve_aliases", json!(true));
         request.insert("follow_directory_symlinks", json!(false));
         let mut paths = Vec::new();

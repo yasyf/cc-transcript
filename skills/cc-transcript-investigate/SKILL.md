@@ -13,15 +13,19 @@ token blowups — using the `cc-transcript` CLI.
 
 ## The one rule
 
-**Never `cat`, `Read`, `head`, or `tail` a raw `.jsonl` transcript.** A single
-transcript routinely exceeds 1MB of dense JSON; one careless read blows the
+**Never read a raw `.jsonl` transcript with `cat`, `Read`, `head`, or `tail`.
+Never recursively `rg` the projects tree.** A single
+transcript routinely exceeds 1 MB of dense JSON; one careless read blows the
 context window. Every question is answerable through the subcommands, which
 parse, filter, and truncate server-side — and `corpus` is how you obey the
 rule across a whole projects tree, where a hand-rolled `rg` over the raw
-files is the same mistake at gigabyte scale:
+files is the same mistake at gigabyte scale. First narrow to one project and
+list recent sessions. Pass an explicit transcript path to `grep` when you know
+which session matters. Use `corpus` for repeated queries across one project:
 
 ```bash
-uvx cc-transcript --help
+uvx cc-transcript list --project monorepo --limit 10
+uvx cc-transcript grep 'pattern' /path/to/session.jsonl --max-matches 10 --timeout-ms 5000
 ```
 
 ## Command cheat-sheet
