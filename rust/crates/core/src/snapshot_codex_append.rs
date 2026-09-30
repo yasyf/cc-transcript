@@ -410,7 +410,7 @@ mod codex_append_tests {
     }
 
     fn acquire(store: &NativeStore, source: &Source, context: &Value) -> Value {
-        let request = json!({"schema":SCHEMA,"id":"codex-append","operation":"acquire","path":source.path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":4*1024*1024,"max_events":4096,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}});
+        let request = json!({"schema":SCHEMA,"id":"codex-append","operation":"acquire","path":source.path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":4*1024*1024,"max_source_read_bytes":4*1024*1024,"max_events":4096,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}});
         let mut response = store.request(&request, context, &Cancellation::default());
         for _ in 0..64 {
             if response["status"].as_str() != Some("incomplete") {

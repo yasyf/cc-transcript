@@ -89,12 +89,18 @@ impl<'store> ScanBudget<'store> {
     }
 
     pub fn remaining(&self) -> WorkLimits {
+        let read = self
+            .limits
+            .max_read_bytes
+            .saturating_sub(self.progress.source_bytes)
+            .saturating_sub(self.progress.projection_bytes);
         WorkLimits {
-            max_read_bytes: self
+            max_read_bytes: read,
+            max_source_read_bytes: self
                 .limits
-                .max_read_bytes
+                .max_source_read_bytes
                 .saturating_sub(self.progress.source_bytes)
-                .saturating_sub(self.progress.projection_bytes),
+                .min(read),
             max_events: self
                 .limits
                 .max_events
@@ -180,6 +186,9 @@ impl<'store> ScanBudget<'store> {
             .progress
             .discovery_entries
             .saturating_add(count(usage, "discovery_entries_examined")?);
+        if self.progress.source_bytes > self.limits.max_source_read_bytes {
+            return Err(crate::snapshot::source_read_limit());
+        }
         if self
             .progress
             .source_bytes
@@ -279,7 +288,7 @@ impl<'a> ScanSession<'a> {
 
     fn bounded_request(&self, operation: &str) -> Value {
         let limits = self.budget.remaining();
-        json!({"operation":operation,"deadline_unix_ms":limits.deadline_unix_ms,"limits":{"max_read_bytes":limits.max_read_bytes,"max_events":limits.max_events,"max_items":limits.max_items,"max_output_bytes":limits.max_output_bytes,"max_discovery_entries":limits.max_discovery_entries,"max_sources":limits.max_sources}})
+        json!({"operation":operation,"deadline_unix_ms":limits.deadline_unix_ms,"limits":limits.to_json()})
     }
 
     fn targets(&mut self, plan: &ScanPlan) -> Result<(Vec<PathBuf>, usize), SnapshotError> {
@@ -555,7 +564,7 @@ where
         }
         let file = std::fs::File::open(path).map_err(|e| incomplete(e.to_string()))?;
         let before = file.metadata().map_err(|e| incomplete(e.to_string()))?;
-        let read_limit = budget.remaining().max_read_bytes;
+        let read_limit = budget.remaining().max_source_read_bytes;
         let source_start = budget.progress.source_bytes;
         let read_count = std::rc::Rc::new(std::cell::Cell::new(0));
         let counted = CountedRead {
@@ -576,7 +585,7 @@ where
                 reader
                     .get_mut()
                     .inner
-                    .set_limit(budget.remaining().max_read_bytes as u64);
+                    .set_limit(budget.remaining().max_source_read_bytes as u64);
             }
             let part = reader.fill_buf().map_err(|e| incomplete(e.to_string()))?;
             budget.progress.source_bytes = source_start.saturating_add(read_count.get());

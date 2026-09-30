@@ -26,6 +26,7 @@ def query_with_attachments(count: int) -> dict[str, object]:
         "deadline_unix_ms": 1,
         "limits": {
             "max_read_bytes": 1,
+            "max_source_read_bytes": 1,
             "max_events": 1,
             "max_items": 1,
             "max_output_bytes": 1,
@@ -49,6 +50,19 @@ def test_prepared_registry_accepts_active_session_and_rejects_overflow() -> None
     assert len(REQUEST.validate_python(prepare_with_threads(918)).thread_ids) == 918
     with pytest.raises(ValidationError, match="thread_ids"):
         REQUEST.validate_python(prepare_with_threads(1025))
+
+
+def test_limits_require_a_source_read_budget() -> None:
+    limits = {
+        "max_read_bytes": 1,
+        "max_events": 1,
+        "max_items": 1,
+        "max_output_bytes": 1,
+        "max_discovery_entries": 1,
+        "max_sources": 1,
+    }
+    with pytest.raises(ValidationError, match="max_source_read_bytes"):
+        REQUEST.validate_python(query_with_attachments(0) | {"limits": limits})
 
 
 def test_ordinary_query_cannot_carry_attachment_paths() -> None:

@@ -80,12 +80,21 @@ impl SnapshotError {
 #[derive(Debug, Clone, Copy)]
 pub struct WorkLimits {
     pub max_read_bytes: usize,
+    pub max_source_read_bytes: usize,
     pub max_events: usize,
     pub max_items: usize,
     pub max_output_bytes: usize,
     pub max_discovery_entries: usize,
     pub max_sources: usize,
     pub deadline_unix_ms: u64,
+}
+
+impl WorkLimits {
+    pub fn to_json(&self) -> Value {
+        json!({"max_read_bytes":self.max_read_bytes,"max_source_read_bytes":self.max_source_read_bytes,"max_events":self.max_events,
+            "max_items":self.max_items,"max_output_bytes":self.max_output_bytes,
+            "max_discovery_entries":self.max_discovery_entries,"max_sources":self.max_sources})
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -380,6 +389,7 @@ struct Waiter {
     expires: u64,
     deadline: u64,
     used_bytes: usize,
+    used_source_bytes: usize,
     used_events: usize,
     stage: Option<Arc<ClassifierSlot>>,
     busy: bool,
@@ -975,6 +985,10 @@ fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
 }
 
+pub(crate) fn source_read_limit() -> SnapshotError {
+    SnapshotError::new(Status::Incomplete, "source_read_limit")
+}
+
 fn str_field<'a>(value: &'a Value, key: &str) -> Result<&'a str, SnapshotError> {
     value
         .get(key)
@@ -1041,6 +1055,7 @@ fn limits(request: &Value) -> Result<WorkLimits, SnapshotError> {
         .ok_or_else(|| invalid("missing limits"))?;
     Ok(WorkLimits {
         max_read_bytes: number(value, "max_read_bytes")?,
+        max_source_read_bytes: number(value, "max_source_read_bytes")?,
         max_events: number(value, "max_events")?,
         max_items: number(value, "max_items")?,
         max_output_bytes: number(value, "max_output_bytes")?,
@@ -1132,6 +1147,7 @@ impl NativeStore {
     pub fn scan_limits(&self) -> WorkLimits {
         WorkLimits {
             max_read_bytes: self.config.read_step,
+            max_source_read_bytes: self.config.read_step,
             max_events: self.config.event_step,
             max_items: self.config.event_step,
             max_output_bytes: self.config.output,
@@ -3670,6 +3686,7 @@ impl NativeStore {
                 expires: (now + self.config.ttl).min(deadline),
                 deadline,
                 used_bytes: 0,
+                used_source_bytes: 0,
                 used_events: 0,
                 stage: None,
                 busy: false,
@@ -3689,11 +3706,12 @@ impl NativeStore {
         (
             json!({"kind": "loading", "reservation": {"owner_epoch": self.owner_epoch, "reservation_id": token,
             "load_id": waiter.load.id, "created_unix_ms": waiter.created, "expires_unix_ms": waiter.expires,
-            "absolute_deadline_unix_ms": waiter.deadline, "remaining_work": {
-                "max_read_bytes": waiter.limits.max_read_bytes.saturating_sub(waiter.used_bytes),
-                "max_events": waiter.limits.max_events.saturating_sub(waiter.used_events),
-                "max_items": waiter.limits.max_items, "max_output_bytes": waiter.limits.max_output_bytes,
-                "max_discovery_entries": waiter.limits.max_discovery_entries, "max_sources": waiter.limits.max_sources}}}),
+            "absolute_deadline_unix_ms": waiter.deadline, "remaining_work": WorkLimits {
+                max_read_bytes: waiter.limits.max_read_bytes.saturating_sub(waiter.used_bytes),
+                max_source_read_bytes: waiter.limits.max_source_read_bytes.saturating_sub(waiter.used_source_bytes),
+                max_events: waiter.limits.max_events.saturating_sub(waiter.used_events),
+                ..waiter.limits
+            }.to_json()}}),
             Some(token.to_owned()),
             Some(reason.to_owned()),
         )
@@ -3743,18 +3761,25 @@ impl NativeStore {
             let read_bound = self.config.read_step.min(
                 waiter
                     .limits
-                    .max_read_bytes
-                    .saturating_sub(waiter.used_bytes),
+                    .max_source_read_bytes
+                    .saturating_sub(waiter.used_source_bytes),
             );
             let events_bound = self
                 .config
                 .event_step
                 .min(waiter.limits.max_events.saturating_sub(waiter.used_events));
-            if read_bound == 0 && load.offset < slot.stamp.size
-                || events_bound == 0
-                    && (load.offset < slot.stamp.size
-                        || !load.pending.is_empty()
-                        || load.indexed < load.count)
+            if read_bound == 0 && load.offset < slot.stamp.size {
+                self.state
+                    .lock()
+                    .expect("snapshot state")
+                    .waiters
+                    .remove(token);
+                return Err(source_read_limit());
+            }
+            if events_bound == 0
+                && (load.offset < slot.stamp.size
+                    || !load.pending.is_empty()
+                    || load.indexed < load.count)
             {
                 self.state
                     .lock()
@@ -3796,7 +3821,7 @@ impl NativeStore {
                     usage,
                 )
             });
-            waiter.used_bytes += (usage[1] - before_bytes) as usize;
+            waiter.used_source_bytes += (usage[1] - before_bytes) as usize;
             waiter.used_events += (usage[3] - before_events) as usize
                 + if checked_prefix == load.prefix_checked {
                     load.indexed.saturating_sub(before_indexed)
@@ -4018,6 +4043,7 @@ impl NativeStore {
     fn extends_prefix(
         &self,
         snapshot: &TranscriptSnapshot,
+        remaining: &mut WorkLimits,
         usage: &mut [u64; 18],
     ) -> Result<bool, SnapshotError> {
         let Some((end, fence)) = snapshot.prefix_fence() else {
@@ -4031,11 +4057,15 @@ impl NativeStore {
         ) {
             return Ok(false);
         }
+        if fence.len() > remaining.max_source_read_bytes {
+            return Err(source_read_limit());
+        }
         let mut current = vec![0; fence.len()];
         file.seek(SeekFrom::Start(end - fence.len() as u64))
             .map_err(io_error)?;
         file.read_exact(&mut current).map_err(io_error)?;
         usage[1] += current.len() as u64;
+        remaining.max_source_read_bytes -= current.len();
         Ok(current == fence)
     }
 
@@ -4067,10 +4097,7 @@ impl NativeStore {
                 .saturating_sub(load.origin_fence.len())
                 .min(read_bound);
             if count == 0 && fence_size > load.origin_fence.len() {
-                return Err(SnapshotError::new(
-                    Status::SourceLimit,
-                    "pinned fence exceeds read budget",
-                ));
+                return Err(source_read_limit());
             }
             load.file
                 .seek(SeekFrom::Start(
@@ -4099,10 +4126,7 @@ impl NativeStore {
                     .saturating_sub(load.prefix_fence.len())
                     .min(read_bound);
                 if count == 0 && prior_fence.len() > load.prefix_fence.len() {
-                    return Err(SnapshotError::new(
-                        Status::SourceLimit,
-                        "append fence exceeds read budget",
-                    ));
+                    return Err(source_read_limit());
                 }
                 load.file
                     .seek(SeekFrom::Start(
@@ -4338,10 +4362,7 @@ impl NativeStore {
                 if usage[1] > read_start {
                     return Ok(());
                 }
-                return Err(SnapshotError::new(
-                    Status::SourceLimit,
-                    "publication fence exceeds read budget",
-                ));
+                return Err(source_read_limit());
             }
             load.file
                 .seek(SeekFrom::Start(
@@ -4764,9 +4785,9 @@ impl NativeStore {
             let before_bytes = usage[1];
             let before_events = usage[3];
             let outcome = self.advance(&token, waiter, cancel, usage)?;
-            graph.remaining.max_read_bytes = graph
+            graph.remaining.max_source_read_bytes = graph
                 .remaining
-                .max_read_bytes
+                .max_source_read_bytes
                 .saturating_sub((usage[1] - before_bytes) as usize);
             graph.remaining.max_events = graph
                 .remaining
@@ -4972,13 +4993,13 @@ impl NativeStore {
                     }
                     let bounds = graph.remaining;
                     let acquire = json!({"schema":SCHEMA,"id":"graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":bounds.deadline_unix_ms,
-                        "limits":{"max_read_bytes":bounds.max_read_bytes,"max_events":bounds.max_events,"max_items":bounds.max_items,"max_output_bytes":bounds.max_output_bytes,"max_discovery_entries":bounds.max_discovery_entries,"max_sources":bounds.max_sources}});
+                        "limits":bounds.to_json()});
                     let before_bytes = usage[1];
                     let before_events = usage[3];
                     let outcome = self.acquire(&acquire, &graph.context, cancel, usage)?;
-                    graph.remaining.max_read_bytes = graph
+                    graph.remaining.max_source_read_bytes = graph
                         .remaining
-                        .max_read_bytes
+                        .max_source_read_bytes
                         .saturating_sub((usage[1] - before_bytes) as usize);
                     graph.remaining.max_events = graph
                         .remaining
@@ -6133,12 +6154,12 @@ impl NativeStore {
                 acquire.insert("operation", json!("acquire"));
                 acquire.insert("path", json!(path.to_string_lossy().as_ref()));
                 let bound = cursor.remaining;
-                acquire.insert("limits", json!({"max_read_bytes":bound.max_read_bytes,"max_events":bound.max_events,"max_items":bound.max_items,"max_output_bytes":bound.max_output_bytes,"max_discovery_entries":bound.max_discovery_entries,"max_sources":bound.max_sources}));
+                acquire.insert("limits", bound.to_json());
                 self.acquire(&acquire, &cursor.context, cancel, usage)?
             };
-            cursor.remaining.max_read_bytes = cursor
+            cursor.remaining.max_source_read_bytes = cursor
                 .remaining
-                .max_read_bytes
+                .max_source_read_bytes
                 .saturating_sub((usage[1] - before_read) as usize);
             cursor.remaining.max_events = cursor
                 .remaining
@@ -6285,7 +6306,7 @@ mod tests {
 
     fn acquire(path: &Path) -> Value {
         json!({"schema":SCHEMA,"id":"request","operation":"acquire","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
-            "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_events":1000,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
+            "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_source_read_bytes":1024*1024,"max_events":1000,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
     }
 
     fn finish(store: &NativeStore, mut response: Value, context: &Value) -> Value {
@@ -6552,13 +6573,15 @@ mod tests {
         let store = store();
         let owner = context("a");
         let mut request = acquire(&source.path);
-        request["limits"].insert("max_read_bytes", json!(10));
-        let result = finish(
+        request["limits"].insert("max_source_read_bytes", json!(10));
+        let result = finish_prepared(
             &store,
             store.request(&request, &owner, &Cancellation::default()),
             &owner,
         );
-        assert_eq!(result["status"].as_str(), Some("source_limit"));
+        assert_eq!(result["status"].as_str(), Some("incomplete"));
+        assert_eq!(result["reason"].as_str(), Some("source_read_limit"));
+        assert!(result["cursor"].is_null());
         let mut denied = owner.clone();
         denied["authority"].insert(
             "effective_uid",
@@ -7170,7 +7193,7 @@ mod tests {
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_entry_bytes":4*1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
         let owner = context("a");
         let mut request = acquire(&source.path);
-        request["limits"].insert("max_read_bytes", json!(16 * 1024 * 1024));
+        request["limits"].insert("max_source_read_bytes", json!(16 * 1024 * 1024));
         let snapshot = store
             .pin(
                 handle(&finish(
@@ -7183,6 +7206,7 @@ mod tests {
             .unwrap();
         let limits = WorkLimits {
             max_read_bytes: 1024 * 1024,
+            max_source_read_bytes: 1024 * 1024,
             max_events: 1000,
             max_items: 256,
             max_output_bytes: 1024 * 1024,
@@ -7207,6 +7231,69 @@ mod tests {
         );
         assert_eq!(usage.events, 4);
         assert!(usage.read_bytes < 64 * 1024, "{}", usage.read_bytes);
+    }
+
+    #[test]
+    fn source_reads_charge_only_the_source_budget() {
+        let source = Source::new(
+            &(0..8)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let size = std::fs::metadata(&source.path).unwrap().len() as usize;
+        let store = store();
+        let owner = context("a");
+        let mut request = acquire(&source.path);
+        request["limits"].insert("max_source_read_bytes", json!(size / 2));
+        request["limits"].insert("max_read_bytes", json!(64 * 1024 * 1024));
+        let first = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        let remaining = &first["data"]["reservation"]["remaining_work"];
+        assert_eq!(
+            remaining["max_source_read_bytes"].as_u64(),
+            Some((size / 2) as u64 - first["usage"]["source_bytes_read"].as_u64().unwrap())
+        );
+        assert_eq!(remaining["max_read_bytes"].as_u64(), Some(64 * 1024 * 1024));
+        let exhausted = finish_prepared(&store, first, &owner);
+        assert_eq!(exhausted["status"].as_str(), Some("incomplete"));
+        assert_eq!(exhausted["reason"].as_str(), Some("source_read_limit"));
+        assert!(exhausted["cursor"].is_null());
+        assert!(store.state.lock().unwrap().waiters.is_empty());
+    }
+
+    #[test]
+    fn classifier_charges_do_not_spend_the_source_budget() {
+        let source = Source::new(
+            &(0..5)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let size = std::fs::metadata(&source.path).unwrap().len() as usize;
+        let probe = store();
+        let owner = context("a");
+        let native = finish(
+            &probe,
+            probe.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let charge: usize = entry_charges(&probe.pin(handle(&native), &owner).unwrap())
+            .iter()
+            .sum();
+        let store = store();
+        let batches = recording_classifier(&store, "cold");
+        let mut request = classifier_acquire(&source.path, "cold", charge);
+        request["limits"].insert("max_source_read_bytes", json!(size + 128));
+        let completed = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(completed["status"].as_str(), Some("ok"), "{completed:?}");
+        assert_eq!(
+            store.pin(handle(&completed), &owner).unwrap().event_count,
+            5
+        );
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..4, 4..5]);
     }
 
     #[test]
@@ -7261,6 +7348,15 @@ mod tests {
             )
         };
         source.append(&format!("{}\n", user("appended")));
+        let mut starved = template["limits"].clone();
+        starved.insert("max_source_read_bytes", json!(1));
+        let starved = store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":starved}), &owner, &Cancellation::default());
+        assert_eq!(
+            starved["status"].as_str(),
+            Some("incomplete"),
+            "{starved:?}"
+        );
+        assert_eq!(starved["reason"].as_str(), Some("source_read_limit"));
         let appended = query();
         assert_eq!(appended["status"].as_str(), Some("ok"), "{appended:?}");
         assert_eq!(appended["data"]["value"].as_bool(), Some(false));
@@ -7384,7 +7480,7 @@ mod tests {
             &owner,
         );
         let mut template = acquire(&source.path);
-        template["limits"].insert("max_read_bytes", json!(1024));
+        template["limits"].insert("max_source_read_bytes", json!(1024));
         template["limits"].insert("max_events", json!(1024));
         template["limits"].insert("max_items", json!(1024));
         template["limits"].insert("max_discovery_entries", json!(2048));
@@ -7674,7 +7770,7 @@ mod tests {
         );
         let baseline = store.state.lock().unwrap().counters;
         let mut template = acquire(&source.path);
-        template["limits"].insert("max_read_bytes", json!(1024));
+        template["limits"].insert("max_source_read_bytes", json!(1024));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let graph = finish_prepared(
             &store,
@@ -7821,7 +7917,7 @@ mod tests {
         );
         let mut template = acquire(&source.path);
         template.insert("deadline_unix_ms", json!(now_ms() + 120_000));
-        template["limits"].insert("max_read_bytes", json!(32 * 1024));
+        template["limits"].insert("max_source_read_bytes", json!(32 * 1024));
         template["limits"].insert("max_events", json!(1024));
         template["limits"].insert("max_items", json!(1024));
         template["limits"].insert("max_discovery_entries", json!(2048));
@@ -7942,7 +8038,7 @@ mod tests {
             &owner,
         );
         let mut template = acquire(&source.path);
-        template["limits"].insert("max_read_bytes", json!(16 * 1024));
+        template["limits"].insert("max_source_read_bytes", json!(16 * 1024));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[large.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let graph = finish_prepared(
             &store,
@@ -7989,7 +8085,7 @@ mod tests {
         owner.insert("work_class", json!("background"));
         let template = acquire(&source.path);
         let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":["thread-large","thread-small"],"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
-        request["limits"].insert("max_read_bytes", json!(8192));
+        request["limits"].insert("max_source_read_bytes", json!(8192));
         let before = store.state.lock().unwrap().counters;
         let mut completed = false;
         for attempt in 0..16 {
@@ -8047,7 +8143,7 @@ mod tests {
         owner.insert("work_class", json!("background"));
         let template = acquire(&source.path);
         let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":[],"roots":[],"direct_paths":[large.to_string_lossy().as_ref()],"start_index":0,"membership_revision":null,"deadline_unix_ms":now_ms()+120_000,"limits":template["limits"]});
-        request["limits"].insert("max_read_bytes", json!(8 * 1024 * 1024));
+        request["limits"].insert("max_source_read_bytes", json!(8 * 1024 * 1024));
         let before = store.state.lock().unwrap().counters;
         let mut previous_offset = 0u64;
         let mut advanced = false;
@@ -8090,7 +8186,7 @@ mod tests {
         owner.insert("work_class", json!("background"));
         let template = acquire(&source.path);
         let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":[],"roots":[],"direct_paths":[source.path.to_string_lossy().as_ref()],"start_index":0,"membership_revision":null,"deadline_unix_ms":now_ms()+120_000,"limits":template["limits"]});
-        request["limits"].insert("max_read_bytes", json!(4 * 1024 * 1024));
+        request["limits"].insert("max_source_read_bytes", json!(4 * 1024 * 1024));
         let warm = |store: &NativeStore, request: &mut Value| {
             let mut bytes = 0u64;
             for _ in 0..12 {
@@ -8140,7 +8236,7 @@ mod tests {
         let template = acquire(&source.path);
         let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":["thread-a","thread-b"],"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         request["limits"].insert(
-            "max_read_bytes",
+            "max_source_read_bytes",
             json!(std::fs::metadata(&first).unwrap().len() + 128),
         );
         let mut partial = Value::new_null();
@@ -8628,7 +8724,7 @@ mod tests {
         request["limits"].insert("max_sources", json!(1024));
         request["limits"].insert("max_discovery_entries", json!(1024));
         request["limits"].insert("max_events", json!(4096));
-        request["limits"].insert("max_read_bytes", json!(8 * 1024 * 1024));
+        request["limits"].insert("max_source_read_bytes", json!(8 * 1024 * 1024));
         request["limits"].insert("max_items", json!(1024));
         request.insert("deadline_unix_ms", json!(deadline));
         let mut reply = store.request(&request, &owner, &Cancellation::default());

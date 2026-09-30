@@ -572,6 +572,7 @@ mod tests {
     fn limits() -> WorkLimits {
         WorkLimits {
             max_read_bytes: 16 * PAGE_BYTES,
+            max_source_read_bytes: 16 * PAGE_BYTES,
             max_events: 1000,
             max_items: 1000,
             max_output_bytes: 16 * PAGE_BYTES,

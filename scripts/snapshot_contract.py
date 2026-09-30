@@ -28,6 +28,7 @@ class WireModel(BaseModel):
 
 class Limits(WireModel):
     max_read_bytes: Annotated[int, Field(gt=0, le=MAX_SOURCE_BYTES)]
+    max_source_read_bytes: Annotated[int, Field(gt=0, le=MAX_SOURCE_BYTES)]
     max_events: Annotated[int, Field(gt=0, le=1_000_000)]
     max_items: Annotated[int, Field(gt=0, le=65_536)]
     max_output_bytes: Annotated[int, Field(gt=0, le=MAX_PROJECTION_BYTES)]
@@ -37,6 +38,7 @@ class Limits(WireModel):
 
 class RemainingWork(WireModel):
     max_read_bytes: Count
+    max_source_read_bytes: Count
     max_events: Count
     max_items: Count
     max_output_bytes: Count

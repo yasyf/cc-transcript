@@ -854,7 +854,7 @@ mod tests {
             std::fs::write(&path,b"{\"type\":\"user\",\"uuid\":\"u\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-02T03:04:05Z\",\"message\":{\"content\":\"hello\"}}\n").unwrap();
             let store=NativeStore::new(&json!({"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
             let context = json!({"claimant":"owner","admission":"hook","authority":{"kind":"user","effective_uid":unsafe{libc::geteuid()}.to_string()},"registry_generation":store.default_registry_generation()});
-            let limits = json!({"max_read_bytes":1024*1024,"max_events":1000,"max_items":1000,"max_output_bytes":MAX_OWNED_BYTES,"max_discovery_entries":1000,"max_sources":100});
+            let limits = json!({"max_read_bytes":1024*1024,"max_source_read_bytes":1024*1024,"max_events":1000,"max_items":1000,"max_output_bytes":MAX_OWNED_BYTES,"max_discovery_entries":1000,"max_sources":100});
             let mut result=store.request(&json!({"schema":SCHEMA,"id":"acquire","operation":"acquire","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+30_000,"limits":limits}),&context,&Cancellation::default());
             for _ in 0..100 {
                 if result["status"].as_str() != Some("incomplete") {

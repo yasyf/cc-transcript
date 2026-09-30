@@ -21,6 +21,7 @@ from cc_transcript.snapshots import (
 CLASSIFIER = {"id": "native", "version": "1"}
 LIMITS = {
     "max_read_bytes": 8 * 1024 * 1024,
+    "max_source_read_bytes": 8 * 1024 * 1024,
     "max_events": 1000,
     "max_items": 256,
     "max_output_bytes": 1024 * 1024,
