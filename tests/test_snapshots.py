@@ -215,6 +215,59 @@ def test_classifier_facts_use_all_source_users_and_first_event_positions(tmp_pat
         assert snapshot.usage["source_bytes_read"] == 0
 
 
+def test_classifier_facts_fit_a_one_megabyte_scope_past_large_early_tool_payloads(tmp_path: Path) -> None:
+    payload = "x" * 700 * 1024
+    line = {"sessionId": "s", "timestamp": "2026-01-02T03:04:05Z"}
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(
+        event(0, "ordinary")
+        + orjson.dumps(
+            line
+            | {
+                "type": "assistant",
+                "uuid": "write",
+                "message": {
+                    "model": "m",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "w",
+                            "name": "Write",
+                            "input": {"file_path": "a", "content": payload},
+                        }
+                    ],
+                },
+            }
+        )
+        + b"\n"
+        + orjson.dumps(
+            line
+            | {
+                "type": "user",
+                "uuid": "result",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "w", "content": payload}]},
+            }
+        )
+        + b"\n"
+        + event(3, "<system_instruction> lane")
+    )
+    store = TranscriptStore({})
+    description = acquire(store, path)
+    with store.borrow_snapshot(
+        description["handle"],
+        context=context(),
+        cancellation=CancellationToken(),
+        limits={**LIMITS, "max_read_bytes": 1024 * 1024},
+        deadline_unix_ms=deadline(),
+    ) as snapshot:
+        assert snapshot.classifier_facts("<system_instruction>") == {
+            "has_users": True,
+            "all_users_sidechain": False,
+            "has_user_prefix": True,
+        }
+        assert snapshot.work["read_bytes"] < 64 * 1024
+
+
 def test_tool_registry_identity_is_definition_bound() -> None:
     store = TranscriptStore({})
     assert store.register_tool_registry([], context=context()) == context()["registry_generation"]

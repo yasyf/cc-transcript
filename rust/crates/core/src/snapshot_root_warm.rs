@@ -154,6 +154,7 @@ impl NativeStore {
             deadline,
             used_bytes: 0,
             used_events: 0,
+            stage: None,
             busy: false,
         };
         {

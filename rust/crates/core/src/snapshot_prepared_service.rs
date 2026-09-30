@@ -1387,6 +1387,7 @@ impl NativeStore {
         &self,
         graph: &Arc<Mutex<PreparedGraph>>,
         context: &Value,
+        usage: &mut [u64; 18],
     ) -> Result<(), SnapshotError> {
         let (handle, classifier, stamp, deadline) = {
             let graph = graph.lock().expect("prepared graph");
@@ -1402,7 +1403,7 @@ impl NativeStore {
             SnapshotError::new(Status::Changed, "prepared graph root disappeared")
         })?);
         if root.stamp != stamp
-            || current != stamp
+            || current != stamp && !self.extends_prefix(&root, usage)?
             || !classifier_eq(&classifier, &description["classifier"])?
         {
             return Err(SnapshotError::new(
@@ -1436,7 +1437,7 @@ impl NativeStore {
             .get(&cursor.graph_id)
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleCursor, "prepared graph expired"))?;
-        self.validate_prepared_root(&graph, context)?;
+        self.validate_prepared_root(&graph, context, usage)?;
         let (sources, sidechain_dirs) = {
             let graph = graph.lock().expect("prepared graph");
             if graph.admission != str_field(context, "admission")?
@@ -1663,7 +1664,7 @@ impl NativeStore {
             .get(token)
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleHandle, "prepared graph expired"))?;
-        self.validate_prepared_root(&graph, context)?;
+        self.validate_prepared_root(&graph, context, usage)?;
         let mut graph = graph.lock().expect("prepared graph");
         if graph.claimant != str_field(context, "claimant")?
             || graph.registry_generation != str_field(context, "registry_generation")?
@@ -1684,7 +1685,11 @@ impl NativeStore {
             ));
         }
         if !graph.validated {
-            for (path, stamp) in &graph.stamps {
+            for (path, stamp) in graph
+                .stamps
+                .iter()
+                .filter(|(_, stamp)| stamp.identity != graph.root.stamp.identity)
+            {
                 self.authority(context, Some(path))?;
                 let current = std::fs::metadata(path).map_err(|_| {
                     SnapshotError::new(Status::Changed, "prepared graph source disappeared")

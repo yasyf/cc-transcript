@@ -72,6 +72,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The native snapshot owner fits classifier batches to the remaining read budget instead
+  of rejecting the whole batch before its callback. `resume` continues without adding
+  budget, and a fresh reservation can reuse partial progress. Classifier admission counts
+  running calls and live reservations, so idle stages no longer block other sessions for
+  their 120 s lifetime. A large transcript whose classifier charge exceeds the budget
+  still ends `incomplete` after each append, now without holding admission.
+- `classifier_facts` charges full entries only when reading user text. Other entries pay
+  for an `Entry` header, and user entries also pay for each `ContentBlock` header before
+  scanning blocks. Large assistant tool inputs and user entries containing only tool
+  results no longer cause `read_limit` by charging unread payloads. Status values, cursor
+  fields and the Python API are unchanged.
+- Prepared snapshot graphs keep answering from their pinned root after the live transcript
+  appends. A changed root must be larger than its pinned size, keep the same file
+  identity, and pass the existing prefix fence check. Attachment sources still require an
+  exact `SourceStamp` match. `acquire` joins an in-flight load across appends and returns
+  its pinned snapshot, avoiding the two `changed` failures that made Captain Hook fail
+  open during live sessions.
 - `Session.recent_messages(0)` returns the empty window. It used to return the window
   from the first message, or raise `IndexError` on an empty session.
 - A typed-invalid line appended to a held cursor is held in `UNREADABLE` after its first
