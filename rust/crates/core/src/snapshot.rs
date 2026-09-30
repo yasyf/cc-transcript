@@ -248,6 +248,16 @@ impl TranscriptSnapshot {
         range.map(|index| self.entry(index)).collect()
     }
 
+    fn prefix_fence(&self) -> Option<(u64, &[u8])> {
+        match self.provider {
+            Provider::Codex => self
+                .codex_raw
+                .as_ref()
+                .map(|raw| (self.stamp.size, &raw[raw.len().saturating_sub(64)..])),
+            Provider::Claude => Some((self.committed_bytes, self.fence.as_slice())),
+        }
+    }
+
     pub fn accounted_allocations(&self) -> Vec<(usize, MemoryCharge)> {
         let mut entries = vec![(
             self as *const Self as usize,
@@ -3547,7 +3557,9 @@ impl NativeStore {
                 usage[7] += 1;
             }
             let slot = if let Some(slot) = state.loads.get(&stamp.identity) {
-                if slot.stamp != stamp {
+                if !Self::matches_prefix(stamp, slot.stamp)
+                    && !Self::matches_prefix(slot.stamp, stamp)
+                {
                     return Err(SnapshotError::new(
                         Status::Changed,
                         "source changed during shared preparation",
@@ -4003,6 +4015,30 @@ impl NativeStore {
         current == pinned || current.identity == pinned.identity && current.size > pinned.size
     }
 
+    fn extends_prefix(
+        &self,
+        snapshot: &TranscriptSnapshot,
+        usage: &mut [u64; 18],
+    ) -> Result<bool, SnapshotError> {
+        let Some((end, fence)) = snapshot.prefix_fence() else {
+            return Ok(false);
+        };
+        let mut file = File::open(&snapshot.canonical_path).map_err(io_error)?;
+        usage[0] += 1;
+        if !Self::matches_prefix(
+            SourceStamp::of(&file.metadata().map_err(io_error)?),
+            snapshot.stamp,
+        ) {
+            return Ok(false);
+        }
+        let mut current = vec![0; fence.len()];
+        file.seek(SeekFrom::Start(end - fence.len() as u64))
+            .map_err(io_error)?;
+        file.read_exact(&mut current).map_err(io_error)?;
+        usage[1] += current.len() as u64;
+        Ok(current == fence)
+    }
+
     fn step(
         &self,
         slot: &LoadSlot,
@@ -4056,12 +4092,8 @@ impl NativeStore {
         }
         if let Some(previous) = &load.previous {
             if !load.prefix_checked {
-                let (prior_end, prior_fence) = if previous.provider == Provider::Codex {
-                    let raw = previous.codex_raw.as_ref().expect("cached codex source");
-                    (previous.stamp.size, &raw[raw.len().saturating_sub(64)..])
-                } else {
-                    (previous.committed_bytes, previous.fence.as_slice())
-                };
+                let (prior_end, prior_fence) =
+                    previous.prefix_fence().expect("cached codex source");
                 let count = prior_fence
                     .len()
                     .saturating_sub(load.prefix_fence.len())
@@ -7175,6 +7207,79 @@ mod tests {
         );
         assert_eq!(usage.events, 4);
         assert!(usage.read_bytes < 64 * 1024, "{}", usage.read_bytes);
+    }
+
+    #[test]
+    fn acquire_joins_a_shared_load_after_the_source_appends() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = store();
+        let a = context("a");
+        let b = context("b");
+        let pinned_size = std::fs::metadata(&source.path).unwrap().len();
+        let first = store.request(&acquire(&source.path), &a, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        source.append(&format!("{}\n", user("c")));
+        let second = store.request(&acquire(&source.path), &b, &Cancellation::default());
+        assert_eq!(second["status"].as_str(), Some("incomplete"), "{second:?}");
+        assert_eq!(
+            first["data"]["reservation"]["load_id"].as_str(),
+            second["data"]["reservation"]["load_id"].as_str()
+        );
+        for (response, owner) in [(first, &a), (second, &b)] {
+            let snapshot = store
+                .pin(handle(&finish(&store, response, owner)), owner)
+                .unwrap();
+            assert_eq!(snapshot.stamp.size, pinned_size);
+            assert_eq!(snapshot.event_count, 2);
+        }
+    }
+
+    #[test]
+    fn prepared_graph_survives_root_appends_and_rejects_root_rewrites() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let child = source.directory.join("child.jsonl");
+        std::fs::write(&child, format!("{}\n", user("child"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[child.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = || {
+            finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            )
+        };
+        source.append(&format!("{}\n", user("appended")));
+        let appended = query();
+        assert_eq!(appended["status"].as_str(), Some("ok"), "{appended:?}");
+        assert_eq!(appended["data"]["value"].as_bool(), Some(false));
+        source.append(&format!("{}\n", user("again")));
+        assert_eq!(query()["status"].as_str(), Some("ok"));
+        let contents = std::fs::read_to_string(&source.path).unwrap();
+        std::fs::write(&source.path, contents.replacen("hello", "HELLO", 1)).unwrap();
+        let rewritten = query();
+        assert_eq!(
+            rewritten["status"].as_str(),
+            Some("changed"),
+            "{rewritten:?}"
+        );
+        assert_eq!(
+            rewritten["reason"].as_str(),
+            Some("prepared root generation changed")
+        );
+        std::fs::write(&source.path, "").unwrap();
+        assert_eq!(query()["status"].as_str(), Some("changed"));
     }
 
     #[test]
