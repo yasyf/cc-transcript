@@ -169,7 +169,7 @@ impl NativeStore {
             }
             state.waiters.insert(token.clone(), waiter.clone());
         }
-        self.advance(&token, waiter, cancel, usage)
+        self.advance(&token, waiter, None, cancel, usage)
     }
 }
 

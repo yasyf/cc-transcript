@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A prepared graph query that resumes an uncached source across pages now reads no more
+  than the request's `max_source_read_bytes`, and a cached source finishes with no source
+  budget left. A reservation that runs out of source budget no longer fails the shared load
+  for other waiters on the same file.
 - The native snapshot owner fits classifier batches to the remaining read budget instead
   of rejecting the whole batch before its callback. `resume` continues without adding
   budget, and a fresh reservation can reuse partial progress. Classifier admission counts

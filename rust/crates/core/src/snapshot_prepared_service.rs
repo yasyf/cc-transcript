@@ -244,9 +244,6 @@ impl NativeStore {
             }
             crate::snapshot_prepared_disk::DiskLookup::Miss => {}
         }
-        if remaining.max_source_read_bytes == 0 {
-            return Err(source_read_limit());
-        }
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
@@ -280,16 +277,21 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<PreparedSourceOutcome, SnapshotError> {
-        if remaining.max_source_read_bytes == 0 {
-            return Err(source_read_limit());
-        }
         self.authority(
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
         )?;
+        let waiter = {
+            let mut state = self.state.lock().expect("snapshot state");
+            let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
+                SnapshotError::new(Status::StaleCursor, "prepared source reservation expired")
+            })?;
+            waiter.context = context.clone();
+            waiter.clone()
+        };
         let before_bytes = usage[1];
         let before_events = usage[3];
-        let outcome = self.dispatch(&json!({"schema":SCHEMA,"id":"prepare-graph-source-resume","operation":"resume","cursor":pending.token}), context, cancel, usage)?;
+        let outcome = self.advance(&pending.token, waiter, Some(remaining), cancel, usage)?;
         remaining.max_source_read_bytes = remaining
             .max_source_read_bytes
             .saturating_sub((usage[1] - before_bytes) as usize);

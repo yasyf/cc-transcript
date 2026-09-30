@@ -3315,7 +3315,7 @@ impl NativeStore {
                     {
                         current.context = context.clone();
                     }
-                    return self.advance(cursor, waiter, cancel, usage);
+                    return self.advance(cursor, waiter, None, cancel, usage);
                 }
                 if let Some(projection) = projection {
                     if projection.claimant != str_field(context, "claimant")? {
@@ -3694,7 +3694,7 @@ impl NativeStore {
             state.waiters.insert(cursor.clone(), waiter.clone());
             waiter
         };
-        self.advance(&cursor, waiter, cancel, usage)
+        self.advance(&cursor, waiter, None, cancel, usage)
     }
 
     fn loading(
@@ -3721,6 +3721,7 @@ impl NativeStore {
         &self,
         token: &str,
         mut waiter: Waiter,
+        bound: Option<&WorkLimits>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -3743,6 +3744,11 @@ impl NativeStore {
             }
             waiter = current.clone();
             current.busy = true;
+        }
+        if let Some(bound) = bound {
+            waiter.limits.max_source_read_bytes =
+                waiter.used_source_bytes + bound.max_source_read_bytes;
+            waiter.limits.max_events = waiter.used_events + bound.max_events;
         }
         let mut claim = WaiterClaim {
             store: self,
@@ -3913,7 +3919,10 @@ impl NativeStore {
                 self.admit_memory(&mut state, &waiter.context, 0)?;
             }
             if let Err(error) = result {
-                if error.status != Status::Cancelled && error.status != Status::Deadline {
+                if !matches!(
+                    error.status,
+                    Status::Cancelled | Status::Deadline | Status::Incomplete
+                ) {
                     load.failure = Some(SnapshotError::new(error.status, &error.reason));
                 }
                 self.state
@@ -4784,7 +4793,7 @@ impl NativeStore {
             };
             let before_bytes = usage[1];
             let before_events = usage[3];
-            let outcome = self.advance(&token, waiter, cancel, usage)?;
+            let outcome = self.advance(&token, waiter, Some(&graph.remaining), cancel, usage)?;
             graph.remaining.max_source_read_bytes = graph
                 .remaining
                 .max_source_read_bytes
@@ -6148,7 +6157,7 @@ impl NativeStore {
                 {
                     current.context = cursor.context.clone();
                 }
-                self.advance(pending, waiter, cancel, usage)?
+                self.advance(pending, waiter, Some(&cursor.remaining), cancel, usage)?
             } else {
                 let mut acquire = cursor.request.clone();
                 acquire.insert("operation", json!("acquire"));
@@ -7262,6 +7271,34 @@ mod tests {
     }
 
     #[test]
+    fn a_waiter_starved_at_the_seal_does_not_fail_the_shared_load() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let size = std::fs::metadata(&source.path).unwrap().len();
+        let store = store();
+        let (patient, starved) = (context("patient"), context("starved"));
+        let waiting = store.request(&acquire(&source.path), &patient, &Cancellation::default());
+        assert_eq!(
+            waiting["status"].as_str(),
+            Some("incomplete"),
+            "{waiting:?}"
+        );
+        let mut request = acquire(&source.path);
+        request["limits"].insert("max_source_read_bytes", json!(size));
+        let exhausted = finish_prepared(
+            &store,
+            store.request(&request, &starved, &Cancellation::default()),
+            &starved,
+        );
+        assert_eq!(
+            exhausted["reason"].as_str(),
+            Some("source_read_limit"),
+            "{exhausted:?}"
+        );
+        let completed = finish(&store, waiting, &patient);
+        assert_eq!(completed["status"].as_str(), Some("ok"), "{completed:?}");
+    }
+
+    #[test]
     fn classifier_charges_do_not_spend_the_source_budget() {
         let source = Source::new(
             &(0..5)
@@ -8069,6 +8106,86 @@ mod tests {
         assert!(after[1] - before[1] >= source_bytes);
         assert!(after[1] - before[1] <= source_bytes + 128);
         assert_eq!(store.prepared_disk.stats().writes, 2);
+    }
+
+    fn appended_graph_query(
+        child_contents: &str,
+        cache_child: bool,
+        allowance: u64,
+    ) -> (Value, u64) {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let child = source.directory.join("child.jsonl");
+        std::fs::write(&child, child_contents).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":128,"max_events_per_step":100,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        if cache_child {
+            let cached = finish(
+                &store,
+                store.request(&acquire(&child), &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(cached["status"].as_str(), Some("ok"), "{cached:?}");
+        }
+        let template = acquire(&source.path);
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[child.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        source.append(&format!("{}\n", user("appended")));
+        let mut limits = template["limits"].clone();
+        limits.insert("max_source_read_bytes", json!(allowance));
+        let mut reply = store.request(
+            &json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":limits}),
+            &owner,
+            &Cancellation::default(),
+        );
+        let mut read = reply["usage"]["source_bytes_read"].as_u64().unwrap();
+        for _ in 0..4096 {
+            let Some(cursor) = reply["cursor"].as_str().map(str::to_owned) else {
+                return (reply, read);
+            };
+            reply = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                &owner,
+                &Cancellation::default(),
+            );
+            read += reply["usage"]["source_bytes_read"].as_u64().unwrap();
+        }
+        panic!("prepared query did not finish");
+    }
+
+    #[test]
+    fn prepared_query_pages_stay_within_the_request_source_allowance() {
+        let (reply, read) =
+            appended_graph_query(&format!("{}\n", user(&"x".repeat(4000))), false, 1200);
+        assert_eq!(reply["status"].as_str(), Some("incomplete"), "{reply:?}");
+        assert_eq!(
+            reply["reason"].as_str(),
+            Some("source_read_limit"),
+            "{reply:?}"
+        );
+        assert!(
+            read <= 1200,
+            "read {read} source bytes against a 1200-byte allowance"
+        );
+    }
+
+    #[test]
+    fn prepared_query_reuses_a_cached_child_without_spare_source_allowance() {
+        let child = format!("{}\n", user("child"));
+        let (ample, needed) = appended_graph_query(&child, true, 1024 * 1024);
+        assert_eq!(ample["status"].as_str(), Some("ok"), "{ample:?}");
+        let (exact, read) = appended_graph_query(&child, true, needed);
+        assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
+        assert_eq!(read, needed);
     }
 
     #[test]
