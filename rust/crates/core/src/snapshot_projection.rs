@@ -329,7 +329,13 @@ pub fn bounded_turn_range_with_usage<'a>(
         if retained_projection > limits.max_output_bytes {
             return Err(SnapshotError::new(
                 Status::OutputLimit,
-                "activity materialization limit",
+                format!(
+                    "activity window of {} turns ({}..{}) retains {retained_projection} bytes, over the {}-byte remaining output budget",
+                    turns.len(),
+                    turns.start,
+                    turns.end,
+                    limits.max_output_bytes
+                ),
             ));
         }
         let repeated_result_bytes = turns.clone().fold(0usize, |total, index| {

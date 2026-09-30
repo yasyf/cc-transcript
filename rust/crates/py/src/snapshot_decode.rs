@@ -348,6 +348,7 @@ pub(crate) fn snapshot_activity_payload<'py>(
     usage: &mut ActivityUsage,
     reserve: impl FnOnce(usize) -> Result<(), SnapshotError> + Send,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let range = turns.clone();
     let detached = py
         .detach(|| -> Result<_, SnapshotError> {
             let mut projection_usage = ProjectionUsage::default();
@@ -363,11 +364,25 @@ pub(crate) fn snapshot_activity_payload<'py>(
             usage.events = projection_usage.events;
             let activity = activity?;
             usage.items = activity.turns.len();
-            let overhead = snapshot_codec::encoded_size(
-                &sonic_rs::json!({"session_id":snapshot.session_id,"turns":[]}),
-                limits.max_output_bytes,
-            )?;
-            let mut remaining = limits.max_output_bytes - overhead;
+            let mut positions: Vec<usize> = range
+                .clone()
+                .flat_map(|index| {
+                    snapshot
+                        .activity
+                        .turn_bounds(index)
+                        .expect("projected turn")
+                        .chain(snapshot.activity.result_events(index))
+                })
+                .collect();
+            positions.sort_unstable();
+            positions.dedup();
+            for position in positions {
+                cancel.check(limits.deadline_unix_ms)?;
+                snapshot_codec::encoded_size_bounded(
+                    &snapshot_codec::EventWire::new(position, snapshot.entry(position)),
+                    snapshot_codec::Bound::record(&format!("event {position}"), usize::MAX),
+                )?;
+            }
             let wires: Vec<_> = activity
                 .turns
                 .iter()
@@ -401,25 +416,25 @@ pub(crate) fn snapshot_activity_payload<'py>(
                     }
                 })
                 .collect();
-            for (ordinal, wire) in wires.iter().enumerate() {
-                cancel.check(limits.deadline_unix_ms)?;
-                if ordinal != 0 {
-                    remaining = remaining.checked_sub(1).ok_or_else(|| {
-                        SnapshotError::new(
-                            cc_transcript_core::snapshot::Status::OutputLimit,
-                            "activity payload exceeds output budget",
-                        )
-                    })?;
-                }
-                remaining -= snapshot_codec::encoded_size(wire, remaining)?;
-            }
+            let what = format!(
+                "activity window of {} turns ({}..{})",
+                wires.len(),
+                range.start,
+                range.end
+            );
+            let bound = snapshot_codec::Bound::budget(&what, limits.max_output_bytes);
+            let payload = snapshot_codec::ActivityWire {
+                session_id: &snapshot.session_id,
+                turns: &wires,
+            };
+            let payload_bytes = snapshot_codec::encoded_size_bounded(&payload, bound)?;
             let mut records = Vec::with_capacity(wires.len());
-            for wire in wires {
+            for wire in &wires {
                 cancel.check(limits.deadline_unix_ms)?;
-                records.push(snapshot_codec::encode(&wire, limits.max_output_bytes)?);
+                records.push(snapshot_codec::encode_bounded(wire, bound)?);
             }
-            usage.output_bytes = limits.max_output_bytes - remaining;
-            snapshot_codec::decode_turns(&records, limits.max_output_bytes)
+            usage.output_bytes = payload_bytes;
+            snapshot_codec::decode_owned_turns(&records)
         })
         .map_err(error)?;
     cancel.check(limits.deadline_unix_ms).map_err(error)?;
@@ -546,6 +561,199 @@ mod tests {
             assert!(!Arc::ptr_eq(&view.r.entries, &snapshot.chunks[0].entries));
             assert_eq!(Arc::strong_count(&snapshot.chunks[0].entries), owners);
         });
+    }
+
+    fn bulky_turn(calls: usize) -> TranscriptSnapshot {
+        use cc_transcript_core::gateway::Provider;
+        use cc_transcript_core::snapshot::{SourceIdentity, SourceStamp};
+        let mut entries = vec![parse_entry(json!({"type":"user","uuid":"prompt","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":"audit"}})).unwrap()];
+        for call in 0..calls {
+            entries.push(parse_entry(json!({"type":"assistant","uuid":format!("use-{call}"),"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":format!("t{call}"),"name":"Bash","input":{"command":"cat log"}}]}})).unwrap());
+            entries.push(parse_entry(json!({"type":"user","uuid":format!("result-{call}"),"sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":format!("t{call}"),"content":"r".repeat(64 * 1024)}]}})).unwrap());
+        }
+        TranscriptSnapshot::from_complete_entries(
+            "test".into(),
+            "/test.jsonl".into(),
+            SourceStamp {
+                identity: SourceIdentity {
+                    device: 1,
+                    inode: 1,
+                },
+                size: 0,
+                mtime_ns: 0,
+                ctime_ns: 0,
+            },
+            Provider::Claude,
+            "s".into(),
+            entries,
+        )
+    }
+
+    fn window_limits(max_output_bytes: usize) -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: 64 * 1024 * 1024,
+            max_source_read_bytes: 64 * 1024 * 1024,
+            max_events: 1000,
+            max_items: 100,
+            max_output_bytes,
+            max_discovery_entries: 100,
+            max_sources: 1,
+            deadline_unix_ms: u64::MAX,
+        }
+    }
+
+    #[test]
+    fn owner_activity_carries_a_turn_larger_than_one_record() {
+        let snapshot = bulky_turn(16);
+        Python::initialize();
+        Python::attach(|py| {
+            let mut usage = ActivityUsage::default();
+            let payload = snapshot_activity_payload(
+                py,
+                &snapshot,
+                0..1,
+                &window_limits(16 * 1024 * 1024),
+                &Cancellation::default(),
+                &mut usage,
+                |_| Ok(()),
+            )
+            .unwrap();
+            let turns = payload.get_item("turns").unwrap().unwrap();
+            assert_eq!(turns.len().unwrap(), 1);
+            let events = turns.get_item(0).unwrap().get_item("events").unwrap();
+            assert_eq!(events.len().unwrap(), 33);
+            assert!(usage.output_bytes > MAX_RECORD_BYTES);
+        });
+    }
+
+    #[test]
+    fn owner_activity_refuses_a_window_over_its_output_budget_with_both_sizes() {
+        let snapshot = bulky_turn(16);
+        Python::initialize();
+        Python::attach(|py| {
+            let mut usage = ActivityUsage::default();
+            snapshot_activity_payload(
+                py,
+                &snapshot,
+                0..1,
+                &window_limits(16 * 1024 * 1024),
+                &Cancellation::default(),
+                &mut usage,
+                |_| Ok(()),
+            )
+            .unwrap();
+            let needed = usage.output_bytes;
+            let refusal = snapshot_activity_payload(
+                py,
+                &snapshot,
+                0..1,
+                &window_limits(needed - 1),
+                &Cancellation::default(),
+                &mut ActivityUsage::default(),
+                |_| Ok(()),
+            )
+            .unwrap_err();
+            let (status, reason): (String, String) = refusal
+                .value(py)
+                .getattr("args")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(status, "output_limit");
+            assert_eq!(
+                reason,
+                format!(
+                    "activity window of 1 turns (0..1) needs {needed} bytes, over the {}-byte remaining output budget",
+                    needed - 1
+                )
+            );
+        });
+    }
+
+    fn oversized_event_refusal(entries: Vec<sonic_rs::Value>, turns: Range<usize>, event: usize) {
+        use cc_transcript_core::gateway::Provider;
+        use cc_transcript_core::snapshot::{SourceIdentity, SourceStamp};
+        let entries: Vec<_> = entries
+            .into_iter()
+            .map(|entry| parse_entry(entry).unwrap())
+            .collect();
+        let mut encoded = Vec::new();
+        snapshot_codec::write_json(
+            &mut encoded,
+            &EventWire::new(event, &entries[event]),
+            usize::MAX,
+        )
+        .unwrap();
+        let snapshot = TranscriptSnapshot::from_complete_entries(
+            "test".into(),
+            "/test.jsonl".into(),
+            SourceStamp {
+                identity: SourceIdentity {
+                    device: 1,
+                    inode: 1,
+                },
+                size: 0,
+                mtime_ns: 0,
+                ctime_ns: 0,
+            },
+            Provider::Claude,
+            "s".into(),
+            entries,
+        );
+        Python::initialize();
+        Python::attach(|py| {
+            let refusal = snapshot_activity_payload(
+                py,
+                &snapshot,
+                turns,
+                &window_limits(16 * 1024 * 1024),
+                &Cancellation::default(),
+                &mut ActivityUsage::default(),
+                |_| Ok(()),
+            )
+            .unwrap_err();
+            let (status, reason): (String, String) = refusal
+                .value(py)
+                .getattr("args")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(status, "output_limit");
+            assert_eq!(
+                reason,
+                format!(
+                    "event {event} needs {} bytes, over the {MAX_RECORD_BYTES}-byte record bound",
+                    encoded.len()
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn owner_activity_refuses_an_event_over_the_record_bound_inside_the_window() {
+        oversized_event_refusal(
+            vec![
+                json!({"type":"user","uuid":"prompt","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":"audit"}}),
+                json!({"type":"assistant","uuid":"use","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"cat log"}}]}}),
+                json!({"type":"user","uuid":"result","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"r".repeat(MAX_RECORD_BYTES)}]}}),
+            ],
+            0..1,
+            2,
+        );
+    }
+
+    #[test]
+    fn owner_activity_refuses_an_external_result_over_the_record_bound() {
+        oversized_event_refusal(
+            vec![
+                json!({"type":"user","uuid":"prompt","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":"audit"}}),
+                json!({"type":"assistant","uuid":"use","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"t","name":"Read","input":{"file_path":"a.rs"}}]}}),
+                json!({"type":"user","uuid":"next","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":"next"}}),
+                json!({"type":"user","uuid":"result","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"r".repeat(MAX_RECORD_BYTES)}]}}),
+            ],
+            0..1,
+            3,
+        );
     }
 
     #[test]

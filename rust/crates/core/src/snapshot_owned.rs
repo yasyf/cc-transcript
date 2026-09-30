@@ -398,11 +398,12 @@ impl PageSource<'_> {
         }
     }
 
-    fn measure(
+    fn size(
         &self,
         start: usize,
         count: usize,
         before: usize,
+        cap: usize,
         cancel: &Cancellation,
         deadline: u64,
     ) -> Result<PagePlan, SnapshotError> {
@@ -414,13 +415,10 @@ impl PageSource<'_> {
             let wire = self.wire(start, count, published, cursor.as_deref());
             let mut counter = PageCounter {
                 bytes: 0,
-                limit: MAX_REPLY_BYTES,
+                limit: cap,
             };
-            write_json(&mut counter, &wire, MAX_REPLY_BYTES).map_err(|_| output_limit())?;
+            write_json(&mut counter, &wire, cap).map_err(|_| output_limit())?;
             let updated = checked_add(before, counter.bytes)?;
-            if updated > self.limit {
-                return Err(output_limit());
-            }
             if updated == published {
                 return Ok(PagePlan {
                     count,
@@ -430,6 +428,46 @@ impl PageSource<'_> {
             }
             published = updated;
         }
+    }
+
+    fn measure(
+        &self,
+        start: usize,
+        count: usize,
+        before: usize,
+        cancel: &Cancellation,
+        deadline: u64,
+    ) -> Result<PagePlan, SnapshotError> {
+        let plan = self.size(start, count, before, MAX_REPLY_BYTES, cancel, deadline)?;
+        if plan.published > self.limit {
+            return Err(output_limit());
+        }
+        Ok(plan)
+    }
+
+    fn refusal(
+        &self,
+        start: usize,
+        before: usize,
+        cancel: &Cancellation,
+        deadline: u64,
+    ) -> Result<SnapshotError, SnapshotError> {
+        let plan = self.size(start, 1, before, usize::MAX, cancel, deadline)?;
+        let what = format!(
+            "owned page for record {} of {} needs {} bytes",
+            self.base + start,
+            self.field,
+            plan.bytes
+        );
+        let reason = if plan.bytes > MAX_REPLY_BYTES {
+            format!("{what}, over the {MAX_REPLY_BYTES}-byte reply bound")
+        } else {
+            format!(
+                "{what}, over the {}-byte remaining publication budget",
+                self.limit - before
+            )
+        };
+        Ok(SnapshotError::new(Status::OutputLimit, reason))
     }
 
     fn plans(
@@ -465,7 +503,9 @@ impl PageSource<'_> {
                     Err(error) => return Err(error),
                 }
             }
-            let plan = best.ok_or_else(output_limit)?;
+            let Some(plan) = best else {
+                return Err(self.refusal(start, published, cancel, deadline)?);
+            };
             start += plan.count;
             published = plan.published;
             pages.push_back(plan);
@@ -577,13 +617,24 @@ fn validate_inputs(
         return Err(invalid("invalid publication field"));
     }
     if records.len() > MAX_OWNED_RECORDS {
-        return Err(output_limit());
+        return Err(SnapshotError::new(
+            Status::OutputLimit,
+            format!(
+                "owned projection of {field} has {} records, over the {MAX_OWNED_RECORDS}-record bound",
+                records.len()
+            ),
+        ));
     }
     let raw_bytes = records
         .iter()
         .try_fold(0usize, |total, record| checked_add(total, record.len()))?;
     if raw_bytes > MAX_OWNED_BYTES {
-        return Err(output_limit());
+        return Err(SnapshotError::new(
+            Status::OutputLimit,
+            format!(
+                "owned projection of {field} needs {raw_bytes} raw record bytes, over the {MAX_OWNED_BYTES}-byte bound"
+            ),
+        ));
     }
     let limits = request
         .get("limits")
@@ -1072,14 +1123,55 @@ mod tests {
         let huge = "x".repeat(MAX_OWNED_BYTES / 2 + 1);
         let records = [huge.as_str(), huge.as_str()];
         assert!(
-            matches!(fixture.store.publish_projection(&fixture.request,&fixture.context,&Cancellation::default(),&json!({}),"records",&records,&json!({"output_bytes":0}),&json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0})),Err(error)if error.status==Status::OutputLimit)
+            matches!(fixture.store.publish_projection(&fixture.request,&fixture.context,&Cancellation::default(),&json!({}),"records",&records,&json!({"output_bytes":0}),&json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0})),Err(error)if error.status==Status::OutputLimit && error.reason==format!("owned projection of records needs {} raw record bytes, over the {MAX_OWNED_BYTES}-byte bound",2*huge.len()))
+        );
+        assert_eq!(fixture.retained(), 0);
+        let records = vec!["{}"; MAX_OWNED_RECORDS + 1];
+        assert!(
+            matches!(fixture.store.publish_projection(&fixture.request,&fixture.context,&Cancellation::default(),&json!({}),"records",&records,&json!({"output_bytes":0}),&json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0})),Err(error)if error.status==Status::OutputLimit && error.reason==format!("owned projection of records has {} records, over the {MAX_OWNED_RECORDS}-record bound",records.len()))
         );
         assert_eq!(fixture.retained(), 0);
         let mut request = fixture.request.clone();
         request["limits"].insert("max_output_bytes", json!(800));
         let records = vec!["{}"; 300];
         assert!(
-            matches!(fixture.store.publish_projection(&request,&fixture.context,&Cancellation::default(),&json!({}),"records",&records,&json!({"output_bytes":0}),&json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0})),Err(error)if error.status==Status::OutputLimit)
+            matches!(fixture.store.publish_projection(&request,&fixture.context,&Cancellation::default(),&json!({}),"records",&records,&json!({"output_bytes":0}),&json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0})),Err(error)if error.status==Status::OutputLimit && error.reason.starts_with("owned page for record ") && error.reason.ends_with("-byte remaining publication budget"))
+        );
+        assert_eq!(fixture.retained(), 0);
+    }
+
+    #[test]
+    fn record_over_the_reply_bound_refuses_with_its_page_size() {
+        let fixture = Fixture::new();
+        let huge = "x".repeat(MAX_REPLY_BYTES);
+        let records = ["{}", huge.as_str()];
+        let Err(error) = fixture.store.publish_projection(
+            &fixture.request,
+            &fixture.context,
+            &Cancellation::default(),
+            &json!({}),
+            "records",
+            &records,
+            &json!({"output_bytes":0}),
+            &json!({"read_bytes":0,"events":0,"items":0,"output_bytes":0}),
+        ) else {
+            panic!("oversized record published");
+        };
+        assert_eq!(error.status, Status::OutputLimit);
+        let needed: usize = error
+            .reason
+            .strip_prefix("owned page for record 1 of records needs ")
+            .and_then(|rest| {
+                rest.strip_suffix(&format!(
+                    " bytes, over the {MAX_REPLY_BYTES}-byte reply bound"
+                ))
+            })
+            .unwrap_or_else(|| panic!("{}", error.reason))
+            .parse()
+            .unwrap();
+        assert!(
+            (huge.len() + 2..huge.len() + 512).contains(&needed),
+            "{needed}"
         );
         assert_eq!(fixture.retained(), 0);
     }

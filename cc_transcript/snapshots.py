@@ -229,14 +229,14 @@ class TranscriptSnapshot:
         self,
         classifier: Mapping[str, str],
         *,
-        anchor: EventRef | None = None,
+        anchors: Sequence[EventRef] = (),
         lookback_turns: int = 40,
         lookahead_turns: int = 120,
     ) -> SessionActivity:
         payload = _call(
             self._native.activity,
             _json(classifier),
-            None if anchor is None else _json(asdict(anchor)),
+            _json([asdict(anchor) for anchor in anchors]) if anchors else None,
             lookback_turns,
             lookahead_turns,
         )

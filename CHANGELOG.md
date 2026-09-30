@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `TranscriptSnapshot.activity` takes `anchors`, a sequence of `EventRef`, instead of
+  `anchor`, and materializes one window from the earliest anchor's lookback to the latest
+  anchor's lookahead.
 - Snapshot requests and the Python `borrow_snapshot` and `prepare_classifier` limits
   dictionaries now require `max_source_read_bytes` for physical source reads, separately
   from `max_read_bytes` for projections and classifiers over snapshots in memory. The new
@@ -85,6 +88,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the request's `max_source_read_bytes`, and a cached source finishes with no source
   budget left. A reservation that runs out of source budget no longer fails the shared load
   for other waiters on the same file.
+- `TranscriptSnapshot.activity` bounds each turn by the scope's remaining output budget
+  instead of the 1 MiB wire record bound, so a turn whose events together exceed 1 MiB
+  materializes. Each event in the window, and each tool result it pairs from outside the
+  window, must still fit the 1 MiB record bound, as it must through `events`.
+  `output_limit` refusals from snapshot encoding, event materialization, and activity
+  windows name what was encoded, the bytes it needs, and the bound it exceeds, instead of
+  the serializer's `io error while serializing or deserializing`. A published record whose
+  page cannot fit the reply bound or the remaining publication budget names the record,
+  its page's bytes, and that bound, instead of `owned projection output limit`, and a
+  publication over the record-count or raw-byte bound names its field, its count or bytes,
+  and that bound.
 - The native snapshot owner fits classifier batches to the remaining read budget instead
   of rejecting the whole batch before its callback. `resume` continues without adding
   budget, and a fresh reservation can reuse partial progress. Classifier admission counts

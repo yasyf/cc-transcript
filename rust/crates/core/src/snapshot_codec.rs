@@ -111,6 +111,12 @@ pub struct TurnWire<'a> {
     pub tool_uses: Vec<ToolUseWire<'a>>,
 }
 
+#[derive(Serialize)]
+pub struct ActivityWire<'a> {
+    pub session_id: &'a str,
+    pub turns: &'a [TurnWire<'a>],
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnRecord {
@@ -256,58 +262,157 @@ impl Write for LimitedWriter {
     }
 }
 
+struct Counter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit - self.bytes {
+            return Err(io::Error::other("snapshot record byte limit"));
+        }
+        self.bytes += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Bound<'a> {
+    pub what: &'a str,
+    pub budget: usize,
+    pub record: bool,
+}
+
+impl<'a> Bound<'a> {
+    pub fn record(what: &'a str, budget: usize) -> Self {
+        Self {
+            what,
+            budget,
+            record: true,
+        }
+    }
+
+    pub fn budget(what: &'a str, budget: usize) -> Self {
+        Self {
+            what,
+            budget,
+            record: false,
+        }
+    }
+
+    fn limit(self) -> usize {
+        if self.record {
+            self.budget.min(MAX_RECORD_BYTES)
+        } else {
+            self.budget
+        }
+    }
+
+    fn refusal<T: Serialize + ?Sized>(self, record: &T) -> SnapshotError {
+        let mut counter = Counter {
+            bytes: 0,
+            limit: usize::MAX,
+        };
+        let reason = match write_json(&mut counter, record, usize::MAX) {
+            Ok(()) if self.record && counter.bytes > MAX_RECORD_BYTES => format!(
+                "{} needs {} bytes, over the {MAX_RECORD_BYTES}-byte record bound",
+                self.what, counter.bytes
+            ),
+            Ok(()) => format!(
+                "{} needs {} bytes, over the {}-byte remaining output budget",
+                self.what, counter.bytes, self.budget
+            ),
+            Err(error) => format!("{} could not be encoded: {error}", self.what),
+        };
+        SnapshotError::new(Status::OutputLimit, reason)
+    }
+
+    fn write<W: Write, T: Serialize + ?Sized>(
+        self,
+        out: &mut W,
+        record: &T,
+    ) -> Result<(), SnapshotError> {
+        write_json(out, record, self.limit()).map_err(|error| {
+            if error.is_io() {
+                self.refusal(record)
+            } else {
+                SnapshotError::new(Status::OutputLimit, error.to_string())
+            }
+        })
+    }
+}
+
+pub fn encode_bounded<T: Serialize + ?Sized>(
+    record: &T,
+    bound: Bound<'_>,
+) -> Result<String, SnapshotError> {
+    let mut out = LimitedWriter {
+        bytes: Vec::new(),
+        max_bytes: bound.limit(),
+    };
+    bound.write(&mut out, record)?;
+    Ok(String::from_utf8(out.bytes).expect("JSON is UTF-8"))
+}
+
+pub fn encoded_size_bounded<T: Serialize + ?Sized>(
+    record: &T,
+    bound: Bound<'_>,
+) -> Result<usize, SnapshotError> {
+    let mut out = Counter {
+        bytes: 0,
+        limit: bound.limit(),
+    };
+    bound.write(&mut out, record)?;
+    Ok(out.bytes)
+}
+
 pub fn encode<T: Serialize + ?Sized>(
     record: &T,
     max_bytes: usize,
 ) -> Result<String, SnapshotError> {
-    let mut out = LimitedWriter {
-        bytes: Vec::new(),
-        max_bytes: max_bytes.min(MAX_RECORD_BYTES),
-    };
-    write_json(&mut out, record, max_bytes.min(MAX_RECORD_BYTES))
-        .map_err(|error| SnapshotError::new(Status::OutputLimit, error.to_string()))?;
-    Ok(String::from_utf8(out.bytes).expect("JSON is UTF-8"))
+    encode_bounded(record, Bound::record("snapshot record", max_bytes))
 }
 
 pub fn encoded_size<T: Serialize + ?Sized>(
     record: &T,
     max_bytes: usize,
 ) -> Result<usize, SnapshotError> {
-    struct Counter {
-        remaining: usize,
-    }
-    impl Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > self.remaining {
-                return Err(io::Error::other("snapshot record byte limit"));
-            }
-            self.remaining -= bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    let limit = max_bytes.min(MAX_RECORD_BYTES);
-    let mut out = Counter { remaining: limit };
-    write_json(&mut out, record, max_bytes.min(MAX_RECORD_BYTES))
-        .map_err(|error| SnapshotError::new(Status::OutputLimit, error.to_string()))?;
-    Ok(limit - out.remaining)
+    encoded_size_bounded(record, Bound::record("snapshot record", max_bytes))
 }
 
 pub fn check_page(records: &[String], max_bytes: usize) -> Result<(), SnapshotError> {
     if records.len() > MAX_RECORDS {
         return Err(SnapshotError::new(
             Status::OutputLimit,
-            "snapshot record count limit",
+            format!(
+                "snapshot page of {} records exceeds the {MAX_RECORDS}-record page bound",
+                records.len()
+            ),
         ));
     }
-    let mut remaining = max_bytes.min(MAX_PAGE_BYTES);
+    let page = max_bytes.min(MAX_PAGE_BYTES);
+    let mut remaining = page;
     for record in records {
-        if record.len() > MAX_RECORD_BYTES || record.len() > remaining {
+        if record.len() > MAX_RECORD_BYTES {
             return Err(SnapshotError::new(
                 Status::OutputLimit,
-                "snapshot record byte limit",
+                format!(
+                    "snapshot record needs {} bytes, over the {MAX_RECORD_BYTES}-byte record bound",
+                    record.len()
+                ),
+            ));
+        }
+        if record.len() > remaining {
+            return Err(SnapshotError::new(
+                Status::OutputLimit,
+                format!(
+                    "snapshot page needs {} bytes, over the {page}-byte page bound",
+                    records.iter().map(String::len).sum::<usize>()
+                ),
             ));
         }
         remaining -= record.len();
@@ -315,11 +420,7 @@ pub fn check_page(records: &[String], max_bytes: usize) -> Result<(), SnapshotEr
     Ok(())
 }
 
-fn decode<T: DeserializeOwned>(
-    records: &[String],
-    max_bytes: usize,
-) -> Result<Vec<T>, SnapshotError> {
-    check_page(records, max_bytes)?;
+fn parse<T: DeserializeOwned>(records: &[String]) -> Result<Vec<T>, SnapshotError> {
     records
         .iter()
         .map(|record| {
@@ -327,6 +428,14 @@ fn decode<T: DeserializeOwned>(
                 .map_err(|error| SnapshotError::new(Status::ParseError, error.to_string()))
         })
         .collect()
+}
+
+fn decode<T: DeserializeOwned>(
+    records: &[String],
+    max_bytes: usize,
+) -> Result<Vec<T>, SnapshotError> {
+    check_page(records, max_bytes)?;
+    parse(records)
 }
 
 fn version(actual: &str, expected: &str) -> Result<(), SnapshotError> {
@@ -365,7 +474,14 @@ pub fn decode_turns(
     records: &[String],
     max_bytes: usize,
 ) -> Result<Vec<TurnRecord>, SnapshotError> {
-    let records: Vec<TurnRecord> = decode(records, max_bytes)?;
+    turns(decode(records, max_bytes)?)
+}
+
+pub fn decode_owned_turns(records: &[String]) -> Result<Vec<TurnRecord>, SnapshotError> {
+    turns(parse(records)?)
+}
+
+fn turns(records: Vec<TurnRecord>) -> Result<Vec<TurnRecord>, SnapshotError> {
     for record in &records {
         version(&record.codec, TURN_CODEC)?;
         for event in &record.events {
@@ -646,6 +762,38 @@ mod tests {
         );
         assert!(
             matches!(encode(&EventWire::new(0, &entry), record.len() - 1), Err(error) if error.status == Status::OutputLimit)
+        );
+    }
+
+    #[test]
+    fn oversized_event_refusal_names_its_bound_and_size() {
+        let encoded_len = |wire: &EventWire<'_>| {
+            let mut encoded = Vec::new();
+            write_json(&mut encoded, wire, usize::MAX).unwrap();
+            encoded.len()
+        };
+        let large = user("u", &"x".repeat(MAX_RECORD_BYTES));
+        let wire = EventWire::new(7, &large);
+        let needed = encoded_len(&wire);
+        for budget in [64, MAX_PAGE_BYTES] {
+            let refusal =
+                encoded_size_bounded(&wire, Bound::record("event 7", budget)).unwrap_err();
+            assert_eq!(refusal.status, Status::OutputLimit);
+            assert_eq!(
+                refusal.reason,
+                format!(
+                    "event 7 needs {needed} bytes, over the {MAX_RECORD_BYTES}-byte record bound"
+                )
+            );
+        }
+        let small = user("u", "payload");
+        let wire = EventWire::new(0, &small);
+        let needed = encoded_len(&wire);
+        assert_eq!(
+            encode(&wire, 8).unwrap_err().reason,
+            format!(
+                "snapshot record needs {needed} bytes, over the 8-byte remaining output budget"
+            )
         );
     }
 

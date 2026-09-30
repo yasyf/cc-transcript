@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -93,6 +94,7 @@ def test_scope_rejects_large_event_before_view_materializes(tmp_path: Path) -> N
         with pytest.raises(SnapshotIncomplete) as failure:
             snapshot.events[0]
         assert failure.value.status == "output_limit"
+        assert re.fullmatch(r"event 0 needs \d+ bytes, over the 64-byte remaining output budget", failure.value.reason)
         assert snapshot.work["output_bytes"] == 0
         assert snapshot.usage["source_bytes_read"] == 0
         assert snapshot.usage["requests_failed"] == 1
@@ -112,13 +114,34 @@ def test_scoped_native_activity_keeps_absolute_turn_indexes(tmp_path: Path) -> N
         deadline_unix_ms=deadline(),
     ) as snapshot:
         activity = snapshot.activity(
-            CLASSIFIER, anchor=EventRef(SessionId("s"), EventUuid("u30")), lookback_turns=1, lookahead_turns=1
+            CLASSIFIER, anchors=[EventRef(SessionId("s"), EventUuid("u30"))], lookback_turns=1, lookahead_turns=1
         )
         assert [turn.index for turn in activity.turns] == [29, 30, 31]
         assert [turn.events[0].meta.uuid for turn in activity.turns] == ["u29", "u30", "u31"]
         assert snapshot.usage["source_opens"] == 0
     with pytest.raises(SnapshotIncomplete):
         len(snapshot.events)
+
+
+def test_scoped_native_activity_spans_every_anchor_window(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(event(index) for index in range(40)))
+    store = TranscriptStore({})
+    description = acquire(store, path)
+    with store.borrow_snapshot(
+        description["handle"],
+        context=context(),
+        cancellation=CancellationToken(),
+        limits=LIMITS,
+        deadline_unix_ms=deadline(),
+    ) as snapshot:
+        activity = snapshot.activity(
+            CLASSIFIER,
+            anchors=[EventRef(SessionId("s"), EventUuid("u30")), EventRef(SessionId("s"), EventUuid("u10"))],
+            lookback_turns=2,
+            lookahead_turns=1,
+        )
+        assert [turn.index for turn in activity.turns] == list(range(8, 32))
 
 
 def test_owned_projection_survives_lease_release(tmp_path: Path) -> None:
