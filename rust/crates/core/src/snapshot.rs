@@ -371,6 +371,7 @@ struct Waiter {
     deadline: u64,
     used_bytes: usize,
     used_events: usize,
+    stage: Option<Arc<ClassifierSlot>>,
     busy: bool,
 }
 
@@ -735,6 +736,7 @@ struct ClassifierSlot {
 
 struct ClassifierProgress {
     snapshot: Option<Arc<TranscriptSnapshot>>,
+    stage: Option<Arc<ClassifierSlot>>,
     read_bytes: usize,
     events: usize,
 }
@@ -1759,6 +1761,7 @@ impl NativeStore {
         {
             return Ok(ClassifierProgress {
                 snapshot: Some(snapshot),
+                stage: None,
                 read_bytes: 0,
                 events: 0,
             });
@@ -1784,22 +1787,23 @@ impl NativeStore {
             str_field(context, "registry_generation")?
         ]))
         .expect("classified key");
-        if let Some(derived) = self
-            .classified
-            .lock()
-            .expect("classified snapshots")
-            .get(&key)
-            .cloned()
-        {
-            return Ok(ClassifierProgress {
-                snapshot: Some(derived),
-                read_bytes: 0,
-                events: 0,
-            });
-        }
         let slot = {
             let mut state = self.state.lock().expect("snapshot state");
             Self::prune(&mut state);
+            if let Some(derived) = self
+                .classified
+                .lock()
+                .expect("classified snapshots")
+                .get(&key)
+                .cloned()
+            {
+                return Ok(ClassifierProgress {
+                    snapshot: Some(derived),
+                    stage: None,
+                    read_bytes: 0,
+                    events: 0,
+                });
+            }
             if let Some(slot) = state.classifier_stages.get(&key) {
                 Arc::clone(slot)
             } else {
@@ -1808,11 +1812,27 @@ impl NativeStore {
                 } else {
                     self.config.loads.saturating_sub(self.config.hook_loads)
                 };
-                if state.classifier_stages.len() >= cap {
+                if state
+                    .classifier_stages
+                    .values()
+                    .filter(|slot| Arc::strong_count(slot) > 1)
+                    .count()
+                    >= cap
+                {
                     return Err(SnapshotError::new(
                         Status::RetainedLimit,
                         "classifier preparation admission exhausted",
                     ));
+                }
+                while state.classifier_stages.len() >= cap {
+                    let idle = state
+                        .classifier_stages
+                        .iter()
+                        .filter(|(_, slot)| Arc::strong_count(slot) == 1)
+                        .min_by_key(|(_, slot)| slot.deadline)
+                        .map(|(key, _)| key.clone())
+                        .expect("idle classifier stage below held cap");
+                    state.classifier_stages.remove(&idle);
                 }
                 self.admit_memory(
                     &mut state,
@@ -1839,6 +1859,7 @@ impl NativeStore {
         let Ok(mut stage) = slot.work.try_lock() else {
             return Ok(ClassifierProgress {
                 snapshot: None,
+                stage: Some(Arc::clone(&slot)),
                 read_bytes: 0,
                 events: 0,
             });
@@ -1846,37 +1867,41 @@ impl NativeStore {
         if let Some(result) = &stage.result {
             return Ok(ClassifierProgress {
                 snapshot: Some(Arc::clone(result)),
+                stage: None,
                 read_bytes: 0,
                 events: 0,
             });
         }
         let start = stage.indexed;
-        let stop = snapshot
+        let limit = snapshot
             .event_count
             .min(start + self.config.event_step.min(bounds.max_events));
-        if start < snapshot.event_count && stop == start {
+        if start < snapshot.event_count && limit == start {
             return Err(SnapshotError::new(
                 Status::Incomplete,
                 "classifier event budget exhausted",
             ));
         }
         let mut bytes = 0usize;
-        for position in start..stop {
-            let at = snapshot
-                .chunks
-                .partition_point(|chunk| chunk.start <= position)
-                - 1;
+        let mut stop = start;
+        while stop < limit {
+            let at = snapshot.chunks.partition_point(|chunk| chunk.start <= stop) - 1;
             let chunk = &snapshot.chunks[at];
-            let charge = chunk.entry_charges[position - chunk.start];
-            bytes = bytes
+            let charge = chunk.entry_charges[stop - chunk.start];
+            let charged = bytes
                 .saturating_add(charge.owned_capacity_bytes)
                 .saturating_add(charge.opaque_dom_accounted_bytes);
-            if bytes > bounds.max_read_bytes {
-                return Err(SnapshotError::new(
-                    Status::Incomplete,
-                    "classifier read budget exhausted before callback",
-                ));
+            if charged > bounds.max_read_bytes {
+                break;
             }
+            bytes = charged;
+            stop += 1;
+        }
+        if stop == start && start < limit {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "classifier read budget exhausted before callback",
+            ));
         }
         let reserve = bytes.saturating_mul(2).saturating_add(stop - start);
         {
@@ -1907,6 +1932,7 @@ impl NativeStore {
         if stop < snapshot.event_count {
             return Ok(ClassifierProgress {
                 snapshot: None,
+                stage: Some(Arc::clone(&slot)),
                 read_bytes: bytes,
                 events: stop - start,
             });
@@ -1934,13 +1960,14 @@ impl NativeStore {
             self.admit_memory(&mut state, context, 0)?;
         }
         stage.result = Some(Arc::clone(&derived));
-        slot.complete.store(true, Ordering::Release);
         self.classified
             .lock()
             .expect("classified snapshots")
             .insert(key, Arc::clone(&derived));
+        slot.complete.store(true, Ordering::Release);
         Ok(ClassifierProgress {
             snapshot: Some(derived),
+            stage: None,
             read_bytes: bytes,
             events: stop - start,
         })
@@ -2066,10 +2093,9 @@ impl NativeStore {
                 Self::release_graph_state(state, &graph);
             }
         }
-        state.classifier_stages.retain(|_, slot| {
-            Arc::strong_count(slot) > 1
-                || slot.deadline > now && !slot.complete.load(Ordering::Acquire)
-        });
+        state
+            .classifier_stages
+            .retain(|_, slot| slot.deadline > now && !slot.complete.load(Ordering::Acquire));
         state
             .discoveries
             .retain(|_, cursor| cursor.expires > now && cursor.limits.deadline_unix_ms > now);
@@ -3633,6 +3659,7 @@ impl NativeStore {
                 deadline,
                 used_bytes: 0,
                 used_events: 0,
+                stage: None,
                 busy: false,
             };
             state.waiters.insert(cursor.clone(), waiter.clone());
@@ -3911,6 +3938,7 @@ impl NativeStore {
             )?;
             waiter.used_bytes += classified.read_bytes;
             waiter.used_events += classified.events;
+            waiter.stage = classified.stage;
             let Some(snapshot) = classified.snapshot else {
                 waiter.expires = (now_ms() + self.config.ttl).min(waiter.deadline);
                 waiter.busy = false;
@@ -6828,6 +6856,325 @@ mod tests {
         let completed = finish(&store, second, &b);
         assert_eq!(store.pin(handle(&completed), &b).unwrap().event_count, 5);
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..4, 4..5]);
+    }
+
+    fn entry_charges(snapshot: &TranscriptSnapshot) -> Vec<usize> {
+        snapshot
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.entry_charges.iter())
+            .map(|charge| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
+            .collect()
+    }
+
+    fn recording_classifier(store: &NativeStore, id: &str) -> Arc<Mutex<Vec<Range<usize>>>> {
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&batches);
+        store
+            .register_classifier(
+                id,
+                "1",
+                Arc::new(move |_, range| {
+                    recorded.lock().unwrap().push(range.clone());
+                    Ok(vec![true; range.len()])
+                }),
+            )
+            .unwrap();
+        batches
+    }
+
+    fn classifier_acquire(path: &Path, id: &str, max_read_bytes: usize) -> Value {
+        let mut request = acquire(path);
+        request.insert("classifier", json!({"id":id,"version":"1"}));
+        request["limits"].insert("max_read_bytes", json!(max_read_bytes));
+        request
+    }
+
+    fn held_classifier_stages(store: &NativeStore) -> usize {
+        store
+            .state
+            .lock()
+            .unwrap()
+            .classifier_stages
+            .values()
+            .filter(|slot| Arc::strong_count(slot) > 1)
+            .count()
+    }
+
+    #[test]
+    fn classifier_batches_shrink_to_the_read_budget_and_resume_where_they_stopped() {
+        let source = Source::new(
+            &(0..5)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let store = store();
+        let owner = context("a");
+        let native = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let charges = entry_charges(&store.pin(handle(&native), &owner).unwrap());
+        let batches = recording_classifier(&store, "budgeted");
+        let budget = charges[..4].iter().sum::<usize>() - 1;
+        let first = store.request(
+            &classifier_acquire(&source.path, "budgeted", budget),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        assert_eq!(
+            first["reason"].as_str(),
+            Some("classifier preparation incomplete")
+        );
+        let resume = |response: &Value| {
+            store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":response["cursor"]}),
+                &owner,
+                &Cancellation::default(),
+            )
+        };
+        let second = resume(&first);
+        assert_eq!(second["status"].as_str(), Some("incomplete"), "{second:?}");
+        assert!(second["cursor"].as_str().is_some());
+        let exhausted = resume(&second);
+        assert_eq!(exhausted["status"].as_str(), Some("incomplete"));
+        assert_eq!(
+            exhausted["reason"].as_str(),
+            Some("classifier read budget exhausted before callback")
+        );
+        assert!(exhausted["cursor"].is_null());
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3]);
+        assert_eq!(held_classifier_stages(&store), 0);
+        let completed = finish(
+            &store,
+            store.request(
+                &classifier_acquire(&source.path, "budgeted", 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            store.pin(handle(&completed), &owner).unwrap().event_count,
+            5
+        );
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 3..5]);
+    }
+
+    #[test]
+    fn classifier_event_larger_than_the_whole_budget_fails_incomplete() {
+        let large = format!(
+            r#"{{"type":"user","uuid":"large","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{}"}}}}"#,
+            "x".repeat(64 * 1024)
+        );
+        let source = Source::new(&format!("{}\n{large}\n{}\n", user("a"), user("c")));
+        let store = NativeStore::new(
+            &json!({"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096}),
+        )
+        .unwrap();
+        let owner = context("a");
+        let native = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let charges = entry_charges(&store.pin(handle(&native), &owner).unwrap());
+        let batches = recording_classifier(&store, "oversized");
+        let budget = charges[1] - 1;
+        assert!(charges[0] + charges[2] < budget);
+        let first = store.request(
+            &classifier_acquire(&source.path, "oversized", budget),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        let failed = store.request(
+            &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":first["cursor"]}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(failed["status"].as_str(), Some("incomplete"));
+        assert!(failed["cursor"].is_null());
+        let retried = store.request(
+            &classifier_acquire(&source.path, "oversized", budget),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(retried["status"].as_str(), Some("incomplete"));
+        assert_eq!(
+            retried["reason"].as_str(),
+            Some("classifier read budget exhausted before callback")
+        );
+        assert!(retried["cursor"].is_null());
+        assert_eq!(*batches.lock().unwrap(), vec![0..1]);
+        let state = store.state.lock().unwrap();
+        assert!(state.waiters.is_empty());
+        assert!(state
+            .classifier_stages
+            .values()
+            .all(|slot| Arc::strong_count(slot) == 1));
+    }
+
+    #[test]
+    fn failed_classifier_stage_frees_admission_immediately() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = NativeStore::new(&json!({"max_pending_loads":1,"reserved_hook_loads":0,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        store
+            .register_classifier(
+                "failing",
+                "1",
+                Arc::new(|_, _| {
+                    Err(SnapshotError::new(
+                        Status::InvalidRequest,
+                        "classifier raised",
+                    ))
+                }),
+            )
+            .unwrap();
+        let batches = recording_classifier(&store, "working");
+        let failed = store.request(
+            &classifier_acquire(&source.path, "failing", 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            failed["status"].as_str(),
+            Some("invalid_request"),
+            "{failed:?}"
+        );
+        assert_eq!(held_classifier_stages(&store), 0);
+        let completed = finish(
+            &store,
+            store.request(
+                &classifier_acquire(&source.path, "working", 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            store.pin(handle(&completed), &owner).unwrap().event_count,
+            2
+        );
+        assert_eq!(*batches.lock().unwrap(), vec![0..2]);
+    }
+
+    #[test]
+    fn parked_classifier_stage_holds_admission_until_its_reservation_is_released() {
+        let source = Source::new(&format!("{}\n{}\n{}\n", user("a"), user("b"), user("c")));
+        let store = NativeStore::new(&json!({"max_pending_loads":1,"reserved_hook_loads":0,"max_events_per_step":1,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        recording_classifier(&store, "parked");
+        let waiting = recording_classifier(&store, "waiting");
+        let parked = store.request(
+            &classifier_acquire(&source.path, "parked", 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(parked["status"].as_str(), Some("incomplete"), "{parked:?}");
+        assert_eq!(held_classifier_stages(&store), 1);
+        let contended = store.request(
+            &classifier_acquire(&source.path, "waiting", 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(contended["status"].as_str(), Some("retained_limit"));
+        assert_eq!(
+            contended["reason"].as_str(),
+            Some("classifier preparation admission exhausted")
+        );
+        let released = store.request(
+            &json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"cursor","token":parked["cursor"]}),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(released["status"].as_str(), Some("ok"), "{released:?}");
+        assert_eq!(held_classifier_stages(&store), 0);
+        let completed = finish(
+            &store,
+            store.request(
+                &classifier_acquire(&source.path, "waiting", 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            store.pin(handle(&completed), &owner).unwrap().event_count,
+            3
+        );
+        assert_eq!(*waiting.lock().unwrap(), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn classifier_facts_charge_only_user_text_among_large_early_tool_payloads() {
+        let payload = "x".repeat(700 * 1024);
+        let tool_use = json!({"type":"assistant","uuid":"write","sessionId":"s","timestamp":"2026-01-02T03:04:06Z",
+            "message":{"model":"m","content":[{"type":"tool_use","id":"w","name":"Write","input":{"file_path":"a.rs","content":payload}}]}});
+        let tool_result = json!({"type":"user","uuid":"result","sessionId":"s","timestamp":"2026-01-02T03:04:07Z",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"w","content":payload}]}});
+        let instruction = json!({"type":"user","uuid":"instruction","sessionId":"s","timestamp":"2026-01-02T03:04:08Z",
+            "message":{"content":"<system_instruction> lane"}});
+        let source = Source::new(&format!(
+            "{}\n{}\n{}\n{}\n",
+            user("a"),
+            sonic_rs::to_string(&tool_use).unwrap(),
+            sonic_rs::to_string(&tool_result).unwrap(),
+            sonic_rs::to_string(&instruction).unwrap()
+        ));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_entry_bytes":4*1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let mut request = acquire(&source.path);
+        request["limits"].insert("max_read_bytes", json!(16 * 1024 * 1024));
+        let snapshot = store
+            .pin(
+                handle(&finish(
+                    &store,
+                    store.request(&request, &owner, &Cancellation::default()),
+                    &owner,
+                )),
+                &owner,
+            )
+            .unwrap();
+        let limits = WorkLimits {
+            max_read_bytes: 1024 * 1024,
+            max_events: 1000,
+            max_items: 256,
+            max_output_bytes: 1024 * 1024,
+            max_discovery_entries: 1000,
+            max_sources: 100,
+            deadline_unix_ms: now_ms() + 30_000,
+        };
+        assert!(entry_charges(&snapshot)[..3].iter().sum::<usize>() > limits.max_read_bytes);
+        let mut usage = crate::snapshot_projection::ProjectionUsage::default();
+        let facts = crate::snapshot_projection::classifier_facts(
+            &snapshot,
+            "<system_instruction>",
+            50,
+            &limits,
+            &Cancellation::default(),
+            &mut usage,
+        )
+        .unwrap();
+        assert_eq!(
+            facts,
+            json!({"has_users":true,"all_users_sidechain":false,"has_user_prefix":true})
+        );
+        assert_eq!(usage.events, 4);
+        assert!(usage.read_bytes < 64 * 1024, "{}", usage.read_bytes);
     }
 
     #[test]

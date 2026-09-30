@@ -215,6 +215,24 @@ impl<'a, 'w> Work<'a, 'w> {
         Ok(())
     }
 
+    fn charge_bytes(&mut self, bytes: usize) -> Result<(), SnapshotError> {
+        self.cancel.check(self.limits.deadline_unix_ms)?;
+        if bytes > self.limits.max_read_bytes.saturating_sub(self.bytes) {
+            return Err(SnapshotError::new(Status::Incomplete, "read_limit"));
+        }
+        self.bytes += bytes;
+        Ok(())
+    }
+
+    fn charge_skipped(&mut self) -> Result<(), SnapshotError> {
+        if self.events == self.limits.max_events {
+            return Err(SnapshotError::new(Status::Incomplete, "event_limit"));
+        }
+        self.charge_bytes(std::mem::size_of::<Entry>())?;
+        self.events += 1;
+        Ok(())
+    }
+
     fn turn(&mut self, index: usize) -> Result<Turn<'a>, SnapshotError> {
         let range = self
             .snapshot
@@ -1873,12 +1891,28 @@ pub fn classifier_facts(
         }
         let mut has_user_prefix = false;
         for index in 0..snapshot.event_count.min(event_limit) {
-            work.charge_range(index..index + 1)?;
-            if let Entry::User(user) = snapshot.entry(index) {
-                if user_prefix(&user.content, prefix) {
-                    has_user_prefix = true;
-                    break;
-                }
+            let Entry::User(user) = snapshot.entry(index) else {
+                work.charge_skipped()?;
+                continue;
+            };
+            let blocks = user.blocks();
+            work.charge_bytes(
+                blocks
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ContentBlock>()),
+            )?;
+            if matches!(user.content, UserContent::Plain(_))
+                || blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text(_)))
+            {
+                work.charge_range(index..index + 1)?;
+            } else {
+                work.charge_skipped()?;
+            }
+            if user_prefix(&user.content, prefix) {
+                has_user_prefix = true;
+                break;
             }
         }
         let value = json!({"has_users":users != 0,"all_users_sidechain":users != 0 && users == sidechain_users,"has_user_prefix":has_user_prefix});
