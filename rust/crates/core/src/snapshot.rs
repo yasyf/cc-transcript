@@ -744,7 +744,26 @@ enum GraphYield {
 struct ClassifierStage {
     activity: ActivityIndex,
     indexed: usize,
+    previous: Option<Arc<TranscriptSnapshot>>,
     result: Option<Arc<TranscriptSnapshot>>,
+}
+
+impl ClassifierStage {
+    fn accounted_bytes(&self) -> usize {
+        let shared: HashSet<_> = self
+            .previous
+            .iter()
+            .flat_map(|previous| previous.activity.accounted_allocations())
+            .map(|(id, _)| id)
+            .collect();
+        self.activity
+            .accounted_allocations()
+            .into_iter()
+            .filter(|(id, _)| !shared.contains(id))
+            .map(|(_, bytes)| bytes)
+            .sum::<usize>()
+            + size_of::<Self>()
+    }
 }
 
 struct ClassifierSlot {
@@ -795,6 +814,7 @@ struct StoreState {
     projections: HashMap<String, ProjectionCursor>,
     generations: HashMap<String, GenerationRecord>,
     classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
+    classified_latest: HashMap<(SourceIdentity, String), Weak<TranscriptSnapshot>>,
     graphs: HashMap<String, GraphCursor>,
     prepared_graphs: HashMap<String, Arc<Mutex<PreparedGraph>>>,
     prepared_builds: HashMap<String, PreparedBuild>,
@@ -1807,12 +1827,12 @@ impl NativeStore {
                     })?,
             )
         };
-        let key = sonic_rs::to_string(&json!([
-            snapshot.id,
-            classifier_key,
-            str_field(context, "registry_generation")?
-        ]))
-        .expect("classified key");
+        let key = sonic_rs::to_string(&json!([snapshot.id, classifier_key, registry]))
+            .expect("classified key");
+        let lineage = (
+            snapshot.stamp.identity,
+            sonic_rs::to_string(&json!([classifier_key, registry])).expect("classified lineage"),
+        );
         let slot = {
             let mut state = self.state.lock().expect("snapshot state");
             Self::prune(&mut state);
@@ -1860,18 +1880,34 @@ impl NativeStore {
                         .expect("idle classifier stage below held cap");
                     state.classifier_stages.remove(&idle);
                 }
-                self.admit_memory(
-                    &mut state,
-                    context,
-                    size_of::<ClassifierSlot>() + size_of::<ClassifierStage>(),
-                )?;
+                let previous = state
+                    .classified_latest
+                    .get(&lineage)
+                    .and_then(Weak::upgrade)
+                    .filter(|previous| {
+                        !previous.provisional_tail
+                            && previous.chunks.len() <= snapshot.chunks.len()
+                            && previous
+                                .chunks
+                                .iter()
+                                .zip(&snapshot.chunks)
+                                .all(|(old, new)| Arc::ptr_eq(old, new))
+                    });
+                let stage = ClassifierStage {
+                    activity: previous
+                        .as_ref()
+                        .map_or_else(ActivityIndex::default, |previous| {
+                            previous.activity.as_ref().clone()
+                        }),
+                    indexed: previous.as_ref().map_or(0, |previous| previous.event_count),
+                    previous,
+                    result: None,
+                };
+                let accounted = stage.accounted_bytes();
+                self.admit_memory(&mut state, context, size_of::<ClassifierSlot>() + accounted)?;
                 let slot = Arc::new(ClassifierSlot {
-                    work: Mutex::new(ClassifierStage {
-                        activity: ActivityIndex::default(),
-                        indexed: 0,
-                        result: None,
-                    }),
-                    accounted: AtomicUsize::new(0),
+                    work: Mutex::new(stage),
+                    accounted: AtomicUsize::new(accounted),
                     deadline: now_ms() + self.config.preparation,
                     complete: AtomicBool::new(false),
                 });
@@ -1937,7 +1973,8 @@ impl NativeStore {
         }
         if stop > start {
             let flags = if let Some(callback) = &callback {
-                let flags = callback(&snapshot.chunks, start..stop)?;
+                let visible = snapshot.chunks.partition_point(|chunk| chunk.start < stop);
+                let flags = callback(&snapshot.chunks[..visible], start..stop)?;
                 if flags.len() != stop - start {
                     return Err(invalid("classifier returned a mismatched flag count"));
                 }
@@ -1950,10 +1987,8 @@ impl NativeStore {
             stage.indexed = stop;
             usage[6] += 1;
         }
-        slot.accounted.store(
-            stage.activity.accounted_bytes() + size_of::<ClassifierStage>(),
-            Ordering::Release,
-        );
+        slot.accounted
+            .store(stage.accounted_bytes(), Ordering::Release);
         cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
         if stop < snapshot.event_count {
             return Ok(ClassifierProgress {
@@ -1982,9 +2017,13 @@ impl NativeStore {
         {
             let mut state = self.state.lock().expect("snapshot state");
             state.generations.insert(derived.id.clone(), generation);
+            state
+                .classified_latest
+                .insert(lineage, Arc::downgrade(&derived));
             slot.accounted.store(0, Ordering::Release);
             self.admit_memory(&mut state, context, 0)?;
         }
+        stage.previous = None;
         stage.result = Some(Arc::clone(&derived));
         self.classified
             .lock()
@@ -2122,6 +2161,9 @@ impl NativeStore {
         state
             .classifier_stages
             .retain(|_, slot| slot.deadline > now && !slot.complete.load(Ordering::Acquire));
+        state
+            .classified_latest
+            .retain(|_, derived| derived.strong_count() > 0);
         state
             .discoveries
             .retain(|_, cursor| cursor.expires > now && cursor.limits.deadline_unix_ms > now);
@@ -2342,6 +2384,13 @@ impl NativeStore {
                 .sum::<usize>()
             + state.prepared_loads.capacity() * size_of::<(SourceIdentity, (Arc<LoadSlot>, u64))>()
             + state.recent_codex.capacity() * size_of::<(SourceIdentity, u64)>()
+            + state.classified_latest.capacity()
+                * size_of::<((SourceIdentity, String), Weak<TranscriptSnapshot>)>()
+            + state
+                .classified_latest
+                .keys()
+                .map(|(_, classifier)| classifier.capacity())
+                .sum::<usize>()
             + state.warm_memberships.capacity() * size_of::<(String, WarmMembership)>()
             + state
                 .warm_memberships
@@ -7016,6 +7065,181 @@ mod tests {
             5
         );
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 3..5]);
+    }
+
+    fn parity_classifier(store: &NativeStore, id: &str) -> Arc<Mutex<Vec<Range<usize>>>> {
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&batches);
+        store
+            .register_classifier(
+                id,
+                "1",
+                Arc::new(move |chunks, range| {
+                    let last = chunks.last().unwrap();
+                    assert!(last.start < range.end);
+                    assert!(range.end <= last.start + last.entries.len());
+                    recorded.lock().unwrap().push(range.clone());
+                    Ok(range.map(|position| position % 2 == 0).collect())
+                }),
+            )
+            .unwrap();
+        batches
+    }
+
+    fn assert_parity_turns(snapshot: &TranscriptSnapshot) {
+        let flags: Vec<bool> = (0..snapshot.event_count)
+            .map(|position| position % 2 == 0)
+            .collect();
+        let expected = ActivityIndex::new(&snapshot.entries(), Some(&flags));
+        assert_eq!(snapshot.activity.entry_count(), snapshot.event_count);
+        assert_eq!(snapshot.activity.turn_count(), expected.turn_count());
+        for turn in 0..expected.turn_count() {
+            assert_eq!(
+                snapshot.activity.turn_bounds(turn),
+                expected.turn_bounds(turn)
+            );
+        }
+    }
+
+    #[test]
+    fn appended_source_classifies_only_the_appended_events() {
+        let source = Source::new(
+            &(0..3)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let classify = || {
+            let response = finish(
+                &store,
+                store.request(
+                    &classifier_acquire(&source.path, "parity", 1024 * 1024),
+                    &owner,
+                    &Cancellation::default(),
+                ),
+                &owner,
+            );
+            store.pin(handle(&response), &owner).unwrap()
+        };
+        assert_eq!(classify().event_count, 3);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3]);
+        source.append(&format!("{}\n{}\n", user("3"), user("4")));
+        let appended = classify();
+        assert_eq!(appended.event_count, 5);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 3..5]);
+        assert_eq!(appended.activity.turn_bounds(1), Some(2..4));
+        assert_parity_turns(&appended);
+    }
+
+    #[test]
+    fn seeded_classifier_stage_charges_only_the_allocations_it_owns() {
+        let source = Source::new(
+            &(0..20)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let classified = finish(
+            &store,
+            store.request(
+                &classifier_acquire(&source.path, "parity", 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        let previous = store.pin(handle(&classified), &owner).unwrap();
+        source.append(&format!("{}\n{}\n", user("20"), user("21")));
+        let budget = entry_charges(&previous).into_iter().max().unwrap();
+        let mut response = store.request(
+            &classifier_acquire(&source.path, "parity", budget),
+            &owner,
+            &Cancellation::default(),
+        );
+        while batches.lock().unwrap().last() != Some(&(20..21)) {
+            response = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":response["cursor"]}),
+                &owner,
+                &Cancellation::default(),
+            );
+        }
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("classifier preparation incomplete"),
+            "{response:?}"
+        );
+        let accounted: usize = store
+            .state
+            .lock()
+            .unwrap()
+            .classifier_stages
+            .values()
+            .map(|slot| slot.accounted.load(Ordering::Acquire))
+            .sum();
+        assert!(
+            accounted < previous.activity.accounted_bytes(),
+            "{accounted} >= {}",
+            previous.activity.accounted_bytes()
+        );
+    }
+
+    #[test]
+    fn rewritten_or_truncated_source_classifies_from_the_start() {
+        let source = Source::new(
+            &(0..3)
+                .map(|index| format!("{}\n", user(&index.to_string())))
+                .collect::<String>(),
+        );
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let classify = || {
+            let response = finish(
+                &store,
+                store.request(
+                    &classifier_acquire(&source.path, "parity", 1024 * 1024),
+                    &owner,
+                    &Cancellation::default(),
+                ),
+                &owner,
+            );
+            store.pin(handle(&response), &owner).unwrap()
+        };
+        classify();
+        let contents = std::fs::read_to_string(&source.path).unwrap();
+        let tail = contents.rfind("hello").unwrap();
+        std::fs::write(
+            &source.path,
+            format!(
+                "{}HELLO{}{}\n",
+                &contents[..tail],
+                &contents[tail + "hello".len()..],
+                user("3")
+            ),
+        )
+        .unwrap();
+        let rewritten = classify();
+        assert_eq!(rewritten.event_count, 4);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 0..2, 2..4]);
+        assert_parity_turns(&rewritten);
+        let contents = std::fs::read_to_string(&source.path).unwrap();
+        std::fs::write(
+            &source.path,
+            contents
+                .lines()
+                .take(2)
+                .map(|line| format!("{line}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let truncated = classify();
+        assert_eq!(truncated.event_count, 2);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 0..2, 2..4, 0..2]);
+        assert_parity_turns(&truncated);
     }
 
     #[test]
