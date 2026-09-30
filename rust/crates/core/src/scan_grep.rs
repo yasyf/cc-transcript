@@ -642,6 +642,7 @@ mod tests {
             owner,
             WorkLimits {
                 max_read_bytes: 8 * 1024 * 1024,
+                max_source_read_bytes: 8 * 1024 * 1024,
                 max_events: 4096,
                 max_items: 4096,
                 max_output_bytes: 1024 * 1024,

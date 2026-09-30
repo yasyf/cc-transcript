@@ -335,7 +335,8 @@ is true. Reaching the quotas stops opening further sources and reports
 
 Grep applies finite read, event, discovery, source, output and time budgets.
 Use `--max-read-bytes`, `--max-events`, `--max-discovery-entries`, `--max-sources`,
-`--max-output-bytes` and `--timeout-ms` to set them. `--all` removes the ordinary
+`--max-output-bytes` and `--timeout-ms` to set them. `--max-read-bytes` caps source
+and projection reads together; `--max-source-read-bytes` caps source reads alone. `--all` removes the ordinary
 file-selection limit, and `--max-matches 0` removes result quotas; work budgets
 still apply. A work limit or failed source makes the scan incomplete and exits
 with status 3. A completed scan without matches retains status 1.

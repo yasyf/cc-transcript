@@ -285,6 +285,7 @@ fn scope_limits(value: &Value) -> WorkLimits {
     let limits = value.get("limits").expect("validated scope limits");
     WorkLimits {
         max_read_bytes: count(limits, "max_read_bytes"),
+        max_source_read_bytes: count(limits, "max_source_read_bytes"),
         max_events: count(limits, "max_events"),
         max_items: count(limits, "max_items"),
         max_output_bytes: count(limits, "max_output_bytes"),
@@ -295,14 +296,6 @@ fn scope_limits(value: &Value) -> WorkLimits {
             .and_then(Value::as_u64)
             .expect("validated deadline"),
     }
-}
-
-fn limits_value(limits: WorkLimits) -> Value {
-    json!({
-        "max_read_bytes":limits.max_read_bytes,"max_events":limits.max_events,
-        "max_items":limits.max_items,"max_output_bytes":limits.max_output_bytes,
-        "max_discovery_entries":limits.max_discovery_entries,"max_sources":limits.max_sources
-    })
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
@@ -1303,7 +1296,7 @@ impl NativeSnapshotScope {
             .map_err(|failure| self.failure(failure))?;
         self.project(py, json!({
             "schema":SCHEMA,"id":"scope-capture","operation":"capture","deadline_unix_ms":limits.deadline_unix_ms,
-            "limits":limits_value(limits), "view":{"handle":self.handle,"classifier":self.description.get("classifier").expect("trusted classifier"),"selectors":[],"attachments":[]},
+            "limits":limits.to_json(), "view":{"handle":self.handle,"classifier":self.description.get("classifier").expect("trusted classifier"),"selectors":[],"attachments":[]},
             "anchors":anchors,"before":before,"after":after,"preview_chars":preview_chars
         }), "windows_json")
     }
@@ -1333,7 +1326,7 @@ impl NativeSnapshotScope {
             .map_err(|failure| self.failure(failure))?;
         self.project(py, json!({
             "schema":SCHEMA,"id":"scope-hydrate","operation":"hydrate","deadline_unix_ms":limits.deadline_unix_ms,
-            "limits":limits_value(limits), "handles":[{"session_id":snapshot.session_id,"handle":self.handle}],
+            "limits":limits.to_json(), "handles":[{"session_id":snapshot.session_id,"handle":self.handle}],
             "windows_json":windows,"render":render
         }), "windows")
     }
@@ -1357,6 +1350,7 @@ mod tests {
     fn limits() -> WorkLimits {
         WorkLimits {
             max_read_bytes: 10,
+            max_source_read_bytes: 10,
             max_events: 2,
             max_items: 2,
             max_output_bytes: 10,
@@ -1490,7 +1484,7 @@ mod tests {
             let store = NativeSnapshotStore::new(py, "{}").unwrap();
             let context = json!({"claimant":"test","admission":"hook","authority":{"kind":"user","effective_uid":uid.to_string()},"registry_generation":store.default_registry_generation()}).to_string();
             let deadline = cc_transcript_core::snapshot::now_ms() + 30_000;
-            let generous = json!({"max_read_bytes":1024*1024,"max_events":100,"max_items":100,"max_output_bytes":1024*1024,"max_discovery_entries":100,"max_sources":10});
+            let generous = json!({"max_read_bytes":1024*1024,"max_source_read_bytes":1024*1024,"max_events":100,"max_items":100,"max_output_bytes":1024*1024,"max_discovery_entries":100,"max_sources":10});
             let cancellation = SnapshotCancellation::new();
             let request = json!({"schema":SCHEMA,"id":"acquire","operation":"acquire","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"limits":generous,"deadline_unix_ms":deadline});
             let mut response: Value = sonic_rs::from_str(

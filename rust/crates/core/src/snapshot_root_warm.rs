@@ -153,6 +153,7 @@ impl NativeStore {
             expires: (now + self.config.ttl).min(deadline),
             deadline,
             used_bytes: 0,
+            used_source_bytes: 0,
             used_events: 0,
             stage: None,
             busy: false,
@@ -168,7 +169,7 @@ impl NativeStore {
             }
             state.waiters.insert(token.clone(), waiter.clone());
         }
-        self.advance(&token, waiter, cancel, usage)
+        self.advance(&token, waiter, None, cancel, usage)
     }
 }
 
@@ -206,7 +207,7 @@ mod root_warm_tests {
     }
 
     fn warm_request(path: &Path, read_bytes: usize) -> Value {
-        json!({"schema":SCHEMA,"id":"warm-root","operation":"warm_root","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":read_bytes,"max_events":100_000,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
+        json!({"schema":SCHEMA,"id":"warm-root","operation":"warm_root","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":read_bytes,"max_source_read_bytes":read_bytes,"max_events":100_000,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
     }
 
     #[test]

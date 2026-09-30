@@ -2003,6 +2003,7 @@ mod tests {
     fn limits() -> WorkLimits {
         WorkLimits {
             max_read_bytes: 4 * 1024 * 1024,
+            max_source_read_bytes: 4 * 1024 * 1024,
             max_events: 100,
             max_items: 100,
             max_output_bytes: 1024 * 1024,

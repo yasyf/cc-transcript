@@ -77,6 +77,7 @@ fn context(store: &NativeStore, source: &RaceSource, claimant: &str) -> Value {
 fn bounds() -> WorkLimits {
     WorkLimits {
         max_read_bytes: 1024 * 1024,
+        max_source_read_bytes: 1024 * 1024,
         max_events: 1000,
         max_items: 256,
         max_output_bytes: 1024 * 1024,
@@ -89,7 +90,7 @@ fn bounds() -> WorkLimits {
 fn acquire(path: &Path) -> Value {
     json!({"schema":SCHEMA,"id":"race-acquire","operation":"acquire",
         "path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
-        "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_events":1000,
+        "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_source_read_bytes":1024*1024,"max_events":1000,
         "max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
 }
 

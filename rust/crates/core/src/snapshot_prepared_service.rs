@@ -244,13 +244,7 @@ impl NativeStore {
             }
             crate::snapshot_prepared_disk::DiskLookup::Miss => {}
         }
-        if remaining.max_read_bytes == 0 {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "prepared graph read budget exhausted",
-            ));
-        }
-        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":remaining.max_read_bytes,"max_events":remaining.max_events,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
+        let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
         let outcome = self.acquire(&acquire, context, cancel, usage);
@@ -261,8 +255,8 @@ impl NativeStore {
             }
         }
         let outcome = outcome?;
-        remaining.max_read_bytes = remaining
-            .max_read_bytes
+        remaining.max_source_read_bytes = remaining
+            .max_source_read_bytes
             .saturating_sub((usage[1] - before_bytes) as usize);
         remaining.max_events = remaining
             .max_events
@@ -283,21 +277,23 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<PreparedSourceOutcome, SnapshotError> {
-        if remaining.max_read_bytes == 0 {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "prepared graph read budget exhausted",
-            ));
-        }
         self.authority(
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
         )?;
+        let waiter = {
+            let mut state = self.state.lock().expect("snapshot state");
+            let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
+                SnapshotError::new(Status::StaleCursor, "prepared source reservation expired")
+            })?;
+            waiter.context = context.clone();
+            waiter.clone()
+        };
         let before_bytes = usage[1];
         let before_events = usage[3];
-        let outcome = self.dispatch(&json!({"schema":SCHEMA,"id":"prepare-graph-source-resume","operation":"resume","cursor":pending.token}), context, cancel, usage)?;
-        remaining.max_read_bytes = remaining
-            .max_read_bytes
+        let outcome = self.advance(&pending.token, waiter, Some(remaining), cancel, usage)?;
+        remaining.max_source_read_bytes = remaining
+            .max_source_read_bytes
             .saturating_sub((usage[1] - before_bytes) as usize);
         remaining.max_events = remaining
             .max_events
@@ -682,7 +678,7 @@ impl NativeStore {
                 let ids = &build.request["thread_ids"];
                 let roots = &build.request["roots"];
                 let bounds = build.remaining;
-                let location = json!({"schema":SCHEMA,"id":"prepare-graph-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":bounds.deadline_unix_ms,"limits":{"max_read_bytes":bounds.max_read_bytes,"max_events":bounds.max_events,"max_items":bounds.max_items,"max_output_bytes":bounds.max_output_bytes,"max_discovery_entries":bounds.max_discovery_entries,"max_sources":bounds.max_sources}});
+                let location = json!({"schema":SCHEMA,"id":"prepare-graph-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":bounds.deadline_unix_ms,"limits":bounds.to_json()});
                 build.location_started = true;
                 self.locate(&location, context, cancel, usage)?
             };
@@ -973,7 +969,7 @@ impl NativeStore {
             .ok_or_else(|| invalid("missing registered direct paths"))?;
         let mut located = HashMap::new();
         if !ids.is_empty() {
-            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":{"max_read_bytes":remaining.max_read_bytes,"max_events":remaining.max_events,"max_items":remaining.max_items,"max_output_bytes":remaining.max_output_bytes,"max_discovery_entries":remaining.max_discovery_entries,"max_sources":remaining.max_sources}});
+            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
             let before = usage[17];
             let mut outcome = self.locate(&location, context, cancel, usage)?;
             loop {
@@ -1240,8 +1236,7 @@ impl NativeStore {
             ) {
                 Ok(outcome) => outcome,
                 Err(error)
-                    if error.status == Status::Incomplete
-                        && error.reason == "prepared graph read budget exhausted" =>
+                    if error.status == Status::Incomplete && error.reason == "source_read_limit" =>
                 {
                     break 'warming;
                 }
@@ -1296,7 +1291,7 @@ impl NativeStore {
                             Ok(outcome) => outcome,
                             Err(error)
                                 if error.status == Status::Incomplete
-                                    && error.reason == "prepared graph read budget exhausted"
+                                    && error.reason == "source_read_limit"
                                     || error.status == Status::SourceLimit
                                         && error.reason == "cumulative preparation work budget exhausted"
                                     || error.status == Status::Deadline
@@ -1387,6 +1382,7 @@ impl NativeStore {
         &self,
         graph: &Arc<Mutex<PreparedGraph>>,
         context: &Value,
+        remaining: &mut WorkLimits,
         usage: &mut [u64; 18],
     ) -> Result<(), SnapshotError> {
         let (handle, classifier, stamp, deadline) = {
@@ -1403,7 +1399,7 @@ impl NativeStore {
             SnapshotError::new(Status::Changed, "prepared graph root disappeared")
         })?);
         if root.stamp != stamp
-            || current != stamp && !self.extends_prefix(&root, usage)?
+            || current != stamp && !self.extends_prefix(&root, remaining, usage)?
             || !classifier_eq(&classifier, &description["classifier"])?
         {
             return Err(SnapshotError::new(
@@ -1437,7 +1433,7 @@ impl NativeStore {
             .get(&cursor.graph_id)
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleCursor, "prepared graph expired"))?;
-        self.validate_prepared_root(&graph, context, usage)?;
+        self.validate_prepared_root(&graph, context, &mut cursor.remaining, usage)?;
         let (sources, sidechain_dirs) = {
             let graph = graph.lock().expect("prepared graph");
             if graph.admission != str_field(context, "admission")?
@@ -1664,7 +1660,8 @@ impl NativeStore {
             .get(token)
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleHandle, "prepared graph expired"))?;
-        self.validate_prepared_root(&graph, context, usage)?;
+        let mut bounds = limits(request)?;
+        self.validate_prepared_root(&graph, context, &mut bounds, usage)?;
         let mut graph = graph.lock().expect("prepared graph");
         if graph.claimant != str_field(context, "claimant")?
             || graph.registry_generation != str_field(context, "registry_generation")?
@@ -1730,7 +1727,6 @@ impl NativeStore {
         ) {
             return Err(invalid("unsupported prepared graph query"));
         }
-        let bounds = limits(request)?;
         cancel.check(bounds.deadline_unix_ms)?;
         let selectors = request
             .get("selectors")

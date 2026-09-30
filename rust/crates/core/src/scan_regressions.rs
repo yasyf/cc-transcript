@@ -39,6 +39,7 @@ impl Drop for Fixture {
 fn limits() -> WorkLimits {
     WorkLimits {
         max_read_bytes: 1024 * 1024,
+        max_source_read_bytes: 1024 * 1024,
         max_events: 1000,
         max_items: 1000,
         max_output_bytes: 1024 * 1024,
@@ -174,7 +175,7 @@ fn long_corpus_line_is_incomplete_without_visiting_it() {
     let path = fixture.0.join("corpus.txt");
     std::fs::write(&path, "abcdefghijk\n").unwrap();
     let mut bound = limits();
-    bound.max_read_bytes = 4;
+    bound.max_source_read_bytes = 4;
     let owner = NativeStore::new(&json!({})).unwrap();
     let mut budget = ScanBudget::new(&owner, bound);
     let result = scan_corpus(
@@ -315,7 +316,7 @@ fn cumulative_read_budget_survives_small_load_pages_and_sources() {
     });
     assert!(reference.complete, "{:?}", reference.reason);
     let mut bound = limits();
-    bound.max_read_bytes = reference.progress.source_bytes + 1;
+    bound.max_source_read_bytes = reference.progress.source_bytes + 1;
     let store = NativeStore::new(&config).unwrap();
     let mut scan = ScanSession::new(&store, bound, Cancellation::default());
     let mut visits = 0;
@@ -325,7 +326,7 @@ fn cumulative_read_budget_survives_small_load_pages_and_sources() {
     });
     assert!(!result.complete);
     assert_eq!(visits, 1);
-    assert!(result.progress.source_bytes <= bound.max_read_bytes);
+    assert!(result.progress.source_bytes <= bound.max_source_read_bytes);
     let context = scan.context.clone();
     drop(scan);
     assert_eq!(gauges(&store, &context)["active_leases"].as_u64(), Some(0));

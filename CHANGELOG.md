@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Snapshot requests and the Python `borrow_snapshot` and `prepare_classifier` limits
+  dictionaries now require `max_source_read_bytes` for physical source reads, separately
+  from `max_read_bytes` for projections and classifiers over snapshots in memory. The new
+  field has no default. Exhausting the source budget returns status `incomplete`,
+  reason `source_read_limit` and no cursor; `warm_root` and `warm_registered` still return
+  partial progress in `ok` pages. Files exceeding the store's configured
+  `max_source_bytes` still return status `source_limit` with reason
+  `source exceeds owner bound`. The CLI `grep --max-read-bytes` cap is unchanged, and
+  `--max-source-read-bytes` sets the source budget alone.
 - `render_turn` renders every message queued mid-turn under who sent it: `user:` for
   the user's own, as before, and now `notification:` for a task notification, `peer:`
   for another agent or session and `channel:` for an MCP channel event, at its place
@@ -72,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A prepared graph query that resumes an uncached source across pages now reads no more
+  than the request's `max_source_read_bytes`, and a cached source finishes with no source
+  budget left. A reservation that runs out of source budget no longer fails the shared load
+  for other waiters on the same file.
 - The native snapshot owner fits classifier batches to the remaining read budget instead
   of rejecting the whole batch before its callback. `resume` continues without adding
   budget, and a fresh reservation can reuse partial progress. Classifier admission counts

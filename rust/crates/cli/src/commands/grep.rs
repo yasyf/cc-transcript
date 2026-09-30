@@ -22,6 +22,8 @@ const DEFAULT_MAX_MATCHES: usize = 20;
 pub struct ScanOptions {
     #[arg(long, help = "Maximum cumulative source and logical projection bytes.")]
     pub max_read_bytes: Option<usize>,
+    #[arg(long, help = "Maximum cumulative source bytes read.")]
+    pub max_source_read_bytes: Option<usize>,
     #[arg(
         long,
         help = "Maximum cumulative preparation and event traversal work."
@@ -41,6 +43,10 @@ impl ScanOptions {
     fn apply(&self, mut limits: WorkLimits) -> Result<WorkLimits, CliExit> {
         if let Some(n) = self.max_read_bytes {
             limits.max_read_bytes = n;
+            limits.max_source_read_bytes = n;
+        }
+        if let Some(n) = self.max_source_read_bytes {
+            limits.max_source_read_bytes = n;
         }
         if let Some(n) = self.max_events {
             limits.max_events = n;
@@ -60,6 +66,7 @@ impl ScanOptions {
         }
         if [
             limits.max_read_bytes,
+            limits.max_source_read_bytes,
             limits.max_events,
             limits.max_output_bytes,
             limits.max_discovery_entries,
