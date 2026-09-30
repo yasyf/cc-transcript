@@ -268,6 +268,23 @@ impl ActivityIndex {
             .filter_map(|call| self.results.get(&call.id).map(|position| position.event))
     }
 
+    pub fn call_events(
+        &self,
+        index: usize,
+    ) -> impl Iterator<Item = (&str, usize, Option<usize>)> + '_ {
+        self.turns
+            .get(index)
+            .into_iter()
+            .flat_map(|turn| turn.calls.iter())
+            .map(|call| {
+                (
+                    call.call.name(),
+                    call.event,
+                    self.results.get(&call.id).map(|position| position.event),
+                )
+            })
+    }
+
     pub fn project_turn_with<'a>(
         &self,
         index: usize,

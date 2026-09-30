@@ -8246,6 +8246,124 @@ mod tests {
     }
 
     #[test]
+    fn sidechain_disk_fact_hits_are_promoted_into_memory() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let sidechain = source.directory.join("side.jsonl");
+        std::fs::write(&sidechain, format!("{}\n", user("side"))).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[sidechain.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = finish_prepared(
+            &store,
+            store.request(&query, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(first["data"]["value"].as_bool(), Some(false), "{first:?}");
+        let identity = SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity;
+        store
+            .state
+            .lock()
+            .unwrap()
+            .prepared_facts
+            .remove(&identity)
+            .unwrap();
+        let writes = store.prepared_disk.stats().writes;
+        let before = store.state.lock().unwrap().counters;
+        let from_disk = finish_prepared(
+            &store,
+            store.request(&query, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            from_disk["data"]["value"].as_bool(),
+            Some(false),
+            "{from_disk:?}"
+        );
+        assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
+        assert_eq!(store.prepared_disk.stats().writes, writes);
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .prepared_facts
+            .contains_key(&identity));
+    }
+
+    #[test]
+    fn oversize_disk_fact_hits_leave_memory_facts_cached() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let small = source.directory.join("small.jsonl");
+        std::fs::write(&small, format!("{}\n", user("side"))).unwrap();
+        let large = source.directory.join("large.jsonl");
+        std::fs::write(&large, format!("{}\n", format!(r#"{{"type":"user","uuid":"large","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{}"}}}}"#, "x".repeat(64 * 1024)))).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"max_prepared_fact_memory_bytes":32*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let graph = |path: &std::path::Path| {
+            let root = finish(
+                &store,
+                store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                &owner,
+            );
+            let graph = finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[path.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+            json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+        };
+        let ask = |query: &Value| {
+            let result = finish_prepared(
+                &store,
+                store.request(query, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(result["data"]["value"].as_bool(), Some(false), "{result:?}");
+        };
+        let identity =
+            |path: &std::path::Path| SourceStamp::of(&std::fs::metadata(path).unwrap()).identity;
+        let large_query = graph(&large);
+        ask(&large_query);
+        ask(&graph(&small));
+        assert!(!store
+            .state
+            .lock()
+            .unwrap()
+            .prepared_facts
+            .contains_key(&identity(&large)));
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .prepared_facts
+            .contains_key(&identity(&small)));
+        let writes = store.prepared_disk.stats().writes;
+        let before = store.state.lock().unwrap().counters;
+        ask(&large_query);
+        assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
+        assert_eq!(store.prepared_disk.stats().writes, writes);
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .prepared_facts
+            .contains_key(&identity(&small)));
+    }
+
+    #[test]
     fn registered_warmer_advances_a_forty_megabyte_source_in_eight_megabyte_steps() {
         let source = Source::new(&format!("{}\n", user("root")));
         let large = source.directory.join("large.jsonl");

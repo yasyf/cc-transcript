@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 use std::ops::Range;
 
@@ -14,8 +14,10 @@ use crate::snapshot::{
     Cancellation, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
-use crate::toolcall::{tool_name_matches, ToolCall};
-use crate::types::{AttachmentDetail, ContentBlock, Entry, UserContent};
+use crate::toolcall::{
+    expand_tool_names, tool_name_matches, with_registry, ToolCall, ToolRegistrySnapshot,
+};
+use crate::types::{matches_names, AttachmentDetail, ContentBlock, Entry, UserContent};
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
@@ -164,6 +166,7 @@ struct Work<'a, 'w> {
     events: usize,
     bytes: usize,
     charged: HashSet<usize>,
+    skipped: HashSet<usize>,
 }
 
 impl<'a, 'w> Work<'a, 'w> {
@@ -179,6 +182,7 @@ impl<'a, 'w> Work<'a, 'w> {
             events: 0,
             bytes: 0,
             charged: HashSet::new(),
+            skipped: HashSet::new(),
         }
     }
 
@@ -192,27 +196,37 @@ impl<'a, 'w> Work<'a, 'w> {
             if self.charged.contains(&index) {
                 continue;
             }
-            if self.events == self.limits.max_events {
+            let counted = self.skipped.contains(&index);
+            if !counted && self.events == self.limits.max_events {
                 return Err(SnapshotError::new(Status::Incomplete, "event_limit"));
             }
-            let at = self
-                .snapshot
-                .chunks
-                .partition_point(|chunk| chunk.start <= index)
-                - 1;
-            let chunk = &self.snapshot.chunks[at];
-            let charge = chunk.entry_charges[index - chunk.start];
-            let bytes = charge
-                .owned_capacity_bytes
-                .saturating_add(charge.opaque_dom_accounted_bytes);
+            let full = self.entry_bytes(index);
+            let bytes = if counted {
+                full.saturating_sub(std::mem::size_of::<Entry>())
+            } else {
+                full
+            };
             if bytes > self.limits.max_read_bytes.saturating_sub(self.bytes) {
                 return Err(SnapshotError::new(Status::Incomplete, "read_limit"));
             }
             self.bytes += bytes;
-            self.events += 1;
+            self.events += usize::from(!counted);
             self.charged.insert(index);
         }
         Ok(())
+    }
+
+    fn entry_bytes(&self, index: usize) -> usize {
+        let at = self
+            .snapshot
+            .chunks
+            .partition_point(|chunk| chunk.start <= index)
+            - 1;
+        let chunk = &self.snapshot.chunks[at];
+        let charge = chunk.entry_charges[index - chunk.start];
+        charge
+            .owned_capacity_bytes
+            .saturating_add(charge.opaque_dom_accounted_bytes)
     }
 
     fn charge_bytes(&mut self, bytes: usize) -> Result<(), SnapshotError> {
@@ -233,6 +247,17 @@ impl<'a, 'w> Work<'a, 'w> {
         Ok(())
     }
 
+    fn charge_header(&mut self, index: usize) -> Result<(), SnapshotError> {
+        if self.charged.contains(&index) || self.skipped.contains(&index) {
+            return Ok(());
+        }
+        if self.entry_bytes(index) <= std::mem::size_of::<Entry>() {
+            return self.charge_range(index..index + 1);
+        }
+        self.skipped.insert(index);
+        self.charge_skipped()
+    }
+
     fn turn(&mut self, index: usize) -> Result<Turn<'a>, SnapshotError> {
         let range = self
             .snapshot
@@ -243,6 +268,48 @@ impl<'a, 'w> Work<'a, 'w> {
         for event in self.snapshot.activity.result_events(index) {
             self.charge_range(event..event + 1)?;
         }
+        self.materialize(index)
+    }
+
+    fn named_turn(&mut self, index: usize, spec: &str) -> Result<Turn<'a>, SnapshotError> {
+        let snapshot = self.snapshot;
+        let bounds = snapshot
+            .activity
+            .turn_bounds(index)
+            .ok_or_else(|| invalid("turn index out of range"))?;
+        self.cancel.check(self.limits.deadline_unix_ms)?;
+        if bounds.len() > self.limits.max_events {
+            return Err(SnapshotError::new(Status::Incomplete, "event_limit"));
+        }
+        let inspected = with_registry(ToolRegistrySnapshot::capture_current(), || {
+            let names = expand_tool_names(spec);
+            let mut inspected = BTreeSet::new();
+            for (name, event, result) in snapshot.activity.call_events(index) {
+                self.cancel.check(self.limits.deadline_unix_ms)?;
+                if matches_names(name, &names) {
+                    inspected.insert(event);
+                    inspected.extend(result);
+                }
+            }
+            Ok::<_, SnapshotError>(inspected)
+        })?;
+        let results = snapshot
+            .activity
+            .call_events(index)
+            .filter_map(|(_, _, result)| result);
+        for position in bounds
+            .chain(results)
+            .filter(|position| !inspected.contains(position))
+        {
+            self.charge_header(position)?;
+        }
+        for event in inspected {
+            self.charge_range(event..event + 1)?;
+        }
+        self.materialize(index)
+    }
+
+    fn materialize(&mut self, index: usize) -> Result<Turn<'a>, SnapshotError> {
         let bytes = self
             .snapshot
             .activity
@@ -500,7 +567,7 @@ fn selected_range(work: &mut Work, request: &Value) -> Result<Range<usize>, Snap
                         .turn_of_event(range.end - 1)
                         .expect("event turn");
                     for index in (first..=last).rev() {
-                        let turn = work.turn(index)?;
+                        let turn = work.named_turn(index, name)?;
                         for position in work.snapshot.activity.turn_bounds(index).unwrap().rev() {
                             if !range.contains(&position) {
                                 continue;
@@ -540,6 +607,7 @@ fn selected_range(work: &mut Work, request: &Value) -> Result<Range<usize>, Snap
 fn lift_range<'a>(
     work: &mut Work<'a, '_>,
     range: &Range<usize>,
+    name: Option<&str>,
 ) -> Result<LiftedSession<'a>, SnapshotError> {
     let mut turns = Vec::new();
     if !range.is_empty() {
@@ -554,7 +622,10 @@ fn lift_range<'a>(
             .turn_of_event(range.end - 1)
             .expect("event turn");
         for index in first..=last {
-            turns.push(work.turn(index)?);
+            turns.push(match name {
+                Some(spec) => work.named_turn(index, spec)?,
+                None => work.turn(index)?,
+            });
         }
     }
     Ok(LiftedSession {
@@ -1019,13 +1090,18 @@ fn assistant_query(
         if message_limit != 0 && scanned == message_limit {
             break;
         }
-        work.charge_range(index..index + 1)?;
         let entry = work.snapshot.entry(index);
         if !matches!(entry, Entry::Assistant(_)) {
+            work.charge_header(index)?;
             continue;
         }
         scanned += 1;
         let mut parts = joined_event_parts(entry);
+        if parts.is_empty() {
+            work.charge_header(index)?;
+            continue;
+        }
+        work.charge_range(index..index + 1)?;
         strip_parts(&mut parts);
         if parts.is_empty() {
             continue;
@@ -1231,15 +1307,22 @@ fn workflow_query(
     let mut parts = Vec::new();
     let mut messages = 0;
     for index in range {
-        work.charge_range(index..index + 1)?;
         let event = work.snapshot.entry(index);
-        if matches!(event, Entry::User(_) | Entry::Assistant(_)) {
-            if messages != 0 {
-                parts.push("\n");
-            }
-            parts.extend(joined_event_parts(event));
-            messages += 1;
+        if !matches!(event, Entry::User(_) | Entry::Assistant(_)) {
+            work.charge_header(index)?;
+            continue;
         }
+        let rendered = joined_event_parts(event);
+        if rendered.is_empty() {
+            work.charge_header(index)?;
+        } else {
+            work.charge_range(index..index + 1)?;
+        }
+        if messages != 0 {
+            parts.push("\n");
+        }
+        parts.extend(rendered);
+        messages += 1;
     }
     let text = with_text_budget(&parts, work.limits.max_output_bytes, || parts.concat())?;
     let pattern = string(query, "pattern")?;
@@ -1336,7 +1419,7 @@ fn render_query(
         .as_bool()
         .ok_or_else(|| invalid("tool_results must be boolean"))?;
     checked_render(work, &range, |work| {
-        let lift = lift_range(work, &range)?;
+        let lift = lift_range(work, &range, None)?;
         let session = view(&lift, &range, work.snapshot);
         let parts: Vec<_> = session
             .turn_views()
@@ -1428,7 +1511,7 @@ fn prepare_facts_limited(
     let mut work = Work::new(snapshot, limits, cancel);
     let range = selected_range(&mut work, &request)?;
     work.charge_range(range.clone())?;
-    let lift = lift_range(&mut work, &range)?;
+    let lift = lift_range(&mut work, &range, None)?;
     let session = view(&lift, &range, snapshot);
     let calls = session.tool_calls().items();
     let inputs = json!({
@@ -1593,7 +1676,26 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             (stop < range.len()).then_some(stop),
         );
     }
-    let lift = lift_range(work, &range)?;
+    let joined: String;
+    let name = match kind {
+        "has_tool" => Some(string(query, "pattern")?),
+        "has_read" | "has_read_glob" => Some("Read"),
+        "has_skill" | "has_skill_suffix" => Some("Skill"),
+        "has_command_regex" => Some("Bash"),
+        "has_pending_tool" => {
+            joined = strings(query, "values")?.join("|");
+            Some(joined.as_str())
+        }
+        "unresolved_tools" => {
+            joined = strings(query, "names")?.join("|");
+            Some(joined.as_str())
+        }
+        "tool_calls" | "tool_count" if query.get("name").is_some_and(|name| !name.is_null()) => {
+            Some(string(query, "name")?)
+        }
+        _ => None,
+    };
+    let lift = lift_range(work, &range, name)?;
     let session = view(&lift, &range, work.snapshot);
     let values = || strings(query, "values");
     let pattern = || string(query, "pattern");
@@ -2004,6 +2106,287 @@ mod tests {
 
     fn tool(uuid: &str, id: &str, name: &str, input: Value) -> Value {
         json!({"type":"assistant","uuid":uuid,"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":id,"name":name,"input":input}]}})
+    }
+
+    fn tool_result(uuid: &str, id: &str, content: String) -> Value {
+        json!({"type":"user","uuid":uuid,"sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":content}]}})
+    }
+
+    fn said(uuid: &str, text: &str) -> Value {
+        json!({"type":"assistant","uuid":uuid,"sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":"test","content":[{"type":"text","text":text}]}})
+    }
+
+    fn hook_scale_snapshot() -> TranscriptSnapshot {
+        snapshot(&[
+            user("u", "grep then delegate"),
+            tool(
+                "g",
+                "grep",
+                "mcp__ccx__ccx_code_grep",
+                json!({"pattern":"x"}),
+            ),
+            tool_result("gr", "grep", "x".repeat(1100 * 1024)),
+            tool(
+                "t",
+                "task",
+                "Task",
+                json!({"description":"d","prompt":"p","subagent_type":"general-purpose"}),
+            ),
+            tool_result("tr", "task", "delegated".into()),
+            said("b", "all done"),
+        ])
+    }
+
+    fn hook_limits() -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: 1024 * 1024,
+            ..limits()
+        }
+    }
+
+    #[test]
+    fn hook_budget_text_queries_skip_unrendered_tool_results() {
+        let snap = hook_scale_snapshot();
+        let ask = |query: Value| {
+            project(
+                &snap,
+                &request(query, json!([])),
+                &hook_limits(),
+                &Cancellation::default(),
+                0,
+            )
+            .unwrap()
+        };
+        let text = ask(json!({"kind":"assistant_text","count":10,"max_per_message":2000}));
+        assert_eq!(text.reason, None);
+        assert!(text.complete);
+        assert_eq!(text.data["value"].as_str(), Some("all done"));
+        let workflow = ask(json!({"kind":"workflow_text","mode":"contains","pattern":"all done"}));
+        assert_eq!(workflow.reason, None);
+        assert_eq!(workflow.data["value"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn hook_budget_named_tool_queries_skip_unrelated_tool_results() {
+        let snap = hook_scale_snapshot();
+        let ask = |query: Value| {
+            project(
+                &snap,
+                &request(query, json!([])),
+                &hook_limits(),
+                &Cancellation::default(),
+                0,
+            )
+            .unwrap()
+        };
+        let calls = ask(json!({"kind":"tool_calls","order":"forward","name":"Task"}));
+        assert_eq!(calls.reason, None);
+        assert!(calls.complete);
+        let records = calls.data["records_json"].as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].as_str().unwrap().contains("\"task\""));
+        let missing = ask(json!({"kind":"has_tool","pattern":"Missing","subagents":false}));
+        assert_eq!(missing.reason, None);
+        assert_eq!(missing.data["value"].as_bool(), Some(false));
+        let unfiltered = ask(json!({"kind":"tool_count","name":null,"errors":"include"}));
+        assert_eq!(unfiltered.reason.as_deref(), Some("read_limit"));
+    }
+
+    #[test]
+    fn hook_budget_inspected_overage_still_hits_read_limit() {
+        let snap = snapshot(&[
+            user("u", "grep then answer"),
+            tool(
+                "g",
+                "grep",
+                "mcp__ccx__ccx_code_grep",
+                json!({"pattern":"x"}),
+            ),
+            tool_result("gr", "grep", "x".repeat(32 * 1024)),
+            said("b", &"y".repeat(32 * 1024)),
+        ]);
+        let cap = WorkLimits {
+            max_read_bytes: 16 * 1024,
+            ..limits()
+        };
+        for query in [
+            json!({"kind":"assistant_text","count":10,"max_per_message":2000}),
+            json!({"kind":"workflow_text","mode":"contains","pattern":"y"}),
+            json!({"kind":"tool_calls","order":"forward","name":"mcp__ccx__ccx_code_grep"}),
+            json!({"kind":"has_tool","pattern":"mcp__ccx__ccx_code_grep","subagents":false}),
+        ] {
+            let result = project(
+                &snap,
+                &request(query.clone(), json!([])),
+                &cap,
+                &Cancellation::default(),
+                0,
+            )
+            .unwrap();
+            assert!(!result.complete, "{query:?}");
+            assert_eq!(result.reason.as_deref(), Some("read_limit"), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn hook_budget_small_skipped_entries_cost_at_most_their_full_charge() {
+        let mut raw = vec![user("u", "go")];
+        for index in 0..32 {
+            raw.push(tool(
+                &format!("c{index}"),
+                &format!("i{index}"),
+                "Probe",
+                json!({}),
+            ));
+            raw.push(tool_result(
+                &format!("r{index}"),
+                &format!("i{index}"),
+                String::new(),
+            ));
+        }
+        raw.push(said("b", "done"));
+        let snap = snapshot(&raw);
+        let cancel = Cancellation::default();
+        let header = std::mem::size_of::<Entry>();
+        let full: Vec<usize> = {
+            let lim = limits();
+            let work = Work::new(&snap, &lim, &cancel);
+            (0..snap.event_count)
+                .map(|index| work.entry_bytes(index))
+                .collect()
+        };
+        let skipped = 1..snap.event_count - 1;
+        assert!(
+            skipped.clone().all(|index| full[index] < header),
+            "{full:?} {header}"
+        );
+        let entries: usize = full.iter().sum();
+        let projected = snap.activity.projected_bytes(0).unwrap();
+        for (query, budget, header_charged, value) in [
+            (
+                json!({"kind":"workflow_text","mode":"contains","pattern":"done"}),
+                entries,
+                full[0] + full[snap.event_count - 1] + skipped.len() * header,
+                true,
+            ),
+            (
+                json!({"kind":"has_tool","pattern":"Missing","subagents":false}),
+                entries + projected,
+                snap.event_count * header + projected,
+                false,
+            ),
+        ] {
+            assert!(header_charged > budget, "{query:?}");
+            let cap = WorkLimits {
+                max_read_bytes: budget,
+                ..limits()
+            };
+            let result =
+                project(&snap, &request(query.clone(), json!([])), &cap, &cancel, 0).unwrap();
+            assert_eq!(result.reason, None, "{query:?}");
+            assert!(result.complete, "{query:?}");
+            assert_eq!(result.data["value"].as_bool(), Some(value), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn hook_budget_selector_then_full_lift_charges_each_entry_once() {
+        let snap = hook_scale_snapshot();
+        let lim = limits();
+        let cancel = Cancellation::default();
+        let mut once = Work::new(&snap, &lim, &cancel);
+        once.turn(0).unwrap();
+        once.materialize(0).unwrap();
+        let mut both = Work::new(&snap, &lim, &cancel);
+        both.named_turn(0, "Task").unwrap();
+        both.turn(0).unwrap();
+        assert_eq!((both.bytes, both.events), (once.bytes, once.events));
+        let count = json!({"kind":"tool_count","name":null,"errors":"include"});
+        let plain = project(&snap, &request(count.clone(), json!([])), &lim, &cancel, 0).unwrap();
+        assert!(plain.complete);
+        let cap = WorkLimits {
+            max_read_bytes: plain.read_bytes + snap.activity.projected_bytes(0).unwrap(),
+            ..limits()
+        };
+        for kind in ["after_last_tool", "before_last_tool"] {
+            let selectors = json!([{"kind":kind,"name":"Task"}]);
+            let result =
+                project(&snap, &request(count.clone(), selectors), &cap, &cancel, 0).unwrap();
+            assert_eq!(result.reason, None, "{kind}");
+            assert!(result.complete, "{kind}");
+            assert_eq!(result.read_bytes, cap.max_read_bytes, "{kind}");
+        }
+    }
+
+    #[test]
+    fn named_turn_counts_external_results_of_unmatched_tools() {
+        let snap = snapshot(&[
+            user("u", "hello"),
+            tool("a", "read", "Read", json!({"file_path":"a.rs"})),
+            tool("g", "grep", "Grep", json!({"pattern":"x"})),
+            user("next", "next"),
+            tool_result("ra", "read", "a".into()),
+            tool_result("rg", "grep", "g".into()),
+        ]);
+        let cap = WorkLimits {
+            max_events: 4,
+            ..limits()
+        };
+        let cancel = Cancellation::default();
+        let full = Work::new(&snap, &cap, &cancel).turn(0).err().unwrap();
+        assert_eq!(full.reason, "event_limit");
+        let named = Work::new(&snap, &cap, &cancel)
+            .named_turn(0, "Task")
+            .err()
+            .unwrap();
+        assert_eq!(named.reason, "event_limit");
+        let result = project(
+            &snap,
+            &request(
+                json!({"kind":"has_tool","pattern":"Task","subagents":false}),
+                json!([{"kind":"event_range","start":0,"stop":3}]),
+            ),
+            &cap,
+            &cancel,
+            0,
+        )
+        .unwrap();
+        assert!(!result.complete);
+        assert_eq!(result.reason.as_deref(), Some("event_limit"));
+    }
+
+    #[test]
+    fn named_turn_refuses_over_limit_turns_before_charging() {
+        let snap = snapshot(&[
+            user("u", "hello"),
+            tool("a", "read", "Read", json!({"file_path":"a.rs"})),
+            tool("b", "grep", "Grep", json!({"pattern":"x"})),
+            tool("c", "task", "Task", json!({"prompt":"p"})),
+            tool("d", "glob", "Glob", json!({"pattern":"*.rs"})),
+            tool("e", "bash", "Bash", json!({"command":"ls"})),
+        ]);
+        let cap = WorkLimits {
+            max_events: 4,
+            ..limits()
+        };
+        let cancel = Cancellation::default();
+        let mut full = Work::new(&snap, &cap, &cancel);
+        assert_eq!(full.turn(0).err().unwrap().reason, "event_limit");
+        let mut named = Work::new(&snap, &cap, &cancel);
+        assert_eq!(
+            named.named_turn(0, "Task").err().unwrap().reason,
+            "event_limit"
+        );
+        assert_eq!((named.bytes, named.events), (full.bytes, full.events));
+        assert_eq!((named.bytes, named.events), (0, 0));
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        let lim = limits();
+        let mut stopped = Work::new(&snap, &lim, &cancelled);
+        assert!(
+            matches!(stopped.named_turn(0, "Task"), Err(error) if error.status == Status::Cancelled)
+        );
+        assert_eq!((stopped.bytes, stopped.events), (0, 0));
     }
 
     fn limits() -> WorkLimits {

@@ -54,6 +54,12 @@ impl NativeStore {
         state.prepared_facts.remove(&stamp.identity);
         let accounted = facts.accounted_bytes();
         let budget = self.config.retained.min(self.config.prepared_fact_memory);
+        if accounted > budget {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "prepared facts cache budget exhausted",
+            ));
+        }
         let mut used = Self::prepared_fact_bytes(&state);
         while accounted > budget.saturating_sub(used) {
             let oldest = state
@@ -227,12 +233,23 @@ impl NativeStore {
         match self.prepared_disk.lookup(&key)? {
             crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
                 usage[7] += 1;
+                let facts = Arc::new(facts);
+                let facts = match self.cache_prepared_facts(
+                    stamp,
+                    Arc::clone(&facts),
+                    &json!({"id":"native","version":"1"}),
+                    context,
+                ) {
+                    Ok(cached) => cached,
+                    Err(error) if error.status == Status::RetainedLimit => facts,
+                    Err(error) => return Err(error),
+                };
                 return Ok((
                     stamp,
                     PreparedSourceOutcome::Ready {
                         stamp,
-                        facts: Arc::new(facts),
-                        cached: true,
+                        facts,
+                        cached: false,
                     },
                 ));
             }
