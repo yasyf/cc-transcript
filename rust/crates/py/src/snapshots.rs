@@ -30,7 +30,7 @@ struct Schemas {
     config: Validator,
     handle: Validator,
     classifier: Validator,
-    anchor: Validator,
+    anchors: Validator,
     render: Validator,
     scope_limits: Validator,
     publication: Validator,
@@ -73,7 +73,11 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
         ),
         handle: definition("Handle"),
         classifier: definition("Classifier"),
-        anchor: definition("EventRef"),
+        anchors: compile(&serde_json::json!({
+            "$schema": request["$schema"], "$defs": request["$defs"],
+            "type": "array", "minItems": 1, "maxItems": snapshot_codec::MAX_RECORDS,
+            "items": {"$ref": "#/$defs/EventRef"}
+        })),
         render: definition("HydrationBudget"),
         publication: compile(&serde_json::json!({
             "$schema":request["$schema"],"$defs":request["$defs"],
@@ -1068,11 +1072,13 @@ impl NativeSnapshotScope {
             output_bytes: 0,
         })?;
         let limit = self.remaining().max_output_bytes;
+        let what = format!("event {index}");
+        let bound = snapshot_codec::Bound::record(&what, limit);
         let output_bytes = py
             .detach(|| {
-                snapshot_codec::encoded_size(
+                snapshot_codec::encoded_size_bounded(
                     &snapshot_codec::EventWire::new(index, &chunk.entries[local]),
-                    limit,
+                    bound,
                 )
             })
             .map_err(|failure| self.failure(failure))?;
@@ -1089,9 +1095,9 @@ impl NativeSnapshotScope {
             .map_err(|failure| self.failure(failure))?;
         let record = py
             .detach(|| {
-                snapshot_codec::encode(
+                snapshot_codec::encode_bounded(
                     &snapshot_codec::EventWire::new(index, &chunk.entries[local]),
-                    limit,
+                    bound,
                 )
             })
             .map_err(|failure| self.failure(failure))?;
@@ -1156,12 +1162,12 @@ impl NativeSnapshotScope {
         Ok(encoded)
     }
 
-    #[pyo3(signature = (classifier_json, anchor_json=None, lookback=40, lookahead=120))]
+    #[pyo3(signature = (classifier_json, anchors_json=None, lookback=40, lookahead=120))]
     fn activity<'py>(
         &mut self,
         py: Python<'py>,
         classifier_json: &str,
-        anchor_json: Option<&str>,
+        anchors_json: Option<&str>,
         lookback: usize,
         lookahead: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
@@ -1174,26 +1180,32 @@ impl NativeSnapshotScope {
         if self.description.get("classifier") != Some(&classifier) {
             return Err(self.failure(invalid("classifier differs from pinned generation")));
         }
-        let turns = match anchor_json {
+        let turns = match anchors_json {
             Some(text) => {
-                let anchor = py
-                    .detach(|| validated(text, &SCHEMAS.anchor))
+                let anchors = py
+                    .detach(|| validated(text, &SCHEMAS.anchors))
                     .map_err(|failure| self.failure(failure))?;
-                if anchor.get("session_id").and_then(Value::as_str)
-                    != Some(snapshot.session_id.as_str())
-                {
-                    return Err(self.failure(invalid("activity anchor session mismatch")));
+                let mut first = usize::MAX;
+                let mut last = 0;
+                for anchor in anchors.as_array().expect("validated anchors").iter() {
+                    if anchor.get("session_id").and_then(Value::as_str)
+                        != Some(snapshot.session_id.as_str())
+                    {
+                        return Err(self.failure(invalid("activity anchor session mismatch")));
+                    }
+                    let uuid = anchor
+                        .get("event_uuid")
+                        .and_then(Value::as_str)
+                        .expect("validated anchor");
+                    let turn = snapshot
+                        .activity
+                        .turn_of_uuid(uuid)
+                        .ok_or_else(|| self.failure(invalid("activity anchor not found")))?;
+                    first = first.min(turn);
+                    last = last.max(turn);
                 }
-                let uuid = anchor
-                    .get("event_uuid")
-                    .and_then(Value::as_str)
-                    .expect("validated anchor");
-                let turn = snapshot
-                    .activity
-                    .turn_of_uuid(uuid)
-                    .ok_or_else(|| self.failure(invalid("activity anchor not found")))?;
-                turn.saturating_sub(lookback)
-                    ..turn
+                first.saturating_sub(lookback)
+                    ..last
                         .saturating_add(lookahead)
                         .saturating_add(1)
                         .min(snapshot.activity.turn_count())
