@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::mem::size_of;
 use std::ops::Range;
@@ -6,7 +7,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use sonic_rs::{json, Value};
 
-use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits};
+use crate::snapshot::{
+    committed_events, owned_index_bytes, Cancellation, CarriedClassification, SnapshotError,
+    Status, TranscriptSnapshot, WorkLimits,
+};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_codec::{self, EventWire};
 use crate::types::Entry;
@@ -68,6 +72,9 @@ pub struct LabelPreparation {
     limits: WorkLimits,
     max_stage_bytes: usize,
     activity: ActivityIndex,
+    seed: Option<Arc<CarriedClassification>>,
+    carried: HashSet<usize>,
+    committed: Option<ActivityIndex>,
     pending: Option<PendingLabels>,
     usage: LabelUsage,
     failed: bool,
@@ -131,6 +138,7 @@ impl LabelPreparation {
         binding: LabelBinding,
         limits: WorkLimits,
         max_stage_bytes: usize,
+        seed: Option<Arc<CarriedClassification>>,
     ) -> Result<Self, SnapshotError> {
         if source.id != binding.physical_generation {
             return Err(failure(
@@ -154,18 +162,47 @@ impl LabelPreparation {
                 "classifier binding is incomplete",
             ));
         }
-        let preparation = Self {
+        assert!(seed
+            .as_ref()
+            .is_none_or(|seed| seed.extends(&source.chunks)));
+        let activity = seed
+            .as_ref()
+            .map_or_else(ActivityIndex::default, |seed| seed.activity().clone());
+        let mut preparation = Self {
             source,
             binding,
             limits,
             max_stage_bytes,
-            activity: ActivityIndex::default(),
+            activity,
+            carried: seed
+                .as_ref()
+                .map_or_else(HashSet::new, |seed| seed.allocation_ids().collect()),
+            seed,
+            committed: None,
             pending: None,
             usage: LabelUsage::default(),
             failed: false,
         };
+        preparation.commit();
         preparation.check_memory(preparation.accounted_bytes())?;
         Ok(preparation)
+    }
+
+    fn commit(&mut self) {
+        if self.source.provisional_tail
+            && self.committed.is_none()
+            && self.activity.entry_count() == committed_events(&self.source)
+        {
+            self.committed = Some(self.activity.clone());
+        }
+    }
+
+    pub fn seed(&self) -> Option<&Arc<CarriedClassification>> {
+        self.seed.as_ref()
+    }
+
+    pub fn complete(&self) -> bool {
+        self.pending.is_none() && self.activity.entry_count() == self.source.event_count
     }
 
     pub fn binding(&self) -> &LabelBinding {
@@ -206,7 +243,15 @@ impl LabelPreparation {
     pub fn accounted_bytes(&self) -> usize {
         size_of::<Self>()
             + self.binding.accounted_bytes()
-            + self.activity.accounted_bytes()
+            + self.carried.capacity() * size_of::<usize>()
+            + owned_index_bytes(
+                self.activity.accounted_allocations().into_iter().chain(
+                    self.committed
+                        .iter()
+                        .flat_map(ActivityIndex::accounted_allocations),
+                ),
+                &self.carried,
+            )
             + self.pending.as_ref().map_or(0, |pending| {
                 pending.token.capacity() + pending.user_positions.capacity() * size_of::<usize>()
             })
@@ -255,12 +300,14 @@ impl LabelPreparation {
                 .saturating_add(page.cursor.len()),
         )?;
         self.usage.output_bytes = used.output_bytes + output_bytes;
-        for position in start
-            ..self
-                .source
-                .event_count
-                .min(start.saturating_add(PAGE_EVENTS))
-        {
+        let committed = committed_events(&self.source);
+        let page_end = if start < committed {
+            committed
+        } else {
+            self.source.event_count
+        }
+        .min(start.saturating_add(PAGE_EVENTS));
+        for position in start..page_end {
             cancel.check(self.limits.deadline_unix_ms)?;
             if used.events + stop - start == self.limits.max_events {
                 if stop > start {
@@ -387,8 +434,10 @@ impl LabelPreparation {
         self.activity = std::mem::take(&mut self.activity).append_tail(&entries, Some(&flags));
         self.pending = None;
         self.usage.activity_lifts += 1;
+        self.commit();
         if let Err(error) = self.check_memory(self.accounted_bytes()) {
             self.activity = ActivityIndex::default();
+            self.committed = None;
             self.failed = true;
             return Err(error);
         }
@@ -396,16 +445,16 @@ impl LabelPreparation {
             self.failed = true;
             return Err(error);
         }
-        Ok(self.activity.entry_count() == self.source.event_count)
+        Ok(self.complete())
     }
 
     pub fn finish(
         self,
         binding: &LabelBinding,
         cancel: &Cancellation,
-    ) -> Result<Arc<TranscriptSnapshot>, SnapshotError> {
+    ) -> Result<(Arc<TranscriptSnapshot>, Option<CarriedClassification>), SnapshotError> {
         self.check(binding, cancel)?;
-        if self.pending.is_some() || self.activity.entry_count() != self.source.event_count {
+        if !self.complete() {
             return Err(failure(
                 Status::Incomplete,
                 "classifier labels are incomplete",
@@ -413,7 +462,7 @@ impl LabelPreparation {
         }
         let metadata_bytes = self.publication_metadata_bytes();
         self.check_memory(self.accounted_bytes().saturating_add(metadata_bytes))?;
-        Ok(Arc::new(TranscriptSnapshot {
+        let snapshot = Arc::new(TranscriptSnapshot {
             id: format!("labels:{}", self.binding.execution_id),
             canonical_path: self.source.canonical_path.clone(),
             stamp: self.source.stamp,
@@ -427,7 +476,9 @@ impl LabelPreparation {
             event_count: self.source.event_count,
             codex_raw: self.source.codex_raw.clone(),
             codex_append: self.source.codex_append.clone(),
-        }))
+        });
+        let carried = CarriedClassification::of(&snapshot, self.committed);
+        Ok((snapshot, carried))
     }
 
     fn check(&self, binding: &LabelBinding, cancel: &Cancellation) -> Result<(), SnapshotError> {
@@ -593,6 +644,7 @@ mod tests {
             binding.clone(),
             bound,
             8 * 1024 * 1024,
+            None,
         )
         .unwrap();
         let mut extended = LabelPreparation::new(
@@ -600,6 +652,7 @@ mod tests {
             binding.clone(),
             bound,
             256 * 1024 * 1024,
+            None,
         )
         .unwrap();
         assert_ne!(short.max_stage_bytes, extended.max_stage_bytes);
@@ -649,9 +702,14 @@ mod tests {
             let mut entries = vec![first];
             entries.extend((1..PAGE_EVENTS).map(assistant));
             entries.push(user(PAGE_EVENTS, "next"));
-            let mut stage =
-                LabelPreparation::new(source(entries), binding.clone(), limits(), 8 * 1024 * 1024)
-                    .unwrap();
+            let mut stage = LabelPreparation::new(
+                source(entries),
+                binding.clone(),
+                limits(),
+                8 * 1024 * 1024,
+                None,
+            )
+            .unwrap();
             let first = stage.next_page("page1".into(), &binding, &cancel).unwrap();
             assert_eq!(first.records_json.len(), 1);
             assert!(!stage.submit("page1", &[true], &binding, &cancel).unwrap());
@@ -686,6 +744,7 @@ mod tests {
             binding.clone(),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         let page = stage.next_page("page1".into(), &binding, &cancel).unwrap();
@@ -705,7 +764,7 @@ mod tests {
             .submit("page1", &[true, false], &binding, &cancel)
             .unwrap());
         let classifier = stage.derived_classifier();
-        let derived = stage.finish(&binding, &cancel).unwrap();
+        let derived = stage.finish(&binding, &cancel).unwrap().0;
         assert_eq!(derived.activity.turn_count(), 2);
         assert_eq!(derived.activity.turn_bounds(1), Some(1..4));
         assert_eq!(source.activity.turn_count(), 3);
@@ -722,6 +781,7 @@ mod tests {
             binding.clone(),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         stage.next_page("page1".into(), &binding, &cancel).unwrap();
@@ -762,6 +822,7 @@ mod tests {
             binding.clone(),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         stage.next_page("page1".into(), &binding, &cancel).unwrap();
@@ -805,6 +866,7 @@ mod tests {
             binding.clone(),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         let first = stage.next_page("page1".into(), &binding, &cancel).unwrap();
@@ -830,6 +892,7 @@ mod tests {
             stage
                 .finish(&binding, &cancel)
                 .unwrap()
+                .0
                 .activity
                 .turn_count(),
             260
@@ -847,6 +910,7 @@ mod tests {
             binding.clone(),
             cap,
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -869,7 +933,7 @@ mod tests {
         let binding = binding("run1");
         let snapshot = source(vec![user(0, "prompt")]);
         assert_eq!(
-            LabelPreparation::new(Arc::clone(&snapshot), binding.clone(), limits(), 1)
+            LabelPreparation::new(Arc::clone(&snapshot), binding.clone(), limits(), 1, None)
                 .err()
                 .unwrap()
                 .status,
@@ -877,9 +941,14 @@ mod tests {
         );
         let mut cap = limits();
         cap.deadline_unix_ms = 0;
-        let mut expired =
-            LabelPreparation::new(Arc::clone(&snapshot), binding.clone(), cap, 8 * PAGE_BYTES)
-                .unwrap();
+        let mut expired = LabelPreparation::new(
+            Arc::clone(&snapshot),
+            binding.clone(),
+            cap,
+            8 * PAGE_BYTES,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             expired
                 .next_page("page1".into(), &binding, &Cancellation::default())
@@ -888,7 +957,8 @@ mod tests {
             Status::Deadline
         );
         let mut stage =
-            LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES).unwrap();
+            LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES, None)
+                .unwrap();
         let cancel = Cancellation::default();
         stage.next_page("page1".into(), &binding, &cancel).unwrap();
         cancel.cancel();
@@ -910,10 +980,12 @@ mod tests {
             binding("first"),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         let second =
-            LabelPreparation::new(snapshot, binding("second"), limits(), 8 * PAGE_BYTES).unwrap();
+            LabelPreparation::new(snapshot, binding("second"), limits(), 8 * PAGE_BYTES, None)
+                .unwrap();
         assert_ne!(first.derived_classifier(), second.derived_classifier());
     }
 
@@ -926,6 +998,7 @@ mod tests {
             binding.clone(),
             limits(),
             8 * PAGE_BYTES,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -952,7 +1025,8 @@ mod tests {
         binding.classifier_version = "v".repeat(256);
         let cancel = Cancellation::default();
         let mut stage =
-            LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES).unwrap();
+            LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES, None)
+                .unwrap();
         assert_eq!(
             stage.derived_classifier()["version"],
             json!("labels:execution")
@@ -961,7 +1035,7 @@ mod tests {
         stage.next_page("page1".into(), &binding, &cancel).unwrap();
         assert!(stage.submit("page1", &[true], &binding, &cancel).unwrap());
         assert_eq!(
-            stage.finish(&binding, &cancel).unwrap().id,
+            stage.finish(&binding, &cancel).unwrap().0.id,
             "labels:execution"
         );
     }

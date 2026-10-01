@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `tail` snapshot request returns the newest `count` events of a Claude transcript
+  without a lease, a classifier, or a read of anything before them: the store reads the
+  file backwards from its end in `max_read_bytes_per_step` blocks until it has `count`
+  events, `max_source_read_bytes` is spent, or the file start is reached. The reply's
+  `kind` is `tail` with `cc-transcript.event/1` records numbered from the oldest returned
+  event, `source_bytes` and `window_start_byte`, the offset of the oldest returned line.
+  A scan the source or output budget stops short returns the events it did reach with
+  status `incomplete`, reason `tail read budget exhausted` or `tail output budget
+  exhausted`, and no cursor. Codex sources are refused as `invalid_request`.
+- A classifier's labels carry across appends. The store keeps, per source identity,
+  classifier id and version, and tool registry generation, the activity index of the
+  last classified generation together with the chunks it covered; a later `acquire`
+  with that classifier, or a later `prepare_classifier` with that policy, that extends
+  those very chunks classifies only the appended events, so the registered callback or
+  the label pages see the appended events alone. A rewritten or truncated source, a
+  changed classifier version, or a changed registry generation classifies from the
+  start. A provisional tail is never carried: the index is kept as of the last committed
+  chunk and the events re-parsed on the next read are labelled again.
+
+### Changed
+
+- `prepare_classifier` on a source whose events the same policy already labelled under
+  the same registry generation completes in the first reply, with a description and no
+  page, exactly as it does for an empty source.
 - `QueuedCommand.origin` names who sent a message queued mid-turn: `human` for the
   user, `peer` for another agent or session, `channel` for an MCP channel event, and
   None when the transcript predates the field.
