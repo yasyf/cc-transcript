@@ -76,6 +76,7 @@ class Description(WireModel):
     provider: Literal["claude", "codex"]
     parser_version: Token
     source_bytes: Count
+    window_start: Count
     committed_bytes: Count
     event_count: Count
     turn_count: Count
@@ -293,6 +294,7 @@ class Acquire(WorkRequest):
     operation: Literal["acquire"]
     path: PathText
     classifier: Classifier
+    tail_bytes: Positive | None = None
 
 
 class Resolve(WorkRequest):
@@ -444,6 +446,7 @@ class WarmRoot(WorkRequest):
     operation: Literal["warm_root"]
     path: PathText
     classifier: Classifier
+    tail_bytes: Positive | None = None
 
 
 class QueryRequest(WorkRequest):

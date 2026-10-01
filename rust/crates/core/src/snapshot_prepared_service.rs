@@ -574,7 +574,7 @@ impl NativeStore {
             let sources: Vec<_> = membership
                 .members
                 .into_iter()
-                .filter(|source| source.stamp.identity != root.stamp.identity)
+                .filter(|source| source.stamp.identity.file() != root.stamp.identity.file())
                 .collect();
             let mut stamps = vec![(root.canonical_path.clone(), root.stamp)];
             stamps.extend(
@@ -651,7 +651,7 @@ impl NativeStore {
             located: HashMap::new(),
             tasks: Vec::new(),
             listing: None,
-            seen: HashSet::from([root.stamp.identity]),
+            seen: HashSet::from([root.stamp.identity.file()]),
             sources: Vec::new(),
             stamps: vec![(root.canonical_path.clone(), root.stamp)],
             sidechain_dirs: Vec::new(),
@@ -870,7 +870,7 @@ impl NativeStore {
                     let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
                     self.authority(context, Some(&canonical))?;
                     let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                    if !build.seen.insert(SourceStamp::of(&metadata).identity) {
+                    if !build.seen.insert(SourceStamp::of(&metadata).identity.file()) {
                         continue;
                     }
                     if build.seen.len() > build.remaining.max_sources {
@@ -1414,7 +1414,8 @@ impl NativeStore {
         let (root, description) = self.pin_scope_for_work(&handle, context, deadline)?;
         let current = SourceStamp::of(&std::fs::metadata(&root.canonical_path).map_err(|_| {
             SnapshotError::new(Status::Changed, "prepared graph root disappeared")
-        })?);
+        })?)
+        .viewed_as(stamp);
         if root.stamp != stamp
             || current != stamp && !self.extends_prefix(&root, remaining, usage)?
             || !classifier_eq(&classifier, &description["classifier"])?
@@ -1702,7 +1703,7 @@ impl NativeStore {
             for (path, stamp) in graph
                 .stamps
                 .iter()
-                .filter(|(_, stamp)| stamp.identity != graph.root.stamp.identity)
+                .filter(|(_, stamp)| stamp.identity.file() != graph.root.stamp.identity.file())
             {
                 self.authority(context, Some(path))?;
                 let current = std::fs::metadata(path).map_err(|_| {

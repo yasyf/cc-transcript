@@ -509,6 +509,7 @@ mod tests {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 1,
+                    window_base: 0,
                 },
                 size: 0,
                 mtime_ns: 0,
@@ -578,6 +579,7 @@ mod tests {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 1,
+                    window_base: 0,
                 },
                 size: 0,
                 mtime_ns: 0,
@@ -691,6 +693,7 @@ mod tests {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 1,
+                    window_base: 0,
                 },
                 size: 0,
                 mtime_ns: 0,

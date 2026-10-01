@@ -470,6 +470,7 @@ impl LabelPreparation {
             session_id: self.source.session_id.clone(),
             chunks: self.source.chunks.clone(),
             activity: Arc::new(self.activity),
+            window_start: 0,
             committed_bytes: self.source.committed_bytes,
             provisional_tail: self.source.provisional_tail,
             fence: self.source.fence.clone(),
@@ -590,6 +591,7 @@ mod tests {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 2,
+                    window_base: 0,
                 },
                 size: 10,
                 mtime_ns: 3,
@@ -599,6 +601,7 @@ mod tests {
             session_id: "s".into(),
             chunks: vec![Arc::new(EntryChunk::new(0, entries))],
             activity: Arc::new(activity),
+            window_start: 0,
             committed_bytes: 10,
             provisional_tail: false,
             fence: Vec::new(),
