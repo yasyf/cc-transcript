@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `render` query charges its input budget for the windowed events only, plus
+  the prompt of each turn the window starts and the names of tools whose calls
+  and results both fall inside it, instead of every event of each overlapping
+  turn. A window inside one long turn no longer fails with `output_limit`. When
+  the windowed events still exceed the budget, the render keeps the newest events
+  that fit and starts with `[N earlier events omitted: over the render budget]`.
 - `predicate_inputs` and `deep_predicate_inputs` split a transcript's inputs across
   records of at most 256 KiB each, so a window whose calls, commands, edited files,
   and skills together exceed the 1 MiB record bound pages out instead of failing
