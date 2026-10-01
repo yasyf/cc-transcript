@@ -14,7 +14,7 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
-    Anchor, Charge, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Work,
+    charged_bytes, Anchor, Charge, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -465,6 +465,16 @@ struct LoadSlot {
     accounted: AtomicUsize,
     attached: AtomicBool,
     deadline: AtomicU64,
+}
+
+impl LoadSlot {
+    fn ledgered_bytes(&self) -> usize {
+        if self.attached.load(Ordering::Acquire) {
+            self.accounted.load(Ordering::Acquire)
+        } else {
+            0
+        }
+    }
 }
 
 struct Load {
@@ -949,6 +959,14 @@ impl ClassifierSlot {
     fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
         self.seed.iter().flat_map(|seed| seed.anchors())
     }
+
+    fn ledgered_bytes(&self) -> usize {
+        if self.attached.load(Ordering::Acquire) {
+            self.accounted.load(Ordering::Acquire)
+        } else {
+            0
+        }
+    }
 }
 
 struct ClassifierProgress {
@@ -1121,9 +1139,15 @@ impl Charge<String> for GraphCursor {
     }
 }
 
+impl Charge<String> for PreparedGraph {
+    fn charge(&self) -> usize {
+        self.accounted
+    }
+}
+
 impl Charge<String> for Arc<Mutex<PreparedGraph>> {
     fn charge(&self) -> usize {
-        self.lock().expect("prepared graph").accounted
+        self.lock().expect("prepared graph").charge()
     }
 }
 
@@ -1346,6 +1370,28 @@ impl StoreState {
                 self.ledger.shared.release(anchor.id);
             }
         }
+    }
+
+    fn admission<K, V: Charge<K>>(
+        &self,
+        key: &K,
+        value: &V,
+        anchors: impl IntoIterator<Item = Anchor>,
+    ) -> usize {
+        charged_bytes(key, value) + self.ledger.shared.unowned_bytes(anchors)
+    }
+
+    fn carries(
+        &self,
+        lineage: &(SourceIdentity, String),
+        candidate: &CarriedClassification,
+    ) -> bool {
+        !self
+            .carried_classifications
+            .get(lineage)
+            .is_some_and(|existing| {
+                candidate.extends(&existing.prefix) && existing.event_count > candidate.event_count
+            })
     }
 
     fn insert_carried(
@@ -2884,15 +2930,29 @@ impl NativeStore {
             codex_append: snapshot.codex_append.clone(),
         });
         let generation = GenerationRecord::new(&derived, registry);
-        let carried = CarriedClassification::of(&derived, stage.committed.take());
+        let carried = CarriedClassification::of(&derived, stage.committed.take()).map(Arc::new);
         {
             let mut state = self.lock_state();
-            state.register_generation(&derived, generation);
-            if let Some(carried) = carried {
-                Self::carry(&mut state, lineage, carried);
-            }
+            let carried = carried.filter(|candidate| state.carries(&lineage, candidate));
+            let additional = state.admission(
+                &snapshot_key(&derived),
+                &generation,
+                generation
+                    .anchors()
+                    .chain(carried.iter().flat_map(|candidate| candidate.anchors())),
+            ) + carried
+                .as_ref()
+                .map_or(0, |candidate| charged_bytes(&lineage, candidate));
+            self.admit_memory(
+                &mut state,
+                context,
+                additional.saturating_sub(slot.ledgered_bytes()),
+            )?;
             state.set_classifier_charge(&slot, 0);
-            self.admit_memory(&mut state, context, 0)?;
+            state.register_generation(&derived, generation);
+            if let Some(candidate) = carried {
+                state.insert_carried(lineage, candidate);
+            }
         }
         stage.result = Some(Arc::clone(&derived));
         self.classified
@@ -2975,13 +3035,7 @@ impl NativeStore {
         lineage: (SourceIdentity, String),
         candidate: CarriedClassification,
     ) {
-        let longer_already = state
-            .carried_classifications
-            .get(&lineage)
-            .is_some_and(|existing| {
-                candidate.extends(&existing.prefix) && existing.event_count > candidate.event_count
-            });
-        if !longer_already {
+        if state.carries(&lineage, &candidate) {
             state.insert_carried(lineage, Arc::new(candidate));
         }
     }
@@ -4989,11 +5043,19 @@ impl NativeStore {
             };
             {
                 let mut state = self.lock_state();
-                if let (Some(snapshot), Some(generation)) = (&load.result, generation) {
-                    state.register_generation(snapshot, generation);
+                let generation = load.result.as_ref().zip(generation);
+                let additional = generation.as_ref().map_or(0, |(snapshot, record)| {
+                    state.admission(&snapshot_key(snapshot), record, record.anchors())
+                }) + pending_charge;
+                self.admit_memory(
+                    &mut state,
+                    &waiter.context,
+                    additional.saturating_sub(slot.ledgered_bytes()),
+                )?;
+                if let Some((snapshot, record)) = generation {
+                    state.register_generation(snapshot, record);
                 }
                 state.set_load_charge(&slot, pending_charge);
-                self.admit_memory(&mut state, &waiter.context, 0)?;
             }
             if let Err(error) = result {
                 if !matches!(
@@ -12170,5 +12232,171 @@ mod tests {
         assert!(steps > 1);
         store.assert_conserved();
         assert_eq!(store.lock_state().ledger.pending, 0);
+    }
+
+    const REPLY_RESERVATION: usize = MAX_REPLY_BYTES * 2;
+
+    fn settled_bytes(store: &NativeStore) -> usize {
+        let mut state = store.lock_state();
+        number(
+            &NativeStore::gauges(&mut state),
+            "retained_total_accounted_bytes",
+        )
+        .unwrap()
+            - NativeStore::fixed_metadata_bytes(&state)
+    }
+
+    fn admission_owner(background: bool) -> (Value, usize) {
+        let mut owner = context("a");
+        if background {
+            owner.insert("work_class", json!("background"));
+        }
+        let cap = 32 * 1024 * 1024 - if background { 4096 } else { 0 };
+        (owner, cap)
+    }
+
+    fn prepare_request(root: &Value) -> Value {
+        let template = acquire(Path::new("/unused"));
+        json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+    }
+
+    fn release_graph(store: &NativeStore, prepared: &Value, owner: &Value) {
+        let released = store.request(
+            &json!({"schema":SCHEMA,"id":"release-graph","operation":"release","kind":"graph","owner_epoch":store.owner_epoch,"token":prepared["data"]["handle"]["graph_id"]}),
+            owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            released["data"]["released"].as_bool(),
+            Some(true),
+            "{released:?}"
+        );
+    }
+
+    fn assert_refused(store: &NativeStore, response: &Value) {
+        assert_eq!(
+            response["status"].as_str(),
+            Some("retained_limit"),
+            "{response:?}"
+        );
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("accounted storage admission exhausted")
+        );
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn prepared_graph_publication_is_admitted_before_it_lands() {
+        for background in [false, true] {
+            let source = Source::new(&format!("{}\n", user("root")));
+            let store = store();
+            let (owner, cap) = admission_owner(background);
+            let root = finish(
+                &store,
+                store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                &owner,
+            );
+            let prepare = prepare_request(&root);
+            let warm = finish(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            release_graph(&store, &warm, &owner);
+            let idle = store.retained_accounted_bytes();
+            let measured = finish(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(measured["status"].as_str(), Some("ok"), "{measured:?}");
+            let graph_bytes = store.retained_accounted_bytes() - idle;
+            assert!(graph_bytes > 0);
+            release_graph(&store, &measured, &owner);
+            assert_eq!(store.retained_accounted_bytes(), idle);
+            let room = cap - idle - graph_bytes - REPLY_RESERVATION;
+            let crowded = store.reserve_projection(&owner, room + 1).unwrap();
+            let refused = store.request(&prepare, &owner, &Cancellation::default());
+            assert_refused(&store, &refused);
+            assert_eq!(store.retained_accounted_bytes(), idle + room + 1);
+            assert!(store.lock_state().prepared_graphs.is_empty());
+            drop(crowded);
+            let fitted = store.reserve_projection(&owner, room).unwrap();
+            let exact = finish(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
+            assert_eq!(store.retained_accounted_bytes(), cap - REPLY_RESERVATION);
+            store.assert_conserved();
+            release_graph(&store, &exact, &owner);
+            drop(fitted);
+            assert_eq!(store.retained_accounted_bytes(), idle);
+        }
+    }
+
+    #[test]
+    fn root_slice_publication_is_admitted_before_it_lands() {
+        let root_tool = r#"{"type":"assistant","uuid":"root-tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read-root","name":"Read","input":{"file_path":"root.rs"}}]}}"#;
+        for background in [false, true] {
+            let source = Source::new(&format!(
+                "{}\n{root_tool}\n{}\n",
+                user("first"),
+                user("last")
+            ));
+            let store = store();
+            let (owner, cap) = admission_owner(background);
+            let root = finish(
+                &store,
+                store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                &owner,
+            );
+            let prepare = prepare_request(&root);
+            let template = acquire(Path::new("/unused"));
+            let slice_query = |prepared: &Value| json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":prepared["data"]["handle"],"selectors":[{"kind":"current_turn"}],"query":{"kind":"has_read","pattern":"root.rs","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let slices = |prepared: &Value| {
+                store.lock_state().prepared_graphs
+                    [prepared["data"]["handle"]["graph_id"].as_str().unwrap()]
+                .lock()
+                .unwrap()
+                .root_slices
+                .len()
+            };
+            let measured = finish(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            let before_slice = settled_bytes(&store);
+            let first = store.request(&slice_query(&measured), &owner, &Cancellation::default());
+            assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+            let slice_bytes = settled_bytes(&store) - before_slice;
+            assert!(slice_bytes > 0);
+            assert_eq!(slices(&measured), 1);
+            let prepared = finish(
+                &store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(slices(&prepared), 0);
+            let idle = store.retained_accounted_bytes();
+            let capacities = idle - settled_bytes(&store);
+            let room = cap - idle - slice_bytes - REPLY_RESERVATION;
+            let crowded = store.reserve_projection(&owner, room + 1).unwrap();
+            let refused = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
+            assert_refused(&store, &refused);
+            assert_eq!(store.retained_accounted_bytes(), idle + room + 1);
+            assert_eq!(slices(&prepared), 0);
+            drop(crowded);
+            let fitted = store.reserve_projection(&owner, room).unwrap();
+            let exact = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
+            assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
+            assert_eq!(settled_bytes(&store), cap - REPLY_RESERVATION - capacities);
+            assert_eq!(slices(&prepared), 1);
+            store.assert_conserved();
+            drop(fitted);
+        }
     }
 }

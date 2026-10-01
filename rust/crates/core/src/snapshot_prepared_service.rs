@@ -593,6 +593,8 @@ impl NativeStore {
                     "prepared graph admission exhausted",
                 ));
             }
+            let additional = state.admission(&graph_id, &graph, graph.anchors());
+            self.admit_memory(&mut state, context, additional)?;
             state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
             return Ok((
                 json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
@@ -902,6 +904,8 @@ impl NativeStore {
                 "prepared graph admission exhausted",
             ));
         }
+        let additional = state.admission(&graph_id, &graph, graph.anchors());
+        self.admit_memory(&mut state, context, additional)?;
         state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
         Ok((
             json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
@@ -923,10 +927,13 @@ impl NativeStore {
             ));
         }
         build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
-        state.insert_prepared_build(token.to_owned(), build);
+        let token = token.to_owned();
+        let additional = state.admission(&token, &build, [facts_anchor(&build.root_facts)]);
+        self.admit_memory(&mut state, &build.context, additional)?;
+        state.insert_prepared_build(token.clone(), build);
         Ok((
             Value::new_null(),
-            Some(token.to_owned()),
+            Some(token),
             Some("prepared graph work incomplete".to_owned()),
         ))
     }
@@ -1588,8 +1595,11 @@ impl NativeStore {
                 "prepared query admission exhausted",
             ));
         }
-        state.prepared_queries.insert(token.to_owned(), cursor);
-        Ok((data, Some(token.to_owned()), Some("prepared query page incomplete".to_owned())))
+        let token = token.to_owned();
+        let additional = state.admission(&token, &cursor, []);
+        self.admit_memory(&mut state, context, additional)?;
+        state.prepared_queries.insert(token.clone(), cursor);
+        Ok((data, Some(token), Some("prepared query page incomplete".to_owned())))
     }
 
     fn query_graph(
@@ -1717,7 +1727,7 @@ impl NativeStore {
                     &fact_limits,
                     cancel,
                 )?;
-                self.publish_root_slice(token, &shared, key, Arc::new(facts))?
+                self.publish_root_slice(token, &shared, key, Arc::new(facts), context)?
             }
             (None, None) => unreachable!("the root facts are always cached"),
         };
@@ -1753,6 +1763,7 @@ impl NativeStore {
         shared: &Arc<Mutex<PreparedGraph>>,
         key: String,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+        context: &Value,
     ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
         let mut state = self.lock_state();
         if !state.prepared_graphs.contains_key(token) {
@@ -1771,6 +1782,11 @@ impl NativeStore {
                 "prepared root selector cache exhausted",
             ));
         }
+        let additional = state
+            .ledger
+            .shared
+            .unowned_bytes([facts_anchor(&facts)]);
+        self.admit_memory(&mut state, context, additional)?;
         state.insert_root_slice(&mut graph, key, Arc::clone(&facts));
         Ok(facts)
     }

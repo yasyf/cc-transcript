@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut, Index};
@@ -222,6 +222,18 @@ impl SharedAllocations {
         let total = self.total(kind);
         *total = total.checked_sub(bytes).expect("balanced retained ledger");
     }
+
+    pub(crate) fn unowned_bytes(&self, anchors: impl IntoIterator<Item = Anchor>) -> usize {
+        let mut seen = HashSet::new();
+        anchors
+            .into_iter()
+            .filter(|anchor| {
+                self.work.tick(1);
+                !self.owners.contains_key(&anchor.id) && seen.insert(anchor.id)
+            })
+            .map(|anchor| anchor.bytes)
+            .sum()
+    }
 }
 
 pub(crate) struct RetainedLedger {
@@ -252,6 +264,10 @@ pub(crate) trait Charge<K> {
     }
 
     fn charge(&self) -> usize;
+}
+
+pub(crate) fn charged_bytes<K, V: Charge<K>>(key: &K, value: &V) -> usize {
+    V::key_charge(key) + value.charge()
 }
 
 struct Slot<V> {
