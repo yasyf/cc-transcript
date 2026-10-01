@@ -1456,6 +1456,31 @@ fn predicate_inputs_query(
     next: usize,
     work: &Work,
 ) -> Result<Projection, SnapshotError> {
+    record_page(
+        predicate_records(session)?.into_iter().map(Ok),
+        "cc-transcript.predicate-inputs/1",
+        next,
+        false,
+        work,
+    )
+}
+
+pub fn predicate_input_records(
+    snapshot: &TranscriptSnapshot,
+    selectors: &Value,
+    limits: &WorkLimits,
+    cancel: &Cancellation,
+) -> Result<(Vec<String>, usize, usize), SnapshotError> {
+    let request = json!({"view":{"attachments":[],"selectors":selectors}});
+    let mut work = Work::new(snapshot, limits, cancel);
+    let range = selected_range(&mut work, &request)?;
+    work.charge_range(range.clone())?;
+    let lift = lift_range(&mut work, &range, None)?;
+    let records = predicate_records(&view(&lift, &range, snapshot))?;
+    Ok((records, work.bytes, work.events))
+}
+
+fn predicate_records(session: &Session) -> Result<Vec<String>, SnapshotError> {
     let calls = session.tool_calls().items();
     let wire = PredicateInputWire {
         calls: calls
@@ -1482,12 +1507,8 @@ fn predicate_inputs_query(
             })
             .collect(),
     };
-    record_page(
-        std::iter::once(snapshot_codec::encode(&wire, work.limits.max_output_bytes)),
-        "cc-transcript.predicate-inputs/1",
-        next,
-        false,
-        work,
+    snapshot_codec::predicate_input_records(
+        &sonic_rs::to_value(&wire).map_err(|error| invalid(error.to_string()))?,
     )
 }
 

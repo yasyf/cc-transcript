@@ -689,7 +689,7 @@ struct PreparedQueryCursor {
     graph_id: String,
     query: Value,
     pending: Option<PendingPreparedSource>,
-    root_record: Option<String>,
+    input_records: Option<VecDeque<String>>,
     next: usize,
     page_output_bytes: usize,
     remaining: WorkLimits,
@@ -764,7 +764,7 @@ struct GraphCursor {
     prepared: bool,
     root_checked: bool,
     projection_at: usize,
-    pending_record: Option<(usize, String)>,
+    pending_records: VecDeque<(usize, String)>,
     published_members: Vec<usize>,
     expires: u64,
     accounted: usize,
@@ -2508,7 +2508,10 @@ impl NativeStore {
                 .values()
                 .map(|cursor| {
                     size_of::<PreparedQueryCursor>()
-                        + cursor.root_record.as_ref().map_or(0, String::capacity)
+                        + cursor
+                            .input_records
+                            .as_ref()
+                            .map_or(0, |records| records.iter().map(String::capacity).sum())
                         + crate::snapshot_memory::value_charge(&cursor.query).owned_capacity_bytes
                 })
                 .sum::<usize>()
@@ -5071,7 +5074,7 @@ impl NativeStore {
             prepared: false,
             root_checked: false,
             projection_at: 0,
-            pending_record: None,
+            pending_records: VecDeque::new(),
             published_members: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(bounds.deadline_unix_ms),
             accounted: 0,
@@ -5152,9 +5155,10 @@ impl NativeStore {
                     .sum::<usize>()
                 + graph.tasks.capacity() * size_of::<GraphTask>()
                 + graph
-                    .pending_record
-                    .as_ref()
-                    .map_or(0, |(_, record)| record.capacity())
+                    .pending_records
+                    .iter()
+                    .map(|(_, record)| record.capacity())
+                    .sum::<usize>()
                 + graph.listing.as_ref().map_or(0, |listing| {
                     listing
                         .children
@@ -5566,7 +5570,7 @@ impl NativeStore {
         let mut output_bytes = 128usize;
         let page_limit = self.config.page_items.min(graph.remaining.max_items);
         let mut projected = 0usize;
-        while graph.projection_at < total || graph.pending_record.is_some() {
+        while graph.projection_at < total || !graph.pending_records.is_empty() {
             cancel.check(graph.remaining.deadline_unix_ms)?;
             if boolean && projected >= self.config.page_items {
                 return Ok(GraphYield::Pending(Value::new_null()));
@@ -5574,7 +5578,7 @@ impl NativeStore {
             if records.len() >= page_limit {
                 break;
             }
-            let (index, record) = if let Some(pending) = graph.pending_record.take() {
+            let (index, record) = if let Some(pending) = graph.pending_records.pop_front() {
                 pending
             } else {
                 let position = if reverse {
@@ -5607,27 +5611,27 @@ impl NativeStore {
                     let mut bounds = graph.remaining;
                     bounds.max_items = 1;
                     bounds.max_output_bytes = bounds.max_output_bytes.min(MAX_DATA_BYTES);
-                    let projection = crate::snapshot_projection::project(
-                        &node.snapshot,
-                        &request,
-                        &bounds,
-                        cancel,
-                        0,
-                    )?;
-                    graph.remaining.max_read_bytes = graph
-                        .remaining
-                        .max_read_bytes
-                        .saturating_sub(projection.read_bytes);
-                    graph.remaining.max_events =
-                        graph.remaining.max_events.saturating_sub(projection.events);
-                    if !projection.complete {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "graph member projection incomplete",
-                        ));
-                    }
-                    graph.projection_at += 1;
                     if boolean {
+                        let projection = crate::snapshot_projection::project(
+                            &node.snapshot,
+                            &request,
+                            &bounds,
+                            cancel,
+                            0,
+                        )?;
+                        graph.remaining.max_read_bytes = graph
+                            .remaining
+                            .max_read_bytes
+                            .saturating_sub(projection.read_bytes);
+                        graph.remaining.max_events =
+                            graph.remaining.max_events.saturating_sub(projection.events);
+                        if !projection.complete {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "graph member projection incomplete",
+                            ));
+                        }
+                        graph.projection_at += 1;
                         projected += 1;
                         if projection.data["value"].as_bool() == Some(true) {
                             return Ok(GraphYield::Complete(projection.data));
@@ -5637,20 +5641,29 @@ impl NativeStore {
                         }
                         continue;
                     }
-                    (
-                        index,
-                        projection.data["records_json"][0]
-                            .as_str()
-                            .ok_or_else(|| invalid("predicate member returned no record"))?
-                            .to_owned(),
-                    )
+                    let (member_records, read_bytes, events) =
+                        crate::snapshot_projection::predicate_input_records(
+                            &node.snapshot,
+                            &request["view"]["selectors"],
+                            &bounds,
+                            cancel,
+                        )?;
+                    graph.remaining.max_read_bytes =
+                        graph.remaining.max_read_bytes.saturating_sub(read_bytes);
+                    graph.remaining.max_events = graph.remaining.max_events.saturating_sub(events);
+                    graph.projection_at += 1;
+                    let mut member_records =
+                        member_records.into_iter().map(|record| (index, record));
+                    let first = member_records.next().expect("predicate member record");
+                    graph.pending_records.extend(member_records);
+                    first
                 }
             };
             let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)?;
             if output_bytes.saturating_add(record_bytes)
                 > graph.remaining.max_output_bytes.min(MAX_DATA_BYTES)
             {
-                graph.pending_record = Some((index, record));
+                graph.pending_records.push_front((index, record));
                 if records.is_empty() {
                     return Err(SnapshotError::new(
                         Status::OutputLimit,
@@ -5674,7 +5687,7 @@ impl NativeStore {
             .remaining
             .max_items
             .saturating_sub(data["records_json"].as_array().expect("records").len());
-        if graph.projection_at >= total && graph.pending_record.is_none() {
+        if graph.projection_at >= total && graph.pending_records.is_empty() {
             Ok(GraphYield::Complete(data))
         } else if graph.remaining.max_items == 0 {
             Err(SnapshotError::new(
@@ -9249,6 +9262,78 @@ mod tests {
         let after = store.state.lock().unwrap().counters;
         assert_eq!(after[1], after_first[1]);
         assert_eq!(after[15], after_first[15]);
+    }
+
+    #[test]
+    fn deep_predicate_inputs_split_a_window_over_the_record_bound() {
+        let commands: Vec<String> = (0..48)
+            .map(|index| format!("echo {index:02} {}", "x".repeat(32 * 1024)))
+            .collect();
+        let tools: String = commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| format!(
+                "{}\n",
+                format_args!(r#"{{"type":"assistant","uuid":"tool-{index}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"bash-{index}","name":"Bash","input":{{"command":"{command}"}}}}]}}}}"#)
+            ))
+            .collect();
+        let source = Source::new(&format!("{}\n{tools}", user("root")));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":4*1024*1024,"max_events_per_step":256,"max_entry_bytes":64*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_read_bytes", json!(64 * 1024 * 1024));
+        template["limits"].insert("max_source_read_bytes", json!(64 * 1024 * 1024));
+        template["limits"].insert("max_output_bytes", json!(16 * 1024 * 1024));
+        let root = finish(
+            &store,
+            store.request(&template, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let commands_of = |records: &[String]| -> Vec<String> {
+            assert!(records.len() > 1, "{} records", records.len());
+            for record in records {
+                assert!(record.len() <= crate::snapshot_codec::MAX_RECORD_BYTES);
+            }
+            crate::snapshot_codec::decode_predicate_inputs(
+                records,
+                crate::snapshot_codec::MAX_PAGE_BYTES,
+            )
+            .unwrap()
+            .into_iter()
+            .flat_map(|record| record.commands)
+            .collect()
+        };
+        let pages = |mut page: Value| -> Vec<String> {
+            let mut records = Vec::new();
+            for _ in 0..64 {
+                records.extend(
+                    page["data"]["records_json"]
+                        .as_array()
+                        .unwrap_or_else(|| panic!("{page:?}"))
+                        .iter()
+                        .map(|item| item.as_str().unwrap().to_owned()),
+                );
+                if page["status"].as_str() == Some("ok") {
+                    return records;
+                }
+                assert_eq!(page["status"].as_str(), Some("incomplete"), "{page:?}");
+                page = store.request(&json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":page["cursor"]}), &owner, &Cancellation::default());
+            }
+            panic!("deep predicate inputs did not finish");
+        };
+        let mut query = graph_request(
+            &root,
+            json!({"kind":"deep_predicate_inputs","order":"forward"}),
+            Vec::new(),
+            json!([]),
+        );
+        query["limits"] = template["limits"].clone();
+        let lease = pages(store.request(&query, &owner, &Cancellation::default()));
+        assert_eq!(commands_of(&lease), commands);
+        let prepare = finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
+        assert_eq!(prepare["status"].as_str(), Some("ok"), "{prepare:?}");
+        let prepared = pages(store.request(&json!({"schema":SCHEMA,"id":"inputs","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()));
+        assert_eq!(commands_of(&prepared), commands);
     }
 
     #[test]

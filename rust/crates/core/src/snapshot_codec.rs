@@ -144,6 +144,48 @@ pub struct PredicateInputsRecord {
     pub skills: Vec<String>,
 }
 
+pub const PREDICATE_INPUT_CHUNK_BYTES: usize = 256 * 1024;
+
+pub fn predicate_input_records(inputs: &sonic_rs::Value) -> Result<Vec<String>, SnapshotError> {
+    use sonic_rs::JsonContainerTrait;
+
+    let mut records = Vec::new();
+    let mut fields: [Vec<String>; 4] = Default::default();
+    let mut bytes = 0usize;
+    for (slot, name) in ["calls", "commands", "edited_files", "skills"]
+        .into_iter()
+        .enumerate()
+    {
+        for item in inputs[name]
+            .as_array()
+            .expect("predicate input field")
+            .iter()
+        {
+            let item = encode(item, MAX_RECORD_BYTES)?;
+            let cost = encoded_size(item.as_str(), MAX_RECORD_BYTES)? + 1;
+            if bytes > 0 && bytes + cost > PREDICATE_INPUT_CHUNK_BYTES {
+                records.push(predicate_input_record(&fields));
+                fields = Default::default();
+                bytes = 0;
+            }
+            bytes += cost;
+            fields[slot].push(item);
+        }
+    }
+    records.push(predicate_input_record(&fields));
+    Ok(records)
+}
+
+fn predicate_input_record([calls, commands, edited_files, skills]: &[Vec<String>; 4]) -> String {
+    format!(
+        r#"{{"calls":[{}],"commands":[{}],"edited_files":[{}],"skills":[{}]}}"#,
+        calls.join(","),
+        commands.join(","),
+        edited_files.join(","),
+        skills.join(",")
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SidechainRecord {
