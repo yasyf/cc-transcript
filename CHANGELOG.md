@@ -242,6 +242,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate that asked twenty times refiltered and reparsed the window's Bash calls
   twenty times. The window is immutable, so `Session` is now unslotted and each
   derivation is a `cached_property`.
+- Prepared-facts disk cache owners are now locked before another process's stale-owner
+  cleanup can see them. Cleanup could previously remove an owner between creating and
+  locking `owner.lock`, causing `Resource temporarily unavailable (os error 35)` on
+  macOS or later `incomplete` results. A no-replace rename from `<epoch>.tmp` publishes
+  the locked owner and still rejects an existing `<epoch>`.
 
 ## [14.9.0] - 2026-07-20
 

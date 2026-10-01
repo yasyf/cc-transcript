@@ -25,6 +25,34 @@ const MAX_CLEANED_BYTES: u64 = 128 * 1024 * 1024;
 static ACTIVE_OWNERS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+#[cfg(test)]
+type LockFileCreatedHook = (CString, Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+static LOCK_FILE_CREATED_HOOK: Mutex<Option<LockFileCreatedHook>> = Mutex::new(None);
+
+#[cfg(test)]
+fn run_lock_file_created_hook(owner_name: &CStr) {
+    let hook = {
+        let mut slot = LOCK_FILE_CREATED_HOOK
+            .lock()
+            .expect("lock file created hook");
+        match slot.as_ref() {
+            Some((hooked, _)) if hooked.as_c_str() == owner_name => {
+                slot.take().map(|(_, hook)| hook)
+            }
+            _ => None,
+        }
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+fn namespace_path() -> io::Result<PathBuf> {
+    Ok(fs::canonicalize(std::env::temp_dir())?.join("cc-transcript-prepared"))
+}
+
 fn incomplete(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::Incomplete, reason)
 }
@@ -50,6 +78,35 @@ fn openat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Resu
 
 fn unlinkat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Result<()> {
     if unsafe { libc::unlinkat(dir_fd, name.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn renameat_noreplace(dir_fd: libc::c_int, from: &CStr, to: &CStr) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            dir_fd,
+            from.as_ptr(),
+            dir_fd,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_vendor = "apple")]
+    let result = unsafe {
+        libc::renameatx_np(
+            dir_fd,
+            from.as_ptr(),
+            dir_fd,
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -250,9 +307,7 @@ impl PreparedDiskCache {
         if max_bytes <= HEADER_BYTES {
             return Err(incomplete("prepared facts disk cache capacity exhausted"));
         }
-        let namespace = fs::canonicalize(std::env::temp_dir())
-            .map_err(disk_error)?
-            .join("cc-transcript-prepared");
+        let namespace = namespace_path().map_err(disk_error)?;
         match DirBuilder::new().mode(0o700).create(&namespace) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -273,15 +328,50 @@ impl PreparedDiskCache {
             ));
         }
         let owner_name = CString::new(owner_epoch).expect("hex owner epoch");
+        let staging_name = CString::new(format!("{owner_epoch}.tmp")).expect("hex owner epoch");
         let dir = namespace.join(owner_epoch);
         let mut active_owners = ACTIVE_OWNERS.lock().expect("active prepared owners");
-        DirBuilder::new()
-            .mode(0o700)
-            .create(&dir)
-            .map_err(disk_error)?;
+        if unsafe { libc::mkdirat(namespace_file.as_raw_fd(), staging_name.as_ptr(), 0o700) } != 0 {
+            return Err(disk_error(io::Error::last_os_error()));
+        }
+        let staged = Self::publish_staged_owner(&namespace_file, &staging_name, &owner_name);
+        let (dir_file, metadata, owner_lock) = match staged {
+            Ok(staged) => staged,
+            Err(error) => {
+                let _ = unlinkat_file(
+                    namespace_file.as_raw_fd(),
+                    &staging_name,
+                    libc::AT_REMOVEDIR,
+                );
+                return Err(error);
+            }
+        };
+        active_owners.insert(owner_epoch.to_owned());
+        drop(active_owners);
+        let cache = Self {
+            namespace,
+            namespace_file,
+            dir,
+            dir_file,
+            owner_name,
+            _owner_lock: owner_lock,
+            dir_device: metadata.dev(),
+            dir_inode: metadata.ino(),
+            max_bytes,
+            state: Mutex::new(DiskState::default()),
+        };
+        cache.cleanup_stale_owners();
+        Ok(cache)
+    }
+
+    fn publish_staged_owner(
+        namespace_file: &std::fs::File,
+        staging_name: &CStr,
+        owner_name: &CStr,
+    ) -> Result<(std::fs::File, fs::Metadata, std::fs::File), SnapshotError> {
         let dir_file = openat_file(
             namespace_file.as_raw_fd(),
-            &owner_name,
+            staging_name,
             libc::O_RDONLY | libc::O_DIRECTORY,
         )
         .map_err(disk_error)?;
@@ -300,28 +390,22 @@ impl PreparedDiskCache {
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
         )
         .map_err(disk_error)?;
-        if unsafe { libc::fchmod(owner_lock.as_raw_fd(), 0o600) } != 0 {
-            return Err(disk_error(io::Error::last_os_error()));
+        #[cfg(test)]
+        run_lock_file_created_hook(owner_name);
+        let published = (|| -> io::Result<()> {
+            if unsafe { libc::fchmod(owner_lock.as_raw_fd(), 0o600) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { libc::flock(owner_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            renameat_noreplace(namespace_file.as_raw_fd(), staging_name, owner_name)
+        })();
+        if let Err(error) = published {
+            let _ = unlinkat_file(dir_file.as_raw_fd(), OWNER_LOCK, 0);
+            return Err(disk_error(error));
         }
-        if unsafe { libc::flock(owner_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(disk_error(io::Error::last_os_error()));
-        }
-        active_owners.insert(owner_epoch.to_owned());
-        drop(active_owners);
-        let cache = Self {
-            namespace,
-            namespace_file,
-            dir,
-            dir_file,
-            owner_name,
-            _owner_lock: owner_lock,
-            dir_device: metadata.dev(),
-            dir_inode: metadata.ino(),
-            max_bytes,
-            state: Mutex::new(DiskState::default()),
-        };
-        cache.cleanup_stale_owners();
-        Ok(cache)
+        Ok((dir_file, metadata, owner_lock))
     }
 
     fn check_dir(&self) -> Result<(), SnapshotError> {
@@ -729,7 +813,9 @@ impl Write for BoundedVec {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     use sonic_rs::json;
 
@@ -739,10 +825,65 @@ mod tests {
 
     static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
-    fn cache(cap: usize) -> PreparedDiskCache {
+    fn epoch() -> String {
         let id = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let epoch = format!("{:032x}{:032x}", std::process::id(), id);
-        PreparedDiskCache::new(&epoch, cap).unwrap()
+        format!("{:032x}{:032x}", std::process::id(), id)
+    }
+
+    fn cache(cap: usize) -> PreparedDiskCache {
+        PreparedDiskCache::new(&epoch(), cap).unwrap()
+    }
+
+    struct ForeignScan {
+        lock: Option<std::fs::File>,
+        deleted: bool,
+    }
+
+    fn foreign_scan(namespace: &Path, epoch: &str) -> ForeignScan {
+        let namespace_file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(namespace)
+            .unwrap();
+        let mut scan = ForeignScan {
+            lock: None,
+            deleted: false,
+        };
+        let mut owners = DirEntries::new(namespace_file.as_raw_fd()).unwrap();
+        while let Some(name) = owners.next() {
+            let bytes = name.to_bytes();
+            if bytes.len() != 64 || !hex_bytes(bytes) || bytes != epoch.as_bytes() {
+                continue;
+            }
+            let owner = openat_file(
+                namespace_file.as_raw_fd(),
+                &name,
+                libc::O_RDONLY | libc::O_DIRECTORY,
+            )
+            .unwrap();
+            let Ok(lock) = openat_file(owner.as_raw_fd(), OWNER_LOCK, libc::O_RDWR) else {
+                continue;
+            };
+            if !private_file(&lock)
+                || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+            {
+                continue;
+            }
+            if only_lock_remains(owner.as_raw_fd()) {
+                unlinkat_file(owner.as_raw_fd(), OWNER_LOCK, 0).unwrap();
+                unlinkat_file(namespace_file.as_raw_fd(), &name, libc::AT_REMOVEDIR).unwrap();
+                scan.deleted = true;
+            }
+            scan.lock = Some(lock);
+        }
+        scan
+    }
+
+    fn foreign_flock_errno(lock: &std::fs::File) -> Option<i32> {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return None;
+        }
+        io::Error::last_os_error().raw_os_error()
     }
 
     fn stamp(size: u64) -> SourceStamp {
@@ -966,6 +1107,66 @@ mod tests {
             restarted.lookup(&entry).unwrap(),
             DiskLookup::Miss
         ));
+    }
+
+    #[test]
+    fn foreign_cleanup_during_construction_cannot_unlock_or_delete_the_owner() {
+        let epoch = epoch();
+        let namespace = namespace_path().unwrap();
+        let scan = Arc::new(Mutex::new(None::<ForeignScan>));
+        let hook = {
+            let scan = scan.clone();
+            let epoch = epoch.clone();
+            Box::new(move || {
+                *scan.lock().unwrap() = Some(foreign_scan(&namespace, &epoch));
+            })
+        };
+        *LOCK_FILE_CREATED_HOOK.lock().unwrap() =
+            Some((CString::new(epoch.clone()).unwrap(), hook));
+        let cache = PreparedDiskCache::new(&epoch, 4096).unwrap();
+        let scan = scan.lock().unwrap().take().expect("foreign scan ran");
+        assert!(scan.lock.is_none());
+        assert!(!scan.deleted);
+        assert!(cache.dir.is_dir());
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(cache.dir.join("owner.lock"))
+            .unwrap();
+        assert_eq!(foreign_flock_errno(&lock), Some(libc::EWOULDBLOCK));
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        cache.insert(&entry, &facts()).unwrap();
+        assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Hit(_)));
+    }
+
+    #[test]
+    fn failed_publication_removes_only_the_staged_owner() {
+        let namespace = cache(4096).namespace.clone();
+        let epoch = epoch();
+        let conflicting = namespace.join(&epoch);
+        DirBuilder::new().mode(0o700).create(&conflicting).unwrap();
+        let before = fs::metadata(&conflicting).unwrap();
+        let Err(error) = PreparedDiskCache::new(&epoch, 4096) else {
+            panic!("publication onto an existing owner succeeded");
+        };
+        assert_eq!(error.status, Status::Incomplete);
+        assert!(error.reason.contains("File exists"), "{}", error.reason);
+        let staging = namespace.join(format!("{epoch}.tmp"));
+        assert_eq!(
+            fs::symlink_metadata(staging.join("owner.lock"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            fs::symlink_metadata(&staging).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let after = fs::metadata(&conflicting).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert!(fs::read_dir(&conflicting).unwrap().next().is_none());
+        assert!(!ACTIVE_OWNERS.lock().unwrap().contains(&epoch));
+        fs::remove_dir(&conflicting).unwrap();
     }
 
     #[test]
