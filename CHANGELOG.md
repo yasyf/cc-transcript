@@ -242,6 +242,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate that asked twenty times refiltered and reparsed the window's Bash calls
   twenty times. The window is immutable, so `Session` is now unslotted and each
   derivation is a `cached_property`.
+- Prepared-facts disk cache construction no longer races with another process's stale-owner
+  cleanup, avoiding `Resource temporarily unavailable (os error 35)` on macOS and later
+  `incomplete` results. The constructor locks `staging/<epoch>.lock`, exclusively creates
+  `<epoch>`, and renames the locked file into it as `owner.lock`. This avoids stranded NFS
+  links that could prevent stale facts from being reclaimed after a client host crash.
+  Existing `<epoch>` directories still reject construction. An abandoned staging lock
+  remains inert inside the reserved `staging` directory and cannot starve cleanup.
 
 ## [14.9.0] - 2026-07-20
 
