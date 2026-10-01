@@ -470,7 +470,7 @@ impl LabelPreparation {
             session_id: self.source.session_id.clone(),
             chunks: self.source.chunks.clone(),
             activity: Arc::new(self.activity),
-            window_start: 0,
+            window_start: self.source.window_start,
             committed_bytes: self.source.committed_bytes,
             provisional_tail: self.source.provisional_tail,
             fence: self.source.fence.clone(),
@@ -1041,5 +1041,27 @@ mod tests {
             stage.finish(&binding, &cancel).unwrap().0.id,
             "labels:execution"
         );
+    }
+
+    #[test]
+    fn finish_keeps_the_source_window_start() {
+        let mut snapshot = source(vec![user(0, "prompt"), user(1, "later")]);
+        {
+            let windowed = Arc::get_mut(&mut snapshot).unwrap();
+            windowed.window_start = 1000;
+            windowed.stamp.identity.window_base = 1024;
+        }
+        let binding = binding("execution");
+        let cancel = Cancellation::default();
+        let mut stage =
+            LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES, None)
+                .unwrap();
+        stage.next_page("page1".into(), &binding, &cancel).unwrap();
+        assert!(stage
+            .submit("page1", &[true, false], &binding, &cancel)
+            .unwrap());
+        let derived = stage.finish(&binding, &cancel).unwrap().0;
+        assert_eq!(derived.window_start, 1000);
+        assert_eq!(derived.stamp.identity.window_base, 1024);
     }
 }
