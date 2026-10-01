@@ -35,13 +35,22 @@ impl NativeStore {
                 .prepared_loads
                 .keys()
                 .filter(|identity| {
-                    identity.file() == current.identity.file() && **identity != current.identity
+                    current.identity.window_base > 0
+                        && identity.window_base > 0
+                        && identity.file() == current.identity.file()
+                        && **identity != current.identity
                 })
                 .copied()
                 .collect();
             for identity in superseded {
                 state.prepared_loads.remove(&identity);
-                state.loads.remove(&identity);
+                if state
+                    .loads
+                    .get(&identity)
+                    .is_some_and(|slot| Arc::strong_count(slot) == 1)
+                {
+                    state.loads.remove(&identity);
+                }
             }
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&current.identity) {
                 if Self::matches_prefix(current, slot.stamp)
@@ -65,7 +74,15 @@ impl NativeStore {
         };
         let stamp = pinned.as_ref().map_or(current, |slot| slot.stamp);
         let outcome = if let Some(slot) = pinned {
-            self.resume_warm_root(slot, classifier, context, bounds, cancel, usage)
+            self.resume_warm_root(
+                slot,
+                classifier,
+                context,
+                bounds,
+                tail_bytes(request)?.is_some(),
+                cancel,
+                usage,
+            )
         } else {
             self.acquire(request, context, cancel, usage)
         };
@@ -152,6 +169,7 @@ impl NativeStore {
         classifier: &Value,
         context: &Value,
         bounds: WorkLimits,
+        windowed: bool,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -173,6 +191,7 @@ impl NativeStore {
             used_source_bytes: 0,
             used_events: 0,
             stage: None,
+            windowed,
             busy: false,
         };
         {
@@ -361,6 +380,43 @@ mod root_warm_tests {
         assert_eq!(pinned.len(), 1, "{pinned:?}");
         assert_eq!(pinned[0].window_base, new_base);
         assert_eq!(state.loads.len(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn whole_file_and_window_warms_keep_their_own_pins() {
+        let (directory, path) = source(4 * 1024 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("alternating-views");
+        let whole = warm_request(&path, 256 * 1024);
+        let mut window = whole.clone();
+        window.insert("tail_bytes", json!(1024 * 1024));
+        let step = |request: &Value| {
+            let reply = store.request(request, &context, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert_eq!(reply["data"]["complete"].as_bool(), Some(false), "{reply:?}");
+            reply["data"]["source_offset"].as_u64().unwrap()
+        };
+        step(&whole);
+        let whole_offset = step(&whole);
+        assert!(whole_offset > 0);
+        step(&window);
+        let window_offset = step(&window);
+        assert!(window_offset > whole_offset);
+        assert_eq!(store.state.lock().unwrap().prepared_loads.len(), 2);
+        let advances = |request: &Value, from: u64| {
+            for _ in 0..4 {
+                let offset = step(request);
+                assert!(offset >= from, "{offset} < {from}");
+                if offset > from {
+                    return;
+                }
+            }
+            panic!("view did not advance past {from}");
+        };
+        advances(&whole, whole_offset);
+        advances(&window, window_offset);
+        assert_eq!(store.state.lock().unwrap().prepared_loads.len(), 2);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

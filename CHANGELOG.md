@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `warm_root` no longer evicts the other views of the same file: warming a window
+  keeps the whole-file pin and the reverse, so alternating requests resume where
+  each left off. A base advance still retires the previous window pin, and a load an
+  acquire still holds stays accounted until that waiter releases it.
+- A graph query on a windowed root deduplicates members by file, so a root attached
+  to itself, or reached through a hard link, no longer reappears as a whole-file
+  child that restores the events the window excluded.
+- A classifier label snapshot built from a windowed source keeps the source's
+  `window_start` instead of publishing `0`.
+- `tail_bytes` on a Codex source is refused with `tail_bytes requires a Claude
+  source` for every window, including one that covers the whole file and one served
+  from the cache; before, only a nonzero base was checked.
+
 ### Added
 
 - `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;

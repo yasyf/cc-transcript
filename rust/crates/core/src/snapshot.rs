@@ -423,6 +423,7 @@ struct Waiter {
     used_source_bytes: usize,
     used_events: usize,
     stage: Option<Arc<ClassifierSlot>>,
+    windowed: bool,
     busy: bool,
 }
 
@@ -4154,6 +4155,7 @@ impl NativeStore {
                 used_source_bytes: 0,
                 used_events: 0,
                 stage: None,
+                windowed: window.is_some(),
                 busy: false,
             };
             state.waiters.insert(cursor.clone(), waiter.clone());
@@ -4409,6 +4411,14 @@ impl NativeStore {
         if let Some(snapshot) = &load.result {
             let snapshot = Arc::clone(snapshot);
             drop(load);
+            if waiter.windowed && snapshot.provider == Provider::Codex {
+                self.state
+                    .lock()
+                    .expect("snapshot state")
+                    .waiters
+                    .remove(token);
+                return Err(invalid("tail_bytes requires a Claude source"));
+            }
             let mut state = self.state.lock().expect("snapshot state");
             if !state
                 .latest
@@ -5039,7 +5049,7 @@ impl NativeStore {
                 depth: 1,
             });
         }
-        let identity = root.stamp.identity;
+        let identity = root.stamp.identity.file();
         let graph = GraphCursor {
             claimant: str_field(context, "claimant")?.to_owned(),
             context: context.clone(),
@@ -5199,7 +5209,7 @@ impl NativeStore {
             &graph.context,
             graph.remaining.deadline_unix_ms,
         )?;
-        let identity = snapshot.stamp.identity;
+        let identity = snapshot.stamp.identity.file();
         if !graph.seen.insert(identity)
             && graph.request["query"]["kind"].as_str() != Some("direct_sidechains")
         {
@@ -8235,6 +8245,64 @@ mod tests {
             &Cancellation::default(),
         );
         assert_eq!(zero["status"].as_str(), Some("invalid_request"));
+        let size = std::fs::metadata(&codex.path).unwrap().len();
+        for tail_bytes in [size, size - 1, 1024 * 1024] {
+            let covered = finish(
+                &store,
+                store.request(
+                    &windowed_acquire(&codex.path, tail_bytes),
+                    &owner,
+                    &Cancellation::default(),
+                ),
+                &owner,
+            );
+            assert_eq!(
+                covered["reason"].as_str(),
+                Some("tail_bytes requires a Claude source"),
+                "{tail_bytes}: {covered:?}"
+            );
+        }
+        let whole = finish(
+            &store,
+            store.request(&acquire(&codex.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(whole["status"].as_str(), Some("ok"), "{whole:?}");
+        let cached = finish(
+            &store,
+            store.request(
+                &windowed_acquire(&codex.path, 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(cached["status"].as_str(), Some("invalid_request"));
+        assert_eq!(
+            cached["reason"].as_str(),
+            Some("tail_bytes requires a Claude source")
+        );
+    }
+
+    #[test]
+    fn windowed_root_attached_to_itself_is_not_its_own_child() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let root = windowed(&store, &source.path, 4096, &owner);
+        let (_, _, first) = expected_window(&source.path, 4096);
+        assert!(first > 0);
+        let records = graph_records(
+            &store,
+            &graph_request(
+                &root,
+                json!({"kind":"sidechain_membership","order":"forward"}),
+                vec![source.path.to_string_lossy().into_owned()],
+                json!([]),
+            ),
+            &owner,
+        );
+        assert!(records.is_empty(), "{records:?}");
     }
 
     #[test]
