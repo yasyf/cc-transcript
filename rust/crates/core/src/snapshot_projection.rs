@@ -1160,6 +1160,7 @@ fn signal_event<'a>(
     work: &mut Work<'a, '_>,
     index: usize,
     origin: &str,
+    thinking: bool,
 ) -> Result<Vec<Vec<&'a str>>, SnapshotError> {
     work.charge_range(index..index + 1)?;
     let event = work.snapshot.entry(index);
@@ -1193,7 +1194,7 @@ fn signal_event<'a>(
     for (ordinal, block) in event.blocks().iter().enumerate() {
         work.cancel.check(work.limits.deadline_unix_ms)?;
         match block {
-            ContentBlock::Thinking(text) if !text.is_empty() => plans.push(vec![text]),
+            ContentBlock::Thinking(text) if thinking && !text.is_empty() => plans.push(vec![text]),
             ContentBlock::ToolUse(tool) => {
                 let call = work
                     .snapshot
@@ -1258,6 +1259,9 @@ fn signal_query(
     if !["any", "assistant"].contains(&origin) {
         return Err(invalid("invalid signal origin"));
     }
+    let thinking = field(query, "thinking")?
+        .as_bool()
+        .ok_or_else(|| invalid("thinking must be boolean"))?;
     let window = field(query, "window")?;
     let mut plans = Vec::new();
     if window.as_str() == Some("current_turn") {
@@ -1272,7 +1276,7 @@ fn signal_query(
                 .max(work.snapshot.activity.turn_bounds(turn).unwrap().start);
         }
         for index in range {
-            plans.extend(signal_event(work, index, origin)?);
+            plans.extend(signal_event(work, index, origin, thinking)?);
         }
     } else {
         let count = count(query, "window")?;
@@ -1282,7 +1286,7 @@ fn signal_query(
             if length >= count {
                 break;
             }
-            let texts = signal_event(work, index, origin)?;
+            let texts = signal_event(work, index, origin, thinking)?;
             length += texts.len();
             events.push(texts);
         }
@@ -2973,7 +2977,7 @@ mod tests {
         let all = run(
             &snap,
             &request(
-                json!({"kind":"signal_texts","window":"current_turn","origin":"any"}),
+                json!({"kind":"signal_texts","window":"current_turn","origin":"any","thinking":true}),
                 json!([]),
             ),
         );
@@ -2998,7 +3002,7 @@ mod tests {
         let last = run(
             &snap,
             &request(
-                json!({"kind":"signal_texts","window":3,"origin":"assistant"}),
+                json!({"kind":"signal_texts","window":3,"origin":"assistant","thinking":true}),
                 json!([]),
             ),
         );
@@ -3009,6 +3013,29 @@ mod tests {
             .map(|value| value.as_str().unwrap())
             .collect();
         assert_eq!(actual, ["finding failure", "second", "todo subject"]);
+        let prose = run(
+            &snap,
+            &request(
+                json!({"kind":"signal_texts","window":"current_turn","origin":"assistant","thinking":false}),
+                json!([]),
+            ),
+        );
+        let actual: Vec<_> = prose.data["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                "visible",
+                "task details",
+                "finding failure",
+                "second",
+                "todo subject"
+            ]
+        );
     }
 
     #[test]
@@ -3025,7 +3052,7 @@ mod tests {
         let result = run(
             &snap,
             &request(
-                json!({"kind":"signal_texts","window":10,"origin":"any"}),
+                json!({"kind":"signal_texts","window":10,"origin":"any","thinking":true}),
                 json!([]),
             ),
         );
@@ -3039,7 +3066,7 @@ mod tests {
         let zero = run(
             &snap,
             &request(
-                json!({"kind":"signal_texts","window":0,"origin":"any"}),
+                json!({"kind":"signal_texts","window":0,"origin":"any","thinking":true}),
                 json!([]),
             ),
         );
