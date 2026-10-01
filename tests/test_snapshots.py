@@ -300,3 +300,39 @@ def test_tool_registry_identity_is_definition_bound() -> None:
     assert first == store.register_tool_registry([spec], context=context())
     assert first != context()["registry_generation"]
     assert first != store.register_tool_registry([{**spec, "behaves_like": "Edit"}], context=context())
+
+
+def test_tail_returns_the_newest_events_without_a_lease(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(event(index) for index in range(40)))
+    store = TranscriptStore({"max_read_bytes_per_step": 64})
+    reply = store.request(
+        request("tail", path=str(path), count=3, limits=LIMITS, deadline_unix_ms=deadline()),
+        cancellation=CancellationToken(),
+        context=context(),
+    )
+    assert reply["status"] == "ok", reply
+    data = reply["data"]
+    assert data["kind"] == "tail"
+    assert data["source_bytes"] == path.stat().st_size
+    assert data["window_start_byte"] == sum(len(event(index)) for index in range(37))
+    events = decode_projection(data["record_schema"], data["records_json"])
+    assert [record.meta.uuid for record in events] == ["u37", "u38", "u39"]
+    assert reply["usage"]["source_bytes_read"] < 8 * len(event(0))
+    bounded = store.request(
+        request(
+            "tail",
+            path=str(path),
+            count=3,
+            limits={**LIMITS, "max_source_read_bytes": len(event(39)) + 1},
+            deadline_unix_ms=deadline(),
+        ),
+        cancellation=CancellationToken(),
+        context=context(),
+    )
+    assert bounded["status"] == "incomplete"
+    assert bounded["reason"] == "tail read budget exhausted"
+    assert bounded["cursor"] is None
+    assert [record.meta.uuid for record in decode_projection("cc-transcript.event/1", bounded["data"]["records_json"])] == [
+        "u39"
+    ]

@@ -465,8 +465,15 @@ class Stats(Envelope):
     operation: Literal["stats"]
 
 
+class Tail(WorkRequest):
+    operation: Literal["tail"]
+    path: PathText
+    count: Annotated[int, Field(gt=0, le=256)]
+
+
 Request = Annotated[
-    Acquire
+    Tail
+    | Acquire
     | Resolve
     | Locate
     | Discover
@@ -646,6 +653,14 @@ class RecordsResult(WireModel):
     records_json: Annotated[list[Text], Field(max_length=256)]
 
 
+class TailResult(WireModel):
+    kind: Literal["tail"]
+    record_schema: Literal["cc-transcript.event/1"]
+    records_json: Annotated[list[Text], Field(max_length=256)]
+    source_bytes: Count
+    window_start_byte: Count
+
+
 class WaitingResult(WireModel):
     kind: Literal["activity_probe"]
     waiting: bool
@@ -675,6 +690,7 @@ Result = Annotated[
     | ScalarResult
     | StringsResult
     | RecordsResult
+    | TailResult
     | WaitingResult
     | StatsResult,
     Field(discriminator="kind"),

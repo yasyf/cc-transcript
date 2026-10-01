@@ -744,11 +744,121 @@ enum GraphYield {
 struct ClassifierStage {
     activity: ActivityIndex,
     indexed: usize,
+    carried: HashSet<usize>,
+    committed: Option<ActivityIndex>,
     result: Option<Arc<TranscriptSnapshot>>,
+}
+
+impl ClassifierStage {
+    fn seeded(seed: Option<&CarriedClassification>) -> Self {
+        let activity = seed.map_or_else(ActivityIndex::default, |seed| {
+            seed.activity.as_ref().clone()
+        });
+        Self {
+            indexed: activity.entry_count(),
+            carried: seed.map_or_else(HashSet::new, |seed| seed.allocation_ids().collect()),
+            committed: None,
+            activity,
+            result: None,
+        }
+    }
+
+    fn accounted_bytes(&self) -> usize {
+        owned_index_bytes(
+            self.activity.accounted_allocations().into_iter().chain(
+                self.committed
+                    .iter()
+                    .flat_map(ActivityIndex::accounted_allocations),
+            ),
+            &self.carried,
+        ) + self.carried.capacity() * size_of::<usize>()
+            + size_of::<Self>()
+    }
+}
+
+pub(crate) fn owned_index_bytes(
+    allocations: impl Iterator<Item = (usize, usize)>,
+    carried: &HashSet<usize>,
+) -> usize {
+    let mut seen = HashSet::new();
+    allocations
+        .filter(|(id, _)| !carried.contains(id) && seen.insert(*id))
+        .map(|(_, bytes)| bytes)
+        .sum()
+}
+
+#[derive(Debug)]
+pub struct CarriedClassification {
+    prefix: Vec<Arc<EntryChunk>>,
+    event_count: usize,
+    activity: Arc<ActivityIndex>,
+    touched: AtomicU64,
+}
+
+impl CarriedClassification {
+    pub(crate) fn lineage(classifier_id: &str, classifier_version: &str, registry: &str) -> String {
+        sonic_rs::to_string(&json!([classifier_id, classifier_version, registry]))
+            .expect("classification lineage")
+    }
+
+    pub(crate) fn of(
+        snapshot: &TranscriptSnapshot,
+        committed: Option<ActivityIndex>,
+    ) -> Option<Self> {
+        let (prefix, activity) = if snapshot.provisional_tail {
+            (
+                &snapshot.chunks[..snapshot.chunks.len() - 1],
+                Arc::new(committed?),
+            )
+        } else {
+            (&snapshot.chunks[..], Arc::clone(&snapshot.activity))
+        };
+        let event_count = prefix.iter().map(|chunk| chunk.entries.len()).sum();
+        assert_eq!(activity.entry_count(), event_count);
+        (event_count > 0).then(|| Self {
+            prefix: prefix.to_vec(),
+            event_count,
+            activity,
+            touched: AtomicU64::new(now_ms()),
+        })
+    }
+
+    pub(crate) fn extends(&self, chunks: &[Arc<EntryChunk>]) -> bool {
+        self.prefix.len() <= chunks.len()
+            && self
+                .prefix
+                .iter()
+                .zip(chunks)
+                .all(|(carried, chunk)| Arc::ptr_eq(carried, chunk))
+    }
+
+    pub(crate) fn activity(&self) -> &ActivityIndex {
+        &self.activity
+    }
+
+    pub(crate) fn allocation_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.activity
+            .accounted_allocations()
+            .into_iter()
+            .map(|(id, _)| id)
+    }
+}
+
+pub(crate) fn committed_events(snapshot: &TranscriptSnapshot) -> usize {
+    snapshot.event_count
+        - if snapshot.provisional_tail {
+            snapshot
+                .chunks
+                .last()
+                .map_or(0, |chunk| chunk.entries.len())
+        } else {
+            0
+        }
 }
 
 struct ClassifierSlot {
     work: Mutex<ClassifierStage>,
+    seed: Option<Arc<CarriedClassification>>,
     accounted: AtomicUsize,
     deadline: u64,
     complete: AtomicBool,
@@ -795,6 +905,7 @@ struct StoreState {
     projections: HashMap<String, ProjectionCursor>,
     generations: HashMap<String, GenerationRecord>,
     classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
+    carried_classifications: HashMap<(SourceIdentity, String), Arc<CarriedClassification>>,
     graphs: HashMap<String, GraphCursor>,
     prepared_graphs: HashMap<String, Arc<Mutex<PreparedGraph>>>,
     prepared_builds: HashMap<String, PreparedBuild>,
@@ -1445,6 +1556,8 @@ impl NativeStore {
         snapshot: Arc<TranscriptSnapshot>,
         generation: GenerationRecord,
         classifier: Value,
+        seed: Option<&CarriedClassification>,
+        carried: Option<((SourceIdentity, String), CarriedClassification)>,
         source_handle: &Value,
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
@@ -1453,6 +1566,10 @@ impl NativeStore {
             .chunks
             .iter()
             .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+            .collect();
+        let seeded: HashSet<_> = seed
+            .into_iter()
+            .flat_map(CarriedClassification::allocation_ids)
             .collect();
         let retained = generation
             .entries
@@ -1463,6 +1580,7 @@ impl NativeStore {
             + generation
                 .indexes
                 .iter()
+                .filter(|(id, _)| !seeded.contains(id))
                 .map(|(_, bytes)| *bytes)
                 .sum::<usize>()
             + generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
@@ -1488,6 +1606,9 @@ impl NativeStore {
                 return Err(error);
             }
         };
+        if let Some((lineage, carried)) = carried {
+            Self::carry(&mut state, lineage, carried);
+        }
         state.transient_bytes -= retained;
         reservation.bytes -= retained;
         Ok(data)
@@ -1561,21 +1682,36 @@ impl NativeStore {
             context,
             bounds.deadline_unix_ms,
         )?;
-        let mut preparation = crate::snapshot_labels::LabelPreparation::new(
-            source,
-            binding.clone(),
-            bounds,
-            max_stage_bytes,
-        )?;
-        if preparation.source().event_count == 0 {
+        let lineage = (
+            source.stamp.identity,
+            CarriedClassification::lineage(
+                &binding.classifier_id,
+                &binding.classifier_version,
+                &binding.registry_generation,
+            ),
+        );
+        let mut preparation = {
+            let mut state = self.state.lock().expect("snapshot state");
+            crate::snapshot_labels::LabelPreparation::new(
+                Arc::clone(&source),
+                binding.clone(),
+                bounds,
+                max_stage_bytes,
+                Self::carried(&mut state, &lineage, &source.chunks),
+            )?
+        };
+        if preparation.complete() {
             let work = preparation.usage();
             let classifier = preparation.derived_classifier();
-            let snapshot = preparation.finish(&binding, cancel)?;
+            let seed = preparation.seed().cloned();
+            let (snapshot, carried) = preparation.finish(&binding, cancel)?;
             let generation = GenerationRecord::new(&snapshot, &binding.registry_generation);
             let data = self.publish_label_generation(
                 snapshot,
                 generation,
                 classifier,
+                seed.as_deref(),
+                carried.map(|carried| (lineage, carried)),
                 handle,
                 context,
                 &mut reservation,
@@ -1691,12 +1827,23 @@ impl NativeStore {
         if complete {
             let work = slot.preparation.usage();
             let classifier = slot.preparation.derived_classifier();
-            let snapshot = slot.preparation.finish(&binding, cancel)?;
+            let lineage = (
+                slot.preparation.source().stamp.identity,
+                CarriedClassification::lineage(
+                    &binding.classifier_id,
+                    &binding.classifier_version,
+                    &binding.registry_generation,
+                ),
+            );
+            let seed = slot.preparation.seed().cloned();
+            let (snapshot, carried) = slot.preparation.finish(&binding, cancel)?;
             let generation = GenerationRecord::new(&snapshot, &binding.registry_generation);
             let data = self.publish_label_generation(
                 snapshot,
                 generation,
                 classifier,
+                seed.as_deref(),
+                carried.map(|carried| (lineage, carried)),
                 &source_handle,
                 context,
                 &mut reservation,
@@ -1807,12 +1954,13 @@ impl NativeStore {
                     })?,
             )
         };
-        let key = sonic_rs::to_string(&json!([
-            snapshot.id,
-            classifier_key,
-            str_field(context, "registry_generation")?
-        ]))
-        .expect("classified key");
+        let key = sonic_rs::to_string(&json!([snapshot.id, classifier_key, registry]))
+            .expect("classified key");
+        let lineage = (
+            snapshot.stamp.identity,
+            CarriedClassification::lineage(id, version, registry),
+        );
+        let committed = committed_events(&snapshot);
         let slot = {
             let mut state = self.state.lock().expect("snapshot state");
             Self::prune(&mut state);
@@ -1860,18 +2008,17 @@ impl NativeStore {
                         .expect("idle classifier stage below held cap");
                     state.classifier_stages.remove(&idle);
                 }
-                self.admit_memory(
-                    &mut state,
-                    context,
-                    size_of::<ClassifierSlot>() + size_of::<ClassifierStage>(),
-                )?;
+                let seed = Self::carried(&mut state, &lineage, &snapshot.chunks);
+                let mut stage = ClassifierStage::seeded(seed.as_deref());
+                if snapshot.provisional_tail && stage.indexed == committed {
+                    stage.committed = Some(stage.activity.clone());
+                }
+                let accounted = stage.accounted_bytes();
+                self.admit_memory(&mut state, context, size_of::<ClassifierSlot>() + accounted)?;
                 let slot = Arc::new(ClassifierSlot {
-                    work: Mutex::new(ClassifierStage {
-                        activity: ActivityIndex::default(),
-                        indexed: 0,
-                        result: None,
-                    }),
-                    accounted: AtomicUsize::new(0),
+                    work: Mutex::new(stage),
+                    seed,
+                    accounted: AtomicUsize::new(accounted),
                     deadline: now_ms() + self.config.preparation,
                     complete: AtomicBool::new(false),
                 });
@@ -1899,9 +2046,12 @@ impl NativeStore {
             });
         }
         let start = stage.indexed;
-        let limit = snapshot
-            .event_count
-            .min(start + self.config.event_step.min(bounds.max_events));
+        let limit = if start < committed {
+            committed
+        } else {
+            snapshot.event_count
+        }
+        .min(start + self.config.event_step.min(bounds.max_events));
         if start < snapshot.event_count && limit == start {
             return Err(SnapshotError::new(
                 Status::Incomplete,
@@ -1948,12 +2098,13 @@ impl NativeStore {
             stage.activity = std::mem::take(&mut stage.activity)
                 .append_tail(&snapshot.range(start..stop), flags.as_deref());
             stage.indexed = stop;
+            if snapshot.provisional_tail && stop == committed {
+                stage.committed = Some(stage.activity.clone());
+            }
             usage[6] += 1;
         }
-        slot.accounted.store(
-            stage.activity.accounted_bytes() + size_of::<ClassifierStage>(),
-            Ordering::Release,
-        );
+        slot.accounted
+            .store(stage.accounted_bytes(), Ordering::Release);
         cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
         if stop < snapshot.event_count {
             return Ok(ClassifierProgress {
@@ -1979,9 +2130,13 @@ impl NativeStore {
             codex_append: snapshot.codex_append.clone(),
         });
         let generation = GenerationRecord::new(&derived, registry);
+        let carried = CarriedClassification::of(&derived, stage.committed.take());
         {
             let mut state = self.state.lock().expect("snapshot state");
             state.generations.insert(derived.id.clone(), generation);
+            if let Some(carried) = carried {
+                Self::carry(&mut state, lineage, carried);
+            }
             slot.accounted.store(0, Ordering::Release);
             self.admit_memory(&mut state, context, 0)?;
         }
@@ -2048,8 +2203,46 @@ impl NativeStore {
         }
     }
 
+    fn carried(
+        state: &mut StoreState,
+        lineage: &(SourceIdentity, String),
+        chunks: &[Arc<EntryChunk>],
+    ) -> Option<Arc<CarriedClassification>> {
+        let carried = state
+            .carried_classifications
+            .get(lineage)
+            .filter(|carried| carried.extends(chunks))?;
+        carried.touched.store(now_ms(), Ordering::Release);
+        Some(Arc::clone(carried))
+    }
+
+    fn carry(
+        state: &mut StoreState,
+        lineage: (SourceIdentity, String),
+        candidate: CarriedClassification,
+    ) {
+        let longer_already = state
+            .carried_classifications
+            .get(&lineage)
+            .is_some_and(|existing| {
+                candidate.extends(&existing.prefix) && existing.event_count > candidate.event_count
+            });
+        if !longer_already {
+            state
+                .carried_classifications
+                .insert(lineage, Arc::new(candidate));
+        }
+    }
+
     fn prune(state: &mut StoreState) {
         let now = now_ms();
+        state.carried_classifications.retain(|_, carried| {
+            carried
+                .touched
+                .load(Ordering::Acquire)
+                .saturating_add(30 * 60_000)
+                > now
+        });
         state
             .expired_prepared_queries
             .retain(|_, (_, expires)| *expires > now);
@@ -2189,6 +2382,28 @@ impl NativeStore {
         for registry in state.registries.values() {
             for (id, bytes) in &registry.allocations {
                 if allocations.insert(*id) {
+                    indexes += bytes;
+                }
+            }
+        }
+        let seeds = state
+            .carried_classifications
+            .values()
+            .chain(
+                state
+                    .classifier_stages
+                    .values()
+                    .filter_map(|slot| slot.seed.as_ref()),
+            )
+            .chain(
+                state
+                    .labels
+                    .values()
+                    .filter_map(|slot| slot.preparation.seed()),
+            );
+        for carried in seeds {
+            for (id, bytes) in carried.activity.accounted_allocations() {
+                if allocations.insert(id) {
                     indexes += bytes;
                 }
             }
@@ -2342,6 +2557,15 @@ impl NativeStore {
                 .sum::<usize>()
             + state.prepared_loads.capacity() * size_of::<(SourceIdentity, (Arc<LoadSlot>, u64))>()
             + state.recent_codex.capacity() * size_of::<(SourceIdentity, u64)>()
+            + state.carried_classifications.capacity()
+                * size_of::<((SourceIdentity, String), CarriedClassification)>()
+            + state
+                .carried_classifications
+                .iter()
+                .map(|((_, lineage), carried)| {
+                    lineage.capacity() + carried.prefix.capacity() * size_of::<Arc<EntryChunk>>()
+                })
+                .sum::<usize>()
             + state.warm_memberships.capacity() * size_of::<(String, WarmMembership)>()
             + state
                 .warm_memberships
@@ -2408,6 +2632,9 @@ impl NativeStore {
             state.latest.retain(|_, snapshot| {
                 leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1
             });
+            state
+                .carried_classifications
+                .retain(|_, carried| Arc::strong_count(carried) > 1);
         }
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
@@ -3499,8 +3726,196 @@ impl NativeStore {
             }
             "discover" | "resolve" => self.discover(request, context, cancel, usage),
             "locate" => self.locate(request, context, cancel, usage),
+            "tail" => self.tail(request, context, cancel, usage),
             _ => Err(invalid("unsupported operation")),
         }
+    }
+
+    fn tail(
+        &self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let limits = limits(request)?;
+        cancel.check(limits.deadline_unix_ms)?;
+        let count = number(request, "count")?;
+        if count == 0
+            || count > limits.max_events
+            || count > limits.max_items
+            || count > crate::snapshot_codec::MAX_RECORDS
+        {
+            return Err(invalid(
+                "tail count must be positive and within the event, item, and page budgets",
+            ));
+        }
+        let path = std::fs::canonicalize(str_field(request, "path")?).map_err(io_error)?;
+        self.authority(context, Some(&path))?;
+        usage[0] += 1;
+        let mut file = File::open(&path).map_err(io_error)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        if !metadata.is_file() {
+            return Err(invalid("source must be a regular file"));
+        }
+        let stamp = SourceStamp::of(&metadata);
+        if stamp.size > self.config.source as u64 {
+            return Err(SnapshotError::new(
+                Status::SourceLimit,
+                "source exceeds owner bound",
+            ));
+        }
+        let budget = limits.max_source_read_bytes.min(stamp.size as usize);
+        let mut reservation = self.reserve_projection(context, 0)?;
+        let mut pending: Vec<u8> = Vec::new();
+        let mut pending_start = stamp.size;
+        let mut cut = 0usize;
+        let mut read = 0usize;
+        let mut provider = None;
+        let mut lines: Vec<(u64, Vec<Entry>)> = Vec::new();
+        let mut events = 0usize;
+        let mut exhausted = false;
+        loop {
+            while events < count {
+                cancel.check(limits.deadline_unix_ms)?;
+                let Some(newline) = memchr::memrchr(b'\n', &pending[..cut]) else {
+                    break;
+                };
+                let start = newline + 1;
+                if let Some(entries) = self.tail_line(&pending[start..cut], &mut provider, usage)? {
+                    events += entries.len();
+                    lines.push((pending_start + start as u64, entries));
+                }
+                cut = newline;
+            }
+            if events >= count {
+                break;
+            }
+            if pending_start == 0 {
+                if let Some(entries) = self.tail_line(&pending[..cut], &mut provider, usage)? {
+                    lines.push((0, entries));
+                }
+                break;
+            }
+            let step = self
+                .config
+                .read_step
+                .min(budget - read)
+                .min(pending_start as usize);
+            if step == 0 {
+                exhausted = true;
+                break;
+            }
+            self.extend_projection_reservation(&mut reservation, context, step.saturating_mul(6))?;
+            pending.truncate(cut);
+            let mut block = vec![0; step];
+            file.seek(SeekFrom::Start(pending_start - step as u64))
+                .map_err(io_error)?;
+            self.before_source_read();
+            file.read_exact(&mut block).map_err(io_error)?;
+            usage[1] += step as u64;
+            read += step;
+            block.extend_from_slice(&pending);
+            pending = block;
+            pending_start -= step as u64;
+            cut = pending.len();
+        }
+        if !Self::matches_prefix(SourceStamp::of(&file.metadata().map_err(io_error)?), stamp) {
+            return Err(SnapshotError::new(
+                Status::Changed,
+                "source changed while reading",
+            ));
+        }
+        let output_limit = limits
+            .max_output_bytes
+            .min(self.config.output)
+            .min(MAX_DATA_BYTES);
+        let envelope = encoded_size(
+            &json!({"kind":"tail","record_schema":"cc-transcript.event/1","records_json":[],
+                "source_bytes":stamp.size,"window_start_byte":stamp.size}),
+            output_limit,
+        )?;
+        let mut selected: Vec<(u64, &Entry)> = Vec::new();
+        let mut output = envelope;
+        let mut clipped = false;
+        for (offset, entry) in lines
+            .iter()
+            .flat_map(|(offset, entries)| entries.iter().rev().map(move |entry| (*offset, entry)))
+            .take(count)
+        {
+            let wire = crate::snapshot_codec::EventWire::new(count - 1, entry);
+            let bytes = match crate::snapshot_codec::encode(&wire, output_limit) {
+                Ok(record) => encoded_size(&json!(record), output_limit)? + 1,
+                Err(error) if error.status == Status::OutputLimit && !selected.is_empty() => {
+                    clipped = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            if output + bytes > output_limit {
+                clipped = true;
+                break;
+            }
+            output += bytes;
+            selected.push((offset, entry));
+        }
+        selected.reverse();
+        let window_start = selected.first().map_or(stamp.size, |(offset, _)| *offset);
+        let records = selected
+            .iter()
+            .enumerate()
+            .map(|(index, (_, entry))| {
+                crate::snapshot_codec::encode(
+                    &crate::snapshot_codec::EventWire::new(index, entry),
+                    output_limit,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let reason = if selected.len() >= count {
+            None
+        } else if clipped {
+            Some("tail output budget exhausted".to_owned())
+        } else if exhausted {
+            Some("tail read budget exhausted".to_owned())
+        } else {
+            None
+        };
+        Ok((
+            json!({"kind":"tail","record_schema":"cc-transcript.event/1","records_json":records,
+                "source_bytes":stamp.size,"window_start_byte":window_start}),
+            None,
+            reason,
+        ))
+    }
+
+    fn tail_line(
+        &self,
+        line: &[u8],
+        provider: &mut Option<Provider>,
+        usage: &mut [u64; 18],
+    ) -> Result<Option<Vec<Entry>>, SnapshotError> {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        if line.len() > self.config.entry {
+            return Err(SnapshotError::new(
+                Status::EntryLimit,
+                "source entry exceeds owner bound",
+            ));
+        }
+        if provider.unwrap_or_else(|| sniff_provider(line)) == Provider::Codex {
+            return Err(invalid("tail requires a Claude source"));
+        }
+        let mut entries = Vec::new();
+        crate::parse::parse_line(line, &mut entries, &|_| true)
+            .map_err(|error| SnapshotError::new(Status::ParseError, format!("{error:?}")))?;
+        usage[2] += line.len() as u64;
+        usage[3] += 1;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        *provider = Some(Provider::Claude);
+        Ok(Some(entries))
     }
 
     fn acquire(
@@ -7027,6 +7442,539 @@ mod tests {
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 3..5]);
     }
 
+    fn parity_classifier(store: &NativeStore, id: &str) -> Arc<Mutex<Vec<Range<usize>>>> {
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&batches);
+        store
+            .register_classifier(
+                id,
+                "1",
+                Arc::new(move |_, range| {
+                    recorded.lock().unwrap().push(range.clone());
+                    Ok(range.map(|position| position % 2 == 0).collect())
+                }),
+            )
+            .unwrap();
+        batches
+    }
+
+    fn assert_parity_turns(snapshot: &TranscriptSnapshot) {
+        let flags: Vec<bool> = (0..snapshot.event_count)
+            .map(|position| position % 2 == 0)
+            .collect();
+        let expected = ActivityIndex::new(&snapshot.entries(), Some(&flags));
+        assert_eq!(snapshot.activity.entry_count(), snapshot.event_count);
+        assert_eq!(snapshot.activity.turn_count(), expected.turn_count());
+        for turn in 0..expected.turn_count() {
+            assert_eq!(
+                snapshot.activity.turn_bounds(turn),
+                expected.turn_bounds(turn)
+            );
+            assert_eq!(snapshot.activity.prompt(turn), expected.prompt(turn));
+        }
+    }
+
+    fn classified(
+        store: &NativeStore,
+        path: &Path,
+        id: &str,
+        owner: &Value,
+    ) -> Arc<TranscriptSnapshot> {
+        let response = finish(
+            store,
+            store.request(
+                &classifier_acquire(path, id, 1024 * 1024),
+                owner,
+                &Cancellation::default(),
+            ),
+            owner,
+        );
+        store.pin(handle(&response), owner).unwrap()
+    }
+
+    fn users(range: Range<usize>) -> String {
+        range
+            .map(|index| format!("{}\n", user(&index.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn appended_source_classifies_only_the_appended_events() {
+        let source = Source::new(&users(0..3));
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let first = classified(&store, &source.path, "parity", &owner);
+        assert_eq!(first.event_count, 3);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3]);
+        assert_parity_turns(&first);
+        let mut expected = vec![0..2, 2..3];
+        for round in 1..=4 {
+            let start = 1 + 2 * round;
+            source.append(&users(start..start + 2));
+            let appended = classified(&store, &source.path, "parity", &owner);
+            expected.push(start..start + 2);
+            assert_eq!(appended.event_count, start + 2);
+            assert_eq!(*batches.lock().unwrap(), expected, "round {round}");
+            assert_parity_turns(&appended);
+        }
+        let unchanged = classified(&store, &source.path, "parity", &owner);
+        assert_eq!(unchanged.event_count, 11);
+        assert_eq!(*batches.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn carried_classification_is_dropped_when_the_classifier_or_registry_changes() {
+        let source = Source::new(&users(0..3));
+        let store = store();
+        let owner = context("a");
+        let first = parity_classifier(&store, "first");
+        let second = parity_classifier(&store, "second");
+        classified(&store, &source.path, "first", &owner);
+        source.append(&users(3..5));
+        classified(&store, &source.path, "second", &owner);
+        assert_eq!(*first.lock().unwrap(), vec![0..2, 2..3]);
+        assert_eq!(*second.lock().unwrap(), vec![0..2, 2..4, 4..5]);
+        let registry = store
+            .register_tool_registry(
+                &json!([{"name":"read_source","behaves_like":"Read","span_edit":null}]),
+                &owner,
+            )
+            .unwrap();
+        let mut reregistered = owner.clone();
+        reregistered.insert("registry_generation", json!(registry));
+        source.append(&users(5..6));
+        classified(&store, &source.path, "first", &reregistered);
+        assert_eq!(*first.lock().unwrap(), vec![0..2, 2..3, 0..2, 2..4, 4..6]);
+        source.append(&users(6..7));
+        classified(&store, &source.path, "first", &owner);
+        assert_eq!(
+            *first.lock().unwrap(),
+            vec![0..2, 2..3, 0..2, 2..4, 4..6, 3..5, 5..7]
+        );
+    }
+
+    #[test]
+    fn rewritten_or_truncated_source_classifies_from_the_start() {
+        let source = Source::new(&users(0..3));
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        classified(&store, &source.path, "parity", &owner);
+        let contents = std::fs::read_to_string(&source.path).unwrap();
+        let tail = contents.rfind("hello").unwrap();
+        std::fs::write(
+            &source.path,
+            format!(
+                "{}HELLO{}{}",
+                &contents[..tail],
+                &contents[tail + "hello".len()..],
+                users(3..4)
+            ),
+        )
+        .unwrap();
+        let rewritten = classified(&store, &source.path, "parity", &owner);
+        assert_eq!(rewritten.event_count, 4);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 0..2, 2..4]);
+        assert_parity_turns(&rewritten);
+        std::fs::write(&source.path, users(0..2)).unwrap();
+        let truncated = classified(&store, &source.path, "parity", &owner);
+        assert_eq!(truncated.event_count, 2);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 0..2, 2..4, 0..2]);
+        assert_parity_turns(&truncated);
+    }
+
+    #[test]
+    fn provisional_tail_labels_are_dropped_and_the_committed_prefix_is_carried() {
+        let source = Source::new(users(0..3).trim_end());
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let provisional = classified(&store, &source.path, "parity", &owner);
+        assert!(provisional.provisional_tail);
+        assert_eq!(provisional.event_count, 3);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3]);
+        source.append(&format!("\n{}", users(3..5)));
+        let sealed = classified(&store, &source.path, "parity", &owner);
+        assert!(!sealed.provisional_tail);
+        assert_eq!(sealed.event_count, 5);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 2..4, 4..5]);
+        assert_parity_turns(&sealed);
+        source.append(users(5..6).trim_end());
+        let reopened = classified(&store, &source.path, "parity", &owner);
+        assert!(reopened.provisional_tail);
+        assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 2..4, 4..5, 5..6]);
+        assert_parity_turns(&reopened);
+    }
+
+    #[test]
+    fn seeded_classifier_stage_charges_only_the_allocations_it_owns() {
+        let source = Source::new(&users(0..20));
+        let store = store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let previous = classified(&store, &source.path, "parity", &owner);
+        source.append(&users(20..22));
+        let budget = entry_charges(&previous).into_iter().max().unwrap();
+        let mut response = store.request(
+            &classifier_acquire(&source.path, "parity", budget),
+            &owner,
+            &Cancellation::default(),
+        );
+        while batches.lock().unwrap().last() != Some(&(20..21)) {
+            response = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":response["cursor"]}),
+                &owner,
+                &Cancellation::default(),
+            );
+        }
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("classifier preparation incomplete"),
+            "{response:?}"
+        );
+        let accounted: usize = store
+            .state
+            .lock()
+            .unwrap()
+            .classifier_stages
+            .values()
+            .map(|slot| slot.accounted.load(Ordering::Acquire))
+            .sum();
+        assert!(
+            accounted < previous.activity.accounted_bytes(),
+            "{accounted} >= {}",
+            previous.activity.accounted_bytes()
+        );
+    }
+
+    #[test]
+    fn concurrent_appends_never_mix_classified_generations() {
+        let source = Arc::new(Source::new(&users(0..4)));
+        let store = Arc::new(NativeStore::new(&json!({"max_read_bytes_per_step":4096,"max_events_per_step":3,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":4096,"reserved_hook_leases":1})).unwrap());
+        parity_classifier(&store, "parity");
+        let rounds = 24;
+        let appender = {
+            let store = Arc::clone(&store);
+            let source = Arc::clone(&source);
+            std::thread::spawn(move || {
+                let owner = context("appender");
+                for round in 0..rounds {
+                    let start = 4 + 2 * round;
+                    source.append(&users(start..start + 2));
+                    let snapshot = classified(&store, &source.path, "parity", &owner);
+                    assert_parity_turns(&snapshot);
+                }
+            })
+        };
+        let readers: Vec<_> = (0..2)
+            .map(|reader| {
+                let store = Arc::clone(&store);
+                let source = Arc::clone(&source);
+                std::thread::spawn(move || {
+                    let owner = context(&format!("reader-{reader}"));
+                    for _ in 0..rounds {
+                        let snapshot = classified(&store, &source.path, "parity", &owner);
+                        assert_parity_turns(&snapshot);
+                    }
+                })
+            })
+            .collect();
+        appender.join().unwrap();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        let last = classified(&store, &source.path, "parity", &context("final"));
+        assert_eq!(last.event_count, 4 + 2 * rounds);
+        assert_parity_turns(&last);
+    }
+
+    fn labelled(
+        store: &NativeStore,
+        path: &Path,
+        policy: &Value,
+        owner: &Value,
+    ) -> (Arc<TranscriptSnapshot>, Vec<Range<usize>>) {
+        let mut request = acquire(path);
+        request["limits"].insert("max_events", json!(100_000));
+        request["limits"].insert("max_items", json!(100_000));
+        request["limits"].insert("max_output_bytes", json!(16 * 1024 * 1024));
+        request["limits"].insert("max_read_bytes", json!(64 * 1024 * 1024));
+        let native = finish(
+            store,
+            store.request(&request, owner, &Cancellation::default()),
+            owner,
+        );
+        let bounds = limits(&request).unwrap();
+        let mut reply = store
+            .prepare_classifier(
+                handle(&native),
+                policy,
+                owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        let mut pages = Vec::new();
+        while reply["complete"].as_bool() != Some(true) {
+            let positions: Vec<usize> = reply["records_json"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|record| {
+                    sonic_rs::from_str::<Value>(record.as_str().unwrap()).unwrap()["i"]
+                        .as_u64()
+                        .unwrap() as usize
+                })
+                .collect();
+            pages.push(positions[0]..positions[positions.len() - 1] + 1);
+            let labels: Vec<bool> = positions.iter().map(|i| i % 2 == 0).collect();
+            reply = store
+                .submit_classifier(
+                    reply["cursor"].as_str().unwrap(),
+                    &labels,
+                    owner,
+                    &Cancellation::default(),
+                )
+                .unwrap();
+        }
+        (
+            store.pin(&reply["description"]["handle"], owner).unwrap(),
+            pages,
+        )
+    }
+
+    #[test]
+    fn label_pages_resume_after_the_carried_prefix() {
+        let source = Source::new(&users(0..3));
+        let store = store();
+        let owner = context("a");
+        let policy = json!({"id":"configured","version":"1"});
+        let (first, pages) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(first.event_count, 3);
+        assert_eq!(pages, vec![0..3]);
+        assert_parity_turns(&first);
+        source.append(&users(3..5));
+        let (appended, pages) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(appended.event_count, 5);
+        assert_eq!(pages, vec![3..5]);
+        assert_parity_turns(&appended);
+        let (unchanged, pages) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(unchanged.event_count, 5);
+        assert!(pages.is_empty());
+        assert_parity_turns(&unchanged);
+        source.append(&users(5..6));
+        let (revised, pages) = labelled(
+            &store,
+            &source.path,
+            &json!({"id":"configured","version":"2"}),
+            &owner,
+        );
+        assert_eq!(revised.event_count, 6);
+        assert_eq!(pages, vec![0..6]);
+        assert_parity_turns(&revised);
+    }
+
+    fn tail_request(path: &Path, count: usize, max_source_read_bytes: usize) -> Value {
+        json!({"schema":SCHEMA,"id":"tail","operation":"tail","path":path.to_string_lossy().as_ref(),"count":count,
+            "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_source_read_bytes":max_source_read_bytes,"max_events":1000,"max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
+    }
+
+    fn tail_uuids(response: &Value) -> Vec<String> {
+        let records: Vec<String> = response["data"]["records_json"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record.as_str().unwrap().to_owned())
+            .collect();
+        crate::snapshot_codec::decode_events(&records, 1024 * 1024)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.event.meta().unwrap().uuid.clone())
+            .collect()
+    }
+
+    #[test]
+    fn tail_returns_the_newest_events_reading_backwards_in_bounded_steps() {
+        let source = Source::new(&users(0..50));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":64,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let response = store.request(
+            &tail_request(&source.path, 5, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(tail_uuids(&response), ["45", "46", "47", "48", "49"]);
+        assert_eq!(response["data"]["kind"].as_str(), Some("tail"));
+        assert_eq!(
+            response["data"]["window_start_byte"].as_u64(),
+            Some(users(0..45).len() as u64)
+        );
+        assert_eq!(
+            response["data"]["source_bytes"].as_u64(),
+            Some(users(0..50).len() as u64)
+        );
+        let read = response["usage"]["source_bytes_read"].as_u64().unwrap() as usize;
+        assert!(
+            read > users(45..50).len() && read <= users(44..50).len() + 64,
+            "{read}"
+        );
+        let whole = store.request(
+            &tail_request(&source.path, 200, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(whole["status"].as_str(), Some("ok"), "{whole:?}");
+        assert_eq!(tail_uuids(&whole).len(), 50);
+        assert_eq!(whole["data"]["window_start_byte"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn tail_reports_a_bounded_window_when_the_read_budget_stops_the_scan() {
+        let source = Source::new(users(0..50).trim_end());
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":64,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let response = store.request(
+            &tail_request(&source.path, 5, users(48..50).len()),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            response["status"].as_str(),
+            Some("incomplete"),
+            "{response:?}"
+        );
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("tail read budget exhausted")
+        );
+        assert!(response["cursor"].is_null());
+        assert_eq!(tail_uuids(&response), ["48", "49"]);
+        assert_eq!(
+            response["data"]["window_start_byte"].as_u64(),
+            Some(users(0..48).len() as u64)
+        );
+    }
+
+    #[test]
+    fn tail_refuses_codex_sources_and_counts_outside_the_budgets() {
+        let codex = Source::new(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\"}}\n{\"type\":\"event_msg\",\"payload\":{}}\n",
+        );
+        let store = store();
+        let owner = context("a");
+        let refused = store.request(
+            &tail_request(&codex.path, 1, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(refused["status"].as_str(), Some("invalid_request"));
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("tail requires a Claude source")
+        );
+        let claude = Source::new(&users(0..2));
+        for count in [0, 257] {
+            let refused = store.request(
+                &tail_request(&claude.path, count, 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            );
+            assert_eq!(
+                refused["status"].as_str(),
+                Some("invalid_request"),
+                "{count}"
+            );
+        }
+        let foreign = store.request(
+            &tail_request(&claude.path, 1, 1024 * 1024),
+            &json!({"claimant":"a","admission":"hook","authority":{"kind":"restricted_roots","effective_uid":unsafe { libc::geteuid() }.to_string(),"roots":[std::env::current_dir().unwrap().to_string_lossy().as_ref()]},"registry_generation":owner["registry_generation"]}),
+            &Cancellation::default(),
+        );
+        assert_eq!(foreign["status"].as_str(), Some("permission_denied"));
+    }
+
+    #[test]
+    fn carried_labels_publish_within_the_page_reservation() {
+        let source = Source::new(&users(0..5000));
+        let store = NativeStore::new(&json!({"max_events_per_step":4096,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":64,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let policy = json!({"id":"configured","version":"1"});
+        let (first, _) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(first.event_count, 5000);
+        let (again, pages) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(again.event_count, 5000);
+        assert!(pages.is_empty());
+        source.append(&users(5000..5001));
+        let (appended, pages) = labelled(&store, &source.path, &policy, &owner);
+        assert_eq!(appended.event_count, 5001);
+        assert_eq!(pages, vec![5000..5001]);
+        assert_parity_turns(&appended);
+    }
+
+    #[test]
+    fn tail_clips_to_the_output_budget_the_reply_is_graded_against() {
+        let source = Source::new(
+            &(0..4)
+                .map(|index| {
+                    format!(
+                        "{}\n",
+                        user(&index.to_string()).replace("hello", &"\\\"x".repeat(1024))
+                    )
+                })
+                .collect::<String>(),
+        );
+        let store = store();
+        let owner = context("a");
+        let mut request = tail_request(&source.path, 4, 1024 * 1024);
+        request["limits"].insert("max_output_bytes", json!(7 * 1024));
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(
+            response["status"].as_str(),
+            Some("incomplete"),
+            "{response:?}"
+        );
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("tail output budget exhausted")
+        );
+        let uuids = tail_uuids(&response);
+        assert!(!uuids.is_empty() && uuids.len() < 4, "{uuids:?}");
+        assert_eq!(uuids.last().map(String::as_str), Some("3"));
+    }
+
+    #[test]
+    fn tail_does_not_take_a_torn_trailing_line_as_proof_of_a_claude_source() {
+        let torn = Source::new(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\"}}\n{\"type\":\"user\",\"uuid\":\"t",
+        );
+        let store = store();
+        let owner = context("a");
+        let refused = store.request(
+            &tail_request(&torn.path, 1, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("invalid_request"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("tail requires a Claude source")
+        );
+        let claude = Source::new(&format!("{}{{\"type\":\"user\",\"uuid\":\"t", users(0..2)));
+        let skipped = store.request(
+            &tail_request(&claude.path, 5, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(skipped["status"].as_str(), Some("ok"), "{skipped:?}");
+        assert_eq!(tail_uuids(&skipped), ["0", "1"]);
+    }
+
     #[test]
     fn classifier_event_larger_than_the_whole_budget_fails_incomplete() {
         let large = format!(
@@ -9512,10 +10460,25 @@ mod tests {
         assert_eq!(derived.event_count, 2);
         assert!(derived.id.starts_with("labels:"));
         assert_eq!(derived.activity.turn_count(), 1);
-        let page2 = store
+        let carried = store
             .prepare_classifier(
                 handle(&root),
                 &classifier,
+                &owner,
+                &Cancellation::default(),
+                bounds,
+            )
+            .unwrap();
+        assert_eq!(carried["complete"].as_bool(), Some(true));
+        assert!(carried["cursor"].is_null());
+        assert_ne!(
+            carried["description"]["handle"]["generation"],
+            complete["description"]["handle"]["generation"]
+        );
+        let page2 = store
+            .prepare_classifier(
+                handle(&root),
+                &json!({"id":"application","version":"2"}),
                 &owner,
                 &Cancellation::default(),
                 bounds,
@@ -9561,22 +10524,14 @@ mod tests {
         assert_eq!(store.state.lock().unwrap().transient_bytes, 0);
         let reservation = store.reserve_projection(&owner, 1024 * 1024).unwrap();
         drop(reservation);
-        let page = store
+        let generations = store.state.lock().unwrap().generations.len();
+        let failed = store
             .prepare_classifier(
                 handle(&root),
                 &classifier,
                 &owner,
                 &Cancellation::default(),
                 bounds,
-            )
-            .unwrap();
-        let generations = store.state.lock().unwrap().generations.len();
-        let failed = store
-            .submit_classifier(
-                page["cursor"].as_str().unwrap(),
-                &[true],
-                &owner,
-                &Cancellation::default(),
             )
             .unwrap_err();
         assert_eq!(failed.status, Status::LeaseLimit);
