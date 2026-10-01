@@ -31,22 +31,24 @@ static ACTIVE_OWNERS: LazyLock<Mutex<HashSet<String>>> =
 enum PublishStep {
     Staged,
     Created,
-    Linked,
+    Renamed,
 }
 
 #[cfg(test)]
-type PublishHook = (CString, Box<dyn FnMut(PublishStep) + Send>);
+type PublishHook = Box<dyn FnMut(PublishStep) + Send>;
 
 #[cfg(test)]
-static PUBLISH_HOOK: Mutex<Option<PublishHook>> = Mutex::new(None);
+static PUBLISH_HOOKS: LazyLock<Mutex<HashMap<CString, PublishHook>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
 fn run_publish_hook(owner_name: &CStr, step: PublishStep) {
-    let mut slot = PUBLISH_HOOK.lock().expect("publish hook");
-    if let Some((hooked, hook)) = slot.as_mut() {
-        if hooked.as_c_str() == owner_name {
-            hook(step);
-        }
+    if let Some(hook) = PUBLISH_HOOKS
+        .lock()
+        .expect("publish hooks")
+        .get_mut(owner_name)
+    {
+        hook(step);
     }
 }
 
@@ -93,11 +95,53 @@ fn mkdirat_private(dir_fd: libc::c_int, name: &CStr) -> io::Result<()> {
     }
 }
 
-fn linkat_file(from_fd: libc::c_int, from: &CStr, to_fd: libc::c_int, to: &CStr) -> io::Result<()> {
-    if unsafe { libc::linkat(from_fd, from.as_ptr(), to_fd, to.as_ptr(), 0) } == 0 {
+fn renameat_file(
+    from_fd: libc::c_int,
+    from: &CStr,
+    to_fd: libc::c_int,
+    to: &CStr,
+) -> io::Result<()> {
+    if unsafe { libc::renameat(from_fd, from.as_ptr(), to_fd, to.as_ptr()) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+type EntryIdentity = (libc::dev_t, libc::ino_t);
+
+fn entry_identity(dir_fd: libc::c_int, name: &CStr) -> io::Result<EntryIdentity> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            dir_fd,
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.st_dev, stat.st_ino))
+}
+
+fn file_identity(file: &std::fs::File) -> io::Result<EntryIdentity> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.st_dev, stat.st_ino))
+}
+
+fn unlink_owned_file(dir_fd: libc::c_int, name: &CStr, owned: &std::fs::File) {
+    let Ok(owned) = file_identity(owned) else {
+        return;
+    };
+    if entry_identity(dir_fd, name).is_ok_and(|identity| identity == owned) {
+        let _ = unlinkat_file(dir_fd, name, 0);
     }
 }
 
@@ -358,7 +402,7 @@ impl PreparedDiskCache {
         let (dir_file, metadata) = match published {
             Ok(published) => published,
             Err(error) => {
-                let _ = unlinkat_file(staging_file.as_raw_fd(), &staged_name, 0);
+                unlink_owned_file(staging_file.as_raw_fd(), &staged_name, &owner_lock);
                 return Err(error);
             }
         };
@@ -410,18 +454,25 @@ impl PreparedDiskCache {
             return Err(disk_error(io::Error::last_os_error()));
         }
         mkdirat_private(namespace_file.as_raw_fd(), owner_name).map_err(disk_error)?;
-        let linked = Self::link_owner_lock(namespace_file, staging_file, staged_name, owner_name);
-        if linked.is_err() {
+        let renamed = Self::rename_owner_lock(
+            namespace_file,
+            staging_file,
+            staged_name,
+            owner_name,
+            owner_lock,
+        );
+        if renamed.is_err() {
             let _ = unlinkat_file(namespace_file.as_raw_fd(), owner_name, libc::AT_REMOVEDIR);
         }
-        linked
+        renamed
     }
 
-    fn link_owner_lock(
+    fn rename_owner_lock(
         namespace_file: &std::fs::File,
         staging_file: &std::fs::File,
         staged_name: &CStr,
         owner_name: &CStr,
+        owner_lock: &std::fs::File,
     ) -> Result<(std::fs::File, fs::Metadata), SnapshotError> {
         let (dir_file, metadata) =
             open_private_dir(namespace_file.as_raw_fd(), owner_name).map_err(disk_error)?;
@@ -432,19 +483,17 @@ impl PreparedDiskCache {
         }
         #[cfg(test)]
         run_publish_hook(owner_name, PublishStep::Created);
-        linkat_file(
+        if let Err(error) = renameat_file(
             staging_file.as_raw_fd(),
             staged_name,
             dir_file.as_raw_fd(),
             OWNER_LOCK,
-        )
-        .map_err(disk_error)?;
-        #[cfg(test)]
-        run_publish_hook(owner_name, PublishStep::Linked);
-        if let Err(error) = unlinkat_file(staging_file.as_raw_fd(), staged_name, 0) {
-            let _ = unlinkat_file(dir_file.as_raw_fd(), OWNER_LOCK, 0);
+        ) {
+            unlink_owned_file(dir_file.as_raw_fd(), OWNER_LOCK, owner_lock);
             return Err(disk_error(error));
         }
+        #[cfg(test)]
+        run_publish_hook(owner_name, PublishStep::Renamed);
         Ok((dir_file, metadata))
     }
 
@@ -599,19 +648,12 @@ impl PreparedDiskCache {
     }
 
     fn rename_entry(&self, from: &CStr, to: &CStr) -> io::Result<()> {
-        if unsafe {
-            libc::renameat(
-                self.dir_file.as_raw_fd(),
-                from.as_ptr(),
-                self.dir_file.as_raw_fd(),
-                to.as_ptr(),
-            )
-        } == 0
-        {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        renameat_file(
+            self.dir_file.as_raw_fd(),
+            from,
+            self.dir_file.as_raw_fd(),
+            to,
+        )
     }
 
     #[cfg(test)]
@@ -1183,9 +1225,13 @@ mod tests {
                     .push((step, foreign_scan(&namespace, &epoch)));
             })
         };
-        *PUBLISH_HOOK.lock().unwrap() = Some((CString::new(epoch.clone()).unwrap(), hook));
+        let owner_name = CString::new(epoch.clone()).unwrap();
+        PUBLISH_HOOKS
+            .lock()
+            .unwrap()
+            .insert(owner_name.clone(), hook);
         let cache = PreparedDiskCache::new(&epoch, 4096).unwrap();
-        *PUBLISH_HOOK.lock().unwrap() = None;
+        PUBLISH_HOOKS.lock().unwrap().remove(&owner_name);
         let scans = std::mem::take(&mut *scans.lock().unwrap());
         let steps: Vec<PublishStep> = scans.iter().map(|(step, _)| *step).collect();
         assert_eq!(
@@ -1193,12 +1239,12 @@ mod tests {
             [
                 PublishStep::Staged,
                 PublishStep::Created,
-                PublishStep::Linked
+                PublishStep::Renamed
             ]
         );
         for (step, scan) in &scans {
             assert_eq!(*step != PublishStep::Staged, scan.found_owner, "{step:?}");
-            assert_eq!(*step == PublishStep::Linked, scan.opened_lock, "{step:?}");
+            assert_eq!(*step == PublishStep::Renamed, scan.opened_lock, "{step:?}");
             assert!(scan.lock.is_none(), "{step:?}");
             assert!(!scan.deleted, "{step:?}");
         }
@@ -1209,6 +1255,7 @@ mod tests {
             .open(cache.dir.join("owner.lock"))
             .unwrap();
         assert!(private_file(&lock));
+        assert_eq!(lock.metadata().unwrap().nlink(), 1);
         assert_eq!(foreign_flock_errno(&lock), Some(libc::EWOULDBLOCK));
         assert_eq!(
             fs::symlink_metadata(namespace.join("staging").join(format!("{epoch}.lock")))
@@ -1219,6 +1266,42 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts()).unwrap();
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Hit(_)));
+    }
+
+    #[test]
+    fn failed_rename_removes_only_the_owned_paths() {
+        let namespace = isolated_namespace();
+        let epoch = epoch();
+        let foreign = namespace.join(&epoch).join("owner.lock");
+        let hook = {
+            let foreign = foreign.clone();
+            Box::new(move |step: PublishStep| {
+                if step == PublishStep::Created {
+                    DirBuilder::new().mode(0o700).create(&foreign).unwrap();
+                }
+            })
+        };
+        let owner_name = CString::new(epoch.clone()).unwrap();
+        PUBLISH_HOOKS
+            .lock()
+            .unwrap()
+            .insert(owner_name.clone(), hook);
+        let result = PreparedDiskCache::open(namespace.clone(), &epoch, 4096);
+        PUBLISH_HOOKS.lock().unwrap().remove(&owner_name);
+        let Err(error) = result else {
+            panic!("rename onto a foreign owner.lock succeeded");
+        };
+        assert_eq!(error.status, Status::Incomplete);
+        assert!(error.reason.contains("Is a directory"), "{}", error.reason);
+        assert!(fs::symlink_metadata(&foreign).unwrap().is_dir());
+        assert_eq!(
+            fs::symlink_metadata(namespace.join("staging").join(format!("{epoch}.lock")))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!ACTIVE_OWNERS.lock().unwrap().contains(&epoch));
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
