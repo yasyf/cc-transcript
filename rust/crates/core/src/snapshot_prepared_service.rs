@@ -57,13 +57,7 @@ impl NativeStore {
         }
         let mut used = state.ledger.shared.facts();
         while accounted > budget.saturating_sub(used) {
-            let oldest = state
-                .prepared_facts
-                .iter()
-                .filter(|(_, cached)| Arc::strong_count(&cached.facts) == 1)
-                .min_by_key(|(_, cached)| cached.last_used)
-                .map(|(identity, _)| *identity);
-            let Some(oldest) = oldest else {
+            let Some(oldest) = state.evictable_prepared_facts() else {
                 return Err(SnapshotError::new(
                     Status::RetainedLimit,
                     "prepared facts cache budget exhausted",
@@ -243,7 +237,7 @@ impl NativeStore {
         {
             let mut state = self.lock_state();
             if let Some(slot) = state.loads.get(&stamp.identity).cloned() {
-                state.prepared_loads.insert(stamp.identity, (slot, now_ms()));
+                state.insert_prepared_load(stamp.identity, slot, now_ms());
             }
         }
         let outcome = outcome?;
@@ -326,31 +320,20 @@ impl NativeStore {
                 && (now_ms() as i128 * 1_000_000).saturating_sub(stamp.mtime_ns)
                     <= 30 * 60 * 1_000_000_000;
             if recent_codex {
-                state.recent_codex.insert(stamp.identity, now_ms());
-                let mut raw_bytes: usize = state
-                    .recent_codex
-                    .keys()
-                    .filter_map(|identity| state.latest.get(identity))
-                    .filter_map(|snapshot| snapshot.codex_raw.as_ref())
-                    .map(|raw| raw.len())
-                    .sum();
-                while raw_bytes > 128 * 1024 * 1024 {
+                state.insert_recent_codex(stamp.identity, now_ms());
+                while state.recent_codex_raw_bytes > 128 * 1024 * 1024 {
                     let oldest = state
                         .recent_codex
                         .iter()
                         .min_by_key(|(_, touched)| *touched)
                         .map(|(identity, _)| *identity)
                         .expect("raw codex cache exceeds bound");
-                    state.recent_codex.remove(&oldest);
-                    if let Some(snapshot) = state.latest.remove(&oldest) {
-                        raw_bytes = raw_bytes.saturating_sub(
-                            snapshot.codex_raw.as_ref().map_or(0, |raw| raw.len()),
-                        );
-                    }
+                    state.remove_recent_codex(&oldest);
+                    state.remove_latest(&oldest);
                 }
             } else {
-                state.recent_codex.remove(&stamp.identity);
-                state.latest.remove(&stamp.identity);
+                state.remove_recent_codex(&stamp.identity);
+                state.remove_latest(&stamp.identity);
             }
         }
         let (facts, _, _) = prepared?;
@@ -539,11 +522,20 @@ impl NativeStore {
             }
             let root_facts =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
-            let sources: Vec<_> = membership
+            let sources: Arc<[PreparedSourceRef]> = if membership
                 .members
-                .into_iter()
-                .filter(|source| source.stamp.identity.file() != root.stamp.identity.file())
-                .collect();
+                .iter()
+                .any(|source| source.stamp.identity.file() == root.stamp.identity.file())
+            {
+                membership
+                    .members
+                    .iter()
+                    .filter(|source| source.stamp.identity.file() != root.stamp.identity.file())
+                    .cloned()
+                    .collect()
+            } else {
+                Arc::clone(&membership.members)
+            };
             let mut stamps = vec![(root.canonical_path.clone(), root.stamp)];
             stamps.extend(
                 sources
@@ -873,8 +865,8 @@ impl NativeStore {
             revision: revision.clone(),
             stamps: build.stamps,
             validated: false,
-            sources: build.sources,
-            sidechain_dirs: build.sidechain_dirs,
+            sources: build.sources.into(),
+            sidechain_dirs: build.sidechain_dirs.into(),
             remaining: build.remaining,
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
         };
@@ -1085,8 +1077,8 @@ impl NativeStore {
             digest.update(source.stamp.revision().as_bytes());
         }
         Ok(WarmMembership {
-            members,
-            sidechain_dirs,
+            members: members.into(),
+            sidechain_dirs: sidechain_dirs.into(),
             revision: format!("{:x}", digest.finalize()),
             complete: located.len() == ids.len(),
             expires: now_ms().saturating_add(30 * 60_000),
@@ -1238,6 +1230,8 @@ impl NativeStore {
                                 .remove(&token);
                             break 'warming;
                         }
+                        #[cfg(test)]
+                        self.warm_copies.fetch_add(1, Ordering::Relaxed);
                         let pending = PendingPreparedSource {
                             token: token.clone(),
                             path: source.path.clone(),
@@ -1294,7 +1288,7 @@ impl NativeStore {
                     "registered warming membership changed",
                 ));
             }
-            for source in members {
+            for source in members.iter() {
                 cancel.check(remaining.deadline_unix_ms)?;
                 let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
                     source.stamp,
@@ -1396,7 +1390,7 @@ impl NativeStore {
                     "prepared graph context differs",
                 ));
             }
-            (graph.sources.clone(), graph.sidechain_dirs.clone())
+            (Arc::clone(&graph.sources), Arc::clone(&graph.sidechain_dirs))
         };
         let inputs = cursor.input_records.is_some();
         let total = sources.len();
@@ -1483,6 +1477,8 @@ impl NativeStore {
                     usage,
                 )? {
                     (_, PreparedSourceOutcome::Pending(source_cursor)) => {
+                        #[cfg(test)]
+                        self.warm_copies.fetch_add(1, Ordering::Relaxed);
                         cursor.pending = Some(PendingPreparedSource {
                             token: source_cursor,
                             path: source.path.clone(),

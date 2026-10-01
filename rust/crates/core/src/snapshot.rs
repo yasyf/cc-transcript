@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -14,7 +14,8 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
-    charged_bytes, Anchor, Charge, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Work,
+    charged_bytes, Anchor, Charge, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger,
+    Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -124,7 +125,7 @@ impl Cancellation {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceIdentity {
     pub device: u64,
     pub inode: u64,
@@ -675,8 +676,8 @@ struct PreparedSourceRef {
 
 #[derive(Clone)]
 struct WarmMembership {
-    members: Vec<PreparedSourceRef>,
-    sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
+    members: Arc<[PreparedSourceRef]>,
+    sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
     revision: String,
     complete: bool,
     expires: u64,
@@ -686,19 +687,25 @@ impl WarmMembership {
     fn accounted_bytes(&self) -> usize {
         size_of::<Self>()
             + self.revision.capacity()
-            + self.members.capacity() * size_of::<PreparedSourceRef>()
-            + self
-                .members
-                .iter()
-                .map(|source| source.path.as_os_str().len())
-                .sum::<usize>()
-            + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
-            + self
-                .sidechain_dirs
-                .iter()
-                .map(|(path, _)| path.as_os_str().len())
-                .sum::<usize>()
+            + source_ref_bytes(&self.members)
+            + sidechain_dir_bytes(&self.sidechain_dirs)
     }
+}
+
+fn source_ref_bytes(sources: &[PreparedSourceRef]) -> usize {
+    sources.len() * size_of::<PreparedSourceRef>()
+        + sources
+            .iter()
+            .map(|source| source.path.as_os_str().len())
+            .sum::<usize>()
+}
+
+fn sidechain_dir_bytes(sidechain_dirs: &[(PathBuf, Option<SourceStamp>)]) -> usize {
+    sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+        + sidechain_dirs
+            .iter()
+            .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
 }
 
 struct PreparedBuild {
@@ -748,8 +755,8 @@ struct PreparedGraph {
     revision: String,
     stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
-    sources: Vec<PreparedSourceRef>,
-    sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
+    sources: Arc<[PreparedSourceRef]>,
+    sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
     remaining: WorkLimits,
     expires: u64,
 }
@@ -1141,18 +1148,8 @@ impl Charge<String> for GraphCursor {
 impl Charge<String> for PreparedGraph {
     fn charge(&self) -> usize {
         size_of::<Self>()
-            + self.sources.capacity() * size_of::<PreparedSourceRef>()
-            + self
-                .sources
-                .iter()
-                .map(|source| source.path.as_os_str().len())
-                .sum::<usize>()
-            + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
-            + self
-                .sidechain_dirs
-                .iter()
-                .map(|(path, _)| path.as_os_str().len())
-                .sum::<usize>()
+            + source_ref_bytes(&self.sources)
+            + sidechain_dir_bytes(&self.sidechain_dirs)
             + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
             + self
                 .stamps
@@ -1269,12 +1266,31 @@ pub(crate) struct StoreState {
     locations: Ledgered<String, LocatedPath>,
     locates: Ledgered<String, LocateCursor>,
     escaped_chunks: HashMap<usize, (Weak<ChunkRows>, MemoryCharge)>,
+    recent_codex_raw_bytes: usize,
+    locations_expiry: ExpiryIndex<String>,
+    carried_expiry: ExpiryIndex<(SourceIdentity, String)>,
+    recent_codex_expiry: ExpiryIndex<SourceIdentity>,
+    prepared_loads_expiry: ExpiryIndex<SourceIdentity>,
+    prepared_facts_lru: BTreeSet<(u64, SourceIdentity)>,
     counters: [u64; 18],
     transient_bytes: usize,
     owned: crate::snapshot_owned::OwnedProjections,
     ledger: RetainedLedger,
     #[cfg(test)]
     audits: Arc<AtomicUsize>,
+}
+
+const TOUCH_TTL_MS: u64 = 30 * 60_000;
+
+fn codex_raw_len(snapshot: &Arc<TranscriptSnapshot>) -> usize {
+    snapshot.codex_raw.as_ref().map_or(0, |raw| raw.len())
+}
+
+fn carried_deadline(carried: &CarriedClassification) -> u64 {
+    carried
+        .touched
+        .load(Ordering::Acquire)
+        .saturating_add(TOUCH_TTL_MS)
 }
 
 impl StoreState {
@@ -1306,6 +1322,12 @@ impl StoreState {
             locations: Ledgered::new(work.clone()),
             locates: Ledgered::new(work.clone()),
             escaped_chunks: HashMap::new(),
+            recent_codex_raw_bytes: 0,
+            locations_expiry: ExpiryIndex::new(work.clone()),
+            carried_expiry: ExpiryIndex::new(work.clone()),
+            recent_codex_expiry: ExpiryIndex::new(work.clone()),
+            prepared_loads_expiry: ExpiryIndex::new(work.clone()),
+            prepared_facts_lru: BTreeSet::new(),
             counters: [0; 18],
             transient_bytes: 0,
             owned: crate::snapshot_owned::OwnedProjections::default(),
@@ -1431,11 +1453,165 @@ impl StoreState {
         for anchor in carried.anchors() {
             self.ledger.shared.acquire(anchor);
         }
+        self.carried_expiry
+            .push(carried_deadline(&carried), lineage.clone());
         if let Some(displaced) = self.carried_classifications.insert(lineage, carried) {
             for anchor in displaced.anchors() {
                 self.ledger.shared.release(anchor.id);
             }
         }
+        if self
+            .carried_expiry
+            .crowded(self.carried_classifications.len())
+        {
+            self.carried_expiry.rebuild(
+                self.carried_classifications
+                    .iter()
+                    .map(|(lineage, carried)| (carried_deadline(carried), lineage.clone())),
+            );
+        }
+    }
+
+    fn remove_carried(&mut self, lineage: &(SourceIdentity, String)) {
+        if let Some(carried) = self.carried_classifications.remove(lineage) {
+            for anchor in carried.anchors() {
+                self.ledger.shared.release(anchor.id);
+            }
+        }
+    }
+
+    fn expired_carried(&mut self, now: u64) -> Vec<(SourceIdentity, String)> {
+        let carried = &self.carried_classifications;
+        self.carried_expiry.expired(now, |lineage| {
+            carried
+                .get(lineage)
+                .map(|carried| carried_deadline(carried))
+        })
+    }
+
+    fn insert_latest(
+        &mut self,
+        identity: SourceIdentity,
+        snapshot: Arc<TranscriptSnapshot>,
+    ) -> Option<Arc<TranscriptSnapshot>> {
+        let added = codex_raw_len(&snapshot);
+        let displaced = self.latest.insert(identity, snapshot);
+        if self.recent_codex.contains_key(&identity) {
+            self.recent_codex_raw_bytes -= displaced.as_ref().map_or(0, codex_raw_len);
+            self.recent_codex_raw_bytes += added;
+        }
+        displaced
+    }
+
+    fn remove_latest(&mut self, identity: &SourceIdentity) -> Option<Arc<TranscriptSnapshot>> {
+        let removed = self.latest.remove(identity)?;
+        if self.recent_codex.contains_key(identity) {
+            self.recent_codex_raw_bytes -= codex_raw_len(&removed);
+        }
+        Some(removed)
+    }
+
+    fn retain_latest(
+        &mut self,
+        mut keep: impl FnMut(&SourceIdentity, &Arc<TranscriptSnapshot>) -> bool,
+    ) {
+        let recent = &self.recent_codex;
+        let raw_bytes = &mut self.recent_codex_raw_bytes;
+        let work = self.ledger.shared.work();
+        self.latest.retain(|identity, snapshot| {
+            work.tick(1);
+            let kept = keep(identity, snapshot);
+            if !kept && recent.contains_key(identity) {
+                *raw_bytes -= codex_raw_len(snapshot);
+            }
+            kept
+        });
+    }
+
+    fn insert_recent_codex(&mut self, identity: SourceIdentity, now: u64) {
+        if self.recent_codex.insert(identity, now).is_some() {
+            return;
+        }
+        self.recent_codex_raw_bytes += self.latest.get(&identity).map_or(0, codex_raw_len);
+        self.recent_codex_expiry
+            .push(now.saturating_add(TOUCH_TTL_MS), identity);
+        if self.recent_codex_expiry.crowded(self.recent_codex.len()) {
+            self.recent_codex_expiry.rebuild(
+                self.recent_codex
+                    .iter()
+                    .map(|(identity, touched)| (touched.saturating_add(TOUCH_TTL_MS), *identity)),
+            );
+        }
+    }
+
+    fn remove_recent_codex(&mut self, identity: &SourceIdentity) {
+        if self.recent_codex.remove(identity).is_some() {
+            self.recent_codex_raw_bytes -= self.latest.get(identity).map_or(0, codex_raw_len);
+        }
+    }
+
+    fn expired_recent_codex(&mut self, now: u64) -> Vec<SourceIdentity> {
+        let recent = &self.recent_codex;
+        self.recent_codex_expiry.expired(now, |identity| {
+            recent
+                .get(identity)
+                .map(|touched| touched.saturating_add(TOUCH_TTL_MS))
+        })
+    }
+
+    fn insert_prepared_load(&mut self, identity: SourceIdentity, slot: Arc<LoadSlot>, now: u64) {
+        self.prepared_loads_expiry
+            .push(now.saturating_add(TOUCH_TTL_MS), identity);
+        self.prepared_loads.insert(identity, (slot, now));
+        if self
+            .prepared_loads_expiry
+            .crowded(self.prepared_loads.len())
+        {
+            self.prepared_loads_expiry.rebuild(
+                self.prepared_loads.iter().map(|(identity, (_, touched))| {
+                    (touched.saturating_add(TOUCH_TTL_MS), *identity)
+                }),
+            );
+        }
+    }
+
+    fn expired_prepared_loads(&mut self, now: u64) -> Vec<SourceIdentity> {
+        let loads = &self.prepared_loads;
+        self.prepared_loads_expiry.expired(now, |identity| {
+            loads
+                .get(identity)
+                .map(|(_, touched)| touched.saturating_add(TOUCH_TTL_MS))
+        })
+    }
+
+    fn insert_location(&mut self, id: String, location: LocatedPath) {
+        self.locations_expiry.push(location.expires, id.clone());
+        self.locations.insert(id, location);
+        if self.locations_expiry.crowded(self.locations.len()) {
+            self.locations_expiry.rebuild(
+                self.locations
+                    .iter()
+                    .map(|(id, location)| (location.expires, id.clone())),
+            );
+        }
+    }
+
+    fn evict_oldest_location(&mut self) -> bool {
+        let locations = &self.locations;
+        let Some(oldest) = self
+            .locations_expiry
+            .pop_earliest(|id| locations.get(id).map(|location| location.expires))
+        else {
+            return false;
+        };
+        self.locations.remove(&oldest);
+        true
+    }
+
+    fn expired_locations(&mut self, now: u64) -> Vec<String> {
+        let locations = &self.locations;
+        self.locations_expiry
+            .expired(now, |id| locations.get(id).map(|location| location.expires))
     }
 
     fn retain_carried(
@@ -1594,15 +1770,30 @@ impl StoreState {
 
     fn insert_prepared_facts(&mut self, identity: SourceIdentity, cached: CachedPreparedFacts) {
         self.ledger.shared.acquire(facts_anchor(&cached.facts));
+        let last_used = cached.last_used;
         if let Some(displaced) = self.prepared_facts.insert(identity, cached) {
             self.ledger.shared.release(facts_key(&displaced.facts));
+            self.prepared_facts_lru
+                .remove(&(displaced.last_used, identity));
         }
+        self.prepared_facts_lru.insert((last_used, identity));
     }
 
     fn remove_prepared_facts(&mut self, identity: &SourceIdentity) -> Option<CachedPreparedFacts> {
         let cached = self.prepared_facts.remove(identity)?;
         self.ledger.shared.release(facts_key(&cached.facts));
+        self.prepared_facts_lru
+            .remove(&(cached.last_used, *identity));
         Some(cached)
+    }
+
+    fn evictable_prepared_facts(&self) -> Option<SourceIdentity> {
+        let work = self.ledger.shared.work();
+        self.prepared_facts_lru
+            .iter()
+            .map(|(_, identity)| *identity)
+            .inspect(|_| work.tick(1))
+            .find(|identity| Arc::strong_count(&self.prepared_facts[identity].facts) == 1)
     }
 
     fn touch_prepared_facts(
@@ -1614,15 +1805,20 @@ impl StoreState {
         classifier: &Value,
     ) -> Option<Arc<crate::snapshot_prepared::PreparedFacts>> {
         let mut cached = self.prepared_facts.get_mut(&stamp.identity)?;
-        (cached.stamp == stamp
-            && cached.registry_generation == registry_generation
-            && cached.admission == admission
-            && cached.authority == *authority
-            && cached.classifier == *classifier)
-            .then(|| {
-                cached.last_used = now_ms();
-                Arc::clone(&cached.facts)
-            })
+        if cached.stamp != stamp
+            || cached.registry_generation != registry_generation
+            || cached.admission != admission
+            || cached.authority != *authority
+            || cached.classifier != *classifier
+        {
+            return None;
+        }
+        let previous = cached.last_used;
+        cached.last_used = now_ms();
+        self.prepared_facts_lru.remove(&(previous, stamp.identity));
+        self.prepared_facts_lru
+            .insert((cached.last_used, stamp.identity));
+        Some(Arc::clone(&cached.facts))
     }
 
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
@@ -3070,27 +3266,20 @@ impl NativeStore {
     }
 
     fn prune(state: &mut StoreState) {
+        Self::prune_at(state, now_ms());
+    }
+
+    fn prune_at(state: &mut StoreState, now: u64) {
         state.drain();
-        let now = now_ms();
-        state.retain_carried(|_, carried| {
-            carried
-                .touched
-                .load(Ordering::Acquire)
-                .saturating_add(30 * 60_000)
-                > now
-        });
+        for lineage in state.expired_carried(now) {
+            state.remove_carried(&lineage);
+        }
         state
             .expired_prepared_queries
             .retain(|_, (_, expires)| *expires > now);
-        let expired_codex: Vec<_> = state
-            .recent_codex
-            .iter()
-            .filter(|(_, touched)| touched.saturating_add(30 * 60_000) <= now)
-            .map(|(identity, _)| *identity)
-            .collect();
-        for identity in expired_codex {
-            state.recent_codex.remove(&identity);
-            state.latest.remove(&identity);
+        for identity in state.expired_recent_codex(now) {
+            state.remove_recent_codex(&identity);
+            state.remove_latest(&identity);
         }
         state
             .deliveries
@@ -3159,7 +3348,9 @@ impl NativeStore {
         state
             .resolutions
             .retain(|_, cursor| cursor.expires > now && cursor.remaining.deadline_unix_ms > now);
-        state.locations.retain(|_, location| location.expires > now);
+        for id in state.expired_locations(now) {
+            state.locations.remove(&id);
+        }
         state
             .locates
             .retain(|_, cursor| cursor.expires > now && cursor.limits.deadline_unix_ms > now);
@@ -3175,9 +3366,9 @@ impl NativeStore {
             .values()
             .map(|w| w.load.stamp.identity)
             .collect();
-        state
-            .prepared_loads
-            .retain(|_, (_, touched)| touched.saturating_add(30 * 60_000) > now);
+        for identity in state.expired_prepared_loads(now) {
+            state.prepared_loads.remove(&identity);
+        }
         state
             .warm_memberships
             .retain(|_, membership| membership.expires > now);
@@ -3344,6 +3535,21 @@ impl NativeStore {
             + state.warm_memberships.capacity_bytes()
             + state.locations.capacity_bytes()
             + state.locates.capacity_bytes()
+            + state.locations_expiry.heap_bytes()
+            + state.carried_expiry.heap_bytes()
+            + state.recent_codex_expiry.heap_bytes()
+            + state.prepared_loads_expiry.heap_bytes()
+            + state.prepared_facts_lru.len() * size_of::<(u64, SourceIdentity)>()
+    }
+
+    #[cfg(test)]
+    fn audit_recent_codex_raw_bytes(state: &StoreState) -> usize {
+        state
+            .recent_codex
+            .keys()
+            .filter_map(|identity| state.latest.get(identity))
+            .map(codex_raw_len)
+            .sum()
     }
 
     #[cfg(test)]
@@ -3362,6 +3568,24 @@ impl NativeStore {
                 number(&audit, key).unwrap(),
                 number(&ledger, key).unwrap(),
                 "retained ledger diverges from the audit on {key}"
+            );
+        }
+        assert_eq!(
+            state.recent_codex_raw_bytes,
+            Self::audit_recent_codex_raw_bytes(&state),
+            "recent codex raw bytes diverge from the audit"
+        );
+        assert_eq!(
+            state.prepared_facts_lru.len(),
+            state.prepared_facts.len(),
+            "prepared facts lru index diverges from the cache"
+        );
+        for (identity, cached) in state.prepared_facts.iter() {
+            assert!(
+                state
+                    .prepared_facts_lru
+                    .contains(&(cached.last_used, *identity)),
+                "prepared facts lru index misses a cached entry"
             );
         }
     }
@@ -3401,9 +3625,9 @@ impl NativeStore {
             .values()
             .map(|lease| lease.snapshot.id.clone())
             .collect();
-        state
-            .latest
-            .retain(|_, snapshot| leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1);
+        state.retain_latest(|_, snapshot| {
+            leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1
+        });
         state.retain_carried(|_, carried| Arc::strong_count(carried) > 1);
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
@@ -5115,8 +5339,7 @@ impl NativeStore {
                 .is_some_and(|old| old.id == snapshot.id)
             {
                 if state
-                    .latest
-                    .insert(slot.stamp.identity, Arc::clone(&snapshot))
+                    .insert_latest(slot.stamp.identity, Arc::clone(&snapshot))
                     .is_some()
                 {
                     usage[10] += 1;
@@ -6916,24 +7139,14 @@ impl NativeStore {
             .iter()
             .map(|(id, path)| id.len() + path.as_os_str().len() + size_of::<LocatedPath>())
             .sum::<usize>();
-        while state.locations.len() + entries.len() > 4096 {
-            let Some(oldest) = state
-                .locations
-                .iter()
-                .min_by_key(|(_, location)| location.expires)
-                .map(|(id, _)| id.clone())
-            else {
-                break;
-            };
-            state.locations.remove(&oldest);
-        }
+        while state.locations.len() + entries.len() > 4096 && state.evict_oldest_location() {}
         if self.admit_memory(&mut state, context, added).is_err() {
             return;
         }
         let expires = now_ms().saturating_add(self.config.ttl.saturating_mul(10));
         for (id, path) in entries {
             if id.len() + path.as_os_str().len() <= 8192 {
-                state.locations.insert(
+                state.insert_location(
                     id.clone(),
                     LocatedPath {
                         path: path.clone(),
@@ -7773,7 +7986,7 @@ mod tests {
         drop(snapshot);
         let mut state = store.state.lock().unwrap();
         state.leases.clear();
-        state.latest.clear();
+        state.retain_latest(|_, _| false);
         NativeStore::prune(&mut state);
         assert!(
             number(
@@ -12119,7 +12332,7 @@ mod tests {
             before - prior_own.owned_capacity_bytes - prior_own.opaque_dom_accounted_bytes
         );
         release_lease(&store, handle(&second), &owner);
-        store.lock_state().latest.clear();
+        store.lock_state().retain_latest(|_, _| false);
         drop(current);
         store.assert_conserved();
         assert_eq!(entry_bytes(&store), 0);
@@ -12148,7 +12361,7 @@ mod tests {
         let rows_bytes = snapshot.chunks[0].charge.owned_capacity_bytes
             + snapshot.chunks[0].charge.opaque_dom_accounted_bytes;
         release_lease(&store, handle(&response), &owner);
-        store.lock_state().latest.clear();
+        store.lock_state().retain_latest(|_, _| false);
         drop(snapshot);
         store.assert_conserved();
         assert_eq!(entry_bytes(&store), rows_bytes);
@@ -12188,7 +12401,7 @@ mod tests {
         assert!(store.lock_state().classifier_stages.is_empty());
         store.assert_conserved();
         release_lease(&store, handle(&response), &owner);
-        store.lock_state().latest.clear();
+        store.lock_state().retain_latest(|_, _| false);
         store.classified.lock().unwrap().clear();
         store.assert_conserved();
         store.lock_state().retain_carried(|_, _| false);
@@ -12212,7 +12425,7 @@ mod tests {
         let before = store.audits.load(Ordering::Relaxed);
         {
             let mut state = store.lock_state();
-            state.latest.clear();
+            state.retain_latest(|_, _| false);
             drop(snapshot);
             let (sender, receiver) = std::sync::mpsc::channel();
             let dropper = std::thread::spawn(move || {
@@ -12352,6 +12565,90 @@ mod tests {
                 records.iter().map(String::capacity).sum::<usize>()
             });
         assert!(state.prepared_queries.charged() > size_of::<PreparedQueryCursor>() + strings);
+    }
+
+    #[test]
+    fn expired_carried_classifications_are_pruned_through_the_index() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = store();
+        let owner = context("a");
+        store
+            .register_classifier(
+                "custom",
+                "1",
+                Arc::new(|_, range| Ok(vec![true; range.len()])),
+            )
+            .unwrap();
+        let mut request = acquire(&source.path);
+        request.insert("classifier", json!({"id":"custom","version":"1"}));
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert!(!store.lock_state().carried_classifications.is_empty());
+        let before = store.retained_work.load(Ordering::Relaxed);
+        NativeStore::prune_at(&mut store.lock_state(), now_ms() + TOUCH_TTL_MS + 1);
+        assert!(store.lock_state().carried_classifications.is_empty());
+        assert!(store.retained_work.load(Ordering::Relaxed) > before);
+        store.assert_conserved();
+    }
+
+    fn located(expires: u64) -> LocatedPath {
+        LocatedPath {
+            path: PathBuf::from("/locations/session.jsonl"),
+            expires,
+        }
+    }
+
+    #[test]
+    fn location_eviction_pops_the_earliest_expiring_ticket() {
+        let store = store();
+        let owner = context("a");
+        let horizon = now_ms() + 600_000;
+        {
+            let mut state = store.lock_state();
+            for index in 0..4096u64 {
+                state.insert_location(format!("session-{index:04}"), located(horizon + index));
+            }
+            assert_eq!(state.locations.len(), 4096);
+        }
+        let before = store.retained_work.load(Ordering::Relaxed);
+        store.remember_locations(
+            &[("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))],
+            &owner,
+        );
+        {
+            let state = store.lock_state();
+            assert_eq!(state.locations.len(), 4096);
+            assert!(!state.locations.contains_key("session-0000"));
+            assert!(state.locations.contains_key("session-0001"));
+            assert!(state.locations.contains_key("fresh"));
+        }
+        assert!(store.retained_work.load(Ordering::Relaxed) > before);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn an_extended_location_survives_its_stale_ticket_and_tickets_compact() {
+        let store = store();
+        {
+            let mut state = store.lock_state();
+            state.insert_location("session".to_owned(), located(now_ms() - 1));
+            state.insert_location("session".to_owned(), located(now_ms() + 600_000));
+            NativeStore::prune(&mut state);
+            assert!(state.locations.contains_key("session"));
+            for step in 1..=8u64 {
+                state.insert_location("session".to_owned(), located(now_ms() + 600_000 + step));
+            }
+            assert_eq!(state.locations.len(), 1);
+            assert!(state.locations_expiry.len() <= 2);
+            state.insert_location("session".to_owned(), located(now_ms() - 1));
+            NativeStore::prune(&mut state);
+            assert!(state.locations.is_empty());
+        }
+        store.assert_conserved();
     }
 
     #[test]

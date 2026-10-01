@@ -109,9 +109,7 @@ impl NativeStore {
                 })
             {
                 if let Some(slot) = &slot {
-                    state
-                        .prepared_loads
-                        .insert(stamp.identity, (Arc::clone(slot), now_ms()));
+                    state.insert_prepared_load(stamp.identity, Arc::clone(slot), now_ms());
                 }
             } else {
                 state.prepared_loads.remove(&stamp.identity);

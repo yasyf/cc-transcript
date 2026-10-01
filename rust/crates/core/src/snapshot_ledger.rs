@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut, Index};
@@ -255,6 +255,114 @@ impl RetainedLedger {
 
     pub(crate) fn storage_bytes(&self) -> usize {
         self.shared.table_bytes() + self.queue.buffer_bytes()
+    }
+}
+
+struct Ticket<K> {
+    deadline: u64,
+    key: K,
+}
+
+impl<K> PartialEq for Ticket<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+
+impl<K> Eq for Ticket<K> {}
+
+impl<K> PartialOrd for Ticket<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K> Ord for Ticket<K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.deadline.cmp(&self.deadline)
+    }
+}
+
+pub(crate) struct ExpiryIndex<K> {
+    heap: BinaryHeap<Ticket<K>>,
+    work: Work,
+}
+
+impl<K> ExpiryIndex<K> {
+    pub(crate) fn new(work: Work) -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            work,
+        }
+    }
+
+    pub(crate) fn push(&mut self, deadline: u64, key: K) {
+        self.work.tick(1);
+        self.heap.push(Ticket { deadline, key });
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.heap.capacity() * size_of::<Ticket<K>>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    pub(crate) fn crowded(&self, live: usize) -> bool {
+        self.heap.len() > 2 * live
+    }
+
+    pub(crate) fn rebuild(&mut self, tickets: impl IntoIterator<Item = (u64, K)>) {
+        self.heap = tickets
+            .into_iter()
+            .map(|(deadline, key)| Ticket { deadline, key })
+            .collect();
+        self.work.tick(self.heap.len());
+    }
+
+    pub(crate) fn expired(
+        &mut self,
+        now: u64,
+        mut deadline_of: impl FnMut(&K) -> Option<u64>,
+    ) -> Vec<K> {
+        let mut expired = Vec::new();
+        while self
+            .heap
+            .peek()
+            .is_some_and(|ticket| ticket.deadline <= now)
+        {
+            let Ticket { key, .. } = self.heap.pop().expect("peeked ticket");
+            self.work.tick(1);
+            match deadline_of(&key) {
+                None => {}
+                Some(current) if current <= now => expired.push(key),
+                Some(current) => self.heap.push(Ticket {
+                    deadline: current,
+                    key,
+                }),
+            }
+        }
+        expired
+    }
+
+    pub(crate) fn pop_earliest(
+        &mut self,
+        mut deadline_of: impl FnMut(&K) -> Option<u64>,
+    ) -> Option<K> {
+        while let Some(Ticket { deadline, key }) = self.heap.pop() {
+            self.work.tick(1);
+            match deadline_of(&key) {
+                None => {}
+                Some(current) if current == deadline => return Some(key),
+                Some(current) => self.heap.push(Ticket {
+                    deadline: current,
+                    key,
+                }),
+            }
+        }
+        None
     }
 }
 
