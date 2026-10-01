@@ -2488,9 +2488,8 @@ impl NativeStore {
             .projections
             .values()
             .map(|cursor| {
-                crate::snapshot_memory::value_charge(&cursor.request).owned_capacity_bytes
-                    + crate::snapshot_memory::value_charge(&cursor.request)
-                        .opaque_dom_accounted_bytes
+                let charge = crate::snapshot_memory::value_charge(&cursor.request);
+                charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
             })
             .sum();
         let graph_bytes: usize = state
@@ -2669,24 +2668,25 @@ impl NativeStore {
         let cap = self.memory_cap(context)?;
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
-            > cap
+            <= cap
         {
-            self.classified
-                .lock()
-                .expect("classified snapshots")
-                .retain(|_, snapshot| Arc::strong_count(snapshot) > 1);
-            let leased: HashSet<_> = state
-                .leases
-                .values()
-                .map(|lease| lease.snapshot.id.clone())
-                .collect();
-            state.latest.retain(|_, snapshot| {
-                leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1
-            });
-            state
-                .carried_classifications
-                .retain(|_, carried| Arc::strong_count(carried) > 1);
+            return Ok(());
         }
+        self.classified
+            .lock()
+            .expect("classified snapshots")
+            .retain(|_, snapshot| Arc::strong_count(snapshot) > 1);
+        let leased: HashSet<_> = state
+            .leases
+            .values()
+            .map(|lease| lease.snapshot.id.clone())
+            .collect();
+        state
+            .latest
+            .retain(|_, snapshot| leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1);
+        state
+            .carried_classifications
+            .retain(|_, carried| Arc::strong_count(carried) > 1);
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
             > cap
@@ -7066,6 +7066,34 @@ mod tests {
             restarted.pin(lease, &owner).unwrap_err().status,
             Status::StaleHandle
         );
+    }
+
+    #[test]
+    fn projection_reservations_preserve_exact_admission_caps_and_release_capacity() {
+        for background in [false, true] {
+            let store = store();
+            let mut owner = context("a");
+            if background {
+                owner.insert("work_class", json!("background"));
+            }
+            let baseline = store.retained_accounted_bytes();
+            let cap = if background {
+                32 * 1024 * 1024 - 4096
+            } else {
+                32 * 1024 * 1024
+            };
+            let reservation = store.reserve_projection(&owner, cap - baseline).unwrap();
+            assert_eq!(store.retained_accounted_bytes(), cap);
+            let refused = store.reserve_projection(&owner, 1);
+            assert!(matches!(refused, Err(error) if error.status == Status::RetainedLimit));
+            assert_eq!(store.retained_accounted_bytes(), cap);
+            drop(reservation);
+            assert_eq!(store.retained_accounted_bytes(), baseline);
+            let reused = store.reserve_projection(&owner, cap - baseline).unwrap();
+            assert_eq!(store.retained_accounted_bytes(), cap);
+            drop(reused);
+            assert_eq!(store.retained_accounted_bytes(), baseline);
+        }
     }
 
     #[test]
