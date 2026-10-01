@@ -16,6 +16,7 @@ use crate::snapshot_prepared::PreparedFacts;
 const VERSION: &[u8; 8] = b"CTPF0001";
 const HEADER_BYTES: usize = 80;
 const OWNER_LOCK: &CStr = c"owner.lock";
+const STAGING: &CStr = c"staging";
 const MAX_SCANNED_OWNERS: usize = 32;
 const MAX_CLEANED_OWNERS: usize = 8;
 const MAX_CLEANED_FILES: usize = 128;
@@ -26,26 +27,26 @@ static ACTIVE_OWNERS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 #[cfg(test)]
-type LockFileCreatedHook = (CString, Box<dyn FnOnce() + Send>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublishStep {
+    Staged,
+    Created,
+    Linked,
+}
 
 #[cfg(test)]
-static LOCK_FILE_CREATED_HOOK: Mutex<Option<LockFileCreatedHook>> = Mutex::new(None);
+type PublishHook = (CString, Box<dyn FnMut(PublishStep) + Send>);
 
 #[cfg(test)]
-fn run_lock_file_created_hook(owner_name: &CStr) {
-    let hook = {
-        let mut slot = LOCK_FILE_CREATED_HOOK
-            .lock()
-            .expect("lock file created hook");
-        match slot.as_ref() {
-            Some((hooked, _)) if hooked.as_c_str() == owner_name => {
-                slot.take().map(|(_, hook)| hook)
-            }
-            _ => None,
+static PUBLISH_HOOK: Mutex<Option<PublishHook>> = Mutex::new(None);
+
+#[cfg(test)]
+fn run_publish_hook(owner_name: &CStr, step: PublishStep) {
+    let mut slot = PUBLISH_HOOK.lock().expect("publish hook");
+    if let Some((hooked, hook)) = slot.as_mut() {
+        if hooked.as_c_str() == owner_name {
+            hook(step);
         }
-    };
-    if let Some(hook) = hook {
-        hook();
     }
 }
 
@@ -84,33 +85,32 @@ fn unlinkat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Re
     }
 }
 
-fn renameat_noreplace(dir_fd: libc::c_int, from: &CStr, to: &CStr) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            dir_fd,
-            from.as_ptr(),
-            dir_fd,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    #[cfg(target_vendor = "apple")]
-    let result = unsafe {
-        libc::renameatx_np(
-            dir_fd,
-            from.as_ptr(),
-            dir_fd,
-            to.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    if result == 0 {
+fn mkdirat_private(dir_fd: libc::c_int, name: &CStr) -> io::Result<()> {
+    if unsafe { libc::mkdirat(dir_fd, name.as_ptr(), 0o700) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+fn linkat_file(from_fd: libc::c_int, from: &CStr, to_fd: libc::c_int, to: &CStr) -> io::Result<()> {
+    if unsafe { libc::linkat(from_fd, from.as_ptr(), to_fd, to.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn open_private_dir(dir_fd: libc::c_int, name: &CStr) -> io::Result<(std::fs::File, fs::Metadata)> {
+    let file = openat_file(dir_fd, name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+    let metadata = file.metadata()?;
+    Ok((file, metadata))
+}
+
+fn private_dir(metadata: &fs::Metadata) -> bool {
+    metadata.is_dir()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o777 == 0o700
 }
 
 fn private_file(file: &std::fs::File) -> bool {
@@ -301,13 +301,24 @@ pub struct PreparedDiskCache {
 
 impl PreparedDiskCache {
     pub fn new(owner_epoch: &str, max_bytes: usize) -> Result<Self, SnapshotError> {
+        Self::open(
+            namespace_path().map_err(disk_error)?,
+            owner_epoch,
+            max_bytes,
+        )
+    }
+
+    fn open(
+        namespace: PathBuf,
+        owner_epoch: &str,
+        max_bytes: usize,
+    ) -> Result<Self, SnapshotError> {
         if owner_epoch.len() != 64 || !owner_epoch.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(incomplete("invalid prepared facts owner epoch"));
         }
         if max_bytes <= HEADER_BYTES {
             return Err(incomplete("prepared facts disk cache capacity exhausted"));
         }
-        let namespace = namespace_path().map_err(disk_error)?;
         match DirBuilder::new().mode(0o700).create(&namespace) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -319,30 +330,35 @@ impl PreparedDiskCache {
             .open(&namespace)
             .map_err(disk_error)?;
         let namespace_metadata = namespace_file.metadata().map_err(disk_error)?;
-        if !namespace_metadata.is_dir()
-            || namespace_metadata.mode() & 0o777 != 0o700
-            || namespace_metadata.uid() != unsafe { libc::geteuid() }
-        {
+        if !private_dir(&namespace_metadata) {
             return Err(incomplete(
                 "prepared facts cache namespace is not owner-private",
             ));
         }
+        let staging_file = Self::open_staging(&namespace_file)?;
         let owner_name = CString::new(owner_epoch).expect("hex owner epoch");
-        let staging_name = CString::new(format!("{owner_epoch}.tmp")).expect("hex owner epoch");
+        let staged_name = CString::new(format!("{owner_epoch}.lock")).expect("hex owner epoch");
         let dir = namespace.join(owner_epoch);
         let mut active_owners = ACTIVE_OWNERS.lock().expect("active prepared owners");
-        if unsafe { libc::mkdirat(namespace_file.as_raw_fd(), staging_name.as_ptr(), 0o700) } != 0 {
-            return Err(disk_error(io::Error::last_os_error()));
-        }
-        let staged = Self::publish_staged_owner(&namespace_file, &staging_name, &owner_name);
-        let (dir_file, metadata, owner_lock) = match staged {
-            Ok(staged) => staged,
+        let owner_lock = openat_file(
+            staging_file.as_raw_fd(),
+            &staged_name,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        )
+        .map_err(disk_error)?;
+        #[cfg(test)]
+        run_publish_hook(&owner_name, PublishStep::Staged);
+        let published = Self::publish_locked_owner(
+            &namespace_file,
+            &staging_file,
+            &staged_name,
+            &owner_name,
+            &owner_lock,
+        );
+        let (dir_file, metadata) = match published {
+            Ok(published) => published,
             Err(error) => {
-                let _ = unlinkat_file(
-                    namespace_file.as_raw_fd(),
-                    &staging_name,
-                    libc::AT_REMOVEDIR,
-                );
+                let _ = unlinkat_file(staging_file.as_raw_fd(), &staged_name, 0);
                 return Err(error);
             }
         };
@@ -364,48 +380,72 @@ impl PreparedDiskCache {
         Ok(cache)
     }
 
-    fn publish_staged_owner(
+    fn open_staging(namespace_file: &std::fs::File) -> Result<std::fs::File, SnapshotError> {
+        match mkdirat_private(namespace_file.as_raw_fd(), STAGING) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(disk_error(error)),
+        }
+        let (staging_file, metadata) =
+            open_private_dir(namespace_file.as_raw_fd(), STAGING).map_err(disk_error)?;
+        if !private_dir(&metadata) {
+            return Err(incomplete(
+                "prepared facts cache staging directory is not owner-private",
+            ));
+        }
+        Ok(staging_file)
+    }
+
+    fn publish_locked_owner(
         namespace_file: &std::fs::File,
-        staging_name: &CStr,
+        staging_file: &std::fs::File,
+        staged_name: &CStr,
         owner_name: &CStr,
-    ) -> Result<(std::fs::File, fs::Metadata, std::fs::File), SnapshotError> {
-        let dir_file = openat_file(
-            namespace_file.as_raw_fd(),
-            staging_name,
-            libc::O_RDONLY | libc::O_DIRECTORY,
-        )
-        .map_err(disk_error)?;
-        let metadata = dir_file.metadata().map_err(disk_error)?;
-        if !metadata.is_dir()
-            || metadata.mode() & 0o777 != 0o700
-            || metadata.uid() != unsafe { libc::geteuid() }
-        {
+        owner_lock: &std::fs::File,
+    ) -> Result<(std::fs::File, fs::Metadata), SnapshotError> {
+        if unsafe { libc::fchmod(owner_lock.as_raw_fd(), 0o600) } != 0 {
+            return Err(disk_error(io::Error::last_os_error()));
+        }
+        if unsafe { libc::flock(owner_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(disk_error(io::Error::last_os_error()));
+        }
+        mkdirat_private(namespace_file.as_raw_fd(), owner_name).map_err(disk_error)?;
+        let linked = Self::link_owner_lock(namespace_file, staging_file, staged_name, owner_name);
+        if linked.is_err() {
+            let _ = unlinkat_file(namespace_file.as_raw_fd(), owner_name, libc::AT_REMOVEDIR);
+        }
+        linked
+    }
+
+    fn link_owner_lock(
+        namespace_file: &std::fs::File,
+        staging_file: &std::fs::File,
+        staged_name: &CStr,
+        owner_name: &CStr,
+    ) -> Result<(std::fs::File, fs::Metadata), SnapshotError> {
+        let (dir_file, metadata) =
+            open_private_dir(namespace_file.as_raw_fd(), owner_name).map_err(disk_error)?;
+        if !private_dir(&metadata) {
             return Err(incomplete(
                 "prepared facts cache directory is not owner-private",
             ));
         }
-        let owner_lock = openat_file(
+        #[cfg(test)]
+        run_publish_hook(owner_name, PublishStep::Created);
+        linkat_file(
+            staging_file.as_raw_fd(),
+            staged_name,
             dir_file.as_raw_fd(),
             OWNER_LOCK,
-            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
         )
         .map_err(disk_error)?;
         #[cfg(test)]
-        run_lock_file_created_hook(owner_name);
-        let published = (|| -> io::Result<()> {
-            if unsafe { libc::fchmod(owner_lock.as_raw_fd(), 0o600) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if unsafe { libc::flock(owner_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            renameat_noreplace(namespace_file.as_raw_fd(), staging_name, owner_name)
-        })();
-        if let Err(error) = published {
+        run_publish_hook(owner_name, PublishStep::Linked);
+        if let Err(error) = unlinkat_file(staging_file.as_raw_fd(), staged_name, 0) {
             let _ = unlinkat_file(dir_file.as_raw_fd(), OWNER_LOCK, 0);
             return Err(disk_error(error));
         }
-        Ok((dir_file, metadata, owner_lock))
+        Ok((dir_file, metadata))
     }
 
     fn check_dir(&self) -> Result<(), SnapshotError> {
@@ -473,10 +513,7 @@ impl PreparedDiskCache {
         let Ok(metadata) = owner.metadata() else {
             return;
         };
-        if !metadata.is_dir()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o777 != 0o700
-        {
+        if !private_dir(&metadata) {
             return;
         }
         let Ok(lock) = openat_file(owner.as_raw_fd(), OWNER_LOCK, libc::O_RDWR) else {
@@ -835,6 +872,8 @@ mod tests {
     }
 
     struct ForeignScan {
+        found_owner: bool,
+        opened_lock: bool,
         lock: Option<std::fs::File>,
         deleted: bool,
     }
@@ -846,6 +885,8 @@ mod tests {
             .open(namespace)
             .unwrap();
         let mut scan = ForeignScan {
+            found_owner: false,
+            opened_lock: false,
             lock: None,
             deleted: false,
         };
@@ -855,6 +896,7 @@ mod tests {
             if bytes.len() != 64 || !hex_bytes(bytes) || bytes != epoch.as_bytes() {
                 continue;
             }
+            scan.found_owner = true;
             let owner = openat_file(
                 namespace_file.as_raw_fd(),
                 &name,
@@ -864,6 +906,7 @@ mod tests {
             let Ok(lock) = openat_file(owner.as_raw_fd(), OWNER_LOCK, libc::O_RDWR) else {
                 continue;
             };
+            scan.opened_lock = true;
             if !private_file(&lock)
                 || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
             {
@@ -877,6 +920,21 @@ mod tests {
             scan.lock = Some(lock);
         }
         scan
+    }
+
+    fn isolated_namespace() -> PathBuf {
+        fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("cc-transcript-prepared-{}", epoch()))
+    }
+
+    fn abandoned_staging_lock(namespace: &Path, id: u64) {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(namespace.join("staging").join(format!("{id:064x}.lock")))
+            .unwrap();
     }
 
     fn foreign_flock_errno(lock: &std::fs::File) -> Option<i32> {
@@ -1110,37 +1168,61 @@ mod tests {
     }
 
     #[test]
-    fn foreign_cleanup_during_construction_cannot_unlock_or_delete_the_owner() {
+    fn foreign_cleanup_at_every_publication_step_cannot_unlock_or_delete_the_owner() {
         let epoch = epoch();
         let namespace = namespace_path().unwrap();
-        let scan = Arc::new(Mutex::new(None::<ForeignScan>));
+        let scans = Arc::new(Mutex::new(Vec::<(PublishStep, ForeignScan)>::new()));
         let hook = {
-            let scan = scan.clone();
+            let scans = scans.clone();
             let epoch = epoch.clone();
-            Box::new(move || {
-                *scan.lock().unwrap() = Some(foreign_scan(&namespace, &epoch));
+            let namespace = namespace.clone();
+            Box::new(move |step: PublishStep| {
+                scans
+                    .lock()
+                    .unwrap()
+                    .push((step, foreign_scan(&namespace, &epoch)));
             })
         };
-        *LOCK_FILE_CREATED_HOOK.lock().unwrap() =
-            Some((CString::new(epoch.clone()).unwrap(), hook));
+        *PUBLISH_HOOK.lock().unwrap() = Some((CString::new(epoch.clone()).unwrap(), hook));
         let cache = PreparedDiskCache::new(&epoch, 4096).unwrap();
-        let scan = scan.lock().unwrap().take().expect("foreign scan ran");
-        assert!(scan.lock.is_none());
-        assert!(!scan.deleted);
+        *PUBLISH_HOOK.lock().unwrap() = None;
+        let scans = std::mem::take(&mut *scans.lock().unwrap());
+        let steps: Vec<PublishStep> = scans.iter().map(|(step, _)| *step).collect();
+        assert_eq!(
+            steps,
+            [
+                PublishStep::Staged,
+                PublishStep::Created,
+                PublishStep::Linked
+            ]
+        );
+        for (step, scan) in &scans {
+            assert_eq!(*step != PublishStep::Staged, scan.found_owner, "{step:?}");
+            assert_eq!(*step == PublishStep::Linked, scan.opened_lock, "{step:?}");
+            assert!(scan.lock.is_none(), "{step:?}");
+            assert!(!scan.deleted, "{step:?}");
+        }
         assert!(cache.dir.is_dir());
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .open(cache.dir.join("owner.lock"))
             .unwrap();
+        assert!(private_file(&lock));
         assert_eq!(foreign_flock_errno(&lock), Some(libc::EWOULDBLOCK));
+        assert_eq!(
+            fs::symlink_metadata(namespace.join("staging").join(format!("{epoch}.lock")))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts()).unwrap();
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Hit(_)));
     }
 
     #[test]
-    fn failed_publication_removes_only_the_staged_owner() {
+    fn failed_publication_removes_only_the_staged_lock() {
         let namespace = cache(4096).namespace.clone();
         let epoch = epoch();
         let conflicting = namespace.join(&epoch);
@@ -1151,15 +1233,10 @@ mod tests {
         };
         assert_eq!(error.status, Status::Incomplete);
         assert!(error.reason.contains("File exists"), "{}", error.reason);
-        let staging = namespace.join(format!("{epoch}.tmp"));
         assert_eq!(
-            fs::symlink_metadata(staging.join("owner.lock"))
+            fs::symlink_metadata(namespace.join("staging").join(format!("{epoch}.lock")))
                 .unwrap_err()
                 .kind(),
-            io::ErrorKind::NotFound
-        );
-        assert_eq!(
-            fs::symlink_metadata(&staging).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
         let after = fs::metadata(&conflicting).unwrap();
@@ -1167,6 +1244,21 @@ mod tests {
         assert!(fs::read_dir(&conflicting).unwrap().next().is_none());
         assert!(!ACTIVE_OWNERS.lock().unwrap().contains(&epoch));
         fs::remove_dir(&conflicting).unwrap();
+    }
+
+    #[test]
+    fn abandoned_staging_locks_do_not_starve_stale_owner_cleanup() {
+        let namespace = isolated_namespace();
+        let cleaner = PreparedDiskCache::open(namespace.clone(), &epoch(), 4096).unwrap();
+        for id in 0..MAX_SCANNED_OWNERS as u64 + 8 {
+            abandoned_staging_lock(&namespace, id);
+        }
+        let (dir, file_path) = stale_owner(&cleaner, 50);
+        cleaner.cleanup_stale_owners_with_limits(128, 128 * 1024 * 1024);
+        assert!(!file_path.exists());
+        assert!(!dir.exists());
+        drop(cleaner);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
@@ -1182,7 +1274,8 @@ mod tests {
 
     #[test]
     fn startup_cleanup_truncates_stale_files_within_byte_budget() {
-        let cleaner = cache(4096);
+        let namespace = isolated_namespace();
+        let cleaner = PreparedDiskCache::open(namespace.clone(), &epoch(), 4096).unwrap();
         let (dir, file_path) = stale_owner(&cleaner, 50);
         for remaining in [34, 18, 2] {
             cleaner.cleanup_stale_owners_with_limits(128, 16);
@@ -1191,6 +1284,8 @@ mod tests {
         }
         cleaner.cleanup_stale_owners_with_limits(128, 16);
         assert!(!dir.exists());
+        drop(cleaner);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
