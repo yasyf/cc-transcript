@@ -125,6 +125,16 @@ impl Cancellation {
 pub struct SourceIdentity {
     pub device: u64,
     pub inode: u64,
+    pub window_base: u64,
+}
+
+impl SourceIdentity {
+    pub fn file(self) -> Self {
+        Self {
+            window_base: 0,
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +151,7 @@ impl SourceStamp {
             identity: SourceIdentity {
                 device: metadata.dev(),
                 inode: metadata.ino(),
+                window_base: 0,
             },
             size: metadata.len(),
             mtime_ns: metadata.mtime() as i128 * 1_000_000_000 + metadata.mtime_nsec() as i128,
@@ -148,10 +159,28 @@ impl SourceStamp {
         }
     }
 
+    pub fn windowed(mut self, tail_bytes: Option<u64>) -> Self {
+        if let Some(tail_bytes) = tail_bytes.filter(|tail_bytes| self.size > *tail_bytes) {
+            let quantum = (tail_bytes / 2).max(1);
+            self.identity.window_base = (self.size - tail_bytes) / quantum * quantum;
+        }
+        self
+    }
+
+    pub fn viewed_as(mut self, pinned: SourceStamp) -> Self {
+        self.identity.window_base = pinned.identity.window_base;
+        self
+    }
+
     fn revision(&self) -> String {
         format!(
-            "{}:{}:{}:{}:{}",
-            self.identity.device, self.identity.inode, self.size, self.mtime_ns, self.ctime_ns
+            "{}:{}:{}:{}:{}:{}",
+            self.identity.device,
+            self.identity.inode,
+            self.identity.window_base,
+            self.size,
+            self.mtime_ns,
+            self.ctime_ns
         )
     }
 }
@@ -205,6 +234,7 @@ pub struct TranscriptSnapshot {
     pub session_id: String,
     pub chunks: Vec<Arc<EntryChunk>>,
     pub activity: Arc<ActivityIndex>,
+    pub window_start: u64,
     pub committed_bytes: u64,
     pub provisional_tail: bool,
     pub fence: Vec<u8>,
@@ -232,6 +262,7 @@ impl TranscriptSnapshot {
             session_id,
             chunks: vec![Arc::new(EntryChunk::new(0, entries))],
             activity: Arc::new(activity),
+            window_start: 0,
             committed_bytes: stamp.size,
             provisional_tail: false,
             fence: Vec::new(),
@@ -429,6 +460,8 @@ struct Load {
     previous: Option<Arc<TranscriptSnapshot>>,
     previous_index_compatible: bool,
     prefix_checked: bool,
+    window_scanned: u64,
+    window_start: Option<u64>,
     fence: Vec<u8>,
     committed: u64,
     provisional: bool,
@@ -1118,6 +1151,19 @@ fn number(value: &Value, key: &str) -> Result<usize, SnapshotError> {
         .and_then(Value::as_u64)
         .and_then(|n| n.try_into().ok())
         .ok_or_else(|| invalid(format!("missing count {key}")))
+}
+
+fn tail_bytes(request: &Value) -> Result<Option<u64>, SnapshotError> {
+    request
+        .get("tail_bytes")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|tail_bytes| *tail_bytes > 0)
+                .ok_or_else(|| invalid("tail_bytes must be a positive integer"))
+        })
+        .transpose()
 }
 
 fn io_error(error: std::io::Error) -> SnapshotError {
@@ -2122,6 +2168,7 @@ impl NativeStore {
             session_id: snapshot.session_id.clone(),
             chunks: snapshot.chunks.clone(),
             activity: Arc::new(std::mem::take(&mut stage.activity)),
+            window_start: snapshot.window_start,
             committed_bytes: snapshot.committed_bytes,
             provisional_tail: snapshot.provisional_tail,
             fence: snapshot.fence.clone(),
@@ -2719,7 +2766,7 @@ impl NativeStore {
             "device": snapshot.stamp.identity.device.to_string(), "inode": snapshot.stamp.identity.inode.to_string(),
             "mtime_ns": snapshot.stamp.mtime_ns.to_string(), "ctime_ns": snapshot.stamp.ctime_ns.to_string(),
             "provider": snapshot.provider.as_str(), "parser_version": PARSER_VERSION,
-            "source_bytes": snapshot.stamp.size, "committed_bytes": snapshot.committed_bytes,
+            "source_bytes": snapshot.stamp.size, "window_start": snapshot.window_start, "committed_bytes": snapshot.committed_bytes,
             "event_count": snapshot.event_count, "turn_count": snapshot.activity.turn_count(),
             "classifier": classifier, "provisional_tail": snapshot.provisional_tail,"lease_expires_unix_ms":expires})
     }
@@ -3954,7 +4001,8 @@ impl NativeStore {
         if !metadata.is_file() {
             return Err(invalid("source must be a regular file"));
         }
-        let stamp = SourceStamp::of(&metadata);
+        let window = tail_bytes(request)?;
+        let stamp = SourceStamp::of(&metadata).windowed(window);
         if stamp.size > self.config.source as u64 {
             return Err(SnapshotError::new(
                 Status::SourceLimit,
@@ -4072,6 +4120,8 @@ impl NativeStore {
                         previous,
                         previous_index_compatible,
                         prefix_checked: false,
+                        window_scanned: 0,
+                        window_start: (stamp.identity.window_base == 0).then_some(0),
                         fence: Vec::new(),
                         committed: 0,
                         provisional: false,
@@ -4461,6 +4511,7 @@ impl NativeStore {
     }
 
     fn matches_prefix(current: SourceStamp, pinned: SourceStamp) -> bool {
+        let current = current.viewed_as(pinned);
         current == pinned || current.identity == pinned.identity && current.size > pinned.size
     }
 
@@ -4593,6 +4644,7 @@ impl NativeStore {
                         load.committed = previous.committed_bytes;
                         load.offset = previous.committed_bytes;
                         load.pending_start = previous.committed_bytes;
+                        load.window_start = Some(previous.window_start);
                         load.provider = Some(Provider::Claude);
                         load.session_id = Some(previous.session_id.clone());
                         if !previous.provisional_tail && load.previous_index_compatible {
@@ -4609,6 +4661,41 @@ impl NativeStore {
                 }
                 return Ok(());
             }
+        }
+        if load.window_start.is_none() {
+            let unscanned = slot.stamp.identity.window_base - load.window_scanned;
+            let located = if unscanned == 0 {
+                Some(0)
+            } else {
+                if load.window_scanned > self.config.entry as u64 {
+                    return Err(SnapshotError::new(
+                        Status::EntryLimit,
+                        "source entry exceeds owner bound",
+                    ));
+                }
+                let count = (read_bound as u64).min(unscanned);
+                if count == 0 {
+                    return Err(source_read_limit());
+                }
+                load.file
+                    .seek(SeekFrom::Start(unscanned - count))
+                    .map_err(io_error)?;
+                let mut block = vec![0; count as usize];
+                self.before_source_read();
+                load.file.read_exact(&mut block).map_err(io_error)?;
+                usage[1] += count;
+                load.window_scanned += count;
+                memchr::memrchr(b'\n', &block).map(|newline| unscanned - count + newline as u64 + 1)
+            };
+            let Some(start) = located else {
+                return Ok(());
+            };
+            load.window_start = Some(start);
+            load.offset = start;
+            load.pending_start = start;
+            load.committed = start;
+            load.file.seek(SeekFrom::Start(start)).map_err(io_error)?;
+            return Ok(());
         }
         if load.indexed < load.count {
             let stop = (load.indexed + events_bound).min(load.count);
@@ -4671,6 +4758,9 @@ impl NativeStore {
                 }
             }
             if load.provider == Some(Provider::Codex) {
+                if slot.stamp.identity.window_base > 0 {
+                    return Err(invalid("tail_bytes requires a Claude source"));
+                }
                 let mut line_start = 0;
                 for end in memchr::memchr_iter(b'\n', &load.pending) {
                     if end - line_start > self.config.entry {
@@ -4838,6 +4928,7 @@ impl NativeStore {
             session_id,
             chunks: load.chunks.clone(),
             activity: Arc::new(load.activity.clone()),
+            window_start: load.window_start.expect("located window"),
             committed_bytes: load.committed,
             provisional_tail: load.provisional,
             fence: load.fence.clone(),
@@ -7893,6 +7984,403 @@ mod tests {
             &Cancellation::default(),
         );
         assert_eq!(foreign["status"].as_str(), Some("permission_denied"));
+    }
+
+    fn windowed_acquire(path: &Path, tail_bytes: u64) -> Value {
+        let mut request = acquire(path);
+        request.insert("tail_bytes", json!(tail_bytes));
+        request
+    }
+
+    fn windowed_store() -> NativeStore {
+        NativeStore::new(&json!({"max_read_bytes_per_step":1024,"max_events_per_step":64,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap()
+    }
+
+    fn expected_window(path: &Path, tail_bytes: u64) -> (u64, u64, usize) {
+        let bytes = std::fs::read(path).unwrap();
+        let size = bytes.len() as u64;
+        let quantum = tail_bytes / 2;
+        let base = if size > tail_bytes {
+            (size - tail_bytes) / quantum * quantum
+        } else {
+            0
+        };
+        let start = bytes[..base as usize]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at as u64 + 1);
+        let first = memchr::memchr_iter(b'\n', &bytes[..start as usize]).count();
+        (base, start, first)
+    }
+
+    fn windowed(store: &NativeStore, path: &Path, tail_bytes: u64, owner: &Value) -> Value {
+        finish(
+            store,
+            store.request(
+                &windowed_acquire(path, tail_bytes),
+                owner,
+                &Cancellation::default(),
+            ),
+            owner,
+        )
+    }
+
+    fn uuids(snapshot: &TranscriptSnapshot) -> Vec<usize> {
+        snapshot
+            .entries()
+            .iter()
+            .map(|entry| entry.meta().unwrap().uuid.parse().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn windowed_acquire_reads_the_window_and_the_entry_cut_at_its_base() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let size = std::fs::metadata(&source.path).unwrap().len();
+        let (base, start, first) = expected_window(&source.path, 4096);
+        assert!(start < base, "{start} {base}");
+        let response = windowed(&store, &source.path, 4096, &owner);
+        let description = &response["data"]["description"];
+        assert_eq!(description["window_start"].as_u64(), Some(start));
+        assert_eq!(description["source_bytes"].as_u64(), Some(size));
+        assert_eq!(description["committed_bytes"].as_u64(), Some(size));
+        assert_eq!(
+            description["event_count"].as_u64(),
+            Some((200 - first) as u64)
+        );
+        let snapshot = store.pin(handle(&response), &owner).unwrap();
+        assert_eq!(uuids(&snapshot), (first..200).collect::<Vec<_>>());
+        assert_eq!(snapshot.activity.turn_count(), 200 - first);
+        let longest = users(0..200).lines().map(str::len).max().unwrap() as u64 + 1;
+        assert!(size - start <= 4096 + 2048 + longest);
+        let read = store.state.lock().unwrap().counters[1];
+        assert!(read >= size - start + 128, "{read}");
+        assert!(read <= size - start + 128 + 1024, "{read}");
+    }
+
+    #[test]
+    fn windowed_acquire_keeps_its_base_across_appends_and_reads_only_the_tail() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let (base, start, first) = expected_window(&source.path, 4096);
+        windowed(&store, &source.path, 4096, &owner);
+        let before = store.state.lock().unwrap().counters[1];
+        let appended = users(200..202);
+        source.append(&appended);
+        let (same_base, same_start, _) = expected_window(&source.path, 4096);
+        assert_eq!((same_base, same_start), (base, start));
+        let response = windowed(&store, &source.path, 4096, &owner);
+        let description = &response["data"]["description"];
+        assert_eq!(description["window_start"].as_u64(), Some(start));
+        assert_eq!(
+            description["event_count"].as_u64(),
+            Some((202 - first) as u64)
+        );
+        let snapshot = store.pin(handle(&response), &owner).unwrap();
+        assert_eq!(uuids(&snapshot), (first..202).collect::<Vec<_>>());
+        let read = store.state.lock().unwrap().counters[1] - before;
+        assert!(read <= appended.len() as u64 + 192, "{read}");
+        assert_eq!(store.state.lock().unwrap().counters[5], 1);
+        source.append(&users(202..260));
+        let (advanced_base, advanced_start, advanced_first) = expected_window(&source.path, 4096);
+        assert!(advanced_base > base);
+        let before = store.state.lock().unwrap().counters[1];
+        let response = windowed(&store, &source.path, 4096, &owner);
+        let description = &response["data"]["description"];
+        assert_eq!(description["window_start"].as_u64(), Some(advanced_start));
+        let snapshot = store.pin(handle(&response), &owner).unwrap();
+        assert_eq!(uuids(&snapshot), (advanced_first..260).collect::<Vec<_>>());
+        let size = std::fs::metadata(&source.path).unwrap().len();
+        let read = store.state.lock().unwrap().counters[1] - before;
+        assert!(read <= size - advanced_start + 128 + 1024, "{read}");
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.counters[4], 2);
+        assert_eq!(state.latest.len(), 2);
+    }
+
+    #[test]
+    fn whole_file_and_windowed_views_of_one_source_coexist() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let (_, start, first) = expected_window(&source.path, 4096);
+        let whole = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let window = windowed(&store, &source.path, 4096, &owner);
+        assert_eq!(
+            whole["data"]["description"]["window_start"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            whole["data"]["description"]["event_count"].as_u64(),
+            Some(200)
+        );
+        assert_eq!(
+            window["data"]["description"]["window_start"].as_u64(),
+            Some(start)
+        );
+        assert_eq!(
+            window["data"]["description"]["event_count"].as_u64(),
+            Some((200 - first) as u64)
+        );
+        assert_ne!(
+            handle(&whole)["snapshot_id"].as_str(),
+            handle(&window)["snapshot_id"].as_str()
+        );
+        let before = store.state.lock().unwrap().counters[1];
+        let whole_again = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let window_again = windowed(&store, &source.path, 4096, &owner);
+        assert_eq!(
+            handle(&whole_again)["snapshot_id"].as_str(),
+            handle(&whole)["snapshot_id"].as_str()
+        );
+        assert_eq!(
+            handle(&window_again)["snapshot_id"].as_str(),
+            handle(&window)["snapshot_id"].as_str()
+        );
+        {
+            let state = store.state.lock().unwrap();
+            assert_eq!(state.counters[1], before);
+            assert_eq!(state.counters[7], 2);
+            assert_eq!(state.latest.len(), 2);
+        }
+        let covering = finish(
+            &store,
+            store.request(
+                &windowed_acquire(&source.path, 1024 * 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            handle(&covering)["snapshot_id"].as_str(),
+            handle(&whole)["snapshot_id"].as_str()
+        );
+    }
+
+    #[test]
+    fn windowed_classifier_labels_only_the_appended_events() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let batches = parity_classifier(&store, "parity");
+        let (_, _, first) = expected_window(&source.path, 4096);
+        let mut request = classifier_acquire(&source.path, "parity", 1024 * 1024);
+        request.insert("tail_bytes", json!(4096));
+        let initial = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let snapshot = store.pin(handle(&initial), &owner).unwrap();
+        assert_eq!(snapshot.event_count, 200 - first);
+        assert_parity_turns(&snapshot);
+        let labelled = batches.lock().unwrap().clone();
+        assert_eq!(labelled.first().unwrap().start, 0);
+        assert_eq!(labelled.last().unwrap().end, 200 - first);
+        source.append(&users(200..202));
+        let appended = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let snapshot = store.pin(handle(&appended), &owner).unwrap();
+        assert_eq!(uuids(&snapshot), (first..202).collect::<Vec<_>>());
+        assert_parity_turns(&snapshot);
+        assert_eq!(
+            batches.lock().unwrap()[labelled.len()..],
+            [200 - first..202 - first]
+        );
+    }
+
+    #[test]
+    fn windowed_acquire_refuses_codex_sources_and_zero_windows() {
+        let codex = Source::new(&format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s\"}}}}\n{}",
+            (0..64)
+                .map(|_| "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"m\"}}\n")
+                .collect::<String>()
+        ));
+        let store = windowed_store();
+        let owner = context("a");
+        let refused = finish(
+            &store,
+            store.request(
+                &windowed_acquire(&codex.path, 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(refused["status"].as_str(), Some("invalid_request"));
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("tail_bytes requires a Claude source")
+        );
+        let claude = Source::new(&users(0..2));
+        let zero = store.request(
+            &windowed_acquire(&claude.path, 0),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(zero["status"].as_str(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn windowed_scan_locates_the_entry_before_the_entry_bound_applies() {
+        let source = Source::new(&users(0..200));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":4096,"max_events_per_step":64,"max_entry_bytes":1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let (_, start, first) = expected_window(&source.path, 4096);
+        let response = windowed(&store, &source.path, 4096, &owner);
+        let description = &response["data"]["description"];
+        assert_eq!(description["window_start"].as_u64(), Some(start));
+        assert_eq!(
+            description["event_count"].as_u64(),
+            Some((200 - first) as u64)
+        );
+        let unbroken = Source::new(&format!(
+            "{}{}\n{}",
+            users(0..5),
+            "x".repeat(8192),
+            users(5..10)
+        ));
+        let refused = finish(
+            &store,
+            store.request(
+                &windowed_acquire(&unbroken.path, 1024),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("entry_limit"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn null_tail_bytes_is_a_whole_file_acquire() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let whole = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut request = acquire(&source.path);
+        request.insert("tail_bytes", json!(null));
+        let unwindowed = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            handle(&unwindowed)["snapshot_id"].as_str(),
+            handle(&whole)["snapshot_id"].as_str()
+        );
+        assert_eq!(
+            unwindowed["data"]["description"]["window_start"].as_u64(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn windowed_root_graph_excludes_its_own_file_from_direct_paths() {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("a");
+        let root = windowed(&store, &source.path, 4096, &owner);
+        let template = acquire(&source.path);
+        let before = store.state.lock().unwrap().counters[1];
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[source.path.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let state = store.state.lock().unwrap();
+        let prepared = state
+            .prepared_graphs
+            .values()
+            .next()
+            .unwrap()
+            .lock()
+            .unwrap();
+        assert!(prepared.sources.is_empty());
+        assert_eq!(prepared.stamps.len(), 1);
+        assert_eq!(state.counters[1], before);
+    }
+
+    #[test]
+    fn concurrent_appends_never_mix_windowed_generations() {
+        let source = Arc::new(Source::new(&users(0..40)));
+        let store = Arc::new(NativeStore::new(&json!({"max_read_bytes_per_step":1024,"max_events_per_step":3,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":4096,"reserved_hook_leases":1})).unwrap());
+        parity_classifier(&store, "parity");
+        let rounds = 24;
+        let view = |store: &NativeStore, path: &Path, owner: &Value| {
+            let mut request = classifier_acquire(path, "parity", 1024 * 1024);
+            request.insert("tail_bytes", json!(2048));
+            let response = finish(
+                store,
+                store.request(&request, owner, &Cancellation::default()),
+                owner,
+            );
+            let snapshot = store.pin(handle(&response), owner).unwrap();
+            let ids = uuids(&snapshot);
+            assert_eq!(
+                ids,
+                (ids[0]..ids[0] + ids.len()).collect::<Vec<_>>(),
+                "{ids:?}"
+            );
+            assert!(snapshot.stamp.size - snapshot.window_start <= 2048 + 1024 + 256);
+            assert_parity_turns(&snapshot);
+            snapshot
+        };
+        let appender = {
+            let store = Arc::clone(&store);
+            let source = Arc::clone(&source);
+            std::thread::spawn(move || {
+                let owner = context("appender");
+                for round in 0..rounds {
+                    let start = 40 + 2 * round;
+                    source.append(&users(start..start + 2));
+                    view(&store, &source.path, &owner);
+                }
+            })
+        };
+        let readers: Vec<_> = (0..2)
+            .map(|reader| {
+                let store = Arc::clone(&store);
+                let source = Arc::clone(&source);
+                std::thread::spawn(move || {
+                    let owner = context(&format!("reader-{reader}"));
+                    for _ in 0..rounds {
+                        view(&store, &source.path, &owner);
+                    }
+                })
+            })
+            .collect();
+        appender.join().unwrap();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        let last = view(&store, &source.path, &context("final"));
+        assert_eq!(*uuids(&last).last().unwrap(), 40 + 2 * rounds - 1);
     }
 
     #[test]

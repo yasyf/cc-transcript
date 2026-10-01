@@ -280,6 +280,7 @@ impl PreparedDiskKey {
             "source": [
                 stamp.identity.device.to_string(),
                 stamp.identity.inode.to_string(),
+                stamp.identity.window_base.to_string(),
                 stamp.size.to_string(),
                 stamp.mtime_ns.to_string(),
                 stamp.ctime_ns.to_string(),
@@ -991,6 +992,7 @@ mod tests {
             identity: SourceIdentity {
                 device: 10,
                 inode: 20,
+                window_base: 0,
             },
             size,
             mtime_ns: 30,

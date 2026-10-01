@@ -2082,6 +2082,7 @@ mod tests {
                 identity: SourceIdentity {
                     device: 1,
                     inode: 1,
+                    window_base: 0,
                 },
                 size: 0,
                 mtime_ns: 0,
@@ -2091,6 +2092,7 @@ mod tests {
             session_id: "s".into(),
             chunks: vec![Arc::new(EntryChunk::new(0, entries))],
             activity: Arc::new(activity),
+            window_start: 0,
             committed_bytes: 0,
             provisional_tail: false,
             fence: Vec::new(),

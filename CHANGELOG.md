@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;
+  absent, whole-file behavior is unchanged. For a Claude file of size `S` and window
+  `W`, `S <= W` gives the same snapshot as a plain `acquire`; otherwise `q = W/2`,
+  `base = ((S-W)/q)*q` quantizes the base to stay stable across appends. A backward
+  scan in `max_read_bytes_per_step` blocks, bounded by `max_entry_bytes`, moves it
+  to the containing line's first byte, including the cut entry whole: the window
+  spans `W` to `1.5 W` bytes plus at most one entry. The window is its own snapshot:
+  the description's `window_start` names its first byte (`0` for whole-file); event
+  positions, turns and counts are window-relative. Whole-file and windowed views
+  never serve or evict each other; the base enters the source revision and
+  prepared-facts cache key. An unchanged base reuses the previous windowed snapshot,
+  reading only appended bytes and carrying classifier labels as whole-file views do;
+  a base advance cold-loads the new window. A later `acquire` with the same
+  `tail_bytes` uses the window `warm_root` warmed. Codex sources under a window
+  return `invalid_request` with reason `tail_bytes requires a Claude source`.
 - The `tail` snapshot request returns the newest `count` events of a Claude transcript
   without a lease, a classifier, or a read of anything before them: the store reads the
   file backwards from its end in `max_read_bytes_per_step` blocks until it has `count`

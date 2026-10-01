@@ -22,7 +22,7 @@ impl NativeStore {
         if !metadata.is_file() {
             return Err(invalid("root source must be a regular file"));
         }
-        let current = SourceStamp::of(&metadata);
+        let current = SourceStamp::of(&metadata).windowed(tail_bytes(request)?);
         if current.size > self.config.source as u64 {
             return Err(SnapshotError::new(
                 Status::SourceLimit,
@@ -31,6 +31,18 @@ impl NativeStore {
         }
         let pinned = {
             let mut state = self.state.lock().expect("snapshot state");
+            let superseded: Vec<_> = state
+                .prepared_loads
+                .keys()
+                .filter(|identity| {
+                    identity.file() == current.identity.file() && **identity != current.identity
+                })
+                .copied()
+                .collect();
+            for identity in superseded {
+                state.prepared_loads.remove(&identity);
+                state.loads.remove(&identity);
+            }
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&current.identity) {
                 if Self::matches_prefix(current, slot.stamp)
                     && slot.path == path
@@ -57,20 +69,25 @@ impl NativeStore {
         } else {
             self.acquire(request, context, cancel, usage)
         };
-        let pending = outcome
-            .as_ref()
-            .ok()
-            .and_then(|(_, token, _)| token.clone());
-        if let Some(token) = &pending {
+        let pending = outcome.as_ref().ok().and_then(|(data, token, _)| {
+            token
+                .clone()
+                .map(|token| (token, data["reservation"]["load_id"].as_str().map(str::to_owned)))
+        });
+        if let Some((token, _)) = &pending {
             self.state
                 .lock()
                 .expect("snapshot state")
                 .waiters
                 .remove(token);
         }
-        let slot = {
+        let (slot, stamp) = {
             let mut state = self.state.lock().expect("snapshot state");
-            let slot = state.loads.get(&stamp.identity).cloned();
+            let slot = match pending.as_ref().and_then(|(_, load_id)| load_id.as_deref()) {
+                Some(load_id) => state.loads.values().find(|slot| slot.id == load_id).cloned(),
+                None => state.loads.get(&stamp.identity).cloned(),
+            };
+            let stamp = slot.as_ref().map_or(stamp, |slot| slot.stamp);
             if pending.is_some()
                 || outcome.as_ref().err().is_some_and(|error| {
                     matches!(error.status, Status::Deadline | Status::Cancelled)
@@ -84,7 +101,7 @@ impl NativeStore {
             } else {
                 state.prepared_loads.remove(&stamp.identity);
             }
-            slot
+            (slot, stamp)
         };
         let source_offset = slot
             .as_ref()
@@ -262,15 +279,101 @@ mod root_warm_tests {
     }
 
     #[test]
+    fn warms_a_trailing_window_without_reading_the_whole_root() {
+        let (directory, path) = source(4 * 1024 * 1024);
+        let bytes = std::fs::read(&path).unwrap();
+        let size = bytes.len() as u64;
+        let base = (size - 1024 * 1024) / (512 * 1024) * (512 * 1024);
+        let start = bytes[..base as usize]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at as u64 + 1);
+        assert!(start < base);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("window-warm");
+        let mut request = warm_request(&path, 256 * 1024);
+        request.insert("tail_bytes", json!(1024 * 1024));
+        let mut total_read = 0;
+        let mut finished = false;
+        for _ in 0..24 {
+            let reply = store.request(&request, &context, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            total_read += reply["usage"]["source_bytes_read"].as_u64().unwrap();
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                assert_eq!(reply["data"]["source_offset"].as_u64(), Some(size));
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished);
+        assert!(total_read >= size - start + 128, "{total_read}");
+        assert!(total_read <= size - start + 128 + 256 * 1024, "{total_read}");
+        let mut acquire = request.clone();
+        acquire.insert("operation", json!("acquire"));
+        let acquired = store.request(&acquire, &context, &Cancellation::default());
+        assert_eq!(acquired["status"].as_str(), Some("ok"), "{acquired:?}");
+        assert_eq!(
+            acquired["data"]["description"]["window_start"].as_u64(),
+            Some(start)
+        );
+        assert_eq!(acquired["usage"]["source_bytes_read"].as_u64(), Some(0));
+        let whole = store.request(
+            &warm_request(&path, 256 * 1024),
+            &context,
+            &Cancellation::default(),
+        );
+        assert_eq!(whole["status"].as_str(), Some("ok"), "{whole:?}");
+        assert_eq!(whole["data"]["complete"].as_bool(), Some(false));
+        assert!(whole["data"]["source_offset"].as_u64().unwrap() < start);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_base_advance_supersedes_the_previous_window_pin() {
+        let (directory, path) = source(4 * 1024 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("advancing-window");
+        let mut request = warm_request(&path, 256 * 1024);
+        request.insert("tail_bytes", json!(1024 * 1024));
+        let first = store.request(&request, &context, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(first["data"]["complete"].as_bool(), Some(false));
+        let old_base = std::fs::metadata(&path).unwrap().len() / (512 * 1024) * (512 * 1024)
+            - 1024 * 1024;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let payload = "y".repeat(16 * 1024);
+        for index in 0..48 {
+            file.write_all(format!(
+                "{{\"type\":\"user\",\"uuid\":\"late-{index}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-02T03:04:05Z\",\"message\":{{\"content\":\"{payload}\"}}}}\n"
+            ).as_bytes()).unwrap();
+        }
+        drop(file);
+        let size = std::fs::metadata(&path).unwrap().len();
+        let new_base = (size - 1024 * 1024) / (512 * 1024) * (512 * 1024);
+        assert!(new_base > old_base);
+        let second = store.request(&request, &context, &Cancellation::default());
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        let state = store.state.lock().unwrap();
+        let pinned: Vec<_> = state.prepared_loads.keys().copied().collect();
+        assert_eq!(pinned.len(), 1, "{pinned:?}");
+        assert_eq!(pinned[0].window_base, new_base);
+        assert_eq!(state.loads.len(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn a_productive_deadline_keeps_the_partial_root() {
         let (directory, path) = source(1024 * 1024);
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("deadline-warm");
         *store.read_hook.lock().unwrap() = Some(Arc::new(|| {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }));
         let mut request = warm_request(&path, 1024 * 1024);
-        request.insert("deadline_unix_ms", json!(now_ms() + 5));
+        request.insert("deadline_unix_ms", json!(now_ms() + 250));
         let reply = store.request(&request, &context, &Cancellation::default());
         assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
         assert_eq!(reply["data"]["complete"].as_bool(), Some(false));

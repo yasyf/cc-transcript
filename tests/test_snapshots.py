@@ -302,6 +302,43 @@ def test_tool_registry_identity_is_definition_bound() -> None:
     assert first != store.register_tool_registry([{**spec, "behaves_like": "Edit"}], context=context())
 
 
+def test_acquire_with_tail_bytes_views_a_trailing_window(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b"".join(event(index) for index in range(200)))
+    store = TranscriptStore({"max_read_bytes_per_step": 1024})
+    token = CancellationToken()
+    reply = store.request(
+        request(
+            "acquire",
+            path=str(path),
+            classifier=CLASSIFIER,
+            tail_bytes=4096,
+            limits=LIMITS,
+            deadline_unix_ms=deadline(),
+        ),
+        cancellation=token,
+        context=context(),
+    )
+    for _ in range(100):
+        if reply["status"] != "incomplete":
+            break
+        reply = store.request(request("resume", cursor=reply["cursor"]), cancellation=token, context=context())
+    assert reply["status"] == "ok", reply
+    description = reply["data"]["description"]
+    size = path.stat().st_size
+    base = (size - 4096) // 2048 * 2048
+    start = path.read_bytes().rfind(b"\n", 0, base) + 1
+    assert 0 < start < base
+    assert description["window_start"] == start
+    assert description["source_bytes"] == size
+    first = path.read_bytes().count(b"\n", 0, start)
+    assert description["event_count"] == 200 - first
+    whole = acquire(store, path)
+    assert whole["window_start"] == 0
+    assert whole["event_count"] == 200
+    assert whole["handle"]["snapshot_id"] != description["handle"]["snapshot_id"]
+
+
 def test_tail_returns_the_newest_events_without_a_lease(tmp_path: Path) -> None:
     path = tmp_path / "s.jsonl"
     path.write_bytes(b"".join(event(index) for index in range(40)))
