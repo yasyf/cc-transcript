@@ -9,6 +9,7 @@ use pyo3::IntoPyObjectExt;
 use std::path::PathBuf;
 
 use crate::views::events::event_view;
+use cc_transcript_core::snapshot::ChunkRows;
 use cc_transcript_core::watch::{tick, TailState};
 use std::sync::Arc;
 
@@ -53,7 +54,7 @@ impl WatchTailer {
                         path.into_bound_py_any(py)?,
                         event.session_id.as_str().into_bound_py_any(py)?,
                         event.is_sidechain.into_bound_py_any(py)?,
-                        event_view(py, &Arc::new(vec![event.event]), 0)?,
+                        event_view(py, &Arc::new(ChunkRows::new(vec![event.event])), 0)?,
                     ],
                 )?
                 .into_any())

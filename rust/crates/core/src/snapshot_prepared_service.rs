@@ -39,7 +39,7 @@ impl NativeStore {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
         let authority = &context["authority"];
-        let mut state = self.state.lock().expect("snapshot state");
+        let mut state = self.lock_state();
         if let Some(cached) = state.prepared_facts.get_mut(&stamp.identity) {
             if cached.stamp == stamp
                 && cached.registry_generation == registry_generation
@@ -103,7 +103,7 @@ impl NativeStore {
     ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         if let Some(facts) = {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             state
                 .prepared_facts
                 .get_mut(&root.stamp.identity)
@@ -181,7 +181,7 @@ impl NativeStore {
         }
         let stamp = SourceStamp::of(&metadata);
         {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&stamp.identity) {
                 if slot.stamp == stamp {
                     slot.deadline.store(
@@ -197,7 +197,7 @@ impl NativeStore {
         }
         let registry_generation = str_field(context, "registry_generation")?;
         if let Some(facts) = {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             state
                 .prepared_facts
                 .get_mut(&stamp.identity)
@@ -266,7 +266,7 @@ impl NativeStore {
         let before_events = usage[3];
         let outcome = self.acquire(&acquire, context, cancel, usage);
         {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             if let Some(slot) = state.loads.get(&stamp.identity).cloned() {
                 state.prepared_loads.insert(stamp.identity, (slot, now_ms()));
             }
@@ -299,7 +299,7 @@ impl NativeStore {
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
         )?;
         let waiter = {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
                 SnapshotError::new(Status::StaleCursor, "prepared source reservation expired")
             })?;
@@ -344,7 +344,7 @@ impl NativeStore {
         let prepared =
             crate::snapshot_projection::prepare_facts(&snapshot, &json!([]), &fact_limits, cancel);
         {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             state.leases.remove(str_field(handle, "lease_id")?);
             let recent_codex = snapshot.provider == Provider::Codex
                 && snapshot.codex_raw.is_some()
@@ -395,9 +395,7 @@ impl NativeStore {
             Err(error) if error.status == Status::RetainedLimit => facts,
             Err(error) => return Err(error),
         };
-        self.state
-            .lock()
-            .expect("snapshot state")
+        self.lock_state()
             .prepared_loads
             .remove(&stamp.identity);
         Ok(PreparedSourceOutcome::Ready {
@@ -541,10 +539,7 @@ impl NativeStore {
         }
         if !ids.is_empty() {
             let key = Self::warm_membership_key(request, context)?;
-            let membership = self
-                .state
-                .lock()
-                .expect("snapshot state")
+            let membership = self.lock_state()
                 .warm_memberships
                 .get(&key)
                 .cloned()
@@ -559,9 +554,7 @@ impl NativeStore {
                     remaining.deadline_unix_ms,
                 )?
             {
-                self.state
-                    .lock()
-                    .expect("snapshot state")
+                self.lock_state()
                     .warm_memberships
                     .remove(&key);
                 return Err(SnapshotError::new(
@@ -617,7 +610,7 @@ impl NativeStore {
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
                 accounted,
             };
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             Self::prune(&mut state);
             if state.prepared_graphs.len() >= self.lease_cap(context)? {
                 return Err(SnapshotError::new(
@@ -929,7 +922,7 @@ impl NativeStore {
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
             accounted,
         };
-        let mut state = self.state.lock().expect("snapshot state");
+        let mut state = self.lock_state();
         if state.prepared_graphs.len() >= self.lease_cap(context)? {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
@@ -951,7 +944,7 @@ impl NativeStore {
         token: &str,
         mut build: PreparedBuild,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let mut state = self.state.lock().expect("snapshot state");
+        let mut state = self.lock_state();
         if state.prepared_builds.len() >= self.lease_cap(&build.context)? {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
@@ -1169,10 +1162,7 @@ impl NativeStore {
         }
         let start = number(request, "start_index")?;
         let key = Self::warm_membership_key(request, context)?;
-        let cached = self
-            .state
-            .lock()
-            .expect("snapshot state")
+        let cached = self.lock_state()
             .warm_memberships
             .get(&key)
             .cloned();
@@ -1187,9 +1177,7 @@ impl NativeStore {
             {
                 cached
             } else {
-                self.state
-                    .lock()
-                    .expect("snapshot state")
+                self.lock_state()
                     .warm_memberships
                     .remove(&key);
                 self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
@@ -1204,7 +1192,7 @@ impl NativeStore {
             ));
         }
         {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             Self::prune(&mut state);
             if !state.warm_memberships.contains_key(&key) {
                 if state.warm_memberships.len() >= 32 {
@@ -1286,9 +1274,7 @@ impl NativeStore {
                     }
                     PreparedSourceOutcome::Pending(token) => {
                         if rounds == 16 {
-                            self.state
-                                .lock()
-                                .expect("snapshot state")
+                            self.lock_state()
                                 .waiters
                                 .remove(&token);
                             break 'warming;
@@ -1315,17 +1301,13 @@ impl NativeStore {
                                         && (usage[1] > before_read
                                             || usage[3] > before_events) =>
                             {
-                                self.state
-                                    .lock()
-                                    .expect("snapshot state")
+                                self.lock_state()
                                     .waiters
                                     .remove(&token);
                                 break 'warming;
                             }
                             Err(error) => {
-                                self.state
-                                    .lock()
-                                    .expect("snapshot state")
+                                self.lock_state()
                                     .waiters
                                     .remove(&token);
                                 return Err(error);
@@ -1345,9 +1327,7 @@ impl NativeStore {
                 cancel,
                 remaining.deadline_unix_ms,
             )? {
-                self.state
-                    .lock()
-                    .expect("snapshot state")
+                self.lock_state()
                     .warm_memberships
                     .remove(&key);
                 return Err(SnapshotError::new(
@@ -1374,10 +1354,7 @@ impl NativeStore {
         }
         let disk = self.prepared_disk.stats();
         let (source_offset, source_size) = if let Some(source) = members.get(next) {
-            let load = self
-                .state
-                .lock()
-                .expect("snapshot state")
+            let load = self.lock_state()
                 .prepared_loads
                 .get(&source.stamp.identity)
                 .map(|(slot, _)| Arc::clone(slot));
@@ -1443,10 +1420,7 @@ impl NativeStore {
             ));
         }
         cancel.check(cursor.remaining.deadline_unix_ms)?;
-        let graph = self
-            .state
-            .lock()
-            .expect("snapshot state")
+        let graph = self.lock_state()
             .prepared_graphs
             .get(&cursor.graph_id)
             .cloned()
@@ -1535,9 +1509,7 @@ impl NativeStore {
                     }
                     Ok(ready) => ready,
                     Err(error) => {
-                        self.state
-                            .lock()
-                            .expect("snapshot state")
+                        self.lock_state()
                             .waiters
                             .remove(&pending.token);
                         return Err(error);
@@ -1634,7 +1606,7 @@ impl NativeStore {
                 .and_then(Value::as_array)
                 .map_or(0, |items| items.len()),
         );
-        let mut state = self.state.lock().expect("snapshot state");
+        let mut state = self.lock_state();
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         if !state.prepared_graphs.contains_key(&cursor.graph_id) {
             return Err(SnapshotError::new(Status::StaleCursor, "prepared graph released"));
@@ -1666,10 +1638,7 @@ impl NativeStore {
             ));
         }
         let token = str_field(handle, "graph_id")?;
-        let graph = self
-            .state
-            .lock()
-            .expect("snapshot state")
+        let graph = self.lock_state()
             .prepared_graphs
             .get(token)
             .cloned()

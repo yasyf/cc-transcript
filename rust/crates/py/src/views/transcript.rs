@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySlice, PyTuple};
 use pyo3::IntoPyObjectExt;
 
-use cc_transcript_core::types::Entry;
+use cc_transcript_core::snapshot::ChunkRows;
 
 use crate::views::dunder::frozen_copy;
 use crate::views::events::event_view;
@@ -14,7 +14,7 @@ use crate::views::events::event_view;
 /// The parsed events of a single transcript file, backed by the native parse
 /// output; ``events`` materializes lazy views on access.
 ///
-/// One parse owns one ``Arc<Vec<Entry>>`` shared by every view, so retaining any
+/// One parse owns one ``Arc<ChunkRows>`` shared by every view, so retaining any
 /// view keeps the whole parse's entries alive; the live
 /// :class:`~cc_transcript.watch.WatchEvent` stream is exempt (one-entry Arc each).
 ///
@@ -29,7 +29,7 @@ pub(crate) struct TranscriptView {
     pub path: Option<String>,
     pub mtime: f64,
     pub provider: &'static str,
-    pub entries: Arc<Vec<Entry>>,
+    pub entries: Arc<ChunkRows>,
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
@@ -73,7 +73,7 @@ impl TranscriptView {
 #[pyo3_stub_gen::derive::gen_stub_pyclass]
 #[pyclass(name = "EventList", module = "cc_transcript.models", frozen)]
 pub(crate) struct EventListView {
-    pub entries: Arc<Vec<Entry>>,
+    pub entries: Arc<ChunkRows>,
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pymethods]

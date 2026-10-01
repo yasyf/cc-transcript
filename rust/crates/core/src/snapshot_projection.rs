@@ -2084,6 +2084,7 @@ mod tests {
         let activity = ActivityIndex::new(&entries.iter().collect::<Vec<_>>(), None);
         let count = entries.len();
         TranscriptSnapshot {
+            ledger: crate::snapshot_ledger::LedgerHook::default(),
             id: "test".into(),
             canonical_path: PathBuf::from("/snapshot.jsonl"),
             stamp: SourceStamp {

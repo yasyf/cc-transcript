@@ -13,6 +13,7 @@ use crate::snapshot::{
 };
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_codec::{self, EventWire};
+use crate::snapshot_ledger::LedgerHook;
 use crate::types::Entry;
 
 const PAGE_EVENTS: usize = 256;
@@ -463,6 +464,7 @@ impl LabelPreparation {
         let metadata_bytes = self.publication_metadata_bytes();
         self.check_memory(self.accounted_bytes().saturating_add(metadata_bytes))?;
         let snapshot = Arc::new(TranscriptSnapshot {
+            ledger: LedgerHook::default(),
             id: format!("labels:{}", self.binding.execution_id),
             canonical_path: self.source.canonical_path.clone(),
             stamp: self.source.stamp,
@@ -585,6 +587,7 @@ mod tests {
         let activity = ActivityIndex::new(&entries.iter().collect::<Vec<_>>(), None);
         let count = entries.len();
         Arc::new(TranscriptSnapshot {
+            ledger: LedgerHook::default(),
             id: "physical".into(),
             canonical_path: "/source.jsonl".into(),
             stamp: SourceStamp {

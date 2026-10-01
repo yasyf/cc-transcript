@@ -180,7 +180,9 @@ mod tests {
             "message":{"role":"assistant","model":"claude","content":content}
         })
         .to_string();
-        let entries = Arc::new(parse_transcript_bytes(source.as_bytes()).unwrap().entries);
+        let entries = Arc::new(cc_transcript_core::snapshot::ChunkRows::new(
+            parse_transcript_bytes(source.as_bytes()).unwrap().entries,
+        ));
         crate::views::events::event_view(py, &entries, 0).unwrap()
     }
 

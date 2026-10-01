@@ -2,7 +2,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use cc_transcript_core::activity::Hunk;
-use cc_transcript_core::snapshot::{Cancellation, SnapshotError, TranscriptSnapshot, WorkLimits};
+use cc_transcript_core::snapshot::{
+    Cancellation, ChunkRows, SnapshotError, TranscriptSnapshot, WorkLimits,
+};
 use cc_transcript_core::snapshot_codec::{self, RefRecord, ToolUseRecord, TurnRecord};
 use cc_transcript_core::snapshot_projection::{bounded_turn_range_with_usage, ProjectionUsage};
 use cc_transcript_core::types::ContentBlock;
@@ -112,7 +114,7 @@ fn detached_turns<'py>(
             start..entries.len()
         })
         .collect();
-    let entries = Arc::new(entries);
+    let entries = Arc::new(ChunkRows::new(entries));
     let (host, indices) = result_blocks(
         records
             .iter_mut()
@@ -157,12 +159,12 @@ pub(crate) fn decode_snapshot_events<'py>(
     let records = py
         .detach(|| snapshot_codec::decode_events(&records, max_bytes))
         .map_err(error)?;
-    let entries = Arc::new(
+    let entries = Arc::new(ChunkRows::new(
         records
             .into_iter()
             .map(|record| record.event)
             .collect::<Vec<_>>(),
-    );
+    ));
     let views = (0..entries.len())
         .map(|index| event_view(py, &entries, index))
         .collect::<PyResult<Vec<_>>>()?;
