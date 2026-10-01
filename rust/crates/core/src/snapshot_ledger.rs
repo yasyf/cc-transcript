@@ -119,6 +119,14 @@ impl Anchor {
             kind: AnchorKind::Indexes,
         }
     }
+
+    pub(crate) fn facts(id: usize, bytes: usize) -> Self {
+        Self {
+            id,
+            bytes,
+            kind: AnchorKind::Facts,
+        }
+    }
 }
 
 struct Shared {
@@ -219,6 +227,8 @@ impl SharedAllocations {
 pub(crate) struct RetainedLedger {
     pub(crate) shared: SharedAllocations,
     pub(crate) queue: Arc<ReleaseQueue>,
+    pub(crate) pending: usize,
+    pub(crate) classifier: usize,
 }
 
 impl RetainedLedger {
@@ -226,6 +236,8 @@ impl RetainedLedger {
         Self {
             shared: SharedAllocations::new(work),
             queue: Arc::new(ReleaseQueue::default()),
+            pending: 0,
+            classifier: 0,
         }
     }
 
@@ -309,6 +321,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         self.map.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -392,6 +405,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         });
     }
 
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.work.tick(self.map.len());
         self.map.clear();
@@ -400,10 +414,6 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.map.iter().map(|(key, slot)| (key, &slot.value))
-    }
-
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
-        self.map.keys()
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &V> {

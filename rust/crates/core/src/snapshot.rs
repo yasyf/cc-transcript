@@ -463,6 +463,7 @@ struct LoadSlot {
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
     work: Mutex<Load>,
     accounted: AtomicUsize,
+    attached: AtomicBool,
     deadline: AtomicU64,
 }
 
@@ -939,6 +940,7 @@ struct ClassifierSlot {
     work: Mutex<ClassifierStage>,
     seed: Option<Arc<CarriedClassification>>,
     accounted: AtomicUsize,
+    attached: AtomicBool,
     deadline: u64,
     complete: AtomicBool,
 }
@@ -1029,32 +1031,190 @@ fn snapshot_key(snapshot: &Arc<TranscriptSnapshot>) -> usize {
     Arc::as_ptr(snapshot) as usize
 }
 
-struct StoreState {
+fn facts_key(facts: &Arc<crate::snapshot_prepared::PreparedFacts>) -> usize {
+    Arc::as_ptr(facts) as usize
+}
+
+fn facts_anchor(facts: &Arc<crate::snapshot_prepared::PreparedFacts>) -> Anchor {
+    Anchor::facts(facts_key(facts), facts.accounted_bytes())
+}
+
+fn value_bytes(value: &Value) -> usize {
+    let charge = crate::snapshot_memory::value_charge(value);
+    charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+}
+
+impl Charge<String> for Lease {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        self.claimant.capacity() + self.registry_generation.capacity()
+    }
+}
+
+impl Charge<String> for Waiter {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        self.claimant.capacity() + value_bytes(&self.context)
+    }
+}
+
+impl Charge<String> for ProjectionCursor {
+    fn charge(&self) -> usize {
+        value_bytes(&self.request)
+    }
+}
+
+impl Charge<String> for DiscoveryCursor {
+    fn charge(&self) -> usize {
+        self.accounted
+    }
+}
+
+impl Charge<String> for Checkpoint {
+    fn charge(&self) -> usize {
+        self.accounted
+    }
+}
+
+impl Charge<String> for ResolutionCursor {
+    fn charge(&self) -> usize {
+        value_bytes(&self.request)
+            + self.ids.iter().map(String::capacity).sum::<usize>()
+            + self
+                .paths
+                .values()
+                .map(|path| path.as_os_str().len())
+                .sum::<usize>()
+            + self.sessions.iter().map(value_bytes).sum::<usize>()
+    }
+}
+
+impl Charge<String> for LocatedPath {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        self.path.as_os_str().len()
+    }
+}
+
+impl Charge<String> for LocateCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        self.accounted_bytes()
+    }
+}
+
+impl Charge<String> for GraphCursor {
+    fn charge(&self) -> usize {
+        self.accounted
+    }
+}
+
+impl Charge<String> for Arc<Mutex<PreparedGraph>> {
+    fn charge(&self) -> usize {
+        self.lock().expect("prepared graph").accounted
+    }
+}
+
+impl PreparedGraph {
+    fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
+        std::iter::once(facts_anchor(&self.root_facts))
+            .chain(self.root_slices.values().map(facts_anchor))
+    }
+}
+
+impl Charge<String> for PreparedBuild {
+    fn charge(&self) -> usize {
+        size_of::<PreparedBuild>()
+            + self.tasks.capacity() * size_of::<GraphTask>()
+            + self.sources.capacity() * size_of::<PreparedSourceRef>()
+    }
+}
+
+impl Charge<String> for PreparedQueryCursor {
+    fn charge(&self) -> usize {
+        size_of::<PreparedQueryCursor>()
+            + self
+                .input_records
+                .as_ref()
+                .map_or(0, |records| records.iter().map(String::capacity).sum())
+            + crate::snapshot_memory::value_charge(&self.query).owned_capacity_bytes
+    }
+}
+
+impl Charge<String> for (String, u64) {
+    fn charge(&self) -> usize {
+        0
+    }
+}
+
+impl Charge<SourceIdentity> for CachedPreparedFacts {
+    fn charge(&self) -> usize {
+        0
+    }
+}
+
+impl Charge<String> for WarmMembership {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        self.accounted_bytes()
+    }
+}
+
+impl Charge<String> for Delivery {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        size_of::<Delivery>()
+            + self.claimant.capacity()
+            + self.leases.capacity() * size_of::<String>()
+            + self.leases.iter().map(String::capacity).sum::<usize>()
+            + self.cursor.as_ref().map_or(0, String::capacity)
+    }
+}
+
+pub(crate) struct StoreState {
     latest: HashMap<SourceIdentity, Arc<TranscriptSnapshot>>,
     recent_codex: HashMap<SourceIdentity, u64>,
     loads: HashMap<SourceIdentity, Arc<LoadSlot>>,
     prepared_loads: HashMap<SourceIdentity, (Arc<LoadSlot>, u64)>,
-    leases: HashMap<String, Lease>,
-    waiters: HashMap<String, Waiter>,
-    projections: HashMap<String, ProjectionCursor>,
+    leases: Ledgered<String, Lease>,
+    waiters: Ledgered<String, Waiter>,
+    projections: Ledgered<String, ProjectionCursor>,
     generations: Ledgered<usize, GenerationRecord>,
     classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
     carried_classifications: Ledgered<(SourceIdentity, String), Arc<CarriedClassification>>,
-    graphs: HashMap<String, GraphCursor>,
-    prepared_graphs: HashMap<String, Arc<Mutex<PreparedGraph>>>,
-    prepared_builds: HashMap<String, PreparedBuild>,
-    prepared_queries: HashMap<String, PreparedQueryCursor>,
-    expired_prepared_queries: HashMap<String, (String, u64)>,
-    prepared_facts: HashMap<SourceIdentity, CachedPreparedFacts>,
-    warm_memberships: HashMap<String, WarmMembership>,
-    deliveries: HashMap<String, Delivery>,
+    graphs: Ledgered<String, GraphCursor>,
+    prepared_graphs: Ledgered<String, Arc<Mutex<PreparedGraph>>>,
+    prepared_builds: Ledgered<String, PreparedBuild>,
+    prepared_queries: Ledgered<String, PreparedQueryCursor>,
+    expired_prepared_queries: Ledgered<String, (String, u64)>,
+    prepared_facts: Ledgered<SourceIdentity, CachedPreparedFacts>,
+    warm_memberships: Ledgered<String, WarmMembership>,
+    deliveries: Ledgered<String, Delivery>,
     labels: Ledgered<String, LabelSlot>,
     registries: Ledgered<String, RegistryRecord>,
-    discoveries: HashMap<String, DiscoveryCursor>,
-    checkpoints: HashMap<String, Checkpoint>,
-    resolutions: HashMap<String, ResolutionCursor>,
-    locations: HashMap<String, LocatedPath>,
-    locates: HashMap<String, LocateCursor>,
+    discoveries: Ledgered<String, DiscoveryCursor>,
+    checkpoints: Ledgered<String, Checkpoint>,
+    resolutions: Ledgered<String, ResolutionCursor>,
+    locations: Ledgered<String, LocatedPath>,
+    locates: Ledgered<String, LocateCursor>,
     escaped_chunks: HashMap<usize, (Weak<ChunkRows>, MemoryCharge)>,
     counters: [u64; 18],
     transient_bytes: usize,
@@ -1071,27 +1231,27 @@ impl StoreState {
             recent_codex: HashMap::new(),
             loads: HashMap::new(),
             prepared_loads: HashMap::new(),
-            leases: HashMap::new(),
-            waiters: HashMap::new(),
-            projections: HashMap::new(),
+            leases: Ledgered::new(work.clone()),
+            waiters: Ledgered::new(work.clone()),
+            projections: Ledgered::new(work.clone()),
             generations: Ledgered::new(work.clone()),
             classifier_stages: HashMap::new(),
             carried_classifications: Ledgered::new(work.clone()),
-            graphs: HashMap::new(),
-            prepared_graphs: HashMap::new(),
-            prepared_builds: HashMap::new(),
-            prepared_queries: HashMap::new(),
-            expired_prepared_queries: HashMap::new(),
-            prepared_facts: HashMap::new(),
-            warm_memberships: HashMap::new(),
-            deliveries: HashMap::new(),
+            graphs: Ledgered::new(work.clone()),
+            prepared_graphs: Ledgered::new(work.clone()),
+            prepared_builds: Ledgered::new(work.clone()),
+            prepared_queries: Ledgered::new(work.clone()),
+            expired_prepared_queries: Ledgered::new(work.clone()),
+            prepared_facts: Ledgered::new(work.clone()),
+            warm_memberships: Ledgered::new(work.clone()),
+            deliveries: Ledgered::new(work.clone()),
             labels: Ledgered::new(work.clone()),
             registries: Ledgered::new(work.clone()),
-            discoveries: HashMap::new(),
-            checkpoints: HashMap::new(),
-            resolutions: HashMap::new(),
-            locations: HashMap::new(),
-            locates: HashMap::new(),
+            discoveries: Ledgered::new(work.clone()),
+            checkpoints: Ledgered::new(work.clone()),
+            resolutions: Ledgered::new(work.clone()),
+            locations: Ledgered::new(work.clone()),
+            locates: Ledgered::new(work.clone()),
             escaped_chunks: HashMap::new(),
             counters: [0; 18],
             transient_bytes: 0,
@@ -1257,36 +1417,239 @@ impl StoreState {
         for anchor in slot.anchors() {
             self.ledger.shared.acquire(anchor);
         }
+        slot.attached.store(true, Ordering::Release);
+        self.ledger.classifier += slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.classifier_stages.insert(key, slot) {
-            for anchor in displaced.anchors() {
-                self.ledger.shared.release(anchor.id);
-            }
+            self.detach_classifier_stage(&displaced);
+        }
+    }
+
+    fn detach_classifier_stage(&mut self, slot: &ClassifierSlot) {
+        slot.attached.store(false, Ordering::Release);
+        self.ledger.classifier = self
+            .ledger
+            .classifier
+            .checked_sub(slot.accounted.load(Ordering::Acquire))
+            .expect("balanced retained ledger");
+        for anchor in slot.anchors() {
+            self.ledger.shared.release(anchor.id);
         }
     }
 
     fn remove_classifier_stage(&mut self, key: &str) -> Option<Arc<ClassifierSlot>> {
         let slot = self.classifier_stages.remove(key)?;
-        for anchor in slot.anchors() {
+        self.detach_classifier_stage(&slot);
+        Some(slot)
+    }
+
+    fn set_classifier_charge(&mut self, slot: &ClassifierSlot, bytes: usize) {
+        let previous = slot.accounted.swap(bytes, Ordering::AcqRel);
+        if slot.attached.load(Ordering::Acquire) {
+            self.ledger.classifier = self
+                .ledger
+                .classifier
+                .checked_sub(previous)
+                .expect("balanced retained ledger")
+                + bytes;
+        }
+    }
+
+    fn add_classifier_charge(&mut self, slot: &ClassifierSlot, bytes: usize) {
+        slot.accounted.fetch_add(bytes, Ordering::AcqRel);
+        if slot.attached.load(Ordering::Acquire) {
+            self.ledger.classifier += bytes;
+        }
+    }
+
+    fn insert_load(&mut self, identity: SourceIdentity, slot: Arc<LoadSlot>) {
+        slot.attached.store(true, Ordering::Release);
+        self.ledger.pending += slot.accounted.load(Ordering::Acquire);
+        if let Some(displaced) = self.loads.insert(identity, slot) {
+            self.detach_load(&displaced);
+        }
+    }
+
+    fn detach_load(&mut self, slot: &LoadSlot) {
+        slot.attached.store(false, Ordering::Release);
+        self.ledger.pending = self
+            .ledger
+            .pending
+            .checked_sub(slot.accounted.load(Ordering::Acquire))
+            .expect("balanced retained ledger");
+    }
+
+    fn remove_load(&mut self, identity: &SourceIdentity) -> Option<Arc<LoadSlot>> {
+        let slot = self.loads.remove(identity)?;
+        self.detach_load(&slot);
+        Some(slot)
+    }
+
+    fn retain_loads(&mut self, mut keep: impl FnMut(&SourceIdentity, &Arc<LoadSlot>) -> bool) {
+        let mut detached = Vec::new();
+        self.loads.retain(|identity, slot| {
+            let kept = keep(identity, slot);
+            if !kept {
+                detached.push(Arc::clone(slot));
+            }
+            kept
+        });
+        for slot in detached {
+            self.detach_load(&slot);
+        }
+    }
+
+    fn set_load_charge(&mut self, slot: &LoadSlot, bytes: usize) {
+        let previous = slot.accounted.swap(bytes, Ordering::AcqRel);
+        if slot.attached.load(Ordering::Acquire) {
+            self.ledger.pending = self
+                .ledger
+                .pending
+                .checked_sub(previous)
+                .expect("balanced retained ledger")
+                + bytes;
+        }
+    }
+
+    fn add_load_charge(&mut self, slot: &LoadSlot, bytes: usize) {
+        slot.accounted.fetch_add(bytes, Ordering::AcqRel);
+        if slot.attached.load(Ordering::Acquire) {
+            self.ledger.pending += bytes;
+        }
+    }
+
+    fn insert_prepared_facts(&mut self, identity: SourceIdentity, cached: CachedPreparedFacts) {
+        self.ledger.shared.acquire(facts_anchor(&cached.facts));
+        if let Some(displaced) = self.prepared_facts.insert(identity, cached) {
+            self.ledger.shared.release(facts_key(&displaced.facts));
+        }
+    }
+
+    fn remove_prepared_facts(&mut self, identity: &SourceIdentity) -> Option<CachedPreparedFacts> {
+        let cached = self.prepared_facts.remove(identity)?;
+        self.ledger.shared.release(facts_key(&cached.facts));
+        Some(cached)
+    }
+
+    fn touch_prepared_facts(
+        &mut self,
+        stamp: SourceStamp,
+        registry_generation: &str,
+        admission: &str,
+        authority: &Value,
+        classifier: &Value,
+    ) -> Option<Arc<crate::snapshot_prepared::PreparedFacts>> {
+        let mut cached = self.prepared_facts.get_mut(&stamp.identity)?;
+        (cached.stamp == stamp
+            && cached.registry_generation == registry_generation
+            && cached.admission == admission
+            && cached.authority == *authority
+            && cached.classifier == *classifier)
+            .then(|| {
+                cached.last_used = now_ms();
+                Arc::clone(&cached.facts)
+            })
+    }
+
+    fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
+        for anchor in graph.lock().expect("prepared graph").anchors() {
+            self.ledger.shared.acquire(anchor);
+        }
+        if let Some(displaced) = self.prepared_graphs.insert(graph_id, graph) {
+            self.release_prepared_graph(&displaced);
+        }
+    }
+
+    fn release_prepared_graph(&mut self, graph: &Mutex<PreparedGraph>) {
+        for anchor in graph.lock().expect("prepared graph").anchors() {
             self.ledger.shared.release(anchor.id);
         }
-        Some(slot)
+    }
+
+    fn remove_prepared_graph(&mut self, graph_id: &str) -> Option<Arc<Mutex<PreparedGraph>>> {
+        let graph = self.prepared_graphs.remove(graph_id)?;
+        self.release_prepared_graph(&graph);
+        Some(graph)
+    }
+
+    fn retain_prepared_graphs(
+        &mut self,
+        mut keep: impl FnMut(&String, &Arc<Mutex<PreparedGraph>>) -> bool,
+    ) {
+        let mut released = Vec::new();
+        self.prepared_graphs.retain(|graph_id, graph| {
+            let kept = keep(graph_id, graph);
+            if !kept {
+                released.push(Arc::clone(graph));
+            }
+            kept
+        });
+        for graph in released {
+            self.release_prepared_graph(&graph);
+        }
+    }
+
+    fn insert_root_slice(
+        &mut self,
+        graph: &mut PreparedGraph,
+        key: String,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    ) {
+        self.ledger.shared.acquire(facts_anchor(&facts));
+        graph.root_slices.insert(key, facts);
+    }
+
+    fn insert_prepared_build(&mut self, token: String, build: PreparedBuild) {
+        self.ledger.shared.acquire(facts_anchor(&build.root_facts));
+        if let Some(displaced) = self.prepared_builds.insert(token, build) {
+            self.ledger.shared.release(facts_key(&displaced.root_facts));
+        }
+    }
+
+    fn remove_prepared_build(&mut self, token: &str) -> Option<PreparedBuild> {
+        let build = self.prepared_builds.remove(token)?;
+        self.ledger.shared.release(facts_key(&build.root_facts));
+        Some(build)
     }
 
     fn retain_classifier_stages(
         &mut self,
         mut keep: impl FnMut(&String, &Arc<ClassifierSlot>) -> bool,
     ) {
-        let mut released = Vec::new();
+        let mut detached = Vec::new();
         self.classifier_stages.retain(|key, slot| {
             let kept = keep(key, slot);
             if !kept {
-                released.extend(slot.anchors());
+                detached.push(Arc::clone(slot));
             }
             kept
         });
-        for anchor in released {
-            self.ledger.shared.release(anchor.id);
+        for slot in detached {
+            self.detach_classifier_stage(&slot);
         }
+    }
+}
+
+struct GaugeTerms {
+    entries: usize,
+    indexes: usize,
+    pending: usize,
+    classifier: usize,
+    label: usize,
+    discovery: usize,
+    projections: usize,
+    graph: usize,
+    metadata: usize,
+    live_generations: usize,
+}
+
+impl GaugeTerms {
+    fn report(&self, state: &StoreState) -> Value {
+        let metadata = self.metadata + NativeStore::fixed_metadata_bytes(state);
+        let owned = state.owned.accounted_bytes();
+        json!({"retained_entry_capacity_bytes": self.entries, "retained_index_capacity_bytes": self.indexes,
+            "retained_projection_bytes": self.projections + self.discovery + self.graph + metadata + owned, "pending_input_capacity_bytes": self.pending + self.classifier + self.label + state.transient_bytes,
+            "retained_total_accounted_bytes": self.entries + self.indexes + self.pending + self.classifier + self.label + self.projections + self.discovery + self.graph + metadata + state.transient_bytes + owned,
+            "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": self.live_generations})
     }
 }
 
@@ -1447,7 +1810,7 @@ impl Drop for WaiterClaim<'_> {
     fn drop(&mut self) {
         let mut state = self.store.lock_state();
         if self.keep {
-            if let Some(waiter) = state.waiters.get_mut(self.token) {
+            if let Some(mut waiter) = state.waiters.get_mut(self.token) {
                 waiter.busy = false;
             }
         } else {
@@ -2409,6 +2772,7 @@ impl NativeStore {
                     work: Mutex::new(stage),
                     seed,
                     accounted: AtomicUsize::new(accounted),
+                    attached: AtomicBool::new(false),
                     deadline: now_ms() + self.config.preparation,
                     complete: AtomicBool::new(false),
                 });
@@ -2471,7 +2835,7 @@ impl NativeStore {
         {
             let mut state = self.lock_state();
             self.admit_memory(&mut state, context, reserve)?;
-            slot.accounted.fetch_add(reserve, Ordering::AcqRel);
+            state.add_classifier_charge(&slot, reserve);
         }
         if stop > start {
             let flags = if let Some(callback) = &callback {
@@ -2491,8 +2855,8 @@ impl NativeStore {
             }
             usage[6] += 1;
         }
-        slot.accounted
-            .store(stage.accounted_bytes(), Ordering::Release);
+        self.lock_state()
+            .set_classifier_charge(&slot, stage.accounted_bytes());
         cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
         if stop < snapshot.event_count {
             return Ok(ClassifierProgress {
@@ -2527,7 +2891,7 @@ impl NativeStore {
             if let Some(carried) = carried {
                 Self::carry(&mut state, lineage, carried);
             }
-            slot.accounted.store(0, Ordering::Release);
+            state.set_classifier_charge(&slot, 0);
             self.admit_memory(&mut state, context, 0)?;
         }
         stage.result = Some(Arc::clone(&derived));
@@ -2650,8 +3014,7 @@ impl NativeStore {
             .retain(|_, delivery| delivery.expires > now);
         state.owned.prune(now);
         state
-            .prepared_graphs
-            .retain(|_, graph| graph.lock().expect("prepared graph").expires > now);
+            .retain_prepared_graphs(|_, graph| graph.lock().expect("prepared graph").expires > now);
         let expired_queries: Vec<_> = state
             .prepared_queries
             .iter()
@@ -2686,7 +3049,7 @@ impl NativeStore {
             .map(|(token, _)| token.clone())
             .collect();
         for token in expired_builds {
-            if let Some(build) = state.prepared_builds.remove(&token) {
+            if let Some(build) = state.remove_prepared_build(&token) {
                 Self::release_prepared_build_state(state, &build);
             }
         }
@@ -2735,7 +3098,7 @@ impl NativeStore {
         state
             .warm_memberships
             .retain(|_, membership| membership.expires > now);
-        state.loads.retain(|id, slot| {
+        state.retain_loads(|id, slot| {
             (active.contains(id) && slot.deadline.load(Ordering::Acquire) > now)
                 || Arc::strong_count(slot) > 1
         });
@@ -2755,39 +3118,34 @@ impl NativeStore {
 
     fn gauges(state: &mut StoreState) -> Value {
         state.drain();
-        Self::gauge_report(
-            state,
-            state.ledger.shared.entries(),
-            state.ledger.shared.indexes(),
-            state.labels.charged(),
-            state.registries.charged()
+        GaugeTerms {
+            entries: state.ledger.shared.entries(),
+            indexes: state.ledger.shared.indexes(),
+            pending: state.ledger.pending,
+            classifier: state.ledger.classifier,
+            label: state.labels.charged(),
+            discovery: state.discoveries.charged() + state.checkpoints.charged(),
+            projections: state.projections.charged(),
+            graph: state.graphs.charged()
+                + state.prepared_graphs.charged()
+                + state.prepared_queries.charged()
+                + state.prepared_builds.charged()
+                + state.expired_prepared_queries.charged()
+                + state.prepared_facts.charged()
+                + state.ledger.shared.facts(),
+            metadata: state.deliveries.charged()
+                + state.registries.charged()
                 + state.generations.charged()
-                + state.carried_classifications.charged(),
-            state.generations.len(),
-        )
-    }
-
-    fn gauge_report(
-        state: &StoreState,
-        entries: usize,
-        indexes: usize,
-        label_bytes: usize,
-        anchored_metadata: usize,
-        live_generations: usize,
-    ) -> Value {
-        let classifier_bytes = Self::classifier_bytes(state);
-        let pending = Self::pending_bytes(state);
-        let discovery_bytes = Self::discovery_bytes(state);
-        let projections = Self::projection_bytes(state);
-        let graph_bytes = Self::graph_bytes(state);
-        let metadata = Self::delivery_bytes(state)
-            + Self::fixed_metadata_bytes(state)
-            + Self::walked_metadata_bytes(state)
-            + anchored_metadata;
-        json!({"retained_entry_capacity_bytes": entries, "retained_index_capacity_bytes": indexes,
-            "retained_projection_bytes": projections + discovery_bytes + graph_bytes + metadata + state.owned.accounted_bytes(), "pending_input_capacity_bytes": pending + classifier_bytes + label_bytes + state.transient_bytes,
-            "retained_total_accounted_bytes": entries + indexes + pending + classifier_bytes + label_bytes + projections + discovery_bytes + graph_bytes + metadata + state.transient_bytes + state.owned.accounted_bytes(),
-            "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": live_generations})
+                + state.carried_classifications.charged()
+                + state.leases.charged()
+                + state.waiters.charged()
+                + state.resolutions.charged()
+                + state.warm_memberships.charged()
+                + state.locations.charged()
+                + state.locates.charged(),
+            live_generations: state.generations.len(),
+        }
+        .report(state)
     }
 
     #[cfg(test)]
@@ -2849,106 +3207,42 @@ impl NativeStore {
                 }
             }
         }
-        Self::gauge_report(
-            state,
+        GaugeTerms {
             entries,
             indexes,
-            state.labels.audit_charged(),
-            state.registries.audit_charged()
+            pending: state
+                .loads
+                .values()
+                .map(|slot| slot.accounted.load(Ordering::Acquire))
+                .sum(),
+            classifier: state
+                .classifier_stages
+                .values()
+                .map(|slot| slot.accounted.load(Ordering::Acquire))
+                .sum(),
+            label: state.labels.audit_charged(),
+            discovery: state.discoveries.audit_charged() + state.checkpoints.audit_charged(),
+            projections: state.projections.audit_charged(),
+            graph: state.graphs.audit_charged()
+                + state.prepared_graphs.audit_charged()
+                + state.prepared_queries.audit_charged()
+                + state.prepared_builds.audit_charged()
+                + state.expired_prepared_queries.audit_charged()
+                + state.prepared_facts.audit_charged()
+                + Self::audit_prepared_fact_bytes(state),
+            metadata: state.deliveries.audit_charged()
+                + state.registries.audit_charged()
                 + state.generations.audit_charged()
-                + state.carried_classifications.audit_charged(),
-            snapshots.len(),
-        )
-    }
-
-    fn classifier_bytes(state: &StoreState) -> usize {
-        state
-            .classifier_stages
-            .values()
-            .map(|slot| slot.accounted.load(Ordering::Acquire))
-            .sum()
-    }
-
-    fn pending_bytes(state: &StoreState) -> usize {
-        state
-            .loads
-            .values()
-            .map(|slot| slot.accounted.load(Ordering::Acquire))
-            .sum()
-    }
-
-    fn discovery_bytes(state: &StoreState) -> usize {
-        state
-            .discoveries
-            .values()
-            .map(|cursor| cursor.accounted)
-            .sum::<usize>()
-            + state
-                .checkpoints
-                .values()
-                .map(|checkpoint| checkpoint.accounted)
-                .sum::<usize>()
-    }
-
-    fn projection_bytes(state: &StoreState) -> usize {
-        state
-            .projections
-            .values()
-            .map(|cursor| {
-                let charge = crate::snapshot_memory::value_charge(&cursor.request);
-                charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
-            })
-            .sum()
-    }
-
-    fn graph_bytes(state: &StoreState) -> usize {
-        state
-            .graphs
-            .values()
-            .map(|graph| graph.accounted)
-            .sum::<usize>()
-            + state
-                .prepared_graphs
-                .values()
-                .map(|graph| graph.lock().expect("prepared graph").accounted)
-                .sum::<usize>()
-            + state
-                .prepared_queries
-                .values()
-                .map(|cursor| {
-                    size_of::<PreparedQueryCursor>()
-                        + cursor
-                            .input_records
-                            .as_ref()
-                            .map_or(0, |records| records.iter().map(String::capacity).sum())
-                        + crate::snapshot_memory::value_charge(&cursor.query).owned_capacity_bytes
-                })
-                .sum::<usize>()
-            + state
-                .prepared_builds
-                .values()
-                .map(|cursor| {
-                    size_of::<PreparedBuild>()
-                        + cursor.tasks.capacity() * size_of::<GraphTask>()
-                        + cursor.sources.capacity() * size_of::<PreparedSourceRef>()
-                })
-                .sum::<usize>()
-            + Self::prepared_fact_bytes(state)
-    }
-
-    fn delivery_bytes(state: &StoreState) -> usize {
-        state
-            .deliveries
-            .iter()
-            .map(|(key, delivery)| {
-                key.capacity()
-                    + size_of::<Delivery>()
-                    + delivery.claimant.capacity()
-                    + delivery.leases.capacity() * size_of::<String>()
-                    + delivery.leases.iter().map(String::capacity).sum::<usize>()
-                    + delivery.cursor.as_ref().map_or(0, String::capacity)
-            })
-            .sum()
+                + state.carried_classifications.audit_charged()
+                + state.leases.audit_charged()
+                + state.waiters.audit_charged()
+                + state.resolutions.audit_charged()
+                + state.warm_memberships.audit_charged()
+                + state.locations.audit_charged()
+                + state.locates.audit_charged(),
+            live_generations: snapshots.len(),
+        }
+        .report(state)
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
@@ -2957,75 +3251,16 @@ impl NativeStore {
             + state.registries.capacity_bytes()
             + state.generations.capacity_bytes()
             + state.carried_classifications.capacity_bytes()
-            + state.leases.capacity() * size_of::<(String, Lease)>()
-            + state.waiters.capacity() * size_of::<(String, Waiter)>()
+            + state.leases.capacity_bytes()
+            + state.waiters.capacity_bytes()
             + state.latest.capacity() * size_of::<(SourceIdentity, Arc<TranscriptSnapshot>)>()
             + state.escaped_chunks.capacity()
                 * size_of::<(usize, (Weak<ChunkRows>, MemoryCharge))>()
             + state.prepared_loads.capacity() * size_of::<(SourceIdentity, (Arc<LoadSlot>, u64))>()
             + state.recent_codex.capacity() * size_of::<(SourceIdentity, u64)>()
-            + state.warm_memberships.capacity() * size_of::<(String, WarmMembership)>()
-            + state.locations.capacity() * size_of::<(String, LocatedPath)>()
-            + state.locates.capacity() * size_of::<(String, LocateCursor)>()
-    }
-
-    fn walked_metadata_bytes(state: &StoreState) -> usize {
-        state
-            .leases
-            .iter()
-            .map(|(key, lease)| {
-                key.capacity() + lease.claimant.capacity() + lease.registry_generation.capacity()
-            })
-            .sum::<usize>()
-            + state
-                .waiters
-                .iter()
-                .map(|(key, waiter)| {
-                    let charge = crate::snapshot_memory::value_charge(&waiter.context);
-                    key.capacity()
-                        + waiter.claimant.capacity()
-                        + charge.owned_capacity_bytes
-                        + charge.opaque_dom_accounted_bytes
-                })
-                .sum::<usize>()
-            + state
-                .resolutions
-                .values()
-                .map(|cursor| {
-                    let charge = crate::snapshot_memory::value_charge(&cursor.request);
-                    charge.owned_capacity_bytes
-                        + charge.opaque_dom_accounted_bytes
-                        + cursor.ids.iter().map(String::capacity).sum::<usize>()
-                        + cursor
-                            .paths
-                            .values()
-                            .map(|path| path.as_os_str().len())
-                            .sum::<usize>()
-                        + cursor
-                            .sessions
-                            .iter()
-                            .map(|value| {
-                                let charge = crate::snapshot_memory::value_charge(value);
-                                charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
-                            })
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + state
-                .warm_memberships
-                .iter()
-                .map(|(key, membership)| key.capacity() + membership.accounted_bytes())
-                .sum::<usize>()
-            + state
-                .locations
-                .iter()
-                .map(|(id, location)| id.capacity() + location.path.as_os_str().len())
-                .sum::<usize>()
-            + state
-                .locates
-                .iter()
-                .map(|(token, cursor)| token.capacity() + cursor.accounted_bytes())
-                .sum::<usize>()
+            + state.warm_memberships.capacity_bytes()
+            + state.locations.capacity_bytes()
+            + state.locates.capacity_bytes()
     }
 
     #[cfg(test)]
@@ -3389,7 +3624,7 @@ impl NativeStore {
             if data.get("kind").and_then(Value::as_str) == Some("loading") {
                 if let Some(token) = &cursor {
                     let mut state = self.lock_state();
-                    if let Some(waiter) = state.waiters.get_mut(token) {
+                    if let Some(mut waiter) = state.waiters.get_mut(token) {
                         if bytes > waiter.limits.max_output_bytes {
                             return Err(SnapshotError::new(
                                 Status::OutputLimit,
@@ -3399,7 +3634,7 @@ impl NativeStore {
                         waiter.limits.max_output_bytes -= bytes;
                         data["reservation"]["remaining_work"]
                             .insert("max_output_bytes", json!(waiter.limits.max_output_bytes));
-                    }
+                    };
                 }
             }
             Ok((data, cursor, reason))
@@ -3562,7 +3797,7 @@ impl NativeStore {
         let mut leases = Vec::new();
         if may_issue {
             for handle in handles {
-                if let Some(lease) = state.leases.get_mut(&handle) {
+                if let Some(mut lease) = state.leases.get_mut(&handle) {
                     if lease.claimant == claimant && !lease.exposed {
                         lease.exposed = true;
                         leases.push(handle);
@@ -3695,7 +3930,7 @@ impl NativeStore {
             }
             released = true;
         }
-        if let Some(build) = state.prepared_builds.remove(token) {
+        if let Some(build) = state.remove_prepared_build(token) {
             Self::release_prepared_build_state(&mut state, &build);
             released = true;
         }
@@ -3904,7 +4139,7 @@ impl NativeStore {
                             "prepared build claimant differs",
                         ));
                     }
-                    state.prepared_builds.remove(cursor)
+                    state.remove_prepared_build(cursor)
                 };
                 if let Some(mut build) = prepared_build {
                     if build.context["authority"] != context["authority"]
@@ -3977,7 +4212,7 @@ impl NativeStore {
                     }
                     self.authority(context, Some(&waiter.load.path))?;
                     waiter.context = context.clone();
-                    if let Some(current) = self.lock_state().waiters.get_mut(cursor) {
+                    if let Some(mut current) = self.lock_state().waiters.get_mut(cursor) {
                         current.context = context.clone();
                     }
                     return self.advance(cursor, waiter, None, cancel, usage);
@@ -4101,7 +4336,7 @@ impl NativeStore {
                                 "prepared graph claimant differs",
                             ));
                         }
-                        let released = state.prepared_graphs.remove(token).is_some();
+                        let released = state.remove_prepared_graph(token).is_some();
                         let discarded: Vec<_> = state
                             .prepared_queries
                             .iter()
@@ -4483,6 +4718,7 @@ impl NativeStore {
                     registry_generation: str_field(context, "registry_generation")?.to_owned(),
                     registry,
                     accounted: AtomicUsize::new(0),
+                    attached: AtomicBool::new(false),
                     deadline: AtomicU64::new(now + self.config.preparation),
                     work: Mutex::new(Load {
                         file,
@@ -4516,7 +4752,7 @@ impl NativeStore {
                         failure: None,
                     }),
                 });
-                state.loads.insert(stamp.identity, Arc::clone(&slot));
+                state.insert_load(stamp.identity, Arc::clone(&slot));
                 slot
             };
             if state.waiters.len() >= self.lease_cap(context)? {
@@ -4584,12 +4820,12 @@ impl NativeStore {
         }
         {
             let mut state = self.lock_state();
-            let current = state
+            let mut current = state
                 .waiters
                 .get_mut(token)
                 .ok_or_else(|| SnapshotError::new(Status::StaleCursor, "reservation released"))?;
             if current.busy {
-                return Ok(self.loading(token, current, "reservation preparation is running"));
+                return Ok(self.loading(token, &current, "reservation preparation is running"));
             }
             waiter = current.clone();
             current.busy = true;
@@ -4649,7 +4885,7 @@ impl NativeStore {
             {
                 let mut state = self.lock_state();
                 self.admit_memory(&mut state, &waiter.context, reservation)?;
-                slot.accounted.fetch_add(reservation, Ordering::AcqRel);
+                state.add_load_charge(&slot, reservation);
             }
 
             let before_bytes = usage[1];
@@ -4756,7 +4992,7 @@ impl NativeStore {
                 if let (Some(snapshot), Some(generation)) = (&load.result, generation) {
                     state.register_generation(snapshot, generation);
                 }
-                slot.accounted.store(pending_charge, Ordering::Release);
+                state.set_load_charge(&slot, pending_charge);
                 self.admit_memory(&mut state, &waiter.context, 0)?;
             }
             if let Err(error) = result {
@@ -5650,7 +5886,7 @@ impl NativeStore {
             *work += 1;
             let waiter = {
                 let mut state = self.lock_state();
-                let waiter = state.waiters.get_mut(&token).ok_or_else(|| {
+                let mut waiter = state.waiters.get_mut(&token).ok_or_else(|| {
                     SnapshotError::new(Status::StaleCursor, "graph source reservation expired")
                 })?;
                 waiter.context = graph.context.clone();
@@ -7020,7 +7256,7 @@ impl NativeStore {
                         SnapshotError::new(Status::StaleCursor, "resolution reservation expired")
                     })?;
                 self.authority(&cursor.context, Some(path))?;
-                if let Some(current) = self.lock_state().waiters.get_mut(pending) {
+                if let Some(mut current) = self.lock_state().waiters.get_mut(pending) {
                     current.context = cursor.context.clone();
                 }
                 self.advance(pending, waiter, Some(&cursor.remaining), cancel, usage)?
@@ -9730,7 +9966,7 @@ mod tests {
         let token = page["cursor"].as_str().unwrap();
         {
             let mut state = store.state.lock().unwrap();
-            let cursor = state.prepared_queries.get_mut(token).unwrap();
+            let mut cursor = state.prepared_queries.get_mut(token).unwrap();
             cursor.expires = now_ms() - 1;
             cursor.remaining.deadline_unix_ms = now_ms() - 1;
         }
@@ -9840,14 +10076,32 @@ mod tests {
             assert_eq!(new["data"]["value"], old["data"]["value"]);
         }
         let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap();
-        let state = store.state.lock().unwrap();
+        store.assert_conserved();
+        let (slices, slice_bytes, before) = {
+            let state = store.lock_state();
+            let graph = state.prepared_graphs[graph_id].lock().unwrap();
+            (
+                graph.root_slices.len(),
+                graph
+                    .root_slices
+                    .values()
+                    .map(|facts| facts.accounted_bytes())
+                    .sum::<usize>(),
+                state.ledger.shared.facts(),
+            )
+        };
+        assert_eq!(slices, 1);
+        assert!(slice_bytes > 0);
+        let released = store.request(&json!({"schema":SCHEMA,"id":"release-graph","operation":"release","kind":"graph","owner_epoch":store.owner_epoch,"token":graph_id}), &owner, &Cancellation::default());
         assert_eq!(
-            state.prepared_graphs[graph_id]
-                .lock()
-                .unwrap()
-                .root_slices
-                .len(),
-            1
+            released["data"]["released"].as_bool(),
+            Some(true),
+            "{released:?}"
+        );
+        store.assert_conserved();
+        assert_eq!(
+            store.lock_state().ledger.shared.facts(),
+            before - slice_bytes
         );
     }
 
@@ -11609,7 +11863,7 @@ mod tests {
         let cap = now_ms() + 10_000;
         {
             let mut state = store.state.lock().unwrap();
-            let lease = state
+            let mut lease = state
                 .leases
                 .get_mut(handle["lease_id"].as_str().unwrap())
                 .unwrap();
@@ -11655,7 +11909,7 @@ mod tests {
         let cap = now_ms() + 90_000;
         {
             let mut state = store.state.lock().unwrap();
-            let lease = state
+            let mut lease = state
                 .leases
                 .get_mut(handle["lease_id"].as_str().unwrap())
                 .unwrap();
@@ -11887,5 +12141,34 @@ mod tests {
         assert_eq!(entry_bytes(&store), 0);
         assert_eq!(store.audits.load(Ordering::Relaxed), before + 1);
         assert!(store.retained_work.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn pending_load_charges_are_conserved_across_steps() {
+        let source = Source::new(&format!(
+            "{}\n{}\n{}\n{}\n",
+            user("a"),
+            user("b"),
+            user("c"),
+            user("d")
+        ));
+        let store = store();
+        let owner = context("a");
+        let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+        let mut steps = 0;
+        while response["status"].as_str() == Some("incomplete") {
+            store.assert_conserved();
+            let cursor = response["cursor"].as_str().unwrap().to_owned();
+            response = store.request(
+                &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":cursor}),
+                &owner,
+                &Cancellation::default(),
+            );
+            steps += 1;
+        }
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert!(steps > 1);
+        store.assert_conserved();
+        assert_eq!(store.lock_state().ledger.pending, 0);
     }
 }

@@ -5,7 +5,8 @@ impl NativeStore {
         }
     }
 
-    fn prepared_fact_bytes(state: &StoreState) -> usize {
+    #[cfg(test)]
+    fn audit_prepared_fact_bytes(state: &StoreState) -> usize {
         let mut seen = HashSet::new();
         let mut bytes = 0usize;
         let mut add = |facts: &Arc<crate::snapshot_prepared::PreparedFacts>| {
@@ -40,18 +41,12 @@ impl NativeStore {
         let admission = str_field(context, "admission")?;
         let authority = &context["authority"];
         let mut state = self.lock_state();
-        if let Some(cached) = state.prepared_facts.get_mut(&stamp.identity) {
-            if cached.stamp == stamp
-                && cached.registry_generation == registry_generation
-                && cached.admission == admission
-                && cached.authority == *authority
-                && cached.classifier == *classifier
-            {
-                cached.last_used = now_ms();
-                return Ok(Arc::clone(&cached.facts));
-            }
+        if let Some(cached) =
+            state.touch_prepared_facts(stamp, registry_generation, admission, authority, classifier)
+        {
+            return Ok(cached);
         }
-        state.prepared_facts.remove(&stamp.identity);
+        state.remove_prepared_facts(&stamp.identity);
         let accounted = facts.accounted_bytes();
         let budget = self.config.retained.min(self.config.prepared_fact_memory);
         if accounted > budget {
@@ -60,7 +55,7 @@ impl NativeStore {
                 "prepared facts cache budget exhausted",
             ));
         }
-        let mut used = Self::prepared_fact_bytes(&state);
+        let mut used = state.ledger.shared.facts();
         while accounted > budget.saturating_sub(used) {
             let oldest = state
                 .prepared_facts
@@ -74,11 +69,11 @@ impl NativeStore {
                     "prepared facts cache budget exhausted",
                 ));
             };
-            state.prepared_facts.remove(&oldest).expect("cached fact");
-            used = Self::prepared_fact_bytes(&state);
+            state.remove_prepared_facts(&oldest).expect("cached fact");
+            used = state.ledger.shared.facts();
         }
         self.admit_memory(&mut state, context, accounted)?;
-        state.prepared_facts.insert(
+        state.insert_prepared_facts(
             stamp.identity,
             CachedPreparedFacts {
                 stamp,
@@ -102,23 +97,13 @@ impl NativeStore {
         cancel: &Cancellation,
     ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
-        if let Some(facts) = {
-            let mut state = self.lock_state();
-            state
-                .prepared_facts
-                .get_mut(&root.stamp.identity)
-                .and_then(|cached| {
-                    (cached.stamp == root.stamp
-                        && cached.registry_generation == registry_generation
-                        && cached.admission == context["admission"].as_str().unwrap_or("")
-                        && cached.authority == context["authority"]
-                        && cached.classifier == *classifier)
-                        .then(|| {
-                            cached.last_used = now_ms();
-                            Arc::clone(&cached.facts)
-                        })
-                })
-        } {
+        if let Some(facts) = self.lock_state().touch_prepared_facts(
+            root.stamp,
+            registry_generation,
+            context["admission"].as_str().unwrap_or(""),
+            &context["authority"],
+            classifier,
+        ) {
             return Ok(facts);
         }
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
@@ -191,28 +176,18 @@ impl NativeStore {
                     *touched = now_ms();
                 } else {
                     state.prepared_loads.remove(&stamp.identity);
-                    state.loads.remove(&stamp.identity);
+                    state.remove_load(&stamp.identity);
                 }
             }
         }
         let registry_generation = str_field(context, "registry_generation")?;
-        if let Some(facts) = {
-            let mut state = self.lock_state();
-            state
-                .prepared_facts
-                .get_mut(&stamp.identity)
-                .and_then(|cached| {
-                    (cached.stamp == stamp
-                        && cached.registry_generation == registry_generation
-                        && cached.admission == context["admission"].as_str().unwrap_or("")
-                        && cached.authority == context["authority"]
-                        && cached.classifier == json!({"id":"native","version":"1"}))
-                    .then(|| {
-                        cached.last_used = now_ms();
-                        Arc::clone(&cached.facts)
-                    })
-                })
-        } {
+        if let Some(facts) = self.lock_state().touch_prepared_facts(
+            stamp,
+            registry_generation,
+            context["admission"].as_str().unwrap_or(""),
+            &context["authority"],
+            &json!({"id":"native","version":"1"}),
+        ) {
             usage[7] += 1;
             return Ok((
                 stamp,
@@ -300,7 +275,7 @@ impl NativeStore {
         )?;
         let waiter = {
             let mut state = self.lock_state();
-            let waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
+            let mut waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
                 SnapshotError::new(Status::StaleCursor, "prepared source reservation expired")
             })?;
             waiter.context = context.clone();
@@ -618,9 +593,7 @@ impl NativeStore {
                     "prepared graph admission exhausted",
                 ));
             }
-            state
-                .prepared_graphs
-                .insert(graph_id.clone(), Arc::new(Mutex::new(graph)));
+            state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
             return Ok((
                 json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
                 None,
@@ -929,9 +902,7 @@ impl NativeStore {
                 "prepared graph admission exhausted",
             ));
         }
-        state
-            .prepared_graphs
-            .insert(graph_id.clone(), Arc::new(Mutex::new(graph)));
+        state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
         Ok((
             json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
             None,
@@ -952,7 +923,7 @@ impl NativeStore {
             ));
         }
         build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
-        state.prepared_builds.insert(token.to_owned(), build);
+        state.insert_prepared_build(token.to_owned(), build);
         Ok((
             Value::new_null(),
             Some(token.to_owned()),
@@ -1638,14 +1609,15 @@ impl NativeStore {
             ));
         }
         let token = str_field(handle, "graph_id")?;
-        let graph = self.lock_state()
+        let shared = self
+            .lock_state()
             .prepared_graphs
             .get(token)
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleHandle, "prepared graph expired"))?;
         let mut bounds = limits(request)?;
-        self.validate_prepared_root(&graph, context, &mut bounds, usage)?;
-        let mut graph = graph.lock().expect("prepared graph");
+        self.validate_prepared_root(&shared, context, &mut bounds, usage)?;
+        let mut graph = shared.lock().expect("prepared graph");
         if graph.claimant != str_field(context, "claimant")?
             || graph.registry_generation != str_field(context, "registry_generation")?
             || graph.admission != str_field(context, "admission")?
@@ -1714,32 +1686,40 @@ impl NativeStore {
         let selectors = request
             .get("selectors")
             .ok_or_else(|| invalid("missing graph selectors"))?;
-        let root_facts = if selectors.as_array().is_some_and(|items| items.is_empty()) {
-            Arc::clone(&graph.root_facts)
-        } else {
-            let key = sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string()))?;
-            if let Some(facts) = graph.root_slices.get(&key) {
-                Arc::clone(facts)
-            } else {
-                if graph.root_slices.len() >= 64 {
+        let claimant = graph.claimant.clone();
+        let expires = graph.expires;
+        let root = Arc::clone(&graph.root);
+        let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
+            .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
+            .transpose()?;
+        let cached_slice = match &selector_key {
+            None => Some(Arc::clone(&graph.root_facts)),
+            Some(key) => {
+                if graph.root_slices.len() >= 64 && !graph.root_slices.contains_key(key) {
                     return Err(SnapshotError::new(
                         Status::Incomplete,
                         "prepared root selector cache exhausted",
                     ));
                 }
+                graph.root_slices.get(key).cloned()
+            }
+        };
+        drop(graph);
+        let root_facts = match (cached_slice, selector_key) {
+            (Some(facts), _) => facts,
+            (None, Some(key)) => {
                 let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
-                fact_limits.max_events = graph.root.event_count;
+                fact_limits.max_events = root.event_count;
                 let (facts, _, _) = crate::snapshot_projection::prepare_facts(
-                    &graph.root,
+                    &root,
                     selectors,
                     &fact_limits,
                     cancel,
                 )?;
-                let facts = Arc::new(facts);
-                graph.root_slices.insert(key, Arc::clone(&facts));
-                facts
+                self.publish_root_slice(token, &shared, key, Arc::new(facts))?
             }
+            (None, None) => unreachable!("the root facts are always cached"),
         };
         if kind != "deep_predicate_inputs" && root_facts.query(query)?["value"].as_bool() == Some(true) {
             let data = json!({"kind":"scalar","value":true});
@@ -1754,7 +1734,7 @@ impl NativeStore {
             None
         };
         let cursor = PreparedQueryCursor {
-            claimant: graph.claimant.clone(),
+            claimant,
             graph_id: token.to_owned(),
             query: query.clone(),
             pending: None,
@@ -1762,9 +1742,36 @@ impl NativeStore {
             next: 0,
             page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
             remaining: bounds,
-            expires: graph.expires,
+            expires,
         };
-        drop(graph);
         self.prepared_query_page(&self.token("prepared-query"), cursor, context, cancel, usage)
+    }
+
+    fn publish_root_slice(
+        &self,
+        token: &str,
+        shared: &Arc<Mutex<PreparedGraph>>,
+        key: String,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
+        let mut state = self.lock_state();
+        if !state.prepared_graphs.contains_key(token) {
+            return Err(SnapshotError::new(
+                Status::StaleHandle,
+                "prepared graph expired",
+            ));
+        }
+        let mut graph = shared.lock().expect("prepared graph");
+        if let Some(existing) = graph.root_slices.get(&key) {
+            return Ok(Arc::clone(existing));
+        }
+        if graph.root_slices.len() >= 64 {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "prepared root selector cache exhausted",
+            ));
+        }
+        state.insert_root_slice(&mut graph, key, Arc::clone(&facts));
+        Ok(facts)
     }
 }

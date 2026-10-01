@@ -49,7 +49,7 @@ impl NativeStore {
                     .get(&identity)
                     .is_some_and(|slot| Arc::strong_count(slot) == 1)
                 {
-                    state.loads.remove(&identity);
+                    state.remove_load(&identity);
                 }
             }
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&current.identity) {
@@ -65,7 +65,7 @@ impl NativeStore {
                     Some(Arc::clone(slot))
                 } else {
                     state.prepared_loads.remove(&current.identity);
-                    state.loads.remove(&current.identity);
+                    state.remove_load(&current.identity);
                     None
                 }
             } else {
