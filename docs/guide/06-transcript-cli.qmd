@@ -345,8 +345,17 @@ with status 3. A completed scan without matches retains status 1.
 Its path and line provenance identify that extract. They cannot recover the
 original events lost by window extraction and deduplication. The `corpus` writer
 still performs a full preparation pass; its unchanged cost is separate from
-bounded searching. Independent CLI invocations do not share in-memory snapshots.
+bounded searching.
 
+Claude `grep` streams matches as it reads and saves checkpoints in
+`$XDG_CACHE_HOME/cc-transcript/scan` (or `~/.cache/cc-transcript/scan`). Each record
+binds the CLI build, parser, tool registry, file identity, patterns and match
+caps, search options, output mode, and starting counts; work budgets are excluded.
+A later matching run reads a fence of up to 64 bytes and the saved hit, context,
+and pending lines, validates them, then continues from the saved prefix,
+including appended bytes. Invalid records cause a rescan from byte 0.
+Budget-capped runs save partial progress but still report incomplete coverage.
+Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
 
 Work counters separate source reads and logical projected payload bytes from
 `staging_peak_reserved_bytes`, the conservative peak allocation reservation.

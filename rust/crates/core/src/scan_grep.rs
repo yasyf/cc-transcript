@@ -1,18 +1,14 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::ops::Range;
-use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
 
 use crate::activity::{result_index, tool_result_metadata};
 use crate::filter::event_kind;
-use crate::gateway::{sniff_provider, Provider};
 use crate::render::{haystack, haystack_bound, tool_haystack, tool_haystack_bound};
-use crate::scan::{ScanBudget, ScanControl, StagingReservation};
-use crate::scan_stream::{LineSpan, SourceStream};
+use crate::scan::{ScanBudget, StagingReservation};
 use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot};
-use crate::snapshot_memory::entry_charge;
 use crate::toolcall::{expand_tool_names, with_registry, ToolRegistrySnapshot};
 use crate::types::{matches_names, ContentBlock, Entry};
 
@@ -442,74 +438,6 @@ impl<'store> GrepReducer<'store> {
         !self.options.errors && !self.options.with_result
     }
 
-    pub fn scan_stream<E>(
-        &mut self,
-        path: &Path,
-        render_names: bool,
-        budget: &mut ScanBudget<'store>,
-        cancel: &Cancellation,
-        mut emit: E,
-    ) -> Result<Option<ScanControl>, SnapshotError>
-    where
-        E: FnMut(
-            GrepEvent<'_>,
-            &mut ScanBudget<'store>,
-            &Cancellation,
-        ) -> Result<(), SnapshotError>,
-    {
-        let mut source = SourceStream::open(path, 0, budget, cancel)?;
-        let generation = source.generation();
-        let mut stream = GrepStream {
-            source_bytes: path.as_os_str().len().saturating_add(generation.len()),
-            generation,
-            render_names,
-            names: HashMap::new(),
-            names_staging: budget.reserve_staging(0, cancel)?,
-            queue: VecDeque::new(),
-            parsed: 0,
-            decided: 0,
-            emitted: 0,
-            last_emitted: None,
-            last_hit: None,
-            stopped: None,
-        };
-        let mut sniffed = false;
-        let mut eof = false;
-        while !stream.finished(self.options.context) {
-            let Some(line) = source.next_line(budget, cancel)? else {
-                eof = true;
-                break;
-            };
-            let bytes = source.bytes(&line);
-            if !sniffed && !bytes.iter().all(u8::is_ascii_whitespace) {
-                sniffed = true;
-                if sniff_provider(bytes) == Provider::Codex {
-                    return Ok(None);
-                }
-            }
-            budget.charge_parse(cancel)?;
-            let mut entries = Vec::with_capacity(1);
-            crate::parse::parse_line(bytes, &mut entries, &|_| true)
-                .map_err(|error| SnapshotError::new(Status::ParseError, format!("{error:?}")))?;
-            if let Some(entry) = entries.pop() {
-                stream.push(line, entry, budget, cancel)?;
-            }
-            stream.decide(self, false, budget, cancel)?;
-            stream.emit(self, false, budget, cancel, &mut emit)?;
-        }
-        if eof {
-            stream.decide(self, true, budget, cancel)?;
-            stream.emit(self, true, budget, cancel, &mut emit)?;
-        }
-        source.verify()?;
-        Ok(Some(match stream.stopped {
-            Some(hit) => ScanControl::Stop {
-                source_complete: eof && stream.parsed == hit + 1 && self.coverage_complete,
-            },
-            None => ScanControl::Continue,
-        }))
-    }
-
     fn matches(
         &mut self,
         event: &Entry,
@@ -605,238 +533,6 @@ impl<'store> GrepReducer<'store> {
                 continue;
             }
             matched[index] = pattern.regex.is_match(text);
-        }
-        Ok(())
-    }
-}
-
-struct ToolName {
-    name: String,
-    referenced: bool,
-}
-
-struct StreamSlot<'store> {
-    index: usize,
-    line: LineSpan,
-    entry: Entry,
-    charge: usize,
-    pattern_ids: Option<Vec<usize>>,
-    staging: StagingReservation<'store>,
-}
-
-struct GrepStream<'store> {
-    generation: String,
-    source_bytes: usize,
-    render_names: bool,
-    names: HashMap<String, ToolName>,
-    names_staging: StagingReservation<'store>,
-    queue: VecDeque<StreamSlot<'store>>,
-    parsed: usize,
-    decided: usize,
-    emitted: usize,
-    last_emitted: Option<usize>,
-    last_hit: Option<usize>,
-    stopped: Option<usize>,
-}
-
-fn unresolved(names: &HashMap<String, ToolName>, entry: &Entry) -> bool {
-    entry
-        .tool_results()
-        .any(|result| !names.contains_key(result.tool_use_id.as_str()))
-}
-
-fn resolve<'n>(
-    names: &'n mut HashMap<String, ToolName>,
-    entry: &Entry,
-    mark: bool,
-) -> HashMap<&'n str, &'n str> {
-    if mark {
-        for result in entry.tool_results() {
-            if let Some(slot) = names.get_mut(result.tool_use_id.as_str()) {
-                slot.referenced = true;
-            }
-        }
-    }
-    let names: &'n HashMap<String, ToolName> = names;
-    entry
-        .tool_results()
-        .filter_map(|result| {
-            names
-                .get_key_value(result.tool_use_id.as_str())
-                .map(|(id, slot)| (id.as_str(), slot.name.as_str()))
-        })
-        .collect()
-}
-
-impl<'store> GrepStream<'store> {
-    fn finished(&self, context: usize) -> bool {
-        self.stopped
-            .is_some_and(|hit| self.parsed > hit + context.max(1) && self.emitted > hit + context)
-    }
-
-    fn push(
-        &mut self,
-        line: LineSpan,
-        entry: Entry,
-        budget: &mut ScanBudget<'store>,
-        cancel: &Cancellation,
-    ) -> Result<(), SnapshotError> {
-        for block in entry.blocks() {
-            let bytes = match block {
-                ContentBlock::ToolUse(tool) => tool.id.len().saturating_add(tool.name.len()),
-                ContentBlock::ToolResult(result) => result
-                    .tool_use_id
-                    .len()
-                    .saturating_add(result.denial_kind.as_ref().map_or(0, String::len)),
-                _ => 0,
-            };
-            budget.charge_projection(bytes.saturating_add(1), 0, cancel)?;
-        }
-        for tool in entry.tool_uses() {
-            match self.names.get_mut(tool.id.as_str()) {
-                Some(slot) if slot.name == tool.name => {}
-                Some(slot) if slot.referenced => {
-                    return Err(incomplete(
-                        "tool_use id redefined with a different name after use",
-                    ))
-                }
-                Some(slot) => {
-                    budget.extend_staging(&mut self.names_staging, tool.name.len(), cancel)?;
-                    slot.name = tool.name.clone();
-                }
-                None => {
-                    budget.extend_staging(
-                        &mut self.names_staging,
-                        tool.id
-                            .len()
-                            .saturating_add(tool.name.len())
-                            .saturating_add(size_of::<(String, ToolName)>()),
-                        cancel,
-                    )?;
-                    self.names.insert(
-                        tool.id.clone(),
-                        ToolName {
-                            name: tool.name.clone(),
-                            referenced: false,
-                        },
-                    );
-                }
-            }
-        }
-        let charge = entry_charge(&entry);
-        let charge = charge
-            .owned_capacity_bytes
-            .saturating_add(charge.opaque_dom_accounted_bytes);
-        self.queue.push_back(StreamSlot {
-            index: self.parsed,
-            line,
-            entry,
-            charge,
-            pattern_ids: None,
-            staging: budget
-                .reserve_staging(charge.saturating_add(size_of::<StreamSlot>()), cancel)?,
-        });
-        self.parsed += 1;
-        Ok(())
-    }
-
-    fn decide(
-        &mut self,
-        grep: &mut GrepReducer<'store>,
-        eof: bool,
-        budget: &mut ScanBudget<'store>,
-        cancel: &Cancellation,
-    ) -> Result<(), SnapshotError> {
-        let filtering = !grep.options.errors && grep.tool_names.is_some();
-        let results = HashMap::new();
-        while self.stopped.is_none() && self.decided < self.parsed {
-            let position = self.decided - self.emitted;
-            let slot = &self.queue[position];
-            let lookup = filtering && matches!(slot.entry, Entry::User(_));
-            if lookup && !eof && unresolved(&self.names, &slot.entry) {
-                break;
-            }
-            let names = if lookup {
-                resolve(&mut self.names, &slot.entry, true)
-            } else {
-                HashMap::new()
-            };
-            let matched =
-                grep.matches(&slot.entry, slot.charge, &names, &results, budget, cancel)?;
-            drop(names);
-            if let Some((matched, _match_staging)) = matched {
-                let slot = &mut self.queue[position];
-                slot.pattern_ids =
-                    Some(grep.commit_matches(&matched, &mut slot.staging, budget, cancel)?);
-                if grep.satisfied() {
-                    self.stopped = Some(slot.index);
-                }
-            }
-            self.decided += 1;
-        }
-        Ok(())
-    }
-
-    fn emit<E>(
-        &mut self,
-        grep: &GrepReducer<'store>,
-        eof: bool,
-        budget: &mut ScanBudget<'store>,
-        cancel: &Cancellation,
-        emit: &mut E,
-    ) -> Result<(), SnapshotError>
-    where
-        E: FnMut(
-            GrepEvent<'_>,
-            &mut ScanBudget<'store>,
-            &Cancellation,
-        ) -> Result<(), SnapshotError>,
-    {
-        let context = grep.options.context;
-        let results = HashMap::new();
-        while let Some(slot) = self.queue.front() {
-            let index = slot.index;
-            let finalized = match self.stopped {
-                Some(hit) => index <= hit + context,
-                None => index < self.decided && (eof || self.decided > index + context),
-            };
-            if !finalized {
-                break;
-            }
-            let windowed = self.last_hit.is_some_and(|hit| index - hit <= context)
-                || self
-                    .queue
-                    .iter()
-                    .take(context + 1)
-                    .any(|slot| slot.pattern_ids.is_some());
-            if windowed {
-                if self.render_names && !eof && unresolved(&self.names, &slot.entry) {
-                    break;
-                }
-                let names = resolve(&mut self.names, &slot.entry, self.render_names);
-                emit(
-                    GrepEvent {
-                        index,
-                        entry: &slot.entry,
-                        pattern_ids: slot.pattern_ids.as_deref(),
-                        names: &names,
-                        results: &results,
-                        generation: &self.generation,
-                        opens_source: self.last_emitted.is_none(),
-                        opens_window: self.last_emitted.is_none_or(|last| last + 1 != index),
-                        charge: slot.charge,
-                        source_bytes: self.source_bytes,
-                    },
-                    budget,
-                    cancel,
-                )?;
-                self.last_emitted = Some(index);
-            }
-            if slot.pattern_ids.is_some() {
-                self.last_hit = Some(index);
-            }
-            self.queue.pop_front();
-            self.emitted += 1;
         }
         Ok(())
     }
@@ -983,6 +679,9 @@ fn preflight_render<'store>(
     Ok(staging)
 }
 
+#[path = "scan_grep_stream.rs"]
+mod stream;
+
 #[cfg(test)]
 #[path = "scan_grep_stream_tests.rs"]
 mod stream_tests;
@@ -990,6 +689,7 @@ mod stream_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::Provider;
     use crate::parse::parse_entry;
     use crate::snapshot::{EntryChunk, SourceIdentity, SourceStamp, WorkLimits};
     use crate::snapshot_activity::ActivityIndex;

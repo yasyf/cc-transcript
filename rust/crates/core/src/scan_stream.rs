@@ -147,6 +147,15 @@ impl<'store> SourceStream<'store> {
         Ok(())
     }
 
+    pub fn seek(&mut self, offset: u64) -> Result<(), SnapshotError> {
+        self.file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+        self.buffer.clear();
+        self.consumed = 0;
+        self.base = offset;
+        self.offset = offset;
+        Ok(())
+    }
+
     pub fn read_span(
         &mut self,
         line: &LineSpan,

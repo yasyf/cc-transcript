@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A streaming `grep` read reports `source_read_limit` only when the source-byte
   cap is exhausted. When the combined source and projection cap prevents the
   read, it reports `cumulative scan work budget exhausted`.
+- Repeated `cc-transcript grep` invocations reuse checkpoints for Claude sources,
+  replaying saved matches and context before continuing from the saved prefix.
+  Budget-capped runs save partial progress and still report incomplete coverage.
+  Checkpoints bind the source, query, and CLI build; stale or corrupt records are
+  discarded and the source is rescanned from byte 0.
 - The `render` query charges its input budget for the windowed events only, plus
   the prompt of each turn the window starts and the names of tools whose calls
   and results both fall inside it, instead of every event of each overlapping

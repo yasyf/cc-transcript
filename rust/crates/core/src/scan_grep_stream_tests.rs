@@ -1,8 +1,11 @@
 use super::*;
-use crate::scan::{ScanProgress, ScanSession};
+use crate::scan::{ScanControl, ScanProgress, ScanSession};
+use crate::scan_checkpoint::GrepCheckpoints;
+use crate::scan_stream::SourceStream;
 use crate::snapshot::{NativeStore, WorkLimits};
 use sonic_rs::{json, Value};
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -163,6 +166,17 @@ fn streamed(
     render_names: bool,
     limits: WorkLimits,
 ) -> (Result<Run, SnapshotError>, Vec<Emitted>, ScanProgress) {
+    checkpointed(path, patterns, options, render_names, limits, None)
+}
+
+fn checkpointed(
+    path: &Path,
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+    render_names: bool,
+    limits: WorkLimits,
+    checkpoints: Option<&GrepCheckpoints>,
+) -> (Result<Run, SnapshotError>, Vec<Emitted>, ScanProgress) {
     let store = NativeStore::new(&json!({})).unwrap();
     let mut budget = ScanBudget::new(&store, limits);
     let mut grep = reducer(patterns, options, &mut budget);
@@ -170,6 +184,7 @@ fn streamed(
     let control = grep.scan_stream(
         path,
         render_names,
+        checkpoints,
         &mut budget,
         &Cancellation::default(),
         |event, budget, cancel| {
@@ -454,6 +469,7 @@ fn codex_sources_fall_back_to_preparation() {
         .scan_stream(
             &source.0,
             true,
+            None,
             &mut budget,
             &Cancellation::default(),
             |_, _, _| panic!("codex event streamed"),
@@ -490,4 +506,263 @@ fn stream_reads_the_pinned_prefix_and_rejects_truncation() {
         .set_len(1)
         .unwrap();
     assert_eq!(stream.verify().unwrap_err().status, Status::Changed);
+}
+
+struct Cache(PathBuf, GrepCheckpoints);
+
+impl Cache {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cc-grep-checkpoints-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self(dir.clone(), GrepCheckpoints::new(dir, "test".into()))
+    }
+
+    fn records(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(&self.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect()
+    }
+}
+
+impl Drop for Cache {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+fn sparse(count: usize, hits: &[usize]) -> Vec<String> {
+    (0..count)
+        .map(|index| {
+            let text = if hits.contains(&index) {
+                format!("needle {index}")
+            } else {
+                format!("filler {index} {}", "x".repeat(500))
+            };
+            line(user(&format!("u{index}"), None, json!(text)))
+        })
+        .collect()
+}
+
+fn append(path: &Path, lines: &[String]) -> u64 {
+    let text = lines
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    text.len() as u64
+}
+
+fn line_bytes(path: &Path, indices: &[usize]) -> usize {
+    let text = std::fs::read_to_string(path).unwrap();
+    text.lines()
+        .enumerate()
+        .filter(|(index, _)| indices.contains(index))
+        .map(|(_, line)| line.len())
+        .sum()
+}
+
+#[test]
+fn warm_run_replays_hits_without_rereading_the_prefix() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(400, &[5, 200, 390]), true);
+    let size = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let (cold, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let cold = cold.unwrap();
+    assert_eq!(progress.source_bytes, size);
+    assert_eq!(cache.records().len(), 1);
+    let (warm, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(warm.unwrap(), cold);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(
+        progress.source_bytes,
+        64 + line_bytes(&source.0, &[5, 200, 390])
+    );
+    assert_eq!(progress.parsed_events, 3);
+}
+
+#[test]
+fn appended_run_reads_only_the_fence_hits_and_new_bytes() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(400, &[5, 200]), true);
+    checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    let appended = append(&source.0, &sparse(450, &[420])[400..]);
+    let (warm, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(warm.unwrap(), fresh.unwrap());
+    assert_eq!(
+        progress.source_bytes as u64,
+        64 + line_bytes(&source.0, &[5, 200]) as u64 + appended
+    );
+    assert_eq!(progress.parsed_events, 2 + 50);
+    assert_eq!(progress.cache_hits, 1);
+}
+
+#[test]
+fn quota_checkpoint_answers_from_the_recorded_hits() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(2000, &[3, 4, 1500]), true);
+    let (cold, _, _) = checkpointed(
+        &source.0,
+        &[("needle", Some(2))],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let cold = cold.unwrap();
+    assert_eq!(cold.stop, Some(false));
+    let (warm, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", Some(2))],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(warm.unwrap(), cold);
+    assert_eq!(
+        progress.source_bytes,
+        64 + line_bytes(&source.0, &[3, 4, 5])
+    );
+}
+
+#[test]
+fn budget_capped_runs_advance_through_partial_checkpoints() {
+    let cache = Cache::new();
+    let lines = sparse(1000, &[10, 400, 800]);
+    let source = Source::new(&lines, true);
+    let size = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let mut bound = limits();
+    bound.max_source_read_bytes = 200_000;
+    let mut runs = 0;
+    let finished = loop {
+        runs += 1;
+        let (run, _, progress) = checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            bound,
+            Some(&cache.1),
+        );
+        assert!(progress.source_bytes <= 200_000);
+        match run {
+            Ok(run) => break run,
+            Err(error) => assert_eq!(error.reason, "source_read_limit"),
+        }
+    };
+    assert!(runs > size / 200_000);
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(finished, fresh.unwrap());
+}
+
+#[test]
+fn rewritten_or_corrupt_records_rescan_from_the_start() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[5]), true);
+    checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    let text = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .replace("filler 99 ", "filler 98 ");
+    std::fs::write(&source.0, &text).unwrap();
+    let (rewritten, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.source_bytes, text.len());
+    assert_eq!(rewritten.unwrap().counts, vec![1]);
+    let grown = text.replace("needle 5", "thread 5");
+    std::fs::write(&source.0, &grown).unwrap();
+    append(&source.0, &sparse(101, &[])[100..]);
+    let (edited, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(edited.unwrap().counts, vec![0]);
+    for record in cache.records() {
+        std::fs::write(record, b"{not json").unwrap();
+    }
+    let (corrupt, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(
+        progress.source_bytes as u64,
+        std::fs::metadata(&source.0).unwrap().len()
+    );
+    assert_eq!(corrupt.unwrap().counts, vec![0]);
+    let (other, _, progress) = checkpointed(
+        &source.0,
+        &[("filler 7 ", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(other.unwrap().counts, vec![1]);
 }

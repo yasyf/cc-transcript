@@ -29,6 +29,7 @@ pub mod query;
 pub mod render;
 pub mod rng;
 pub mod scan;
+pub mod scan_checkpoint;
 pub mod scan_grep;
 pub mod scan_stream;
 #[cfg(feature = "sqlite")]

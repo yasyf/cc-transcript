@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use cc_transcript_core::render::{compact_line, display_path, event_json, transcript_header, Json};
 use cc_transcript_core::scan::{
     scan_corpus, ScanBudget, ScanControl, ScanOutcome, ScanPlan, ScanSession,
 };
+use cc_transcript_core::scan_checkpoint::GrepCheckpoints;
 use cc_transcript_core::scan_grep::{
     GrepEvent, GrepOptions, GrepPatternSpec, GrepReducer, GrepResultMetadata,
 };
@@ -336,6 +338,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         source_limit: args.discovery.effective_limit(),
     };
     let structured = args.json || args.scan_json;
+    let checkpoints = checkpoints();
     let mut render = Render {
         args: &args,
         emitter: Emitter::new(args.scan_json, &mut session.budget, &cancel)?,
@@ -346,6 +349,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             if let Some(control) = reducer.scan_stream(
                 path,
                 !structured,
+                Some(&checkpoints),
                 &mut session.budget,
                 &cancel,
                 |event, budget, cancel| render.event(path, event, budget, cancel),
@@ -556,6 +560,28 @@ fn run_over_corpus(
         outcome.progress = budget.progress.clone();
     }
     emitter.finish(&outcome, counts)
+}
+
+fn checkpoints() -> GrepCheckpoints {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(
+            || PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache"),
+            PathBuf::from,
+        );
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .expect("current executable metadata");
+    GrepCheckpoints::new(
+        cache.join("cc-transcript").join("scan"),
+        format!(
+            "{} {} {}.{}",
+            crate::pkg_version(),
+            exe.len(),
+            exe.mtime(),
+            exe.mtime_nsec()
+        ),
+    )
 }
 
 fn failed_outcome(error: SnapshotError, budget: &ScanBudget) -> ScanOutcome {
