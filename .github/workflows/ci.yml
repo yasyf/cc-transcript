@@ -87,7 +87,7 @@ jobs:
         run: uv run pytest
 
       - name: Test capt-hook hooks
-        run: uvx --isolated 'capt-hook>=12.72.0' test
+        run: uvx --isolated 'capt-hook>=12.74.0' test
 
       - name: Build + smoke-test wheel in a fresh venv
         run: |
