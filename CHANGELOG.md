@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cc-transcript grep` searches Claude transcripts as it reads them, so a scan
+  that runs out of budget can print the matches it reached. `--max-matches` stops
+  reading once the requested context and completion lookahead are available,
+  subject to buffered read-ahead. Codex sources, `--errors`, and `--with-result`
+  keep using prepared snapshots.
+- A streaming `grep` read reports `source_read_limit` only when the source-byte
+  cap is exhausted. When the combined source and projection cap prevents the
+  read, it reports `cumulative scan work budget exhausted`.
 - The `render` query charges its input budget for the windowed events only, plus
   the prompt of each turn the window starts and the names of tools whose calls
   and results both fall inside it, instead of every event of each overlapping

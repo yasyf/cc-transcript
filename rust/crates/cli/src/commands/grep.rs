@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cc_transcript_core::render::{compact_line, display_path, event_json, transcript_header, Json};
 use cc_transcript_core::scan::{
     scan_corpus, ScanBudget, ScanControl, ScanOutcome, ScanPlan, ScanSession,
 };
-use cc_transcript_core::scan_grep::{GrepOptions, GrepPatternSpec, GrepReducer, GrepSourceResult};
+use cc_transcript_core::scan_grep::{
+    GrepEvent, GrepOptions, GrepPatternSpec, GrepReducer, GrepResultMetadata,
+};
 use cc_transcript_core::snapshot::{Cancellation, NativeStore, SnapshotError, Status, WorkLimits};
 use cc_transcript_core::types::{ContentBlock, Entry};
 use regex::{Regex, RegexBuilder};
@@ -226,7 +229,10 @@ impl Emitter {
     }
 }
 
-fn result_fields(event: &Entry, result: &GrepSourceResult<'_, '_>) -> Vec<(String, Json)> {
+fn result_fields(
+    event: &Entry,
+    results: &HashMap<&str, GrepResultMetadata<'_>>,
+) -> Vec<(String, Json)> {
     if !matches!(event, Entry::Assistant(_)) {
         return Vec::new();
     }
@@ -237,7 +243,7 @@ fn result_fields(event: &Entry, result: &GrepSourceResult<'_, '_>) -> Vec<(Strin
             let ContentBlock::ToolUse(tool) = block else {
                 return None;
             };
-            let value = result.results.get(tool.id.as_str())?;
+            let value = results.get(tool.id.as_str())?;
             Some((
                 tool.id.clone(),
                 Json::Obj(vec![
@@ -253,7 +259,7 @@ fn result_fields(event: &Entry, result: &GrepSourceResult<'_, '_>) -> Vec<(Strin
         .collect()
 }
 
-fn result_suffix(event: &Entry, result: &GrepSourceResult<'_, '_>) -> String {
+fn result_suffix(event: &Entry, results: &HashMap<&str, GrepResultMetadata<'_>>) -> String {
     if !matches!(event, Entry::Assistant(_)) {
         return String::new();
     }
@@ -264,7 +270,7 @@ fn result_suffix(event: &Entry, result: &GrepSourceResult<'_, '_>) -> String {
             let ContentBlock::ToolUse(tool) = block else {
                 return None;
             };
-            let value = result.results.get(tool.id.as_str())?;
+            let value = results.get(tool.id.as_str())?;
             let status = if value.denied {
                 "[denied]"
             } else if value.is_error {
@@ -329,84 +335,36 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         contains: args.discovery.contains.clone(),
         source_limit: args.discovery.effective_limit(),
     };
-    let mut emitter = Emitter::new(args.scan_json, &mut session.budget, &cancel)?;
-    let mut files = 0usize;
-    let mut outcome = session.run(&plan, |path, snapshot, budget, cancel| {
-        let result = reducer.scan_source(snapshot, budget, cancel)?;
-        if result.hits.is_empty() {
-            return Ok(if result.quota_reached {
+    let structured = args.json || args.scan_json;
+    let mut render = Render {
+        args: &args,
+        emitter: Emitter::new(args.scan_json, &mut session.budget, &cancel)?,
+        files: 0,
+    };
+    let mut outcome = session.each_source(&plan, |session, path| {
+        if reducer.streams() {
+            if let Some(control) = reducer.scan_stream(
+                path,
+                !structured,
+                &mut session.budget,
+                &cancel,
+                |event, budget, cancel| render.event(path, event, budget, cancel),
+            )? {
+                return Ok(control);
+            }
+        }
+        session.visit_snapshot(path, &mut |path, snapshot, budget, cancel| {
+            let result = reducer.scan_source(snapshot, budget, cancel)?;
+            result.emit(snapshot, budget, cancel, |event, budget, cancel| {
+                render.event(path, event, budget, cancel)
+            })?;
+            Ok(if result.quota_reached {
                 ScanControl::Stop {
                     source_complete: result.source_complete,
                 }
             } else {
                 ScanControl::Continue
-            });
-        }
-        files += 1;
-        if !args.json && !args.scan_json {
-            emitter.emit(transcript_header(&path.to_string_lossy()), budget, cancel)?;
-        }
-        for (window_index, window) in result.windows.iter().enumerate() {
-            if !args.json && !args.scan_json && args.context > 0 && window_index > 0 {
-                emitter.emit("--".to_owned(), budget, cancel)?;
-            }
-            for index in window.clone() {
-                let _render_staging = result.preflight_render(snapshot, index, budget, cancel)?;
-                let event = snapshot.entry(index);
-                let hit = result.hits.iter().find(|hit| hit.event_index == index);
-                let line = if args.json || args.scan_json {
-                    let Json::Obj(mut fields) = event_json(index, event) else {
-                        unreachable!("event_json object")
-                    };
-                    fields.insert(
-                        0,
-                        (
-                            "path".into(),
-                            Json::Str(path.to_string_lossy().into_owned()),
-                        ),
-                    );
-                    if hit.is_none() {
-                        fields.push(("context".into(), Json::Bool(true)));
-                    }
-                    if args.with_result {
-                        let results = result_fields(event, &result);
-                        if !results.is_empty() {
-                            fields.push(("results".into(), Json::Obj(results)));
-                        }
-                    }
-                    if args.scan_json {
-                        fields.push(("generation".into(), Json::Str(snapshot.id.clone())));
-                        fields.push((
-                            "pattern_ids".into(),
-                            Json::Arr(
-                                hit.map(|hit| {
-                                    hit.pattern_ids
-                                        .iter()
-                                        .map(|id| Json::Int(*id as i64))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            ),
-                        ));
-                    }
-                    Json::Obj(fields).dumps()
-                } else {
-                    let mut line =
-                        compact_line(index, event, &result.names, args.width, false, args.uuids);
-                    if args.with_result {
-                        line.push_str(&result_suffix(event, &result));
-                    }
-                    line
-                };
-                emitter.emit(line, budget, cancel)?;
-            }
-        }
-        Ok(if result.quota_reached {
-            ScanControl::Stop {
-                source_complete: result.source_complete,
-            }
-        } else {
-            ScanControl::Continue
+            })
         })
     });
     if outcome.complete && !reducer.complete() {
@@ -423,9 +381,10 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             String::new()
         };
-        if let Err(error) = emitter.emit(
+        if let Err(error) = render.emitter.emit(
             format!(
-                "{files} files, {} matches{note}",
+                "{} files, {} matches{note}",
+                render.files,
                 counts.iter().sum::<usize>()
             ),
             &mut session.budget,
@@ -436,7 +395,85 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         }
         outcome.progress = session.budget.progress.clone();
     }
-    emitter.finish(&outcome, counts)
+    render.emitter.finish(&outcome, counts)
+}
+
+struct Render<'a> {
+    args: &'a GrepArgs,
+    emitter: Emitter,
+    files: usize,
+}
+
+impl Render<'_> {
+    fn event(
+        &mut self,
+        path: &Path,
+        event: GrepEvent<'_>,
+        budget: &mut ScanBudget,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let args = self.args;
+        let structured = args.json || args.scan_json;
+        if event.opens_source {
+            self.files += 1;
+            if !structured {
+                self.emitter
+                    .emit(transcript_header(&path.to_string_lossy()), budget, cancel)?;
+            }
+        }
+        if !structured && args.context > 0 && event.opens_window && !event.opens_source {
+            self.emitter.emit("--".to_owned(), budget, cancel)?;
+        }
+        let _render_staging = event.preflight_render(budget, cancel)?;
+        let line = if structured {
+            let Json::Obj(mut fields) = event_json(event.index, event.entry) else {
+                unreachable!("event_json object")
+            };
+            fields.insert(
+                0,
+                (
+                    "path".into(),
+                    Json::Str(path.to_string_lossy().into_owned()),
+                ),
+            );
+            if event.pattern_ids.is_none() {
+                fields.push(("context".into(), Json::Bool(true)));
+            }
+            if args.with_result {
+                let results = result_fields(event.entry, event.results);
+                if !results.is_empty() {
+                    fields.push(("results".into(), Json::Obj(results)));
+                }
+            }
+            if args.scan_json {
+                fields.push(("generation".into(), Json::Str(event.generation.to_owned())));
+                fields.push((
+                    "pattern_ids".into(),
+                    Json::Arr(
+                        event
+                            .pattern_ids
+                            .map(|ids| ids.iter().map(|id| Json::Int(*id as i64)).collect())
+                            .unwrap_or_default(),
+                    ),
+                ));
+            }
+            Json::Obj(fields).dumps()
+        } else {
+            let mut line = compact_line(
+                event.index,
+                event.entry,
+                event.names,
+                args.width,
+                false,
+                args.uuids,
+            );
+            if args.with_result {
+                line.push_str(&result_suffix(event.entry, event.results));
+            }
+            line
+        };
+        self.emitter.emit(line, budget, cancel)
+    }
 }
 
 fn run_over_corpus(

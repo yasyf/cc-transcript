@@ -30,6 +30,7 @@ pub mod render;
 pub mod rng;
 pub mod scan;
 pub mod scan_grep;
+pub mod scan_stream;
 #[cfg(feature = "sqlite")]
 pub mod schema;
 pub mod snapshot;

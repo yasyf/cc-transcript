@@ -1,0 +1,493 @@
+use super::*;
+use crate::scan::{ScanProgress, ScanSession};
+use crate::snapshot::{NativeStore, WorkLimits};
+use sonic_rs::{json, Value};
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct Source(PathBuf);
+
+impl Source {
+    fn new(lines: &[String], terminated: bool) -> Self {
+        let mut text = lines.join("\n");
+        if terminated {
+            text.push('\n');
+        }
+        Self::raw(text.as_bytes())
+    }
+
+    fn raw(contents: &[u8]) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "cc-grep-stream-{}-{}.jsonl",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Source {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).unwrap();
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Emitted {
+    index: usize,
+    pattern_ids: Option<Vec<usize>>,
+    opens_source: bool,
+    opens_window: bool,
+    names: Vec<(String, Option<String>)>,
+}
+
+impl Emitted {
+    fn of(event: &GrepEvent<'_>) -> Self {
+        Self {
+            index: event.index,
+            pattern_ids: event.pattern_ids.map(<[usize]>::to_vec),
+            opens_source: event.opens_source,
+            opens_window: event.opens_window,
+            names: event
+                .entry
+                .tool_results()
+                .map(|result| {
+                    (
+                        result.tool_use_id.clone(),
+                        event
+                            .names
+                            .get(result.tool_use_id.as_str())
+                            .map(|name| (*name).to_owned()),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Run {
+    emitted: Vec<Emitted>,
+    counts: Vec<usize>,
+    stop: Option<bool>,
+    complete: bool,
+}
+
+fn line(value: Value) -> String {
+    sonic_rs::to_string(&value).unwrap()
+}
+
+fn user(uuid: &str, parent: Option<&str>, content: Value) -> Value {
+    json!({"type":"user","uuid":uuid,"parentUuid":parent,"sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":content}})
+}
+
+fn assistant(uuid: &str, parent: &str, blocks: Value) -> Value {
+    json!({"type":"assistant","uuid":uuid,"parentUuid":parent,"sessionId":"s","timestamp":"2026-01-01T00:00:01Z","message":{"model":"test","content":blocks}})
+}
+
+fn tool(id: &str, name: &str, input: Value) -> Value {
+    json!({"type":"tool_use","id":id,"name":name,"input":input})
+}
+
+fn result(uuid: &str, parent: &str, id: &str, text: &str) -> Value {
+    user(
+        uuid,
+        Some(parent),
+        json!([{"type":"tool_result","tool_use_id":id,"content":text,"is_error":false}]),
+    )
+}
+
+fn limits() -> WorkLimits {
+    WorkLimits {
+        max_read_bytes: 64 * 1024 * 1024,
+        max_source_read_bytes: 64 * 1024 * 1024,
+        max_events: 1_000_000,
+        max_items: 1_000_000,
+        max_output_bytes: 64 * 1024 * 1024,
+        max_sources: 100,
+        max_discovery_entries: 100,
+        deadline_unix_ms: crate::snapshot::now_ms() + 60_000,
+    }
+}
+
+fn options() -> GrepOptions {
+    GrepOptions {
+        kinds: vec![],
+        tool: None,
+        errors: false,
+        where_text: true,
+        where_thinking: true,
+        where_tools: true,
+        context: 0,
+        with_result: false,
+        ignore_case: false,
+    }
+}
+
+fn reducer<'store>(
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+    budget: &mut ScanBudget<'store>,
+) -> GrepReducer<'store> {
+    GrepReducer::new(
+        patterns
+            .iter()
+            .enumerate()
+            .map(|(id, (pattern, cap))| GrepPatternSpec {
+                id,
+                pattern: (*pattern).into(),
+                max_matches: *cap,
+            })
+            .collect(),
+        options,
+        budget,
+        &Cancellation::default(),
+    )
+    .unwrap()
+}
+
+fn stop(control: ScanControl) -> Option<bool> {
+    match control {
+        ScanControl::Continue => None,
+        ScanControl::Stop { source_complete } => Some(source_complete),
+    }
+}
+
+fn streamed(
+    path: &Path,
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+    render_names: bool,
+    limits: WorkLimits,
+) -> (Result<Run, SnapshotError>, Vec<Emitted>, ScanProgress) {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits);
+    let mut grep = reducer(patterns, options, &mut budget);
+    let mut emitted = Vec::new();
+    let control = grep.scan_stream(
+        path,
+        render_names,
+        &mut budget,
+        &Cancellation::default(),
+        |event, budget, cancel| {
+            let _staging = event.preflight_render(budget, cancel)?;
+            emitted.push(Emitted::of(&event));
+            Ok(())
+        },
+    );
+    let run = control.map(|control| Run {
+        emitted: std::mem::take(&mut emitted),
+        counts: grep.counts().to_vec(),
+        stop: stop(control.expect("claude source streams")),
+        complete: grep.complete(),
+    });
+    (run, emitted, budget.progress.clone())
+}
+
+fn prepared(path: &Path, patterns: &[(&str, Option<usize>)], options: GrepOptions) -> Run {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut session = ScanSession::new(&store, limits(), Cancellation::default());
+    let mut grep = reducer(patterns, options, &mut session.budget);
+    let mut emitted = Vec::new();
+    let control = session
+        .visit_snapshot(path, &mut |_, snapshot, budget, cancel| {
+            let result = grep.scan_source(snapshot, budget, cancel)?;
+            result.emit(snapshot, budget, cancel, |event, budget, cancel| {
+                let _staging = event.preflight_render(budget, cancel)?;
+                emitted.push(Emitted::of(&event));
+                Ok(())
+            })?;
+            Ok(if result.quota_reached {
+                ScanControl::Stop {
+                    source_complete: result.source_complete,
+                }
+            } else {
+                ScanControl::Continue
+            })
+        })
+        .unwrap();
+    Run {
+        emitted,
+        counts: grep.counts().to_vec(),
+        stop: stop(control),
+        complete: grep.complete(),
+    }
+}
+
+fn transcript() -> Vec<String> {
+    let long = format!("needle {}", "x".repeat(150_000));
+    vec![
+        line(json!({"type":"last-prompt","leafUuid":"u9","sessionId":"s"})),
+        line(user("u0", None, json!("first needle"))),
+        line(assistant(
+            "a1",
+            "u0",
+            json!([{"type":"text","text":"about the needle"},tool("t1","Bash",json!({"command":"echo needle"}))]),
+        )),
+        line(result("u1", "a1", "t1", "needle output")),
+        String::new(),
+        "not json {".to_owned(),
+        "[1,2]".to_owned(),
+        line(json!({"type":"mode","mode":"normal","sessionId":"s"})),
+        line({
+            let mut value = user("u2", Some("u1"), json!("sidechain needle"));
+            value.insert("isSidechain", json!(true));
+            value
+        }),
+        line(assistant(
+            "a2",
+            "u2",
+            json!([tool(
+                "t2",
+                "Edit",
+                json!({"file_path":"/a","old_string":"needle","new_string":"thread"})
+            )]),
+        )),
+        line(result("u3", "a2", "t2", "edited")),
+        line(result("u4", "u3", "t3", "early needle")),
+        line(assistant(
+            "a3",
+            "u4",
+            json!([tool("t3", "Read", json!({"file_path":"/needle"}))]),
+        )),
+        line(assistant(
+            "a1",
+            "u0",
+            json!([{"type":"text","text":"about the needle"},tool("t1","Bash",json!({"command":"echo needle"}))]),
+        )),
+        line(user("u5", Some("a3"), json!(long))),
+        line(user("u6", Some("u5"), json!("needle again"))),
+        line(user("u7", Some("u6"), json!("tail"))),
+    ]
+}
+
+fn case(name: &str) -> (Vec<(&'static str, Option<usize>)>, GrepOptions) {
+    let mut options = options();
+    let patterns = match name {
+        "plain" => vec![("needle", None)],
+        "quota" => vec![("needle", Some(3))],
+        "multi" => vec![("needle", Some(2)), ("tail|edited", Some(1))],
+        "context" => {
+            options.context = 2;
+            vec![("needle", None)]
+        }
+        "context-quota" => {
+            options.context = 1;
+            vec![("needle", Some(2))]
+        }
+        "kinds" => {
+            options.kinds = vec!["user".into()];
+            vec![("needle", None)]
+        }
+        "tool-forward" => {
+            options.tool = Some("Read".into());
+            vec![("needle", None)]
+        }
+        "tool-bash" => {
+            options.tool = Some("Bash".into());
+            vec![("needle|output", None)]
+        }
+        "ignore-case" => {
+            options.ignore_case = true;
+            vec![("NEEDLE", Some(1))]
+        }
+        "final" => vec![("tail", Some(1))],
+        "absent" => vec![("absent", None)],
+        _ => unreachable!("unknown case {name}"),
+    };
+    (patterns, options)
+}
+
+#[test]
+fn streamed_grep_matches_the_prepared_snapshot_path() {
+    let names = [
+        "plain",
+        "quota",
+        "multi",
+        "context",
+        "context-quota",
+        "kinds",
+        "tool-forward",
+        "tool-bash",
+        "ignore-case",
+        "final",
+        "absent",
+    ];
+    for terminated in [true, false] {
+        let source = Source::new(&transcript(), terminated);
+        for name in names {
+            for render_names in [true, false] {
+                let (patterns, options) = case(name);
+                let mut expected = prepared(&source.0, &patterns, options);
+                let (patterns, options) = case(name);
+                let (actual, _, _) =
+                    streamed(&source.0, &patterns, options, render_names, limits());
+                let mut actual = actual.unwrap();
+                if !render_names {
+                    for emitted in expected.emitted.iter_mut().chain(&mut actual.emitted) {
+                        emitted.names.clear();
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "{name}, terminated {terminated}, render names {render_names}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn quota_stops_reading_before_the_rest_of_the_file() {
+    let mut lines = vec![
+        line(user("u0", None, json!("a"))),
+        line(user("u1", Some("u0"), json!("b"))),
+        line(user("u2", Some("u1"), json!("needle"))),
+    ];
+    lines.extend((3..4003).map(|index| {
+        line(user(
+            &format!("u{index}"),
+            Some("u2"),
+            json!("x".repeat(1000)),
+        ))
+    }));
+    let source = Source::new(&lines, true);
+    let (run, _, progress) = streamed(&source.0, &[("needle", Some(1))], options(), true, limits());
+    let run = run.unwrap();
+    assert_eq!(run.stop, Some(false));
+    assert_eq!(run.emitted.len(), 1);
+    assert!(std::fs::metadata(&source.0).unwrap().len() > 4_000_000);
+    assert_eq!(progress.source_bytes, 64 * 1024);
+    assert_eq!(progress.parsed_events, 4);
+    assert_eq!(progress.examined_events, 4);
+    assert_eq!(progress.preparation_reserved_events, 0);
+}
+
+#[test]
+fn complete_scan_charges_exact_bytes_lines_and_events() {
+    let lines = vec![
+        line(user("u0", None, json!("needle"))),
+        String::new(),
+        "garbage".to_owned(),
+        line(user("u1", Some("u0"), json!("other"))),
+        line(user("u2", Some("u1"), json!("needle"))),
+    ];
+    let source = Source::new(&lines, true);
+    let (run, _, progress) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let run = run.unwrap();
+    assert_eq!(run.stop, None);
+    assert_eq!(run.counts, vec![2]);
+    assert_eq!(
+        progress.source_bytes as u64,
+        std::fs::metadata(&source.0).unwrap().len()
+    );
+    assert_eq!(progress.parsed_events, 5);
+    assert_eq!(progress.examined_events, 3 + 2);
+    assert_eq!(progress.source_opens, 1);
+}
+
+#[test]
+fn exhausted_source_budget_keeps_earlier_hits_and_reports_incomplete() {
+    let mut lines = vec![line(user("u0", None, json!("needle")))];
+    lines.extend((1..2000).map(|index| {
+        line(user(
+            &format!("u{index}"),
+            Some("u0"),
+            json!("x".repeat(1000)),
+        ))
+    }));
+    let source = Source::new(&lines, true);
+    let mut bound = limits();
+    bound.max_source_read_bytes = 200_000;
+    let (run, emitted, progress) = streamed(&source.0, &[("needle", None)], options(), true, bound);
+    let error = run.err().unwrap();
+    assert_eq!(
+        (error.status, error.reason.as_str()),
+        (Status::Incomplete, "source_read_limit")
+    );
+    assert_eq!(emitted.len(), 1);
+    assert_eq!(emitted[0].index, 0);
+    assert_eq!(progress.source_bytes, 200_000);
+}
+
+#[test]
+fn exhausted_event_budget_stops_parsing() {
+    let lines: Vec<_> = (0..100)
+        .map(|index| line(user(&format!("u{index}"), None, json!("absent"))))
+        .collect();
+    let source = Source::new(&lines, true);
+    let mut bound = limits();
+    bound.max_events = 41;
+    let (run, _, progress) = streamed(&source.0, &[("needle", None)], options(), true, bound);
+    assert_eq!(run.err().unwrap().status, Status::Incomplete);
+    assert_eq!(progress.parsed_events + progress.examined_events, 41);
+}
+
+#[test]
+fn tool_name_redefined_after_use_is_incomplete() {
+    let lines = vec![
+        line(result("u0", "a0", "t", "needle")),
+        line(assistant("a0", "u0", json!([tool("t", "Bash", json!({}))]))),
+        line(assistant("a1", "a0", json!([tool("t", "Read", json!({}))]))),
+    ];
+    let source = Source::new(&lines, true);
+    let (run, emitted, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let error = run.err().unwrap();
+    assert_eq!(error.status, Status::Incomplete);
+    assert!(error.reason.contains("redefined"), "{}", error.reason);
+    assert_eq!(emitted[0].names, vec![("t".into(), Some("Bash".into()))]);
+}
+
+#[test]
+fn codex_sources_fall_back_to_preparation() {
+    let source = Source::new(
+        &[line(json!({"type":"session_meta","payload":{"id":"x"}}))],
+        true,
+    );
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(&[("x", None)], options(), &mut budget);
+    let control = grep
+        .scan_stream(
+            &source.0,
+            true,
+            &mut budget,
+            &Cancellation::default(),
+            |_, _, _| panic!("codex event streamed"),
+        )
+        .unwrap();
+    assert!(control.is_none());
+    assert_eq!(budget.progress.parsed_events, 0);
+}
+
+#[test]
+fn stream_reads_the_pinned_prefix_and_rejects_truncation() {
+    let source = Source::new(&["a".into(), "b".into()], true);
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let mut stream = SourceStream::open(&source.0, 0, &mut budget, &cancel).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&source.0)
+        .unwrap()
+        .write_all(b"c\n")
+        .unwrap();
+    let mut lines = Vec::new();
+    while let Some(line) = stream.next_line(&mut budget, &cancel).unwrap() {
+        lines.push(stream.bytes(&line).to_vec());
+    }
+    assert_eq!(lines, vec![b"a".to_vec(), b"b".to_vec()]);
+    assert_eq!(budget.progress.source_bytes, 4);
+    stream.verify().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&source.0)
+        .unwrap()
+        .set_len(1)
+        .unwrap();
+    assert_eq!(stream.verify().unwrap_err().status, Status::Changed);
+}
