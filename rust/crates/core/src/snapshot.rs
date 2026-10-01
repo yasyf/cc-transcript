@@ -7663,6 +7663,10 @@ include!("snapshot_codex_append.rs");
 mod regression_tests;
 
 #[cfg(test)]
+#[path = "snapshot_ledger_tests.rs"]
+mod ledger_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
