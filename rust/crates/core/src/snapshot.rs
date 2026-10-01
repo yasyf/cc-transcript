@@ -752,7 +752,6 @@ struct PreparedGraph {
     sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
     remaining: WorkLimits,
     expires: u64,
-    accounted: usize,
 }
 
 struct GraphNode {
@@ -1141,7 +1140,25 @@ impl Charge<String> for GraphCursor {
 
 impl Charge<String> for PreparedGraph {
     fn charge(&self) -> usize {
-        self.accounted
+        size_of::<Self>()
+            + self.sources.capacity() * size_of::<PreparedSourceRef>()
+            + self
+                .sources
+                .iter()
+                .map(|source| source.path.as_os_str().len())
+                .sum::<usize>()
+            + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + self
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+            + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+            + self
+                .stamps
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
     }
 }
 
@@ -1169,23 +1186,35 @@ impl Charge<String> for PreparedBuild {
 impl Charge<String> for PreparedQueryCursor {
     fn charge(&self) -> usize {
         size_of::<PreparedQueryCursor>()
-            + self
-                .input_records
-                .as_ref()
-                .map_or(0, |records| records.iter().map(String::capacity).sum())
-            + crate::snapshot_memory::value_charge(&self.query).owned_capacity_bytes
+            + self.claimant.capacity()
+            + self.graph_id.capacity()
+            + value_bytes(&self.query)
+            + self.pending.as_ref().map_or(0, |pending| {
+                pending.token.capacity() + pending.path.as_os_str().len()
+            })
+            + self.input_records.as_ref().map_or(0, |records| {
+                records.capacity() * size_of::<String>()
+                    + records.iter().map(String::capacity).sum::<usize>()
+            })
     }
 }
 
 impl Charge<String> for (String, u64) {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
-        0
+        self.0.capacity()
     }
 }
 
 impl Charge<SourceIdentity> for CachedPreparedFacts {
     fn charge(&self) -> usize {
-        0
+        self.registry_generation.capacity()
+            + self.admission.capacity()
+            + value_bytes(&self.authority)
+            + value_bytes(&self.classifier)
     }
 }
 
@@ -12284,6 +12313,45 @@ mod tests {
             Some("accounted storage admission exhausted")
         );
         store.assert_conserved();
+    }
+
+    #[test]
+    fn a_parked_prepared_query_is_charged_beyond_its_struct_and_query_strings() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let paths: Vec<String> = (0..12)
+            .map(|index| {
+                let path = source.directory.join(format!("external-{index:02}.jsonl"));
+                let tool = format!(
+                    r#"{{"type":"assistant","uuid":"tool-{index}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"bash-{index}","name":"Bash","input":{{"command":"echo {index}"}}}}]}}}}"#
+                );
+                std::fs::write(&path, format!("{}\n{tool}\n", user(&format!("u-{index}")))).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let prepare = finish_prepared(&store, store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":paths,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()), &owner);
+        assert_eq!(prepare["status"].as_str(), Some("ok"), "{prepare:?}");
+        let page = store.request(&json!({"schema":SCHEMA,"id":"inputs","operation":"query_graph","handle":prepare["data"]["handle"],"selectors":[],"query":{"kind":"deep_predicate_inputs","order":"forward"},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default());
+        assert_eq!(page["status"].as_str(), Some("incomplete"), "{page:?}");
+        store.assert_conserved();
+        let state = store.lock_state();
+        let cursor = state
+            .prepared_queries
+            .values()
+            .next()
+            .expect("parked prepared query");
+        let strings = crate::snapshot_memory::value_charge(&cursor.query).owned_capacity_bytes
+            + cursor.input_records.as_ref().map_or(0, |records| {
+                records.iter().map(String::capacity).sum::<usize>()
+            });
+        assert!(state.prepared_queries.charged() > size_of::<PreparedQueryCursor>() + strings);
     }
 
     #[test]

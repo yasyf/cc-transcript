@@ -557,15 +557,6 @@ impl NativeStore {
             }
             let revision = format!("{:x}", digest.finalize());
             let graph_id = self.token("prepared-graph");
-            let accounted = size_of::<PreparedGraph>()
-                + sources.capacity() * size_of::<PreparedSourceRef>()
-                + membership.sidechain_dirs.capacity()
-                    * size_of::<(PathBuf, Option<SourceStamp>)>()
-                + membership
-                    .sidechain_dirs
-                    .iter()
-                    .map(|(path, _)| path.as_os_str().len())
-                    .sum::<usize>();
             let graph = PreparedGraph {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -583,7 +574,6 @@ impl NativeStore {
                 sidechain_dirs: membership.sidechain_dirs,
                 remaining,
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
-                accounted,
             };
             let mut state = self.lock_state();
             Self::prune(&mut state);
@@ -870,14 +860,6 @@ impl NativeStore {
         }
         let revision = format!("{:x}", digest.finalize());
         let graph_id = self.token("prepared-graph");
-        let accounted = size_of::<PreparedGraph>()
-            + build.sources.capacity() * size_of::<PreparedSourceRef>()
-            + build.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
-            + build
-                .sidechain_dirs
-                .iter()
-                .map(|(path, _)| path.as_os_str().len())
-                .sum::<usize>();
         let graph = PreparedGraph {
             claimant: build.claimant,
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -895,7 +877,6 @@ impl NativeStore {
             sidechain_dirs: build.sidechain_dirs,
             remaining: build.remaining,
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
-            accounted,
         };
         let mut state = self.lock_state();
         if state.prepared_graphs.len() >= self.lease_cap(context)? {
