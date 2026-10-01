@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `predicate_inputs` and `deep_predicate_inputs` split a transcript's inputs across
+  records of at most 256 KiB each, so a window whose calls, commands, edited files,
+  and skills together exceed the 1 MiB record bound pages out instead of failing
+  with `output_limit`. Each record is a valid `PredicateInputs` on its own, so
+  callers that ask whether any record matches get the same answer. A graph query
+  lifts each member once, however many records it yields.
 - A `warm_root` no longer evicts the other views of the same file: warming a window
   keeps the whole-file pin and the reverse, so alternating requests resume where
   each left off. A base advance still retires the previous window pin, and a load an

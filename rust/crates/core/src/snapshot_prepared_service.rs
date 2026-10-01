@@ -1465,8 +1465,8 @@ impl NativeStore {
             }
             (graph.sources.clone(), graph.sidechain_dirs.clone())
         };
-        let inputs = cursor.root_record.is_some();
-        let total = sources.len() + usize::from(inputs);
+        let inputs = cursor.input_records.is_some();
+        let total = sources.len();
         let mut records = Vec::new();
         let mut bytes = 128usize;
         let mut steps = 0usize;
@@ -1483,27 +1483,30 @@ impl NativeStore {
                 "prepared query output budget exhausted",
             ));
         }
-        while cursor.next < total
+        while (cursor.next < total
+            || cursor.input_records.as_ref().is_some_and(|records| !records.is_empty()))
             && steps < page_steps
             && uncached_steps < 8
             && (!inputs || records.len() < page_items)
         {
             cancel.check(cursor.remaining.deadline_unix_ms)?;
-            if inputs && cursor.next == 0 {
-                let record = cursor.root_record.as_ref().expect("input root record").clone();
+            if let Some(record) = cursor.input_records.as_mut().and_then(VecDeque::pop_front) {
                 let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)? + 1;
                 if bytes + record_bytes > output_limit {
-                    return Err(SnapshotError::new(
-                        Status::OutputLimit,
-                        "prepared input record exceeds page bound",
-                    ));
+                    if records.is_empty() {
+                        return Err(SnapshotError::new(
+                            Status::OutputLimit,
+                            "prepared input record exceeds page bound",
+                        ));
+                    }
+                    cursor.input_records.as_mut().expect("input records").push_front(record);
+                    break;
                 }
                 bytes += record_bytes;
                 records.push(record);
-                cursor.next += 1;
                 continue;
             }
-            let source = &sources[cursor.next - usize::from(inputs)];
+            let source = &sources[cursor.next];
             self.authority(context, Some(&source.path))?;
             let metadata = std::fs::metadata(&source.path).map_err(io_error)?;
             if SourceStamp::of(&metadata) != source.stamp {
@@ -1576,20 +1579,11 @@ impl NativeStore {
                 ));
             }
             if inputs {
-                let record = sonic_rs::to_string(&facts.inputs)
-                    .map_err(|error| invalid(error.to_string()))?;
-                let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)? + 1;
-                if bytes + record_bytes > output_limit {
-                    if records.is_empty() {
-                        return Err(SnapshotError::new(
-                            Status::OutputLimit,
-                            "prepared input record exceeds page bound",
-                        ));
-                    }
-                    break;
-                }
-                bytes += record_bytes;
-                records.push(record);
+                cursor
+                    .input_records
+                    .as_mut()
+                    .expect("input records")
+                    .extend(crate::snapshot_codec::predicate_input_records(&facts.inputs)?);
             } else if facts.query(&cursor.query)?["value"].as_bool() == Some(true) {
                 let data = json!({"kind":"scalar","value":true});
                 encoded_size(&data, output_limit)?;
@@ -1599,7 +1593,9 @@ impl NativeStore {
             steps += 1;
             uncached_steps += usize::from(!cached);
         }
-        if cursor.next == total {
+        if cursor.next == total
+            && cursor.input_records.as_ref().is_none_or(VecDeque::is_empty)
+        {
             if !self.validate_source_stamps(
                 &sources,
                 context,
@@ -1781,8 +1777,10 @@ impl NativeStore {
             encoded_size(&data, bounds.max_output_bytes)?;
             return Ok((data, None, None));
         }
-        let root_record = if kind == "deep_predicate_inputs" {
-            Some(sonic_rs::to_string(&root_facts.inputs).map_err(|error| invalid(error.to_string()))?)
+        let input_records = if kind == "deep_predicate_inputs" {
+            Some(VecDeque::from(crate::snapshot_codec::predicate_input_records(
+                &root_facts.inputs,
+            )?))
         } else {
             None
         };
@@ -1791,7 +1789,7 @@ impl NativeStore {
             graph_id: token.to_owned(),
             query: query.clone(),
             pending: None,
-            root_record,
+            input_records,
             next: 0,
             page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
             remaining: bounds,
