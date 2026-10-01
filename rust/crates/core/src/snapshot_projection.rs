@@ -1336,77 +1336,58 @@ fn workflow_query(
     scalar(json!(matched), work)
 }
 
-fn checked_render<T>(
-    work: &mut Work,
-    range: &Range<usize>,
-    produce: impl FnOnce(&mut Work) -> Result<T, SnapshotError>,
-) -> Result<T, SnapshotError> {
+fn render_window(work: &Work, range: &Range<usize>) -> Result<Range<usize>, SnapshotError> {
+    let limit = work.limits.max_output_bytes;
     let mut input = OutputCounter {
-        remaining: work
-            .limits
-            .max_output_bytes
-            .checked_sub(64)
-            .ok_or_else(output_limit)?
-            / 16,
+        remaining: limit.checked_sub(64).ok_or_else(output_limit)? / 16,
     };
-    let mut clones = work.limits.max_output_bytes;
-    if !range.is_empty() {
-        let first = work
-            .snapshot
-            .activity
-            .turn_of_event(range.start)
-            .expect("view turn");
-        let last = work
-            .snapshot
-            .activity
-            .turn_of_event(range.end - 1)
-            .expect("view turn");
-        for index in first..=last {
-            let copied = work
-                .snapshot
-                .activity
-                .projected_bytes(index)
-                .expect("view turn");
-            clones = clones.checked_sub(copied).ok_or_else(output_limit)?;
-            let bounds = work
-                .snapshot
-                .activity
-                .turn_bounds(index)
-                .expect("view turn");
-            work.charge_range(bounds.clone())?;
-            let mut names = std::collections::HashMap::new();
-            for position in bounds {
-                let entry = work.snapshot.entry(position);
-                snapshot_codec::write_json(&mut input, entry, work.limits.max_output_bytes)
-                    .map_err(|_| output_limit())?;
-                for block in entry.blocks() {
-                    match block {
-                        ContentBlock::ToolUse(tool) => {
-                            names.insert(tool.id.as_str(), tool.name.as_str());
-                        }
-                        ContentBlock::ToolResult(result) => {
-                            if let Some(name) = names.get(result.tool_use_id.as_str()) {
-                                snapshot_codec::write_json(
-                                    &mut input,
-                                    name,
-                                    work.limits.max_output_bytes,
-                                )
-                                .map_err(|_| output_limit())?;
-                            }
-                        }
-                        _ => {}
-                    }
+    let activity = &work.snapshot.activity;
+    let mut start = range.end;
+    let mut turn = 0;
+    let mut bounds = 0..0;
+    let mut pending = HashSet::new();
+    for index in range.clone().rev() {
+        work.cancel.check(work.limits.deadline_unix_ms)?;
+        if !bounds.contains(&index) {
+            turn = activity.turn_of_event(index).expect("view turn");
+            bounds = activity.turn_bounds(turn).expect("view turn");
+            pending.clear();
+        }
+        let entry = work.snapshot.entry(index);
+        pending.extend(entry.blocks().iter().filter_map(|block| match block {
+            ContentBlock::ToolResult(result) => Some(result.tool_use_id.as_str()),
+            _ => None,
+        }));
+        let fits = snapshot_codec::write_json(&mut input, entry, limit).is_ok()
+            && entry.blocks().iter().all(|block| match block {
+                ContentBlock::ToolUse(tool) if pending.contains(tool.id.as_str()) => {
+                    snapshot_codec::write_json(&mut input, tool.name.as_str(), limit).is_ok()
                 }
-            }
-            snapshot_codec::write_json(
-                &mut input,
-                work.snapshot.activity.prompt(index).expect("view turn"),
-                work.limits.max_output_bytes,
-            )
-            .map_err(|_| output_limit())?;
+                _ => true,
+            })
+            && (index != bounds.start
+                || snapshot_codec::write_json(
+                    &mut input,
+                    activity.prompt(turn).expect("view turn"),
+                    limit,
+                )
+                .is_ok());
+        if !fits {
+            break;
+        }
+        start = index;
+    }
+    let window = start..range.end;
+    if !window.is_empty() {
+        let first = activity.turn_of_event(window.start).expect("view turn");
+        let last = activity.turn_of_event(window.end - 1).expect("view turn");
+        let mut clones = limit;
+        for index in first..=last {
+            let copied = activity.projected_bytes(index).expect("view turn");
+            clones = clones.checked_sub(copied).ok_or_else(output_limit)?;
         }
     }
-    produce(work)
+    Ok(window)
 }
 
 fn render_query(
@@ -1418,24 +1399,30 @@ fn render_query(
     let tool_results = field(query, "tool_results")?
         .as_bool()
         .ok_or_else(|| invalid("tool_results must be boolean"))?;
-    checked_render(work, &range, |work| {
-        let lift = lift_range(work, &range, None)?;
-        let session = view(&lift, &range, work.snapshot);
-        let parts: Vec<_> = session
-            .turn_views()
-            .map(|(_, prompt, events, uses)| {
-                render::render_turn_parts(
-                    prompt,
-                    events,
-                    &uses.iter().map(|use_| &use_.call).collect::<Vec<_>>(),
-                    &budget,
-                    tool_results,
-                )
-            })
-            .filter(|text| !text.is_empty())
-            .collect();
-        scalar(json!(parts.join("\n\n")), work)
-    })
+    let window = render_window(work, &range)?;
+    let lift = lift_range(work, &window, None)?;
+    let session = view(&lift, &window, work.snapshot);
+    let mut parts: Vec<_> = session
+        .turn_views()
+        .map(|(_, prompt, events, uses)| {
+            render::render_turn_parts(
+                prompt,
+                events,
+                &uses.iter().map(|use_| &use_.call).collect::<Vec<_>>(),
+                &budget,
+                tool_results,
+            )
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
+    let omitted = window.start - range.start;
+    if omitted != 0 {
+        parts.insert(
+            0,
+            format!("[{omitted} earlier events omitted: over the render budget]"),
+        );
+    }
+    scalar(json!(parts.join("\n\n")), work)
 }
 
 #[derive(serde::Serialize)]
@@ -2785,16 +2772,100 @@ mod tests {
         let mut cap = limits();
         cap.max_output_bytes = 128;
         let cancel = Cancellation::default();
-        let mut work = Work::new(&snap, &cap, &cancel);
-        let produced = checked_render(&mut work, &(0..1), |_| {
-            visits.set(visits.get() + 1);
-            Ok(())
-        });
-        assert!(matches!(produced,Err(error) if error.status==Status::OutputLimit));
-        assert_eq!(visits.get(), 0);
+        let work = Work::new(&snap, &cap, &cancel);
+        assert_eq!(render_window(&work, &(0..1)).unwrap(), 1..1);
         let req = request(json!({"kind":"user_text"}), json!([]));
         assert!(
             matches!(project(&snap,&req,&cap,&cancel,0),Err(error) if error.status==Status::OutputLimit)
+        );
+    }
+
+    fn render_request(selectors: Value) -> Value {
+        request(
+            json!({"kind":"render","budget":{"turn_chars":100,"tool_chars":100},"tool_results":false}),
+            selectors,
+        )
+    }
+
+    fn long_turn(calls: usize, input_bytes: usize) -> Vec<Value> {
+        std::iter::once(user("u", "start the long run"))
+            .chain((0..calls).flat_map(|call| {
+                let id = format!("bash-{call}");
+                [
+                    tool(
+                        &format!("call-{call}"),
+                        &id,
+                        "Bash",
+                        json!({"command":format!("echo {call} {}", "x".repeat(input_bytes))}),
+                    ),
+                    tool_result(&format!("result-{call}"), &id, format!("done {call}")),
+                ]
+            }))
+            .collect()
+    }
+
+    #[test]
+    fn render_inside_one_long_turn_charges_only_the_window() {
+        let snap = snapshot(&long_turn(400, 2048));
+        let count = snap.event_count;
+        let cap = long_turn_limits();
+        let mut whole_turn = OutputCounter {
+            remaining: (cap.max_output_bytes - 64) / 16,
+        };
+        assert!((0..count).any(|index| {
+            snapshot_codec::write_json(&mut whole_turn, snap.entry(index), cap.max_output_bytes)
+                .is_err()
+        }));
+        let cancel = Cancellation::default();
+        let request =
+            render_request(json!([{"kind":"event_range","start":count - 6,"stop":count}]));
+        let result = project(&snap, &request, &cap, &cancel, 0).unwrap();
+        assert!(result.complete);
+        let text = result.data["value"].as_str().unwrap();
+        assert!(!text.contains("omitted"));
+        assert!(text.contains("echo 397") && text.contains("echo 399"));
+        assert!(!text.contains("echo 396"));
+    }
+
+    fn long_turn_limits() -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: 64 * 1024 * 1024,
+            max_events: 10_000,
+            max_output_bytes: 2 * 1024 * 1024,
+            ..limits()
+        }
+    }
+
+    #[test]
+    fn over_budget_render_keeps_the_newest_events_and_names_the_omission() {
+        let snap = snapshot(&long_turn(400, 2048));
+        let count = snap.event_count;
+        let cap = long_turn_limits();
+        let cancel = Cancellation::default();
+        let work = Work::new(&snap, &cap, &cancel);
+        let window = render_window(&work, &(0..count)).unwrap();
+        assert_eq!(window.end, count);
+        assert!(window.start > 1 && window.len() > 6);
+        let result = project(&snap, &render_request(json!([])), &cap, &cancel, 0).unwrap();
+        assert!(result.complete);
+        let text = result.data["value"].as_str().unwrap();
+        let marker = format!(
+            "[{} earlier events omitted: over the render budget]\n\n",
+            window.start
+        );
+        assert!(text.starts_with(&marker));
+        assert!(text.contains("echo 399"));
+        assert!(!text.contains("start the long run"));
+        let single = snapshot(&[user("u", &"y".repeat(32768))]);
+        let tiny = WorkLimits {
+            max_output_bytes: 1024,
+            ..limits()
+        };
+        let result = project(&single, &render_request(json!([])), &tiny, &cancel, 0).unwrap();
+        assert!(result.complete);
+        assert_eq!(
+            result.data["value"].as_str(),
+            Some("[1 earlier events omitted: over the render budget]")
         );
     }
 
