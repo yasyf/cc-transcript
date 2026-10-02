@@ -834,7 +834,7 @@ fn search_limit() -> crate::snapshot::SnapshotError {
     )
 }
 
-fn search_add(
+pub(crate) fn search_add(
     total: &mut usize,
     bytes: usize,
     limit: usize,

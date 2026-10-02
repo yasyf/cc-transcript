@@ -1,26 +1,31 @@
-use std::fs::{DirBuilder, OpenOptions};
-use std::hash::{DefaultHasher, Hasher};
+use std::collections::HashSet;
+use std::fs::{DirBuilder, File, OpenOptions};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sonic_rs::Value;
 
+use crate::scan_index::{open_private, IndexLayer, MIN_SOURCE_BYTES};
 use crate::scan_stream::LineSpan;
 
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub const PREFIX_SEGMENT: u64 = 4 * 1024 * 1024;
 const MAX_RECORDS: usize = 256;
-const MAX_LISTED: usize = 1024;
+const MAX_LISTED: usize = 4096;
 const MAX_QUERIES: usize = 16;
+const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub struct GrepCheckpoints {
     dir: PathBuf,
     producer: String,
     segment: u64,
+    index_from: u64,
 }
 
 pub struct Prefix {
@@ -61,7 +66,7 @@ pub struct Replayed {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Queued {
     pub index: usize,
-    pub span: Span,
+    pub span: Option<Span>,
     pub pattern_ids: Option<Vec<usize>>,
 }
 
@@ -80,11 +85,13 @@ pub struct FileLayer {
     pub events: usize,
     pub names: Vec<(String, String)>,
     pub prefix: Vec<(u64, u64)>,
+    pub index: Option<IndexLayer>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct QueryLayer {
     pub key: String,
+    pub indexed: bool,
     pub committed: u64,
     pub parsed: usize,
     pub decided: usize,
@@ -107,40 +114,134 @@ pub struct SourceRecord {
     pub queries: Vec<QueryLayer>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Version {
+    inode: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+pub struct Loaded {
+    pub record: SourceRecord,
+    version: Version,
+}
+
+pub struct Saved {
+    pub published: bool,
+    pub read: usize,
+}
+
+pub fn digest(bytes: &[u8]) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn lock(file: &File, blocking: bool) -> bool {
+    let mode = if blocking {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    unsafe { libc::flock(file.as_raw_fd(), mode) == 0 }
+}
+
+fn try_lock(path: &Path) -> Option<File> {
+    open_private(path, true)
+        .ok()
+        .filter(|file| lock(file, false))
+}
+
+fn version(metadata: &std::fs::Metadata) -> Version {
+    Version {
+        inode: metadata.ino(),
+        size: metadata.size(),
+        mtime: (metadata.mtime(), metadata.mtime_nsec()),
+        ctime: (metadata.ctime(), metadata.ctime_nsec()),
+    }
+}
+
+fn private(path: &Path) -> bool {
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .and_then(|()| std::fs::symlink_metadata(path))
+        .is_ok_and(|metadata| {
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o077 == 0
+        })
+}
+
+fn dir_bytes(path: &Path) -> u64 {
+    std::fs::read_dir(path).map_or(0, |entries| {
+        entries
+            .take(MAX_LISTED)
+            .flatten()
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum()
+    })
+}
+
+impl FileLayer {
+    fn proven(&self) -> bool {
+        self.prefix.last().map_or(0, |(end, _)| *end) == self.committed
+    }
+
+    fn agreed(&self, other: &Self) -> u64 {
+        self.prefix
+            .iter()
+            .zip(&other.prefix)
+            .take_while(|(ours, theirs)| ours == theirs)
+            .last()
+            .map_or(0, |((end, _), _)| *end)
+    }
+}
+
 impl SourceRecord {
-    pub fn merge(
-        existing: Option<Self>,
-        key: String,
-        size: u64,
-        revision: String,
-        file: FileLayer,
-        query: QueryLayer,
-    ) -> Self {
-        let mut record = match existing {
-            Some(record) if record.file.committed >= file.committed => Self {
-                size,
-                revision,
-                ..record
-            },
-            Some(record) => Self {
-                key,
-                size,
-                revision,
-                file,
-                queries: record.queries,
-            },
-            None => Self {
-                key,
-                size,
-                revision,
-                file,
-                queries: Vec::new(),
-            },
+    pub fn merge(latest: Option<Self>, trusted: bool, ours: Self, builds: bool) -> Option<Self> {
+        let Some(latest) = latest else {
+            return ours.file.proven().then_some(ours);
         };
-        record.queries.retain(|layer| layer.key != query.key);
-        record.queries.insert(0, query);
-        record.queries.truncate(MAX_QUERIES);
-        record
+        let shared = (!trusted).then(|| ours.file.agreed(&latest.file));
+        let crosses = |layer: &QueryLayer| {
+            shared.is_none_or(|shared| !layer.indexed && layer.committed <= shared)
+        };
+        let query = ours
+            .queries
+            .first()
+            .cloned()
+            .expect("a saved record carries its query layer");
+        let ours_wins = ours.file.committed > latest.file.committed && ours.file.proven();
+        let (mut record, other) = if ours_wins {
+            (ours, latest)
+        } else {
+            (latest, ours)
+        };
+        if builds != ours_wins {
+            if let Some(index) = other
+                .file
+                .index
+                .filter(|index| shared.is_none_or(|shared| index.committed <= shared))
+            {
+                record.file.index = Some(index);
+            }
+        }
+        let carried = ours_wins || crosses(&query);
+        let mut queries: Vec<QueryLayer> = std::mem::take(&mut record.queries)
+            .into_iter()
+            .chain(other.queries.into_iter().filter(|layer| crosses(layer)))
+            .filter(|layer| !carried || layer.key != query.key)
+            .collect();
+        if carried {
+            queries.insert(0, query);
+        }
+        queries.truncate(MAX_QUERIES);
+        record.queries = queries;
+        Some(record)
     }
 }
 
@@ -237,6 +338,7 @@ impl GrepCheckpoints {
             dir,
             producer,
             segment: PREFIX_SEGMENT,
+            index_from: MIN_SOURCE_BYTES,
         }
     }
 
@@ -248,9 +350,17 @@ impl GrepCheckpoints {
         self.segment
     }
 
+    pub fn indexing_from(self, index_from: u64) -> Self {
+        Self { index_from, ..self }
+    }
+
+    pub fn indexes(&self, size: u64) -> bool {
+        size >= self.index_from
+    }
+
     pub fn key(&self, binding: Value) -> Result<String, String> {
         let binding = sonic_rs::json!({
-            "version": "grep-checkpoint/4",
+            "version": "grep-checkpoint/5",
             "parser": crate::snapshot::PARSER_VERSION,
             "producer": self.producer,
             "binding": binding,
@@ -265,38 +375,51 @@ impl GrepCheckpoints {
         self.dir.join(format!("{key}.json"))
     }
 
-    fn private_dir(&self) -> bool {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.dir)
-            .and_then(|()| std::fs::symlink_metadata(&self.dir))
-            .is_ok_and(|metadata| {
-                metadata.is_dir()
-                    && metadata.uid() == unsafe { libc::geteuid() }
-                    && metadata.mode() & 0o077 == 0
-            })
+    pub fn index_dir(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("{key}.idx"))
     }
 
-    pub fn load(&self, key: &str, limit: usize) -> (Option<SourceRecord>, usize) {
+    fn build_lock_path(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("{key}.build.lock"))
+    }
+
+    fn private_dir(&self) -> bool {
+        private(&self.dir)
+    }
+
+    pub fn build_lock(&self, key: &str) -> Option<File> {
+        (self.private_dir() && private(&self.index_dir(key)))
+            .then(|| try_lock(&self.build_lock_path(key)))
+            .flatten()
+    }
+
+    pub fn load(&self, key: &str, limit: usize) -> (Option<Loaded>, usize) {
         if !self.private_dir() {
             return (None, 0);
         }
+        let (loaded, bytes, corrupt) = self.read(key, limit);
+        if corrupt {
+            self.discard(key);
+        }
+        (loaded, bytes)
+    }
+
+    fn read(&self, key: &str, limit: usize) -> (Option<Loaded>, usize, bool) {
         let Ok(mut file) = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(self.path(key))
         else {
-            return (None, 0);
+            return (None, 0, false);
         };
         let Ok(metadata) = file.metadata() else {
-            return (None, 0);
+            return (None, 0, false);
         };
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.len() > MAX_RECORD_BYTES.min(limit) as u64
         {
-            return (None, 0);
+            return (None, 0, false);
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         if (&mut file)
@@ -304,26 +427,76 @@ impl GrepCheckpoints {
             .read_to_end(&mut bytes)
             .is_err()
         {
-            return (None, bytes.len());
+            return (None, bytes.len(), false);
         }
         match sonic_rs::from_slice::<SourceRecord>(&bytes) {
-            Ok(record) if record.key == key => (Some(record), bytes.len()),
-            _ => {
-                self.discard(key);
-                (None, bytes.len())
-            }
+            Ok(record) if record.key == key => (
+                Some(Loaded {
+                    record,
+                    version: version(&metadata),
+                }),
+                bytes.len(),
+                false,
+            ),
+            _ => (None, bytes.len(), true),
         }
     }
 
     pub fn discard(&self, key: &str) {
         let _ = std::fs::remove_file(self.path(key));
+        self.discard_index(key);
     }
 
-    pub fn save(&self, record: &SourceRecord) -> std::io::Result<()> {
+    pub fn discard_index(&self, key: &str) {
+        let _ = std::fs::remove_dir_all(self.index_dir(key));
+    }
+
+    pub fn save(
+        &self,
+        ours: SourceRecord,
+        builds: bool,
+        basis: Option<&Loaded>,
+        limit: usize,
+    ) -> std::io::Result<Saved> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let bytes = sonic_rs::to_vec(record).map_err(std::io::Error::other)?;
-        if bytes.len() > MAX_RECORD_BYTES || !self.private_dir() {
-            return Ok(());
+        if !self.private_dir() {
+            return Ok(Saved {
+                published: false,
+                read: 0,
+            });
+        }
+        let guard = open_private(&self.dir.join(format!("{}.lock", ours.key)), true)?;
+        if !lock(&guard, true) {
+            return Err(std::io::Error::last_os_error());
+        }
+        let current = std::fs::symlink_metadata(self.path(&ours.key))
+            .ok()
+            .map(|metadata| version(&metadata));
+        let (latest, trusted, read) = match basis {
+            Some(basis) if current == Some(basis.version) => (Some(basis.record.clone()), true, 0),
+            _ => match self.read(&ours.key, limit) {
+                (None, read, false) if current.is_some() => {
+                    return Ok(Saved {
+                        published: false,
+                        read,
+                    })
+                }
+                (latest, read, _) => (latest.map(|loaded| loaded.record), false, read),
+            },
+        };
+        let fresh = ours.file.index.clone();
+        let Some(record) = SourceRecord::merge(latest, trusted, ours, builds) else {
+            return Ok(Saved {
+                published: false,
+                read,
+            });
+        };
+        let bytes = sonic_rs::to_vec(&record).map_err(std::io::Error::other)?;
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Ok(Saved {
+                published: false,
+                read,
+            });
         }
         let staged = self.dir.join(format!(
             "{}.{}.{}.tmp",
@@ -343,29 +516,68 @@ impl GrepCheckpoints {
             let _ = std::fs::remove_file(&staged);
         }
         written?;
-        self.evict();
-        Ok(())
+        drop(guard);
+        self.evict(builds);
+        Ok(Saved {
+            published: record.file.index == fresh,
+            read,
+        })
     }
 
-    fn evict(&self) {
+    fn evict(&self, indexes: bool) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
         };
-        let mut records: Vec<(std::time::SystemTime, PathBuf)> = entries
-            .take(MAX_LISTED)
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                (path.extension()? == "json").then_some(())?;
-                Some((entry.metadata().ok()?.modified().ok()?, path))
-            })
-            .collect();
-        if records.len() <= MAX_RECORDS {
-            return;
+        let mut records = Vec::new();
+        let mut dirs = Vec::new();
+        for entry in entries.take(MAX_LISTED).flatten() {
+            let path = entry.path();
+            let (Some(extension), Some(key)) = (
+                path.extension().and_then(|extension| extension.to_str()),
+                path.file_stem().and_then(|stem| stem.to_str()),
+            ) else {
+                continue;
+            };
+            match extension {
+                "json" => {
+                    if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified())
+                    {
+                        records.push((modified, key.to_owned()));
+                    }
+                }
+                "idx" => dirs.push(key.to_owned()),
+                _ => {}
+            }
         }
         records.sort();
-        for (_, path) in &records[..records.len() - MAX_RECORDS] {
-            let _ = std::fs::remove_file(path);
+        let excess = records.len().saturating_sub(MAX_RECORDS);
+        for (_, key) in records.drain(..excess) {
+            if let Some(_held) = try_lock(&self.build_lock_path(&key)) {
+                self.discard(&key);
+                let _ = std::fs::remove_file(self.dir.join(format!("{key}.lock")));
+                let _ = std::fs::remove_file(self.build_lock_path(&key));
+            }
+        }
+        if !indexes {
+            return;
+        }
+        let kept: HashSet<&str> = records.iter().map(|(_, key)| key.as_str()).collect();
+        for key in dirs.iter().filter(|key| !kept.contains(key.as_str())) {
+            if let Some(_held) = try_lock(&self.build_lock_path(key)) {
+                self.discard_index(key);
+                let _ = std::fs::remove_file(self.build_lock_path(key));
+            }
+        }
+        let mut total = 0u64;
+        for (_, key) in records.iter().rev() {
+            match total.saturating_add(dir_bytes(&self.index_dir(key))) {
+                within if within <= MAX_INDEX_BYTES => total = within,
+                _ => {
+                    if let Some(_held) = try_lock(&self.build_lock_path(key)) {
+                        self.discard_index(key);
+                    }
+                }
+            }
         }
     }
 }

@@ -1,17 +1,18 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
 use std::path::Path;
 
 use sonic_rs::json;
 
-use super::{incomplete, GrepEvent, GrepReducer};
+use super::{incomplete, GrepEvent, GrepReducer, Searched};
 use crate::gateway::{sniff_provider, Provider};
 use crate::scan::{ScanBudget, ScanControl, StagingReservation};
 use crate::scan_checkpoint::{
-    FileLayer, GrepCheckpoints, Prefix, QueryLayer, Queued, ReducerState, Replayed, SourceRecord,
-    Span, PREFIX_SEGMENT,
+    digest, FileLayer, GrepCheckpoints, Prefix, QueryLayer, Queued, ReducerState, Replayed,
+    SourceRecord, Span, PREFIX_SEGMENT,
 };
+use crate::scan_index::{needs, Builder, IndexReader, Need, Opened};
+use crate::scan_projection::Projected;
 use crate::scan_stream::{LineSpan, SourceStream};
 use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
 use crate::snapshot_memory::entry_charge;
@@ -26,9 +27,9 @@ struct ToolName {
 
 struct StreamSlot<'store> {
     index: usize,
-    line: LineSpan,
-    digest: u64,
-    entry: Entry,
+    line: Option<(LineSpan, u64)>,
+    entry: Option<Entry>,
+    projected: Option<Projected>,
     charge: usize,
     pattern_ids: Option<Vec<usize>>,
     staging: StagingReservation<'store>,
@@ -64,36 +65,57 @@ struct GrepStream<'store> {
     names_final: bool,
     capture: Option<(FileLayer, QueryLayer)>,
     poisoned: bool,
+    index: Option<IndexReader>,
+    feeding: bool,
+    builder: Option<Builder<'store>>,
     prefix: Prefix,
     proof: Option<Prefix>,
     frozen: bool,
     tail: Option<(LineSpan, u64)>,
 }
 
-fn unresolved(names: &HashMap<String, ToolName>, entry: &Entry) -> bool {
-    entry
-        .tool_results()
-        .any(|result| !names.contains_key(result.tool_use_id.as_str()))
+impl StreamSlot<'_> {
+    fn is_user(&self) -> bool {
+        match (&self.entry, &self.projected) {
+            (Some(entry), _) => matches!(entry, Entry::User(_)),
+            (None, Some(projected)) => projected.kind() == "user",
+            (None, None) => false,
+        }
+    }
+
+    fn results(&self) -> Vec<&str> {
+        match (&self.entry, &self.projected) {
+            (Some(entry), _) => entry
+                .tool_results()
+                .map(|result| result.tool_use_id.as_str())
+                .collect(),
+            (None, Some(projected)) => projected.results().collect(),
+            (None, None) => Vec::new(),
+        }
+    }
+}
+
+fn unresolved(names: &HashMap<String, ToolName>, ids: &[&str]) -> bool {
+    ids.iter().any(|id| !names.contains_key(*id))
 }
 
 fn resolve<'n>(
     names: &'n mut HashMap<String, ToolName>,
-    entry: &Entry,
+    ids: &[&str],
     mark: bool,
 ) -> HashMap<&'n str, &'n str> {
     if mark {
-        for result in entry.tool_results() {
-            if let Some(slot) = names.get_mut(result.tool_use_id.as_str()) {
+        for id in ids {
+            if let Some(slot) = names.get_mut(*id) {
                 slot.referenced = true;
             }
         }
     }
     let names: &'n HashMap<String, ToolName> = names;
-    entry
-        .tool_results()
-        .filter_map(|result| {
+    ids.iter()
+        .filter_map(|id| {
             names
-                .get_key_value(result.tool_use_id.as_str())
+                .get_key_value(*id)
                 .map(|(id, slot)| (id.as_str(), slot.name.as_str()))
         })
         .collect()
@@ -109,12 +131,6 @@ fn parse(
     crate::parse::parse_line(bytes, &mut entries, &|_| true)
         .map_err(|error| SnapshotError::new(Status::ParseError, format!("{error:?}")))?;
     Ok(entries.pop())
-}
-
-fn digest(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn revision(stamp: &SourceStamp) -> String {
@@ -155,6 +171,15 @@ impl<'store> GrepReducer<'store> {
             matched_items: self.matched_items,
             coverage_complete: self.coverage_complete,
         }
+    }
+
+    fn needs(&self) -> Vec<[Need; 2]> {
+        self.patterns
+            .iter()
+            .zip(&self.counts)
+            .filter(|(pattern, count)| pattern.max_matches.is_none_or(|cap| **count < cap))
+            .map(|(pattern, _)| needs(pattern.regex.as_str(), self.options.ignore_case))
+            .collect()
     }
 
     fn keys(
@@ -239,25 +264,70 @@ impl<'store> GrepReducer<'store> {
             names_final: false,
             capture: None,
             poisoned: false,
+            index: None,
+            feeding: false,
+            builder: None,
             prefix: Prefix::new(checkpoints.map_or(PREFIX_SEGMENT, GrepCheckpoints::segment)),
             proof: None,
             frozen: false,
             tail: None,
         };
-        let mut existing = None;
+        let build_lock = match (checkpoints, &keys) {
+            (Some(store), Some((file_key, _))) if store.indexes(stream.size) => {
+                store.build_lock(file_key)
+            }
+            _ => None,
+        };
+        let mut basis = None;
         if let (Some(store), Some((file_key, query_key))) = (checkpoints, &keys) {
-            let (record, bytes) = store.load(file_key, budget.remaining().max_read_bytes);
+            let (loaded, bytes) = store.load(file_key, budget.remaining().max_read_bytes);
             budget.charge_projection(bytes, 0, cancel)?;
-            if let Some(record) = record {
-                let layer = record
+            if let Some(loaded) = loaded {
+                let record = &loaded.record;
+                let mut validity = stream.validates(record, &mut source, budget, cancel)?;
+                let saved = record
                     .queries
                     .iter()
                     .find(|layer| {
                         &layer.key == query_key && layer.committed <= record.file.committed
                     })
                     .cloned();
-                let validity = match stream.validates(&record, &mut source, budget, cancel)? {
-                    Validity::Valid => match layer {
+                if let Some(layer) = record.file.index.clone().filter(|index| {
+                    matches!(validity, Validity::Valid)
+                        && index.committed <= record.file.committed
+                        && saved.as_ref().is_none_or(|layer| {
+                            layer.indexed
+                                || layer.queue.iter().any(|queued| queued.span.is_none())
+                                || layer.stopped.is_none() && layer.parsed < index.events
+                        })
+                }) {
+                    match IndexReader::open(
+                        &store.index_dir(file_key),
+                        layer,
+                        &self.needs(),
+                        budget,
+                        cancel,
+                    )? {
+                        Opened::Ready(reader) => {
+                            budget.progress.cache_hits += 1;
+                            stream.index = Some(reader);
+                        }
+                        Opened::Missing => {}
+                        Opened::Damaged => {
+                            store.discard_index(file_key);
+                            budget.progress.cache_invalidations += 1;
+                        }
+                    }
+                }
+                let layer = saved.filter(|layer| {
+                    !layer.indexed && layer.queue.iter().all(|queued| queued.span.is_some())
+                        || stream
+                            .index
+                            .as_ref()
+                            .is_some_and(|reader| layer.parsed <= reader.layer.events)
+                });
+                if let Validity::Valid = validity {
+                    validity = match layer {
                         Some(layer) => {
                             let restored = self.restore(
                                 &mut stream,
@@ -277,45 +347,85 @@ impl<'store> GrepReducer<'store> {
                                 Validity::Invalid
                             }
                         }
-                        None if record.file.committed == stream.size => {
+                        None if record.file.committed == stream.size || stream.index.is_some() => {
                             stream.adopt(&record.file, budget, cancel)?;
                             Validity::Valid
                         }
                         None => Validity::Valid,
-                    },
-                    unproven => unproven,
-                };
+                    };
+                }
                 match validity {
-                    Validity::Valid => existing = Some(record),
+                    Validity::Valid => basis = Some(loaded),
                     Validity::Invalid => {
                         store.discard(file_key);
+                        stream.index = None;
                         budget.progress.cache_invalidations += 1;
                     }
-                    Validity::Unverified => {}
+                    Validity::Unverified => store.discard(file_key),
                 }
+            }
+        }
+        if let (Some(_), Some(store), Some((file_key, _))) = (&build_lock, checkpoints, &keys) {
+            let start = match &stream.index {
+                Some(reader) if stream.parsed <= reader.layer.events => Some(Some(&reader.layer)),
+                Some(_) => None,
+                None => (stream.parsed == 0).then_some(None),
+            };
+            if let Some(layer) = start {
+                stream.builder = Builder::start(
+                    &store.index_dir(file_key),
+                    layer,
+                    stream.size,
+                    budget,
+                    cancel,
+                )?;
             }
         }
         let result = self.drive(&mut stream, &mut source, budget, cancel, &mut emit);
-        if let (Some(store), Some((file_key, _)), false) = (checkpoints, &keys, stream.poisoned) {
-            if result.as_ref().map_or_else(saves, Option::is_some) {
-                if let Some((file, query)) = stream.capture.take().or_else(|| stream.capture(self))
+        let damaged = stream.index.as_ref().is_some_and(IndexReader::is_damaged)
+            || stream.builder.as_ref().is_some_and(Builder::is_damaged);
+        if let (Some(store), Some((file_key, _))) = (checkpoints, &keys) {
+            if damaged {
+                store.discard_index(file_key);
+                budget.progress.cache_invalidations += 1;
+            }
+            if !stream.poisoned && result.as_ref().map_or_else(saves, Option::is_some) {
+                if let Some((mut file, query)) =
+                    stream.capture.take().or_else(|| stream.capture(self))
                 {
-                    let _ = store.save(&SourceRecord::merge(
-                        existing,
-                        file_key.clone(),
-                        stream.size,
-                        stream.revision.clone(),
-                        file,
-                        query,
-                    ));
+                    let published = match (&mut stream.builder, damaged) {
+                        (Some(builder), false) => builder.publish().ok(),
+                        _ => None,
+                    };
+                    let builds = published.is_some();
+                    file.index = published;
+                    let saved = store.save(
+                        SourceRecord {
+                            key: file_key.clone(),
+                            size: stream.size,
+                            revision: stream.revision.clone(),
+                            file,
+                            queries: vec![query],
+                        },
+                        builds,
+                        basis.as_ref(),
+                        budget.remaining().max_read_bytes,
+                    );
+                    if let Ok(saved) = saved {
+                        budget.progress.projection_bytes += saved.read;
+                        if let (Some(builder), true, true) =
+                            (&mut stream.builder, builds, saved.published)
+                        {
+                            builder.retire();
+                        }
+                    }
                 }
             }
-        }
-        if stream.poisoned {
-            if let (Some(store), Some((file_key, _))) = (checkpoints, &keys) {
+            if stream.poisoned {
                 store.discard(file_key);
             }
         }
+        drop(build_lock);
         let Some(eof) = result? else {
             return Ok(None);
         };
@@ -349,37 +459,44 @@ impl<'store> GrepReducer<'store> {
         ) -> Result<(), SnapshotError>,
     {
         stream.decide(self, false, budget, cancel)?;
-        stream.emit(self, false, budget, cancel, emit)?;
+        stream.emit(self, false, source, budget, cancel, emit)?;
+        stream.feed(self, source, budget, cancel, emit)?;
         while !stream.finished(self.options.context) {
             let Some(line) = source.next_line(budget, cancel)? else {
                 if stream.capture.is_none() {
                     stream.capture = stream.capture(self);
                 }
                 stream.decide(self, true, budget, cancel)?;
-                stream.emit(self, true, budget, cancel, emit)?;
+                stream.emit(self, true, source, budget, cancel, emit)?;
                 return Ok(Some(true));
             };
             if !line.terminated {
                 stream.capture = stream.capture(self);
             }
             let bytes = source.bytes(&line);
-            if !line.terminated {
-                stream.tail = Some((line, digest(bytes)));
-            }
             if !stream.sniffed && !bytes.iter().all(u8::is_ascii_whitespace) {
                 stream.sniffed = true;
                 if sniff_provider(bytes) == Provider::Codex {
+                    stream.builder = None;
                     return Ok(None);
                 }
             }
+            let sum = digest(bytes);
+            if !line.terminated {
+                stream.tail = Some((line, sum));
+            }
             if let Some(entry) = parse(bytes, budget, cancel)? {
-                stream.push(line, digest(bytes), entry, budget, cancel)?;
+                let projected = match (&mut stream.builder, line.terminated) {
+                    (Some(builder), true) => builder.add(line, sum, &entry, budget, cancel)?,
+                    _ => None,
+                };
+                stream.push(line, sum, entry, projected, budget, cancel)?;
             }
             if line.terminated {
                 stream.commit(line, source, budget, cancel)?;
             }
             stream.decide(self, false, budget, cancel)?;
-            stream.emit(self, false, budget, cancel, emit)?;
+            stream.emit(self, false, source, budget, cancel, emit)?;
         }
         Ok(Some(false))
     }
@@ -401,14 +518,30 @@ impl<'store> GrepReducer<'store> {
             &Cancellation,
         ) -> Result<(), SnapshotError>,
     {
+        let limit = stream.index.as_ref().map_or(layer.committed, |reader| {
+            reader.layer.committed.max(layer.committed)
+        });
+        let mut spans = Vec::with_capacity(layer.queue.len());
+        for queued in &layer.queue {
+            spans.push(match queued.span {
+                Some(span) => span,
+                None => {
+                    let (line, sum) = stream
+                        .index
+                        .as_ref()
+                        .expect("span-less layers restore through an index")
+                        .row(queued.index, budget, cancel)?;
+                    span(line, sum)
+                }
+            });
+        }
         let mut lines = Vec::with_capacity(layer.queue.len() + layer.replay.len());
-        for span in layer
-            .queue
+        for span in spans
             .iter()
-            .map(|queued| queued.span)
+            .copied()
             .chain(layer.replay.iter().map(|replayed| replayed.span))
         {
-            if span.offset + span.len as u64 > layer.committed {
+            if span.offset + span.len as u64 > limit {
                 return Ok(false);
             }
             let bytes = source.read_span(&span.into(), budget, cancel)?;
@@ -436,16 +569,16 @@ impl<'store> GrepReducer<'store> {
             }
         }
         let mut lines = lines.into_iter();
-        for (queued, bytes) in layer.queue.iter().zip(lines.by_ref()) {
+        for ((queued, span), bytes) in layer.queue.iter().zip(spans).zip(lines.by_ref()) {
             let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| {
                 SnapshotError::new(Status::Changed, "checkpointed event no longer parses")
             })?;
             let charge = charge_of(&entry);
             stream.queue.push_back(StreamSlot {
                 index: queued.index,
-                line: queued.span.into(),
-                digest: queued.span.digest,
-                entry,
+                line: Some((span.into(), span.digest)),
+                entry: Some(entry),
+                projected: None,
                 charge,
                 pattern_ids: queued.pattern_ids.clone(),
                 staging: budget
@@ -469,7 +602,11 @@ impl<'store> GrepReducer<'store> {
             let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| {
                 SnapshotError::new(Status::Changed, "checkpointed event no longer parses")
             })?;
-            let names = resolve(&mut stream.names, &entry, false);
+            let ids: Vec<&str> = entry
+                .tool_results()
+                .map(|result| result.tool_use_id.as_str())
+                .collect();
+            let names = resolve(&mut stream.names, &ids, false);
             emit(
                 GrepEvent {
                     index: replayed.index,
@@ -624,9 +761,11 @@ impl<'store> GrepStream<'store> {
                     .map(|(id, slot)| (id.clone(), slot.name.clone()))
                     .collect(),
                 prefix: self.prefix.segments(),
+                index: None,
             },
             QueryLayer {
                 key: self.query_key.clone()?,
+                indexed: self.feeding,
                 committed: self.committed,
                 parsed: self.parsed,
                 decided: self.decided,
@@ -647,7 +786,7 @@ impl<'store> GrepStream<'store> {
                     .iter()
                     .map(|slot| Queued {
                         index: slot.index,
-                        span: span(slot.line, slot.digest),
+                        span: slot.line.map(|(line, digest)| span(line, digest)),
                         pattern_ids: slot.pattern_ids.clone(),
                     })
                     .collect(),
@@ -688,6 +827,93 @@ impl<'store> GrepStream<'store> {
         self.fence.push(b'\n');
         let excess = self.fence.len().saturating_sub(FENCE_BYTES);
         self.fence.drain(..excess);
+        match &mut self.builder {
+            Some(builder) => {
+                builder.commit(self.committed, &self.fence, self.sniffed, budget, cancel)
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn feed<E>(
+        &mut self,
+        grep: &mut GrepReducer<'store>,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+        emit: &mut E,
+    ) -> Result<(), SnapshotError>
+    where
+        E: FnMut(
+            GrepEvent<'_>,
+            &mut ScanBudget<'store>,
+            &Cancellation,
+        ) -> Result<(), SnapshotError>,
+    {
+        let Some(blocks) = self
+            .index
+            .as_ref()
+            .filter(|reader| self.parsed <= reader.layer.events)
+            .map(IndexReader::blocks)
+        else {
+            return Ok(());
+        };
+        self.feeding = true;
+        for block in 0..blocks {
+            let reader = self.index.as_ref().expect("index open");
+            let events = reader.events(block);
+            if events.end <= self.parsed {
+                continue;
+            }
+            let read = reader
+                .candidate(block)
+                .then(|| reader.read(block, budget, cancel))
+                .transpose()?;
+            let (mut projected, _staging) = match read {
+                Some((projected, staging)) => (Some(projected.into_iter()), Some(staging)),
+                None => (None, None),
+            };
+            for index in events {
+                let next = projected.as_mut().and_then(Iterator::next);
+                if index < self.parsed {
+                    continue;
+                }
+                self.push_indexed(index, next, budget, cancel)?;
+                self.decide(grep, false, budget, cancel)?;
+                self.emit(grep, false, source, budget, cancel, emit)?;
+                if self.finished(grep.options.context) {
+                    return Ok(());
+                }
+            }
+        }
+        let layer = &self.index.as_ref().expect("index open").layer;
+        self.committed = layer.committed;
+        self.fence.clone_from(&layer.fence);
+        self.sniffed = layer.sniffed;
+        self.feeding = false;
+        source.seek(self.committed)
+    }
+
+    fn push_indexed(
+        &mut self,
+        index: usize,
+        projected: Option<Projected>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let charge = projected.as_ref().map_or(0, Projected::bytes);
+        let staging =
+            budget.reserve_staging(charge.saturating_add(size_of::<StreamSlot>()), cancel)?;
+        self.queue.push_back(StreamSlot {
+            index,
+            line: None,
+            entry: None,
+            projected,
+            charge,
+            pattern_ids: None,
+            staging,
+        });
+        self.parsed += 1;
         Ok(())
     }
 
@@ -696,6 +922,7 @@ impl<'store> GrepStream<'store> {
         line: LineSpan,
         digest: u64,
         entry: Entry,
+        projected: Option<Projected>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
@@ -744,9 +971,9 @@ impl<'store> GrepStream<'store> {
         }
         self.queue.push_back(StreamSlot {
             index: self.parsed,
-            line,
-            digest,
-            entry,
+            line: Some((line, digest)),
+            entry: Some(entry),
+            projected,
             charge,
             pattern_ids: None,
             staging,
@@ -767,20 +994,34 @@ impl<'store> GrepStream<'store> {
         while self.stopped.is_none() && self.decided < self.parsed {
             let position = self.decided - self.emitted;
             let slot = &self.queue[position];
-            let lookup = filtering && matches!(slot.entry, Entry::User(_));
-            if lookup && !eof && unresolved(&self.names, &slot.entry) {
+            let lookup = filtering && slot.is_user();
+            let ids = slot.results();
+            if lookup && !eof && unresolved(&self.names, &ids) {
                 break;
             }
             let names = if lookup {
-                resolve(&mut self.names, &slot.entry, true)
+                resolve(&mut self.names, &ids, true)
             } else {
                 HashMap::new()
             };
-            let matched =
-                grep.matches(&slot.entry, slot.charge, &names, &results, budget, cancel)?;
+            let searched = match (&slot.projected, &slot.entry) {
+                (Some(projected), _) => Some(Searched::Projected(projected)),
+                (None, Some(entry)) => Some(Searched::Entry(entry)),
+                (None, None) => None,
+            };
+            let matched = match searched {
+                Some(searched) => {
+                    grep.matches(searched, slot.charge, &names, &results, budget, cancel)?
+                }
+                None => {
+                    grep.mark_skipped_patterns();
+                    None
+                }
+            };
             drop(names);
+            let slot = &mut self.queue[position];
+            slot.projected = None;
             if let Some((matched, _match_staging)) = matched {
-                let slot = &mut self.queue[position];
                 slot.pattern_ids =
                     Some(grep.commit_matches(&matched, &mut slot.staging, budget, cancel)?);
                 if grep.satisfied() {
@@ -792,10 +1033,36 @@ impl<'store> GrepStream<'store> {
         Ok(())
     }
 
+    fn load(
+        &mut self,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let reader = self
+            .index
+            .as_ref()
+            .expect("unparsed slots come from an index");
+        let (line, sum) = reader.row(self.queue[0].index, budget, cancel)?;
+        let bytes = source.read_span(&line, budget, cancel)?;
+        if digest(&bytes) != sum {
+            return Err(reader.damage());
+        }
+        let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| reader.damage())?;
+        let charge = charge_of(&entry);
+        let slot = &mut self.queue[0];
+        budget.extend_staging(&mut slot.staging, charge, cancel)?;
+        slot.line = Some((line, sum));
+        slot.charge = charge;
+        slot.entry = Some(entry);
+        Ok(())
+    }
+
     fn emit<E>(
         &mut self,
         grep: &GrepReducer<'store>,
         eof: bool,
+        source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
         emit: &mut E,
@@ -825,16 +1092,26 @@ impl<'store> GrepStream<'store> {
                     .take(context + 1)
                     .any(|slot| slot.pattern_ids.is_some());
             if windowed {
-                if self.render_names && !eof && unresolved(&self.names, &slot.entry) {
+                if self.queue[0].entry.is_none() {
+                    self.load(source, budget, cancel)?;
+                }
+                let slot = &self.queue[0];
+                let entry = slot.entry.as_ref().expect("windowed slots are loaded");
+                let ids: Vec<&str> = entry
+                    .tool_results()
+                    .map(|result| result.tool_use_id.as_str())
+                    .collect();
+                if self.render_names && !eof && unresolved(&self.names, &ids) {
                     break;
                 }
+                let (line, digest) = slot.line.expect("loaded slots carry their line");
                 let opens_window = self.last_emitted.is_none_or(|last| last + 1 != index);
                 budget.extend_staging(&mut self.staging, size_of::<Replayed>(), cancel)?;
-                let names = resolve(&mut self.names, &slot.entry, self.render_names);
+                let names = resolve(&mut self.names, &ids, self.render_names);
                 emit(
                     GrepEvent {
                         index,
-                        entry: &slot.entry,
+                        entry,
                         pattern_ids: slot.pattern_ids.as_deref(),
                         names: &names,
                         results: &results,
@@ -849,13 +1126,13 @@ impl<'store> GrepStream<'store> {
                 )?;
                 self.history.push(Replayed {
                     index,
-                    span: span(slot.line, slot.digest),
+                    span: span(line, digest),
                     pattern_ids: slot.pattern_ids.clone(),
                     opens_window,
                 });
                 self.last_emitted = Some(index);
             }
-            if slot.pattern_ids.is_some() {
+            if self.queue[0].pattern_ids.is_some() {
                 self.last_hit = Some(index);
             }
             self.queue.pop_front();

@@ -1,6 +1,8 @@
 use super::*;
 use crate::scan::{ScanControl, ScanPlan, ScanProgress, ScanSession};
-use crate::scan_checkpoint::{GrepCheckpoints, SourceRecord, MAX_RECORD_BYTES, PREFIX_SEGMENT};
+use crate::scan_checkpoint::{
+    GrepCheckpoints, QueryLayer, ReducerState, SourceRecord, MAX_RECORD_BYTES, PREFIX_SEGMENT,
+};
 use crate::scan_stream::{LineSpan, SourceStream, VALIDATE_HOOKS};
 use crate::snapshot::{NativeStore, WorkLimits};
 use sonic_rs::{json, Value};
@@ -584,10 +586,18 @@ struct Cache(PathBuf, GrepCheckpoints);
 
 impl Cache {
     fn new() -> Self {
-        Self::segmented(PREFIX_SEGMENT)
+        Self::indexing(crate::scan_index::MIN_SOURCE_BYTES)
+    }
+
+    fn indexing(from: u64) -> Self {
+        Self::with(from, PREFIX_SEGMENT)
     }
 
     fn segmented(segment: u64) -> Self {
+        Self::with(crate::scan_index::MIN_SOURCE_BYTES, segment)
+    }
+
+    fn with(from: u64, segment: u64) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "cc-grep-checkpoints-{}-{}",
@@ -596,19 +606,25 @@ impl Cache {
         ));
         Self(
             dir.clone(),
-            GrepCheckpoints::new(dir, "test".into()).segmented(segment),
+            GrepCheckpoints::new(dir, "test".into())
+                .indexing_from(from)
+                .segmented(segment),
         )
+    }
+
+    fn record(&self) -> crate::scan_checkpoint::SourceRecord {
+        sonic_rs::from_slice(&std::fs::read(&self.records()[0]).unwrap()).unwrap()
     }
 
     fn records(&self) -> Vec<PathBuf> {
         std::fs::read_dir(&self.0)
             .unwrap()
             .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
             .collect()
-    }
-
-    fn record(&self) -> SourceRecord {
-        sonic_rs::from_slice(&std::fs::read(&self.records()[0]).unwrap()).unwrap()
     }
 }
 
@@ -1071,6 +1087,22 @@ fn a_racing_append_past_the_validation_cap_is_incomplete() {
         assert_eq!(progress.cache_hits, hits, "{hits}");
         assert_eq!(progress.validated_bytes, hits * pinned, "{hits}");
     }
+}
+
+#[test]
+fn a_rewrite_racing_an_indexed_query_fails_that_query() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&sparse(100, &[50]), true);
+    build(&source, &cache);
+    let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let rewrite = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .find("filler 5 ")
+        .unwrap() as u64;
+    let (result, _, progress) = racing(&source, &json!({}), Some(&cache.1), Some(rewrite));
+    assert_eq!(result.err().unwrap().status, Status::Changed);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, pinned);
 }
 
 #[test]
@@ -1613,4 +1645,830 @@ fn a_used_name_contradicted_by_a_later_full_layer_is_incomplete() {
     assert_eq!(error.status, Status::Incomplete);
     assert!(error.reason.contains("redefined"), "{}", error.reason);
     assert!(cache.records().is_empty());
+}
+
+fn extras() -> Vec<String> {
+    vec![
+        line(
+            json!({"type":"system","subtype":"informational","content":"system needle","uuid":"s1","sessionId":"s","timestamp":"2026-01-01T00:00:02Z"}),
+        ),
+        line(
+            json!({"type":"attachment","attachment":{"type":"hook_success","content":"hook needle"},"uuid":"h1","sessionId":"s","timestamp":"2026-01-01T00:00:02Z"}),
+        ),
+        line(
+            json!({"type":"attachment","attachment":{"type":"task_reminder","content":[{"needle":true}]},"uuid":"h2","sessionId":"s","timestamp":"2026-01-01T00:00:02Z"}),
+        ),
+        line(assistant(
+            "a9",
+            "u7",
+            json!([{"type":"thinking","thinking":"deep needle","signature":"x"},{"type":"text","text":"answer"},tool("t9","Grep",json!({"pattern":"needle"}))]),
+        )),
+        line(result("u9", "a9", "t9", "grep needle\nsecond line")),
+        line(json!({"type":"permission-mode","permissionMode":"default","sessionId":"s"})),
+    ]
+}
+
+fn bulk(count: usize, hits: &[usize]) -> Vec<String> {
+    let pad = "x".repeat(1000);
+    let mut lines = transcript();
+    lines.extend((0..count).map(|index| {
+        let text = match index {
+            _ if hits.contains(&index) => format!("needle {index} {pad}"),
+            100 => format!("\u{212A}elvin probe {pad}"),
+            _ => format!("filler {index} {pad}"),
+        };
+        line(user(&format!("b{index}"), None, json!(text)))
+    }));
+    lines.extend(extras());
+    lines.extend(transcript());
+    lines
+}
+
+fn build(source: &Source, cache: &Cache) -> crate::scan_index::IndexLayer {
+    checkpointed(
+        &source.0,
+        &[("zq-never", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    cache.record().file.index.unwrap()
+}
+
+fn index_files(cache: &Cache) -> PathBuf {
+    std::fs::read_dir(&cache.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "idx"))
+        .unwrap()
+}
+
+#[test]
+fn projections_rebuild_every_haystack_mask() {
+    let mut entries = Vec::new();
+    for text in transcript().iter().chain(&extras()) {
+        crate::parse::parse_line(text.as_bytes(), &mut entries, &|_| true).unwrap();
+    }
+    assert_eq!(entries.len(), 20);
+    for entry in &entries {
+        let projected = Projected::of(entry);
+        let mut bytes = Vec::new();
+        projected.encode(&mut bytes);
+        assert_eq!(
+            Projected::decode_all(&bytes).unwrap(),
+            vec![projected.clone()]
+        );
+        for mask in 0..8 {
+            let (text, thinking, tools) = (mask & 1 != 0, mask & 2 != 0, mask & 4 != 0);
+            let expected = crate::render::haystack(entry, text, thinking, tools);
+            assert_eq!(projected.haystack(text, thinking, tools), expected);
+            assert_eq!(
+                projected
+                    .haystack_bound(text, thinking, tools, usize::MAX)
+                    .unwrap(),
+                expected.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn literal_needs_hold_for_every_matching_haystack() {
+    let haystacks = [
+        "ship lane ready",
+        "READY-FOR-SHIP now",
+        "the \u{212A}elvin scale",
+        "multi\nline needle",
+        "needle 900 x",
+        "fooXYZbar",
+        "",
+    ];
+    let patterns = [
+        ("ship lane|READY-FOR-SHIP", false),
+        ("kelvin", true),
+        ("line\\nneedle", false),
+        ("n.edl.\\s9", false),
+        ("foo.*bar", false),
+        ("(?i)ready-for", false),
+        ("x*", false),
+        ("[^\\s\\S]", false),
+    ];
+    for (pattern, ignore_case) in patterns {
+        let regex = regex::RegexBuilder::new(pattern)
+            .case_insensitive(ignore_case)
+            .build()
+            .unwrap();
+        let needs = crate::scan_index::needs(pattern, ignore_case);
+        for haystack in haystacks.iter().filter(|haystack| regex.is_match(haystack)) {
+            let present: std::collections::HashSet<u32> = haystack
+                .split('\n')
+                .flat_map(|part| crate::scan_projection::grams(part.as_bytes()))
+                .collect();
+            for need in &needs {
+                assert!(
+                    need.as_ref().is_none_or(|literals| literals
+                        .iter()
+                        .any(|keys| keys.iter().all(|key| present.contains(key)))),
+                    "{pattern} on {haystack:?}"
+                );
+            }
+        }
+    }
+    assert!(crate::scan_index::needs("ship lane|READY-FOR-SHIP", false)
+        .iter()
+        .all(Option::is_some));
+    assert!(crate::scan_index::needs("n.edl.\\s9", false)
+        .iter()
+        .all(Option::is_none));
+    assert_eq!(
+        crate::scan_index::needs("[^\\s\\S]", false),
+        [Some(vec![]), Some(vec![])]
+    );
+}
+
+#[test]
+fn indexed_new_queries_match_the_prepared_snapshot_path() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[3, 900, 1700, 2350]), true);
+    let index = build(&source, &cache);
+    assert_eq!(index.segments[0].blocks, 64);
+    assert!(index.segments.len() >= 2);
+    assert_eq!(index.committed, std::fs::metadata(&source.0).unwrap().len());
+    let mut names: Vec<_> = [
+        "plain",
+        "quota",
+        "multi",
+        "context",
+        "context-quota",
+        "kinds",
+        "tool-forward",
+        "tool-bash",
+        "ignore-case",
+        "final",
+        "absent",
+    ]
+    .map(case)
+    .into_iter()
+    .collect();
+    names.push((vec![("kelvin", None)], {
+        let mut options = options();
+        options.ignore_case = true;
+        options
+    }));
+    names.push((vec![("needle 1700", Some(1))], options()));
+    for (patterns, options) in names {
+        for render_names in [true, false] {
+            let rebuilt = GrepOptions {
+                kinds: options.kinds.clone(),
+                tool: options.tool.clone(),
+                ..options
+            };
+            let mut expected = prepared(&source.0, &patterns, rebuilt);
+            let rebuilt = GrepOptions {
+                kinds: options.kinds.clone(),
+                tool: options.tool.clone(),
+                ..options
+            };
+            let (actual, _, progress) = checkpointed(
+                &source.0,
+                &patterns,
+                rebuilt,
+                render_names,
+                limits(),
+                Some(&cache.1),
+            );
+            let mut actual = actual.unwrap();
+            assert_eq!(progress.cache_hits, 1, "{patterns:?}");
+            assert_eq!(actual.names_through, None);
+            if !render_names {
+                for emitted in expected.emitted.iter_mut().chain(&mut actual.emitted) {
+                    emitted.names.clear();
+                }
+            }
+            assert_eq!(
+                actual, expected,
+                "{patterns:?}, render names {render_names}"
+            );
+        }
+    }
+}
+
+#[test]
+fn warm_new_query_reads_candidate_blocks_and_hit_lines_only() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[900]);
+    let source = Source::new(&lines, true);
+    let index = build(&source, &cache);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 900", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(
+        progress.source_bytes,
+        64 + lines[transcript().len() + 900].len()
+    );
+    assert_eq!(progress.parsed_events, 1);
+    assert!(
+        (progress.projection_bytes as u64) < index.proj / 8,
+        "{} of {}",
+        progress.projection_bytes,
+        index.proj
+    );
+    assert!(
+        progress.examined_events < 200,
+        "{}",
+        progress.examined_events
+    );
+}
+
+#[test]
+fn appended_lines_extend_the_index_from_the_suffix() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[900]);
+    let source = Source::new(&lines, true);
+    build(&source, &cache);
+    let before = std::fs::metadata(&source.0).unwrap().len();
+    let appended = append(&source.0, &sparse(2450, &[2420])[2400..]);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 2420", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.source_bytes as u64, 64 + appended);
+    assert_eq!(progress.validated_bytes as u64, before);
+    assert_eq!(progress.parsed_events, 50);
+    let size = std::fs::metadata(&source.0).unwrap().len();
+    assert_eq!(cache.record().file.index.unwrap().committed, size);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 2420|needle 900", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(
+        &source.0,
+        &[("needle 2420|needle 900", None)],
+        options(),
+        true,
+        limits(),
+    );
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.parsed_events, 2);
+    assert_eq!(progress.validated_bytes, 0);
+}
+
+#[test]
+fn an_index_serves_a_grown_file_only_after_the_prefix_proof() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[900]), true);
+    build(&source, &cache);
+    let before = std::fs::metadata(&source.0).unwrap().len();
+    let text = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .replace("filler 50 ", "needle 50 ");
+    std::fs::write(&source.0, &text).unwrap();
+    append(&source.0, &sparse(2401, &[])[2400..]);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 50 ", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(
+        &source.0,
+        &[("needle 50 ", None)],
+        options(),
+        true,
+        limits(),
+    );
+    let run = run.unwrap();
+    assert_eq!(run, fresh.unwrap());
+    assert_eq!(run.counts, vec![1]);
+    assert!(run.complete);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.validated_bytes as u64, before);
+}
+
+#[test]
+fn growth_past_the_validation_cap_leaves_the_index_unopened() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[900]), true);
+    build(&source, &cache);
+    append(&source.0, &sparse(2401, &[2400])[2400..]);
+    let size = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let (run, _, progress) = configured(
+        &json!({"max_scan_validate_bytes": 1000}),
+        &source.0,
+        &[("needle 2400|needle 900", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(
+        &source.0,
+        &[("needle 2400|needle 900", None)],
+        options(),
+        true,
+        limits(),
+    );
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.validated_bytes, 0);
+    assert_eq!(progress.source_bytes, 64 + size);
+}
+
+fn escaped() -> Vec<String> {
+    vec![
+        r#"{"type":"user","uuid":"e1","parentUuid":null,"sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"caf\u00e9 said \"hi\" at C:\\temp \u212Aelvin \u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3 rolls"}}"#.to_owned(),
+        line(assistant(
+            "e2",
+            "e1",
+            json!([{"type":"thinking","thinking":"thought marker","signature":"x"},{"type":"text","text":"text marker"},tool("e3","Bash",json!({"command":"echo tool marker"}))]),
+        )),
+        line(result("e4", "e2", "e3", "result marker \\u00e9")),
+    ]
+}
+
+#[test]
+fn indexed_queries_match_fresh_scans_across_escapes_folds_and_masks() {
+    let cache = Cache::indexing(0);
+    let mut lines = bulk(300, &[30]);
+    let tail = lines.split_off(transcript().len() + 150);
+    lines.extend(escaped());
+    lines.extend(tail);
+    let source = Source::new(&lines, true);
+    build(&source, &cache);
+    let patterns = [
+        ("café", false),
+        ("caf\\x{e9} said \"hi\"", false),
+        ("C:\\\\temp", false),
+        ("\\\\u00e9", false),
+        ("kelvin", true),
+        ("σίσυφος", true),
+        ("thought marker", false),
+        ("text marker|tool marker", false),
+        ("result marker", false),
+    ];
+    for mask in 1..8 {
+        for (pattern, ignore_case) in patterns {
+            let masked = || GrepOptions {
+                where_text: mask & 1 != 0,
+                where_thinking: mask & 2 != 0,
+                where_tools: mask & 4 != 0,
+                ignore_case,
+                ..options()
+            };
+            let (run, _, progress) = checkpointed(
+                &source.0,
+                &[(pattern, None)],
+                masked(),
+                true,
+                limits(),
+                Some(&cache.1),
+            );
+            let (fresh, _, _) = streamed(&source.0, &[(pattern, None)], masked(), true, limits());
+            assert_eq!(run.unwrap(), fresh.unwrap(), "{pattern} under mask {mask}");
+            assert_eq!(progress.cache_hits, 1, "{pattern} under mask {mask}");
+        }
+    }
+}
+
+#[test]
+fn literal_free_patterns_traverse_projections_not_the_source() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[900]);
+    let source = Source::new(&lines, true);
+    let index = build(&source, &cache);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("n.edl.\\s9", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(
+        progress.source_bytes,
+        64 + lines[transcript().len() + 900].len()
+    );
+    assert!(progress.projection_bytes as u64 >= index.proj);
+}
+
+#[test]
+fn budget_capped_indexed_runs_resume_with_pending_context() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[3, 900, 901, 1700]);
+    let source = Source::new(&lines, true);
+    build(&source, &cache);
+    let mut options = options();
+    options.context = 2;
+    let mut bound = limits();
+    bound.max_read_bytes = 1_500_000;
+    let mut runs = 0;
+    let finished = loop {
+        runs += 1;
+        let rebuilt = GrepOptions {
+            kinds: Vec::new(),
+            tool: None,
+            ..options
+        };
+        let (run, _, _) = checkpointed(
+            &source.0,
+            &[("n.edl.\\s", None)],
+            rebuilt,
+            true,
+            bound,
+            Some(&cache.1),
+        );
+        match run {
+            Ok(run) => break run,
+            Err(error) => assert!(
+                matches!(error.status, Status::Incomplete | Status::OutputLimit),
+                "{}",
+                error.reason
+            ),
+        }
+    };
+    assert!(runs > 2);
+    let (fresh, _, _) = streamed(&source.0, &[("n.edl.\\s", None)], options, true, limits());
+    assert_eq!(finished, fresh.unwrap());
+}
+
+#[test]
+fn damaged_index_files_are_discarded_and_rebuilt() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[900]);
+    let source = Source::new(&lines, true);
+    let index = build(&source, &cache);
+    let dir = index_files(&cache);
+    let proj = dir.join(format!("proj-{}", index.generation));
+    let mut bytes = std::fs::read(&proj).unwrap();
+    bytes[40] ^= 1;
+    std::fs::write(&proj, &bytes).unwrap();
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("first needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let error = run.unwrap_err();
+    assert_eq!(error.status, Status::Changed);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert!(!dir.exists());
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("first needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(
+        &source.0,
+        &[("first needle", None)],
+        options(),
+        true,
+        limits(),
+    );
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.cache_hits, 0);
+    let rebuilt = cache.record().file.index.unwrap();
+    assert_ne!(rebuilt.generation, index.generation);
+    let segment = dir.join(&rebuilt.segments[0].name);
+    let mut bytes = std::fs::read(&segment).unwrap();
+    bytes[20] ^= 1;
+    std::fs::write(&segment, &bytes).unwrap();
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 900", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.cache_hits, 0);
+}
+
+#[test]
+fn a_held_build_lock_leaves_the_index_to_its_holder() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(300, &[5]), true);
+    let unindexed = GrepCheckpoints::new(cache.0.clone(), "test".into()).indexing_from(u64::MAX);
+    checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&unindexed),
+    )
+    .0
+    .unwrap();
+    let key = cache.record().key;
+    let held = cache.1.build_lock(&key).unwrap();
+    let (run, _, _) = checkpointed(
+        &source.0,
+        &[("filler 7 ", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(cache.record().file.index, None);
+    drop(held);
+    build(&source, &cache);
+}
+
+#[test]
+fn an_added_event_publishes_only_once_its_line_commits() {
+    let cache = Cache::indexing(0);
+    let dir = cache.0.join("builder.idx");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let mut builder = crate::scan_index::Builder::start(&dir, None, u64::MAX, &mut budget, &cancel)
+        .unwrap()
+        .unwrap();
+    let text = line(user("u0", None, json!("needle")));
+    let mut entries = Vec::new();
+    crate::parse::parse_line(text.as_bytes(), &mut entries, &|_| true).unwrap();
+    let span = LineSpan {
+        offset: 0,
+        len: text.len(),
+        terminated: true,
+    };
+    assert!(builder
+        .add(span, 7, &entries[0], &mut budget, &cancel)
+        .unwrap()
+        .is_some());
+    let uncommitted = builder.publish().unwrap();
+    assert_eq!((uncommitted.events, uncommitted.committed), (0, 0));
+    builder
+        .add(span, 7, &entries[0], &mut budget, &cancel)
+        .unwrap();
+    builder
+        .commit(span.end(), b"x", true, &mut budget, &cancel)
+        .unwrap();
+    let committed = builder.publish().unwrap();
+    assert_eq!((committed.events, committed.committed), (1, span.end()));
+}
+
+#[test]
+fn an_index_of_blank_lines_still_detects_the_provider() {
+    let cache = Cache::indexing(0);
+    let source = Source::raw(b"\n\n  \n");
+    checkpointed(
+        &source.0,
+        &[("x", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    assert!(!cache.record().file.index.unwrap().sniffed);
+    append(
+        &source.0,
+        &[
+            line(json!({"type":"session_meta","payload":{"id":"x"}})),
+            line(
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"needle"}]}}),
+            ),
+        ],
+    );
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(&[("needle", None)], options(), &mut budget);
+    let control = grep
+        .scan_stream(
+            &source.0,
+            true,
+            Some(&cache.1),
+            &mut budget,
+            &Cancellation::default(),
+            |_, _, _| panic!("codex event streamed"),
+        )
+        .unwrap();
+    assert!(control.is_none());
+}
+
+#[test]
+fn pruned_events_still_mark_capped_patterns_incomplete() {
+    let cache = Cache::indexing(0);
+    let lines: Vec<String> = (0..512)
+        .map(|index| {
+            let text = if index == 255 { "needle" } else { "xxxx" };
+            line(user(&format!("u{index}"), None, json!(text)))
+        })
+        .collect();
+    let source = Source::new(&lines, true);
+    let index = build(&source, &cache);
+    assert_eq!(index.blocks.len(), 2);
+    let patterns = [("needle", Some(1)), ("absent", None)];
+    let expected = prepared(&source.0, &patterns, options());
+    let (actual, _, progress) = checkpointed(
+        &source.0,
+        &patterns,
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 1);
+    let actual = actual.unwrap();
+    assert!(!actual.complete);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn incoherent_index_geometry_is_damage_not_a_panic() {
+    let cache = Cache::indexing(0);
+    let lines = bulk(2400, &[900]);
+    let source = Source::new(&lines, true);
+    build(&source, &cache);
+    let mut record = cache.record();
+    record.file.index.as_mut().unwrap().segments[0].first = 1;
+    std::fs::write(&cache.records()[0], sonic_rs::to_vec(&record).unwrap()).unwrap();
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 900", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(
+        &source.0,
+        &[("needle 900", None)],
+        options(),
+        true,
+        limits(),
+    );
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.cache_hits, 0);
+}
+
+fn query_layer(key: &str, committed: u64) -> QueryLayer {
+    QueryLayer {
+        key: key.into(),
+        indexed: false,
+        committed,
+        parsed: 1,
+        decided: 1,
+        emitted: 1,
+        last_emitted: None,
+        last_hit: None,
+        stopped: None,
+        reducer: ReducerState {
+            counts: vec![0],
+            matched_items: 0,
+            coverage_complete: true,
+        },
+        referenced: Vec::new(),
+        replay: Vec::new(),
+        queue: Vec::new(),
+    }
+}
+
+fn source_record(
+    revision: &str,
+    committed: u64,
+    prefix: &[(u64, u64)],
+    queries: &[(&str, u64)],
+) -> SourceRecord {
+    SourceRecord {
+        key: "k".into(),
+        size: committed + 10,
+        revision: revision.into(),
+        file: crate::scan_checkpoint::FileLayer {
+            committed,
+            fence: Vec::new(),
+            sniffed: true,
+            events: 1,
+            names: Vec::new(),
+            prefix: prefix.to_vec(),
+            index: None,
+        },
+        queries: queries
+            .iter()
+            .map(|(key, committed)| query_layer(key, *committed))
+            .collect(),
+    }
+}
+
+fn query_keys(record: &SourceRecord) -> Vec<&str> {
+    record
+        .queries
+        .iter()
+        .map(|layer| layer.key.as_str())
+        .collect()
+}
+
+#[test]
+fn a_kept_newer_file_layer_keeps_its_own_size_and_revision() {
+    let older = || source_record("r1", 90, &[(90, 1)], &[("q", 90)]);
+    let newer = || source_record("r2", 150, &[(90, 1), (150, 2)], &[("q", 150)]);
+    let merged = SourceRecord::merge(Some(newer()), true, older(), false).unwrap();
+    assert_eq!((merged.size, merged.revision.as_str()), (160, "r2"));
+    assert_eq!(merged.file.committed, 150);
+    let merged = SourceRecord::merge(Some(older()), true, newer(), false).unwrap();
+    assert_eq!((merged.size, merged.revision.as_str()), (160, "r2"));
+    assert!(SourceRecord::merge(
+        None,
+        false,
+        source_record("r1", 90, &[(150, 1)], &[("q", 90)]),
+        false
+    )
+    .is_none());
+}
+
+#[test]
+fn a_concurrent_record_shares_only_layers_inside_the_agreed_prefix() {
+    let theirs = || {
+        let mut record = source_record("r2", 150, &[(100, 7), (150, 8)], &[("a", 150), ("b", 100)]);
+        record.queries.push(QueryLayer {
+            indexed: true,
+            ..query_layer("d", 0)
+        });
+        record
+    };
+    let merged = SourceRecord::merge(
+        Some(theirs()),
+        false,
+        source_record("r3", 180, &[(100, 7), (180, 9)], &[("c", 180)]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(merged.file.committed, 180);
+    assert_eq!(query_keys(&merged), vec!["c", "b"]);
+    let merged = SourceRecord::merge(
+        Some(theirs()),
+        false,
+        source_record("r3", 180, &[(100, 7), (200, 9)], &[("c", 180)]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(merged.file.committed, 150);
+    assert_eq!(query_keys(&merged), vec!["a", "b", "d"]);
+    let merged = SourceRecord::merge(
+        Some(theirs()),
+        false,
+        source_record("r3", 180, &[(180, 5)], &[("c", 180)]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(merged.file.prefix, vec![(180, 5)]);
+    assert_eq!(query_keys(&merged), vec!["c"]);
+    let merged = SourceRecord::merge(
+        Some(theirs()),
+        true,
+        source_record("r3", 180, &[(100, 7), (150, 8), (180, 9)], &[("a", 180)]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(query_keys(&merged), vec!["a", "b", "d"]);
+    assert_eq!(merged.queries[0].committed, 180);
+}
+
+#[test]
+fn orphaned_index_directories_are_reclaimed_after_a_publish() {
+    let cache = Cache::indexing(0);
+    let orphan = cache.0.join("0000.idx");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&orphan)
+        .unwrap();
+    std::fs::write(orphan.join("proj-x"), b"stale").unwrap();
+    let source = Source::new(&sparse(20, &[3]), true);
+    build(&source, &cache);
+    assert!(!orphan.exists());
+    assert!(index_files(&cache).exists());
 }

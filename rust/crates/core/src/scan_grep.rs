@@ -8,6 +8,7 @@ use crate::activity::{result_index, tool_result_metadata};
 use crate::filter::event_kind;
 use crate::render::{haystack, haystack_bound, tool_haystack, tool_haystack_bound};
 use crate::scan::{ScanBudget, StagingReservation};
+use crate::scan_projection::Projected;
 use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot};
 use crate::toolcall::{expand_tool_names, with_registry, ToolRegistrySnapshot};
 use crate::types::{matches_names, ContentBlock, Entry};
@@ -73,6 +74,45 @@ pub struct GrepReducer<'store> {
     sources_indexed: usize,
     coverage_complete: bool,
     _staging: StagingReservation<'store>,
+}
+
+#[derive(Clone, Copy)]
+enum Searched<'a> {
+    Entry(&'a Entry),
+    Projected(&'a Projected),
+}
+
+impl Searched<'_> {
+    fn kind(self) -> &'static str {
+        match self {
+            Searched::Entry(event) => event_kind(event),
+            Searched::Projected(event) => event.kind(),
+        }
+    }
+
+    fn haystack_bound(self, options: &GrepOptions, limit: usize) -> Result<usize, SnapshotError> {
+        let (text, thinking, tools) = (
+            options.where_text,
+            options.where_thinking,
+            options.where_tools,
+        );
+        match self {
+            Searched::Entry(event) => haystack_bound(event, text, thinking, tools, limit),
+            Searched::Projected(event) => event.haystack_bound(text, thinking, tools, limit),
+        }
+    }
+
+    fn haystack(self, options: &GrepOptions) -> String {
+        let (text, thinking, tools) = (
+            options.where_text,
+            options.where_thinking,
+            options.where_tools,
+        );
+        match self {
+            Searched::Entry(event) => haystack(event, text, thinking, tools),
+            Searched::Projected(event) => event.haystack(text, thinking, tools),
+        }
+    }
 }
 
 fn incomplete(reason: &str) -> SnapshotError {
@@ -284,14 +324,19 @@ impl<'store> GrepReducer<'store> {
             .is_none_or(|names| with_registry(self.registry.clone(), || matches_names(name, names)))
     }
 
-    fn uses_tool(&self, event: &Entry, names: &HashMap<&str, &str>) -> bool {
+    fn uses_tool(&self, event: Searched<'_>, names: &HashMap<&str, &str>) -> bool {
+        let named = |id: &str| names.get(id).is_some_and(|name| self.tool_matches(name));
         match event {
-            Entry::Assistant(_) => event.tool_uses().any(|tool| self.tool_matches(&tool.name)),
-            Entry::User(_) => event.tool_results().any(|result| {
-                names
-                    .get(result.tool_use_id.as_str())
-                    .is_some_and(|name| self.tool_matches(name))
-            }),
+            Searched::Entry(event @ Entry::Assistant(_)) => {
+                event.tool_uses().any(|tool| self.tool_matches(&tool.name))
+            }
+            Searched::Entry(event @ Entry::User(_)) => event
+                .tool_results()
+                .any(|result| named(result.tool_use_id.as_str())),
+            Searched::Projected(event) if event.kind() == "assistant" => {
+                event.uses().any(|name| self.tool_matches(name))
+            }
+            Searched::Projected(event) if event.kind() == "user" => event.results().any(named),
             _ => false,
         }
     }
@@ -387,7 +432,7 @@ impl<'store> GrepReducer<'store> {
         };
         for index in 0..snapshot.event_count {
             let Some((matched, _match_staging)) = self.matches(
-                snapshot.entry(index),
+                Searched::Entry(snapshot.entry(index)),
                 entry_bytes(snapshot, index),
                 &output.names,
                 &output.results,
@@ -440,7 +485,7 @@ impl<'store> GrepReducer<'store> {
 
     fn matches(
         &mut self,
-        event: &Entry,
+        event: Searched<'_>,
         charge: usize,
         names: &HashMap<&str, &str>,
         results: &HashMap<&str, GrepResultMetadata<'_>>,
@@ -450,11 +495,7 @@ impl<'store> GrepReducer<'store> {
         budget.charge_projection(0, 1, cancel)?;
         self.mark_skipped_patterns();
         if !self.options.kinds.is_empty()
-            && !self
-                .options
-                .kinds
-                .iter()
-                .any(|kind| kind == event_kind(event))
+            && !self.options.kinds.iter().any(|kind| kind == event.kind())
         {
             return Ok(None);
         }
@@ -471,6 +512,9 @@ impl<'store> GrepReducer<'store> {
         )?;
         let mut matched = vec![false; self.patterns.len()];
         if self.options.errors {
+            let Searched::Entry(event) = event else {
+                unreachable!("error scans never read projections")
+            };
             for block in event.blocks() {
                 budget.checkpoint(cancel)?;
                 let id = match block {
@@ -492,21 +536,16 @@ impl<'store> GrepReducer<'store> {
                 self.match_text(&text, &mut matched, budget, cancel)?;
             }
         } else {
-            let bytes = haystack_bound(
-                event,
-                self.options.where_text,
-                self.options.where_thinking,
-                self.options.where_tools,
-                budget.remaining().max_read_bytes,
-            )?;
+            let limit = match event {
+                Searched::Entry(_) => budget.remaining().max_read_bytes,
+                Searched::Projected(_) => usize::MAX,
+            };
+            let bytes = event.haystack_bound(&self.options, limit)?;
             let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
-            budget.charge_projection(bytes, 0, cancel)?;
-            let text = haystack(
-                event,
-                self.options.where_text,
-                self.options.where_thinking,
-                self.options.where_tools,
-            );
+            if let Searched::Entry(_) = event {
+                budget.charge_projection(bytes, 0, cancel)?;
+            }
+            let text = event.haystack(&self.options);
             self.haystacks_built += 1;
             self.match_text(&text, &mut matched, budget, cancel)?;
         }

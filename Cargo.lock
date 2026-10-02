@@ -226,6 +226,7 @@ dependencies = [
  "once_cell",
  "rable",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "ryu-js",
  "serde",

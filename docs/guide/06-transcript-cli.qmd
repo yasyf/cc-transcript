@@ -400,6 +400,34 @@ When `validated_bytes` is nonzero, the human summary appends
 ` · re-read {validated_bytes} bytes for validation` to `N files, M matches`.
 
 Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
+
+For Claude transcripts of `8 MiB` or more, streaming `grep` also builds a persistent
+per-file index in `~/.claude/cc-transcript/scan/<key>.idx`, private to your account.
+The index opens only after its checkpoint record passes the validation above.
+On an unchanged transcript, a new query reads the index, validation fence,
+matching source lines, and requested context. Extending a partial checkpoint
+also requires the partial-segment read described above, or saves nothing if the
+validation cap cannot cover it. On growth, the run re-reads and hashes the
+committed prefix (`validated_bytes`) before using the index, then reads appended
+bytes to extend it. The index uses the same fixed `4 MiB` prefix segments and
+retains the validated partial hash, so extending the proof needs no extra read.
+
+If the transcript grows during an index-backed query, that same run re-reads its
+committed prefix and any parsed unterminated final line before reporting.
+These reads charge `validated_bytes`; a mismatch returns `changed`, and a check
+over the remaining validation cap returns `incomplete`. Candidates are verified
+exactly, so completed results are identical to a full scan of the pinned source.
+
+A failed prefix proof invalidates the index with the record; the rescan and
+`cache_invalidations` behavior above apply, and a later run rebuilds the index.
+If the committed prefix exceeds the remaining `max_scan_validate_bytes`, the
+budgeted fresh-scan path above also bypasses the index and replaces the record
+on save. Rewrites or truncation also invalidate the index.
+
+Index reads count toward `--max-read-bytes`. An index uses
+about half the transcript's size on disk. Total index storage is capped at `2 GiB`,
+with the oldest indexes evicted first.
+
 If `--max-matches` stops before EOF after output used names for `--tool` filtering
 or compact `← Name` labels, the outcome reason becomes
 `result_limit; tool names resolved through byte X` and stderr adds

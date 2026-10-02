@@ -15,6 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 memchr = "2.7"
 once_cell = "1"
 regex = "1"
+regex-syntax = "0.8"
 # Gated behind `command`: a real bash AST (rable) backs the command parser. The Swift/CI build
 # takes core with default-features off, so this stays out of the python-free path.
 rable = { version = "0.2.1", optional = true }

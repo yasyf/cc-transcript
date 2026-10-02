@@ -31,6 +31,8 @@ pub mod rng;
 pub mod scan;
 pub mod scan_checkpoint;
 pub mod scan_grep;
+pub mod scan_index;
+pub mod scan_projection;
 pub mod scan_stream;
 #[cfg(feature = "sqlite")]
 pub mod schema;
