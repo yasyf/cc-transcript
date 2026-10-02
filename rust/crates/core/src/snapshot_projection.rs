@@ -1592,9 +1592,9 @@ fn prepare_facts_limited(
     let session = view(&lift, &range, snapshot);
     let calls = session.tool_calls().items();
     let inputs = json!({
-        "calls":calls.iter().map(|use_| json!([use_.call.name(),use_.call.file_paths()])).collect::<Vec<_>>(),
+        "calls":calls.iter().map(|use_| (use_.call.name(), use_.call.file_paths())).collect::<Vec<_>>(),
         "commands":session.commands(),
-        "edited_files":calls.iter().flat_map(|use_| use_.edits.iter().map(|(path, _)| json!({"path":path}))).collect::<Vec<_>>(),
+        "edited_files":calls.iter().flat_map(|use_| use_.edits.iter().map(|(path, _)| PredicateFileWire { path })).collect::<Vec<_>>(),
         "skills":session.tool_calls().named("Skill").items().iter().filter_map(|use_| match &use_.call {
             ToolCall::Skill(call) => Some(call.skill.as_str()),
             _ => None,
