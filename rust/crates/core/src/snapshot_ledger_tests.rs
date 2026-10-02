@@ -2022,7 +2022,7 @@ fn root_facts_are_reserved_at_their_entry_bytes_before_parsing() {
         reserved_before_the_last_admission(
             "root facts",
             &traced(&store),
-            entry_bytes(&[&snapshot]),
+            super::entry_bytes(&snapshot),
         );
     }
 }
