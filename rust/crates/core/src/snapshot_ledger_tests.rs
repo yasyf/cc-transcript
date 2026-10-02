@@ -7847,6 +7847,503 @@ fn incomplete_loads_charge_their_inline_index_once() {
     }
 }
 
+fn array_tool_line(id: &str, zeros: usize) -> String {
+    format!(
+        "{}\n",
+        json!({"type":"assistant","uuid":id,"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"m","content":[{"type":"tool_use","id":format!("{id}-call"),"name":"Bash","input":{"n":vec![0u8; zeros]}}]}})
+    )
+}
+
+fn advance_parked(fixture: &Fixture) -> bool {
+    let token = fixture.request["cursor"].as_str().unwrap();
+    let waiter = fixture
+        .store
+        .lock_state()
+        .waiters
+        .get(token)
+        .cloned()
+        .expect("parked reservation");
+    match fixture.store.advance(
+        token,
+        waiter,
+        None,
+        &Cancellation::default(),
+        &mut [0u64; 18],
+    ) {
+        Ok((data, cursor, reason)) => {
+            assert!(cursor.is_some() && reason.is_some(), "{data:?}");
+            assert_eq!(data["kind"].as_str(), Some("loading"), "{data:?}");
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("advance failed outside admission: {error:?}"),
+    }
+}
+
+fn admitted_traces(store: &NativeStore) -> Vec<usize> {
+    traced(store)
+        .into_iter()
+        .filter_map(|trace| match trace {
+            Trace::Admitted(bytes) => Some(bytes),
+            Trace::Allocated(_) | Trace::Reserved(_) => None,
+        })
+        .collect()
+}
+
+fn step_reservation(read_step: usize, pending: usize) -> (usize, usize) {
+    let decode_bound = 4 * (64 * 1024usize).min(pending + read_step);
+    (read_step + decode_bound, decode_bound)
+}
+
+#[test]
+fn metered_decode_steps_stop_at_their_decode_bound() {
+    let wide: String = (0..5)
+        .map(|index| array_tool_line(&format!("wide-{index}"), 4096))
+        .collect();
+    let source = LedgerSource::new(&format!("{}{wide}", line("anchor")));
+    let store = fast_store();
+    let owner = context_for("metered", false);
+    let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+    assert!(parked(&response), "{response:?}");
+    let slot = store
+        .lock_state()
+        .loads
+        .values()
+        .next()
+        .cloned()
+        .expect("parked load");
+    let (reservation, _) = step_reservation(64 * 1024, 0);
+    let mut stopped = None;
+    let mut steps = 0;
+    while response["status"].as_str() == Some("incomplete") {
+        store.assert_conserved();
+        let before = slot.accounted.load(Ordering::Acquire);
+        traced(&store);
+        response = resume(&store, &response, &owner);
+        let admitted = admitted_traces(&store);
+        if response["status"].as_str() == Some("ok") {
+            break;
+        }
+        assert!(parked(&response), "{response:?}");
+        let reserved = admitted
+            .iter()
+            .position(|&bytes| bytes == reservation)
+            .unwrap_or_else(|| panic!("step {steps} never reserved {reservation}: {admitted:?}"));
+        let step = &admitted[reserved..];
+        assert_eq!(
+            step.last(),
+            Some(&0),
+            "step {steps}: the exact charge exceeded its admitted reservation: {admitted:?}"
+        );
+        let after = slot.accounted.load(Ordering::Acquire);
+        assert!(
+            after.saturating_sub(before) <= step.iter().sum::<usize>(),
+            "step {steps}: retained {} past the {} admitted",
+            after.saturating_sub(before),
+            step.iter().sum::<usize>()
+        );
+        {
+            let load = slot.work.lock().unwrap();
+            if !load.decoded && load.count > 0 && load.pending.contains(&b'\n') {
+                stopped = Some(load.count);
+            }
+        }
+        steps += 1;
+    }
+    assert!(
+        matches!(stopped, Some(count) if count < 6),
+        "the decode never stopped short of its bound: {stopped:?}"
+    );
+    let snapshot = store.pin(&ok_handle(&response), &owner).unwrap();
+    assert_eq!(snapshot.event_count, 6);
+    assert!(snapshot.chunks.len() >= 2, "{}", snapshot.chunks.len());
+    let whole = crate::parse::parse_bytes(&std::fs::read(&source.path).unwrap(), |_| true).unwrap();
+    assert_eq!(
+        snapshot
+            .entries()
+            .iter()
+            .map(|entry| entry.meta().map(|meta| meta.uuid.clone()))
+            .collect::<Vec<_>>(),
+        whole
+            .iter()
+            .map(|entry| entry.meta().map(|meta| meta.uuid.clone()))
+            .collect::<Vec<_>>()
+    );
+    store.assert_conserved();
+}
+
+fn wide_line_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = store_with(64 * 1024, 1, &[]);
+    let owner = context_for("wide-line", background);
+    let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+    for _ in 0..2 {
+        assert!(parked(&response), "{response:?}");
+        response = resume(&store, &response, &owner);
+    }
+    assert!(parked(&response), "{response:?}");
+    {
+        let slot = store
+            .lock_state()
+            .loads
+            .values()
+            .next()
+            .cloned()
+            .expect("parked load");
+        let load = slot.work.lock().unwrap();
+        assert!(
+            !load.decoded && load.count == 1 && load.indexed == 1 && load.pending.contains(&b'\n'),
+            "the load did not park before the wide line"
+        );
+    }
+    Fixture {
+        store,
+        owner,
+        request: response,
+        pins: Vec::new(),
+    }
+}
+
+#[test]
+fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
+    let source = LedgerSource::new(&format!(
+        "{}{}{}",
+        line("anchor"),
+        array_tool_line("wide", 20480),
+        line("trailer")
+    ));
+    let site = "wide decode line";
+    for background in [false, true] {
+        let build = || wide_line_fixture(&source, background);
+        let exact = exact_headroom(&build, &advance_parked);
+        let probe = build();
+        let (reservation, decode_bound, chunks_growth, fence_growth) = {
+            let slot = parked_slot(&probe);
+            let load = slot.work.lock().unwrap();
+            let (reservation, decode_bound) = step_reservation(64 * 1024, load.pending.len());
+            (
+                reservation,
+                decode_bound,
+                grown_by_one(&load.chunks),
+                64usize.saturating_sub(load.fence.capacity()),
+            )
+        };
+        let refused = build();
+        let slot = parked_slot(&refused);
+        let before = slot.accounted.load(Ordering::Acquire);
+        assert_refused_at(site, &refused, &advance_parked, exact);
+        {
+            let load = slot.work.lock().unwrap();
+            assert_eq!(load.count, 1, "{site}: the refusal retained the wide line");
+            assert_eq!(load.chunks.len(), 1);
+            assert!(load.pending.contains(&b'\n'));
+            assert!(
+                load.failure.is_none(),
+                "{site}: the refusal poisoned the load"
+            );
+        }
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            before,
+            "{site}: the refusal moved the load charge"
+        );
+        let fitted = build();
+        let slot = parked_slot(&fitted);
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(advance_parked(&fitted), "{site}: the exact fit was refused");
+        let admitted = admitted_traces(&fitted.store);
+        fitted.store.assert_conserved();
+        assert!(audited(&fitted.store)[TOTAL] <= cap);
+        let wide = {
+            let load = slot.work.lock().unwrap();
+            assert_eq!(
+                load.count, 2,
+                "{site}: the exact fit did not retain the wide line"
+            );
+            assert!(load.pending.contains(&b'\n'));
+            NativeStore::audit_chunk_bytes(&load.chunks[1])
+        };
+        let extension = wide + chunks_growth + fence_growth - decode_bound;
+        assert_eq!(
+            admitted,
+            vec![reservation, extension, 0],
+            "{site}: the wide line was not admitted exactly before its retention"
+        );
+        assert_eq!(exact, reservation + extension);
+        let walk = cold_load_walk(&slot);
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            walk,
+            "{site}: the slot charge is not its heap walked once"
+        );
+        let pending = fitted.store.lock_state().ledger.pending;
+        assert_eq!(
+            pending,
+            NativeStore::audit_load_record_bytes(&slot) + walk,
+            "{site}: the pending gauge is not the slot record plus its heap"
+        );
+    }
+}
+
+fn appended_index_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    std::fs::write(&source.path, lines(0..SEEDED_EVENTS)).unwrap();
+    let store = prepared_store();
+    let owner = context_for("appended", background);
+    let (_, previous) = acquired(&store, &source.path, &owner);
+    assert_eq!(previous.event_count, SEEDED_EVENTS);
+    source.append(&lines(SEEDED_EVENTS..SEEDED_EVENTS + 2 * SEEDED_STEP));
+    let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+    loop {
+        assert!(parked(&response), "{response:?}");
+        let ready = {
+            let slot = store
+                .lock_state()
+                .loads
+                .values()
+                .next()
+                .cloned()
+                .expect("parked load");
+            let load = slot.work.lock().unwrap();
+            load.previous.is_some() && load.decoded && load.indexed < load.count
+        };
+        if ready {
+            break;
+        }
+        response = resume(&store, &response, &owner);
+    }
+    Fixture {
+        store,
+        owner,
+        request: response,
+        pins: vec![previous],
+    }
+}
+
+fn appended_index_walk(slot: &LoadSlot) -> usize {
+    let load = slot.work.lock().unwrap();
+    let previous = load
+        .previous
+        .as_ref()
+        .expect("the load extends a published snapshot");
+    assert!(load.result.is_none() && load.codex_raw.is_none() && load.codex_append.is_none());
+    let shared: HashSet<usize> = previous
+        .chunks
+        .iter()
+        .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+        .collect();
+    let prior: HashSet<usize> = previous
+        .activity
+        .audited_allocations(true)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    load.pending.capacity()
+        + load.origin_fence.capacity()
+        + load.seal_fence.capacity()
+        + load.prefix_fence.capacity()
+        + load.fence.capacity()
+        + load.session_id.as_ref().map_or(0, String::capacity)
+        + load
+            .chunks
+            .iter()
+            .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
+            .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
+            .sum::<usize>()
+        + load
+            .activity
+            .audited_heap_allocations()
+            .into_iter()
+            .filter(|(id, _)| !prior.contains(id))
+            .map(|(_, bytes)| bytes)
+            .sum::<usize>()
+}
+
+#[test]
+fn appended_index_steps_admit_their_copy_on_write_before_appending() {
+    let source = LedgerSource::new("");
+    let site = "appended index step";
+    for background in [false, true] {
+        let build = || appended_index_fixture(&source, background);
+        let exact = exact_headroom(&build, &advance_parked);
+        let probe = build();
+        let (reservation, extension, heuristic) = {
+            let slot = parked_slot(&probe);
+            let load = slot.work.lock().unwrap();
+            let (reservation, _) = step_reservation(4096, load.pending.len());
+            let (bytes, calls, results) = load
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.start >= load.indexed)
+                .flat_map(|chunk| chunk.entries.iter().zip(chunk.entry_charges.iter()))
+                .fold(
+                    (0usize, 0usize, 0usize),
+                    |(bytes, calls, results), (entry, charge)| {
+                        (
+                            bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                            calls + entry.tool_uses().count(),
+                            results + entry.tool_results().count(),
+                        )
+                    },
+                );
+            let appended = load.count - load.indexed;
+            assert_eq!(appended, 2 * SEEDED_STEP);
+            let heuristic = 2 * bytes + appended * size_of::<&Entry>();
+            (
+                reservation,
+                heuristic
+                    + load
+                        .activity
+                        .append_container_reservation_bytes(appended, calls, results),
+                heuristic,
+            )
+        };
+        assert_eq!(
+            exact,
+            reservation + extension,
+            "{site}: the index step admission is not the step reservation plus its extension"
+        );
+        let refused = build();
+        let slot = parked_slot(&refused);
+        let before = slot.accounted.load(Ordering::Acquire);
+        assert_refused_at(site, &refused, &advance_parked, exact);
+        {
+            let load = slot.work.lock().unwrap();
+            assert_eq!(load.indexed, SEEDED_EVENTS, "{site}: the refusal appended");
+            assert_eq!(load.activity.entry_count(), SEEDED_EVENTS);
+            assert!(
+                load.failure.is_none(),
+                "{site}: the refusal poisoned the load"
+            );
+        }
+        assert_eq!(slot.accounted.load(Ordering::Acquire), before);
+        assert_eq!(appended_index_walk(&slot), before);
+        let fitted = build();
+        let slot = parked_slot(&fitted);
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(advance_parked(&fitted), "{site}: the exact fit was refused");
+        let admitted = admitted_traces(&fitted.store);
+        fitted.store.assert_conserved();
+        assert!(audited(&fitted.store)[TOTAL] <= cap);
+        assert_eq!(
+            admitted,
+            vec![reservation, extension, 0],
+            "{site}: the copy-on-write was not admitted exactly before the append"
+        );
+        let after = slot.accounted.load(Ordering::Acquire);
+        assert_eq!(
+            slot.work.lock().unwrap().indexed,
+            SEEDED_EVENTS + 2 * SEEDED_STEP
+        );
+        assert_eq!(
+            after,
+            appended_index_walk(&slot),
+            "{site}: the slot charge is not its owned heap walked once"
+        );
+        assert!(
+            after - before > heuristic,
+            "{site}: the copy-on-write growth {} fits the input heuristic {heuristic}",
+            after - before
+        );
+        let pending = fitted.store.lock_state().ledger.pending;
+        assert_eq!(
+            pending,
+            NativeStore::audit_load_record_bytes(&slot) + after,
+            "{site}: the pending gauge is not the slot record plus its heap"
+        );
+    }
+}
+
+#[test]
+fn refused_unpublished_build_frees_its_load_slot() {
+    let source = LedgerSource::new(&lines(0..3));
+    let store: &'static NativeStore = Box::leak(Box::new(prepared_store()));
+    let background = context_for("backstop", true);
+    let foreground = context_for("filler", false);
+    let response = store.request(
+        &acquire(&source.path),
+        &background,
+        &Cancellation::default(),
+    );
+    assert!(parked(&response), "{response:?}");
+    let slot = store
+        .lock_state()
+        .loads
+        .values()
+        .next()
+        .cloned()
+        .expect("parked load");
+    store
+        .lock_state()
+        .insert_prepared_load(slot.stamp.identity, Arc::clone(&slot), now_ms());
+    let held: Arc<Mutex<Option<ProjectionReservation<'static>>>> = Arc::new(Mutex::new(None));
+    *store.read_hook.lock().unwrap() = Some(Arc::new({
+        let held = Arc::clone(&held);
+        let foreground = foreground.clone();
+        move || {
+            let headroom = cap_of(store, &foreground) - ledger(store)[TOTAL];
+            *held.lock().unwrap() = Some(store.reserve_projection(&foreground, headroom).unwrap());
+        }
+    }));
+    let refused = resume(store, &response, &background);
+    assert_eq!(
+        refused["status"].as_str(),
+        Some("retained_limit"),
+        "{refused:?}"
+    );
+    assert!(
+        store.read_hook.lock().unwrap().is_none(),
+        "the filler never ran inside the step"
+    );
+    assert!(held.lock().unwrap().is_some());
+    store.assert_conserved();
+    assert!(audited(store)[TOTAL] <= cap_for(&foreground));
+    {
+        let state = store.lock_state();
+        assert!(state.loads.is_empty(), "the refused build kept its slot");
+        assert!(!state.prepared_loads.contains_key(&slot.stamp.identity));
+        assert!(state.waiters.is_empty());
+    }
+    assert_eq!(slot.ledgered_bytes(), 0);
+    assert_eq!(
+        Arc::strong_count(&slot),
+        1,
+        "the refused build is still held"
+    );
+    {
+        let load = slot.work.lock().unwrap();
+        assert!(
+            load.failure
+                .as_ref()
+                .is_some_and(|failure| failure.status == Status::RetainedLimit),
+            "{:?}",
+            load.failure
+        );
+        assert_eq!(load.count, 3, "the refused step built nothing");
+    }
+    drop(held.lock().unwrap().take());
+    let retried = drive(
+        store,
+        store.request(
+            &acquire(&source.path),
+            &background,
+            &Cancellation::default(),
+        ),
+        &background,
+    );
+    assert_eq!(retried["status"].as_str(), Some("ok"), "{retried:?}");
+    assert_eq!(
+        store
+            .pin(&ok_handle(&retried), &background)
+            .unwrap()
+            .event_count,
+        3
+    );
+    store.assert_conserved();
+}
+
 fn location_root_fixture(root: &Path, background: bool) -> Fixture {
     Fixture {
         store: cursor_store(),

@@ -7042,7 +7042,8 @@ impl NativeStore {
                     .entry
                     .min(load.pending.len().saturating_add(read_bound))
             };
-            let reservation = read_bound.saturating_add(decode_source.saturating_mul(4));
+            let decode_bound = decode_source.saturating_mul(4);
+            let reservation = read_bound.saturating_add(decode_bound);
             {
                 let mut state = self.lock_state();
                 self.admit_memory(&mut state, &waiter.context, reservation)?;
@@ -7059,7 +7060,9 @@ impl NativeStore {
                     &mut load,
                     read_bound,
                     events_bound,
+                    decode_bound,
                     waiter.limits.max_events.saturating_sub(waiter.used_events),
+                    &waiter.context,
                     cancel,
                     waiter.deadline,
                     usage,
@@ -7087,7 +7090,8 @@ impl NativeStore {
                 .result
                 .as_ref()
                 .map(|snapshot| GenerationRecord::new(snapshot, &slot.registry_generation));
-            let pending_charge = if generation.is_some() {
+            let publishing = generation.is_some();
+            let pending_charge = if publishing {
                 0
             } else {
                 let shared: HashSet<_> = load
@@ -7162,7 +7166,7 @@ impl NativeStore {
                         .map(|bytes| (token, bytes))
                 })
                 .transpose()?;
-            {
+            let admitted = {
                 let mut state = self.lock_state();
                 let generation = load
                     .result
@@ -7179,27 +7183,45 @@ impl NativeStore {
                         + state.escape_growth(&snapshot.chunks)
                 }) + pledge.as_ref().map_or(0, |(_, bytes)| *bytes)
                     + pending_charge;
-                self.admit_memory(
+                match self.admit_memory(
                     &mut state,
                     &waiter.context,
                     additional.saturating_sub(slot.ledgered_bytes()),
-                )?;
-                if let Some((snapshot, record)) = generation {
-                    state.register_generation(snapshot, record);
-                    state.escape_chunks(&snapshot.chunks);
+                ) {
+                    Ok(()) => {
+                        if let Some((snapshot, record)) = generation {
+                            state.register_generation(snapshot, record);
+                            state.escape_chunks(&snapshot.chunks);
+                        }
+                        if let Some((_, bytes)) = &pledge {
+                            state.transient_bytes += bytes;
+                        }
+                        state.set_load_charge(&slot, pending_charge);
+                        lease = pledge.map(|(token, bytes)| {
+                            (token, ProjectionReservation { store: self, bytes })
+                        });
+                        Ok(())
+                    }
+                    Err(error) => {
+                        if !publishing {
+                            state.remove_load(&slot.stamp.identity);
+                            state.prepared_loads.remove(&slot.stamp.identity);
+                        }
+                        Err(error)
+                    }
                 }
-                if let Some((_, bytes)) = &pledge {
-                    state.transient_bytes += bytes;
+            };
+            if let Err(error) = admitted {
+                if !publishing {
+                    load.failure = Some(SnapshotError::new(error.status, &error.reason));
                 }
-                state.set_load_charge(&slot, pending_charge);
-                lease = pledge
-                    .map(|(token, bytes)| (token, ProjectionReservation { store: self, bytes }));
+                return Err(error);
             }
         }
         if let Some(Err(error)) = stepped {
             if !matches!(
                 error.status,
-                Status::Cancelled | Status::Deadline | Status::Incomplete
+                Status::Cancelled | Status::Deadline | Status::Incomplete | Status::RetainedLimit
             ) {
                 load.failure = Some(SnapshotError::new(error.status, &error.reason));
             }
@@ -7389,13 +7411,92 @@ impl NativeStore {
         Ok(current == fence)
     }
 
+    fn decoded_line_bytes(
+        entries: &Vec<Entry>,
+        parsed: &[Entry],
+        chunks: &Vec<Arc<EntryChunk>>,
+        session_pending: bool,
+    ) -> usize {
+        if parsed.is_empty() {
+            return 0;
+        }
+        let chunk = if entries.is_empty() {
+            arc_bytes::<EntryChunk>() + arc_bytes::<ChunkRows>() + vec_growth(chunks, 1)
+        } else {
+            0
+        };
+        let session = if session_pending {
+            parsed
+                .iter()
+                .find_map(Entry::meta)
+                .map_or(0, |meta| meta.session_id.len())
+        } else {
+            0
+        };
+        chunk
+            + session
+            + vec_growth(entries, parsed.len())
+            + parsed
+                .iter()
+                .map(|entry| {
+                    let charge = entry_charge(entry);
+                    charge.owned_capacity_bytes
+                        + charge.opaque_dom_accounted_bytes
+                        + size_of::<MemoryCharge>()
+                })
+                .sum::<usize>()
+    }
+
+    fn fence_growth(fence: &Vec<u8>, fresh: &[u8]) -> usize {
+        let after = if fresh.len() >= 64 {
+            64
+        } else {
+            vec_capacity_for(fence, fresh.len())
+        };
+        after.saturating_sub(fence.capacity())
+    }
+
+    fn unindexed(
+        chunks: &[Arc<EntryChunk>],
+        indexed: usize,
+        stop: usize,
+    ) -> impl Iterator<Item = (&Entry, &MemoryCharge)> + '_ {
+        let first = chunks
+            .partition_point(|chunk| chunk.start <= indexed)
+            .saturating_sub(1);
+        chunks[first..]
+            .iter()
+            .flat_map(move |chunk| {
+                chunk
+                    .entries
+                    .iter()
+                    .zip(chunk.entry_charges.iter())
+                    .skip(indexed.saturating_sub(chunk.start))
+            })
+            .take(stop - indexed)
+    }
+
+    fn extend_load_reservation(
+        &self,
+        slot: &LoadSlot,
+        context: &Value,
+        bytes: usize,
+    ) -> Result<(), SnapshotError> {
+        let mut state = self.lock_state();
+        self.admit_memory(&mut state, context, bytes)?;
+        state.add_load_charge(slot, bytes);
+        Ok(())
+    }
+
     fn step(
         &self,
         slot: &LoadSlot,
         load: &mut Load,
         read_bound: usize,
         events_bound: usize,
+        decode_bound: usize,
         lowering_events: usize,
+        context: &Value,
         cancel: &Cancellation,
         deadline: u64,
         usage: &mut [u64; 18],
@@ -7544,19 +7645,27 @@ impl NativeStore {
         }
         if load.indexed < load.count {
             let stop = (load.indexed + events_bound).min(load.count);
-            let first = load
-                .chunks
-                .partition_point(|chunk| chunk.start <= load.indexed)
-                .saturating_sub(1);
-            let entries: Vec<&Entry> = load.chunks[first..]
-                .iter()
-                .flat_map(|chunk| {
-                    chunk
-                        .entries
-                        .iter()
-                        .skip(load.indexed.saturating_sub(chunk.start))
-                })
-                .take(stop - load.indexed)
+            let (bytes, calls, results) = Self::unindexed(&load.chunks, load.indexed, stop).fold(
+                (0usize, 0usize, 0usize),
+                |(bytes, calls, results), (entry, charge)| {
+                    (
+                        bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                        calls + entry.tool_uses().count(),
+                        results + entry.tool_results().count(),
+                    )
+                },
+            );
+            let extension = bytes
+                .saturating_mul(2)
+                .saturating_add((stop - load.indexed) * size_of::<&Entry>())
+                .saturating_add(load.activity.append_container_reservation_bytes(
+                    stop - load.indexed,
+                    calls,
+                    results,
+                ));
+            self.extend_load_reservation(slot, context, extension)?;
+            let entries: Vec<&Entry> = Self::unindexed(&load.chunks, load.indexed, stop)
+                .map(|(entry, _)| entry)
                 .collect();
             load.activity = std::mem::take(&mut load.activity).append_tail(&entries, None);
             load.indexed = stop;
@@ -7570,6 +7679,10 @@ impl NativeStore {
                     || !load.pending.contains(&b'\n'))
             {
                 let count = (slot.stamp.size - load.offset).min(read_bound as u64) as usize;
+                let growth = vec_growth(&load.pending, count);
+                if growth > read_bound {
+                    self.extend_load_reservation(slot, context, growth - read_bound)?;
+                }
                 let start = load.pending.len();
                 load.pending.resize(start + count, 0);
                 self.before_source_read();
@@ -7628,8 +7741,12 @@ impl NativeStore {
                 self.lower_codex_source(slot, load, lowering_events, usage)?;
             } else {
                 let mut entries = Vec::new();
+                let mut parsed = Vec::new();
                 let mut consumed = 0;
                 let mut lines = 0;
+                let mut decoded = 0usize;
+                let mut decode_bound = decode_bound;
+                let mut session_pending = load.session_id.is_none();
                 for end in memchr::memchr_iter(b'\n', &load.pending) {
                     if lines >= events_bound {
                         break;
@@ -7640,11 +7757,31 @@ impl NativeStore {
                             "source entry exceeds owner bound",
                         ));
                     }
-                    crate::parse::parse_line(&load.pending[consumed..end], &mut entries, &|_| true)
+                    crate::parse::parse_line(&load.pending[consumed..end], &mut parsed, &|_| true)
                         .map_err(|error| {
                             SnapshotError::new(Status::ParseError, format!("{error:?}"))
                         })?;
                     let fresh = &load.pending[consumed..=end];
+                    let charge =
+                        Self::decoded_line_bytes(&entries, &parsed, &load.chunks, session_pending)
+                            + Self::fence_growth(&load.fence, fresh);
+                    if decoded + charge > decode_bound {
+                        if lines > 0 {
+                            parsed.clear();
+                            break;
+                        }
+                        self.extend_load_reservation(
+                            slot,
+                            context,
+                            decoded + charge - decode_bound,
+                        )?;
+                        decode_bound = decoded + charge;
+                    }
+                    decoded += charge;
+                    if session_pending && parsed.iter().any(|entry| entry.meta().is_some()) {
+                        session_pending = false;
+                    }
+                    entries.append(&mut parsed);
                     if fresh.len() >= 64 {
                         load.fence = fresh[fresh.len() - 64..].to_vec();
                     } else {
@@ -7691,6 +7828,22 @@ impl NativeStore {
                     crate::parse::parse_line(&load.pending, &mut tail, &|_| true).map_err(
                         |error| SnapshotError::new(Status::ParseError, format!("{error:?}")),
                     )?;
+                    let charge = Self::decoded_line_bytes(
+                        &Vec::new(),
+                        &tail,
+                        &load.chunks,
+                        load.session_id.is_none(),
+                    );
+                    if decoded + charge > decode_bound {
+                        if lines > 0 {
+                            return Ok(());
+                        }
+                        self.extend_load_reservation(
+                            slot,
+                            context,
+                            decoded + charge - decode_bound,
+                        )?;
+                    }
                     usage[2] += load.pending.len() as u64;
                     usage[3] += 1;
                     let count = tail.len();
