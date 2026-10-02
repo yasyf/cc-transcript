@@ -921,6 +921,7 @@ impl NativeStore {
             context,
             PreparedGraph::key_charge(&graph_id)
                 + size_of::<PreparedGraph>()
+                + stamp_bytes(&build.stamps)
                 + source_ref_bytes(&build.sources)
                 + sidechain_dir_bytes(&build.sidechain_dirs),
         )?;

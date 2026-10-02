@@ -738,6 +738,14 @@ fn sidechain_dir_bytes(sidechain_dirs: &[(PathBuf, Option<SourceStamp>)]) -> usi
             .sum::<usize>()
 }
 
+fn stamp_bytes(stamps: &Vec<(PathBuf, SourceStamp)>) -> usize {
+    stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+        + stamps
+            .iter()
+            .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
+}
+
 struct PreparedBuild {
     claimant: String,
     context: Value,
@@ -1239,13 +1247,7 @@ impl Charge<String> for PreparedGraph {
     }
 
     fn charge(&self) -> usize {
-        size_of::<Self>()
-            + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-            + self
-                .stamps
-                .iter()
-                .map(|(path, _)| path.as_os_str().len())
-                .sum::<usize>()
+        size_of::<Self>() + stamp_bytes(&self.stamps)
     }
 }
 
