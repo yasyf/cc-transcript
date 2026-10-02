@@ -12122,10 +12122,10 @@ fn membership_record_bytes(fixture: &Fixture) -> usize {
         + 2 * <Sha256 as Digest>::output_size()
 }
 
-fn built_membership(
-    fixture: &Fixture,
+fn built_membership<'a>(
+    fixture: &'a Fixture,
     usage: &mut [u64; 18],
-) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
+) -> Result<(WarmMembership, ProjectionReservation<'a>), SnapshotError> {
     let mut remaining = work_bounds();
     fixture.store.build_warm_membership(
         &membership_key(fixture),
