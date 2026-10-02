@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
 use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut, Index};
@@ -152,6 +152,7 @@ pub(crate) enum Trace {
 #[derive(Clone, Default)]
 pub(crate) struct Work {
     ticks: Arc<AtomicUsize>,
+    reclaims: Arc<AtomicUsize>,
     trace: Arc<Mutex<Vec<Trace>>>,
 }
 
@@ -165,8 +166,16 @@ impl Work {
         self.ticks.fetch_add(units, Ordering::Relaxed);
     }
 
+    pub(crate) fn reclaim(&self, units: usize) {
+        self.reclaims.fetch_add(units, Ordering::Relaxed);
+    }
+
     pub(crate) fn counter(&self) -> Arc<AtomicUsize> {
         Arc::clone(&self.ticks)
+    }
+
+    pub(crate) fn reclaims(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.reclaims)
     }
 
     pub(crate) fn allocated(&self, tier: usize) {
@@ -184,6 +193,8 @@ impl Work {
 #[cfg(not(test))]
 impl Work {
     pub(crate) fn tick(&self, _units: usize) {}
+
+    pub(crate) fn reclaim(&self, _units: usize) {}
 
     pub(crate) fn allocated(&self, _tier: usize) {}
 }
@@ -292,6 +303,14 @@ impl<K: Eq + Hash, V> Table<K, V> {
         Q: ?Sized + Hash + Eq,
     {
         self.map.remove(key)
+    }
+
+    pub(crate) fn remove_entry<Q>(&mut self, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.remove_entry(key)
     }
 
     pub(crate) fn retain(&mut self, keep: impl FnMut(&K, &mut V) -> bool) {
@@ -683,7 +702,10 @@ impl<K: TicketKey> ExpiryIndex<K> {
             let Ticket { key, .. } = self.pop().expect("peeked ticket");
             match deadline_of(&key) {
                 None => {}
-                Some(current) if current <= now => expired.push(key),
+                Some(current) if current <= now => {
+                    self.work.reclaim(1);
+                    expired.push(key);
+                }
                 Some(current) => self.push(current, key),
             }
         }
@@ -712,6 +734,70 @@ impl<K> Reserved for ExpiryIndex<K> {
 
     #[cfg(test)]
     fn audit_reserved(&self) {}
+}
+
+pub(crate) struct DeadlineIndex<K> {
+    deadlines: BTreeSet<(u64, K)>,
+    work: Work,
+}
+
+impl<K: Ord> DeadlineIndex<K> {
+    pub(crate) fn new(work: Work) -> Self {
+        Self {
+            deadlines: BTreeSet::new(),
+            work,
+        }
+    }
+
+    pub(crate) fn insert(&mut self, deadline: u64, key: K) {
+        self.work.tick(1);
+        assert!(
+            self.deadlines.insert((deadline, key)),
+            "one deadline per indexed key"
+        );
+    }
+
+    pub(crate) fn remove(&mut self, deadline: u64, key: K) {
+        self.work.tick(1);
+        assert!(
+            self.deadlines.remove(&(deadline, key)),
+            "balanced deadline index"
+        );
+    }
+
+    pub(crate) fn earliest(&self) -> Option<&K> {
+        self.work.tick(1);
+        self.deadlines.first().map(|(_, key)| key)
+    }
+
+    pub(crate) fn pop_expired(&mut self, now: u64) -> Option<K> {
+        self.work.tick(1);
+        if !self
+            .deadlines
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now)
+        {
+            return None;
+        }
+        self.work.reclaim(1);
+        self.deadlines.pop_first().map(|(_, key)| key)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.deadlines.len()
+    }
+
+    pub(crate) fn index_bytes(&self) -> usize {
+        self.deadlines.len() * size_of::<(u64, K)>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, deadline: u64, key: &K) -> bool
+    where
+        K: Clone,
+    {
+        self.deadlines.contains(&(deadline, key.clone()))
+    }
 }
 
 pub(crate) trait Charge<K> {
@@ -858,13 +944,21 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         K: Borrow<Q>,
         Q: ?Sized + Hash + Eq,
     {
+        self.remove_entry(key).map(|(_, value)| value)
+    }
+
+    pub(crate) fn remove_entry<Q>(&mut self, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
         self.work.tick(1);
-        let slot = self.map.remove(key)?;
+        let (key, slot) = self.map.remove_entry(key)?;
         self.charged = self
             .charged
             .checked_sub(slot.key_charge + slot.charge)
             .expect("balanced retained ledger");
-        Some(slot.value)
+        Some((key, slot.value))
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
@@ -874,6 +968,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
             work.tick(1);
             let kept = keep(key, &slot.value);
             if !kept {
+                work.reclaim(1);
                 *charged = charged
                     .checked_sub(slot.key_charge + slot.charge)
                     .expect("balanced retained ledger");

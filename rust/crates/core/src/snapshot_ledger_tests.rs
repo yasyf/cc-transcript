@@ -9,6 +9,8 @@ const REPLY_RESERVATION: usize = 2 * MAX_REPLY_BYTES;
 const SEARCH_LIMIT: usize = 4 * 1024 * 1024;
 const SLOW_READ_STEP: usize = 64;
 const WARM_HIT_BOUND: usize = 768;
+const HIT_SPREAD_BOUND: usize = 4;
+const STEADY_HITS: usize = 1024;
 const PER_SOURCE_BOUND: usize = 16;
 const PAGE_STEPS: usize = 256;
 const PAGE_BOUND: usize = PER_SOURCE_BOUND * PAGE_STEPS + WARM_HIT_BOUND;
@@ -587,14 +589,52 @@ fn entry_bytes(snapshots: &[&Arc<TranscriptSnapshot>]) -> usize {
         .sum()
 }
 
-fn measured(store: &NativeStore, operation: impl FnOnce()) -> (usize, usize) {
+#[derive(Debug, Clone, Copy)]
+struct Measured {
+    work: usize,
+    copies: usize,
+    reclaims: usize,
+}
+
+fn measured(store: &NativeStore, operation: impl FnOnce()) -> Measured {
     let work = store.retained_work.load(Ordering::Relaxed);
     let copies = store.warm_copies.load(Ordering::Relaxed);
+    let reclaims = store.reclaims.load(Ordering::Relaxed);
     operation();
-    (
-        store.retained_work.load(Ordering::Relaxed) - work,
-        store.warm_copies.load(Ordering::Relaxed) - copies,
-    )
+    Measured {
+        work: store.retained_work.load(Ordering::Relaxed) - work,
+        copies: store.warm_copies.load(Ordering::Relaxed) - copies,
+        reclaims: store.reclaims.load(Ordering::Relaxed) - reclaims,
+    }
+}
+
+fn cached_hit(store: &NativeStore, path: &Path, owner: &Value, label: &str) -> Measured {
+    measured(store, || {
+        let response = store.request(&acquire(path), owner, &Cancellation::default());
+        assert_eq!(
+            response["status"].as_str(),
+            Some("ok"),
+            "{label}: {response:?}"
+        );
+        assert!(
+            response["cursor"].is_null(),
+            "{label} was not cached: {response:?}"
+        );
+        let handle = &response["data"]["description"]["handle"];
+        store.validate_scope(handle, owner).unwrap();
+        release_lease(store, handle, owner);
+    })
+}
+
+fn assert_steady(label: &str, work: &[usize]) {
+    let (min, max) = (
+        work.iter().copied().min().unwrap(),
+        work.iter().copied().max().unwrap(),
+    );
+    assert!(
+        max - min <= HIT_SPREAD_BOUND,
+        "{label}: retained work drifted from {min} to {max}: {work:?}"
+    );
 }
 
 fn fill_to<'a>(
@@ -616,7 +656,7 @@ fn fill_to<'a>(
     filler
 }
 
-fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Vec<(usize, usize)>) {
+fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Vec<Measured>) {
     let mut next = request;
     let mut costs = Vec::new();
     loop {
@@ -632,8 +672,8 @@ fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Ve
     }
 }
 
-fn assert_page_costs(pass: &str, count: usize, pages: &[(usize, usize)]) {
-    for (page, (work, copies)) in pages.iter().copied().enumerate() {
+fn assert_page_costs(pass: &str, count: usize, pages: &[Measured]) {
+    for (page, Measured { work, copies, .. }) in pages.iter().copied().enumerate() {
         assert!(
             work <= PAGE_BOUND,
             "{pass} over {count} sources did {work} units of retained work on page request {page}"
@@ -2084,6 +2124,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
 
 #[test]
 fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
+    let mut every_hit = Vec::new();
     for count in SCALING_COUNTS {
         let scenario = scaling_scenario(count);
         let warmed = warmed_registry(prepared_store(), &scenario);
@@ -2097,35 +2138,62 @@ fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
         let audits = store.audits.load(Ordering::Relaxed);
         let mut hits = Vec::new();
         for hit in 0..8 {
-            let (work, copies) = measured(store, || {
-                let response = store.request(&acquire(path), owner, &Cancellation::default());
-                assert_eq!(
-                    response["status"].as_str(),
-                    Some("ok"),
-                    "hit {hit} at {count}: {response:?}"
-                );
-                assert!(
-                    response["cursor"].is_null(),
-                    "hit {hit} at {count} was not cached: {response:?}"
-                );
-                let handle = &response["data"]["description"]["handle"];
-                store.validate_scope(handle, owner).unwrap();
-                release_lease(store, handle, owner);
-            });
+            let hit = cached_hit(store, path, owner, &format!("hit {hit} at {count}"));
             assert!(
-                work <= WARM_HIT_BOUND,
-                "hit {hit} at {count} did {work} units of retained work"
+                hit.work <= WARM_HIT_BOUND,
+                "a hit at {count} did {} units of retained work",
+                hit.work
             );
-            assert!(
-                copies <= WARM_HIT_BOUND,
-                "hit {hit} at {count} copied {copies} retained elements"
-            );
-            hits.push((work, copies));
+            assert_eq!(hit.copies, 0, "a hit at {count} copied retained elements");
+            assert_eq!(hit.reclaims, 0, "a hit at {count} drained retained state");
+            hits.push(hit.work);
         }
-        eprintln!("cached hits: count={count} retained_work_and_warm_copies={hits:?}");
+        eprintln!("cached hits: count={count} retained_work={hits:?}");
         assert_eq!(store.audits.load(Ordering::Relaxed), audits);
         store.assert_conserved();
+        every_hit.extend(hits);
     }
+    assert_steady("cached hits across every retained count", &every_hit);
+}
+
+#[test]
+fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
+    let count = 923;
+    let scenario = scaling_scenario(count);
+    let warmed = warmed_registry(
+        store_with(4096, 2048, &[("max_lease_ms", 600_000)]),
+        &scenario,
+    );
+    let (store, owner) = (&warmed.store, &warmed.owner);
+    let path = &scenario.sidechains[count / 2];
+    let mut steady = Vec::new();
+    let mut draining = Vec::new();
+    for hit in 0..STEADY_HITS {
+        let measured = cached_hit(store, path, owner, &format!("hit {hit}"));
+        assert!(
+            measured.work <= WARM_HIT_BOUND,
+            "hit {hit} did {} units of retained work",
+            measured.work
+        );
+        assert_eq!(measured.copies, 0, "hit {hit} copied retained elements");
+        if measured.reclaims > 0 {
+            draining.push((hit, measured));
+        } else {
+            steady.push(measured.work);
+        }
+    }
+    eprintln!(
+        "thousand cached hits: steady={} draining={draining:?} min={:?} max={:?}",
+        steady.len(),
+        steady.iter().min(),
+        steady.iter().max()
+    );
+    assert!(
+        draining.is_empty(),
+        "cached hits drained retained state: {draining:?}"
+    );
+    assert_steady("a thousand cached hits", &steady);
+    store.assert_conserved();
 }
 
 #[test]
@@ -2141,7 +2209,7 @@ fn f2_graph_pages_cost_bounded_work_per_page_request() {
         let audits = store.audits.load(Ordering::Relaxed);
         let mut markers = Vec::new();
         for query in 0..4 {
-            let (work, copies) = measured(store, || {
+            let Measured { work, copies, .. } = measured(store, || {
                 let reply = settle(
                     store,
                     store.request(

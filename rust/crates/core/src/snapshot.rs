@@ -14,8 +14,8 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
-    charged_bytes, Anchor, Charge, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, Reserved,
-    RetainedLedger, Table, TicketKey, Work,
+    charged_bytes, Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered,
+    Reserved, RetainedLedger, Table, TicketKey, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -1259,9 +1259,9 @@ impl Charge<String> for WarmMembership {
     }
 }
 
-impl Charge<String> for Delivery {
-    fn key_charge(key: &String) -> usize {
-        key.capacity()
+impl Charge<Arc<str>> for Delivery {
+    fn key_charge(key: &Arc<str>) -> usize {
+        2 * size_of::<usize>() + key.len()
     }
 
     fn charge(&self) -> usize {
@@ -1291,7 +1291,8 @@ pub(crate) struct StoreState {
     expired_prepared_queries: Ledgered<String, (String, u64)>,
     prepared_facts: Ledgered<SourceIdentity, CachedPreparedFacts>,
     warm_memberships: Ledgered<String, WarmMembership>,
-    deliveries: Ledgered<String, Delivery>,
+    deliveries: Ledgered<Arc<str>, Delivery>,
+    deliveries_expiry: DeadlineIndex<Arc<str>>,
     labels: Ledgered<String, LabelSlot>,
     registries: Ledgered<String, RegistryRecord>,
     discoveries: Ledgered<String, DiscoveryCursor>,
@@ -1348,6 +1349,7 @@ impl StoreState {
             prepared_facts: Ledgered::new(work.clone()),
             warm_memberships: Ledgered::new(work.clone()),
             deliveries: Ledgered::new(work.clone()),
+            deliveries_expiry: DeadlineIndex::new(work.clone()),
             labels: Ledgered::new(work.clone()),
             registries: Ledgered::new(work.clone()),
             discoveries: Ledgered::new(work.clone()),
@@ -1397,6 +1399,7 @@ impl StoreState {
     fn drain(&mut self) {
         for event in self.ledger.queue.take() {
             self.ledger.shared.work().tick(1);
+            self.ledger.shared.work().reclaim(1);
             match event {
                 LedgerEvent::Generation(snapshot) => {
                     if let Some(record) = self.generations.get(&snapshot) {
@@ -1930,6 +1933,31 @@ impl StoreState {
         graph.root_slices.insert(key, facts);
     }
 
+    fn insert_delivery(&mut self, key: Arc<str>, delivery: Delivery) {
+        self.remove_delivery(&key);
+        self.deliveries_expiry
+            .insert(delivery.expires, Arc::clone(&key));
+        self.deliveries.insert(key, delivery);
+    }
+
+    fn remove_delivery(&mut self, key: &str) -> Option<Delivery> {
+        let (key, delivery) = self.deliveries.remove_entry(key)?;
+        self.deliveries_expiry.remove(delivery.expires, key);
+        Some(delivery)
+    }
+
+    fn expire_deliveries(&mut self, now: u64) {
+        while let Some(key) = self.deliveries_expiry.pop_expired(now) {
+            self.deliveries.remove(&*key).expect("indexed delivery");
+        }
+    }
+
+    fn evict_earliest_delivery(&mut self) {
+        if let Some(earliest) = self.deliveries_expiry.earliest().cloned() {
+            self.remove_delivery(&earliest);
+        }
+    }
+
     fn insert_warm_membership(&mut self, key: String, membership: WarmMembership) {
         for anchor in membership.anchors() {
             self.ledger.shared.acquire(anchor);
@@ -2050,6 +2078,8 @@ pub struct NativeStore {
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
     pub(crate) retained_work: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(crate) reclaims: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(crate) warm_copies: AtomicUsize,
     #[cfg(test)]
@@ -2368,6 +2398,8 @@ impl NativeStore {
             membership_metadata_checks: AtomicUsize::new(0),
             #[cfg(test)]
             retained_work: work.counter(),
+            #[cfg(test)]
+            reclaims: work.reclaims(),
             #[cfg(test)]
             warm_copies: AtomicUsize::new(0),
             #[cfg(test)]
@@ -3379,9 +3411,7 @@ impl NativeStore {
             state.remove_recent_codex(&identity);
             state.remove_latest(&identity);
         }
-        state
-            .deliveries
-            .retain(|_, delivery| delivery.expires > now);
+        state.expire_deliveries(now);
         state.owned.prune(now);
         state
             .retain_prepared_graphs(|_, graph| graph.lock().expect("prepared graph").expires > now);
@@ -3636,6 +3666,7 @@ impl NativeStore {
             + state.carried_expiry.heap_bytes()
             + state.recent_codex_expiry.heap_bytes()
             + state.prepared_loads_expiry.heap_bytes()
+            + state.deliveries_expiry.index_bytes()
             + state.prepared_facts_lru.len() * size_of::<(u64, SourceIdentity)>()
     }
 
@@ -3698,6 +3729,17 @@ impl NativeStore {
             state.locations_expiry.audit_key_bytes(),
             "location expiry tickets diverge from their session ids"
         );
+        assert_eq!(
+            state.deliveries_expiry.len(),
+            state.deliveries.len(),
+            "delivery deadline index diverges from the deliveries"
+        );
+        for (key, delivery) in state.deliveries.iter() {
+            assert!(
+                state.deliveries_expiry.contains(delivery.expires, key),
+                "delivery deadline index misses a delivery"
+            );
+        }
     }
 
     fn foreground_admission(context: &Value) -> Result<bool, SnapshotError> {
@@ -4223,21 +4265,14 @@ impl NativeStore {
             }
         }
         if leases.is_empty() && cursor.is_none() {
-            state.deliveries.remove(&key);
+            state.remove_delivery(&key);
             return;
         }
         if state.deliveries.len() >= self.config.leases.saturating_mul(4) {
-            if let Some(oldest) = state
-                .deliveries
-                .iter()
-                .min_by_key(|(_, delivery)| delivery.expires)
-                .map(|(token, _)| token.clone())
-            {
-                state.deliveries.remove(&oldest);
-            }
+            state.evict_earliest_delivery();
         }
-        state.deliveries.insert(
-            key,
+        state.insert_delivery(
+            Arc::from(key),
             Delivery {
                 claimant: claimant.to_owned(),
                 leases,
@@ -4255,10 +4290,7 @@ impl NativeStore {
         self.authority(context, None)?;
         let handles = Self::response_handles(response)?;
         let key = self.delivery_key(response, context, &handles)?;
-        let delivery = {
-            let mut state = self.lock_state();
-            state.deliveries.remove(&key)
-        };
+        let delivery = self.lock_state().remove_delivery(&key);
         let Some(delivery) = delivery else {
             return Ok(false);
         };
