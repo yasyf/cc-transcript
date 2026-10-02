@@ -2,13 +2,90 @@ use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
-use std::mem::size_of;
+use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut, Index};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use crate::snapshot_memory::MemoryCharge;
+
+#[cfg(all(
+    target_feature = "sse2",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
+const GROUP_WIDTH: usize = 16;
+#[cfg(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little"
+))]
+const GROUP_WIDTH: usize = 8;
+#[cfg(not(any(
+    all(
+        target_feature = "sse2",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ),
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_endian = "little"
+    )
+)))]
+const GROUP_WIDTH: usize = size_of::<usize>();
+
+fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
+    if bucket_mask < 8 {
+        bucket_mask
+    } else {
+        ((bucket_mask + 1) / 8) * 7
+    }
+}
+
+fn capacity_to_buckets(cap: usize, element_size: usize) -> usize {
+    if cap < 15 {
+        let min_cap = match (GROUP_WIDTH, element_size) {
+            (16, 0..=1) => 14,
+            (16, 2..=3) | (8, 0..=1) => 7,
+            _ => 3,
+        };
+        return match min_cap.max(cap) {
+            0..=3 => 4,
+            4..=7 => 8,
+            _ => 16,
+        };
+    }
+    (cap.checked_mul(8).expect("hashbrown capacity") / 7).next_power_of_two()
+}
+
+fn hashbrown_tier(cap: usize, element_size: usize) -> usize {
+    bucket_mask_to_capacity(capacity_to_buckets(cap, element_size) - 1)
+}
+
+fn is_hashbrown_tier(reserved: usize) -> bool {
+    reserved == 0
+        || (2..usize::BITS)
+            .map(|bits| bucket_mask_to_capacity((1usize << bits) - 1))
+            .any(|tier| tier == reserved)
+}
+
+fn min_non_zero_cap(element_size: usize) -> usize {
+    match element_size {
+        1 => 8,
+        2..=1024 => 4,
+        _ => 1,
+    }
+}
+
+fn vec_capacity_after(cap: usize, len: usize, additional: usize, element_size: usize) -> usize {
+    if additional <= cap - len {
+        cap
+    } else {
+        (cap * 2)
+            .max(len + additional)
+            .max(min_non_zero_cap(element_size))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LedgerEvent {
@@ -66,8 +143,17 @@ impl Drop for LedgerHook {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trace {
+    Allocated(usize),
+}
+
+#[cfg(test)]
 #[derive(Clone, Default)]
-pub(crate) struct Work(Arc<AtomicUsize>);
+pub(crate) struct Work {
+    ticks: Arc<AtomicUsize>,
+    trace: Arc<Mutex<Vec<Trace>>>,
+}
 
 #[cfg(not(test))]
 #[derive(Clone, Copy, Default)]
@@ -76,17 +162,181 @@ pub(crate) struct Work;
 #[cfg(test)]
 impl Work {
     pub(crate) fn tick(&self, units: usize) {
-        self.0.fetch_add(units, Ordering::Relaxed);
+        self.ticks.fetch_add(units, Ordering::Relaxed);
     }
 
     pub(crate) fn counter(&self) -> Arc<AtomicUsize> {
-        Arc::clone(&self.0)
+        Arc::clone(&self.ticks)
+    }
+
+    pub(crate) fn allocated(&self, tier: usize) {
+        self.trace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Trace::Allocated(tier));
+    }
+
+    pub(crate) fn traced(&self) -> Vec<Trace> {
+        std::mem::take(&mut *self.trace.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
 #[cfg(not(test))]
 impl Work {
     pub(crate) fn tick(&self, _units: usize) {}
+
+    pub(crate) fn allocated(&self, _tier: usize) {}
+}
+
+pub(crate) trait Reserved {
+    fn reserved(&self) -> usize;
+
+    #[cfg(test)]
+    fn audit_reserved(&self);
+}
+
+pub(crate) struct Table<K, V> {
+    map: HashMap<K, V>,
+    reserved: usize,
+    work: Work,
+}
+
+impl<K: Eq + Hash, V> Table<K, V> {
+    pub(crate) fn new(work: Work) -> Self {
+        Self {
+            map: HashMap::new(),
+            reserved: 0,
+            work,
+        }
+    }
+
+    pub(crate) fn reserved_bytes(&self) -> usize {
+        self.reserved * size_of::<(K, V)>()
+    }
+
+    fn tier_after(&self, additional: usize) -> usize {
+        if additional <= self.map.capacity() - self.map.len() {
+            return self.reserved;
+        }
+        let items = self.map.len() + additional;
+        if items <= self.reserved / 2 {
+            return self.reserved;
+        }
+        hashbrown_tier(items.max(self.reserved + 1), size_of::<(K, V)>())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.map.capacity()
+    }
+
+    pub(crate) fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.contains_key(key)
+    }
+
+    pub(crate) fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.get(key)
+    }
+
+    pub(crate) fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.get_mut(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let predicted = self.tier_after(1);
+        let before = self.reserved;
+        let displaced = match self.map.entry(key) {
+            Entry::Occupied(mut occupied) => Some(replace(occupied.get_mut(), value)),
+            Entry::Vacant(vacant) => {
+                vacant.insert(value);
+                None
+            }
+        };
+        if displaced.is_none() {
+            self.reserved = self.reserved.max(self.map.capacity());
+            assert_eq!(
+                self.reserved, predicted,
+                "retained table landed off its predicted tier"
+            );
+            if self.reserved != before {
+                self.work.allocated(self.reserved);
+            }
+        }
+        displaced
+    }
+
+    pub(crate) fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.remove(key)
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&K, &mut V) -> bool) {
+        self.map.retain(keep);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.map.iter()
+    }
+
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
+        self.map.keys()
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
+        self.map.values()
+    }
+}
+
+impl<K: Eq + Hash, V> Reserved for Table<K, V> {
+    fn reserved(&self) -> usize {
+        self.reserved
+    }
+
+    #[cfg(test)]
+    fn audit_reserved(&self) {
+        assert!(
+            self.reserved >= self.map.capacity(),
+            "retained table reservation trails its capacity"
+        );
+        assert!(
+            self.reserved >= self.map.len(),
+            "retained table reservation trails its length"
+        );
+        assert!(
+            is_hashbrown_tier(self.reserved),
+            "retained table reservation {} is not a hashbrown tier",
+            self.reserved
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +386,7 @@ struct Shared {
 }
 
 pub(crate) struct SharedAllocations {
-    owners: HashMap<usize, Shared>,
+    owners: Table<usize, Shared>,
     entries: usize,
     indexes: usize,
     facts: usize,
@@ -146,7 +396,7 @@ pub(crate) struct SharedAllocations {
 impl SharedAllocations {
     fn new(work: Work) -> Self {
         Self {
-            owners: HashMap::new(),
+            owners: Table::new(work.clone()),
             entries: 0,
             indexes: 0,
             facts: 0,
@@ -167,7 +417,17 @@ impl SharedAllocations {
     }
 
     pub(crate) fn table_bytes(&self) -> usize {
-        self.owners.capacity() * size_of::<(usize, Shared)>()
+        self.owners.reserved_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.owners.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.owners.capacity()
     }
 
     pub(crate) fn work(&self) -> &Work {
@@ -184,41 +444,34 @@ impl SharedAllocations {
 
     pub(crate) fn acquire(&mut self, anchor: Anchor) {
         self.work.tick(1);
-        let charged = match self.owners.entry(anchor.id) {
-            Entry::Occupied(mut existing) => {
-                let existing = existing.get_mut();
-                debug_assert_eq!(
-                    (existing.bytes, existing.kind),
-                    (anchor.bytes, anchor.kind),
-                    "retained allocation re-acquired with a different charge"
-                );
-                existing.owners += 1;
-                false
-            }
-            Entry::Vacant(vacant) => {
-                vacant.insert(Shared {
-                    owners: 1,
-                    bytes: anchor.bytes,
-                    kind: anchor.kind,
-                });
-                true
-            }
-        };
-        if charged {
-            *self.total(anchor.kind) += anchor.bytes;
+        if let Some(existing) = self.owners.get_mut(&anchor.id) {
+            debug_assert_eq!(
+                (existing.bytes, existing.kind),
+                (anchor.bytes, anchor.kind),
+                "retained allocation re-acquired with a different charge"
+            );
+            existing.owners += 1;
+            return;
         }
+        self.owners.insert(
+            anchor.id,
+            Shared {
+                owners: 1,
+                bytes: anchor.bytes,
+                kind: anchor.kind,
+            },
+        );
+        *self.total(anchor.kind) += anchor.bytes;
     }
 
     pub(crate) fn release(&mut self, id: usize) {
         self.work.tick(1);
-        let Entry::Occupied(mut existing) = self.owners.entry(id) else {
-            panic!("balanced retained ledger");
-        };
-        existing.get_mut().owners -= 1;
-        if existing.get().owners > 0 {
+        let existing = self.owners.get_mut(&id).expect("balanced retained ledger");
+        existing.owners -= 1;
+        if existing.owners > 0 {
             return;
         }
-        let Shared { bytes, kind, .. } = existing.remove();
+        let Shared { bytes, kind, .. } = self.owners.remove(&id).expect("balanced retained ledger");
         let total = self.total(kind);
         *total = total.checked_sub(bytes).expect("balanced retained ledger");
     }
@@ -233,6 +486,17 @@ impl SharedAllocations {
             })
             .map(|anchor| anchor.bytes)
             .sum()
+    }
+}
+
+impl Reserved for SharedAllocations {
+    fn reserved(&self) -> usize {
+        self.owners.reserved()
+    }
+
+    #[cfg(test)]
+    fn audit_reserved(&self) {
+        self.owners.audit_reserved();
     }
 }
 
@@ -298,7 +562,26 @@ impl<K> ExpiryIndex<K> {
 
     pub(crate) fn push(&mut self, deadline: u64, key: K) {
         self.work.tick(1);
+        let predicted = self.capacity_after(1);
         self.heap.push(Ticket { deadline, key });
+        self.settle(predicted);
+    }
+
+    fn capacity_after(&self, additional: usize) -> usize {
+        vec_capacity_after(
+            self.heap.capacity(),
+            self.heap.len(),
+            additional,
+            size_of::<Ticket<K>>(),
+        )
+    }
+
+    fn settle(&self, predicted: usize) {
+        assert_eq!(
+            self.heap.capacity(),
+            predicted,
+            "expiry index landed off its predicted capacity"
+        );
     }
 
     pub(crate) fn heap_bytes(&self) -> usize {
@@ -314,11 +597,18 @@ impl<K> ExpiryIndex<K> {
         self.heap.len() > 2 * live
     }
 
-    pub(crate) fn rebuild(&mut self, tickets: impl IntoIterator<Item = (u64, K)>) {
-        self.heap = tickets
-            .into_iter()
-            .map(|(deadline, key)| Ticket { deadline, key })
-            .collect();
+    pub(crate) fn rebuild(&mut self, live: usize, tickets: impl IntoIterator<Item = (u64, K)>) {
+        let mut rebuilt = Vec::with_capacity(live);
+        rebuilt.extend(
+            tickets
+                .into_iter()
+                .map(|(deadline, key)| Ticket { deadline, key }),
+        );
+        assert!(
+            rebuilt.capacity() <= self.heap.capacity(),
+            "expiry index rebuild grew the heap"
+        );
+        self.heap = BinaryHeap::from(rebuilt);
         self.work.tick(self.heap.len());
     }
 
@@ -366,6 +656,15 @@ impl<K> ExpiryIndex<K> {
     }
 }
 
+impl<K> Reserved for ExpiryIndex<K> {
+    fn reserved(&self) -> usize {
+        self.heap.capacity()
+    }
+
+    #[cfg(test)]
+    fn audit_reserved(&self) {}
+}
+
 pub(crate) trait Charge<K> {
     fn key_charge(_key: &K) -> usize {
         0
@@ -385,7 +684,7 @@ struct Slot<V> {
 }
 
 pub(crate) struct Ledgered<K, V> {
-    map: HashMap<K, Slot<V>>,
+    map: Table<K, Slot<V>>,
     charged: usize,
     work: Work,
 }
@@ -427,7 +726,7 @@ impl<V> Drop for ChargedMut<'_, V> {
 impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
     pub(crate) fn new(work: Work) -> Self {
         Self {
-            map: HashMap::new(),
+            map: Table::new(work.clone()),
             charged: 0,
             work,
         }
@@ -438,7 +737,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
     }
 
     pub(crate) fn capacity_bytes(&self) -> usize {
-        self.map.capacity() * size_of::<(K, Slot<V>)>()
+        self.map.reserved_bytes()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -550,6 +849,17 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
             .iter()
             .map(|(key, slot)| V::key_charge(key) + slot.value.charge())
             .sum()
+    }
+}
+
+impl<K: Eq + Hash, V: Charge<K>> Reserved for Ledgered<K, V> {
+    fn reserved(&self) -> usize {
+        self.map.reserved()
+    }
+
+    #[cfg(test)]
+    fn audit_reserved(&self) {
+        self.map.audit_reserved();
     }
 }
 

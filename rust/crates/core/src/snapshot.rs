@@ -14,8 +14,8 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
-    charged_bytes, Anchor, Charge, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger,
-    Work,
+    charged_bytes, Anchor, Charge, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, Reserved,
+    RetainedLedger, Table, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -1240,10 +1240,10 @@ impl Charge<String> for Delivery {
 }
 
 pub(crate) struct StoreState {
-    latest: HashMap<SourceIdentity, Arc<TranscriptSnapshot>>,
-    recent_codex: HashMap<SourceIdentity, u64>,
+    latest: Table<SourceIdentity, Arc<TranscriptSnapshot>>,
+    recent_codex: Table<SourceIdentity, u64>,
     loads: HashMap<SourceIdentity, Arc<LoadSlot>>,
-    prepared_loads: HashMap<SourceIdentity, (Arc<LoadSlot>, u64)>,
+    prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
     leases: Ledgered<String, Lease>,
     waiters: Ledgered<String, Waiter>,
     projections: Ledgered<String, ProjectionCursor>,
@@ -1265,7 +1265,7 @@ pub(crate) struct StoreState {
     resolutions: Ledgered<String, ResolutionCursor>,
     locations: Ledgered<String, LocatedPath>,
     locates: Ledgered<String, LocateCursor>,
-    escaped_chunks: HashMap<usize, (Weak<ChunkRows>, MemoryCharge)>,
+    escaped_chunks: Table<usize, (Weak<ChunkRows>, MemoryCharge)>,
     recent_codex_raw_bytes: usize,
     locations_expiry: ExpiryIndex<String>,
     carried_expiry: ExpiryIndex<(SourceIdentity, String)>,
@@ -1296,10 +1296,10 @@ fn carried_deadline(carried: &CarriedClassification) -> u64 {
 impl StoreState {
     fn new(work: Work) -> Self {
         Self {
-            latest: HashMap::new(),
-            recent_codex: HashMap::new(),
+            latest: Table::new(work.clone()),
+            recent_codex: Table::new(work.clone()),
             loads: HashMap::new(),
-            prepared_loads: HashMap::new(),
+            prepared_loads: Table::new(work.clone()),
             leases: Ledgered::new(work.clone()),
             waiters: Ledgered::new(work.clone()),
             projections: Ledgered::new(work.clone()),
@@ -1321,7 +1321,7 @@ impl StoreState {
             resolutions: Ledgered::new(work.clone()),
             locations: Ledgered::new(work.clone()),
             locates: Ledgered::new(work.clone()),
-            escaped_chunks: HashMap::new(),
+            escaped_chunks: Table::new(work.clone()),
             recent_codex_raw_bytes: 0,
             locations_expiry: ExpiryIndex::new(work.clone()),
             carried_expiry: ExpiryIndex::new(work.clone()),
@@ -1335,6 +1335,29 @@ impl StoreState {
             #[cfg(test)]
             audits: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    fn reservables(&self) -> [&dyn Reserved; 17] {
+        [
+            &self.ledger.shared,
+            &self.registries,
+            &self.generations,
+            &self.carried_classifications,
+            &self.leases,
+            &self.waiters,
+            &self.latest,
+            &self.escaped_chunks,
+            &self.prepared_loads,
+            &self.recent_codex,
+            &self.warm_memberships,
+            &self.locations,
+            &self.locates,
+            &self.locations_expiry,
+            &self.carried_expiry,
+            &self.recent_codex_expiry,
+            &self.prepared_loads_expiry,
+        ]
     }
 
     fn drain(&mut self) {
@@ -1465,6 +1488,7 @@ impl StoreState {
             .crowded(self.carried_classifications.len())
         {
             self.carried_expiry.rebuild(
+                self.carried_classifications.len(),
                 self.carried_classifications
                     .iter()
                     .map(|(lineage, carried)| (carried_deadline(carried), lineage.clone())),
@@ -1537,6 +1561,7 @@ impl StoreState {
             .push(now.saturating_add(TOUCH_TTL_MS), identity);
         if self.recent_codex_expiry.crowded(self.recent_codex.len()) {
             self.recent_codex_expiry.rebuild(
+                self.recent_codex.len(),
                 self.recent_codex
                     .iter()
                     .map(|(identity, touched)| (touched.saturating_add(TOUCH_TTL_MS), *identity)),
@@ -1568,6 +1593,7 @@ impl StoreState {
             .crowded(self.prepared_loads.len())
         {
             self.prepared_loads_expiry.rebuild(
+                self.prepared_loads.len(),
                 self.prepared_loads.iter().map(|(identity, (_, touched))| {
                     (touched.saturating_add(TOUCH_TTL_MS), *identity)
                 }),
@@ -1589,6 +1615,7 @@ impl StoreState {
         self.locations.insert(id, location);
         if self.locations_expiry.crowded(self.locations.len()) {
             self.locations_expiry.rebuild(
+                self.locations.len(),
                 self.locations
                     .iter()
                     .map(|(id, location)| (location.expires, id.clone())),
@@ -3529,11 +3556,10 @@ impl NativeStore {
             + state.carried_classifications.capacity_bytes()
             + state.leases.capacity_bytes()
             + state.waiters.capacity_bytes()
-            + state.latest.capacity() * size_of::<(SourceIdentity, Arc<TranscriptSnapshot>)>()
-            + state.escaped_chunks.capacity()
-                * size_of::<(usize, (Weak<ChunkRows>, MemoryCharge))>()
-            + state.prepared_loads.capacity() * size_of::<(SourceIdentity, (Arc<LoadSlot>, u64))>()
-            + state.recent_codex.capacity() * size_of::<(SourceIdentity, u64)>()
+            + state.latest.reserved_bytes()
+            + state.escaped_chunks.reserved_bytes()
+            + state.prepared_loads.reserved_bytes()
+            + state.recent_codex.reserved_bytes()
             + state.warm_memberships.capacity_bytes()
             + state.locations.capacity_bytes()
             + state.locates.capacity_bytes()
@@ -3571,6 +3597,9 @@ impl NativeStore {
                 number(&ledger, key).unwrap(),
                 "retained ledger diverges from the audit on {key}"
             );
+        }
+        for reservable in state.reservables() {
+            reservable.audit_reserved();
         }
         assert_eq!(
             state.recent_codex_raw_bytes,

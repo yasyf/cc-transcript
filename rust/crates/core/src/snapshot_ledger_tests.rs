@@ -1,4 +1,5 @@
 use super::*;
+use crate::snapshot_ledger::Trace;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -923,6 +924,61 @@ fn advance_published(fixture: &Fixture) -> bool {
         Err(error) if error.status == Status::RetainedLimit => false,
         Err(error) => panic!("advance failed outside admission: {error:?}"),
     }
+}
+
+#[test]
+fn anchor_table_charge_moves_only_when_the_table_reallocates() {
+    let work = Work::default();
+    let mut ledger = RetainedLedger::new(work.clone());
+    let anchors = &mut ledger.shared;
+    let mut next = 1usize;
+    let mut live = Vec::new();
+    while anchors.len() < 14 {
+        anchors.acquire(Anchor::facts(next, 0));
+        live.push(next);
+        next += 1;
+    }
+    assert_eq!(anchors.reserved(), 14);
+    assert_eq!(anchors.capacity(), 14);
+    let charged = anchors.table_bytes();
+    work.traced();
+    let mut dipped = false;
+    let mut rounds = 0;
+    while !dipped && rounds < 256 {
+        anchors.release(live.remove(0));
+        anchors.audit_reserved();
+        dipped |= anchors.capacity() < anchors.reserved();
+        assert_eq!(anchors.table_bytes(), charged, "release moved the charge");
+        anchors.acquire(Anchor::facts(next, 0));
+        live.push(next);
+        next += 1;
+        anchors.audit_reserved();
+        let reallocated = work.traced();
+        if anchors.table_bytes() != charged {
+            assert_eq!(reallocated, vec![Trace::Allocated(anchors.reserved())]);
+            break;
+        }
+        assert!(reallocated.is_empty(), "allocation without a charge change");
+        rounds += 1;
+    }
+    assert!(dipped, "no erase left a tombstone in {rounds} rounds");
+    let charged = anchors.table_bytes();
+    let reserved = anchors.reserved();
+    work.traced();
+    while anchors.len() < reserved {
+        anchors.acquire(Anchor::facts(next, 0));
+        next += 1;
+        assert_eq!(anchors.table_bytes(), charged);
+    }
+    assert!(work.traced().is_empty());
+    anchors.acquire(Anchor::facts(next, 0));
+    assert!(anchors.reserved() > reserved);
+    assert_eq!(work.traced(), vec![Trace::Allocated(anchors.reserved())]);
+    assert_eq!(
+        anchors.table_bytes(),
+        anchors.reserved() * (charged / reserved)
+    );
+    anchors.audit_reserved();
 }
 
 #[test]
