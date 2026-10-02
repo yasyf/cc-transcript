@@ -2834,7 +2834,24 @@ fn codex_finish_fixture(source: &LedgerSource, background: bool) -> Fixture {
     };
     let (data, pinned) = codex_acquired(&fixture);
     fixture.request.insert("outcome", data);
+    let identity = pinned.stamp.identity;
     fixture.pins.push(pinned);
+    {
+        let mut state = fixture.store.lock_state();
+        let lease = state.leases.audit_with(NativeStore::audit_lease_bytes);
+        let mut inode = 0;
+        while state.recent_codex_growth(&identity) <= lease {
+            inode += 1;
+            state.insert_recent_codex(
+                SourceIdentity {
+                    device: 0,
+                    inode,
+                    window_base: 0,
+                },
+                now_ms(),
+            );
+        }
+    }
     fixture
 }
 
@@ -3135,11 +3152,22 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
         };
         let probe = build();
         let predicted = facts_bound_walk(&probe.pins[0]);
-        let growth = {
+        let (growth, lease) = {
             let state = probe.store.lock_state();
-            state.recent_codex.growth(1) + state.recent_codex_expiry.growth(1)
+            assert_eq!(
+                state.leases.len(),
+                1,
+                "{site}: the completion consumes exactly one lease"
+            );
+            (
+                state.recent_codex.growth(1) + state.recent_codex_expiry.growth(1),
+                state.leases.audit_with(NativeStore::audit_lease_bytes),
+            )
         };
-        assert!(growth > 0);
+        assert!(
+            growth > lease,
+            "{site}: the consumed lease covers the cache growth: growth={growth} lease={lease}"
+        );
         let exact = exact_headroom(&build, &finished);
         assert_eq!(
             exact, predicted,
@@ -3149,6 +3177,11 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
         assert!(
             exact < with_cache && with_cache <= exact + growth,
             "the cache write costs its growth: exact={exact} with_cache={with_cache} growth={growth}"
+        );
+        assert_eq!(
+            with_cache,
+            exact + growth - lease,
+            "{site}: the cache write costs its growth beyond the consumed lease: exact={exact} growth={growth} lease={lease}"
         );
         {
             let refused = build();
@@ -3173,6 +3206,13 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
         {
             let skipped = build();
             let _filler = fill_to(&skipped.store, &skipped.owner, with_cache - 1);
+            let reserved = {
+                let state = skipped.store.lock_state();
+                (
+                    state.recent_codex.reserved(),
+                    state.recent_codex_expiry.reserved(),
+                )
+            };
             assert!(
                 finished(&skipped),
                 "{site}: the completion itself was refused"
@@ -3181,8 +3221,14 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
             assert!(audited(&skipped.store)[TOTAL] <= cap_for(&skipped.owner));
             let state = skipped.store.lock_state();
             assert!(!state.latest.contains_key(&identity));
-            assert_eq!(state.recent_codex.reserved(), 0);
-            assert_eq!(state.recent_codex_expiry.reserved(), 0);
+            assert_eq!(
+                (
+                    state.recent_codex.reserved(),
+                    state.recent_codex_expiry.reserved(),
+                ),
+                reserved,
+                "{site}: the skipped cache write grew its tables"
+            );
             assert_eq!(state.recent_codex_raw_bytes, 0);
         }
         let admitted = build();
@@ -4816,7 +4862,7 @@ fn completion_query_fixture(scenario: &Scenario, index: usize, background: bool)
 #[test]
 fn prepared_query_refuses_source_completion_before_construction() {
     let scenario = Scenario::new(2, |index| match index {
-        0 => line("thread-0000"),
+        0 => prompt_line("thread-0000", 8 * 1024),
         _ => prompt_line("thread-0001", 16 * 1024),
     });
     let site = "source completion";
@@ -6323,15 +6369,11 @@ fn cache_replacement_barrier(
             let held = cached();
             let before = fixture.store.lock_state().ledger.shared.facts();
             let replaced = replace();
-            (
-                held,
-                before,
-                replaced,
-                cached(),
-                fixture.store.lock_state().ledger.shared.facts(),
-                ledger(&fixture.store)[TOTAL],
-                audited(&fixture.store)[TOTAL],
-            )
+            let fresh = cached();
+            let counted = fixture.store.lock_state().ledger.shared.facts();
+            let ledgered = ledger(&fixture.store)[TOTAL];
+            let audit = audited(&fixture.store)[TOTAL];
+            (held, before, replaced, fresh, counted, ledgered, audit)
         });
     assert_eq!(
         replaced["status"].as_str(),
