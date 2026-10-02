@@ -419,14 +419,11 @@ impl NativeStore {
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
         )?;
-        let waiter = {
-            let mut state = self.lock_state();
-            let mut waiter = state.waiters.get_mut(&pending.token).ok_or_else(|| {
+        let waiter = self
+            .rebind_waiter(&mut self.lock_state(), &pending.token, context)?
+            .ok_or_else(|| {
                 SnapshotError::new(Status::StaleCursor, "prepared source reservation expired")
             })?;
-            waiter.context = context.clone();
-            waiter.clone()
-        };
         let before_bytes = usage[1];
         let before_events = usage[3];
         let outcome = self.advance(&pending.token, waiter, Some(remaining), cancel, usage)?;

@@ -1139,14 +1139,6 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
     }
 
     #[cfg(test)]
-    pub(crate) fn audit_charged(&self) -> usize {
-        self.map
-            .iter()
-            .map(|(key, slot)| V::key_charge(key) + slot.value.charge() + slot.pledge)
-            .sum()
-    }
-
-    #[cfg(test)]
     pub(crate) fn audit_with(&self, bytes: impl Fn(&K, &V) -> usize) -> usize {
         self.map
             .iter()

@@ -2362,7 +2362,10 @@ fn lease_issue_admits_exactly_its_record() {
         let exact = exact_headroom(&build, &issued);
         assert_boundary_at("lease issue", &build(), &issued, exact);
         let growth = assert_exact_growth("lease issue", &build(), &issued, exact, &|store| {
-            lease_table(store).2
+            store
+                .lock_state()
+                .leases
+                .audit_with(NativeStore::audit_lease_bytes)
         });
         assert_eq!(growth, 0, "an unfilled lease table grew");
         let refused = build();
@@ -2489,7 +2492,7 @@ fn parked_cursor_pledges_its_delivery_and_converts_it_without_admission() {
         assert_eq!(
             admitted.last().copied(),
             Some(
-                charged_bytes(&token, &state.prepared_queries[&token])
+                NativeStore::audit_prepared_query_bytes(&token, &state.prepared_queries[&token])
                     + state.prepared_queries.capacity_bytes()
                     - capacity
                     + pledge
@@ -2580,7 +2583,10 @@ fn lease_table_growth_is_admitted_before_the_lease_is_issued() {
         let (_, reserved, _, capacity_bytes) = lease_table(&fitted.store);
         traced(&fitted.store);
         let growth = assert_exact_growth("lease table growth", &fitted, &issued, exact, &|store| {
-            lease_table(store).2
+            store
+                .lock_state()
+                .leases
+                .audit_with(NativeStore::audit_lease_bytes)
         });
         let traced = traced(&fitted.store);
         assert_admitted_before_allocating("lease table growth", &traced);
@@ -5784,5 +5790,705 @@ fn ledger_scaling() {
             "ledger_scaling count={count} live_generations={live} warm_hit_us={:.2}",
             elapsed.as_secs_f64() * 1e6 / hits as f64
         );
+    }
+}
+
+fn delivered(store: &NativeStore) -> usize {
+    let state = store.lock_state();
+    state
+        .deliveries
+        .audit_with(NativeStore::audit_delivery_bytes)
+        + state.deliveries_expiry.index_bytes()
+}
+
+fn refused_at_site(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    offset: usize,
+    exact: usize,
+) {
+    for headroom in [offset, exact - 1] {
+        assert_refused_at(site, &build(), attempt, headroom + 1);
+    }
+    assert_fitted_at(site, &build(), attempt, exact);
+}
+
+fn location_park_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    Fixture {
+        store: cursor_store(),
+        owner: context_for("locate-park", background),
+        request: json!({"schema":SCHEMA,"id":"ledger-locate","operation":"locate","session_ids":["absent"],"roots":[source.directory.to_string_lossy().as_ref()],"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        pins: Vec::new(),
+    }
+}
+
+fn location_parked(fixture: &Fixture) -> bool {
+    match fixture.store.locate(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &mut [0u64; 18],
+    ) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_some() && reason.is_some(),
+                "the location page completed: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("location park failed outside admission: {error:?}"),
+    }
+}
+
+#[test]
+fn location_cursor_park_admits_its_stored_key_exactly() {
+    let source = LedgerSource::new(&line("locate"));
+    for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+        source.file(name, &line(name));
+    }
+    for background in [false, true] {
+        let build = || location_park_fixture(&source, background);
+        let exact = exact_headroom(&build, &location_parked);
+        refused_at_site("location park", &build, &location_parked, 0, exact);
+        let fitted = build();
+        let capacity = fitted.store.lock_state().locates.capacity_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(location_parked(&fitted));
+        assert_admitted_before_allocating("location park", &traced(&fitted.store));
+        fitted.store.assert_conserved();
+        assert_eq!(
+            ledger(&fitted.store)[TOTAL],
+            cap_for(&fitted.owner),
+            "the exact fit did not land on the cap"
+        );
+        assert_eq!(audited(&fitted.store)[TOTAL], cap_for(&fitted.owner));
+        let (token, pledged) = {
+            let state = fitted.store.lock_state();
+            let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert_eq!(token.capacity(), 64);
+            assert_eq!(
+                exact,
+                NativeStore::audit_locate_bytes(token, cursor)
+                    + state.locates.capacity_bytes()
+                    - capacity
+                    + state.locates.pledged(token),
+                "the park admission is not the stored key, the cursor, its table growth, and its pledge"
+            );
+            (token.clone(), state.locates.pledged(token))
+        };
+        let before = delivered(&fitted.store);
+        traced(&fitted.store);
+        fitted
+            .store
+            .track_delivery(
+                &json!({"id":"ledger-delivery","status":"incomplete","cursor":token}),
+                &fitted.owner,
+                false,
+            )
+            .unwrap();
+        assert!(
+            traced(&fitted.store).is_empty(),
+            "converting the location pledge admitted or allocated"
+        );
+        assert_eq!(
+            delivered(&fitted.store) - before,
+            pledged,
+            "the location pledge differs from its delivery record"
+        );
+        let refused = build();
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!location_parked(&refused));
+        }
+        assert!(
+            refused.store.lock_state().locates.is_empty(),
+            "a refused location cursor was parked"
+        );
+        assert!(
+            location_parked(&refused),
+            "the store was unusable after a refused location park"
+        );
+        refused.store.assert_conserved();
+    }
+}
+
+fn classifier_lease_fixture(source: &LedgerSource, background: bool, classifier: &str) -> Fixture {
+    let mut fixture = lease_fixture(source, background, false);
+    if classifier != "native" {
+        fixture
+            .store
+            .register_classifier(
+                classifier,
+                "1",
+                Arc::new(|_, range| Ok(vec![false; range.len()])),
+            )
+            .unwrap();
+    }
+    fixture.request = json!({"id":classifier,"version":"1"});
+    fixture
+}
+
+fn retain_fixture(source: &LedgerSource, background: bool, classifier: &str) -> Fixture {
+    let mut fixture = classifier_lease_fixture(source, background, classifier);
+    let data = {
+        let mut state = fixture.store.lock_state();
+        fixture
+            .store
+            .issue(
+                &mut state,
+                Arc::clone(&fixture.pins[0]),
+                fixture.request.clone(),
+                &fixture.owner,
+                now_ms() + 120_000,
+                fixture.store.token("lease"),
+                0,
+            )
+            .unwrap()
+    };
+    fixture.request = json!({"schema":SCHEMA,"id":"ledger-retain","operation":"retain","handle":data["description"]["handle"]});
+    fixture
+}
+
+fn lease_walk(store: &NativeStore) -> usize {
+    store
+        .lock_state()
+        .leases
+        .audit_with(NativeStore::audit_lease_bytes)
+}
+
+#[test]
+fn lease_admits_and_charges_its_classifier() {
+    let source = LedgerSource::new(&lines(0..2));
+    let long = "c".repeat(4096);
+    let retained = |fixture: &Fixture| admitted(&submit(fixture), "ok");
+    for background in [false, true] {
+        let issue_exact = |classifier: &str| {
+            exact_headroom(
+                &|| classifier_lease_fixture(&source, background, classifier),
+                &issued,
+            )
+        };
+        let retain_exact = |classifier: &str| {
+            exact_headroom(
+                &|| retain_fixture(&source, background, classifier),
+                &retained,
+            )
+        };
+        assert_eq!(
+            issue_exact(long.as_str()) - issue_exact("native"),
+            long.len() - "native".len(),
+            "lease issue omits its classifier"
+        );
+        assert_eq!(
+            retain_exact(long.as_str()) - retain_exact("native"),
+            long.len() - "native".len(),
+            "lease retain omits its cloned classifier"
+        );
+        for classifier in ["native", long.as_str()] {
+            let build = || classifier_lease_fixture(&source, background, classifier);
+            let exact = issue_exact(classifier);
+            refused_at_site("lease issue classifier", &build, &issued, 0, exact);
+            let fitted = build();
+            let walked = lease_walk(&fitted.store);
+            let capacity = fitted.store.lock_state().leases.capacity_bytes();
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+            assert!(issued(&fitted));
+            fitted.store.assert_conserved();
+            assert_eq!(ledger(&fitted.store)[TOTAL], cap_for(&fitted.owner));
+            let grown = fitted.store.lock_state().leases.capacity_bytes() - capacity;
+            assert_eq!(
+                exact,
+                lease_walk(&fitted.store) - walked + grown,
+                "lease issue is not admitted at its walked record and table growth"
+            );
+            let build = || retain_fixture(&source, background, classifier);
+            let exact = retain_exact(classifier);
+            refused_at_site(
+                "lease retain classifier",
+                &build,
+                &retained,
+                REPLY_RESERVATION,
+                exact,
+            );
+            let fitted = build();
+            let walked = lease_walk(&fitted.store);
+            let capacity = fitted.store.lock_state().leases.capacity_bytes();
+            let before = delivered(&fitted.store);
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+            assert!(retained(&fitted));
+            fitted.store.assert_conserved();
+            let grown = fitted.store.lock_state().leases.capacity_bytes() - capacity;
+            assert_eq!(
+                exact,
+                REPLY_RESERVATION + lease_walk(&fitted.store) - walked
+                    + grown
+                    + delivered(&fitted.store)
+                    - before,
+                "retain is not admitted at its lease, table growth, and delivery"
+            );
+        }
+    }
+}
+
+fn resolution_charge_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+    let store = fast_store();
+    let owner = restricted_context("resolve", background, &scenario.root.directory, padding);
+    let pins = scenario
+        .sidechains
+        .iter()
+        .map(|path| acquired(&store, path, &owner).1)
+        .collect();
+    Fixture {
+        store,
+        request: json!({"schema":SCHEMA,"id":"ledger-resolve","operation":"resolve","session_ids":scenario.ids(),"roots":scenario.roots(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        owner,
+        pins,
+    }
+}
+
+#[test]
+fn resolution_cursor_charges_and_admits_its_context_and_nested_tables() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    let authority = |padding: usize| {
+        value_bytes(
+            &restricted_context("resolve", false, &scenario.root.directory, padding)["authority"],
+        )
+    };
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for background in [false, true] {
+        let build = |padding: usize| resolution_charge_fixture(&scenario, background, padding);
+        let retained = |padding: usize| {
+            let fixture = build(padding);
+            let before = settled(&fixture.store)[TOTAL];
+            assert!(attempt(&fixture));
+            fixture.store.assert_conserved();
+            settled(&fixture.store)[TOTAL] - before
+        };
+        assert_eq!(
+            retained(63) - retained(0),
+            authority(63) - authority(0),
+            "the parked resolution omits its context"
+        );
+        let small = exact_headroom(&|| build(0), &attempt);
+        let large = exact_headroom(&|| build(63), &attempt);
+        assert_eq!(
+            large - small,
+            authority(63) - authority(0),
+            "the resolution park admission omits its context"
+        );
+        for (padding, exact) in [(0, small), (63, large)] {
+            refused_at_site(
+                "resolution park",
+                &|| build(padding),
+                &attempt,
+                REPLY_RESERVATION,
+                exact,
+            );
+        }
+        let fixture = build(63);
+        assert!(attempt(&fixture));
+        let state = fixture.store.lock_state();
+        let (token, cursor) = state.resolutions.iter().next().expect("parked resolution");
+        assert!(
+            cursor.ids.capacity() >= 2
+                && cursor.paths.capacity() >= 2
+                && cursor.sessions.capacity() >= 1,
+            "the resolution has no nested buffers"
+        );
+        assert!(cursor.pending.is_none());
+        let nested = cursor.ids.capacity() * size_of::<String>()
+            + cursor.ids.iter().map(String::capacity).sum::<usize>()
+            + cursor.paths.capacity() * size_of::<(String, PathBuf)>()
+            + cursor
+                .paths
+                .iter()
+                .map(|(id, path)| id.capacity() + path.capacity())
+                .sum::<usize>()
+            + cursor.sessions.capacity() * size_of::<Value>()
+            + cursor.sessions.iter().map(value_bytes).sum::<usize>();
+        assert_eq!(
+            state.resolutions.charged(),
+            token.capacity()
+                + cursor.claimant.capacity()
+                + value_bytes(&cursor.context)
+                + value_bytes(&cursor.request)
+                + nested
+                + state.resolutions.pledged(token),
+            "the resolution charge is not its key, strings, context, request, and nested table, vector, and key capacities"
+        );
+    }
+}
+
+#[test]
+fn waiter_context_rebind_admits_its_growth_before_replacing_the_context() {
+    let source = LedgerSource::new(&lines(0..8));
+    let padded = |owner: &Value| {
+        let mut padded = owner.clone();
+        padded.insert("padding", json!("p".repeat(4096)));
+        padded
+    };
+    let rebound = |fixture: &Fixture| {
+        let token = fixture.request["cursor"].as_str().unwrap();
+        match fixture.store.rebind_waiter(
+            &mut fixture.store.lock_state(),
+            token,
+            &padded(&fixture.owner),
+        ) {
+            Ok(Some(_)) => true,
+            Ok(None) => panic!("the parked waiter vanished"),
+            Err(error) if error.status == Status::RetainedLimit => false,
+            Err(error) => panic!("waiter rebind failed outside admission: {error:?}"),
+        }
+    };
+    for background in [false, true] {
+        let build = || parked_load(&source.path, background, 2);
+        let probe = build();
+        let growth = value_bytes(&padded(&probe.owner)) - value_bytes(&probe.owner);
+        assert!(growth >= 4096);
+        assert_eq!(
+            exact_headroom(&build, &rebound),
+            growth,
+            "the rebind is not admitted at its context growth"
+        );
+        for headroom in [0, growth - 1] {
+            let refused = build();
+            let token = refused.request["cursor"].as_str().unwrap().to_owned();
+            assert_refused_at("waiter rebind", &refused, &rebound, headroom + 1);
+            assert_eq!(
+                refused.store.lock_state().waiters[&token].context,
+                refused.owner,
+                "a refused rebind replaced the context"
+            );
+        }
+        let fitted = build();
+        let walked = fitted
+            .store
+            .lock_state()
+            .waiters
+            .audit_with(NativeStore::audit_waiter_bytes);
+        let _filler = fill_to(&fitted.store, &fitted.owner, growth);
+        assert!(rebound(&fitted));
+        fitted.store.assert_conserved();
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap_for(&fitted.owner));
+        assert_eq!(
+            fitted
+                .store
+                .lock_state()
+                .waiters
+                .audit_with(NativeStore::audit_waiter_bytes)
+                - walked,
+            growth
+        );
+        let resumed = build();
+        let token = resumed.request["cursor"].as_str().unwrap().to_owned();
+        {
+            let _filler = fill_to(
+                &resumed.store,
+                &resumed.owner,
+                REPLY_RESERVATION + growth - 1,
+            );
+            let response = resumed.store.request(
+                &resume_request(&token),
+                &padded(&resumed.owner),
+                &Cancellation::default(),
+            );
+            assert_eq!(
+                response["status"].as_str(),
+                Some("retained_limit"),
+                "{response:?}"
+            );
+        }
+        assert_eq!(
+            resumed.store.lock_state().waiters[&token].context,
+            resumed.owner,
+            "the resume replaced the context without admitting it"
+        );
+        resumed.store.assert_conserved();
+    }
+}
+
+fn projection_fixture(source: &LedgerSource, background: bool, claimant: &str) -> Fixture {
+    let store = cursor_store();
+    let owner = context_for(claimant, background);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    Fixture {
+        store,
+        request: json!({"schema":SCHEMA,"id":"ledger-prompts","operation":"query","view":{"handle":handle,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"query":{"kind":"prompts","selection":"first","count":10},"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        owner,
+        pins: vec![snapshot],
+    }
+}
+
+#[test]
+fn projection_cursor_charges_its_identity_strings() {
+    let source = LedgerSource::new(&lines(0..3));
+    let long = "p".repeat(4096);
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for background in [false, true] {
+        let exact_for = |claimant: &str| {
+            exact_headroom(
+                &|| projection_fixture(&source, background, claimant),
+                &attempt,
+            )
+        };
+        assert_eq!(
+            exact_for(long.as_str()) - exact_for("p"),
+            2 * (long.len() - 1),
+            "the projection cursor omits its claimant"
+        );
+        for claimant in ["p", long.as_str()] {
+            let build = || projection_fixture(&source, background, claimant);
+            let exact = exact_for(claimant);
+            refused_at_site(
+                "projection park",
+                &build,
+                &attempt,
+                REPLY_RESERVATION,
+                exact,
+            );
+            let fitted = build();
+            let capacity = fitted.store.lock_state().projections.capacity_bytes();
+            let before = delivered(&fitted.store);
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+            assert!(attempt(&fitted));
+            fitted.store.assert_conserved();
+            let walked = {
+                let state = fitted.store.lock_state();
+                let (token, cursor) = state.projections.iter().next().expect("parked projection");
+                NativeStore::audit_projection_bytes(token, cursor)
+                    + state.projections.capacity_bytes()
+                    - capacity
+            };
+            assert_eq!(
+                exact,
+                REPLY_RESERVATION + walked + delivered(&fitted.store) - before,
+                "the projection park is not admitted at its cursor, table growth, and delivery"
+            );
+        }
+    }
+}
+
+fn discovery_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+    let mut owner = context_for("discover", background);
+    owner.insert("padding", json!("p".repeat(padding)));
+    Fixture {
+        store: cursor_store(),
+        owner,
+        request: json!({"schema":SCHEMA,"id":"ledger-discover","operation":"discover","roots":scenario.roots(),"checkpoint":null,"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        pins: Vec::new(),
+    }
+}
+
+#[test]
+fn discovery_cursor_and_checkpoint_charge_their_context_request_and_tables() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for background in [false, true] {
+        let build = |padding: usize| discovery_fixture(&scenario, background, padding);
+        let small = exact_headroom(&|| build(0), &attempt);
+        let large = exact_headroom(&|| build(4096), &attempt);
+        assert_eq!(
+            large - small,
+            4096,
+            "the discovery park admission omits its context"
+        );
+        for (padding, exact) in [(0, small), (4096, large)] {
+            refused_at_site(
+                "discovery park",
+                &|| build(padding),
+                &attempt,
+                REPLY_RESERVATION,
+                exact,
+            );
+            let fitted = build(padding);
+            let capacity = fitted.store.lock_state().discoveries.capacity_bytes();
+            let before = delivered(&fitted.store);
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+            assert!(attempt(&fitted));
+            fitted.store.assert_conserved();
+            let walked = {
+                let state = fitted.store.lock_state();
+                let (token, scan) = state.discoveries.iter().next().expect("parked discovery");
+                assert!(
+                    scan.inventory.capacity() > 0 && scan.seen.capacity() > 0,
+                    "the discovery has no nested tables"
+                );
+                NativeStore::audit_discovery_bytes(token, scan) + state.discoveries.capacity_bytes()
+                    - capacity
+            };
+            assert_eq!(
+                exact,
+                REPLY_RESERVATION + walked + delivered(&fitted.store) - before
+            );
+        }
+        let completed = build(4096);
+        let settled_reply = drive(&completed.store, submit(&completed), &completed.owner);
+        assert_eq!(
+            settled_reply["status"].as_str(),
+            Some("ok"),
+            "{settled_reply:?}"
+        );
+        let state = completed.store.lock_state();
+        let (token, checkpoint) = state
+            .checkpoints
+            .iter()
+            .next()
+            .expect("discovery checkpoint");
+        assert_eq!(checkpoint.inventory.len(), 10);
+        assert_eq!(
+            state.checkpoints.charged(),
+            token.capacity()
+                + checkpoint.claimant.capacity()
+                + value_bytes(&checkpoint.roots)
+                + checkpoint.inventory.capacity() * size_of::<(String, Value)>()
+                + checkpoint
+                    .inventory
+                    .iter()
+                    .map(|(path, value)| path.capacity() + value_bytes(value))
+                    .sum::<usize>(),
+            "the checkpoint charge is not its claimant, roots, inventory tier, and measured entries"
+        );
+    }
+}
+
+#[test]
+fn graph_cursor_charges_its_context_and_nested_buffers() {
+    let source = LedgerSource::new(&line("root"));
+    let children = source.directory.join("s/subagents");
+    std::fs::create_dir_all(&children).unwrap();
+    for index in 0..9 {
+        std::fs::write(
+            children.join(format!("agent-{index}.jsonl")),
+            line(&format!("agent-{index}")),
+        )
+        .unwrap();
+    }
+    for background in [false, true] {
+        let parked_graph = |padding: usize| {
+            let store = cursor_store();
+            let mut owner = context_for("graph", background);
+            owner.insert("padding", json!("p".repeat(padding)));
+            let (root, _snapshot) = acquired(&store, &source.path, &owner);
+            let before = settled(&store)[TOTAL];
+            let response = store.request(
+                &json!({"schema":SCHEMA,"id":"ledger-graph","operation":"query","view":{"handle":root,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"query":missing_tool(),"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+                &owner,
+                &Cancellation::default(),
+            );
+            assert!(parked(&response), "{response:?}");
+            store.assert_conserved();
+            let holders = {
+                let state = store.lock_state();
+                assert_eq!(state.graphs.len(), 1);
+                let (_, graph) = state.graphs.iter().next().unwrap();
+                assert!(graph.seen.capacity() > 0 && graph.nodes.capacity() > 0);
+                1 + state.waiters.len()
+            };
+            (settled(&store)[TOTAL] - before, holders)
+        };
+        let (small, holders) = parked_graph(0);
+        let (large, large_holders) = parked_graph(4096);
+        assert_eq!(holders, large_holders);
+        assert_eq!(
+            large - small,
+            4096 * holders,
+            "a parked graph or its source waiter omits the context"
+        );
+    }
+}
+
+fn released_seed_label(background: bool) -> (LedgerSource, NativeStore, Value, String, LabelSlot) {
+    let source = LedgerSource::new(&lines(0..4));
+    let store = fast_store();
+    let owner = context_for("seeded-labels", background);
+    recording_classifier(&store, "overlap");
+    classified(&store, &source.path, "overlap", &owner);
+    source.append(&lines(4..300));
+    let (native, _) = acquired(&store, &source.path, &owner);
+    let page = store
+        .prepare_classifier(
+            &native,
+            &json!({"id":"overlap","version":"1"}),
+            &owner,
+            &Cancellation::default(),
+            label_bounds(),
+        )
+        .unwrap();
+    assert_eq!(
+        page["event_start"].as_u64(),
+        Some(4),
+        "the label preparation was not seeded: {page:?}"
+    );
+    let token = page["cursor"].as_str().unwrap().to_owned();
+    let slot = {
+        let mut state = store.lock_state();
+        let lineage = state
+            .carried_classifications
+            .iter()
+            .next()
+            .map(|(lineage, _)| lineage.clone())
+            .expect("carried classification");
+        state.remove_carried(&lineage);
+        state.remove_label(&token).expect("published label slot")
+    };
+    (source, store, owner, token, slot)
+}
+
+#[test]
+fn label_republication_reserves_seed_anchors_its_carried_record_released() {
+    for background in [false, true] {
+        let publish = |bytes: usize| {
+            let (_source, store, owner, token, slot) = released_seed_label(background);
+            let before = (ledger(&store), audited(&store), bookkeeping(&store));
+            let mut reservation = store.reserve_projection(&owner, bytes).unwrap();
+            let published = match store.publish_label(token.clone(), slot, &owner, &mut reservation)
+            {
+                Ok(()) => true,
+                Err(error) if error.status == Status::RetainedLimit => false,
+                Err(error) => panic!("label publication failed outside admission: {error:?}"),
+            };
+            drop(reservation);
+            store.assert_conserved();
+            if !published {
+                assert!(
+                    !store.lock_state().labels.contains_key(&token),
+                    "a refused label slot was published"
+                );
+                assert_eq!(
+                    (ledger(&store), audited(&store), bookkeeping(&store)),
+                    before,
+                    "the refused publication leaked state"
+                );
+            }
+            (published, store, token)
+        };
+        let (fitted, store, token) = publish(SEARCH_LIMIT);
+        assert!(fitted);
+        let exact = {
+            let state = store.lock_state();
+            let slot = &state.labels[&token];
+            let seed = slot.preparation.seed().expect("seeded label slot");
+            for (id, _) in seed.activity.accounted_allocations() {
+                assert!(
+                    state
+                        .generations
+                        .values()
+                        .any(|record| { record.indexes.iter().any(|(owned, _)| *owned == id) }),
+                    "the seed index is not owned by its generation"
+                );
+            }
+            NativeStore::audit_label_bytes(&token, slot)
+                + size_of::<CarriedClassification>()
+                + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>()
+        };
+        assert!(!publish(0).0);
+        assert!(
+            !publish(exact - 1).0,
+            "the seed payload released by the carried record was not reserved"
+        );
+        assert!(publish(exact).0, "the exact reservation was refused");
     }
 }

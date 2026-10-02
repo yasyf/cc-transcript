@@ -258,6 +258,69 @@ impl LabelPreparation {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) fn audited_bytes(&self) -> usize {
+        let Self {
+            source: _,
+            binding,
+            limits: _,
+            max_stage_bytes: _,
+            activity,
+            seed: _,
+            carried,
+            committed,
+            pending,
+            usage: _,
+            failed: _,
+        } = self;
+        let LabelBinding {
+            owner_epoch,
+            claimant,
+            physical_generation,
+            classifier_id,
+            classifier_version,
+            registry_generation,
+            execution_id,
+        } = binding;
+        let mut seen = HashSet::new();
+        size_of::<Self>()
+            + [
+                owner_epoch,
+                claimant,
+                physical_generation,
+                classifier_id,
+                classifier_version,
+                registry_generation,
+                execution_id,
+            ]
+            .iter()
+            .map(|field| field.capacity())
+            .sum::<usize>()
+            + carried.capacity() * size_of::<usize>()
+            + activity
+                .accounted_allocations()
+                .into_iter()
+                .chain(
+                    committed
+                        .iter()
+                        .flat_map(ActivityIndex::accounted_allocations),
+                )
+                .filter(|(id, _)| !carried.contains(id) && seen.insert(*id))
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>()
+            + pending.as_ref().map_or(
+                0,
+                |PendingLabels {
+                     token,
+                     span: _,
+                     user_positions,
+                     input_bytes: _,
+                 }| {
+                    token.capacity() + user_positions.capacity() * size_of::<usize>()
+                },
+            )
+    }
+
     pub fn next_page(
         &mut self,
         page_token: String,
