@@ -13,9 +13,11 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
+#[cfg(test)]
+use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{
     charged_bytes, Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered,
-    Reserved, RetainedLedger, Table, TicketKey, Work,
+    RetainedLedger, Table, TicketKey, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
