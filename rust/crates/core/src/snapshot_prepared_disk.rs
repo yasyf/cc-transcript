@@ -21,7 +21,7 @@ use crate::snapshot_ledger::{Table, Work};
 use crate::snapshot_prepared::PreparedFacts;
 
 const VERSION: &[u8; 8] = b"CTPF0001";
-const HEADER_BYTES: usize = 80;
+pub(crate) const HEADER_BYTES: usize = 80;
 const OWNER_LOCK: &CStr = c"owner.lock";
 const STAGING: &CStr = c"staging";
 const MAX_SCANNED_OWNERS: usize = 32;

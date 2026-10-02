@@ -96,6 +96,9 @@ impl NativeStore {
         for build in state.prepared_builds.values() {
             add(&build.root_facts);
         }
+        for owner in &state.retained_owners {
+            add(&owner.upgrade().expect("retained facts are live"));
+        }
         bytes
     }
 
@@ -136,7 +139,7 @@ impl NativeStore {
         classifier: &Value,
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
-    ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
+    ) -> Result<RetainedFacts<'_>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
         let authority = &context["authority"];
@@ -144,7 +147,7 @@ impl NativeStore {
         if let Some(cached) =
             state.touch_prepared_facts(stamp, registry_generation, admission, authority, classifier)
         {
-            return Ok(cached);
+            return Ok(self.retain_cached_facts(&mut state, cached));
         }
         state.remove_prepared_facts(&stamp.identity);
         let accounted = facts.accounted_bytes();
@@ -182,7 +185,7 @@ impl NativeStore {
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
         state.insert_prepared_facts(stamp.identity, cached);
-        Ok(facts)
+        Ok(self.retain_cached_facts(&mut state, facts))
     }
 
     fn admit_prepared_disk_growth(&self, context: &Value, growth: usize) -> bool {
@@ -201,23 +204,18 @@ impl NativeStore {
         context: &Value,
         remaining: &WorkLimits,
         cancel: &Cancellation,
-    ) -> Result<
-        (
-            Arc<crate::snapshot_prepared::PreparedFacts>,
-            ProjectionReservation<'_>,
-        ),
-        SnapshotError,
-    > {
+    ) -> Result<(RetainedFacts<'_>, ProjectionReservation<'_>), SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
-        if let Some(facts) = self.lock_state().touch_prepared_facts(
+        if let Some(retained) = self.touch_retained_facts(
             root.stamp,
             registry_generation,
             context["admission"].as_str().unwrap_or(""),
             &context["authority"],
             classifier,
         ) {
+            self.after_facts_returned();
             return Ok((
-                facts,
+                retained,
                 ProjectionReservation {
                     store: self,
                     bytes: 0,
@@ -247,10 +245,11 @@ impl NativeStore {
                         context,
                         &mut reservation,
                     ) {
-                        Ok(cached) => Ok((cached, reservation)),
-                        Err(error) if error.status == Status::RetainedLimit => {
-                            Ok((facts, reservation))
-                        }
+                        Ok(retained) => Ok((retained, reservation)),
+                        Err(error) if error.status == Status::RetainedLimit => Ok((
+                            self.retain_facts(&mut reservation, context, facts)?,
+                            reservation,
+                        )),
                         Err(error) => Err(error),
                     };
                 }
@@ -281,8 +280,11 @@ impl NativeStore {
             context,
             &mut reservation,
         ) {
-            Ok(cached) => Ok((cached, reservation)),
-            Err(error) if error.status == Status::RetainedLimit => Ok((facts, reservation)),
+            Ok(retained) => Ok((retained, reservation)),
+            Err(error) if error.status == Status::RetainedLimit => Ok((
+                self.retain_facts(&mut reservation, context, facts)?,
+                reservation,
+            )),
             Err(error) => Err(error),
         }
     }
@@ -319,7 +321,7 @@ impl NativeStore {
             }
         }
         let registry_generation = str_field(context, "registry_generation")?;
-        if let Some(facts) = self.lock_state().touch_prepared_facts(
+        if let Some(retained) = self.touch_retained_facts(
             stamp,
             registry_generation,
             context["admission"].as_str().unwrap_or(""),
@@ -331,11 +333,7 @@ impl NativeStore {
                 stamp,
                 PreparedSourceOutcome::Ready {
                     stamp,
-                    facts,
-                    reservation: ProjectionReservation {
-                        store: self,
-                        bytes: 0,
-                    },
+                    held: HeldFacts::Retained(retained),
                     cached: true,
                 },
             ));
@@ -355,23 +353,24 @@ impl NativeStore {
                 crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
                     usage[7] += 1;
                     let facts = Arc::new(facts);
-                    let facts = match self.cache_prepared_facts(
+                    let held = match self.cache_prepared_facts(
                         stamp,
                         Arc::clone(&facts),
                         &json!({"id":"native","version":"1"}),
                         context,
                         &mut reservation,
                     ) {
-                        Ok(cached) => cached,
-                        Err(error) if error.status == Status::RetainedLimit => facts,
+                        Ok(retained) => HeldFacts::Retained(retained),
+                        Err(error) if error.status == Status::RetainedLimit => {
+                            HeldFacts::Reserved { facts, reservation }
+                        }
                         Err(error) => return Err(error),
                     };
                     return Ok((
                         stamp,
                         PreparedSourceOutcome::Ready {
                             stamp,
-                            facts,
-                            reservation,
+                            held,
                             cached: false,
                         },
                     ));
@@ -487,7 +486,7 @@ impl NativeStore {
                     &fact_limits,
                     cancel,
                 )
-                .map(|(facts, _, _)| (facts, reservation))
+                .map(|(facts, _, _)| (reservation, facts))
             });
         {
             let mut state = self.lock_state();
@@ -514,7 +513,8 @@ impl NativeStore {
                 state.remove_latest(&stamp.identity);
             }
         }
-        let (facts, mut reservation) = prepared?;
+        let (mut reservation, facts) = prepared?;
+        let facts = Arc::new(facts);
         #[cfg(test)]
         {
             let hook = self
@@ -523,7 +523,7 @@ impl NativeStore {
                 .expect("built facts hook")
                 .take();
             if let Some(hook) = hook {
-                hook();
+                hook(&facts);
             }
         }
         drop(snapshot);
@@ -538,16 +538,17 @@ impl NativeStore {
         self.prepared_disk.insert(&key, &facts, |growth| {
             self.admit_prepared_disk_growth(context, growth)
         })?;
-        let facts = Arc::new(facts);
-        let facts = match self.cache_prepared_facts(
+        let held = match self.cache_prepared_facts(
             stamp,
             Arc::clone(&facts),
             &classifier,
             context,
             &mut reservation,
         ) {
-            Ok(cached) => cached,
-            Err(error) if error.status == Status::RetainedLimit => facts,
+            Ok(retained) => HeldFacts::Retained(retained),
+            Err(error) if error.status == Status::RetainedLimit => {
+                HeldFacts::Reserved { facts, reservation }
+            }
             Err(error) => return Err(error),
         };
         self.lock_state()
@@ -555,8 +556,7 @@ impl NativeStore {
             .remove(&stamp.identity);
         Ok(PreparedSourceOutcome::Ready {
             stamp,
-            facts,
-            reservation,
+            held,
             cached: false,
         })
     }
@@ -716,9 +716,8 @@ impl NativeStore {
                     "registered membership changed or is incomplete",
                 ));
             }
-            let (root_facts, mut reservation) =
+            let (retained, mut reservation) =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
-            let retained = self.retain_facts(&mut reservation, context, root_facts)?;
             let shares_root = membership
                 .members
                 .iter()
@@ -796,9 +795,8 @@ impl NativeStore {
             };
             return self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation);
         }
-        let (root_facts, mut reservation) =
+        let (retained, mut reservation) =
             self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
-        let retained = self.retain_facts(&mut reservation, context, root_facts)?;
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         self.extend_projection_reservation(
             &mut reservation,
@@ -1837,9 +1835,8 @@ impl NativeStore {
             };
             let PreparedSourceOutcome::Ready {
                 stamp,
-                ref facts,
+                ref held,
                 cached,
-                ..
             } = outcome
             else {
                 return Err(invalid("prepared source did not finish"));
@@ -1851,6 +1848,7 @@ impl NativeStore {
                     "prepared source revision changed",
                 ));
             }
+            let facts = held.facts();
             if inputs {
                 cursor
                     .input_records

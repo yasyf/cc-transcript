@@ -694,11 +694,27 @@ struct CachedPreparedFacts {
 enum PreparedSourceOutcome<'a> {
     Ready {
         stamp: SourceStamp,
-        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
-        reservation: ProjectionReservation<'a>,
+        held: HeldFacts<'a>,
         cached: bool,
     },
     Pending(String),
+}
+
+enum HeldFacts<'a> {
+    Retained(RetainedFacts<'a>),
+    Reserved {
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+        reservation: ProjectionReservation<'a>,
+    },
+}
+
+impl HeldFacts<'_> {
+    fn facts(&self) -> &Arc<crate::snapshot_prepared::PreparedFacts> {
+        match self {
+            Self::Retained(retained) => retained.facts(),
+            Self::Reserved { facts, .. } => facts,
+        }
+    }
 }
 
 enum QueryPage {
@@ -1589,6 +1605,8 @@ pub(crate) struct StoreState {
     ledger: RetainedLedger,
     #[cfg(test)]
     audits: Arc<AtomicUsize>,
+    #[cfg(test)]
+    retained_owners: Vec<Weak<crate::snapshot_prepared::PreparedFacts>>,
 }
 
 const TOUCH_TTL_MS: u64 = 30 * 60_000;
@@ -1648,6 +1666,8 @@ impl StoreState {
             ledger: RetainedLedger::new(work),
             #[cfg(test)]
             audits: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            retained_owners: Vec::new(),
         }
     }
 
@@ -2269,6 +2289,19 @@ impl StoreState {
         Some(Arc::clone(&cached.facts))
     }
 
+    fn retained_facts<'a>(
+        &mut self,
+        store: &'a NativeStore,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    ) -> RetainedFacts<'a> {
+        #[cfg(test)]
+        self.retained_owners.push(Arc::downgrade(&facts));
+        RetainedFacts {
+            store,
+            facts: Some(facts),
+        }
+    }
+
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
         self.prepared_graphs.reserve_for(&graph_id);
         let prepared = graph.lock().expect("prepared graph");
@@ -2500,7 +2533,8 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) fact_lookups: AtomicUsize,
     #[cfg(test)]
-    pub(crate) built_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pub(crate) built_facts_hook:
+        Mutex<Option<Arc<dyn Fn(&Arc<crate::snapshot_prepared::PreparedFacts>) + Send + Sync>>>,
     #[cfg(test)]
     pub(crate) returned_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -2552,6 +2586,15 @@ impl Drop for RetainedFacts<'_> {
         let mut state = self.store.lock_state();
         let facts = self.facts.take().expect("retained facts are released once");
         state.ledger.shared.release(facts_key(&facts));
+        #[cfg(test)]
+        {
+            let registered = state
+                .retained_owners
+                .iter()
+                .position(|owner| owner.as_ptr() == Arc::as_ptr(&facts))
+                .expect("retained facts are registered");
+            state.retained_owners.swap_remove(registered);
+        }
         drop(facts);
     }
 }
@@ -3059,10 +3102,35 @@ impl NativeStore {
         state.ledger.shared.acquire(anchor);
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
-        Ok(RetainedFacts {
-            store: self,
-            facts: Some(facts),
-        })
+        Ok(state.retained_facts(self, facts))
+    }
+
+    fn retain_cached_facts(
+        &self,
+        state: &mut StoreState,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    ) -> RetainedFacts<'_> {
+        state.ledger.shared.acquire(facts_anchor(&facts));
+        state.retained_facts(self, facts)
+    }
+
+    fn touch_retained_facts(
+        &self,
+        stamp: SourceStamp,
+        registry_generation: &str,
+        admission: &str,
+        authority: &Value,
+        classifier: &Value,
+    ) -> Option<RetainedFacts<'_>> {
+        let mut state = self.lock_state();
+        let facts = state.touch_prepared_facts(
+            stamp,
+            registry_generation,
+            admission,
+            authority,
+            classifier,
+        )?;
+        Some(self.retain_cached_facts(&mut state, facts))
     }
 
     fn grow_projection_capacity(
@@ -5821,15 +5889,13 @@ impl NativeStore {
                                 store: self,
                                 bytes: held,
                             },
-                            RetainedFacts {
-                                store: self,
-                                facts: Some(Arc::clone(&build.root_facts)),
-                            },
+                            state.retained_facts(self, Arc::clone(&build.root_facts)),
                             build,
                         )
                     })
                 };
                 if let Some((mut reservation, _retained, mut build)) = prepared_build {
+                    self.after_facts_returned();
                     if build.context["authority"] != context["authority"]
                         || build.context["admission"] != context["admission"]
                         || build.context["registry_generation"] != context["registry_generation"]

@@ -140,6 +140,13 @@ struct LoadResidue {
     pinned: usize,
 }
 
+struct Replacement {
+    response: Value,
+    held: Arc<PreparedFacts>,
+    fresh: Arc<PreparedFacts>,
+    counted: usize,
+}
+
 fn entry(id: &str, session: &str) -> String {
     format!(
         "{}\n",
@@ -4589,8 +4596,7 @@ fn query_graph_refuses_a_source_disk_hit_before_decoding() {
     }
 }
 
-fn finish_fixture(path: &Path, background: bool) -> Fixture {
-    let store = prepared_store();
+fn finish_fixture(store: NativeStore, path: &Path, background: bool) -> Fixture {
     let owner = context_for("finish", background);
     let mut request = acquire(path);
     let acquired = drive(
@@ -4979,7 +4985,7 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
     let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
     let site = "finish_prepared_source barrier";
     for background in [false, true] {
-        let control = finish_fixture(&scenario.sidechains[0], background);
+        let control = finish_fixture(prepared_store(), &scenario.sidechains[0], background);
         let leased = ledger(&control.store)[TOTAL];
         control
             .store
@@ -4988,7 +4994,7 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
             .remove(&lease_id(&control));
         let lease_bytes = leased - ledger(&control.store)[TOTAL];
         assert!(lease_bytes > 0, "{site}: the source lease is not charged");
-        let fixture = finish_fixture(&scenario.sidechains[0], background);
+        let fixture = finish_fixture(prepared_store(), &scenario.sidechains[0], background);
         let cap = cap_for(&fixture.owner);
         let predicted = facts_bound_walk(&fixture.pins[0]);
         let occupied = facts_walk(&built_facts(&fixture.pins[0], &json!([])));
@@ -4999,14 +5005,15 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
         let (paused_tx, paused_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel::<()>();
         let resume_rx = Mutex::new(resume_rx);
-        *fixture.store.built_facts_hook.lock().unwrap() = Some(Arc::new(move || {
-            paused_tx.send(()).unwrap();
-            resume_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(DROP_TIMEOUT)
-                .expect("the barrier was never released");
-        }));
+        *fixture.store.built_facts_hook.lock().unwrap() =
+            Some(Arc::new(move |_: &Arc<PreparedFacts>| {
+                paused_tx.send(()).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(DROP_TIMEOUT)
+                    .expect("the barrier was never released");
+            }));
         let filler = fill_to(&fixture.store, &fixture.owner, predicted);
         std::thread::scope(|scope| {
             let finishing = scope.spawn(|| finish_source(&fixture));
@@ -5049,6 +5056,67 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
         fixture.store.assert_conserved();
         assert!(audited(&fixture.store)[TOTAL] <= cap);
         drop(filler);
+        assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+        fixture.store.assert_conserved();
+    }
+}
+
+fn disk_refusing_store() -> NativeStore {
+    store_with(
+        4096,
+        2048,
+        &[(
+            "max_prepared_disk_bytes",
+            crate::snapshot_prepared_disk::HEADER_BYTES + 1,
+        )],
+    )
+}
+
+#[test]
+fn finished_source_facts_are_freed_before_their_reservation_when_the_disk_write_fails() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let site = "finish_prepared_source disk write failure";
+    for background in [false, true] {
+        let fixture = finish_fixture(disk_refusing_store(), &scenario.sidechains[0], background);
+        let built: Arc<Mutex<Option<Weak<PreparedFacts>>>> = Arc::new(Mutex::new(None));
+        *fixture.store.built_facts_hook.lock().unwrap() = Some(Arc::new({
+            let built = Arc::clone(&built);
+            move |facts: &Arc<PreparedFacts>| {
+                *built.lock().unwrap() = Some(Arc::downgrade(facts));
+            }
+        }));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(AtomicUsize::new(0));
+        *fixture.store.release_hook.lock().unwrap() = Some(Arc::new({
+            let (built, releases, live) =
+                (Arc::clone(&built), Arc::clone(&releases), Arc::clone(&live));
+            move |_: usize| {
+                if let Some(facts) = built.lock().unwrap().as_ref() {
+                    releases.fetch_add(1, Ordering::Relaxed);
+                    live.fetch_add(usize::from(facts.upgrade().is_some()), Ordering::Relaxed);
+                }
+            }
+        }));
+        let outcome = finish_source(&fixture);
+        *fixture.store.release_hook.lock().unwrap() = None;
+        let error = outcome
+            .err()
+            .expect("the capacity-exhausted disk write landed");
+        assert_eq!(error.status, Status::Incomplete, "{site}: {error:?}");
+        assert!(
+            built.lock().unwrap().is_some(),
+            "{site}: the facts were never built"
+        );
+        assert_eq!(
+            releases.load(Ordering::Relaxed),
+            1,
+            "{site}: the facts reservation was not released exactly once"
+        );
+        assert_eq!(
+            live.load(Ordering::Relaxed),
+            0,
+            "{site}: the reservation was released while the facts were live"
+        );
         assert_eq!(fixture.store.lock_state().transient_bytes, 0);
         fixture.store.assert_conserved();
     }
@@ -5100,13 +5168,7 @@ fn uncached_source_facts_fixture(scenario: &Scenario, background: bool) -> Fixtu
     }
 }
 
-fn held_facts_barrier(
-    site: &str,
-    fixture: &Fixture,
-    filler: ProjectionReservation<'_>,
-    occupied: usize,
-) -> Value {
-    let cap = cap_for(&fixture.owner);
+fn returned_facts_barrier<T>(fixture: &Fixture, during: impl FnOnce() -> T) -> (Value, T) {
     let (paused_tx, paused_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel::<()>();
     let resume_rx = Mutex::new(resume_rx);
@@ -5121,34 +5183,44 @@ fn held_facts_barrier(
     std::thread::scope(|scope| {
         let holding = scope.spawn(|| submit(fixture));
         let paused = paused_rx.recv_timeout(DROP_TIMEOUT);
-        let observed = paused.is_ok().then(|| {
-            let held = ledger(&fixture.store)[TOTAL];
-            let audit = audited(&fixture.store)[TOTAL];
-            let refused = fixture
-                .store
-                .reserve_projection(&fixture.owner, occupied)
-                .err();
-            let after = ledger(&fixture.store)[TOTAL];
-            (held, audit, refused, after)
-        });
-        drop(filler);
+        let observed = paused.is_ok().then(during);
         resume_tx.send(()).unwrap();
         let response = holding.join().unwrap();
         paused.expect("the facts were never returned");
-        let (held, audit, refused, after) = observed.unwrap();
-        assert_eq!(
-            held, cap,
-            "{site}: the reservation is not held while the returned facts are live"
-        );
-        assert!(
-            audit <= cap,
-            "{site}: the audit exceeded the cap while the facts were held"
-        );
-        let refused = refused.expect("the headroom the returned facts occupy was admitted twice");
-        assert_eq!(refused.status, Status::RetainedLimit, "{site}: {refused:?}");
-        assert_eq!(after, cap, "{site}: the refused admission moved the ledger");
-        response
+        (response, observed.unwrap())
     })
+}
+
+fn held_facts_barrier(
+    site: &str,
+    fixture: &Fixture,
+    filler: ProjectionReservation<'_>,
+    occupied: usize,
+) -> Value {
+    let cap = cap_for(&fixture.owner);
+    let (response, (held, audit, refused, after)) = returned_facts_barrier(fixture, || {
+        let held = ledger(&fixture.store)[TOTAL];
+        let audit = audited(&fixture.store)[TOTAL];
+        let refused = fixture
+            .store
+            .reserve_projection(&fixture.owner, occupied)
+            .err();
+        let after = ledger(&fixture.store)[TOTAL];
+        drop(filler);
+        (held, audit, refused, after)
+    });
+    assert_eq!(
+        held, cap,
+        "{site}: the reservation is not held while the returned facts are live"
+    );
+    assert!(
+        audit <= cap,
+        "{site}: the audit exceeded the cap while the facts were held"
+    );
+    let refused = refused.expect("the headroom the returned facts occupy was admitted twice");
+    assert_eq!(refused.status, Status::RetainedLimit, "{site}: {refused:?}");
+    assert_eq!(after, cap, "{site}: the refused admission moved the ledger");
+    response
 }
 
 #[test]
@@ -5712,7 +5784,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
         let owner = context_for("facts-owner", background);
         let other = restricted_context("facts-owner", background, &scenario.root.directory, 0);
         let (_, root) = acquired(&store, &scenario.root.path, &owner);
-        let (facts, mut reservation) = store
+        let (retained, reservation) = store
             .prepared_root_facts(
                 &root,
                 &classifier,
@@ -5721,8 +5793,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 &Cancellation::default(),
             )
             .unwrap();
-        let bytes = facts.accounted_bytes();
-        let retained = store.retain_facts(&mut reservation, &owner, facts).unwrap();
+        let bytes = facts_walk(retained.facts());
         assert_eq!(store.lock_state().ledger.shared.facts(), bytes);
         let (replacement, replacement_reservation) = store
             .prepared_root_facts(
@@ -5737,19 +5808,20 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
             let state = store.lock_state();
             assert!(Arc::ptr_eq(
                 &state.prepared_facts[&root.stamp.identity].facts,
-                &replacement
+                replacement.facts()
             ));
-            assert!(!Arc::ptr_eq(retained.facts(), &replacement));
+            assert!(!Arc::ptr_eq(retained.facts(), replacement.facts()));
             assert_eq!(
                 state.ledger.shared.facts(),
-                bytes + replacement.accounted_bytes(),
+                bytes + facts_walk(replacement.facts()),
                 "the replaced root facts lost their in-flight owner"
             );
         }
+        store.assert_conserved();
         drop(retained);
         assert_eq!(
             store.lock_state().ledger.shared.facts(),
-            replacement.accounted_bytes()
+            facts_walk(replacement.facts())
         );
         drop(replacement_reservation);
         drop(reservation);
@@ -5787,13 +5859,217 @@ fn resumed_prepared_build_keeps_its_root_facts_counted_after_a_cache_replacement
             "the other authority did not replace the cached root facts"
         );
         let counted = fixture.store.lock_state().ledger.shared.facts();
-        assert_eq!(counted, parked.accounted_bytes() + cached.accounted_bytes());
-        let resumed = drive(&fixture.store, submit(&fixture), &fixture.owner);
+        assert_eq!(counted, facts_walk(&parked) + facts_walk(&cached));
+        let (resumed, (ledgered, audit, extracted)) = returned_facts_barrier(&fixture, || {
+            (
+                ledger(&fixture.store)[TOTAL],
+                audited(&fixture.store)[TOTAL],
+                fixture.store.lock_state().ledger.shared.facts(),
+            )
+        });
+        assert_eq!(
+            audit, ledgered,
+            "the audit lost the extracted build's root facts"
+        );
+        assert_eq!(
+            extracted, counted,
+            "the extracted build dropped its root facts' owner"
+        );
+        let resumed = drive(&fixture.store, resumed, &fixture.owner);
         assert_eq!(resumed["status"].as_str(), Some("ok"), "{resumed:?}");
         assert_eq!(
             fixture.store.lock_state().ledger.shared.facts(),
             counted,
             "the resumed build dropped or double counted its root facts"
+        );
+        fixture.store.assert_conserved();
+    }
+}
+
+fn cached_root_facts_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("cached-root-facts", background);
+    let (root, snapshot) = acquired(&store, &source.path, &owner);
+    let request = prepare_request(&root, &[], &[], &[]);
+    let primed = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    assert_eq!(primed["status"].as_str(), Some("ok"), "{primed:?}");
+    assert!(
+        store
+            .lock_state()
+            .prepared_facts
+            .contains_key(&snapshot.stamp.identity),
+        "the root facts were not cached"
+    );
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: vec![snapshot],
+    }
+}
+
+fn cached_source_facts_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("cached-source-facts", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let (_, sidechain) = acquired(&store, &scenario.sidechains[0], &owner);
+    let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
+    let request = graph_query(&graph, missing_tool(), json!([]));
+    let primed = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    assert_eq!(primed["status"].as_str(), Some("ok"), "{primed:?}");
+    assert!(
+        store
+            .lock_state()
+            .prepared_facts
+            .contains_key(&sidechain.stamp.identity),
+        "the sidechain facts were not cached"
+    );
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: vec![root_snapshot, sidechain],
+    }
+}
+
+fn cache_replacement_barrier(
+    site: &str,
+    fixture: &Fixture,
+    identity: SourceIdentity,
+    replace: impl FnOnce() -> Value,
+) -> Replacement {
+    let cached = || Arc::clone(&fixture.store.lock_state().prepared_facts[&identity].facts);
+    let (response, (held, before, replaced, fresh, counted, ledgered, audit)) =
+        returned_facts_barrier(fixture, || {
+            let held = cached();
+            let before = fixture.store.lock_state().ledger.shared.facts();
+            let replaced = replace();
+            (
+                held,
+                before,
+                replaced,
+                cached(),
+                fixture.store.lock_state().ledger.shared.facts(),
+                ledger(&fixture.store)[TOTAL],
+                audited(&fixture.store)[TOTAL],
+            )
+        });
+    assert_eq!(
+        replaced["status"].as_str(),
+        Some("ok"),
+        "{site}: {replaced:?}"
+    );
+    assert!(
+        !Arc::ptr_eq(&held, &fresh),
+        "{site}: the other authority did not replace the cached facts"
+    );
+    assert_eq!(
+        counted,
+        before + facts_walk(&fresh),
+        "{site}: the replaced facts lost their in-flight owner"
+    );
+    assert_eq!(audit, ledgered, "{site}: the audit lost the returned facts");
+    Replacement {
+        response,
+        held,
+        fresh,
+        counted,
+    }
+}
+
+#[test]
+fn cached_root_facts_stay_counted_across_a_cache_replacement() {
+    let source = LedgerSource::new(&lines(0..4));
+    let site = "prepare_graph cache hit replacement barrier";
+    for background in [false, true] {
+        let fixture = cached_root_facts_fixture(&source, background);
+        let other = restricted_context("cached-root-facts", background, &source.directory, 0);
+        let replacement =
+            cache_replacement_barrier(site, &fixture, fixture.pins[0].stamp.identity, || {
+                let (root, _pin) = acquired(&fixture.store, &source.path, &other);
+                drive(
+                    &fixture.store,
+                    fixture.store.request(
+                        &prepare_request(&root, &[], &[], &[]),
+                        &other,
+                        &Cancellation::default(),
+                    ),
+                    &other,
+                )
+            });
+        assert_eq!(
+            replacement.response["status"].as_str(),
+            Some("ok"),
+            "{site}: {:?}",
+            replacement.response
+        );
+        assert_eq!(
+            replacement.response["data"]["kind"].as_str(),
+            Some("prepared_graph"),
+            "{site}: {:?}",
+            replacement.response
+        );
+        assert_eq!(
+            fixture.store.lock_state().ledger.shared.facts(),
+            facts_walk(&replacement.held) + facts_walk(&replacement.fresh),
+            "{site}: the published graph does not own the facts it was built from"
+        );
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn cached_source_facts_stay_counted_across_a_cache_replacement() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let site = "prepared_query_page cache hit replacement barrier";
+    for background in [false, true] {
+        let fixture = cached_source_facts_fixture(&scenario, background);
+        let other = restricted_context(
+            "cached-source-facts",
+            background,
+            &scenario.root.directory,
+            0,
+        );
+        let (root, _pin) = acquired(&fixture.store, &scenario.root.path, &other);
+        let query = graph_query(
+            &prepared_graph(&fixture.store, &root, &scenario.direct(), &other),
+            missing_tool(),
+            json!([]),
+        );
+        let replacement =
+            cache_replacement_barrier(site, &fixture, fixture.pins[1].stamp.identity, || {
+                drive(
+                    &fixture.store,
+                    fixture
+                        .store
+                        .request(&query, &other, &Cancellation::default()),
+                    &other,
+                )
+            });
+        assert_eq!(
+            replacement.response["status"].as_str(),
+            Some("ok"),
+            "{site}: {:?}",
+            replacement.response
+        );
+        assert_eq!(
+            replacement.response["data"],
+            json!({"kind":"scalar","value":false}),
+            "{site}: {:?}",
+            replacement.response
+        );
+        assert_eq!(
+            fixture.store.lock_state().ledger.shared.facts() + facts_walk(&replacement.held),
+            replacement.counted,
+            "{site}: the consumed facts outlived their owner in the ledger"
         );
         fixture.store.assert_conserved();
     }
