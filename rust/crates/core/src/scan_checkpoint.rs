@@ -66,6 +66,7 @@ pub struct Checkpoint {
     pub revision: String,
     pub committed: u64,
     pub fence: Vec<u8>,
+    pub sniffed: bool,
     pub parsed: usize,
     pub decided: usize,
     pub emitted: usize,
@@ -83,21 +84,17 @@ impl GrepCheckpoints {
         Self { dir, producer }
     }
 
-    pub fn key(&self, binding: Value) -> String {
+    pub fn key(&self, binding: Value) -> Result<String, String> {
         let binding = sonic_rs::json!({
             "version": "grep-checkpoint/1",
             "parser": crate::snapshot::PARSER_VERSION,
             "producer": self.producer,
             "binding": binding,
         });
-        format!(
+        Ok(format!(
             "{:x}",
-            Sha256::digest(
-                crate::ids::canonical_json(&binding)
-                    .expect("checkpoint binding is canonical json")
-                    .as_bytes()
-            )
-        )
+            Sha256::digest(crate::ids::canonical_json(&binding)?.as_bytes())
+        ))
     }
 
     fn path(&self, key: &str) -> PathBuf {
@@ -117,30 +114,39 @@ impl GrepCheckpoints {
             })
     }
 
-    pub fn load(&self, key: &str) -> Option<(Checkpoint, usize)> {
+    pub fn load(&self, key: &str, limit: usize) -> (Option<Checkpoint>, usize) {
         if !self.private_dir() {
-            return None;
+            return (None, 0);
         }
-        let path = self.path(key);
-        let mut file = OpenOptions::new()
+        let Ok(mut file) = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .ok()?;
-        let metadata = file.metadata().ok()?;
+            .open(self.path(key))
+        else {
+            return (None, 0);
+        };
+        let Ok(metadata) = file.metadata() else {
+            return (None, 0);
+        };
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.len() > MAX_RECORD_BYTES as u64
+            || metadata.len() > MAX_RECORD_BYTES.min(limit) as u64
         {
-            return None;
+            return (None, 0);
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.read_to_end(&mut bytes).ok()?;
+        if (&mut file)
+            .take(metadata.len())
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return (None, bytes.len());
+        }
         match sonic_rs::from_slice::<Checkpoint>(&bytes) {
-            Ok(record) if record.key == key => Some((record, bytes.len())),
+            Ok(record) if record.key == key => (Some(record), bytes.len()),
             _ => {
                 self.discard(key);
-                None
+                (None, bytes.len())
             }
         }
     }

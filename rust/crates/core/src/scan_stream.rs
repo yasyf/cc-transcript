@@ -181,7 +181,8 @@ impl<'store> SourceStream<'store> {
         let open = SourceStamp::of(&self.file.metadata().map_err(io_error)?);
         let linked = SourceStamp::of(&std::fs::metadata(&self.path).map_err(io_error)?);
         if [open, linked].iter().any(|current| {
-            current.identity != self.stamp.identity || current.size < self.stamp.size
+            *current != self.stamp
+                && (current.identity != self.stamp.identity || current.size <= self.stamp.size)
         }) {
             return Err(changed("source changed during scan"));
         }

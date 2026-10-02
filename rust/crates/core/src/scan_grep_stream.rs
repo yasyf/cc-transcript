@@ -155,16 +155,16 @@ impl<'store> GrepReducer<'store> {
             "device": source.stamp.identity.device.to_string(),
             "inode": source.stamp.identity.inode.to_string(),
             "registry": self.registry.fingerprint(),
-            "patterns": self.patterns.iter().map(|pattern| json!([pattern.id, pattern.regex.as_str(), pattern.max_matches])).collect::<Vec<_>>(),
+            "patterns": self.patterns.iter().map(|pattern| json!([pattern.id.to_string(), pattern.regex.as_str(), pattern.max_matches.map(|cap| cap.to_string())])).collect::<Vec<_>>(),
             "options": {
                 "kinds": self.options.kinds,
                 "tool": self.options.tool,
                 "ignore_case": self.options.ignore_case,
                 "where": [self.options.where_text, self.options.where_thinking, self.options.where_tools],
-                "context": self.options.context,
+                "context": self.options.context.to_string(),
             },
             "render_names": render_names,
-            "start": sonic_rs::to_value(&self.state()).expect("reducer state is json"),
+            "start": sonic_rs::to_string(&self.state()).expect("reducer state is json"),
         }))
     }
 
@@ -188,7 +188,9 @@ impl<'store> GrepReducer<'store> {
         let generation = source.generation();
         let key = checkpoints
             .map(|store| {
-                Ok::<_, SnapshotError>(store.key(self.binding(path, &source, render_names)?))
+                store
+                    .key(self.binding(path, &source, render_names)?)
+                    .map_err(|error| SnapshotError::new(Status::InvalidRequest, error))
             })
             .transpose()?;
         let mut stream = GrepStream {
@@ -215,21 +217,15 @@ impl<'store> GrepReducer<'store> {
             poisoned: false,
         };
         let key = stream.key.clone();
-        stream.sniffed = match (checkpoints, &key) {
-            (Some(store), Some(key)) => match store.load(key) {
-                Some((record, bytes)) => {
-                    budget.charge_projection(bytes, 0, cancel)?;
-                    let restored =
-                        self.restore(&mut stream, &mut source, record, budget, cancel, &mut emit)?;
-                    if !restored {
-                        store.discard(key);
-                    }
-                    restored
+        if let (Some(store), Some(key)) = (checkpoints, &key) {
+            let (record, bytes) = store.load(key, budget.remaining().max_read_bytes);
+            budget.charge_projection(bytes, 0, cancel)?;
+            if let Some(record) = record {
+                if !self.restore(&mut stream, &mut source, record, budget, cancel, &mut emit)? {
+                    store.discard(key);
                 }
-                None => false,
-            },
-            _ => false,
-        };
+            }
+        }
         let result = self.drive(&mut stream, &mut source, budget, cancel, &mut emit);
         if let (Some(store), false) = (checkpoints, stream.poisoned) {
             if result.as_ref().map_or_else(saves, Option::is_some) {
@@ -270,6 +266,8 @@ impl<'store> GrepReducer<'store> {
             &Cancellation,
         ) -> Result<(), SnapshotError>,
     {
+        stream.decide(self, false, budget, cancel)?;
+        stream.emit(self, false, budget, cancel, emit)?;
         while !stream.finished(self.options.context) {
             let Some(line) = source.next_line(budget, cancel)? else {
                 if stream.capture.is_none() {
@@ -395,6 +393,7 @@ impl<'store> GrepReducer<'store> {
         stream.stopped = record.stopped;
         stream.committed = record.committed;
         stream.fence = record.fence;
+        stream.sniffed = record.sniffed;
         source.seek(record.committed)?;
         let results = HashMap::new();
         for (position, (replayed, bytes)) in record.replay.iter().zip(lines).enumerate() {
@@ -437,6 +436,7 @@ impl<'store> GrepStream<'store> {
             revision: self.revision.clone(),
             committed: self.committed,
             fence: self.fence.clone(),
+            sniffed: self.sniffed,
             parsed: self.parsed,
             decided: self.decided,
             emitted: self.emitted,

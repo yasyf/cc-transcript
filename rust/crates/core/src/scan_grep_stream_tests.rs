@@ -766,3 +766,153 @@ fn rewritten_or_corrupt_records_rescan_from_the_start() {
     assert_eq!(progress.cache_hits, 0);
     assert_eq!(other.unwrap().counts, vec![1]);
 }
+
+#[test]
+fn checkpoint_before_provider_detection_still_sniffs_appended_lines() {
+    let cache = Cache::new();
+    let source = Source::raw(b"\n\n");
+    checkpointed(
+        &source.0,
+        &[("x", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    append(
+        &source.0,
+        &[line(json!({"type":"session_meta","payload":{"id":"x"}}))],
+    );
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(&[("x", None)], options(), &mut budget);
+    let control = grep
+        .scan_stream(
+            &source.0,
+            true,
+            Some(&cache.1),
+            &mut budget,
+            &Cancellation::default(),
+            |_, _, _| panic!("codex event streamed"),
+        )
+        .unwrap();
+    assert!(control.is_none());
+}
+
+#[test]
+fn restored_pending_hits_emit_before_the_next_read() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(10, &[2]), true);
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(&[("needle", None)], options(), &mut budget);
+    let error = grep
+        .scan_stream(
+            &source.0,
+            true,
+            Some(&cache.1),
+            &mut budget,
+            &Cancellation::default(),
+            |_, _, _| Err(SnapshotError::new(Status::OutputLimit, "writer failed")),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.status, Status::OutputLimit);
+    let mut bound = limits();
+    bound.max_events = 2;
+    let (run, emitted, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        bound,
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap_err().status, Status::Incomplete);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(
+        emitted.iter().map(|event| event.index).collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
+#[test]
+fn same_size_rewrite_fails_verification() {
+    let source = Source::new(&["aaaa".into(), "bbbb".into()], true);
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let cancel = Cancellation::default();
+    let stream = SourceStream::open(&source.0, 0, &mut budget, &cancel).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&source.0)
+        .unwrap()
+        .write_all(b"cccc")
+        .unwrap();
+    assert_eq!(stream.verify().unwrap_err().status, Status::Changed);
+}
+
+#[test]
+fn checkpoint_reads_are_charged_and_bounded() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(10, &[2]), true);
+    checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    for record in cache.records() {
+        std::fs::write(record, vec![b' '; 10_000]).unwrap();
+    }
+    let (_, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert!(progress.projection_bytes >= 10_000);
+    for record in cache.records() {
+        std::fs::write(record, vec![b' '; 30_000]).unwrap();
+    }
+    let mut bound = limits();
+    bound.max_read_bytes = 20_000;
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        bound,
+        Some(&cache.1),
+    );
+    assert_eq!(progress.cache_hits, 0);
+    assert!(progress.projection_bytes < 20_000);
+    assert_eq!(run.unwrap().counts, vec![1]);
+}
+
+#[test]
+fn large_integer_options_bind_a_checkpoint_key() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(3, &[1]), true);
+    let mut wide = options();
+    wide.context = 1 << 53;
+    let (run, _, _) = checkpointed(
+        &source.0,
+        &[("needle", Some(1 << 60))],
+        wide,
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().emitted.len(), 3);
+}
