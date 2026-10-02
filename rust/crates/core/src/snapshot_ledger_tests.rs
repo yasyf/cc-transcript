@@ -1973,6 +1973,142 @@ fn lease_issue_admits_exactly_its_record() {
     }
 }
 
+fn delivery_bytes(store: &NativeStore) -> usize {
+    store.lock_state().deliveries.charged()
+}
+
+#[test]
+fn issued_lease_pledges_its_delivery_and_converts_it_without_admission() {
+    let source = LedgerSource::new(&lines(0..2));
+    for background in [false, true] {
+        let fixture = lease_fixture(&source, background, false);
+        let token = fixture.store.token("lease");
+        let acquired = {
+            let mut state = fixture.store.lock_state();
+            fixture
+                .store
+                .issue(
+                    &mut state,
+                    Arc::clone(&fixture.pins[0]),
+                    fixture.request.clone(),
+                    &fixture.owner,
+                    now_ms() + 120_000,
+                    token.clone(),
+                    0,
+                )
+                .unwrap()
+        };
+        let (pledged, charged, delivered, deliveries) = {
+            let state = fixture.store.lock_state();
+            (
+                state.leases[&token].delivery,
+                state.leases.charged(),
+                state.deliveries.charged() + state.deliveries_expiry.index_bytes(),
+                state.deliveries.len(),
+            )
+        };
+        assert!(
+            pledged > 0,
+            "the issued lease pledged nothing for its delivery"
+        );
+        traced(&fixture.store);
+        fixture
+            .store
+            .track_delivery(
+                &json!({"id":"ledger-delivery","status":"ok","data":acquired}),
+                &fixture.owner,
+                true,
+            )
+            .unwrap();
+        let admitted = traced(&fixture.store);
+        assert!(
+            admitted.is_empty(),
+            "converting the delivery pledge admitted or allocated again: {admitted:?}"
+        );
+        fixture.store.assert_conserved();
+        let state = fixture.store.lock_state();
+        assert!(state.leases[&token].exposed);
+        assert_eq!(state.leases[&token].delivery, 0);
+        assert_eq!(charged - state.leases.charged(), pledged);
+        assert_eq!(state.deliveries.len(), deliveries + 1);
+        assert_eq!(
+            state.deliveries.charged() + state.deliveries_expiry.index_bytes() - delivered,
+            pledged,
+            "the delivery record differs from its pledge"
+        );
+    }
+}
+
+#[test]
+fn delivery_tracking_admits_exactly_its_record_and_releases_a_refused_cursor() {
+    let source = LedgerSource::new(&lines(0..8));
+    for background in [false, true] {
+        let build = || parked_load(&source.path, background, 2);
+        let tracked = |fixture: &Fixture| {
+            let response = json!({"id":"ledger-delivery","status":"incomplete","cursor":fixture.request["cursor"]});
+            match fixture
+                .store
+                .track_delivery(&response, &fixture.owner, false)
+            {
+                Ok(()) => true,
+                Err(error) if error.status == Status::RetainedLimit => false,
+                Err(error) => panic!("delivery tracking failed outside admission: {error:?}"),
+            }
+        };
+        let exact = exact_headroom(&build, &tracked);
+        assert!(exact > 0);
+        let refused = build();
+        let cap = cap_for(&refused.owner);
+        let token = refused.request["cursor"].as_str().unwrap().to_owned();
+        let deliveries = {
+            let state = refused.store.lock_state();
+            assert!(state.waiters.contains_key(&token));
+            state.deliveries.len()
+        };
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            traced(&refused.store);
+            assert!(
+                !tracked(&refused),
+                "one byte over the exact fit tracked the delivery"
+            );
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap);
+            assert!(
+                !traced(&refused.store)
+                    .iter()
+                    .any(|trace| matches!(trace, Trace::Allocated(_))),
+                "the refused delivery allocated retained bookkeeping"
+            );
+            let state = refused.store.lock_state();
+            assert_eq!(
+                state.deliveries.len(),
+                deliveries,
+                "the refused delivery landed"
+            );
+            assert!(
+                !state.waiters.contains_key(&token),
+                "the refused delivery left its cursor issued"
+            );
+            assert!(state.loads.is_empty(), "the released cursor kept its load");
+        }
+        let fitted = build();
+        let growth = assert_exact_growth(
+            "delivery tracking",
+            &fitted,
+            &tracked,
+            exact,
+            &delivery_bytes,
+        );
+        assert_eq!(
+            growth,
+            size_of::<(u64, Arc<str>)>(),
+            "the pre-sized delivery table grew past its deadline node"
+        );
+        assert_eq!(fitted.store.lock_state().deliveries.len(), deliveries + 1);
+    }
+}
+
 #[test]
 fn lease_table_growth_is_admitted_before_the_lease_is_issued() {
     let source = LedgerSource::new(&lines(0..2));

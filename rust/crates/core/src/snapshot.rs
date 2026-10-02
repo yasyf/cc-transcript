@@ -438,6 +438,7 @@ struct Lease {
     expires: u64,
     absolute_deadline: u64,
     exposed: bool,
+    delivery: usize,
     registry_generation: String,
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
 }
@@ -1123,15 +1124,17 @@ impl Charge<String> for Lease {
     }
 
     fn charge(&self) -> usize {
-        self.claimant.capacity() + self.registry_generation.capacity()
+        self.claimant.capacity() + self.registry_generation.capacity() + self.delivery
     }
 }
 
 impl Lease {
     fn pledge(token: &String, context: &Value) -> Result<usize, SnapshotError> {
+        let claimant = str_field(context, "claimant")?;
         Ok(Self::key_charge(token)
-            + str_field(context, "claimant")?.len()
-            + str_field(context, "registry_generation")?.len())
+            + claimant.len()
+            + str_field(context, "registry_generation")?.len()
+            + Delivery::pledge(claimant, token))
     }
 }
 
@@ -1295,6 +1298,22 @@ impl Charge<Arc<str>> for Delivery {
             + self.leases.capacity() * size_of::<String>()
             + self.leases.iter().map(String::capacity).sum::<usize>()
             + self.cursor.as_ref().map_or(0, String::capacity)
+    }
+}
+
+impl Delivery {
+    fn record_bytes(key: &Arc<str>, delivery: &Self) -> usize {
+        charged_bytes(key, delivery) + size_of::<(u64, Arc<str>)>()
+    }
+
+    fn pledge(claimant: &str, lease: &str) -> usize {
+        size_of::<Self>()
+            + claimant.len()
+            + size_of::<String>()
+            + lease.len()
+            + 2 * size_of::<usize>()
+            + 2 * <Sha256 as Digest>::output_size()
+            + size_of::<(u64, Arc<str>)>()
     }
 }
 
@@ -2470,6 +2489,7 @@ impl NativeStore {
         let builtin = crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new());
         let work = Work::default();
         let mut state = StoreState::new(work.clone());
+        state.deliveries.reserve(config.leases.saturating_mul(4));
         for registry in [captured, builtin] {
             let fingerprint = registry.fingerprint().to_owned();
             if !state.registries.contains_key(&fingerprint) {
@@ -2765,7 +2785,7 @@ impl NativeStore {
         usage[6] = activity_lifts as u64;
         reply.insert("work",json!({"events":work.events,"input_bytes":work.input_bytes,"items":work.items,"output_bytes":work.output_bytes}));
         reply.insert("usage", usage_value(&usage));
-        self.track_delivery(&reply, context, true);
+        self.track_delivery(&reply, context, true)?;
         for _ in 0..3 {
             match encoded_size(&reply, MAX_REPLY_BYTES) {
                 Ok(bytes) => usage[13] = bytes as u64,
@@ -3811,6 +3831,7 @@ impl NativeStore {
             + state.carried_classifications.capacity_bytes()
             + state.leases.capacity_bytes()
             + state.waiters.capacity_bytes()
+            + state.deliveries.capacity_bytes()
             + state.latest.reserved_bytes()
             + state.escaped_chunks.reserved_bytes()
             + state.prepared_loads.reserved_bytes()
@@ -4000,13 +4021,15 @@ impl NativeStore {
         }
         let expires = (now + self.config.ttl).min(absolute_deadline);
         let description = self.description(&snapshot, &classifier, &token, expires);
+        let claimant = str_field(context, "claimant")?;
         let lease = Lease {
-            claimant: str_field(context, "claimant")?.to_owned(),
+            claimant: claimant.to_owned(),
             snapshot,
             classifier,
             expires,
             absolute_deadline,
             exposed: false,
+            delivery: Delivery::pledge(claimant, &token),
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
             registry,
         };
@@ -4219,8 +4242,9 @@ impl NativeStore {
                 Ok(bytes)=>bytes,
                 Err(error)=> {
                     let pending=json!({"id":id,"status":if reason.is_some(){"incomplete"}else{"ok"},"data":data,"cursor":cursor});
-                    self.track_delivery(&pending,context,request.get("operation").and_then(Value::as_str)!=Some("describe"));
-                    self.discard_response(&pending,context)?;
+                    if self.track_delivery(&pending,context,request.get("operation").and_then(Value::as_str)!=Some("describe")).is_ok() {
+                        self.discard_response(&pending,context)?;
+                    }
                     return Err(error);
                 }
             };
@@ -4298,11 +4322,14 @@ impl NativeStore {
             }
             response.insert("usage", usage_value(&usage));
         }
-        self.track_delivery(
+        if let Err(error) = self.track_delivery(
             &response,
             context,
             request.get("operation").and_then(Value::as_str) != Some("describe"),
-        );
+        ) {
+            usage[12] += 1;
+            response = json!({"schema":SCHEMA,"id":id,"status":error.status.as_str(),"complete":false,"data":null,"cursor":null,"reason":error.reason,"usage":usage_value(&usage)});
+        }
         let mut state = self.lock_state();
         for (total, own) in state.counters.iter_mut().zip(usage.iter()) {
             *total += own;
@@ -4408,45 +4435,80 @@ impl NativeStore {
         Ok(format!("{:x}", digest.finalize()))
     }
 
-    pub(crate) fn track_delivery(&self, response: &Value, context: &Value, may_issue: bool) {
+    pub(crate) fn track_delivery(
+        &self,
+        response: &Value,
+        context: &Value,
+        may_issue: bool,
+    ) -> Result<(), SnapshotError> {
         let Ok(handles) = Self::response_handles(response) else {
-            return;
+            return Ok(());
         };
         let Ok(key) = self.delivery_key(response, context, &handles) else {
-            return;
+            return Ok(());
         };
         let Ok(claimant) = str_field(context, "claimant") else {
-            return;
+            return Ok(());
         };
         let cursor = Self::response_cursor(response).map(str::to_owned);
         let mut state = self.lock_state();
-        let mut leases = Vec::new();
-        if may_issue {
-            for handle in handles {
-                if let Some(mut lease) = state.leases.get_mut(&handle) {
-                    if lease.claimant == claimant && !lease.exposed {
-                        lease.exposed = true;
-                        leases.push(handle);
-                    }
-                }
-            }
-        }
+        let mut leases: Vec<String> = if may_issue {
+            handles
+                .into_iter()
+                .filter(|handle| {
+                    state
+                        .leases
+                        .get(handle)
+                        .is_some_and(|lease| lease.claimant == claimant && !lease.exposed)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        leases.shrink_to_fit();
         if leases.is_empty() && cursor.is_none() {
             state.remove_delivery(&key);
-            return;
+            return Ok(());
+        }
+        let pledged: usize = leases
+            .iter()
+            .map(|token| state.leases[token].delivery)
+            .sum();
+        let key: Arc<str> = Arc::from(key);
+        let delivery = Delivery {
+            claimant: claimant.to_owned(),
+            leases,
+            cursor,
+            expires: now_ms() + self.config.ttl,
+        };
+        let replaced = state
+            .deliveries
+            .get(&key)
+            .map_or(0, |existing| Delivery::record_bytes(&key, existing));
+        let additional = Delivery::record_bytes(&key, &delivery).saturating_sub(pledged + replaced);
+        if additional > 0 {
+            if let Err(error) = self.admit_memory(&mut state, context, additional) {
+                for token in &delivery.leases {
+                    state.leases.remove(token);
+                    state.owned.release_lease(token);
+                }
+                drop(state);
+                if let Some(cursor) = &delivery.cursor {
+                    self.release_cursor(cursor, context)?;
+                }
+                return Err(error);
+            }
+        }
+        for token in &delivery.leases {
+            let mut lease = state.leases.get_mut(token).expect("exposed lease");
+            lease.exposed = true;
+            lease.delivery = 0;
         }
         if state.deliveries.len() >= self.config.leases.saturating_mul(4) {
             state.evict_earliest_delivery();
         }
-        state.insert_delivery(
-            Arc::from(key),
-            Delivery {
-                claimant: claimant.to_owned(),
-                leases,
-                cursor,
-                expires: now_ms() + self.config.ttl,
-            },
-        );
+        state.insert_delivery(key, delivery);
+        Ok(())
     }
 
     pub fn discard_response(
@@ -12363,7 +12425,9 @@ mod tests {
         let store = store();
         let owner = context("a");
         let cursor = format!("{}:0", store.owned_token());
-        store.track_delivery(&json!({"cursor":cursor}), &owner, false);
+        store
+            .track_delivery(&json!({"cursor":cursor}), &owner, false)
+            .unwrap();
         let wrapped =
             json!({"id":"outer","status":"incomplete","data":{"metadata":{}},"cursor":cursor});
         assert!(store.discard_response(&wrapped, &owner).unwrap());

@@ -800,7 +800,7 @@ impl NativeStore {
             }
             return Err(error);
         }
-        self.track_delivery(&sonic_rs::json!({"cursor":delivery_cursor}), context, false);
+        self.track_delivery(&sonic_rs::json!({"cursor":delivery_cursor}), context, false)?;
         Ok(OwnedProjectionReply {
             encoded,
             _reservation: reservation,
@@ -870,7 +870,7 @@ impl NativeStore {
             }
             return Err(error);
         }
-        self.track_delivery(&sonic_rs::json!({"cursor":delivery_cursor}), context, false);
+        self.track_delivery(&sonic_rs::json!({"cursor":delivery_cursor}), context, false)?;
         Ok(Some(OwnedProjectionReply {
             encoded,
             _reservation: reservation,
