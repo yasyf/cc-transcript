@@ -20,9 +20,9 @@ use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
     arc_bytes, arc_slice_bytes, charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier,
-    set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge, DeadlineIndex,
-    ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table, TicketKey, Work,
-    MUTEX_STORAGE_BYTES,
+    map_capacity_for, map_growth, set_capacity_for, set_growth, vec_capacity_for, vec_growth,
+    Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger,
+    Table, TicketKey, Work, MUTEX_STORAGE_BYTES,
 };
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
@@ -2646,6 +2646,16 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) registered_sources: AtomicUsize,
     #[cfg(test)]
+    pub(crate) discovery_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) resolution_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) prepared_query_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) warm_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) directory_opens: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -3044,6 +3054,16 @@ impl NativeStore {
             locate_items: AtomicUsize::new(0),
             #[cfg(test)]
             registered_sources: AtomicUsize::new(0),
+            #[cfg(test)]
+            discovery_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            resolution_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            prepared_query_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            warm_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            directory_opens: AtomicUsize::new(0),
             #[cfg(test)]
             audits,
         })
@@ -6183,7 +6203,7 @@ impl NativeStore {
                     if let Err(error) = self.extend_projection_reservation(
                         &mut reservation,
                         context,
-                        value_bytes(context),
+                        value_bytes(context) + LOCATE_PATH_SLOTS,
                     ) {
                         drop(discovery);
                         return Err(error);
@@ -8645,6 +8665,8 @@ impl NativeStore {
                                 children: Vec::new(),
                                 depth,
                             });
+                            #[cfg(test)]
+                            self.directory_opens.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(error) => return Err(io_error(error)),
@@ -9149,20 +9171,33 @@ impl NativeStore {
             .get("roots")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing roots"))?;
-        let mut paths = Vec::new();
+        let claimant = str_field(context, "claimant")?;
+        let mut reservation = self.reserve_projection(
+            context,
+            claimant.len()
+                + value_bytes(request)
+                + value_bytes(context)
+                + roots.len() * size_of::<PathBuf>()
+                + LOCATE_PATH_SLOTS,
+        )?;
+        #[cfg(test)]
+        self.discovery_records.fetch_add(1, Ordering::Relaxed);
+        let mut paths = Vec::with_capacity(roots.len());
         for root in roots.iter() {
             let path = std::fs::canonicalize(root.as_str().ok_or_else(|| invalid("invalid root"))?)
                 .map_err(io_error)?;
             self.authority(context, Some(&path))?;
+            self.extend_projection_reservation(&mut reservation, context, path.capacity())?;
             paths.push(path);
         }
+        assert_eq!(paths.capacity(), roots.len());
         let previous = if let Some(token) = request.get("checkpoint").and_then(Value::as_str) {
             let mut state = self.lock_state();
             Self::prune(&mut state);
             let checkpoint = state.checkpoints.get(token).ok_or_else(|| {
                 SnapshotError::new(Status::StaleCursor, "discovery checkpoint expired")
             })?;
-            if checkpoint.claimant != str_field(context, "claimant")?
+            if checkpoint.claimant != claimant
                 || sonic_rs::to_vec(&checkpoint.roots).ok()
                     != sonic_rs::to_vec(&request["roots"]).ok()
             {
@@ -9171,13 +9206,25 @@ impl NativeStore {
                     "checkpoint scope differs",
                 ));
             }
-            checkpoint.inventory.clone()
+            let inventory = inventory_bytes(&checkpoint.inventory);
+            self.extend_projection_reservation_in(
+                &mut state,
+                &mut reservation,
+                context,
+                inventory,
+            )?;
+            state
+                .checkpoints
+                .get(token)
+                .expect("checked checkpoint")
+                .inventory
+                .clone()
         } else {
             HashMap::new()
         };
         let token = self.token("discovery");
         let cursor = DiscoveryCursor {
-            claimant: str_field(context, "claimant")?.to_owned(),
+            claimant: claimant.to_owned(),
             request: request.clone(),
             context: context.clone(),
             limits: bound,
@@ -9194,10 +9241,6 @@ impl NativeStore {
             removed: Vec::new(),
             walking: true,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
-        };
-        let mut reservation = ProjectionReservation {
-            store: self,
-            bytes: 0,
         };
         self.scan(&token, cursor, &mut reservation, cancel, usage)
     }
@@ -9229,27 +9272,59 @@ impl NativeStore {
             let path = if scan.directories.is_empty() {
                 let Some(path) = scan.roots.pop() else {
                     scan.walking = false;
-                    scan.removed = scan
+                    let removed = scan
                         .previous
-                        .drain()
-                        .filter(|(path, _)| !scan.inventory.contains_key(path))
-                        .map(|(_, mut value)| {
-                            value.insert("state", json!("removed"));
-                            value
-                        })
-                        .collect();
+                        .keys()
+                        .filter(|path| !scan.inventory.contains_key(*path))
+                        .count();
+                    self.extend_projection_reservation(
+                        reservation,
+                        &scan.context,
+                        removed * size_of::<Value>(),
+                    )?;
+                    scan.removed = Vec::with_capacity(removed);
+                    scan.removed.extend(
+                        scan.previous
+                            .drain()
+                            .filter(|(path, _)| !scan.inventory.contains_key(path))
+                            .map(|(_, mut value)| {
+                                value.insert("state", json!("removed"));
+                                value
+                            }),
+                    );
+                    assert_eq!(scan.removed.capacity(), removed);
                     break;
                 };
                 self.authority(&scan.context, Some(&path))?;
                 let metadata = std::fs::metadata(&path).map_err(io_error)?;
                 if metadata.is_dir() {
-                    if !scan
-                        .seen_directories
-                        .insert(SourceStamp::of(&metadata).identity)
-                    {
+                    let identity = SourceStamp::of(&metadata).identity;
+                    if scan.seen_directories.contains(&identity) {
                         continue;
                     }
+                    self.extend_projection_reservation(
+                        reservation,
+                        &scan.context,
+                        set_growth(&scan.seen_directories, 1)
+                            + vec_growth(&scan.directories, 1)
+                            + READ_DIR_HANDLE_BYTES
+                            + path.as_os_str().len(),
+                    )?;
+                    let predicted = (
+                        set_capacity_for(&scan.seen_directories, 1),
+                        vec_capacity_for(&scan.directories, 1),
+                    );
+                    scan.seen_directories.insert(identity);
                     scan.directories.push(OpenDirectory::open(&path)?);
+                    #[cfg(test)]
+                    self.directory_opens.fetch_add(1, Ordering::Relaxed);
+                    assert_eq!(
+                        (
+                            scan.seen_directories.capacity(),
+                            scan.directories.capacity()
+                        ),
+                        predicted
+                    );
                     continue;
                 }
                 if !metadata.is_file() {
@@ -9280,7 +9355,14 @@ impl NativeStore {
                     {
                         continue;
                     }
+                    self.extend_projection_reservation(
+                        reservation,
+                        &scan.context,
+                        vec_growth(&scan.roots, 1) + canonical.capacity(),
+                    )?;
+                    let predicted = vec_capacity_for(&scan.roots, 1);
                     scan.roots.push(canonical);
+                    assert_eq!(scan.roots.capacity(), predicted);
                     continue;
                 }
                 if !metadata.is_file() {
@@ -9301,7 +9383,8 @@ impl NativeStore {
             }
             let metadata = std::fs::metadata(&path).map_err(io_error)?;
             let stamp = SourceStamp::of(&metadata);
-            if !scan.seen.insert(stamp.identity)
+            let fresh = !scan.seen.contains(&stamp.identity);
+            if !fresh
                 && scan
                     .request
                     .get("preserve_aliases")
@@ -9309,6 +9392,16 @@ impl NativeStore {
                     != Some(true)
             {
                 continue;
+            }
+            if fresh {
+                self.extend_projection_reservation(
+                    reservation,
+                    &scan.context,
+                    set_growth(&scan.seen, 1),
+                )?;
+                let predicted = set_capacity_for(&scan.seen, 1);
+                scan.seen.insert(stamp.identity);
+                assert_eq!(scan.seen.capacity(), predicted);
             }
             scan.sources += 1;
             let path = path.to_string_lossy().into_owned();
@@ -9323,7 +9416,6 @@ impl NativeStore {
             let bytes = sonic_rs::to_vec(&value)
                 .map_err(|error| invalid(error.to_string()))?
                 .len();
-            scan.inventory.insert(path, value.clone());
             if changed {
                 if scan.output_bytes.saturating_add(bytes)
                     > scan.limits.max_output_bytes.saturating_sub(128)
@@ -9336,8 +9428,23 @@ impl NativeStore {
                 }
                 scan.output_bytes += bytes;
                 scan.emitted += 1;
-                output.push(value);
+                output.push(value.clone());
             }
+            let (table, growth) = if scan.inventory.contains_key(&path) {
+                (scan.inventory.capacity(), 0)
+            } else {
+                (
+                    map_capacity_for(&scan.inventory, 1),
+                    map_growth(&scan.inventory, 1) + path.capacity(),
+                )
+            };
+            self.extend_projection_reservation(
+                reservation,
+                &scan.context,
+                growth + value_bytes(&value),
+            )?;
+            scan.inventory.insert(path, value);
+            assert_eq!(scan.inventory.capacity(), table);
         }
         while !scan.walking
             && !scan.removed.is_empty()
@@ -9373,6 +9480,12 @@ impl NativeStore {
             ));
         }
         if complete {
+            self.extend_projection_reservation_in(
+                &mut state,
+                reservation,
+                &scan.context,
+                value_bytes(&scan.request["roots"]),
+            )?;
             let checkpoint = self.token("checkpoint");
             let record = Checkpoint {
                 claimant: scan.claimant,
@@ -9382,7 +9495,10 @@ impl NativeStore {
             };
             let additional = state.admission(&checkpoint, &record, [])
                 + state.checkpoints.growth_for(&checkpoint);
-            self.admit_memory(&mut state, &scan.context, additional)?;
+            let covered = additional.min(reservation.bytes);
+            self.admit_memory(&mut state, &scan.context, additional - covered)?;
+            state.transient_bytes -= covered;
+            reservation.bytes -= covered;
             state.checkpoints.reserve_for(&checkpoint);
             state.checkpoints.insert(checkpoint.clone(), record);
             Ok((
@@ -9821,6 +9937,8 @@ impl NativeStore {
                         );
                         cursor.seen_directories.insert(identity);
                         cursor.directories.push(OpenDirectory::open(&path)?);
+                        #[cfg(test)]
+                        self.directory_opens.fetch_add(1, Ordering::Relaxed);
                         assert_eq!(
                             (
                                 cursor.seen_directories.capacity(),
@@ -9934,13 +10052,28 @@ impl NativeStore {
             .get("roots")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing roots"))?;
+        let id_bytes = ids
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .map(str::len)
+                    .ok_or_else(|| invalid("invalid session id"))
+            })
+            .sum::<Result<usize, _>>()?;
+        let claimant = str_field(context, "claimant")?;
+        let mut reservation = self.reserve_projection(
+            context,
+            claimant.len()
+                + value_bytes(context)
+                + value_bytes(request)
+                + ids.len() * size_of::<String>()
+                + id_bytes,
+        )?;
+        #[cfg(test)]
+        self.resolution_records.fetch_add(1, Ordering::Relaxed);
         let mut wanted = HashSet::new();
         for id in ids.iter() {
-            wanted.insert(
-                id.as_str()
-                    .ok_or_else(|| invalid("invalid session id"))?
-                    .to_owned(),
-            );
+            wanted.insert(id.as_str().expect("validated session id").to_owned());
         }
         let mut stack = Vec::new();
         for root in roots.iter() {
@@ -10004,19 +10137,36 @@ impl NativeStore {
                 };
                 let stamp = SourceStamp::of(&metadata);
                 if identities.insert(stamp.identity) {
+                    let (table, growth) = if found.contains_key(id) {
+                        (found.capacity(), 0)
+                    } else {
+                        (
+                            map_capacity_for(&found, 1),
+                            map_growth(&found, 1) + id.len(),
+                        )
+                    };
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        growth + path.capacity(),
+                    )?;
                     found.insert(id.clone(), path);
+                    assert_eq!(found.capacity(), table);
                 }
             }
         }
         let token = self.token("resolution");
+        let mut session_ids = Vec::with_capacity(ids.len());
+        session_ids.extend(
+            ids.iter()
+                .map(|id| id.as_str().expect("validated id").to_owned()),
+        );
+        assert_eq!(session_ids.capacity(), ids.len());
         let cursor = ResolutionCursor {
-            claimant: str_field(context, "claimant")?.to_owned(),
+            claimant: claimant.to_owned(),
             context: context.clone(),
             request: request.clone(),
-            ids: ids
-                .iter()
-                .map(|id| id.as_str().expect("validated id").to_owned())
-                .collect(),
+            ids: session_ids,
             paths: found,
             sessions: Vec::new(),
             next: 0,
@@ -10024,10 +10174,6 @@ impl NativeStore {
             remaining: bound,
             complete_scan: complete,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
-        };
-        let mut reservation = ProjectionReservation {
-            store: self,
-            bytes: 0,
         };
         self.resolve_step(&token, cursor, &mut reservation, cancel, usage)
     }
@@ -10041,7 +10187,7 @@ impl NativeStore {
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let delivered = cursor.sessions.len();
-        let stepped = self.resolution_steps(&mut cursor, cancel, usage);
+        let stepped = self.resolution_steps(&mut cursor, reservation, cancel, usage);
         let pending = cursor.pending.clone();
         let issued: Vec<String> = cursor.sessions[delivered..]
             .iter()
@@ -10066,6 +10212,7 @@ impl NativeStore {
     fn resolution_steps(
         &self,
         cursor: &mut ResolutionCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(), SnapshotError> {
@@ -10095,7 +10242,15 @@ impl NativeStore {
         while cursor.next < cursor.ids.len() {
             let id = &cursor.ids[cursor.next];
             let Some(path) = cursor.paths.get(id) else {
-                cursor.sessions.push(json!({"session_id":id,"status":if cursor.complete_scan {"missing"} else {"incomplete"},"description":null}));
+                let session = json!({"session_id":id,"status":if cursor.complete_scan {"missing"} else {"incomplete"},"description":null});
+                self.extend_projection_reservation(
+                    reservation,
+                    &cursor.context,
+                    vec_growth(&cursor.sessions, 1) + value_bytes(&session),
+                )?;
+                let predicted = vec_capacity_for(&cursor.sessions, 1);
+                cursor.sessions.push(session);
+                assert_eq!(cursor.sessions.capacity(), predicted);
                 cursor.next += 1;
                 continue;
             };
@@ -10149,9 +10304,21 @@ impl NativeStore {
                         .remove(str_field(handle, "lease_id")?);
                 }
                 let description = adopted?;
-                cursor
-                    .sessions
-                    .push(json!({"session_id":id,"status":"ok","description":description}));
+                let session = json!({"session_id":id,"status":"ok","description":description});
+                let admitted = self.extend_projection_reservation(
+                    reservation,
+                    &cursor.context,
+                    vec_growth(&cursor.sessions, 1) + value_bytes(&session),
+                );
+                if admitted.is_err() {
+                    self.lock_state()
+                        .leases
+                        .remove(str_field(handle, "lease_id")?);
+                }
+                admitted?;
+                let predicted = vec_capacity_for(&cursor.sessions, 1);
+                cursor.sessions.push(session);
+                assert_eq!(cursor.sessions.capacity(), predicted);
                 cursor.next += 1;
             }
             break;

@@ -1139,6 +1139,8 @@ impl NativeStore {
                         children: Vec::new(),
                         depth,
                     });
+                    #[cfg(test)]
+                    self.directory_opens.fetch_add(1, Ordering::Relaxed);
                 }
                 GraphTask::Visit {
                     path,
@@ -1336,12 +1338,15 @@ impl NativeStore {
 
     fn build_warm_membership(
         &self,
+        key: &str,
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
         remaining: &mut WorkLimits,
-    ) -> Result<WarmMembership, SnapshotError> {
+    ) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
+        use std::fmt::Write as _;
+
         let ids = request["thread_ids"]
             .as_array()
             .ok_or_else(|| invalid("missing registered thread ids"))?;
@@ -1351,6 +1356,13 @@ impl NativeStore {
         let direct = request["direct_paths"]
             .as_array()
             .ok_or_else(|| invalid("missing registered direct paths"))?;
+        let revision_len = 2 * <Sha256 as Digest>::output_size();
+        let mut reservation = self.reserve_projection(
+            context,
+            key.len() + size_of::<WarmMembership>() + revision_len,
+        )?;
+        #[cfg(test)]
+        self.warm_records.fetch_add(1, Ordering::Relaxed);
         let mut located = HashMap::new();
         if !ids.is_empty() {
             let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
@@ -1405,10 +1417,17 @@ impl NativeStore {
             }
             let stamp = SourceStamp::of(&metadata);
             if seen.insert(stamp.identity) {
+                self.extend_projection_reservation(
+                    &mut reservation,
+                    context,
+                    vec_growth(&members, 1) + canonical.capacity(),
+                )?;
+                let predicted = vec_capacity_for(&members, 1);
                 members.push(PreparedSourceRef {
                     path: canonical,
                     stamp,
                 });
+                assert_eq!(members.capacity(), predicted);
             }
         }
         let mut sidechain_dirs = Vec::new();
@@ -1435,7 +1454,14 @@ impl NativeStore {
             let canonical = match std::fs::canonicalize(&directory) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        vec_growth(&sidechain_dirs, 1) + directory.capacity(),
+                    )?;
+                    let predicted = vec_capacity_for(&sidechain_dirs, 1);
                     sidechain_dirs.push((directory, None));
+                    assert_eq!(sidechain_dirs.capacity(), predicted);
                     examined += 1;
                     continue;
                 }
@@ -1443,7 +1469,14 @@ impl NativeStore {
             };
             self.authority(context, Some(&canonical))?;
             let directory_stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+            self.extend_projection_reservation(
+                &mut reservation,
+                context,
+                vec_growth(&sidechain_dirs, 1) + canonical.as_os_str().len(),
+            )?;
+            let predicted = vec_capacity_for(&sidechain_dirs, 1);
             sidechain_dirs.push((canonical.clone(), Some(directory_stamp)));
+            assert_eq!(sidechain_dirs.capacity(), predicted);
             let mut children = Vec::new();
             for entry in std::fs::read_dir(&canonical).map_err(io_error)? {
                 cancel.check(remaining.deadline_unix_ms)?;
@@ -1474,10 +1507,17 @@ impl NativeStore {
                 }
                 let stamp = SourceStamp::of(&metadata);
                 if seen.insert(stamp.identity) {
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        vec_growth(&members, 1) + canonical.capacity(),
+                    )?;
+                    let predicted = vec_capacity_for(&members, 1);
                     members.push(PreparedSourceRef {
                         path: canonical,
                         stamp,
                     });
+                    assert_eq!(members.capacity(), predicted);
                 }
             }
             examined += 1;
@@ -1487,13 +1527,60 @@ impl NativeStore {
             digest.update(source.path.as_os_str().as_encoded_bytes());
             digest.update(source.stamp.revision().as_bytes());
         }
-        Ok(WarmMembership {
-            members: members.into(),
-            sidechain_dirs: sidechain_dirs.into(),
-            revision: format!("{:x}", digest.finalize()),
-            complete: located.len() == ids.len(),
-            expires: now_ms().saturating_add(30 * 60_000),
-        })
+        self.extend_projection_reservation(
+            &mut reservation,
+            context,
+            arc_slice_bytes::<PreparedSourceRef>(members.len())
+                + arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len()),
+        )?;
+        let mut revision = String::with_capacity(revision_len);
+        write!(revision, "{:x}", digest.finalize()).expect("hex digest");
+        assert_eq!(revision.capacity(), revision_len);
+        Ok((
+            WarmMembership {
+                members: members.into(),
+                sidechain_dirs: sidechain_dirs.into(),
+                revision,
+                complete: located.len() == ids.len(),
+                expires: now_ms().saturating_add(30 * 60_000),
+            },
+            reservation,
+        ))
+    }
+
+    fn publish_warm_membership(
+        &self,
+        key: &String,
+        membership: &WarmMembership,
+        context: &Value,
+        reservation: Option<&mut ProjectionReservation<'_>>,
+    ) -> Result<(), SnapshotError> {
+        let mut state = self.lock_state();
+        Self::prune(&mut state);
+        if state.warm_memberships.contains_key(key) {
+            return Ok(());
+        }
+        if state.warm_memberships.len() >= 32 {
+            let oldest = state
+                .warm_memberships
+                .iter()
+                .min_by_key(|(_, membership)| membership.expires)
+                .map(|(key, _)| key.clone())
+                .expect("full warm membership cache");
+            state.remove_warm_membership(&oldest);
+        }
+        let additional = state.admission(key, membership, membership.anchors())
+            + state.warm_memberships.growth_for(key);
+        let covered = reservation
+            .as_ref()
+            .map_or(0, |reservation| additional.min(reservation.bytes));
+        self.admit_memory(&mut state, context, additional - covered)?;
+        if let Some(reservation) = reservation {
+            state.transient_bytes -= covered;
+            reservation.bytes -= covered;
+        }
+        state.insert_warm_membership(key.clone(), membership.clone());
+        Ok(())
     }
 
     fn warm_registered(
@@ -1528,23 +1615,30 @@ impl NativeStore {
             .warm_memberships
             .get(&key)
             .cloned();
-        let membership = if let Some(cached) = cached {
-            if start > 0
-                || self.validate_warm_membership(
-                    &cached.members,
-                    &cached.sidechain_dirs,
-                    context,
-                    cancel,
-                    remaining.deadline_unix_ms,
-                )?
+        let (membership, mut reservation) = match cached {
+            Some(cached)
+                if start > 0
+                    || self.validate_warm_membership(
+                        &cached.members,
+                        &cached.sidechain_dirs,
+                        context,
+                        cancel,
+                        remaining.deadline_unix_ms,
+                    )? =>
             {
-                cached
-            } else {
-                self.lock_state().remove_warm_membership(&key);
-                self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
+                (cached, None)
             }
-        } else {
-            self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
+            Some(_) => {
+                self.lock_state().remove_warm_membership(&key);
+                let (membership, reservation) =
+                    self.build_warm_membership(&key, request, context, cancel, usage, &mut remaining)?;
+                (membership, Some(reservation))
+            }
+            None => {
+                let (membership, reservation) =
+                    self.build_warm_membership(&key, request, context, cancel, usage, &mut remaining)?;
+                (membership, Some(reservation))
+            }
         };
         if !membership.complete {
             return Err(SnapshotError::new(
@@ -1552,25 +1646,8 @@ impl NativeStore {
                 "registered membership is incomplete",
             ));
         }
-        {
-            let mut state = self.lock_state();
-            Self::prune(&mut state);
-            if !state.warm_memberships.contains_key(&key) {
-                if state.warm_memberships.len() >= 32 {
-                    let oldest = state
-                        .warm_memberships
-                        .iter()
-                        .min_by_key(|(_, membership)| membership.expires)
-                        .map(|(key, _)| key.clone())
-                        .expect("full warm membership cache");
-                    state.remove_warm_membership(&oldest);
-                }
-                let additional = state.admission(&key, &membership, membership.anchors())
-                    + state.warm_memberships.growth_for(&key);
-                self.admit_memory(&mut state, context, additional)?;
-                state.insert_warm_membership(key.clone(), membership.clone());
-            }
-        }
+        self.publish_warm_membership(&key, &membership, context, reservation.as_mut())?;
+        drop(reservation);
         let members = &membership.members;
         let membership_revision = &membership.revision;
         if start > members.len() {
@@ -1779,7 +1856,7 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let page = self.prepared_query_steps(&mut cursor, context, cancel, usage);
+        let page = self.prepared_query_steps(&mut cursor, context, reservation, cancel, usage);
         let pending = cursor.pending.as_ref().map(|pending| pending.token.clone());
         let reply = page.and_then(|page| match page {
             QueryPage::Complete(data) => Ok((data, None, None)),
@@ -1799,6 +1876,7 @@ impl NativeStore {
         &self,
         cursor: &mut PreparedQueryCursor,
         context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<QueryPage, SnapshotError> {
@@ -1944,11 +2022,17 @@ impl NativeStore {
             }
             let facts = held.facts();
             if inputs {
-                cursor
-                    .input_records
-                    .as_mut()
-                    .expect("input records")
-                    .extend(crate::snapshot_codec::predicate_input_records(&facts.inputs)?);
+                let bound = crate::snapshot_codec::predicate_input_records_bound(&facts.inputs)?;
+                let queue = cursor.input_records.as_mut().expect("input records");
+                self.extend_projection_reservation(
+                    reservation,
+                    context,
+                    deque_growth(queue, bound.records) + bound.bytes,
+                )?;
+                let records = crate::snapshot_codec::predicate_input_records(&facts.inputs, &bound)?;
+                let predicted = deque_capacity_for(queue, records.len());
+                queue.extend(records);
+                assert_eq!(queue.capacity(), predicted);
             } else if facts.query(&cursor.query)?["value"].as_bool() == Some(true) {
                 let data = json!({"kind":"scalar","value":true});
                 encoded_size(&data, output_limit)?;
@@ -2130,7 +2214,6 @@ impl NativeStore {
         let selectors = request
             .get("selectors")
             .ok_or_else(|| invalid("missing graph selectors"))?;
-        let claimant = graph.claimant.clone();
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
@@ -2156,7 +2239,7 @@ impl NativeStore {
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = root.event_count;
                 let bound = crate::snapshot_projection::facts_bound(&root);
-                let mut reservation = self.reserve_projection(context, bound)?;
+                let mut slice_reservation = self.reserve_projection(context, bound)?;
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
                 let (facts, _, _) = crate::snapshot_projection::prepare_facts(
@@ -2175,7 +2258,7 @@ impl NativeStore {
                     key,
                     Arc::new(facts),
                     context,
-                    &mut reservation,
+                    &mut slice_reservation,
                 )?
             }
             (None, None) => unreachable!("the root facts are always cached"),
@@ -2185,15 +2268,27 @@ impl NativeStore {
             encoded_size(&data, bounds.max_output_bytes)?;
             return Ok((data, None, None));
         }
+        let claimant = str_field(context, "claimant")?;
+        let mut reservation = self.reserve_projection(
+            context,
+            size_of::<PreparedQueryCursor>() + claimant.len() + token.len() + value_bytes(query),
+        )?;
+        #[cfg(test)]
+        self.prepared_query_records.fetch_add(1, Ordering::Relaxed);
         let input_records = if kind == "deep_predicate_inputs" {
-            Some(VecDeque::from(crate::snapshot_codec::predicate_input_records(
+            let bound = crate::snapshot_codec::predicate_input_records_bound(&root_facts.inputs)?;
+            self.extend_projection_reservation(&mut reservation, context, bound.bytes)?;
+            let records = VecDeque::from(crate::snapshot_codec::predicate_input_records(
                 &root_facts.inputs,
-            )?))
+                &bound,
+            )?);
+            assert_eq!(records.capacity(), bound.records);
+            Some(records)
         } else {
             None
         };
         let cursor = PreparedQueryCursor {
-            claimant,
+            claimant: claimant.to_owned(),
             graph_id: token.to_owned(),
             query: query.clone(),
             pending: None,
@@ -2202,10 +2297,6 @@ impl NativeStore {
             page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
             remaining: bounds,
             expires,
-        };
-        let mut reservation = ProjectionReservation {
-            store: self,
-            bytes: 0,
         };
         self.prepared_query_page(
             &self.token("prepared-query"),

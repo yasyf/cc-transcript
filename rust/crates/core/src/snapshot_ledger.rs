@@ -133,6 +133,20 @@ pub(crate) fn set_growth<T>(set: &HashSet<T>, additional: usize) -> usize {
     (set_capacity_for(set, additional) - set.capacity()) * size_of::<T>()
 }
 
+pub(crate) fn map_capacity_for<K, V>(map: &HashMap<K, V>, additional: usize) -> usize {
+    if additional <= map.capacity() - map.len() {
+        return map.capacity();
+    }
+    hashbrown_tier(
+        (map.len() + additional).max(map.capacity() + 1),
+        size_of::<(K, V)>(),
+    )
+}
+
+pub(crate) fn map_growth<K, V>(map: &HashMap<K, V>, additional: usize) -> usize {
+    (map_capacity_for(map, additional) - map.capacity()) * size_of::<(K, V)>()
+}
+
 pub(crate) fn deque_capacity_for<T>(deque: &VecDeque<T>, additional: usize) -> usize {
     vec_capacity_after(deque.capacity(), deque.len(), additional, size_of::<T>())
 }

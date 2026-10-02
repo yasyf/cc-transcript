@@ -1501,8 +1501,10 @@ fn predicate_records(session: &Session) -> Result<Vec<String>, SnapshotError> {
             })
             .collect(),
     };
+    let inputs = sonic_rs::to_value(&wire).map_err(|error| invalid(error.to_string()))?;
     snapshot_codec::predicate_input_records(
-        &sonic_rs::to_value(&wire).map_err(|error| invalid(error.to_string()))?,
+        &inputs,
+        &snapshot_codec::predicate_input_records_bound(&inputs)?,
     )
 }
 

@@ -5094,17 +5094,18 @@ fn query_graph_refuses_a_source_disk_hit_before_decoding() {
     for background in [false, true] {
         let build = || facts_cache_fixture(&scenario, background, 0);
         let predicted = decoded_source_facts_prediction(&build());
+        let record = prepared_query_record_bytes(&build());
         assert_facts_admitted_in_full(
             site,
             &build,
             &|fixture: &Fixture| submitted(site, fixture, [0, 1]),
-            REPLY_RESERVATION,
+            REPLY_RESERVATION + record,
             predicted,
-            &[Trace::Reserved(REPLY_RESERVATION)],
+            &[Trace::Reserved(REPLY_RESERVATION), Trace::Reserved(record)],
             NO_LOADS,
         );
         for headroom in [0, predicted - 1] {
-            assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+            assert_refused_reply(site, &build(), REPLY_RESERVATION + record + headroom, 0);
         }
     }
 }
@@ -5293,8 +5294,9 @@ fn prepared_query_refuses_source_completion_before_construction() {
             "{site}: completion is not gated on its facts bound"
         );
         let offset = large - large_bytes;
+        let record = prepared_query_record_bytes(&build(1));
         assert!(
-            offset > REPLY_RESERVATION,
+            offset > REPLY_RESERVATION + record,
             "{site}: the internal source lease was not charged before completion"
         );
         assert_facts_admitted_in_full(
@@ -5303,7 +5305,7 @@ fn prepared_query_refuses_source_completion_before_construction() {
             &attempt,
             offset,
             large_bytes,
-            &[Trace::Reserved(REPLY_RESERVATION)],
+            &[Trace::Reserved(REPLY_RESERVATION), Trace::Reserved(record)],
             PINNED_LOAD,
         );
         assert_refused_reply(site, &build(1), large - 1, 1);
@@ -9414,19 +9416,24 @@ fn discovery_cursor_and_checkpoint_charge_their_context_request_and_tables() {
             let _filler = fill_to(&fitted.store, &fitted.owner, exact);
             assert!(attempt(&fitted));
             fitted.store.assert_conserved();
-            let walked = {
+            let (walked, peak) = {
                 let state = fitted.store.lock_state();
                 let (token, scan) = state.discoveries.iter().next().expect("parked discovery");
                 assert!(
                     scan.inventory.capacity() > 0 && scan.seen.capacity() > 0,
                     "the discovery has no nested tables"
                 );
-                NativeStore::audit_discovery_bytes(token, scan) + state.discoveries.capacity_bytes()
-                    - capacity
+                (
+                    NativeStore::audit_discovery_bytes(token, scan)
+                        + state.discoveries.capacity_bytes()
+                        - capacity,
+                    discovery_step_peak(token, scan, &scenario.root.directory),
+                )
             };
             assert_eq!(
                 exact,
-                REPLY_RESERVATION + walked + delivered(&fitted.store) - before
+                REPLY_RESERVATION + peak.max(walked + delivered(&fitted.store) - before),
+                "the discovery step's admission is not its peak reservation or its parked record"
             );
         }
         let completed = build(4096);
@@ -10705,6 +10712,8 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
 struct ResumedArm {
     site: &'static str,
     extends_context: bool,
+    slots: usize,
+    grows: bool,
     reparks: bool,
     parked: fn(&StoreState) -> (String, usize, usize),
     len: fn(&StoreState) -> usize,
@@ -10783,17 +10792,21 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
     let sample = build();
     let (key, held, capacity) = held_by(arm, &sample);
     let context = NativeStore::audit_value_bytes(&sample.owner);
-    let extension = if arm.extends_context { context } else { 0 };
+    let extension = if arm.extends_context {
+        context + arm.slots
+    } else {
+        0
+    };
     if arm.extends_context {
         let fits = |fixture: &Fixture| {
             traced(&fixture.store);
             resumed(fixture);
-            reserved(&fixture.store).first() == Some(&context)
+            reserved(&fixture.store).first() == Some(&extension)
         };
         assert_eq!(
             exact_headroom(build, &fits) + key,
-            context,
-            "{}: the resume freed more than its stored key before admitting its new context",
+            extension,
+            "{}: the resume freed more than its stored key before admitting its new context and path slots",
             arm.site
         );
     }
@@ -10852,21 +10865,30 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
     let lease_capacity_after = fitted.store.lock_state().leases.capacity_bytes();
     let leases = leases_after - leases_before + lease_capacity_after - lease_capacity_before;
     let additional = reparked_by(arm, &fitted, key, capacity);
-    let covered = additional.min(held + extension);
+    let reservations = reserved_traces(&trace);
+    let fresh = reservations
+        .iter()
+        .skip(usize::from(arm.extends_context))
+        .sum::<usize>();
+    let covered = additional.min(held + extension + fresh);
     assert_eq!(
         page + key,
-        extension + leases + additional - covered,
-        "{}: the resumed page is not admitted at its new context, its step's leases, and the part of its re-parked record that its held charge does not cover",
+        extension + fresh + leases + additional - covered,
+        "{}: the resumed page is not admitted at its new context, its fresh growth, its step's leases, and the part of its re-parked record that its held charge does not cover",
         arm.site
     );
+    if arm.extends_context {
+        assert_eq!(
+            reservations.first(),
+            Some(&extension),
+            "{}: the step did not reserve its new context first: {trace:?}",
+            arm.site
+        );
+    }
     assert_eq!(
-        reserved_traces(&trace),
-        if arm.extends_context {
-            vec![extension]
-        } else {
-            Vec::new()
-        },
-        "{}: the step reserved something besides its new context: {trace:?}",
+        reservations.len() > usize::from(arm.extends_context),
+        arm.grows,
+        "{}: the step's fresh growth reservations do not match its arm: {trace:?}",
         arm.site
     );
     let admitted = admitted_bytes_of(&trace);
@@ -10880,13 +10902,13 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
     }
     assert_eq!(
         admitted.iter().sum::<usize>(),
-        extension + leases + additional - covered,
-        "{}: the resumed page admitted bytes outside its context, leases, and re-park: {trace:?}",
+        extension + fresh + leases + additional - covered,
+        "{}: the resumed page admitted bytes outside its context, fresh growth, leases, and re-park: {trace:?}",
         arm.site
     );
     assert_eq!(
         released,
-        vec![held + extension - covered],
+        vec![held + extension + fresh - covered],
         "{}: the step released more or less than the uncovered remainder of its held charge",
         arm.site
     );
@@ -10916,6 +10938,8 @@ fn resumed_discovery_scan_holds_its_cursor_charge_through_the_page() {
     let arm = ResumedArm {
         site: "resumed discovery",
         extends_context: true,
+        slots: LOCATE_PATH_SLOTS,
+        grows: true,
         reparks: true,
         parked: parked_discovery,
         len: |state| state.discoveries.len(),
@@ -10985,6 +11009,8 @@ fn resolution_arm() -> ResumedArm {
     ResumedArm {
         site: "resumed resolution",
         extends_context: true,
+        slots: 0,
+        grows: true,
         reparks: false,
         parked: parked_resolution,
         len: |state| state.resolutions.len(),
@@ -11024,6 +11050,11 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
         let fixture = resolution_resume_fixture(&scenario, background, 0, scenario.ids());
         let (key, held, capacity) = held_by(&arm, &fixture);
         let context = NativeStore::audit_value_bytes(&fixture.owner);
+        let sessions_before = {
+            let state = fixture.store.lock_state();
+            let (_, cursor) = state.resolutions.iter().next().expect("parked resolution");
+            cursor.sessions.capacity()
+        };
         traced(&fixture.store);
         let released = released_by(&fixture.store, || {
             assert!(resumed(&fixture), "the resumed resolution was refused");
@@ -11031,11 +11062,22 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
         let trace = traced(&fixture.store);
         fixture.store.assert_conserved();
         let additional = reparked_by(&arm, &fixture, key, capacity);
-        let covered = additional.min(held + context);
+        let fresh = {
+            let state = fixture.store.lock_state();
+            let (_, cursor) = state.resolutions.iter().next().expect("parked resolution");
+            assert_eq!(cursor.sessions.len(), 2);
+            (cursor.sessions.capacity() - sessions_before) * size_of::<Value>()
+                + value_bytes(&cursor.sessions[1])
+        };
+        let covered = additional.min(held + context + fresh);
         assert_eq!(
             reserved_traces(&trace).first(),
             Some(&context),
             "the resumed resolution did not admit its new context first: {trace:?}"
+        );
+        assert!(
+            reserved_traces(&trace).contains(&fresh),
+            "the resumed resolution did not reserve its resolved session before retaining it: {fresh} {trace:?}"
         );
         assert_eq!(
             admitted_bytes_of(&trace).last(),
@@ -11044,7 +11086,7 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
         );
         assert_eq!(
             released.last(),
-            Some(&(held + context - covered)),
+            Some(&(held + context + fresh - covered)),
             "the resolution step released more or less than the uncovered remainder of its held charge: {released:?}"
         );
         assert!(audited(&fixture.store)[TOTAL] <= cap_for(&fixture.owner));
@@ -11129,6 +11171,8 @@ fn resumed_prepared_query_page_holds_its_cursor_charge_through_the_page() {
     let arm = ResumedArm {
         site: "resumed prepared query",
         extends_context: false,
+        slots: 0,
+        grows: false,
         reparks: true,
         parked: parked_prepared_query,
         len: |state| state.prepared_queries.len(),
@@ -11165,6 +11209,8 @@ fn resumed_projection_holds_its_cursor_charge_through_the_page() {
     let arm = ResumedArm {
         site: "resumed projection",
         extends_context: false,
+        slots: 0,
+        grows: false,
         reparks: true,
         parked: parked_projection,
         len: |state| state.projections.len(),
@@ -11189,5 +11235,1035 @@ fn resumed_projection_holds_its_cursor_charge_through_the_page() {
             key + held + pledged,
             "the re-parked projection does not carry the resumed cursor's request and identity strings byte for byte"
         );
+    }
+}
+
+fn discovery_record_bytes(fixture: &Fixture) -> usize {
+    fixture.owner["claimant"].as_str().unwrap().len()
+        + value_bytes(&fixture.request)
+        + value_bytes(&fixture.owner)
+        + fixture.request["roots"].as_array().unwrap().len() * size_of::<PathBuf>()
+        + LOCATE_PATH_SLOTS
+}
+
+fn discovery_step_peak(token: &String, scan: &DiscoveryCursor, root: &Path) -> usize {
+    NativeStore::audit_discovery_bytes(token, scan) - token.capacity()
+        + LOCATE_PATH_SLOTS
+        + std::fs::canonicalize(root).unwrap().as_os_str().len()
+}
+
+fn discovery_directory_reservation(scan: &DiscoveryCursor, root: &Path) -> usize {
+    scan.seen_directories.capacity() * size_of::<SourceIdentity>()
+        + scan.directories.capacity() * size_of::<OpenDirectory>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + std::fs::canonicalize(root).unwrap().as_os_str().len()
+}
+
+fn discovered(
+    fixture: &Fixture,
+    usage: &mut [u64; 18],
+) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+    fixture.store.discover(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        usage,
+    )
+}
+
+fn discovery_parked(fixture: &Fixture) -> bool {
+    match discovered(fixture, &mut [0u64; 18]) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_some() && reason.is_some(),
+                "the discovery page completed: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("discovery failed outside admission: {error:?}"),
+    }
+}
+
+fn discovery_completed(fixture: &Fixture) -> bool {
+    match discovered(fixture, &mut [0u64; 18]) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_none() && reason.is_none() && data["checkpoint"].as_str().is_some(),
+                "the discovery did not complete into a checkpoint: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("discovery failed outside admission: {error:?}"),
+    }
+}
+
+fn assert_record_refused(
+    site: &str,
+    fixture: &Fixture,
+    headroom: usize,
+    records: fn(&NativeStore) -> usize,
+    parked: fn(&StoreState) -> usize,
+    attempt: impl Fn(&Fixture, &mut [u64; 18]) -> Result<(), SnapshotError>,
+) {
+    let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+    let before = (
+        ledger(&fixture.store),
+        audited(&fixture.store),
+        bookkeeping(&fixture.store),
+    );
+    traced(&fixture.store);
+    let mut usage = [0u64; 18];
+    let error = attempt(fixture, &mut usage).unwrap_err();
+    assert_eq!(error.status, Status::RetainedLimit, "{site}");
+    assert_eq!(usage[17], 0, "{site}: the refused record examined entries");
+    assert!(traced(&fixture.store).is_empty(), "{site}");
+    assert_eq!(records(&fixture.store), 0, "{site}: the record was built");
+    assert_eq!(
+        parked(&fixture.store.lock_state()),
+        0,
+        "{site}: a cursor was parked"
+    );
+    assert_eq!(
+        (
+            ledger(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store)
+        ),
+        before,
+        "{site}: the refused record leaked state"
+    );
+    drop(filler);
+    attempt(fixture, &mut [0u64; 18])
+        .unwrap_or_else(|error| panic!("{site}: the retry after the refusal failed: {error:?}"));
+    assert_eq!(
+        records(&fixture.store),
+        1,
+        "{site}: the retry did not build the record"
+    );
+    fixture.store.assert_conserved();
+}
+
+fn first_directory_reservation(root: &Path, root_len: usize) -> usize {
+    let mut seen: HashSet<SourceIdentity> = HashSet::new();
+    seen.insert(SourceStamp::of(&std::fs::metadata(root).unwrap()).identity);
+    let mut directories: Vec<[u8; size_of::<OpenDirectory>()]> = Vec::new();
+    directories.push([0; size_of::<OpenDirectory>()]);
+    seen.capacity() * size_of::<SourceIdentity>()
+        + directories.capacity() * size_of::<OpenDirectory>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + root_len
+}
+
+fn assert_denied_directory_admission_opens_nothing(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    directory: usize,
+) {
+    let opened = reached(
+        |store| store.directory_opens.load(Ordering::Relaxed),
+        |fixture| {
+            attempt(fixture);
+        },
+    );
+    let fit = exact_headroom(build, &opened);
+    let fixture = build();
+    {
+        let _filler = fill_to(&fixture.store, &fixture.owner, fit - 1);
+        let before = (
+            ledger(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store),
+        );
+        traced(&fixture.store);
+        assert!(
+            !attempt(&fixture),
+            "{site}: the denied directory admission was admitted"
+        );
+        let trace = traced(&fixture.store);
+        assert_eq!(
+            fixture.store.directory_opens.load(Ordering::Relaxed),
+            0,
+            "{site}: a denied directory admission opened the directory: {trace:?}"
+        );
+        assert!(
+            !reserved_traces(&trace).contains(&directory),
+            "{site}: the denied step reserved its directory anyway: {trace:?}"
+        );
+        assert!(
+            !trace
+                .iter()
+                .any(|entry| matches!(entry, Trace::Allocated(_))),
+            "{site}: the denied directory admission allocated retained bookkeeping: {trace:?}"
+        );
+        assert_eq!(
+            (
+                ledger(&fixture.store),
+                audited(&fixture.store),
+                bookkeeping(&fixture.store)
+            ),
+            before,
+            "{site}: the denied directory admission leaked state"
+        );
+        fixture.store.assert_conserved();
+    }
+    traced(&fixture.store);
+    assert!(
+        attempt(&fixture),
+        "{site}: the retry after the denied directory admission was refused"
+    );
+    assert_eq!(
+        fixture.store.directory_opens.load(Ordering::Relaxed),
+        1,
+        "{site}: the retry did not open the directory exactly once"
+    );
+    assert!(
+        reserved_traces(&traced(&fixture.store)).contains(&directory),
+        "{site}: the retry did not reserve its directory before opening it"
+    );
+    fixture.store.assert_conserved();
+}
+
+#[test]
+fn denied_discovery_directory_admission_opens_nothing_and_retries() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let root = &scenario.root.directory;
+    let directory =
+        first_directory_reservation(root, std::fs::canonicalize(root).unwrap().as_os_str().len());
+    for background in [false, true] {
+        assert_denied_directory_admission_opens_nothing(
+            "fresh discovery directory",
+            &|| discovery_fixture(&scenario, background, 0),
+            &discovery_parked,
+            directory,
+        );
+    }
+}
+
+#[test]
+fn denied_location_directory_admission_opens_nothing_and_retries() {
+    let source = LedgerSource::new(&line("locate"));
+    for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+        source.file(name, &line(name));
+    }
+    let directory =
+        first_directory_reservation(&source.directory, source.directory.as_os_str().len());
+    for background in [false, true] {
+        assert_denied_directory_admission_opens_nothing(
+            "location directory",
+            &|| location_park_fixture(&source, background),
+            &location_parked,
+            directory,
+        );
+    }
+}
+
+#[test]
+fn denied_graph_listing_admission_opens_nothing_and_retries() {
+    let source = subagent_graph_source();
+    let directory = std::fs::canonicalize(&source.directory)
+        .unwrap()
+        .join("s")
+        .join("subagents");
+    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+    for background in [false, true] {
+        assert_denied_directory_admission_opens_nothing(
+            "graph listing",
+            &|| graph_fixture(&source, background, json!([])),
+            &|fixture: &Fixture| parked(&submit(fixture)),
+            listed,
+        );
+    }
+}
+
+#[test]
+fn fresh_discovery_admits_its_record_before_scanning() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let root = &scenario.root.directory;
+    for background in [false, true] {
+        for padding in [0, 4096] {
+            let build = || discovery_fixture(&scenario, background, padding);
+            let record = discovery_record_bytes(&build());
+            let site = reached(
+                |store| store.discovery_records.load(Ordering::Relaxed),
+                |fixture| {
+                    discovery_parked(fixture);
+                },
+            );
+            assert_eq!(
+                exact_headroom(&build, &site),
+                record,
+                "the discovery cursor's reservation is not its constructed record"
+            );
+            for headroom in [0, record - 1] {
+                assert_record_refused(
+                    "fresh discovery record",
+                    &build(),
+                    headroom,
+                    |store| store.discovery_records.load(Ordering::Relaxed),
+                    |state| state.discoveries.len(),
+                    |fixture, usage| discovered(fixture, usage).map(|_| ()),
+                );
+            }
+            refused_at_site("fresh discovery record", &build, &site, 0, record);
+            let step = exact_headroom(&build, &discovery_parked);
+            refused_at_site("fresh discovery step", &build, &discovery_parked, 0, step);
+            let fitted = build();
+            let capacity = fitted.store.lock_state().discoveries.capacity_bytes();
+            let _filler = fill_to(&fitted.store, &fitted.owner, step);
+            traced(&fitted.store);
+            let released = released_by(&fitted.store, || {
+                assert!(discovery_parked(&fitted), "the exact fit was refused");
+            });
+            let trace = traced(&fitted.store);
+            fitted.store.assert_conserved();
+            assert_admitted_before_allocating("fresh discovery step", &trace);
+            reserved_before_the_last_admission("fresh discovery step", &trace, record);
+            let reservations = reserved_traces(&trace);
+            assert_eq!(
+                reservations.first(),
+                Some(&record),
+                "the discovery did not reserve its record first: {trace:?}"
+            );
+            let (peak, parked) = {
+                let state = fitted.store.lock_state();
+                let (token, scan) = state.discoveries.iter().next().expect("parked discovery");
+                assert_eq!(token.capacity(), 64);
+                assert!(
+                    scan.roots.is_empty()
+                        && scan.directories.len() == 1
+                        && !scan.inventory.is_empty(),
+                    "the parked discovery is not mid-directory"
+                );
+                assert!(
+                    reservations.contains(&discovery_directory_reservation(scan, root)),
+                    "the discovery step did not reserve its directory tables, root copy, and open-directory handle in one extension: {trace:?}"
+                );
+                (
+                    discovery_step_peak(token, scan, root),
+                    NativeStore::audit_discovery_bytes(token, scan)
+                        + state.discoveries.capacity_bytes()
+                        - capacity
+                        + state.discoveries.pledged(token),
+                )
+            };
+            assert_eq!(
+                reservations.iter().sum::<usize>(),
+                peak,
+                "the discovery step's reservations are not its record, its path slots, and each retained growth: {trace:?}"
+            );
+            assert_eq!(
+                step,
+                peak.max(parked),
+                "the discovery step's admission is not its peak reservation or its parked record"
+            );
+            assert_eq!(
+                released,
+                vec![step - parked],
+                "the discovery park did not draw its record from the step's reservation"
+            );
+            let cap = cap_for(&fitted.owner);
+            assert_eq!(ledger(&fitted.store)[TOTAL], cap - step + parked);
+            assert_eq!(audited(&fitted.store)[TOTAL], cap - step + parked);
+        }
+    }
+}
+
+fn checkpointed_discovery_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let mut fixture = Fixture {
+        store: fast_store(),
+        owner: context_for("discover-checkpoint", background),
+        request: json!({"schema":SCHEMA,"id":"ledger-discover","operation":"discover","roots":scenario.roots(),"checkpoint":null,"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        pins: Vec::new(),
+    };
+    let settled_reply = drive(&fixture.store, submit(&fixture), &fixture.owner);
+    assert_eq!(
+        settled_reply["status"].as_str(),
+        Some("ok"),
+        "{settled_reply:?}"
+    );
+    let checkpoint = settled_reply["data"]["checkpoint"]
+        .as_str()
+        .expect("discovery checkpoint")
+        .to_owned();
+    fixture.request.insert("checkpoint", json!(checkpoint));
+    fixture
+}
+
+#[test]
+fn checkpointed_discovery_admits_its_previous_inventory_before_cloning_it() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let build = || checkpointed_discovery_fixture(&scenario, background);
+        let control = build();
+        let record = discovery_record_bytes(&control);
+        let roots = value_bytes(&control.request["roots"]);
+        let previous = {
+            let state = control.store.lock_state();
+            assert_eq!(state.checkpoints.len(), 1);
+            let (token, checkpoint) = state.checkpoints.iter().next().expect("checkpoint");
+            assert_eq!(checkpoint.inventory.len(), 10);
+            NativeStore::audit_checkpoint_bytes(token, checkpoint)
+                - token.capacity()
+                - checkpoint.claimant.capacity()
+                - value_bytes(&checkpoint.roots)
+        };
+        let exact = exact_headroom(&build, &discovery_completed);
+        for headroom in [0, record - 1] {
+            assert_record_refused(
+                "checkpointed discovery record",
+                &build(),
+                headroom,
+                |store| store.discovery_records.load(Ordering::Relaxed),
+                |state| state.discoveries.len() + state.checkpoints.len() - 1,
+                |fixture, usage| discovered(fixture, usage).map(|_| ()),
+            );
+        }
+        refused_at_site(
+            "checkpointed discovery",
+            &build,
+            &discovery_completed,
+            0,
+            exact,
+        );
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        let released = released_by(&fitted.store, || {
+            assert!(discovery_completed(&fitted), "the exact fit was refused");
+        });
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        let admitted_at = trace
+            .iter()
+            .position(|entry| matches!(entry, Trace::Admitted(_)))
+            .expect("the rediscovery admitted nothing");
+        assert!(
+            trace
+                .iter()
+                .enumerate()
+                .all(|(at, entry)| !matches!(entry, Trace::Allocated(_)) || at > admitted_at),
+            "retained bookkeeping grew before its admission: {trace:?}"
+        );
+        reserved_before_the_last_admission("checkpointed discovery", &trace, record);
+        let reservations = reserved_traces(&trace);
+        assert_eq!(
+            reservations.first(),
+            Some(&record),
+            "the rediscovery did not reserve its record first: {trace:?}"
+        );
+        assert!(
+            reservations.contains(&previous),
+            "the rediscovery did not reserve its previous inventory before cloning it: {previous} {trace:?}"
+        );
+        assert!(
+            reservations.contains(&roots),
+            "the checkpoint did not reserve its roots before cloning them: {roots} {trace:?}"
+        );
+        let peak = reservations.iter().sum::<usize>();
+        let retained = ledger(&fitted.store)[TOTAL] + exact - cap;
+        assert_eq!(fitted.store.lock_state().checkpoints.len(), 2);
+        assert_eq!(
+            exact,
+            peak.max(retained),
+            "the rediscovery's admission is not its peak reservation or its new checkpoint"
+        );
+        assert_eq!(
+            admitted_bytes_of(&trace).last(),
+            Some(&(retained - retained.min(peak))),
+            "the checkpoint admitted bytes the scan's reservation already covered: {trace:?}"
+        );
+        assert_eq!(
+            released,
+            vec![exact - retained],
+            "the checkpoint did not draw its record from the scan's reservation"
+        );
+        assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + retained);
+    }
+}
+
+fn resolution_record_bytes(fixture: &Fixture) -> usize {
+    let ids = fixture.request["session_ids"].as_array().unwrap();
+    fixture.owner["claimant"].as_str().unwrap().len()
+        + value_bytes(&fixture.owner)
+        + value_bytes(&fixture.request)
+        + ids.len() * size_of::<String>()
+        + ids
+            .iter()
+            .map(|id| id.as_str().unwrap().len())
+            .sum::<usize>()
+}
+
+fn resolved(
+    fixture: &Fixture,
+    usage: &mut [u64; 18],
+) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+    fixture.store.resolve(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        usage,
+    )
+}
+
+fn resolution_completed(fixture: &Fixture) -> bool {
+    match resolved(fixture, &mut [0u64; 18]) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_none() && reason.is_none(),
+                "the resolution parked: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("resolution failed outside admission: {error:?}"),
+    }
+}
+
+fn resolution_parked(fixture: &Fixture) -> bool {
+    match resolved(fixture, &mut [0u64; 18]) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_some() && reason.is_some(),
+                "the resolution completed: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("resolution failed outside admission: {error:?}"),
+    }
+}
+
+fn fresh_resolution_fixture(
+    scenario: &Scenario,
+    background: bool,
+    ids: Vec<String>,
+    cached: bool,
+) -> Fixture {
+    let store = fast_store();
+    let owner = context_for("resolve-fresh", background);
+    let pins = if cached {
+        scenario
+            .sidechains
+            .iter()
+            .map(|path| {
+                let (handle, snapshot) = acquired(&store, path, &owner);
+                release_lease(&store, &handle, &owner);
+                snapshot
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Fixture {
+        store,
+        request: json!({"schema":SCHEMA,"id":"ledger-resolve","operation":"resolve","session_ids":ids,"roots":scenario.roots(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        owner,
+        pins,
+    }
+}
+
+#[test]
+fn fresh_resolution_admits_its_record_before_walking() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    let ids = vec!["absent-a".to_owned(), "absent-bb".to_owned()];
+    for background in [false, true] {
+        let build = || fresh_resolution_fixture(&scenario, background, ids.clone(), false);
+        let record = resolution_record_bytes(&build());
+        let site = reached(
+            |store| store.resolution_records.load(Ordering::Relaxed),
+            |fixture| {
+                resolution_completed(fixture);
+            },
+        );
+        assert_eq!(
+            exact_headroom(&build, &site),
+            record,
+            "the resolution cursor's reservation is not its constructed record"
+        );
+        for headroom in [0, record - 1] {
+            assert_record_refused(
+                "fresh resolution record",
+                &build(),
+                headroom,
+                |store| store.resolution_records.load(Ordering::Relaxed),
+                |state| state.resolutions.len(),
+                |fixture, usage| resolved(fixture, usage).map(|_| ()),
+            );
+        }
+        refused_at_site("fresh resolution record", &build, &site, 0, record);
+        let mut sessions: Vec<Value> = Vec::new();
+        let mut growth = Vec::new();
+        for id in &ids {
+            let capacity = sessions.capacity();
+            sessions.push(json!({"session_id":id,"status":"missing","description":null}));
+            growth.push(
+                (sessions.capacity() - capacity) * size_of::<Value>()
+                    + value_bytes(sessions.last().unwrap()),
+            );
+        }
+        let exact = exact_headroom(&build, &resolution_completed);
+        assert_eq!(
+            exact,
+            record + growth.iter().sum::<usize>(),
+            "the completing resolution is not admitted at its record and each session it retains"
+        );
+        refused_at_site("fresh resolution", &build, &resolution_completed, 0, exact);
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        let released = released_by(&fitted.store, || {
+            assert!(resolution_completed(&fitted), "the exact fit was refused");
+        });
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        assert_eq!(
+            reserved_traces(&trace),
+            [vec![record], growth].concat(),
+            "the resolution reserved something besides its record and sessions: {trace:?}"
+        );
+        assert_eq!(admitted_bytes_of(&trace).iter().sum::<usize>(), exact);
+        assert!(
+            !trace
+                .iter()
+                .any(|entry| matches!(entry, Trace::Allocated(_))),
+            "the completing resolution allocated retained bookkeeping: {trace:?}"
+        );
+        assert_eq!(
+            released,
+            vec![exact],
+            "the completing resolution did not release its whole reservation"
+        );
+        assert!(fitted.store.lock_state().resolutions.is_empty());
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap - exact);
+        assert_eq!(audited(&fitted.store)[TOTAL], cap - exact);
+    }
+}
+
+#[test]
+fn fresh_resolution_reserves_each_found_session_before_retaining_it() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    let root = PathBuf::from(&scenario.roots()[0]);
+    for background in [false, true] {
+        let build = || fresh_resolution_fixture(&scenario, background, scenario.ids(), true);
+        let record = resolution_record_bytes(&build());
+        let exact = exact_headroom(&build, &resolution_parked);
+        refused_at_site(
+            "fresh resolution step",
+            &build,
+            &resolution_parked,
+            0,
+            exact,
+        );
+        let fitted = build();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(resolution_parked(&fitted), "the exact fit was refused");
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        assert_admitted_before_allocating("fresh resolution step", &trace);
+        reserved_before_the_last_admission("fresh resolution step", &trace, record);
+        let reservations = reserved_traces(&trace);
+        assert_eq!(
+            reservations.first(),
+            Some(&record),
+            "the resolution did not reserve its record first: {trace:?}"
+        );
+        let mut found: HashMap<String, PathBuf> = HashMap::new();
+        for id in scenario.ids() {
+            let path = root.join(format!("{id}.jsonl"));
+            let bytes = id.len() + path.capacity();
+            let capacity = found.capacity();
+            found.insert(id, path);
+            let growth = (found.capacity() - capacity) * size_of::<(String, PathBuf)>() + bytes;
+            assert!(
+                reservations.contains(&growth),
+                "the walk did not reserve a found session's table growth, id, and path before retaining it: {growth} {trace:?}"
+            );
+        }
+        let session = {
+            let state = fitted.store.lock_state();
+            let (_, cursor) = state.resolutions.iter().next().expect("parked resolution");
+            assert_eq!(cursor.sessions.len(), 1);
+            let mut mirror: Vec<Value> = Vec::new();
+            mirror.push(Value::new_null());
+            mirror.capacity() * size_of::<Value>() + value_bytes(&cursor.sessions[0])
+        };
+        assert!(
+            reservations.contains(&session),
+            "the step did not reserve its resolved session before retaining it: {session} {trace:?}"
+        );
+        assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+    }
+}
+
+fn prepared_query_record_bytes(fixture: &Fixture) -> usize {
+    size_of::<PreparedQueryCursor>()
+        + fixture.owner["claimant"].as_str().unwrap().len()
+        + fixture.request["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .len()
+        + value_bytes(&fixture.request["query"])
+}
+
+fn predicate_queue_bound(fixture: &Fixture) -> (usize, usize) {
+    let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+    let encoded = {
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[graph_id].lock().unwrap();
+        sonic_rs::to_vec(&graph.root_facts.inputs).unwrap().len()
+    };
+    let records = 2 * (4 * encoded) / crate::snapshot_codec::PREDICATE_INPUT_CHUNK_BYTES + 2;
+    let framing = r#"{"calls":[],"commands":[],"edited_files":[],"skills":[]}"#.len();
+    (records, records * (size_of::<String>() + framing) + encoded)
+}
+
+fn fresh_query_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = prepared_cursor_store();
+    let owner = context_for("query-fresh", background);
+    let (root, root_snapshot) = acquired(&store, &source.path, &owner);
+    let graph = prepared_graph(&store, &root, &[], &owner);
+    Fixture {
+        store,
+        owner,
+        request: graph_query(
+            &graph,
+            json!({"kind":"deep_predicate_inputs","order":"forward"}),
+            json!([]),
+        ),
+        pins: vec![root_snapshot],
+    }
+}
+
+fn queried(
+    fixture: &Fixture,
+    usage: &mut [u64; 18],
+) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+    fixture.store.query_graph(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        usage,
+    )
+}
+
+fn query_parked(fixture: &Fixture) -> bool {
+    match queried(fixture, &mut [0u64; 18]) {
+        Ok((data, cursor, reason)) => {
+            assert!(
+                cursor.is_some() && reason.is_some(),
+                "the prepared query completed: {data:?}"
+            );
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("prepared query failed outside admission: {error:?}"),
+    }
+}
+
+#[test]
+fn fresh_prepared_query_admits_its_cursor_before_building_its_record_queue() {
+    let source = chunked_inputs_source();
+    for background in [false, true] {
+        let build = || fresh_query_fixture(&source, background);
+        let control = build();
+        let record = prepared_query_record_bytes(&control);
+        let (records, queue) = predicate_queue_bound(&control);
+        let site = reached(
+            |store| store.prepared_query_records.load(Ordering::Relaxed),
+            |fixture| {
+                query_parked(fixture);
+            },
+        );
+        assert_eq!(
+            exact_headroom(&build, &site),
+            record,
+            "the prepared query cursor's reservation is not its constructed record"
+        );
+        for headroom in [0, record - 1] {
+            assert_record_refused(
+                "fresh prepared query record",
+                &build(),
+                headroom,
+                |store| store.prepared_query_records.load(Ordering::Relaxed),
+                |state| state.prepared_queries.len(),
+                |fixture, usage| queried(fixture, usage).map(|_| ()),
+            );
+        }
+        refused_at_site("fresh prepared query record", &build, &site, 0, record);
+        let exact = exact_headroom(&build, &query_parked);
+        refused_at_site("fresh prepared query", &build, &query_parked, 0, exact);
+        let fitted = build();
+        let capacity = fitted.store.lock_state().prepared_queries.capacity_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        let released = released_by(&fitted.store, || {
+            assert!(query_parked(&fitted), "the exact fit was refused");
+        });
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        assert_admitted_before_allocating("fresh prepared query", &trace);
+        reserved_before_the_last_admission("fresh prepared query", &trace, record);
+        assert_eq!(
+            reserved_traces(&trace),
+            vec![record, queue],
+            "the prepared query reserved something besides its cursor record and its record-queue bound: {trace:?}"
+        );
+        let parked = {
+            let state = fitted.store.lock_state();
+            let (token, cursor) = state
+                .prepared_queries
+                .iter()
+                .next()
+                .expect("parked prepared query");
+            let queued = cursor.input_records.as_ref().expect("input records");
+            assert_eq!(
+                queued.capacity(),
+                records,
+                "the record queue was not built at its record bound"
+            );
+            assert!(queued.len() >= 2, "the page drained the chunked queue");
+            assert!(
+                queued.capacity() * size_of::<String>()
+                    + queued.iter().map(String::capacity).sum::<usize>()
+                    <= queue,
+                "the record queue outgrew its byte bound"
+            );
+            NativeStore::audit_prepared_query_bytes(token, cursor)
+                + state.prepared_queries.capacity_bytes()
+                - capacity
+                + state.prepared_queries.pledged(token)
+        };
+        assert_eq!(
+            exact,
+            (record + queue).max(parked),
+            "the prepared query's admission is not its peak reservation or its parked record"
+        );
+        assert_eq!(
+            released,
+            vec![exact - parked],
+            "the prepared query park did not draw its record from the reservation"
+        );
+        let cap = cap_for(&fitted.owner);
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap - exact + parked);
+        assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + parked);
+    }
+}
+
+fn membership_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let mut request = warm_request(scenario);
+    request.insert("thread_ids", json!([]));
+    request.insert("direct_paths", json!(scenario.direct()));
+    Fixture {
+        store: prepared_store(),
+        owner: context_for("warm-membership", background),
+        request,
+        pins: Vec::new(),
+    }
+}
+
+fn membership_key(fixture: &Fixture) -> String {
+    NativeStore::warm_membership_key(&fixture.request, &fixture.owner).unwrap()
+}
+
+fn membership_record_bytes(fixture: &Fixture) -> usize {
+    membership_key(fixture).len()
+        + size_of::<WarmMembership>()
+        + 2 * <Sha256 as Digest>::output_size()
+}
+
+fn built_membership(
+    fixture: &Fixture,
+    usage: &mut [u64; 18],
+) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
+    let mut remaining = work_bounds();
+    fixture.store.build_warm_membership(
+        &membership_key(fixture),
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        usage,
+        &mut remaining,
+    )
+}
+
+fn membership_built(fixture: &Fixture) -> bool {
+    match built_membership(fixture, &mut [0u64; 18]) {
+        Ok(_) => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("membership build failed outside admission: {error:?}"),
+    }
+}
+
+fn membership_published(fixture: &Fixture) -> bool {
+    let (membership, mut reservation) = match built_membership(fixture, &mut [0u64; 18]) {
+        Ok(built) => built,
+        Err(error) if error.status == Status::RetainedLimit => return false,
+        Err(error) => panic!("membership build failed outside admission: {error:?}"),
+    };
+    match fixture.store.publish_warm_membership(
+        &membership_key(fixture),
+        &membership,
+        &fixture.owner,
+        Some(&mut reservation),
+    ) {
+        Ok(()) => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("membership publication failed outside admission: {error:?}"),
+    }
+}
+
+#[test]
+fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
+    let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let build = || membership_fixture(&scenario, background);
+        let record = membership_record_bytes(&build());
+        let site = reached(
+            |store| store.warm_records.load(Ordering::Relaxed),
+            |fixture| {
+                membership_built(fixture);
+            },
+        );
+        assert_eq!(
+            exact_headroom(&build, &site),
+            record,
+            "the warm membership's reservation is not its key, record, and revision"
+        );
+        for headroom in [0, record - 1] {
+            assert_record_refused(
+                "fresh warm membership record",
+                &build(),
+                headroom,
+                |store| store.warm_records.load(Ordering::Relaxed),
+                |state| state.warm_memberships.len(),
+                |fixture, usage| built_membership(fixture, usage).map(|_| ()),
+            );
+        }
+        refused_at_site("fresh warm membership record", &build, &site, 0, record);
+        let exact = exact_headroom(&build, &membership_built);
+        refused_at_site("fresh warm membership", &build, &membership_built, 0, exact);
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        let (membership, reservation) =
+            built_membership(&fitted, &mut [0u64; 18]).expect("the exact fit was refused");
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        let reservations = reserved_traces(&trace);
+        assert_eq!(
+            reservations.first(),
+            Some(&record),
+            "the membership did not reserve its record first: {trace:?}"
+        );
+        assert_eq!(reservations.iter().sum::<usize>(), exact);
+        assert_eq!(
+            reservation.bytes, exact,
+            "the build does not hold every byte it reserved"
+        );
+        assert_eq!(admitted_bytes_of(&trace).iter().sum::<usize>(), exact);
+        assert!(
+            !trace
+                .iter()
+                .any(|entry| matches!(entry, Trace::Allocated(_))),
+            "the membership build allocated retained bookkeeping: {trace:?}"
+        );
+        assert_eq!(
+            (membership.members.len(), membership.sidechain_dirs.len()),
+            (4, 4)
+        );
+        let mut members: Vec<PreparedSourceRef> = Vec::new();
+        let mut dirs: Vec<(PathBuf, Option<SourceStamp>)> = Vec::new();
+        let mut growth = record;
+        for member in membership.members.iter() {
+            let capacity = members.capacity();
+            members.push(member.clone());
+            growth += (members.capacity() - capacity) * size_of::<PreparedSourceRef>()
+                + member.path.capacity();
+        }
+        for dir in membership.sidechain_dirs.iter() {
+            let capacity = dirs.capacity();
+            dirs.push(dir.clone());
+            growth += (dirs.capacity() - capacity) * size_of::<(PathBuf, Option<SourceStamp>)>()
+                + dir.0.capacity();
+        }
+        growth += arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
+            + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(membership.sidechain_dirs.len());
+        assert_eq!(
+            exact, growth,
+            "the membership build is not admitted at its record, each retained path and buffer growth, and its shared slices"
+        );
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap);
+        let released = released_by(&fitted.store, || drop(reservation));
+        assert_eq!(released, vec![exact]);
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap - exact);
+        drop(membership);
+    }
+}
+
+#[test]
+fn published_warm_membership_draws_its_record_from_the_build_reservation() {
+    let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let build = || membership_fixture(&scenario, background);
+        let record = membership_record_bytes(&build());
+        let peak = exact_headroom(&build, &membership_built);
+        let exact = exact_headroom(&build, &membership_published);
+        refused_at_site(
+            "warm membership publication",
+            &build,
+            &membership_published,
+            0,
+            exact,
+        );
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let shared_table = fitted.store.lock_state().ledger.shared.table_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        let released = released_by(&fitted.store, || {
+            assert!(membership_published(&fitted), "the exact fit was refused");
+        });
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        assert_admitted_before_allocating("warm membership publication", &trace);
+        reserved_before_the_last_admission("warm membership publication", &trace, record);
+        let retained = ledger(&fitted.store)[TOTAL] + exact - cap;
+        let stored = {
+            let state = fitted.store.lock_state();
+            assert_eq!(state.warm_memberships.len(), 1);
+            let (key, membership) = state.warm_memberships.iter().next().unwrap();
+            NativeStore::audit_warm_membership_bytes(key, membership)
+                + state.warm_memberships.capacity_bytes()
+                + NativeStore::audit_warm_buffer_bytes(&state)
+                + state.ledger.shared.table_bytes()
+                - shared_table
+        };
+        assert_eq!(
+            retained, stored,
+            "the published membership retains more than its record, its table growth, and its shared buffers"
+        );
+        assert_eq!(
+            exact,
+            peak.max(retained),
+            "the publication's admission is not the build's peak reservation or its retained record"
+        );
+        assert_eq!(
+            admitted_bytes_of(&trace).last(),
+            Some(&(retained - retained.min(peak))),
+            "the publication admitted bytes the build's reservation already covered: {trace:?}"
+        );
+        assert_eq!(
+            released,
+            vec![exact - retained],
+            "the publication did not draw its record from the build's reservation"
+        );
+        assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + retained);
     }
 }
