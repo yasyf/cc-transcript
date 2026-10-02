@@ -743,7 +743,10 @@ fn appends_keep_fixed_size_prefix_segments() {
     warm().0.unwrap();
     for round in 0..5 {
         let before = std::fs::metadata(&source.0).unwrap().len() as usize;
-        append(&source.0, &sparse(110 + round * 10, &[])[100 + round * 10..]);
+        append(
+            &source.0,
+            &sparse(110 + round * 10, &[])[100 + round * 10..],
+        );
         let (run, _, progress) = warm();
         assert_eq!(run.unwrap().counts, vec![1]);
         assert_eq!(progress.cache_hits, 1);
