@@ -3078,7 +3078,7 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
                     .contains_key(&identity)
         };
         let probe = build();
-        let predicted = chunk_entry_bytes(&probe.pins[0]);
+        let predicted = facts_bound_walk(&probe.pins[0]);
         let growth = {
             let state = probe.store.lock_state();
             state.recent_codex.growth(1) + state.recent_codex_expiry.growth(1)
@@ -3354,7 +3354,30 @@ fn fact_probes(store: &NativeStore) -> [usize; 2] {
 }
 
 fn chunk_entry_bytes(snapshot: &Arc<TranscriptSnapshot>) -> usize {
-    entry_bytes(&[snapshot]) - snapshot.accounted_allocations()[0].1.owned_capacity_bytes
+    snapshot
+        .chunks
+        .iter()
+        .map(|chunk| {
+            size_of::<EntryChunk>()
+                + size_of::<ChunkRows>()
+                + chunk.entries.capacity() * size_of::<Entry>()
+                + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+                + chunk
+                    .entry_charges
+                    .iter()
+                    .map(|charge| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+fn empty_facts_walk() -> usize {
+    size_of::<PreparedFacts>()
+        + value_walk(&json!({"calls":[],"commands":[],"edited_files":[],"skills":[]}))
+}
+
+pub(super) fn facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
+    chunk_entry_bytes(snapshot) + empty_facts_walk()
 }
 
 fn value_walk(value: &Value) -> usize {
@@ -3433,7 +3456,7 @@ fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>)
 }
 
 fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
-    chunk_entry_bytes(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
+    facts_bound_walk(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
 }
 
 fn decoded_source_facts_prediction(fixture: &Fixture) -> usize {
@@ -3707,7 +3730,7 @@ fn root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
     if primed {
         decoded_root_facts_prediction(fixture)
     } else {
-        chunk_entry_bytes(&fixture.pins[0])
+        facts_bound_walk(&fixture.pins[0])
     }
 }
 
@@ -3745,6 +3768,46 @@ fn root_facts_are_admitted_in_full_before_construction_or_decoding() {
                 NO_LOADS,
             );
         }
+    }
+}
+
+#[test]
+fn empty_root_facts_are_admitted_at_their_fixed_overhead_before_construction() {
+    let source = LedgerSource::new("");
+    let site = "prepared_root_facts empty root";
+    for background in [false, true] {
+        let build = || root_facts_fixture(&source, background, false);
+        let probe = build();
+        assert_eq!(probe.pins[0].event_count, 0);
+        assert_eq!(chunk_entry_bytes(&probe.pins[0]), 0);
+        let predicted = facts_bound_walk(&probe.pins[0]);
+        assert_eq!(
+            predicted,
+            facts_walk(&built_facts(&probe.pins[0], &json!([]))),
+            "{site}: the fixed overhead is not the empty facts"
+        );
+        assert_facts_admitted_in_full(
+            site,
+            &build,
+            &|fixture: &Fixture| {
+                constructed(site, &fixture.store, [1, 0], false, || {
+                    fixture
+                        .store
+                        .prepared_root_facts(
+                            &fixture.pins[0],
+                            &json!({"id":"native","version":"1"}),
+                            &fixture.owner,
+                            &work_bounds(),
+                            &Cancellation::default(),
+                        )
+                        .map(|_| ())
+                })
+            },
+            0,
+            predicted,
+            &[],
+            NO_LOADS,
+        );
     }
 }
 
@@ -3796,7 +3859,7 @@ fn warm_root_refuses_root_facts_before_construction() {
         settled(&probe.store)[ENTRIES],
         entry_bytes(&[&probe.pins[0]])
     );
-    let predicted = chunk_entry_bytes(&probe.pins[0]);
+    let predicted = facts_bound_walk(&probe.pins[0]);
     assert_facts_admitted_in_full(
         site,
         &build,
@@ -3916,7 +3979,7 @@ fn finished_source_facts_are_admitted_in_full_before_construction() {
             settled(&probe.store)[ENTRIES],
             entry_bytes(&[&probe.pins[0]])
         );
-        let predicted = chunk_entry_bytes(&probe.pins[0]);
+        let predicted = facts_bound_walk(&probe.pins[0]);
         assert_eq!(exact_headroom(&build, &attempt), predicted);
         for headroom in [0, predicted - 1] {
             let control = build();
@@ -4021,8 +4084,8 @@ fn prepared_query_refuses_source_completion_before_construction() {
     for background in [false, true] {
         let build = |index: usize| completion_query_fixture(&scenario, index, background);
         let (small_bytes, large_bytes) = (
-            chunk_entry_bytes(&build(0).pins[1]),
-            chunk_entry_bytes(&build(1).pins[1]),
+            facts_bound_walk(&build(0).pins[1]),
+            facts_bound_walk(&build(1).pins[1]),
         );
         let small = exact_headroom(&|| build(0), &attempt);
         let large = exact_headroom(&|| build(1), &attempt);
@@ -4050,7 +4113,7 @@ fn prepared_query_refuses_source_completion_before_construction() {
 }
 
 fn root_slice_prediction(fixture: &Fixture) -> usize {
-    facts_walk(&built_facts(&fixture.pins[0], &json!([])))
+    facts_bound_walk(&fixture.pins[0])
 }
 
 #[test]
@@ -4061,14 +4124,13 @@ fn root_slice_is_admitted_in_full_before_construction() {
         let build = || slice_fixture(&scenario, background);
         let probe = build();
         let predicted = root_slice_prediction(&probe);
-        let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
-        assert_eq!(
-            predicted,
-            probe.store.lock_state().prepared_graphs[graph_id]
-                .lock()
-                .unwrap()
-                .root_facts
-                .accounted_bytes()
+        let slice_bytes = facts_walk(&built_facts(
+            &probe.pins[0],
+            &json!([{"kind":"current_turn"}]),
+        ));
+        assert!(
+            predicted >= slice_bytes,
+            "{site}: the {predicted}-byte reservation does not cover the {slice_bytes}-byte slice"
         );
         let attempt = |fixture: &Fixture| {
             let mut usage = [0u64; 18];
@@ -4151,7 +4213,7 @@ fn degraded_root_slices_are_admitted_at_the_root_entry_bytes_before_construction
         "{}{}{}",
         prompt_line("early", 17 * 1024 * 1024),
         tool_line("reply", "Bash"),
-        prompt_line("now", 1024 * 1024)
+        prompt_line("now", 256 * 1024)
     ));
     let site = "query_graph degraded root slice";
     for background in [false, true] {
@@ -4174,8 +4236,8 @@ fn degraded_root_slices_are_admitted_at_the_root_entry_bytes_before_construction
             .as_ref()
             .expect("the current turn keeps its overrides");
         assert_eq!(overrides.len(), 1, "{site}: the current turn is one event");
-        assert_eq!(overrides[0].text.len(), 1024 * 1024);
-        let predicted = chunk_entry_bytes(&probe.pins[0]);
+        assert_eq!(overrides[0].text.len(), 256 * 1024);
+        let predicted = facts_bound_walk(&probe.pins[0]);
         let slice_bytes = facts_walk(&slice);
         assert!(
             predicted >= slice_bytes,
@@ -4255,9 +4317,18 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
     let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
     let site = "finish_prepared_source barrier";
     for background in [false, true] {
+        let control = finish_fixture(&scenario.sidechains[0], background);
+        let leased = ledger(&control.store)[TOTAL];
+        control
+            .store
+            .lock_state()
+            .leases
+            .remove(&lease_id(&control));
+        let lease_bytes = leased - ledger(&control.store)[TOTAL];
+        assert!(lease_bytes > 0, "{site}: the source lease is not charged");
         let fixture = finish_fixture(&scenario.sidechains[0], background);
         let cap = cap_for(&fixture.owner);
-        let predicted = chunk_entry_bytes(&fixture.pins[0]);
+        let predicted = facts_bound_walk(&fixture.pins[0]);
         let occupied = facts_walk(&built_facts(&fixture.pins[0], &json!([])));
         assert!(
             occupied <= predicted,
@@ -4277,30 +4348,37 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
         let filler = fill_to(&fixture.store, &fixture.owner, predicted);
         std::thread::scope(|scope| {
             let finishing = scope.spawn(|| finish_source(&fixture));
-            paused_rx
-                .recv_timeout(DROP_TIMEOUT)
-                .expect("the facts were never built");
+            let paused = paused_rx.recv_timeout(DROP_TIMEOUT);
+            let observed = paused.is_ok().then(|| {
+                let held = ledger(&fixture.store)[TOTAL];
+                let audit = audited(&fixture.store)[TOTAL];
+                let plug = fixture
+                    .store
+                    .reserve_projection(&fixture.owner, lease_bytes);
+                let refused = fixture
+                    .store
+                    .reserve_projection(&fixture.owner, occupied)
+                    .err();
+                let after = ledger(&fixture.store)[TOTAL];
+                drop(plug);
+                (held, audit, refused, after)
+            });
+            resume_tx.send(()).unwrap();
+            let outcome = finishing.join().unwrap();
+            paused.expect("the facts were never built");
+            let (held, audit, refused, after) = observed.unwrap();
             assert_eq!(
-                ledger(&fixture.store)[TOTAL],
-                cap,
+                held,
+                cap - lease_bytes,
                 "{site}: the reservation is not held while the facts are live"
             );
-            assert!(audited(&fixture.store)[TOTAL] <= cap);
-            let refused = fixture
-                .store
-                .reserve_projection(&fixture.owner, occupied)
-                .err()
-                .expect("the headroom the facts occupy was admitted twice");
+            assert!(audit <= cap);
+            let refused = refused.expect("the headroom the facts occupy was admitted twice");
             assert_eq!(refused.status, Status::RetainedLimit, "{site}: {refused:?}");
-            assert_eq!(
-                ledger(&fixture.store)[TOTAL],
-                cap,
-                "{site}: the refused admission moved the ledger"
-            );
-            resume_tx.send(()).unwrap();
+            assert_eq!(after, cap, "{site}: the refused admission moved the ledger");
             assert!(
                 matches!(
-                    finishing.join().unwrap(),
+                    outcome,
                     Ok(PreparedSourceOutcome::Ready { cached: false, .. })
                 ),
                 "{site}: the finish did not publish its facts"
@@ -4366,11 +4444,19 @@ fn primed_disk_index_fixture(scenario: &Scenario, background: bool) -> Fixture {
     );
     let spare = scenario.root.file("spare.jsonl", &line("spare"));
     let (_, spare_snapshot) = acquired(&store, &spare, &owner);
+    let pins = [root_snapshot, spare_snapshot]
+        .into_iter()
+        .chain(scenario.sidechains.iter().map(|path| {
+            let (handle, snapshot) = acquired(&store, path, &owner);
+            release_lease(&store, &handle, &owner);
+            snapshot
+        }))
+        .collect();
     Fixture {
         store,
         owner,
         request: json!(null),
-        pins: vec![root_snapshot, spare_snapshot],
+        pins,
     }
 }
 
@@ -4396,7 +4482,7 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         let build = || primed_disk_index_fixture(&scenario, background);
         let control = build();
         let cap = cap_for(&control.owner);
-        let entry = chunk_entry_bytes(&control.pins[1]);
+        let entry = facts_bound_walk(&control.pins[1]);
         let (tier, charged) = (
             control.store.prepared_disk.index_capacity_bytes(),
             control.store.lock_state().prepared_disk_index_bytes,
@@ -4409,8 +4495,8 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         assert!(landed(&control), "{site}: the control insert did not land");
         let growth = control.store.prepared_disk.index_capacity_bytes() - tier;
         assert!(
-            growth > entry,
-            "{site}: the {growth}-byte tier growth hides behind the {entry}-byte facts reservation"
+            growth > 0,
+            "{site}: the control insert did not grow the index"
         );
         assert_eq!(
             control.store.lock_state().prepared_disk_index_bytes - charged,
@@ -4419,7 +4505,7 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         );
         assert_admitted_before_allocating(site, &traced(&control.store));
         control.store.assert_conserved();
-        for headroom in [0, growth - 1] {
+        for headroom in [0, entry + growth - 1] {
             let refused = build();
             let (stats, probes, before) = (
                 refused.store.prepared_disk.stats(),
@@ -4457,7 +4543,7 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
             assert!(audited(&refused.store)[TOTAL] <= cap);
         }
         let fitted = build();
-        let _filler = fill_to(&fitted.store, &fitted.owner, growth);
+        let _filler = fill_to(&fitted.store, &fitted.owner, entry + growth);
         assert!(landed(&fitted), "{site}: the exact growth was refused");
         fitted.store.assert_conserved();
         assert!(audited(&fitted.store)[TOTAL] <= cap);

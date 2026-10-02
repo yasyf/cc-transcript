@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use regex::RegexBuilder;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
@@ -1510,6 +1511,18 @@ pub fn prepare_facts(
     cancel: &Cancellation,
 ) -> Result<(crate::snapshot_prepared::PreparedFacts, usize, usize), SnapshotError> {
     prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024)
+}
+
+pub fn empty_facts_bytes() -> usize {
+    static BYTES: LazyLock<usize> = LazyLock::new(|| {
+        let charge = crate::snapshot_memory::value_charge(
+            &json!({"calls":[],"commands":[],"edited_files":[],"skills":[]}),
+        );
+        std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
+            + charge.owned_capacity_bytes
+            + charge.opaque_dom_accounted_bytes
+    });
+    *BYTES
 }
 
 fn prepare_facts_limited(

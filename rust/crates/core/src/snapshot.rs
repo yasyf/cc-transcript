@@ -1138,6 +1138,10 @@ fn entry_bytes(snapshot: &TranscriptSnapshot) -> usize {
         .sum()
 }
 
+fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
+    entry_bytes(snapshot) + crate::snapshot_projection::empty_facts_bytes()
+}
+
 fn value_bytes(value: &Value) -> usize {
     let charge = crate::snapshot_memory::value_charge(value);
     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
@@ -13503,13 +13507,14 @@ mod tests {
             assert_eq!(slices(&prepared), 0);
             let idle = store.retained_accounted_bytes();
             let capacities = idle - settled_bytes(&store);
-            let root_facts = store.lock_state().prepared_graphs
-                [prepared["data"]["handle"]["graph_id"].as_str().unwrap()]
-            .lock()
-            .unwrap()
-            .root_facts
-            .accounted_bytes();
-            let bound = slice_bytes.max(root_facts);
+            let root = Arc::clone(
+                &store.lock_state().prepared_graphs
+                    [prepared["data"]["handle"]["graph_id"].as_str().unwrap()]
+                .lock()
+                .unwrap()
+                .root,
+            );
+            let bound = slice_bytes.max(super::ledger_tests::facts_bound_walk(&root));
             let room = cap - idle - bound - REPLY_RESERVATION;
             let crowded = store.reserve_projection(&owner, room + 1).unwrap();
             let refused = store.request(&slice_query(&prepared), &owner, &Cancellation::default());

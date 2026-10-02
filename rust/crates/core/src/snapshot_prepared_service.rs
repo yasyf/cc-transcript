@@ -198,23 +198,11 @@ impl NativeStore {
         Ok(facts)
     }
 
-    fn admit_prepared_disk_growth(
-        &self,
-        context: &Value,
-        reservation: &mut ProjectionReservation<'_>,
-        growth: usize,
-    ) -> bool {
+    fn admit_prepared_disk_growth(&self, context: &Value, growth: usize) -> bool {
         let mut state = self.lock_state();
-        let covered = growth.min(reservation.bytes);
-        if growth > covered
-            && self
-                .admit_memory(&mut state, context, growth - covered)
-                .is_err()
-        {
+        if self.admit_memory(&mut state, context, growth).is_err() {
             return false;
         }
-        state.transient_bytes -= covered;
-        reservation.bytes -= covered;
         state.prepared_disk_index_bytes += growth;
         true
     }
@@ -246,7 +234,7 @@ impl NativeStore {
         )?;
         let decoded = self.prepared_disk.decoded_bytes(&key)?;
         let mut reservation =
-            self.reserve_projection(context, decoded.unwrap_or(0).max(entry_bytes(root)))?;
+            self.reserve_projection(context, decoded.unwrap_or(0).max(facts_bound(root)))?;
         if decoded.is_some() {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
@@ -282,7 +270,7 @@ impl NativeStore {
         let (facts, _, _) =
             crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
         self.prepared_disk.insert(&key, &facts, |growth| {
-            self.admit_prepared_disk_growth(context, &mut reservation, growth)
+            self.admit_prepared_disk_growth(context, growth)
         })?;
         let facts = Arc::new(facts);
         match self.cache_prepared_facts(
@@ -475,7 +463,7 @@ impl NativeStore {
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
         let prepared = self
-            .reserve_projection(context, entry_bytes(&snapshot))
+            .reserve_projection(context, facts_bound(&snapshot))
             .and_then(|reservation| {
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
@@ -534,7 +522,7 @@ impl NativeStore {
             &classifier,
         )?;
         self.prepared_disk.insert(&key, &facts, |growth| {
-            self.admit_prepared_disk_growth(context, &mut reservation, growth)
+            self.admit_prepared_disk_growth(context, growth)
         })?;
         let facts = Arc::new(facts);
         let facts = match self.cache_prepared_facts(
@@ -1952,11 +1940,7 @@ impl NativeStore {
         let claimant = graph.claimant.clone();
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
-        let root_facts_bytes = if graph.root_facts.override_events.is_some() {
-            graph.root_facts.accounted_bytes()
-        } else {
-            entry_bytes(&graph.root)
-        };
+        let root_facts_bytes = facts_bound(&graph.root);
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
