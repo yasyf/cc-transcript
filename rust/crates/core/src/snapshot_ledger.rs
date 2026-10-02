@@ -538,6 +538,16 @@ impl RetainedLedger {
     }
 }
 
+pub(crate) trait TicketKey {
+    fn owned_bytes(&self) -> usize;
+}
+
+impl TicketKey for String {
+    fn owned_bytes(&self) -> usize {
+        self.capacity()
+    }
+}
+
 struct Ticket<K> {
     deadline: u64,
     key: K,
@@ -565,13 +575,15 @@ impl<K> Ord for Ticket<K> {
 
 pub(crate) struct ExpiryIndex<K> {
     heap: BinaryHeap<Ticket<K>>,
+    key_bytes: usize,
     work: Work,
 }
 
-impl<K> ExpiryIndex<K> {
+impl<K: TicketKey> ExpiryIndex<K> {
     pub(crate) fn new(work: Work) -> Self {
         Self {
             heap: BinaryHeap::new(),
+            key_bytes: 0,
             work,
         }
     }
@@ -579,6 +591,7 @@ impl<K> ExpiryIndex<K> {
     pub(crate) fn push(&mut self, deadline: u64, key: K) {
         self.work.tick(1);
         let predicted = self.capacity_after(1);
+        self.key_bytes += key.owned_bytes();
         self.heap.push(Ticket { deadline, key });
         self.settle(predicted);
     }
@@ -600,8 +613,35 @@ impl<K> ExpiryIndex<K> {
         );
     }
 
+    fn pop(&mut self) -> Option<Ticket<K>> {
+        let ticket = self.heap.pop()?;
+        self.work.tick(1);
+        self.key_bytes = self
+            .key_bytes
+            .checked_sub(ticket.key.owned_bytes())
+            .expect("balanced expiry index");
+        Some(ticket)
+    }
+
     pub(crate) fn heap_bytes(&self) -> usize {
-        self.heap.capacity() * size_of::<Ticket<K>>()
+        self.heap.capacity() * size_of::<Ticket<K>>() + self.key_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn key_bytes(&self) -> usize {
+        self.key_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audit_key_bytes(&self) -> usize {
+        self.summed_key_bytes()
+    }
+
+    fn summed_key_bytes(&self) -> usize {
+        self.heap
+            .iter()
+            .map(|ticket| ticket.key.owned_bytes())
+            .sum()
     }
 
     #[cfg(test)]
@@ -625,6 +665,7 @@ impl<K> ExpiryIndex<K> {
             "expiry index rebuild grew the heap"
         );
         self.heap = BinaryHeap::from(rebuilt);
+        self.key_bytes = self.summed_key_bytes();
         self.work.tick(self.heap.len());
     }
 
@@ -639,15 +680,11 @@ impl<K> ExpiryIndex<K> {
             .peek()
             .is_some_and(|ticket| ticket.deadline <= now)
         {
-            let Ticket { key, .. } = self.heap.pop().expect("peeked ticket");
-            self.work.tick(1);
+            let Ticket { key, .. } = self.pop().expect("peeked ticket");
             match deadline_of(&key) {
                 None => {}
                 Some(current) if current <= now => expired.push(key),
-                Some(current) => self.heap.push(Ticket {
-                    deadline: current,
-                    key,
-                }),
+                Some(current) => self.push(current, key),
             }
         }
         expired
@@ -657,15 +694,11 @@ impl<K> ExpiryIndex<K> {
         &mut self,
         mut deadline_of: impl FnMut(&K) -> Option<u64>,
     ) -> Option<K> {
-        while let Some(Ticket { deadline, key }) = self.heap.pop() {
-            self.work.tick(1);
+        while let Some(Ticket { deadline, key }) = self.pop() {
             match deadline_of(&key) {
                 None => {}
                 Some(current) if current == deadline => return Some(key),
-                Some(current) => self.heap.push(Ticket {
-                    deadline: current,
-                    key,
-                }),
+                Some(current) => self.push(current, key),
             }
         }
         None
@@ -797,22 +830,27 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
 
     pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.work.tick(1);
-        let key_charge = V::key_charge(&key);
         let charge = value.charge();
+        if let Some(slot) = self.map.get_mut(&key) {
+            self.charged = self
+                .charged
+                .checked_sub(slot.charge)
+                .expect("balanced retained ledger")
+                + charge;
+            slot.charge = charge;
+            return Some(replace(&mut slot.value, value));
+        }
+        let key_charge = V::key_charge(&key);
         self.charged += key_charge + charge;
-        let displaced = self.map.insert(
+        self.map.insert(
             key,
             Slot {
                 value,
                 key_charge,
                 charge,
             },
-        )?;
-        self.charged = self
-            .charged
-            .checked_sub(displaced.key_charge + displaced.charge)
-            .expect("balanced retained ledger");
-        Some(displaced.value)
+        );
+        None
     }
 
     pub(crate) fn remove<Q>(&mut self, key: &Q) -> Option<V>

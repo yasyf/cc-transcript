@@ -15,7 +15,7 @@ use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
     charged_bytes, Anchor, Charge, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, Reserved,
-    RetainedLedger, Table, Work,
+    RetainedLedger, Table, TicketKey, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -957,6 +957,18 @@ impl Charge<(SourceIdentity, String)> for Arc<CarriedClassification> {
 
     fn charge(&self) -> usize {
         self.prefix.capacity() * size_of::<Arc<EntryChunk>>()
+    }
+}
+
+impl TicketKey for SourceIdentity {
+    fn owned_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl TicketKey for (SourceIdentity, String) {
+    fn owned_bytes(&self) -> usize {
+        self.1.capacity()
     }
 }
 
@@ -3249,9 +3261,9 @@ impl NativeStore {
                 generation
                     .anchors()
                     .chain(carried.iter().flat_map(|candidate| candidate.anchors())),
-            ) + carried
-                .as_ref()
-                .map_or(0, |candidate| charged_bytes(&lineage, candidate));
+            ) + carried.as_ref().map_or(0, |candidate| {
+                charged_bytes(&lineage, candidate) + lineage.owned_bytes()
+            });
             self.admit_memory(
                 &mut state,
                 context,
@@ -3676,6 +3688,16 @@ impl NativeStore {
                 "prepared facts lru index misses a cached entry"
             );
         }
+        assert_eq!(
+            state.carried_expiry.key_bytes(),
+            state.carried_expiry.audit_key_bytes(),
+            "carried expiry tickets diverge from their lineage strings"
+        );
+        assert_eq!(
+            state.locations_expiry.key_bytes(),
+            state.locations_expiry.audit_key_bytes(),
+            "location expiry tickets diverge from their session ids"
+        );
     }
 
     fn foreground_admission(context: &Value) -> Result<bool, SnapshotError> {
@@ -7225,7 +7247,7 @@ impl NativeStore {
         Self::prune(&mut state);
         let added = entries
             .iter()
-            .map(|(id, path)| id.len() + path.as_os_str().len() + size_of::<LocatedPath>())
+            .map(|(id, path)| 2 * id.len() + path.as_os_str().len() + size_of::<LocatedPath>())
             .sum::<usize>();
         while state.locations.len() + entries.len() > 4096 && state.evict_oldest_location() {}
         if self.admit_memory(&mut state, context, added).is_err() {
@@ -12679,6 +12701,74 @@ mod tests {
         assert!(store.lock_state().carried_classifications.is_empty());
         assert!(store.retained_work.load(Ordering::Relaxed) > before);
         store.assert_conserved();
+    }
+
+    #[test]
+    fn carried_expiry_tickets_charge_their_lineage_strings_until_compaction() {
+        let source = Source::new(&format!("{}\n{}\n", user("a"), user("b")));
+        let store = store();
+        let owner = context("a");
+        let classifier = "c".repeat(16 * 1024);
+        store
+            .register_classifier(
+                &classifier,
+                "1",
+                Arc::new(|_, range| Ok(vec![true; range.len()])),
+            )
+            .unwrap();
+        let mut request = acquire(&source.path);
+        request.insert("classifier", json!({"id":classifier,"version":"1"}));
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        store.assert_conserved();
+        let (lineage, carried) = {
+            let state = store.lock_state();
+            let (lineage, carried) = state
+                .carried_classifications
+                .iter()
+                .next()
+                .expect("carried classification");
+            (lineage.clone(), Arc::clone(carried))
+        };
+        let ticket = lineage.owned_bytes();
+        assert!(ticket >= 16 * 1024);
+        let one_ticket = store.retained_accounted_bytes();
+        {
+            let state = store.lock_state();
+            assert_eq!(state.carried_expiry.len(), 1);
+            assert_eq!(state.carried_expiry.key_bytes(), ticket);
+        }
+        store
+            .lock_state()
+            .insert_carried(lineage.clone(), Arc::clone(&carried));
+        store.assert_conserved();
+        let heap_two = {
+            let state = store.lock_state();
+            assert_eq!(state.carried_expiry.len(), 2);
+            assert_eq!(state.carried_expiry.key_bytes(), 2 * ticket);
+            state.carried_expiry.heap_bytes()
+        };
+        let two_tickets = store.retained_accounted_bytes();
+        assert_eq!(two_tickets, one_ticket + ticket);
+        store
+            .lock_state()
+            .insert_carried(lineage.clone(), Arc::clone(&carried));
+        store.assert_conserved();
+        let heap_one = {
+            let state = store.lock_state();
+            assert_eq!(state.carried_expiry.len(), 1);
+            assert_eq!(state.carried_expiry.key_bytes(), ticket);
+            state.carried_expiry.heap_bytes()
+        };
+        eprintln!("carried tickets: lineage={ticket} heap_two={heap_two} heap_one={heap_one}");
+        assert_eq!(
+            store.retained_accounted_bytes(),
+            two_tickets - (heap_two - heap_one)
+        );
     }
 
     fn located(expires: u64) -> LocatedPath {
