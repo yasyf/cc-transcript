@@ -12,17 +12,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+use sonic_rs::JsonType;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
-#[cfg(test)]
-use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{
-    charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier, set_capacity_for, set_growth,
-    vec_capacity_for, vec_growth, Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent,
-    LedgerHook, Ledgered, RetainedLedger, Table, TicketKey, Work,
+    arc_bytes, arc_control_bytes, arc_slice_bytes, charged_bytes, deque_capacity_for, deque_growth,
+    hashbrown_tier, set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge,
+    DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table,
+    TicketKey, Work, MUTEX_STORAGE_BYTES,
 };
+#[cfg(test)]
+use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
 use crate::types::Entry;
@@ -33,6 +36,12 @@ pub const MAX_REPLY_BYTES: usize = 1_044_480;
 const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
+const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<(*mut libc::DIR, PathBuf)>();
+const LOAD_SLOT_BYTES: usize = arc_bytes::<LoadSlot>() + MUTEX_STORAGE_BYTES;
+const CLASSIFIER_SLOT_BYTES: usize = arc_bytes::<ClassifierSlot>() + MUTEX_STORAGE_BYTES;
+const PREPARED_GRAPH_BYTES: usize = arc_bytes::<Mutex<PreparedGraph>>() + MUTEX_STORAGE_BYTES;
+const RELEASE_QUEUE_BYTES: usize =
+    arc_bytes::<crate::snapshot_ledger::ReleaseQueue>() + MUTEX_STORAGE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -234,8 +243,8 @@ pub struct EntryChunk {
 impl EntryChunk {
     pub fn new(start: usize, entries: Vec<Entry>) -> Self {
         let mut charge = MemoryCharge {
-            owned_capacity_bytes: size_of::<Self>()
-                + size_of::<ChunkRows>()
+            owned_capacity_bytes: arc_bytes::<Self>()
+                + arc_bytes::<ChunkRows>()
                 + entries.capacity() * size_of::<Entry>(),
             opaque_dom_accounted_bytes: 0,
         };
@@ -342,9 +351,9 @@ impl TranscriptSnapshot {
         let mut entries = vec![(
             self as *const Self as usize,
             MemoryCharge {
-                owned_capacity_bytes: size_of::<Self>()
+                owned_capacity_bytes: arc_bytes::<Self>()
                     + self.id.capacity()
-                    + self.canonical_path.as_os_str().len()
+                    + self.canonical_path.capacity()
                     + self.session_id.capacity()
                     + self.chunks.capacity() * size_of::<Arc<EntryChunk>>()
                     + self.fence.capacity(),
@@ -360,7 +369,7 @@ impl TranscriptSnapshot {
             entries.push((
                 Arc::as_ptr(raw) as usize,
                 MemoryCharge {
-                    owned_capacity_bytes: size_of::<Vec<u8>>() + raw.capacity(),
+                    owned_capacity_bytes: arc_bytes::<Vec<u8>>() + raw.capacity(),
                     opaque_dom_accounted_bytes: 0,
                 },
             ));
@@ -488,6 +497,13 @@ struct LoadSlot {
 }
 
 impl LoadSlot {
+    fn record_bytes(&self) -> usize {
+        LOAD_SLOT_BYTES
+            + self.id.capacity()
+            + self.path.capacity()
+            + self.registry_generation.capacity()
+    }
+
     fn ledgered_bytes(&self) -> usize {
         if self.attached.load(Ordering::Acquire) {
             self.accounted.load(Ordering::Acquire)
@@ -499,7 +515,6 @@ impl LoadSlot {
 
 struct Load {
     file: File,
-    path: PathBuf,
     offset: u64,
     pending: Vec<u8>,
     pending_start: u64,
@@ -546,7 +561,7 @@ struct DiscoveryCursor {
     context: Value,
     limits: WorkLimits,
     roots: Vec<PathBuf>,
-    directories: Vec<std::fs::ReadDir>,
+    directories: Vec<OpenDirectory>,
     seen: HashSet<SourceIdentity>,
     seen_directories: HashSet<SourceIdentity>,
     examined: usize,
@@ -588,7 +603,7 @@ struct LocateCursor {
     found: HashSet<String>,
     scope: Vec<PathBuf>,
     roots: Vec<PathBuf>,
-    directories: Vec<std::fs::ReadDir>,
+    directories: Vec<OpenDirectory>,
     seen_directories: HashSet<SourceIdentity>,
     pending: VecDeque<Value>,
     examined: usize,
@@ -613,18 +628,15 @@ impl LocateCursor {
             + self.found.capacity() * size_of::<String>()
             + self.found.iter().map(String::capacity).sum::<usize>()
             + self.scope.capacity() * size_of::<PathBuf>()
-            + self
-                .scope
-                .iter()
-                .map(|path| path.as_os_str().len())
-                .sum::<usize>()
+            + self.scope.iter().map(PathBuf::capacity).sum::<usize>()
             + self.roots.capacity() * size_of::<PathBuf>()
+            + self.roots.iter().map(PathBuf::capacity).sum::<usize>()
+            + self.directories.capacity() * size_of::<OpenDirectory>()
             + self
-                .roots
+                .directories
                 .iter()
-                .map(|path| path.as_os_str().len())
+                .map(OpenDirectory::retained_bytes)
                 .sum::<usize>()
-            + self.directories.capacity() * size_of::<std::fs::ReadDir>()
             + self.seen_directories.capacity() * size_of::<SourceIdentity>()
             + self.pending.capacity() * size_of::<Value>()
             + self
@@ -667,7 +679,12 @@ impl DiscoveryCursor {
             + value_bytes(&self.context)
             + self.roots.capacity() * size_of::<PathBuf>()
             + self.roots.iter().map(PathBuf::capacity).sum::<usize>()
-            + self.directories.capacity() * size_of::<std::fs::ReadDir>()
+            + self.directories.capacity() * size_of::<OpenDirectory>()
+            + self
+                .directories
+                .iter()
+                .map(OpenDirectory::retained_bytes)
+                .sum::<usize>()
             + self.seen.capacity() * size_of::<SourceIdentity>()
             + self.seen_directories.capacity() * size_of::<SourceIdentity>()
             + inventory_bytes(&self.inventory)
@@ -796,19 +813,19 @@ fn sidechain_dirs_anchor(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>)
     )
 }
 
-fn source_ref_bytes(sources: &[PreparedSourceRef]) -> usize {
-    sources.len() * size_of::<PreparedSourceRef>()
+fn source_ref_bytes(sources: &Arc<[PreparedSourceRef]>) -> usize {
+    arc_slice_bytes::<PreparedSourceRef>(sources.len())
         + sources
             .iter()
-            .map(|source| source.path.as_os_str().len())
+            .map(|source| source.path.capacity())
             .sum::<usize>()
 }
 
-fn sidechain_dir_bytes(sidechain_dirs: &[(PathBuf, Option<SourceStamp>)]) -> usize {
-    sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+fn sidechain_dir_bytes(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>) -> usize {
+    arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len())
         + sidechain_dirs
             .iter()
-            .map(|(path, _)| path.as_os_str().len())
+            .map(|(path, _)| path.capacity())
             .sum::<usize>()
 }
 
@@ -816,7 +833,7 @@ fn stamp_bytes(stamps: &Vec<(PathBuf, SourceStamp)>) -> usize {
     stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
         + stamps
             .iter()
-            .map(|(path, _)| path.as_os_str().len())
+            .map(|(path, _)| path.capacity())
             .sum::<usize>()
 }
 
@@ -824,8 +841,8 @@ fn task_bytes(task: &GraphTask) -> usize {
     match task {
         GraphTask::Visit {
             path, spawned_by, ..
-        } => path.as_os_str().len() + spawned_by.as_ref().map_or(0, String::capacity),
-        GraphTask::List { parent, .. } => parent.as_os_str().len(),
+        } => path.capacity() + spawned_by.as_ref().map_or(0, String::capacity),
+        GraphTask::List { parent, .. } => parent.capacity(),
     }
 }
 
@@ -952,9 +969,35 @@ enum GraphTask {
 }
 
 struct GraphListing {
-    entries: std::fs::ReadDir,
+    entries: OpenDirectory,
     children: Vec<PathBuf>,
     depth: usize,
+}
+
+struct OpenDirectory {
+    entries: std::fs::ReadDir,
+    root_capacity: usize,
+}
+
+impl OpenDirectory {
+    fn open(path: &Path) -> Result<Self, SnapshotError> {
+        Ok(Self {
+            entries: std::fs::read_dir(path).map_err(io_error)?,
+            root_capacity: path.as_os_str().len(),
+        })
+    }
+
+    fn retained_bytes(&self) -> usize {
+        READ_DIR_HANDLE_BYTES + self.root_capacity
+    }
+}
+
+impl Iterator for OpenDirectory {
+    type Item = std::io::Result<std::fs::DirEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.entries.next()
+    }
 }
 
 struct GraphPending {
@@ -1019,6 +1062,7 @@ impl GraphCursor {
                         .iter()
                         .map(PathBuf::capacity)
                         .sum::<usize>()
+                    + listing.entries.retained_bytes()
             })
             + self.pending.as_ref().map_or(0, |pending| {
                 pending.token.capacity()
@@ -1145,11 +1189,11 @@ impl CarriedClassification {
     fn anchors(&self) -> impl Iterator<Item = Anchor> {
         std::iter::once(Anchor::indexes((
             self as *const Self as usize,
-            size_of::<Self>() + self.prefix.capacity() * size_of::<Arc<EntryChunk>>(),
+            arc_bytes::<Self>() + self.prefix.capacity() * size_of::<Arc<EntryChunk>>(),
         )))
         .chain(
             self.activity
-                .accounted_allocations()
+                .shared_allocations()
                 .into_iter()
                 .map(Anchor::indexes),
         )
@@ -1269,7 +1313,7 @@ impl GenerationRecord {
             snapshot: Arc::downgrade(snapshot),
             registry_generation: registry_generation.to_owned(),
             entries: snapshot.accounted_allocations(),
-            indexes: snapshot.activity.accounted_allocations(),
+            indexes: snapshot.activity.shared_allocations(),
         }
     }
 
@@ -1418,7 +1462,7 @@ impl Charge<String> for LocatedPath {
     }
 
     fn charge(&self) -> usize {
-        self.path.as_os_str().len()
+        self.path.capacity()
     }
 }
 
@@ -1448,7 +1492,7 @@ impl Charge<String> for PreparedGraph {
     }
 
     fn charge(&self) -> usize {
-        size_of::<Self>()
+        PREPARED_GRAPH_BYTES
             + self.claimant.capacity()
             + self.registry_generation.capacity()
             + self.admission.capacity()
@@ -1502,22 +1546,23 @@ impl Charge<String> for PreparedBuild {
                     + listing
                         .children
                         .iter()
-                        .map(|child| child.as_os_str().len())
+                        .map(PathBuf::capacity)
                         .sum::<usize>()
+                    + listing.entries.retained_bytes()
             })
             + self.seen.capacity() * size_of::<SourceIdentity>()
             + self.sources.capacity() * size_of::<PreparedSourceRef>()
             + self
                 .sources
                 .iter()
-                .map(|source| source.path.as_os_str().len())
+                .map(|source| source.path.capacity())
                 .sum::<usize>()
             + stamp_bytes(&self.stamps)
             + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
             + self
                 .sidechain_dirs
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
     }
 }
@@ -1533,7 +1578,7 @@ impl Charge<String> for PreparedQueryCursor {
             + self.graph_id.capacity()
             + value_bytes(&self.query)
             + self.pending.as_ref().map_or(0, |pending| {
-                pending.token.capacity() + pending.path.as_os_str().len()
+                pending.token.capacity() + pending.path.capacity()
             })
             + self.input_records.as_ref().map_or(0, |records| {
                 records.capacity() * size_of::<String>()
@@ -1573,7 +1618,7 @@ impl Charge<String> for WarmMembership {
 
 impl Charge<Arc<str>> for Delivery {
     fn key_charge(key: &Arc<str>) -> usize {
-        2 * size_of::<usize>() + key.len()
+        arc_slice_bytes::<u8>(key.len())
     }
 
     fn charge(&self) -> usize {
@@ -1594,8 +1639,7 @@ impl Delivery {
         size_of::<Self>()
             + claimant.len()
             + cursor.len()
-            + 2 * size_of::<usize>()
-            + 2 * <Sha256 as Digest>::output_size()
+            + arc_slice_bytes::<u8>(2 * <Sha256 as Digest>::output_size())
             + size_of::<(u64, Arc<str>)>()
     }
 
@@ -2166,7 +2210,7 @@ impl StoreState {
         }
         slot.attached.store(true, Ordering::Release);
         self.ledger.classifier +=
-            size_of::<ClassifierSlot>() + key.capacity() + slot.accounted.load(Ordering::Acquire);
+            CLASSIFIER_SLOT_BYTES + key.capacity() + slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.classifier_stages.insert(key, slot) {
             self.detach_classifier_stage(0, &displaced);
         }
@@ -2177,9 +2221,7 @@ impl StoreState {
         self.ledger.classifier = self
             .ledger
             .classifier
-            .checked_sub(
-                size_of::<ClassifierSlot>() + key_bytes + slot.accounted.load(Ordering::Acquire),
-            )
+            .checked_sub(CLASSIFIER_SLOT_BYTES + key_bytes + slot.accounted.load(Ordering::Acquire))
             .expect("balanced retained ledger");
         for anchor in slot.anchors() {
             self.ledger.shared.release(anchor.id);
@@ -2214,7 +2256,7 @@ impl StoreState {
     fn insert_load(&mut self, identity: SourceIdentity, slot: Arc<LoadSlot>) {
         self.loads.reserve_for(&identity);
         slot.attached.store(true, Ordering::Release);
-        self.ledger.pending += slot.accounted.load(Ordering::Acquire);
+        self.ledger.pending += slot.record_bytes() + slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.loads.insert(identity, slot) {
             self.detach_load(&displaced);
         }
@@ -2225,7 +2267,7 @@ impl StoreState {
         self.ledger.pending = self
             .ledger
             .pending
-            .checked_sub(slot.accounted.load(Ordering::Acquire))
+            .checked_sub(slot.record_bytes() + slot.accounted.load(Ordering::Acquire))
             .expect("balanced retained ledger");
     }
 
@@ -3867,7 +3909,7 @@ impl NativeStore {
                 }
                 let accounted = stage.accounted_bytes();
                 let stored = key.clone();
-                let additional = size_of::<ClassifierSlot>()
+                let additional = CLASSIFIER_SLOT_BYTES
                     + stored.capacity()
                     + accounted
                     + state.classifier_stages.growth_for(&stored)
@@ -4269,20 +4311,20 @@ impl NativeStore {
                 continue;
             };
             snapshots.insert(snapshot_key(&snapshot));
-            for (id, charge) in &record.entries {
-                if allocations.insert(*id) {
-                    entries += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+            for (id, bytes) in Self::audit_snapshot_allocations(&snapshot) {
+                if allocations.insert(id) {
+                    entries += bytes;
                 }
             }
-            for (id, charge) in &record.indexes {
-                if allocations.insert(*id) {
-                    indexes += *charge;
+            for (id, bytes) in snapshot.activity.audited_allocations(true) {
+                if allocations.insert(id) {
+                    indexes += bytes;
                 }
             }
         }
         for registry in state.registries.values() {
-            for (id, bytes) in &registry.allocations {
-                if allocations.insert(*id) {
+            for (id, bytes) in registry.snapshot.audited_allocations() {
+                if allocations.insert(id) {
                     indexes += bytes;
                 }
             }
@@ -4304,10 +4346,10 @@ impl NativeStore {
             );
         for carried in seeds {
             if allocations.insert(Arc::as_ptr(carried) as usize) {
-                indexes += size_of::<CarriedClassification>()
+                indexes += arc_mirror::<CarriedClassification>()
                     + carried.prefix.capacity() * size_of::<Arc<EntryChunk>>();
             }
-            for (id, bytes) in carried.activity.accounted_allocations() {
+            for (id, bytes) in carried.activity.audited_allocations(true) {
                 if allocations.insert(id) {
                     indexes += bytes;
                 }
@@ -4326,13 +4368,16 @@ impl NativeStore {
             pending: state
                 .loads
                 .values()
-                .map(|slot| slot.accounted.load(Ordering::Acquire))
+                .map(|slot| {
+                    Self::audit_load_record_bytes(slot) + slot.accounted.load(Ordering::Acquire)
+                })
                 .sum(),
             classifier: state
                 .classifier_stages
                 .iter()
                 .map(|(key, slot)| {
-                    size_of::<ClassifierSlot>()
+                    arc_mirror::<ClassifierSlot>()
+                        + MUTEX_STORAGE_MIRROR
                         + key.capacity()
                         + slot.accounted.load(Ordering::Acquire)
                 })
@@ -4486,6 +4531,127 @@ impl NativeStore {
     }
 
     #[cfg(test)]
+    fn audit_snapshot_allocations(snapshot: &Arc<TranscriptSnapshot>) -> Vec<(usize, usize)> {
+        let TranscriptSnapshot {
+            ledger: _,
+            id,
+            canonical_path,
+            stamp: _,
+            provider: _,
+            session_id,
+            chunks,
+            activity: _,
+            window_start: _,
+            committed_bytes: _,
+            provisional_tail: _,
+            fence,
+            event_count: _,
+            codex_raw,
+            codex_append,
+        } = &**snapshot;
+        std::iter::once((
+            snapshot_key(snapshot),
+            arc_mirror::<TranscriptSnapshot>()
+                + id.capacity()
+                + canonical_path.capacity()
+                + session_id.capacity()
+                + chunks.capacity() * size_of::<Arc<EntryChunk>>()
+                + fence.capacity(),
+        ))
+        .chain(chunks.iter().map(|chunk| {
+            let EntryChunk {
+                entries,
+                start: _,
+                charge: _,
+                entry_charges,
+                user_count: _,
+                sidechain_user_count: _,
+            } = &**chunk;
+            (
+                Arc::as_ptr(entries) as usize,
+                arc_mirror::<EntryChunk>()
+                    + arc_mirror::<ChunkRows>()
+                    + entries.capacity() * size_of::<Entry>()
+                    + entry_charges.capacity() * size_of::<MemoryCharge>()
+                    + entries
+                        .iter()
+                        .map(|entry| {
+                            let charge = entry_charge(entry);
+                            charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+                        })
+                        .sum::<usize>(),
+            )
+        }))
+        .chain(codex_raw.iter().map(|raw| {
+            (
+                Arc::as_ptr(raw) as usize,
+                arc_mirror::<Vec<u8>>() + raw.capacity(),
+            )
+        }))
+        .chain(codex_append.iter().map(|index| {
+            (
+                Arc::as_ptr(index) as usize,
+                Self::audit_codex_index_bytes(index),
+            )
+        }))
+        .collect()
+    }
+
+    #[cfg(test)]
+    fn audit_codex_index_bytes(index: &CodexAppendIndex) -> usize {
+        let CodexAppendIndex {
+            thread_id,
+            cwd,
+            model,
+            lines: _,
+            terminated: _,
+            last_trigger_turn: _,
+            user_echoes,
+            assistant_echoes,
+            user_events,
+            assistant_events,
+        } = index;
+        arc_mirror::<CodexAppendIndex>()
+            + thread_id.as_ref().map_or(0, String::capacity)
+            + cwd.as_ref().map_or(0, String::capacity)
+            + model.as_ref().map_or(0, String::capacity)
+            + user_echoes.capacity() * size_of::<String>()
+            + user_echoes.iter().map(String::capacity).sum::<usize>()
+            + assistant_echoes.capacity() * size_of::<String>()
+            + assistant_echoes.iter().map(String::capacity).sum::<usize>()
+            + (user_events.capacity() + assistant_events.capacity()) * size_of::<[u8; 32]>()
+    }
+
+    #[cfg(test)]
+    fn audit_load_record_bytes(slot: &LoadSlot) -> usize {
+        let LoadSlot {
+            id,
+            path,
+            stamp: _,
+            registry_generation,
+            registry: _,
+            work: _,
+            accounted: _,
+            attached: _,
+            deadline: _,
+        } = slot;
+        arc_mirror::<LoadSlot>()
+            + MUTEX_STORAGE_MIRROR
+            + id.capacity()
+            + path.capacity()
+            + registry_generation.capacity()
+    }
+
+    #[cfg(test)]
+    fn audit_open_directory_bytes(directory: &OpenDirectory) -> usize {
+        let OpenDirectory {
+            entries: _,
+            root_capacity,
+        } = directory;
+        arc_mirror::<(*mut libc::DIR, PathBuf)>() + root_capacity
+    }
+
+    #[cfg(test)]
     fn audit_lease_bytes(token: &String, lease: &Lease) -> usize {
         let Lease {
             claimant,
@@ -4619,12 +4785,13 @@ impl NativeStore {
             + listing.as_ref().map_or(
                 0,
                 |GraphListing {
-                     entries: _,
+                     entries,
                      children,
                      depth: _,
                  }| {
                     children.capacity() * size_of::<PathBuf>()
                         + children.iter().map(PathBuf::capacity).sum::<usize>()
+                        + Self::audit_open_directory_bytes(entries)
                 },
             )
             + pending.as_ref().map_or(
@@ -4722,8 +4889,7 @@ impl NativeStore {
             cursor,
             expires: _,
         } = delivery;
-        2 * size_of::<usize>()
-            + key.len()
+        arc_slice_mirror::<u8>(key.len())
             + size_of::<Delivery>()
             + claimant.capacity()
             + leases.capacity() * size_of::<String>()
@@ -4790,7 +4956,11 @@ impl NativeStore {
             + value_bytes(context)
             + roots.capacity() * size_of::<PathBuf>()
             + roots.iter().map(PathBuf::capacity).sum::<usize>()
-            + directories.capacity() * size_of::<std::fs::ReadDir>()
+            + directories.capacity() * size_of::<OpenDirectory>()
+            + directories
+                .iter()
+                .map(Self::audit_open_directory_bytes)
+                .sum::<usize>()
             + seen.capacity() * size_of::<SourceIdentity>()
             + seen_directories.capacity() * size_of::<SourceIdentity>()
             + table(inventory)
@@ -4889,14 +5059,18 @@ impl NativeStore {
             + scope.iter().map(PathBuf::capacity).sum::<usize>()
             + roots.capacity() * size_of::<PathBuf>()
             + roots.iter().map(PathBuf::capacity).sum::<usize>()
-            + directories.capacity() * size_of::<std::fs::ReadDir>()
+            + directories.capacity() * size_of::<OpenDirectory>()
+            + directories
+                .iter()
+                .map(Self::audit_open_directory_bytes)
+                .sum::<usize>()
             + seen_directories.capacity() * size_of::<SourceIdentity>()
             + pending.capacity() * size_of::<Value>()
             + pending.iter().map(value_bytes).sum::<usize>()
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
-        Self::bookkeeping_bytes(state) + state.ledger.queue.buffer_bytes()
+        Self::bookkeeping_bytes(state) + RELEASE_QUEUE_BYTES + state.ledger.queue.buffer_bytes()
     }
 
     fn bookkeeping_bytes(state: &StoreState) -> usize {
@@ -4970,6 +5144,30 @@ impl NativeStore {
             assert_eq!(
                 walked, charged,
                 "{table} records diverge from their field walk"
+            );
+        }
+        for record in state.generations.values() {
+            let Some(snapshot) = record.snapshot.upgrade() else {
+                continue;
+            };
+            assert_eq!(
+                record
+                    .entries
+                    .iter()
+                    .map(|(id, charge)| {
+                        (
+                            *id,
+                            charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                Self::audit_snapshot_allocations(&snapshot),
+                "a generation's entry records diverge from their snapshot walk"
+            );
+            assert_eq!(
+                record.indexes,
+                snapshot.activity.audited_allocations(true),
+                "a generation's index records diverge from their activity walk"
             );
         }
         assert_eq!(
@@ -6569,9 +6767,16 @@ impl NativeStore {
                         "preparation admission exhausted",
                     ));
                 }
+                let registry_generation = str_field(context, "registry_generation")?;
+                let record = LOAD_SLOT_BYTES
+                    + 2 * <Sha256 as Digest>::output_size()
+                    + path.as_os_str().len()
+                    + registry_generation.len();
                 let additional = state.loads.growth_for(&stamp.identity)
+                    + record
+                    + ActivityIndex::EMPTY_ALLOCATION_BYTES
                     + if cached.is_some() {
-                        size_of::<LoadSlot>()
+                        0
                     } else {
                         self.config.read_step.min(stamp.size as usize)
                     };
@@ -6600,16 +6805,15 @@ impl NativeStore {
                 }
                 let slot = Arc::new(LoadSlot {
                     id: self.token("load"),
-                    path: path.clone(),
+                    path,
                     stamp,
-                    registry_generation: str_field(context, "registry_generation")?.to_owned(),
+                    registry_generation: registry_generation.to_owned(),
                     registry,
-                    accounted: AtomicUsize::new(0),
+                    accounted: AtomicUsize::new(ActivityIndex::EMPTY_ALLOCATION_BYTES),
                     attached: AtomicBool::new(false),
                     deadline: AtomicU64::new(now + self.config.preparation),
                     work: Mutex::new(Load {
                         file,
-                        path,
                         offset: 0,
                         pending: Vec::new(),
                         pending_start: 0,
@@ -6639,6 +6843,11 @@ impl NativeStore {
                         failure: None,
                     }),
                 });
+                assert_eq!(
+                    slot.record_bytes(),
+                    record,
+                    "load slot landed off its predicted record"
+                );
                 state.insert_load(stamp.identity, Arc::clone(&slot));
                 (slot, true)
             };
@@ -6851,7 +7060,7 @@ impl NativeStore {
                         {
                             0
                         } else {
-                            raw.capacity()
+                            arc_bytes::<Vec<u8>>() + raw.capacity()
                         }
                     })
                     + load.codex_append.as_ref().map_or(0, |index| {
@@ -7495,7 +7704,7 @@ impl NativeStore {
             SourceStamp::of(&load.file.metadata().map_err(io_error)?),
             slot.stamp,
         ) || !Self::matches_prefix(
-            SourceStamp::of(&std::fs::metadata(&load.path).map_err(io_error)?),
+            SourceStamp::of(&std::fs::metadata(&slot.path).map_err(io_error)?),
             slot.stamp,
         ) {
             return Err(SnapshotError::new(
@@ -7504,7 +7713,7 @@ impl NativeStore {
             ));
         }
         let session_id = load.session_id.clone().unwrap_or_else(|| {
-            load.path
+            slot.path
                 .file_stem()
                 .expect("source filename")
                 .to_string_lossy()
@@ -7513,7 +7722,7 @@ impl NativeStore {
         load.result = Some(Arc::new(TranscriptSnapshot {
             ledger: LedgerHook::default(),
             id: self.token("snapshot"),
-            canonical_path: load.path.clone(),
+            canonical_path: slot.path.clone(),
             stamp: slot.stamp,
             provider: load.provider.unwrap_or(Provider::Claude),
             session_id,
@@ -8117,7 +8326,7 @@ impl NativeStore {
                         Ok(canonical) => {
                             self.authority(&graph.context, Some(&canonical))?;
                             graph.listing = Some(GraphListing {
-                                entries: std::fs::read_dir(&directory).map_err(io_error)?,
+                                entries: OpenDirectory::open(&directory)?,
                                 children: Vec::new(),
                                 depth,
                             });
@@ -8718,8 +8927,7 @@ impl NativeStore {
                     {
                         continue;
                     }
-                    scan.directories
-                        .push(std::fs::read_dir(path).map_err(io_error)?);
+                    scan.directories.push(OpenDirectory::open(&path)?);
                     continue;
                 }
                 if !metadata.is_file() {
@@ -9286,9 +9494,7 @@ impl NativeStore {
                             vec_capacity_for(&cursor.directories, 1),
                         );
                         cursor.seen_directories.insert(identity);
-                        cursor
-                            .directories
-                            .push(std::fs::read_dir(&path).map_err(io_error)?);
+                        cursor.directories.push(OpenDirectory::open(&path)?);
                         assert_eq!(
                             (
                                 cursor.seen_directories.capacity(),
@@ -14600,25 +14806,26 @@ mod tests {
             + graph
                 .stamps
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
             + tasks.capacity() * size_of::<GraphTask>()
-            + graph.root.canonical_path.as_os_str().len()
+            + graph.root.canonical_path.capacity()
             + FILESYSTEM_PATH_BYTES
             + dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
             + graph
                 .sidechain_dirs
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
             + key
-            + size_of::<PreparedGraph>()
+            + arc_mirror::<Mutex<PreparedGraph>>()
+            + MUTEX_STORAGE_MIRROR
             + graph.registry_generation.capacity()
             + graph.admission.capacity()
             + value_bytes(&graph.authority)
             + graph.revision.capacity()
-            + graph.sources.len() * size_of::<PreparedSourceRef>()
-            + graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + arc_slice_mirror::<PreparedSourceRef>(graph.sources.len())
+            + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(graph.sidechain_dirs.len())
     }
 
     #[test]

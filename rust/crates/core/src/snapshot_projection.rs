@@ -1566,7 +1566,7 @@ pub fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
             _ => 0,
         })
         .sum::<usize>();
-    std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
+    crate::snapshot_ledger::arc_bytes::<crate::snapshot_prepared::PreparedFacts>()
         + hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair) * pair
         + ["calls", "commands", "edited_files", "skills"]
             .iter()

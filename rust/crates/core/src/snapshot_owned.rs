@@ -127,8 +127,7 @@ impl OwnedOperation {
                 .map(|record| record.len())
                 .sum::<usize>()
             + self.plans.capacity() * size_of::<PagePlan>()
-            + size_of::<std::sync::atomic::AtomicBool>()
-            + 2 * size_of::<std::sync::atomic::AtomicUsize>()
+            + crate::snapshot_ledger::arc_bytes::<std::sync::atomic::AtomicBool>()
     }
 
     fn valid(

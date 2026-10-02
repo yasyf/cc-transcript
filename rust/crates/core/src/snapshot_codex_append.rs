@@ -218,7 +218,7 @@ impl CodexAppendIndex {
     }
 
     pub(crate) fn accounted_bytes(&self) -> usize {
-        size_of::<Self>()
+        arc_bytes::<Self>()
             + self.thread_id.as_ref().map_or(0, String::capacity)
             + self.cwd.as_ref().map_or(0, String::capacity)
             + self.model.as_ref().map_or(0, String::capacity)

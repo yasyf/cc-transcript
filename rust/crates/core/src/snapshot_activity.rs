@@ -4,6 +4,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, ToolUse, Turn};
+#[cfg(test)]
+use crate::snapshot_ledger::arc_mirror;
+use crate::snapshot_ledger::{arc_bytes, arc_control_bytes};
 use crate::snapshot_memory::{block_charge, value_charge, MemoryCharge};
 use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{ContentBlock, Entry};
@@ -51,6 +54,10 @@ pub struct ActivityIndex {
 }
 
 impl ActivityIndex {
+    pub(crate) const EMPTY_ALLOCATION_BYTES: usize = arc_bytes::<Vec<Arc<CachedTurn>>>()
+        + arc_bytes::<HashMap<String, usize>>()
+        + arc_bytes::<HashMap<String, ResultPosition>>();
+
     pub fn new(entries: &[&Entry], openers: Option<&[bool]>) -> Self {
         Self::default().append_tail(entries, openers)
     }
@@ -361,18 +368,18 @@ impl ActivityIndex {
             (self as *const Self as usize, size_of::<Self>()),
             (
                 Arc::as_ptr(&self.turns) as usize,
-                size_of::<Vec<Arc<CachedTurn>>>()
+                arc_bytes::<Vec<Arc<CachedTurn>>>()
                     + self.turns.capacity() * size_of::<Arc<CachedTurn>>(),
             ),
             (
                 Arc::as_ptr(&self.uuids) as usize,
-                size_of::<HashMap<String, usize>>()
+                arc_bytes::<HashMap<String, usize>>()
                     + self.uuids.capacity() * size_of::<(String, usize)>()
                     + self.uuids.keys().map(String::capacity).sum::<usize>(),
             ),
             (
                 Arc::as_ptr(&self.results) as usize,
-                size_of::<HashMap<String, ResultPosition>>()
+                arc_bytes::<HashMap<String, ResultPosition>>()
                     + self.results.capacity() * size_of::<(String, ResultPosition)>()
                     + self.results.keys().map(String::capacity).sum::<usize>(),
             ),
@@ -380,15 +387,82 @@ impl ActivityIndex {
         for turn in self.turns.iter() {
             allocations.push((
                 Arc::as_ptr(turn) as usize,
-                size_of::<CachedTurn>()
+                arc_bytes::<CachedTurn>()
                     + turn.prompt.capacity()
                     + turn.calls.capacity() * size_of::<Arc<CachedCall>>(),
             ));
-            allocations.extend(
-                turn.calls
-                    .iter()
-                    .map(|call| (Arc::as_ptr(call) as usize, call.accounted_bytes)),
-            );
+            allocations.extend(turn.calls.iter().map(|call| {
+                (
+                    Arc::as_ptr(call) as usize,
+                    arc_control_bytes::<CachedCall>() + call.accounted_bytes,
+                )
+            }));
+        }
+        allocations
+    }
+
+    pub fn shared_allocations(self: &Arc<Self>) -> Vec<(usize, usize)> {
+        let mut allocations = self.accounted_allocations();
+        allocations[0].1 = arc_bytes::<Self>();
+        allocations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audited_allocations(&self, shared: bool) -> Vec<(usize, usize)> {
+        let Self {
+            entries: _,
+            turns,
+            uuids,
+            results,
+            work: _,
+        } = self;
+        let mut allocations = vec![
+            (
+                self as *const Self as usize,
+                if shared {
+                    arc_mirror::<Self>()
+                } else {
+                    size_of::<Self>()
+                },
+            ),
+            (
+                Arc::as_ptr(turns) as usize,
+                arc_mirror::<Vec<Arc<CachedTurn>>>()
+                    + turns.capacity() * size_of::<Arc<CachedTurn>>(),
+            ),
+            (
+                Arc::as_ptr(uuids) as usize,
+                arc_mirror::<HashMap<String, usize>>()
+                    + uuids.capacity() * size_of::<(String, usize)>()
+                    + uuids.keys().map(String::capacity).sum::<usize>(),
+            ),
+            (
+                Arc::as_ptr(results) as usize,
+                arc_mirror::<HashMap<String, ResultPosition>>()
+                    + results.capacity() * size_of::<(String, ResultPosition)>()
+                    + results.keys().map(String::capacity).sum::<usize>(),
+            ),
+        ];
+        for turn in turns.iter() {
+            let CachedTurn {
+                prompt,
+                bounds: _,
+                started: _,
+                ended: _,
+                calls,
+            } = &**turn;
+            allocations.push((
+                Arc::as_ptr(turn) as usize,
+                arc_mirror::<CachedTurn>()
+                    + prompt.capacity()
+                    + calls.capacity() * size_of::<Arc<CachedCall>>(),
+            ));
+            allocations.extend(calls.iter().map(|call| {
+                (
+                    Arc::as_ptr(call) as usize,
+                    arc_mirror::<CachedCall>() - size_of::<CachedCall>() + call.accounted_bytes,
+                )
+            }));
         }
         allocations
     }
@@ -418,19 +492,22 @@ impl ActivityIndex {
             }
         };
         let uuid_copy = if Arc::strong_count(&self.uuids) > 1 {
-            self.uuids.capacity() * size_of::<(String, usize)>()
+            arc_bytes::<HashMap<String, usize>>()
+                + self.uuids.capacity() * size_of::<(String, usize)>()
                 + self.uuids.keys().map(String::capacity).sum::<usize>()
         } else {
             0
         };
         let result_copy = if Arc::strong_count(&self.results) > 1 {
-            self.results.capacity() * size_of::<(String, ResultPosition)>()
+            arc_bytes::<HashMap<String, ResultPosition>>()
+                + self.results.capacity() * size_of::<(String, ResultPosition)>()
                 + self.results.keys().map(String::capacity).sum::<usize>()
         } else {
             0
         };
         let turn_copy = if Arc::strong_count(&self.turns) > 1 {
-            self.turns.capacity() * size_of::<Arc<CachedTurn>>()
+            arc_bytes::<Vec<Arc<CachedTurn>>>()
+                + self.turns.capacity() * size_of::<Arc<CachedTurn>>()
         } else {
             0
         };
@@ -440,7 +517,7 @@ impl ActivityIndex {
                 turn.calls.len().saturating_add(calls),
                 size_of::<Arc<CachedCall>>(),
             ) + if Arc::strong_count(turn) > 1 || Arc::strong_count(&self.turns) > 1 {
-                size_of::<CachedTurn>()
+                arc_bytes::<CachedTurn>()
                     + turn.prompt.capacity()
                     + turn.calls.capacity() * size_of::<Arc<CachedCall>>()
             } else {
@@ -466,9 +543,9 @@ impl ActivityIndex {
                 self.turns.len().saturating_add(entries),
                 size_of::<Arc<CachedTurn>>(),
             ))
-            .saturating_add(entries.saturating_mul(size_of::<CachedTurn>()))
+            .saturating_add(entries.saturating_mul(arc_bytes::<CachedTurn>()))
             .saturating_add(
-                calls.saturating_mul(size_of::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>()),
+                calls.saturating_mul(arc_bytes::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>()),
             )
     }
 }

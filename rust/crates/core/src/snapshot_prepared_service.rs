@@ -3,7 +3,8 @@ impl NativeStore {
     fn audit_prepared_graph_bytes(graph_id: &String, graph: &Arc<Mutex<PreparedGraph>>) -> usize {
         let graph = graph.lock().expect("prepared graph");
         graph_id.capacity()
-            + size_of::<PreparedGraph>()
+            + arc_mirror::<Mutex<PreparedGraph>>()
+            + MUTEX_STORAGE_MIRROR
             + graph.claimant.capacity()
             + graph.registry_generation.capacity()
             + graph.admission.capacity()
@@ -15,7 +16,7 @@ impl NativeStore {
             + graph
                 .stamps
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
             + graph.root_slices.reserved_bytes()
             + graph
@@ -40,38 +41,91 @@ impl NativeStore {
                 .iter()
                 .map(|task| match task {
                     GraphTask::Visit {
-                        path, spawned_by, ..
-                    } => path.as_os_str().len() + spawned_by.as_ref().map_or(0, String::capacity),
-                    GraphTask::List { parent, .. } => parent.as_os_str().len(),
+                        path,
+                        depth: _,
+                        spawned_by,
+                    } => path.capacity() + spawned_by.as_ref().map_or(0, String::capacity),
+                    GraphTask::List { parent, depth: _ } => parent.capacity(),
                 })
                 .sum::<usize>()
-            + build.listing.as_ref().map_or(0, |listing| {
-                listing.children.capacity() * size_of::<PathBuf>()
-                    + listing
-                        .children
-                        .iter()
-                        .map(|child| child.as_os_str().len())
-                        .sum::<usize>()
-            })
+            + build.listing.as_ref().map_or(
+                0,
+                |GraphListing {
+                     entries,
+                     children,
+                     depth: _,
+                 }| {
+                    children.capacity() * size_of::<PathBuf>()
+                        + children.iter().map(PathBuf::capacity).sum::<usize>()
+                        + Self::audit_open_directory_bytes(entries)
+                },
+            )
             + build.seen.capacity() * size_of::<SourceIdentity>()
             + build.sources.capacity() * size_of::<PreparedSourceRef>()
             + build
                 .sources
                 .iter()
-                .map(|source| source.path.as_os_str().len())
+                .map(|PreparedSourceRef { path, stamp: _ }| path.capacity())
                 .sum::<usize>()
             + build.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
             + build
                 .stamps
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
             + build.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
             + build
                 .sidechain_dirs
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
+    }
+
+    #[cfg(test)]
+    fn audit_value_bytes(value: &Value) -> usize {
+        match value.get_type() {
+            JsonType::Null | JsonType::Boolean => 0,
+            JsonType::Number => value
+                .as_raw_number()
+                .map_or(0, |number| number.as_str().len()),
+            JsonType::String => value.as_str().unwrap().len(),
+            JsonType::Array => {
+                let array = value.as_array().unwrap();
+                array.capacity() * size_of::<Value>()
+                    + array.iter().map(Self::audit_value_bytes).sum::<usize>()
+            }
+            JsonType::Object => {
+                let object = value.as_object().unwrap();
+                object.capacity() * size_of::<(Value, Value)>()
+                    + object
+                        .iter()
+                        .map(|(key, item)| key.len() + Self::audit_value_bytes(item))
+                        .sum::<usize>()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn audit_facts_bytes(facts: &crate::snapshot_prepared::PreparedFacts) -> usize {
+        let crate::snapshot_prepared::PreparedFacts {
+            inputs,
+            has_error: _,
+            override_events,
+            accounted: _,
+        } = facts;
+        arc_mirror::<crate::snapshot_prepared::PreparedFacts>()
+            + Self::audit_value_bytes(inputs)
+            + override_events.as_ref().map_or(0, |events| {
+                events.capacity() * size_of::<crate::snapshot_prepared::OverrideEvent>()
+                    + events
+                        .iter()
+                        .map(|crate::snapshot_prepared::OverrideEvent { text, tools }| {
+                            text.capacity()
+                                + tools.capacity() * size_of::<String>()
+                                + tools.iter().map(String::capacity).sum::<usize>()
+                        })
+                        .sum::<usize>()
+            })
     }
 
     #[cfg(test)]
@@ -80,7 +134,7 @@ impl NativeStore {
         let mut bytes = 0usize;
         let mut add = |facts: &Arc<crate::snapshot_prepared::PreparedFacts>| {
             if seen.insert(Arc::as_ptr(facts) as usize) {
-                bytes += facts.accounted_bytes();
+                bytes += Self::audit_facts_bytes(facts);
             }
         };
         for cached in state.prepared_facts.values() {
@@ -111,22 +165,30 @@ impl NativeStore {
                 bytes += buffer_bytes;
             }
         };
+        let sources = |sources: &Arc<[PreparedSourceRef]>| {
+            arc_slice_mirror::<PreparedSourceRef>(sources.len())
+                + sources
+                    .iter()
+                    .map(|PreparedSourceRef { path, stamp: _ }| path.capacity())
+                    .sum::<usize>()
+        };
+        let dirs = |dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>| {
+            arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(dirs.len())
+                + dirs.iter().map(|(path, _)| path.capacity()).sum::<usize>()
+        };
         for membership in state.warm_memberships.values() {
-            add(
-                slice_key(&membership.members),
-                source_ref_bytes(&membership.members),
-            );
+            add(slice_key(&membership.members), sources(&membership.members));
             add(
                 slice_key(&membership.sidechain_dirs),
-                sidechain_dir_bytes(&membership.sidechain_dirs),
+                dirs(&membership.sidechain_dirs),
             );
         }
         for graph in state.prepared_graphs.values() {
             let graph = graph.lock().expect("prepared graph");
-            add(slice_key(&graph.sources), source_ref_bytes(&graph.sources));
+            add(slice_key(&graph.sources), sources(&graph.sources));
             add(
                 slice_key(&graph.sidechain_dirs),
-                sidechain_dir_bytes(&graph.sidechain_dirs),
+                dirs(&graph.sidechain_dirs),
             );
         }
         bytes
@@ -748,9 +810,10 @@ impl NativeStore {
                     .map(|source| source.path.as_os_str().len())
                     .sum::<usize>();
             let buffers: usize = if shared.is_some() {
-                others()
-                    .map(|source| size_of::<PreparedSourceRef>() + source.path.as_os_str().len())
-                    .sum()
+                arc_slice_bytes::<PreparedSourceRef>(others().count())
+                    + others()
+                        .map(|source| source.path.as_os_str().len())
+                        .sum::<usize>()
             } else {
                 0
             };
@@ -765,7 +828,7 @@ impl NativeStore {
                 &mut reservation,
                 context,
                 PreparedGraph::key_charge(&graph_id)
-                    + size_of::<PreparedGraph>()
+                    + PREPARED_GRAPH_BYTES
                     + record
                     + stamps_bytes
                     + buffers,
@@ -966,7 +1029,7 @@ impl NativeStore {
                         self.extend_projection_reservation(
                             reservation,
                             context,
-                            path.as_os_str().len() + vec_growth(&listing.children, 1),
+                            path.capacity() + vec_growth(&listing.children, 1),
                         )?;
                         let predicted = vec_capacity_for(&listing.children, 1);
                         listing.children.push(path);
@@ -1020,18 +1083,19 @@ impl NativeStore {
                     let stem = parent
                         .file_stem()
                         .ok_or_else(|| invalid("source has no stem"))?;
+                    let directory_bytes = sidechain_directory_capacity(base, stem);
                     self.extend_projection_reservation(
                         reservation,
                         context,
-                        base.as_os_str().len()
-                            + 1
-                            + stem.len()
-                            + 1
-                            + "subagents".len()
-                            + vec_growth(&build.sidechain_dirs, 1),
+                        directory_bytes + vec_growth(&build.sidechain_dirs, 1),
                     )?;
                     let predicted = vec_capacity_for(&build.sidechain_dirs, 1);
-                    let directory = base.join(stem).join("subagents");
+                    let directory = sidechain_directory(base, stem);
+                    assert_eq!(
+                        directory.capacity(),
+                        directory_bytes,
+                        "sidechain directory landed off its predicted capacity"
+                    );
                     let canonical = match realpath(&directory) {
                         Ok(canonical) => canonical,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1050,7 +1114,7 @@ impl NativeStore {
                     self.extend_projection_reservation(
                         reservation,
                         context,
-                        canonical.as_os_str().len() + directory.as_os_str().len(),
+                        canonical.capacity() + READ_DIR_HANDLE_BYTES + directory.as_os_str().len(),
                     )?;
                     build.sidechain_dirs.push((canonical, Some(stamp)));
                     assert_eq!(
@@ -1059,7 +1123,7 @@ impl NativeStore {
                         "prepared build collections landed off their predicted capacities"
                     );
                     build.listing = Some(GraphListing {
-                        entries: std::fs::read_dir(&directory).map_err(io_error)?,
+                        entries: OpenDirectory::open(&directory)?,
                         children: Vec::new(),
                         depth,
                     });
@@ -1129,13 +1193,13 @@ impl NativeStore {
             reservation,
             context,
             PreparedGraph::key_charge(&graph_id)
-                + size_of::<PreparedGraph>()
+                + PREPARED_GRAPH_BYTES
                 + str_field(context, "registry_generation")?.len()
                 + str_field(context, "admission")?.len()
                 + value_bytes(&context["authority"])
                 + 2 * <Sha256 as Digest>::output_size()
-                + build.sources.len() * size_of::<PreparedSourceRef>()
-                + build.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>(),
+                + arc_slice_bytes::<PreparedSourceRef>(build.sources.len())
+                + arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(build.sidechain_dirs.len()),
         )?;
         let mut digest = Sha256::new();
         for (path, stamp) in &build.stamps {
@@ -1346,17 +1410,16 @@ impl NativeStore {
                 ));
             }
             let source = &members[examined];
-            let directory = source
-                .path
-                .parent()
-                .ok_or_else(|| invalid("registered source has no parent"))?
-                .join(
-                    source
-                        .path
-                        .file_stem()
-                        .ok_or_else(|| invalid("registered source has no stem"))?,
-                )
-                .join("subagents");
+            let directory = sidechain_directory(
+                source
+                    .path
+                    .parent()
+                    .ok_or_else(|| invalid("registered source has no parent"))?,
+                source
+                    .path
+                    .file_stem()
+                    .ok_or_else(|| invalid("registered source has no stem"))?,
+            );
             let canonical = match std::fs::canonicalize(&directory) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

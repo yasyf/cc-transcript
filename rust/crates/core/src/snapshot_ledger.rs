@@ -1,7 +1,10 @@
+use std::alloc::Layout;
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
+#[cfg(test)]
+use std::mem::align_of;
 use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut, Index};
 #[cfg(test)]
@@ -33,6 +36,22 @@ const GROUP_WIDTH: usize = 8;
     )
 )))]
 const GROUP_WIDTH: usize = size_of::<usize>();
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) const MUTEX_STORAGE_BYTES: usize = 0;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+)))]
+pub(crate) const MUTEX_STORAGE_BYTES: usize = size_of::<libc::pthread_mutex_t>();
 
 fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
     if bucket_mask < 8 {
@@ -120,6 +139,25 @@ pub(crate) fn deque_capacity_for<T>(deque: &VecDeque<T>, additional: usize) -> u
 
 pub(crate) fn deque_growth<T>(deque: &VecDeque<T>, additional: usize) -> usize {
     (deque_capacity_for(deque, additional) - deque.capacity()) * size_of::<T>()
+}
+
+const fn arc_layout_bytes(value: Layout) -> usize {
+    match Layout::new::<[usize; 2]>().extend(value) {
+        Ok((layout, _)) => layout.pad_to_align().size(),
+        Err(_) => panic!("arc allocation layout overflows"),
+    }
+}
+
+pub(crate) const fn arc_bytes<T>() -> usize {
+    arc_layout_bytes(Layout::new::<T>())
+}
+
+pub(crate) const fn arc_control_bytes<T>() -> usize {
+    arc_bytes::<T>() - size_of::<T>()
+}
+
+pub(crate) fn arc_slice_bytes<T>(len: usize) -> usize {
+    arc_layout_bytes(Layout::array::<T>(len).expect("arc slice layout"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +291,33 @@ impl Work {
 
     pub(crate) fn reserved(&self, _bytes: usize) {}
 }
+
+#[cfg(test)]
+pub(crate) const fn arc_inner_mirror(align: usize, size: usize) -> usize {
+    ((2 * size_of::<usize>()).next_multiple_of(align) + size).next_multiple_of(
+        if align > size_of::<usize>() {
+            align
+        } else {
+            size_of::<usize>()
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) const fn arc_mirror<T>() -> usize {
+    arc_inner_mirror(align_of::<T>(), size_of::<T>())
+}
+
+#[cfg(test)]
+pub(crate) const fn arc_slice_mirror<T>(len: usize) -> usize {
+    arc_inner_mirror(align_of::<T>(), len * size_of::<T>())
+}
+
+#[cfg(all(test, target_vendor = "apple"))]
+pub(crate) const MUTEX_STORAGE_MIRROR: usize = 64;
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) const MUTEX_STORAGE_MIRROR: usize = 0;
 
 pub(crate) trait Reserved {
     fn reserved(&self) -> usize;

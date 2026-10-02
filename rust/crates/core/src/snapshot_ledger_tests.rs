@@ -5,7 +5,6 @@ use crate::snapshot_prepared::{OverrideEvent, PreparedFacts};
 use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{joined_text, ContentBlock};
-use sonic_rs::JsonType;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -2039,24 +2038,25 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
     let sources = if shared_sources {
         0
     } else {
-        graph.sources.len() * size_of::<PreparedSourceRef>()
+        arc_slice_mirror::<PreparedSourceRef>(graph.sources.len())
             + graph
                 .sources
                 .iter()
-                .map(|source| source.path.as_os_str().len())
+                .map(|source| source.path.capacity())
                 .sum::<usize>()
     };
     let dirs = if shared_dirs {
         0
     } else {
-        graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+        arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(graph.sidechain_dirs.len())
             + graph
                 .sidechain_dirs
                 .iter()
-                .map(|(path, _)| path.as_os_str().len())
+                .map(|(path, _)| path.capacity())
                 .sum::<usize>()
     };
-    key + size_of::<PreparedGraph>()
+    key + arc_mirror::<Mutex<PreparedGraph>>()
+        + MUTEX_STORAGE_MIRROR
         + graph.claimant.capacity()
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
@@ -2068,7 +2068,7 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
         + graph
             .stamps
             .iter()
-            .map(|(path, _)| path.as_os_str().len())
+            .map(|(path, _)| path.capacity())
             .sum::<usize>()
         + graph.root_slices.reserved_bytes()
         + graph
@@ -2087,13 +2087,14 @@ fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &Prepa
         .find(|(key, _)| key.as_str() == graph_id)
         .map(|(key, _)| key.capacity())
         .expect("published graph key")
-        + size_of::<PreparedGraph>()
+        + arc_mirror::<Mutex<PreparedGraph>>()
+        + MUTEX_STORAGE_MIRROR
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
         + graph.revision.capacity()
         + value_bytes(&graph.authority)
-        + graph.sources.len() * size_of::<PreparedSourceRef>()
-        + graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+        + arc_slice_mirror::<PreparedSourceRef>(graph.sources.len())
+        + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(graph.sidechain_dirs.len())
 }
 
 fn moved_build_bytes(graph: &PreparedGraph) -> usize {
@@ -2104,17 +2105,17 @@ fn moved_build_bytes(graph: &PreparedGraph) -> usize {
         + graph
             .stamps
             .iter()
-            .map(|(path, _)| path.as_os_str().len())
+            .map(|(path, _)| path.capacity())
             .sum::<usize>()
         + graph
             .sources
             .iter()
-            .map(|source| source.path.as_os_str().len())
+            .map(|source| source.path.capacity())
             .sum::<usize>()
         + graph
             .sidechain_dirs
             .iter()
-            .map(|(path, _)| path.as_os_str().len())
+            .map(|(path, _)| path.capacity())
             .sum::<usize>()
 }
 
@@ -2194,7 +2195,9 @@ fn root_facts_are_reserved_at_their_bound_before_parsing() {
         );
         assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
         reserved_before_the_last_admission("root facts", &traced(&store), bound);
-        let cached = facts_walk(&store.lock_state().prepared_facts[&snapshot.stamp.identity].facts);
+        let cached = NativeStore::audit_facts_bytes(
+            &store.lock_state().prepared_facts[&snapshot.stamp.identity].facts,
+        );
         assert_eq!(
             cached, bound,
             "root facts: the cached {cached}-byte facts are not the {bound} bytes reserved"
@@ -2224,7 +2227,7 @@ fn root_slices_are_reserved_at_the_root_bound_before_preparation() {
             .root_slices
             .iter()
             .find(|(key, _)| !existing.contains(*key))
-            .map(|(_, facts)| facts_walk(facts))
+            .map(|(_, facts)| NativeStore::audit_facts_bytes(facts))
             .expect("published root slice");
         assert!(
             bound >= slice,
@@ -2291,9 +2294,11 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
             long.len() - 1,
             "the classifier stage key is not charged by its length"
         );
-        let fixture = classifier_stage_fixture(&source, &long, background);
+        let build = || classifier_stage_fixture(&source, &long, background);
+        refused_at_site("classifier stage", &build, &stage_created, 0, large);
+        let fixture = build();
         let before = fixture.store.lock_state().ledger.classifier;
-        assert_boundary_at("classifier stage", &fixture, &stage_created, large);
+        assert_fitted_at("classifier stage", &fixture, &stage_created, large);
         let state = fixture.store.lock_state();
         let (key, slot) = state
             .classifier_stages
@@ -2303,8 +2308,11 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
         assert!(key.capacity() > 16 * 1024);
         assert_eq!(
             state.ledger.classifier - before,
-            size_of::<ClassifierSlot>() + key.capacity() + slot.accounted.load(Ordering::Acquire),
-            "the classifier gauge misses the stage slot or its key"
+            arc_mirror::<ClassifierSlot>()
+                + MUTEX_STORAGE_MIRROR
+                + key.capacity()
+                + slot.accounted.load(Ordering::Acquire),
+            "the classifier gauge misses the stage slot, its mutex storage, or its key"
         );
     }
 }
@@ -2354,6 +2362,8 @@ fn default_startup_footprint_is_the_pre_sized_tables_and_the_default_registries(
     assert_eq!(
         store.retained_accounted_bytes(),
         size_of::<StoreState>()
+            + arc_mirror::<crate::snapshot_ledger::ReleaseQueue>()
+            + MUTEX_STORAGE_MIRROR
             + PRE_SIZED_SLOTS
                 * (Ledgered::<Arc<str>, Delivery>::entry_bytes()
                     + Ledgered::<String, (String, u64)>::entry_bytes())
@@ -4077,8 +4087,8 @@ fn chunk_entry_bytes(snapshot: &Arc<TranscriptSnapshot>) -> usize {
         .chunks
         .iter()
         .map(|chunk| {
-            size_of::<EntryChunk>()
-                + size_of::<ChunkRows>()
+            arc_mirror::<EntryChunk>()
+                + arc_mirror::<ChunkRows>()
                 + chunk.entries.capacity() * size_of::<Entry>()
                 + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
                 + chunk
@@ -4153,50 +4163,12 @@ pub(super) fn facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
         };
         events.push(OverrideEvent { text, tools });
     }
-    facts_walk(&PreparedFacts {
+    NativeStore::audit_facts_bytes(&PreparedFacts {
         inputs,
         has_error: false,
         override_events: Some(events),
         accounted: 0,
     })
-}
-
-fn value_walk(value: &Value) -> usize {
-    match value.get_type() {
-        JsonType::Null | JsonType::Boolean => 0,
-        JsonType::Number => value
-            .as_raw_number()
-            .map_or(0, |number| number.as_str().len()),
-        JsonType::String => value.as_str().unwrap().len(),
-        JsonType::Array => {
-            let array = value.as_array().unwrap();
-            array.capacity() * size_of::<Value>() + array.iter().map(value_walk).sum::<usize>()
-        }
-        JsonType::Object => {
-            let object = value.as_object().unwrap();
-            object.capacity() * size_of::<(Value, Value)>()
-                + object
-                    .iter()
-                    .map(|(key, item)| key.len() + value_walk(item))
-                    .sum::<usize>()
-        }
-    }
-}
-
-fn facts_walk(facts: &PreparedFacts) -> usize {
-    size_of::<PreparedFacts>()
-        + value_walk(&facts.inputs)
-        + facts.override_events.as_ref().map_or(0, |events| {
-            events.capacity() * size_of::<OverrideEvent>()
-                + events
-                    .iter()
-                    .map(|event| {
-                        event.text.capacity()
-                            + event.tools.capacity() * size_of::<String>()
-                            + event.tools.iter().map(String::capacity).sum::<usize>()
-                    })
-                    .sum::<usize>()
-        })
 }
 
 fn built_facts(source: &Arc<TranscriptSnapshot>, selectors: &Value) -> PreparedFacts {
@@ -4224,7 +4196,10 @@ fn disk_key(owner: &Value, stamp: SourceStamp) -> PreparedDiskKey {
 fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>) -> usize {
     let built = built_facts(source, &json!([]));
     let decoded: PreparedFacts = sonic_rs::from_slice(&sonic_rs::to_vec(&built).unwrap()).unwrap();
-    let (decoded_walk, built_walk) = (facts_walk(&decoded), facts_walk(&built));
+    let (decoded_walk, built_walk) = (
+        NativeStore::audit_facts_bytes(&decoded),
+        NativeStore::audit_facts_bytes(&built),
+    );
     assert!(
         decoded_walk <= built_walk,
         "the decoded facts walk {decoded_walk} outgrew the {built_walk}-byte built facts"
@@ -4564,7 +4539,7 @@ fn empty_root_facts_are_admitted_at_their_fixed_overhead_before_construction() {
         let predicted = facts_bound_walk(&probe.pins[0]);
         assert_eq!(
             predicted,
-            facts_walk(&built_facts(&probe.pins[0], &json!([]))),
+            NativeStore::audit_facts_bytes(&built_facts(&probe.pins[0], &json!([]))),
             "{site}: the fixed overhead is not the empty facts"
         );
         assert_facts_admitted_in_full(
@@ -4921,7 +4896,7 @@ fn root_slice_is_admitted_in_full_before_construction() {
         let build = || slice_fixture(&scenario, background);
         let probe = build();
         let predicted = root_slice_prediction(&probe);
-        let slice_bytes = facts_walk(&built_facts(
+        let slice_bytes = NativeStore::audit_facts_bytes(&built_facts(
             &probe.pins[0],
             &json!([{"kind":"current_turn"}]),
         ));
@@ -5088,7 +5063,7 @@ fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
             let source = LedgerSource::new(&patch_transcript(&patch, failed));
             let (handle, snapshot) = acquired(&store, &source.path, &owner);
             let full = built_facts(&snapshot, &json!([]));
-            let walked = facts_walk(&full);
+            let walked = NativeStore::audit_facts_bytes(&full);
             let bound = facts_bound_walk(&snapshot);
             assert_eq!(
                 bound,
@@ -5126,7 +5101,7 @@ fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
                 json!([{"kind":"before_last_tool","name":"apply_patch"}]),
                 json!([{"kind":"prior"}]),
             ] {
-                let slice = facts_walk(&built_facts(&snapshot, &selectors));
+                let slice = NativeStore::audit_facts_bytes(&built_facts(&snapshot, &selectors));
                 assert!(
                     slice <= bound,
                     "{site} {selectors}: the {slice}-byte slice exceeds the {bound}-byte bound"
@@ -5151,7 +5126,7 @@ fn patch_root_facts_are_admitted_at_their_bound_before_construction() {
             let predicted = facts_bound_walk(&probe.pins[0]);
             assert_eq!(
                 predicted,
-                facts_walk(&facts),
+                NativeStore::audit_facts_bytes(&facts),
                 "{shape}: the bound is not exact on a clean root"
             );
             assert!(
@@ -5209,7 +5184,7 @@ fn patch_source_completion_is_admitted_at_its_bound_before_construction() {
             let predicted = facts_bound_walk(&probe.pins[0]);
             assert_eq!(
                 predicted,
-                facts_walk(&facts),
+                NativeStore::audit_facts_bytes(&facts),
                 "{shape}: the bound is not exact on a clean root"
             );
             assert!(
@@ -5230,13 +5205,13 @@ fn slices_of_a_decoded_patch_root_are_admitted_at_the_root_bound() {
             let build = || decoded_slice_fixture(&source, background);
             let probe = build();
             let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
-            let decoded = facts_walk(
+            let decoded = NativeStore::audit_facts_bytes(
                 &probe.store.lock_state().prepared_graphs[graph_id]
                     .lock()
                     .unwrap()
                     .root_facts,
             );
-            let slice = facts_walk(&built_facts(
+            let slice = NativeStore::audit_facts_bytes(&built_facts(
                 &probe.pins[0],
                 &json!([{"kind":"current_turn"}]),
             ));
@@ -5334,7 +5309,7 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
         assert_eq!(overrides.len(), 1, "{site}: the current turn is one event");
         assert_eq!(overrides[0].text.len(), 256 * 1024);
         let predicted = facts_bound_walk(&probe.pins[0]);
-        let slice_bytes = facts_walk(&slice);
+        let slice_bytes = NativeStore::audit_facts_bytes(&slice);
         assert!(
             predicted >= slice_bytes,
             "{site}: the {predicted}-byte reservation does not cover the {slice_bytes}-byte slice"
@@ -5425,7 +5400,7 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
         let fixture = finish_fixture(prepared_store(), &scenario.sidechains[0], background);
         let cap = cap_for(&fixture.owner);
         let predicted = facts_bound_walk(&fixture.pins[0]);
-        let occupied = facts_walk(&built_facts(&fixture.pins[0], &json!([])));
+        let occupied = NativeStore::audit_facts_bytes(&built_facts(&fixture.pins[0], &json!([])));
         assert!(
             occupied <= predicted,
             "{site}: the {predicted}-byte prediction does not cover the {occupied}-byte facts"
@@ -5659,7 +5634,7 @@ fn uncached_root_facts_hold_their_reservation_until_retention() {
         let fixture = uncached_root_facts_fixture(&source, background);
         let cap = cap_for(&fixture.owner);
         let predicted = facts_bound_walk(&fixture.pins[0]);
-        let occupied = facts_walk(&built_facts(&fixture.pins[0], &json!([])));
+        let occupied = NativeStore::audit_facts_bytes(&built_facts(&fixture.pins[0], &json!([])));
         assert!(
             occupied <= predicted,
             "{site}: the {predicted}-byte prediction does not cover the {occupied}-byte facts"
@@ -5700,7 +5675,7 @@ fn uncached_source_facts_hold_their_reservation_until_consumption() {
         let fixture = uncached_source_facts_fixture(&scenario, background);
         let cap = cap_for(&fixture.owner);
         let predicted = decoded_source_facts_prediction(&fixture);
-        let occupied = facts_walk(&built_facts(&fixture.pins[1], &json!([])));
+        let occupied = NativeStore::audit_facts_bytes(&built_facts(&fixture.pins[1], &json!([])));
         let probes = fact_probes(&fixture.store);
         let filler = fill_to(
             &fixture.store,
@@ -5750,14 +5725,17 @@ fn user_text_with_tool_results_is_built_at_exact_capacity() {
     assert_eq!(joined.capacity(), joined.len());
     assert_eq!(events[0].tools.capacity(), 0);
     assert_eq!(
-        facts_walk(&facts),
-        size_of::<PreparedFacts>()
-            + value_walk(&facts.inputs)
+        NativeStore::audit_facts_bytes(&facts),
+        arc_mirror::<PreparedFacts>()
+            + NativeStore::audit_value_bytes(&facts.inputs)
             + events.capacity() * size_of::<OverrideEvent>()
             + text.len()
             + result.len()
     );
-    assert_eq!(facts_walk(&facts), facts.accounted_bytes());
+    assert_eq!(
+        NativeStore::audit_facts_bytes(&facts),
+        facts.accounted_bytes()
+    );
 }
 
 fn primed_disk_index_fixture(scenario: &Scenario, background: bool) -> Fixture {
@@ -6033,7 +6011,7 @@ fn parked_build_record_bytes(fixture: &Fixture) -> usize {
         + HashSet::from([root.stamp.identity.file()]).capacity() * size_of::<SourceIdentity>()
         + vec![(root.canonical_path.clone(), root.stamp)].capacity()
             * size_of::<(PathBuf, SourceStamp)>()
-        + root.canonical_path.as_os_str().len()
+        + root.canonical_path.capacity()
 }
 
 #[test]
@@ -6111,7 +6089,7 @@ fn resumed_source_bytes(fixture: &Fixture, scenario: &Scenario) -> (usize, usize
         (seen.capacity() - before) * size_of::<SourceIdentity>()
             + grown_by_one(&build.stamps)
             + grown_by_one(&build.sources)
-            + 3 * visited.as_os_str().len(),
+            + 3 * visited.capacity(),
     )
 }
 
@@ -6221,7 +6199,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 &Cancellation::default(),
             )
             .unwrap();
-        let bytes = facts_walk(retained.facts());
+        let bytes = NativeStore::audit_facts_bytes(retained.facts());
         assert_eq!(store.lock_state().ledger.shared.facts(), bytes);
         let (replacement, replacement_reservation) = store
             .prepared_root_facts(
@@ -6241,7 +6219,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
             assert!(!Arc::ptr_eq(retained.facts(), replacement.facts()));
             assert_eq!(
                 state.ledger.shared.facts(),
-                bytes + facts_walk(replacement.facts()),
+                bytes + NativeStore::audit_facts_bytes(replacement.facts()),
                 "the replaced root facts lost their in-flight owner"
             );
         }
@@ -6249,7 +6227,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
         drop(retained);
         assert_eq!(
             store.lock_state().ledger.shared.facts(),
-            facts_walk(replacement.facts())
+            NativeStore::audit_facts_bytes(replacement.facts())
         );
         drop(replacement_reservation);
         drop(reservation);
@@ -6287,7 +6265,10 @@ fn resumed_prepared_build_keeps_its_root_facts_counted_after_a_cache_replacement
             "the other authority did not replace the cached root facts"
         );
         let counted = fixture.store.lock_state().ledger.shared.facts();
-        assert_eq!(counted, facts_walk(&parked) + facts_walk(&cached));
+        assert_eq!(
+            counted,
+            NativeStore::audit_facts_bytes(&parked) + NativeStore::audit_facts_bytes(&cached)
+        );
         let (resumed, (ledgered, audit, extracted)) = returned_facts_barrier(&fixture, || {
             (
                 ledger(&fixture.store)[TOTAL],
@@ -6397,7 +6378,7 @@ fn cache_replacement_barrier(
     );
     assert_eq!(
         counted,
-        before + facts_walk(&fresh),
+        before + NativeStore::audit_facts_bytes(&fresh),
         "{site}: the replaced facts lost their in-flight owner"
     );
     assert_eq!(audit, ledgered, "{site}: the audit lost the returned facts");
@@ -6443,7 +6424,8 @@ fn cached_root_facts_stay_counted_across_a_cache_replacement() {
         );
         assert_eq!(
             fixture.store.lock_state().ledger.shared.facts(),
-            facts_walk(&replacement.held) + facts_walk(&replacement.fresh),
+            NativeStore::audit_facts_bytes(&replacement.held)
+                + NativeStore::audit_facts_bytes(&replacement.fresh),
             "{site}: the published graph does not own the facts it was built from"
         );
         fixture.store.assert_conserved();
@@ -6491,7 +6473,8 @@ fn cached_source_facts_stay_counted_across_a_cache_replacement() {
             replacement.response
         );
         assert_eq!(
-            fixture.store.lock_state().ledger.shared.facts() + facts_walk(&replacement.held),
+            fixture.store.lock_state().ledger.shared.facts()
+                + NativeStore::audit_facts_bytes(&replacement.held),
             replacement.counted,
             "{site}: the consumed facts outlived their owner in the ledger"
         );
@@ -6569,8 +6552,8 @@ fn native_chunk_charge_covers_its_rows_header() {
     assert!(size_of::<ChunkRows>() > size_of::<Vec<Entry>>());
     assert_eq!(
         chunk.charge.owned_capacity_bytes,
-        size_of::<EntryChunk>()
-            + size_of::<ChunkRows>()
+        arc_mirror::<EntryChunk>()
+            + arc_mirror::<ChunkRows>()
             + chunk.entries.capacity() * size_of::<Entry>()
             + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
             + entries
@@ -6884,7 +6867,20 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         (
             key.clone(),
             charged_bytes(key, membership),
-            source_ref_bytes(&membership.members) + sidechain_dir_bytes(&membership.sidechain_dirs),
+            arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
+                + membership
+                    .members
+                    .iter()
+                    .map(|member| member.path.capacity())
+                    .sum::<usize>()
+                + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(
+                    membership.sidechain_dirs.len(),
+                )
+                + membership
+                    .sidechain_dirs
+                    .iter()
+                    .map(|(path, _)| path.capacity())
+                    .sum::<usize>(),
             charged_bytes(&first_id, &*first),
         )
     };
@@ -7323,6 +7319,393 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
         );
         refused.store.assert_conserved();
     }
+}
+
+fn load_slot_fixture(source: &LedgerSource, name: &str, background: bool) -> Fixture {
+    let parent = source.directory.join(name);
+    std::fs::create_dir_all(&parent).unwrap();
+    let path = parent.join("s.jsonl");
+    std::fs::write(&path, lines(0..2)).unwrap();
+    let store = fast_store();
+    let owner = context_for("load-slot", background);
+    let (_, snapshot) = acquired(&store, &path, &owner);
+    store.lock_state().retain_loads(|_, _| false);
+    Fixture {
+        store,
+        owner,
+        request: acquire(&path),
+        pins: vec![snapshot],
+    }
+}
+
+fn cached_acquire(fixture: &Fixture) -> bool {
+    match fixture.store.acquire(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &mut [0u64; 18],
+    ) {
+        Ok((data, cursor, reason)) => {
+            assert!(cursor.is_none() && reason.is_none(), "{data:?}");
+            assert_eq!(data["kind"].as_str(), Some("acquired"), "{data:?}");
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("cached acquire failed outside admission: {error:?}"),
+    }
+}
+
+fn empty_index_walk(slot: &LoadSlot) -> usize {
+    slot.work
+        .lock()
+        .unwrap()
+        .activity
+        .audited_allocations(false)[1..]
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum()
+}
+
+#[test]
+fn load_slot_admits_and_charges_its_record_once() {
+    let source = LedgerSource::new(&line("anchor"));
+    let site = "load slot";
+    for background in [false, true] {
+        let [small, large] = ["d".to_owned(), "d".repeat(301)].map(|name| {
+            exact_headroom(
+                &|| load_slot_fixture(&source, &name, background),
+                &cached_acquire,
+            )
+        });
+        assert_eq!(
+            large - small,
+            300,
+            "{site}: the slot path is not charged once by its bytes"
+        );
+        let name = "d".repeat(301);
+        let build = || load_slot_fixture(&source, &name, background);
+        assert_refused_at(site, &build(), &cached_acquire, 1);
+        {
+            let released = settled(&build().store);
+            let refused = build();
+            let cap = cap_for(&refused.owner);
+            let filler = fill_to(&refused.store, &refused.owner, large - 1);
+            assert!(
+                !cached_acquire(&refused),
+                "{site}: one byte over the exact fit was admitted"
+            );
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap);
+            drop(filler);
+            assert_eq!(
+                settled(&refused.store),
+                released,
+                "{site}: the refused acquire left its slot behind"
+            );
+            assert!(refused.store.lock_state().loads.is_empty());
+        }
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let (pending, reserved) = {
+            let state = fitted.store.lock_state();
+            assert!(state.loads.is_empty());
+            (state.ledger.pending, state.loads.reserved_bytes())
+        };
+        let _filler = fill_to(&fitted.store, &fitted.owner, large);
+        traced(&fitted.store);
+        assert!(cached_acquire(&fitted), "{site}: the exact fit was refused");
+        let trace = traced(&fitted.store);
+        fitted.store.assert_conserved();
+        assert!(audited(&fitted.store)[TOTAL] <= cap);
+        let slot = fitted
+            .store
+            .lock_state()
+            .loads
+            .values()
+            .next()
+            .cloned()
+            .expect("cached load slot");
+        let empty = empty_index_walk(&slot);
+        assert!(empty > 0);
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            empty,
+            "{site}: the cached slot does not carry its empty index"
+        );
+        let record = NativeStore::audit_load_record_bytes(&slot);
+        let state = fitted.store.lock_state();
+        let growth = state.loads.reserved_bytes() - reserved;
+        assert_eq!(
+            state.ledger.pending - pending,
+            record + empty,
+            "{site}: the pending gauge misses the slot record or its empty index"
+        );
+        let admitted = trace
+            .iter()
+            .position(|entry| matches!(entry, Trace::Admitted(_)))
+            .unwrap_or_else(|| panic!("{site}: nothing was admitted: {trace:?}"));
+        assert_eq!(
+            trace[admitted],
+            Trace::Admitted(growth + record + empty),
+            "{site}: the slot admission is not its table growth, record, and empty index"
+        );
+        assert!(
+            trace
+                .iter()
+                .enumerate()
+                .all(|(at, entry)| !matches!(entry, Trace::Allocated(_)) || at > admitted),
+            "{site}: retained bookkeeping grew before the slot admission: {trace:?}"
+        );
+    }
+}
+
+fn location_root_fixture(root: &Path, background: bool) -> Fixture {
+    Fixture {
+        store: cursor_store(),
+        owner: context_for("locate-root", background),
+        request: json!({"schema":SCHEMA,"id":"ledger-locate-root","operation":"locate","session_ids":["absent"],"roots":[root.to_string_lossy().as_ref()],"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        pins: Vec::new(),
+    }
+}
+
+#[test]
+fn location_cursor_charges_its_open_directory_root_copy() {
+    let source = LedgerSource::new(&line("locate"));
+    let roots = ["r".to_owned(), "r".repeat(301)].map(|name| {
+        let root = source.directory.join(name);
+        std::fs::create_dir(&root).unwrap();
+        for file in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            std::fs::write(root.join(file), line(file)).unwrap();
+        }
+        root
+    });
+    let site = "location park";
+    for background in [false, true] {
+        let [small, large] = [&roots[0], &roots[1]].map(|root| {
+            exact_headroom(
+                &|| location_root_fixture(root, background),
+                &location_parked,
+            )
+        });
+        assert_eq!(
+            large - small,
+            2 * 300,
+            "{site}: the root is not charged as the scope copy plus the open directory's root copy"
+        );
+        let root = &roots[1];
+        let build = || location_root_fixture(root, background);
+        refused_at_site(site, &build, &location_parked, 0, large);
+        let fitted = build();
+        let capacity = fitted.store.lock_state().locates.capacity_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, large);
+        assert!(location_parked(&fitted));
+        fitted.store.assert_conserved();
+        let state = fitted.store.lock_state();
+        let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+        assert_eq!(cursor.directories.len(), 1);
+        assert_eq!(
+            cursor.directories[0].root_capacity,
+            root.as_os_str().len(),
+            "{site}: the open directory does not record its root copy"
+        );
+        assert!(cursor.roots.is_empty());
+        assert_eq!(cursor.scope.len(), 1);
+        assert_eq!(
+            large,
+            NativeStore::audit_locate_bytes(token, cursor) + state.locates.capacity_bytes()
+                - capacity
+                + state.locates.pledged(token),
+            "{site}: the park admission is not the cursor walk, its table growth, and its pledge"
+        );
+    }
+}
+
+#[test]
+fn published_generations_record_their_arc_headers() {
+    let source = LedgerSource::new(&lines(0..3));
+    for background in [false, true] {
+        let store = fast_store();
+        let owner = context_for("headers", background);
+        let (_, snapshot) = acquired(&store, &source.path, &owner);
+        let state = store.lock_state();
+        let record = state
+            .generations
+            .get(&snapshot_key(&snapshot))
+            .expect("published generation");
+        let (id, charge) = record.entries[0];
+        assert_eq!(id, snapshot_key(&snapshot));
+        assert_eq!(charge.opaque_dom_accounted_bytes, 0);
+        assert_eq!(
+            charge.owned_capacity_bytes,
+            arc_mirror::<TranscriptSnapshot>()
+                + snapshot.id.capacity()
+                + snapshot.canonical_path.capacity()
+                + snapshot.session_id.capacity()
+                + snapshot.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+                + snapshot.fence.capacity(),
+            "the generation's snapshot entry misses its arc header or path capacity"
+        );
+        assert_eq!(
+            record.indexes[0],
+            (
+                Arc::as_ptr(&snapshot.activity) as usize,
+                arc_mirror::<ActivityIndex>()
+            ),
+            "the generation's index entry misses its arc header"
+        );
+        assert_eq!(record.indexes, snapshot.activity.audited_allocations(true));
+        assert_eq!(
+            record
+                .entries
+                .iter()
+                .map(|(id, charge)| {
+                    (
+                        *id,
+                        charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            NativeStore::audit_snapshot_allocations(&snapshot)
+        );
+    }
+}
+
+fn listing_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("listing", background);
+    let (root, root_snapshot) = acquired(&store, &source.path, &owner);
+    Fixture {
+        store,
+        owner,
+        request: prepare_request(&root, &[], &[], &[]),
+        pins: vec![root_snapshot],
+    }
+}
+
+#[test]
+fn direct_listing_children_are_admitted_at_their_join_capacity() {
+    let source = LedgerSource::new(&line("root"));
+    let subagents = source.directory.join("s").join("subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    for index in 0..12 {
+        std::fs::write(
+            subagents.join(format!("agent-{index:02}.jsonl")),
+            line(&format!("agent-{index:02}")),
+        )
+        .unwrap();
+    }
+    let site = "direct listing";
+    for background in [false, true] {
+        let fixture = listing_fixture(&source, background);
+        traced(&fixture.store);
+        assert!(
+            parked(&submit(&fixture)),
+            "{site}: the listing finished in one step"
+        );
+        let trace = traced(&fixture.store);
+        fixture.store.assert_conserved();
+        let state = fixture.store.lock_state();
+        let build = state.prepared_builds.values().next().expect("parked build");
+        let listing = build.listing.as_ref().expect("parked inside the listing");
+        assert!(!listing.children.is_empty());
+        assert!(
+            listing
+                .children
+                .iter()
+                .any(|child| child.capacity() > child.as_os_str().len()),
+            "{site}: no listed child outgrew its length"
+        );
+        let mut replay = Vec::<PathBuf>::new();
+        let expected: Vec<usize> = listing
+            .children
+            .iter()
+            .map(|child| {
+                let before = replay.capacity();
+                replay.push(child.clone());
+                child.capacity() + (replay.capacity() - before) * size_of::<PathBuf>()
+            })
+            .collect();
+        let reserved = reserved_traces(&trace);
+        let mut next = 0;
+        for bytes in &expected {
+            let at = reserved[next..]
+                .iter()
+                .position(|entry| entry == bytes)
+                .unwrap_or_else(|| {
+                    panic!("{site}: child reservation {bytes} is missing in order: {reserved:?}")
+                });
+            next += at + 1;
+        }
+    }
+}
+
+fn assert_exact_sidechain_directories<'a>(
+    site: &str,
+    parents: impl Iterator<Item = &'a Path>,
+    dirs: &[(PathBuf, Option<SourceStamp>)],
+) {
+    let expected: Vec<PathBuf> = parents
+        .map(|parent| {
+            parent
+                .parent()
+                .unwrap()
+                .join(parent.file_stem().unwrap())
+                .join("subagents")
+        })
+        .collect();
+    assert!(
+        dirs.iter().any(|(_, stamp)| stamp.is_none()),
+        "{site}: no missing sidechain directory was recorded"
+    );
+    for (path, stamp) in dirs {
+        assert_eq!(
+            path.capacity(),
+            path.as_os_str().len(),
+            "{site}: {path:?} outgrew its length"
+        );
+        if stamp.is_none() {
+            assert!(
+                expected.contains(path),
+                "{site}: {path:?} is not a member's sidechain directory"
+            );
+        }
+    }
+}
+
+#[test]
+fn sidechain_directories_are_built_at_exact_capacity() {
+    let scenario = Scenario::new(3, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = direct_graph_fixture(&scenario, background);
+        let response = submit(&fixture);
+        assert!(admitted(&response, "ok"), "{response:?}");
+        let graph_id = response["data"]["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+        assert_exact_sidechain_directories(
+            "direct build",
+            graph.stamps.iter().map(|(path, _)| path.as_path()),
+            &graph.sidechain_dirs,
+        );
+    }
+    let warmed = warmed_registry(prepared_store(), &scaling_scenario(8));
+    let state = warmed.store.lock_state();
+    let membership = state
+        .warm_memberships
+        .values()
+        .next()
+        .expect("warmed membership");
+    assert_exact_sidechain_directories(
+        "warm membership",
+        membership
+            .members
+            .iter()
+            .map(|member| member.path.as_path()),
+        &membership.sidechain_dirs,
+    );
 }
 
 fn classifier_lease_fixture(source: &LedgerSource, background: bool, classifier: &str) -> Fixture {
@@ -7877,7 +8260,7 @@ fn label_republication_reserves_seed_anchors_its_carried_record_released() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.accounted_allocations() {
+            for (id, _) in seed.activity.audited_allocations(true) {
                 assert!(
                     state
                         .generations
@@ -7887,7 +8270,7 @@ fn label_republication_reserves_seed_anchors_its_carried_record_released() {
                 );
             }
             NativeStore::audit_label_bytes(&token, slot)
-                + size_of::<CarriedClassification>()
+                + arc_mirror::<CarriedClassification>()
                 + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>()
         };
         assert!(!publish(0).0);
@@ -8151,7 +8534,7 @@ fn label_extraction_carries_the_seed_anchors_it_last_owned() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.accounted_allocations() {
+            for (id, _) in seed.activity.audited_allocations(true) {
                 assert!(
                     state
                         .generations
@@ -8161,7 +8544,7 @@ fn label_extraction_carries_the_seed_anchors_it_last_owned() {
                 );
             }
             (
-                size_of::<CarriedClassification>()
+                arc_mirror::<CarriedClassification>()
                     + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>(),
                 NativeStore::audit_label_bytes(&token, slot),
                 state.labels.pledged(&token),
