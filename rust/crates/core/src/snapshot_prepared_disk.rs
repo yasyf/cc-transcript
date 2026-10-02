@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
-#[cfg(test)]
 use std::mem::size_of;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -22,6 +21,7 @@ use crate::snapshot_prepared::PreparedFacts;
 
 const VERSION: &[u8; 8] = b"CTPF0001";
 pub(crate) const HEADER_BYTES: usize = 80;
+const SONIC_STRING_BLOCK_LANES: usize = 32;
 const OWNER_LOCK: &CStr = c"owner.lock";
 const STAGING: &CStr = c"staging";
 const MAX_SCANNED_OWNERS: usize = 32;
@@ -69,6 +69,12 @@ fn incomplete(reason: impl Into<String>) -> SnapshotError {
 
 fn disk_error(error: io::Error) -> SnapshotError {
     incomplete(format!("prepared facts disk cache: {error}"))
+}
+
+fn decode_transient_bytes(payload: usize) -> usize {
+    size_of::<Vec<Value>>()
+        + (payload / 2 + 2) * size_of::<Value>()
+        + 2 * (payload + SONIC_STRING_BLOCK_LANES)
 }
 
 fn openat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {
@@ -772,7 +778,9 @@ impl PreparedDiskCache {
             .expect("prepared facts disk state")
             .entries
             .get(&key.digest)
-            .map(|entry| entry.bytes + entry.accounted))
+            .map(|entry| {
+                entry.bytes + entry.accounted + decode_transient_bytes(entry.bytes - HEADER_BYTES)
+            }))
     }
 
     #[cfg(test)]
@@ -1483,6 +1491,13 @@ mod tests {
         facts
     }
 
+    fn decode_transients_walk(payload: usize) -> usize {
+        assert_eq!(size_of::<Value>(), 16);
+        let node_buffer = size_of::<Vec<Value>>() + (payload / 2 + 2) * size_of::<Value>();
+        let unescape_scratch = 2 * (payload + 32);
+        node_buffer + unescape_scratch
+    }
+
     #[test]
     fn decoded_bytes_cover_the_file_and_the_decoded_facts() {
         let cache = cache(64 * 1024);
@@ -1493,7 +1508,7 @@ mod tests {
         let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
         assert_eq!(
             cache.decoded_bytes(&entry).unwrap(),
-            Some(file + built.accounted_bytes())
+            Some(file + built.accounted_bytes() + decode_transients_walk(file - 80))
         );
         let DiskLookup::Hit(decoded) = cache.lookup(&entry).unwrap() else {
             panic!("expected completed facts");
@@ -1513,6 +1528,56 @@ mod tests {
             assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
             assert_eq!(decoded_event.tools.capacity(), built_event.tools.capacity());
         }
+    }
+
+    #[test]
+    fn decoded_bytes_cover_a_heap_node_buffer_for_a_large_payload() {
+        let cache = cache(2 * 1024 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let mut built = PreparedFacts {
+            inputs: json!({
+                "calls": [["Read", ["/repo/file.rs"]]],
+                "commands": [],
+                "edited_files": [],
+                "skills": [],
+            }),
+            has_error: false,
+            override_events: Some(vec![OverrideEvent {
+                text: "override line\n".repeat(32 * 1024),
+                tools: vec!["Read".to_owned()],
+            }]),
+            accounted: 0,
+        };
+        built.refresh_accounted();
+        assert!(cache.insert(&entry, &built, |_| true).unwrap());
+        let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
+        let payload = file - 80;
+        assert!(payload >= 400 * 1024, "payload {payload}");
+        assert!(
+            (payload - r#"{"inputs":"#.len()) / 2 + 2 >= (3 << 20) / size_of::<Value>(),
+            "payload {payload} decodes through the thread-local node buffer"
+        );
+        assert_eq!(
+            cache.decoded_bytes(&entry).unwrap(),
+            Some(file + built.accounted_bytes() + decode_transients_walk(payload))
+        );
+        let DiskLookup::Hit(decoded) = cache.lookup(&entry).unwrap() else {
+            panic!("expected completed facts");
+        };
+        assert!(
+            decoded.accounted_bytes() <= built.accounted_bytes(),
+            "decoded facts charge {} above the {} recorded at insertion",
+            decoded.accounted_bytes(),
+            built.accounted_bytes()
+        );
+        let (decoded_event, built_event) = (
+            &decoded.override_events.as_ref().unwrap()[0],
+            &built.override_events.as_ref().unwrap()[0],
+        );
+        assert_eq!(decoded_event.text, built_event.text);
+        assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
+        assert_eq!(decoded_event.tools, built_event.tools);
+        assert_eq!(decoded.inputs, built.inputs);
     }
 
     #[test]

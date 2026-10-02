@@ -4193,6 +4193,13 @@ fn disk_key(owner: &Value, stamp: SourceStamp) -> PreparedDiskKey {
     .unwrap()
 }
 
+fn decode_transients_walk(file: usize) -> usize {
+    let payload = file - crate::snapshot_prepared_disk::HEADER_BYTES;
+    let node_buffer = size_of::<Vec<Value>>() + (payload / 2 + 2) * size_of::<Value>();
+    let unescape_scratch = 2 * (payload + 32);
+    node_buffer + unescape_scratch
+}
+
 fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>) -> usize {
     let built = built_facts(source, &json!([]));
     let decoded: PreparedFacts = sonic_rs::from_slice(&sonic_rs::to_vec(&built).unwrap()).unwrap();
@@ -4204,11 +4211,11 @@ fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>)
         decoded_walk <= built_walk,
         "the decoded facts walk {decoded_walk} outgrew the {built_walk}-byte built facts"
     );
-    fixture
+    let file = fixture
         .store
         .prepared_disk
-        .entry_file_len(&disk_key(&fixture.owner, source.stamp)) as usize
-        + built_walk
+        .entry_file_len(&disk_key(&fixture.owner, source.stamp)) as usize;
+    file + built_walk + decode_transients_walk(file)
 }
 
 fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
