@@ -335,9 +335,15 @@ impl NativeStore {
             facts.accounted_bytes() <= bound,
             "prepared root facts outgrew their bound"
         );
-        self.prepared_disk.insert(&key, &facts, |growth| {
-            self.admit_prepared_disk_growth(context, growth)
-        })?;
+        self.prepared_disk.insert(
+            &key,
+            &facts,
+            |bytes| {
+                self.extend_projection_reservation(&mut reservation, context, bytes)
+                    .is_ok()
+            },
+            |growth| self.admit_prepared_disk_growth(context, growth),
+        )?;
         let facts = Arc::new(facts);
         match self.cache_prepared_facts(
             root.stamp,
@@ -608,9 +614,15 @@ impl NativeStore {
             &context["authority"],
             &classifier,
         )?;
-        self.prepared_disk.insert(&key, &facts, |growth| {
-            self.admit_prepared_disk_growth(context, growth)
-        })?;
+        self.prepared_disk.insert(
+            &key,
+            &facts,
+            |bytes| {
+                self.extend_projection_reservation(&mut reservation, context, bytes)
+                    .is_ok()
+            },
+            |growth| self.admit_prepared_disk_growth(context, growth),
+        )?;
         let held = match self.cache_prepared_facts(
             stamp,
             Arc::clone(&facts),

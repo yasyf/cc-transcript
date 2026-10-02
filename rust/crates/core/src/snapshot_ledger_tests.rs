@@ -5782,11 +5782,18 @@ fn primed_disk_index_fixture(scenario: &Scenario, background: bool) -> Fixture {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Landing {
+    Landed,
+    Returned,
+    Refused,
+}
+
 #[test]
 fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
     let scenario = Scenario::new(111, |index| line(&format!("thread-{index:04}")));
     let site = "prepared disk index growth";
-    let landed = |fixture: &Fixture| {
+    let attempt = |fixture: &Fixture| {
         let before = fixture.store.prepared_disk.stats().entries;
         match fixture.store.prepared_root_facts(
             &fixture.pins[1],
@@ -5795,16 +5802,21 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
             &work_bounds(),
             &Cancellation::default(),
         ) {
-            Ok(_) => fixture.store.prepared_disk.stats().entries > before,
-            Err(error) if error.status == Status::RetainedLimit => false,
+            Ok(_) if fixture.store.prepared_disk.stats().entries > before => Landing::Landed,
+            Ok(_) => Landing::Returned,
+            Err(error) if error.status == Status::RetainedLimit => Landing::Refused,
             Err(error) => panic!("{site}: failed outside admission: {error:?}"),
         }
     };
+    let landed = |fixture: &Fixture| attempt(fixture) == Landing::Landed;
     for background in [false, true] {
         let build = || primed_disk_index_fixture(&scenario, background);
         let control = build();
         let cap = cap_for(&control.owner);
         let bound = facts_bound_walk(&control.pins[1]);
+        let payload = sonic_rs::to_vec(&built_facts(&control.pins[1], &json!([])))
+            .unwrap()
+            .len();
         let (tier, charged) = (
             control.store.prepared_disk.index_capacity_bytes(),
             control.store.lock_state().prepared_disk_index_bytes,
@@ -5827,7 +5839,20 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         );
         assert_admitted_before_allocating(site, &traced(&control.store));
         control.store.assert_conserved();
-        for headroom in [0, bound + growth - 1] {
+        assert_eq!(
+            control
+                .store
+                .prepared_disk
+                .entry_file_len(&disk_key(&control.owner, control.pins[1].stamp))
+                as usize,
+            crate::snapshot_prepared_disk::HEADER_BYTES + payload,
+            "{site}: the control insert did not write the counted payload"
+        );
+        for (headroom, expected) in [
+            (0, Landing::Refused),
+            (bound + payload - 1, Landing::Returned),
+            (bound + payload + growth - 1, Landing::Returned),
+        ] {
             let refused = build();
             let (stats, probes, before) = (
                 refused.store.prepared_disk.stats(),
@@ -5837,10 +5862,11 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
                     refused.store.lock_state().prepared_disk_index_bytes,
                 ),
             );
-            let _filler = fill_to(&refused.store, &refused.owner, headroom);
-            assert!(
-                !landed(&refused),
-                "{site}: headroom {headroom} below the growth landed the entry"
+            let filler = fill_to(&refused.store, &refused.owner, headroom);
+            assert_eq!(
+                attempt(&refused),
+                expected,
+                "{site}: headroom {headroom} below the growth changed the outcome"
             );
             let after = refused.store.prepared_disk.stats();
             assert_eq!(
@@ -5863,9 +5889,15 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
             );
             refused.store.assert_conserved();
             assert!(audited(&refused.store)[TOTAL] <= cap);
+            drop(filler);
+            assert_eq!(
+                refused.store.lock_state().transient_bytes,
+                0,
+                "{site}: the refusal at headroom {headroom} left a reservation behind"
+            );
         }
         let fitted = build();
-        let _filler = fill_to(&fitted.store, &fitted.owner, bound + growth);
+        let _filler = fill_to(&fitted.store, &fitted.owner, bound + payload + growth);
         assert!(landed(&fitted), "{site}: the exact growth was refused");
         fitted.store.assert_conserved();
         assert!(audited(&fitted.store)[TOTAL] <= cap);

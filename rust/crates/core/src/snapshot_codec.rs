@@ -304,9 +304,9 @@ impl Write for LimitedWriter {
     }
 }
 
-struct Counter {
-    bytes: usize,
-    limit: usize,
+pub(crate) struct Counter {
+    pub(crate) bytes: usize,
+    pub(crate) limit: usize,
 }
 
 impl Write for Counter {
