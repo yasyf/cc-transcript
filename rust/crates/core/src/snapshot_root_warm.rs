@@ -109,7 +109,10 @@ impl NativeStore {
                 })
             {
                 if let Some(slot) = &slot {
-                    state.insert_prepared_load(stamp.identity, Arc::clone(slot), now_ms());
+                    let growth = state.prepared_load_growth(&stamp.identity);
+                    if self.admit_memory(&mut state, context, growth).is_ok() {
+                        state.insert_prepared_load(stamp.identity, Arc::clone(slot), now_ms());
+                    }
                 }
             } else {
                 state.prepared_loads.remove(&stamp.identity);
@@ -197,7 +200,9 @@ impl NativeStore {
                     "root warming reservation admission exhausted",
                 ));
             }
-            state.waiters.insert(token.clone(), waiter.clone());
+            let additional = charged_bytes(&token, &waiter) + state.waiters.growth_for(&token);
+            self.admit_memory(&mut state, context, additional)?;
+            state.insert_waiter(token.clone(), waiter.clone());
         }
         self.advance(&token, waiter, None, cancel, usage)
     }

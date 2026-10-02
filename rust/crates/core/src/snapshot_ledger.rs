@@ -145,6 +145,7 @@ impl Drop for LedgerHook {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Trace {
+    Admitted(usize),
     Allocated(usize),
 }
 
@@ -178,6 +179,13 @@ impl Work {
         Arc::clone(&self.reclaims)
     }
 
+    pub(crate) fn admitted(&self, bytes: usize) {
+        self.trace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Trace::Admitted(bytes));
+    }
+
     pub(crate) fn allocated(&self, tier: usize) {
         self.trace
             .lock()
@@ -195,6 +203,8 @@ impl Work {
     pub(crate) fn tick(&self, _units: usize) {}
 
     pub(crate) fn reclaim(&self, _units: usize) {}
+
+    pub(crate) fn admitted(&self, _bytes: usize) {}
 
     pub(crate) fn allocated(&self, _tier: usize) {}
 }
@@ -234,6 +244,44 @@ impl<K: Eq + Hash, V> Table<K, V> {
             return self.reserved;
         }
         hashbrown_tier(items.max(self.reserved + 1), size_of::<(K, V)>())
+    }
+
+    pub(crate) fn growth(&self, additional: usize) -> usize {
+        (self.tier_after(additional) - self.reserved) * size_of::<(K, V)>()
+    }
+
+    pub(crate) fn growth_for<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.growth(usize::from(!self.map.contains_key(key)))
+    }
+
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        let predicted = self.tier_after(additional);
+        self.map.reserve(additional);
+        self.settle(predicted);
+    }
+
+    pub(crate) fn reserve_for<Q>(&mut self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.reserve(usize::from(!self.map.contains_key(key)));
+    }
+
+    fn settle(&mut self, predicted: usize) {
+        let before = self.reserved;
+        self.reserved = self.reserved.max(self.map.capacity());
+        assert_eq!(
+            self.reserved, predicted,
+            "retained table landed off its predicted tier"
+        );
+        if self.reserved != before {
+            self.work.allocated(self.reserved);
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -276,7 +324,6 @@ impl<K: Eq + Hash, V> Table<K, V> {
 
     pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
         let predicted = self.tier_after(1);
-        let before = self.reserved;
         let displaced = match self.map.entry(key) {
             Entry::Occupied(mut occupied) => Some(replace(occupied.get_mut(), value)),
             Entry::Vacant(vacant) => {
@@ -285,14 +332,7 @@ impl<K: Eq + Hash, V> Table<K, V> {
             }
         };
         if displaced.is_none() {
-            self.reserved = self.reserved.max(self.map.capacity());
-            assert_eq!(
-                self.reserved, predicted,
-                "retained table landed off its predicted tier"
-            );
-            if self.reserved != before {
-                self.work.allocated(self.reserved);
-            }
+            self.settle(predicted);
         }
         displaced
     }
@@ -511,7 +551,7 @@ impl SharedAllocations {
         *total = total.checked_sub(bytes).expect("balanced retained ledger");
     }
 
-    pub(crate) fn unowned_bytes(&self, anchors: impl IntoIterator<Item = Anchor>) -> usize {
+    pub(crate) fn unowned(&self, anchors: impl IntoIterator<Item = Anchor>) -> (usize, usize) {
         let mut seen = HashSet::new();
         anchors
             .into_iter()
@@ -519,8 +559,27 @@ impl SharedAllocations {
                 self.work.tick(1);
                 !self.owners.contains_key(&anchor.id) && seen.insert(anchor.id)
             })
-            .map(|anchor| anchor.bytes)
-            .sum()
+            .fold((0, 0), |(bytes, additional), anchor| {
+                (bytes + anchor.bytes, additional + 1)
+            })
+    }
+
+    pub(crate) fn unowned_bytes(&self, anchors: impl IntoIterator<Item = Anchor>) -> usize {
+        self.unowned(anchors).0
+    }
+
+    pub(crate) fn growth(&self, anchors: impl IntoIterator<Item = Anchor>) -> usize {
+        self.owners.growth(self.unowned(anchors).1)
+    }
+
+    pub(crate) fn admission(&self, anchors: impl IntoIterator<Item = Anchor>) -> usize {
+        let (bytes, additional) = self.unowned(anchors);
+        bytes + self.owners.growth(additional)
+    }
+
+    pub(crate) fn reserve(&mut self, anchors: impl IntoIterator<Item = Anchor>) {
+        let (_, additional) = self.unowned(anchors);
+        self.owners.reserve(additional);
     }
 }
 
@@ -550,10 +609,6 @@ impl RetainedLedger {
             pending: 0,
             classifier: 0,
         }
-    }
-
-    pub(crate) fn storage_bytes(&self) -> usize {
-        self.shared.table_bytes() + self.queue.buffer_bytes()
     }
 }
 
@@ -609,10 +664,22 @@ impl<K: TicketKey> ExpiryIndex<K> {
 
     pub(crate) fn push(&mut self, deadline: u64, key: K) {
         self.work.tick(1);
+        let before = self.heap.capacity();
         let predicted = self.capacity_after(1);
         self.key_bytes += key.owned_bytes();
         self.heap.push(Ticket { deadline, key });
-        self.settle(predicted);
+        self.settle(before, predicted);
+    }
+
+    pub(crate) fn growth(&self, additional: usize) -> usize {
+        (self.capacity_after(additional) - self.heap.capacity()) * size_of::<Ticket<K>>()
+    }
+
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        let before = self.heap.capacity();
+        let predicted = self.capacity_after(additional);
+        self.heap.reserve(additional);
+        self.settle(before, predicted);
     }
 
     fn capacity_after(&self, additional: usize) -> usize {
@@ -624,12 +691,15 @@ impl<K: TicketKey> ExpiryIndex<K> {
         )
     }
 
-    fn settle(&self, predicted: usize) {
+    fn settle(&self, before: usize, predicted: usize) {
         assert_eq!(
             self.heap.capacity(),
             predicted,
             "expiry index landed off its predicted capacity"
         );
+        if predicted != before {
+            self.work.allocated(predicted);
+        }
     }
 
     fn pop(&mut self) -> Option<Ticket<K>> {
@@ -873,6 +943,30 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
 
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.map.reserved_bytes()
+    }
+
+    pub(crate) fn growth(&self, additional: usize) -> usize {
+        self.map.growth(additional)
+    }
+
+    pub(crate) fn growth_for<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.growth_for(key)
+    }
+
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        self.map.reserve(additional);
+    }
+
+    pub(crate) fn reserve_for<Q>(&mut self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.reserve_for(key);
     }
 
     pub(crate) fn len(&self) -> usize {

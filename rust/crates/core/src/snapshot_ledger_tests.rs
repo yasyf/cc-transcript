@@ -570,9 +570,156 @@ fn warm_buffer_charge(store: &NativeStore) -> usize {
     store.lock_state().ledger.shared.warm()
 }
 
-fn unadmitted_bytes(store: &NativeStore) -> usize {
+fn bookkeeping(store: &NativeStore) -> usize {
+    NativeStore::fixed_metadata_bytes(&store.lock_state())
+}
+
+fn traced(store: &NativeStore) -> Vec<Trace> {
+    store.lock_state().ledger.shared.work().traced()
+}
+
+fn lease_table(store: &NativeStore) -> (usize, usize, usize, usize) {
     let state = store.lock_state();
-    NativeStore::fixed_metadata_bytes(&state) + state.leases.charged()
+    (
+        state.leases.len(),
+        state.leases.reserved(),
+        state.leases.charged(),
+        state.leases.capacity_bytes(),
+    )
+}
+
+fn location_heap(store: &NativeStore) -> (usize, usize, usize) {
+    let state = store.lock_state();
+    (
+        state.locations_expiry.len(),
+        state.locations_expiry.reserved(),
+        state.locations_expiry.heap_bytes(),
+    )
+}
+
+fn publication_tables(store: &NativeStore) -> (usize, usize) {
+    let state = store.lock_state();
+    (state.generations.reserved(), state.ledger.shared.reserved())
+}
+
+fn issued(fixture: &Fixture) -> bool {
+    let mut state = fixture.store.lock_state();
+    match fixture.store.issue(
+        &mut state,
+        Arc::clone(&fixture.pins[0]),
+        fixture.request.clone(),
+        &fixture.owner,
+        now_ms() + 120_000,
+        fixture.store.token("lease"),
+        0,
+    ) {
+        Ok(data) => {
+            assert_eq!(data["kind"].as_str(), Some("acquired"), "{data:?}");
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("lease issue failed outside admission: {error:?}"),
+    }
+}
+
+fn remembered(fixture: &Fixture) -> bool {
+    let id = fixture.request["id"].as_str().unwrap().to_owned();
+    let path = PathBuf::from(fixture.request["path"].as_str().unwrap());
+    fixture
+        .store
+        .remember_locations(&[(id.clone(), path)], &fixture.owner);
+    fixture.store.lock_state().locations.contains_key(&id)
+}
+
+fn location_bytes(fixture: &Fixture) -> usize {
+    fixture.request["id"].as_str().unwrap().len()
+        + fixture.request["path"].as_str().unwrap().len()
+        + size_of::<LocatedPath>()
+}
+
+fn lease_fixture(source: &LedgerSource, background: bool, full: bool) -> Fixture {
+    let store = fast_store();
+    let owner = context_for("lease", background);
+    let (_, snapshot) = acquired(&store, &source.path, &owner);
+    let fixture = Fixture {
+        store,
+        owner,
+        request: json!({"id":"native","version":"1"}),
+        pins: vec![snapshot],
+    };
+    while full && {
+        let (len, reserved, _, _) = lease_table(&fixture.store);
+        len < reserved
+    } {
+        assert!(issued(&fixture), "lease table padding refused");
+    }
+    let (len, reserved, _, _) = lease_table(&fixture.store);
+    assert_eq!(len == reserved, full, "lease table padding missed");
+    fixture
+}
+
+fn location_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = fast_store();
+    let owner = context_for("locate", background);
+    let path = source.path.to_string_lossy().into_owned();
+    for index in 0.. {
+        let (len, reserved, _) = location_heap(&store);
+        if len == reserved && len > 0 {
+            break;
+        }
+        store.remember_locations(
+            &[(format!("session-{index:04}"), source.path.clone())],
+            &owner,
+        );
+    }
+    {
+        let state = store.lock_state();
+        assert!(
+            state.locations.len() < state.locations.reserved(),
+            "the location table would grow with the heap"
+        );
+    }
+    Fixture {
+        store,
+        owner,
+        request: json!({"id":"session-next","path":path}),
+        pins: Vec::new(),
+    }
+}
+
+fn padded_classification(
+    source: &LedgerSource,
+    extras: &[LedgerSource],
+    classifier: &str,
+    background: bool,
+) -> Fixture {
+    let mut fixture = interrupted_classification(source, classifier, background);
+    for extra in extras {
+        let full = {
+            let state = fixture.store.lock_state();
+            state.generations.len() == state.generations.reserved()
+        };
+        if full {
+            break;
+        }
+        fixture
+            .pins
+            .push(acquired(&fixture.store, &extra.path, &fixture.owner).1);
+    }
+    let mut state = fixture.store.lock_state();
+    assert_eq!(
+        state.generations.len(),
+        state.generations.reserved(),
+        "generation table padding missed"
+    );
+    for id in 1.. {
+        if state.ledger.shared.len() == state.ledger.shared.reserved() {
+            break;
+        }
+        state.ledger.shared.acquire(Anchor::facts(id, 0));
+    }
+    drop(state);
+    fixture
 }
 
 fn chunk_charge(chunk: &EntryChunk) -> usize {
@@ -742,16 +889,31 @@ fn assert_boundary_at(
     {
         let _filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
         fixture.store.assert_conserved();
-        let before = ledger(&fixture.store);
+        let before = (
+            ledger(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store),
+        );
+        traced(&fixture.store);
         assert!(
             !attempt(fixture),
             "{site}: one byte over the exact fit was admitted"
         );
         fixture.store.assert_conserved();
         assert_eq!(
-            ledger(&fixture.store),
+            (
+                ledger(&fixture.store),
+                audited(&fixture.store),
+                bookkeeping(&fixture.store),
+            ),
             before,
             "{site}: the refused admission leaked state"
+        );
+        assert!(
+            !traced(&fixture.store)
+                .iter()
+                .any(|trace| matches!(trace, Trace::Allocated(_))),
+            "{site}: the refused admission allocated retained bookkeeping"
         );
         assert!(
             audited(&fixture.store)[TOTAL] <= cap,
@@ -759,12 +921,63 @@ fn assert_boundary_at(
         );
     }
     let _filler = fill_to(&fixture.store, &fixture.owner, exact);
-    let unadmitted = unadmitted_bytes(&fixture.store);
     assert!(attempt(fixture), "{site}: the exact fit was refused");
     fixture.store.assert_conserved();
     assert!(
-        audited(&fixture.store)[TOTAL] <= cap + unadmitted_bytes(&fixture.store) - unadmitted,
-        "{site}: the admitted publication exceeded the cap beyond its unadmitted bookkeeping"
+        audited(&fixture.store)[TOTAL] <= cap,
+        "{site}: the admitted publication exceeded the cap"
+    );
+}
+
+fn assert_exact_growth(
+    site: &str,
+    fixture: &Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    exact: usize,
+    charged: &dyn Fn(&NativeStore) -> usize,
+) -> usize {
+    let cap = cap_for(&fixture.owner);
+    let _filler = fill_to(&fixture.store, &fixture.owner, exact);
+    let (charge, growth) = (charged(&fixture.store), bookkeeping(&fixture.store));
+    assert!(attempt(fixture), "{site}: the exact fit was refused");
+    fixture.store.assert_conserved();
+    let (charge, growth) = (
+        charged(&fixture.store) - charge,
+        bookkeeping(&fixture.store) - growth,
+    );
+    eprintln!("{site}: charge={charge} growth={growth} headroom={exact}");
+    assert_eq!(
+        exact,
+        charge + growth,
+        "{site}: the exact headroom is not the charge plus its bookkeeping growth"
+    );
+    assert_eq!(
+        ledger(&fixture.store)[TOTAL],
+        cap,
+        "{site}: the exact fit did not land on the cap"
+    );
+    assert_eq!(audited(&fixture.store)[TOTAL], cap);
+    growth
+}
+
+fn assert_admitted_before_allocating(site: &str, traced: &[Trace]) {
+    let admitted = traced
+        .iter()
+        .position(|trace| matches!(trace, Trace::Admitted(_)))
+        .unwrap_or_else(|| panic!("{site}: nothing was admitted: {traced:?}"));
+    let allocated: Vec<_> = traced
+        .iter()
+        .enumerate()
+        .filter(|(_, trace)| matches!(trace, Trace::Allocated(_)))
+        .map(|(at, _)| at)
+        .collect();
+    assert!(
+        !allocated.is_empty(),
+        "{site}: the full table did not grow: {traced:?}"
+    );
+    assert!(
+        allocated.iter().all(|at| *at > admitted),
+        "{site}: retained bookkeeping grew before its admission: {traced:?}"
     );
 }
 
@@ -1721,15 +1934,175 @@ fn advance_publication_admits_exactly_before_registering_the_generation() {
         let fitted = build();
         let generations = ledger(&fitted.store)[GENERATIONS];
         let filler = fill_to(&fitted.store, &fitted.owner, exact);
-        let unadmitted = unadmitted_bytes(&fitted.store);
         assert!(advance_published(&fitted));
         fitted.store.assert_conserved();
-        assert!(
-            audited(&fitted.store)[TOTAL] <= cap + unadmitted_bytes(&fitted.store) - unadmitted
-        );
+        assert!(audited(&fitted.store)[TOTAL] <= cap);
         assert_eq!(ledger(&fitted.store)[GENERATIONS], generations + 1);
         drop(filler);
         fitted.store.assert_conserved();
+    }
+}
+
+#[test]
+fn lease_issue_admits_exactly_its_record() {
+    let source = LedgerSource::new(&lines(0..2));
+    for background in [false, true] {
+        let build = || lease_fixture(&source, background, false);
+        let exact = exact_headroom(&build, &issued);
+        assert_boundary_at("lease issue", &build(), &issued, exact);
+        let growth = assert_exact_growth("lease issue", &build(), &issued, exact, &|store| {
+            lease_table(store).2
+        });
+        assert_eq!(growth, 0, "an unfilled lease table grew");
+        let refused = build();
+        let leases = lease_table(&refused.store);
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!issued(&refused));
+        }
+        assert_eq!(
+            lease_table(&refused.store),
+            leases,
+            "a refused lease was left behind"
+        );
+        assert!(
+            issued(&refused),
+            "the store was unusable after a refused lease"
+        );
+        refused.store.assert_conserved();
+    }
+}
+
+#[test]
+fn lease_table_growth_is_admitted_before_the_lease_is_issued() {
+    let source = LedgerSource::new(&lines(0..2));
+    for background in [false, true] {
+        let build = || lease_fixture(&source, background, true);
+        let exact = exact_headroom(&build, &issued);
+        assert_boundary_at("lease table growth", &build(), &issued, exact);
+        let fitted = build();
+        let (_, reserved, _, capacity_bytes) = lease_table(&fitted.store);
+        traced(&fitted.store);
+        let growth = assert_exact_growth("lease table growth", &fitted, &issued, exact, &|store| {
+            lease_table(store).2
+        });
+        let traced = traced(&fitted.store);
+        assert_admitted_before_allocating("lease table growth", &traced);
+        let (len, grown, _, grown_bytes) = lease_table(&fitted.store);
+        assert!(grown > reserved, "the full lease table did not grow");
+        assert!(len <= grown);
+        assert!(
+            traced.contains(&Trace::Allocated(grown)),
+            "the lease table did not report its new tier: {traced:?}"
+        );
+        assert_eq!(
+            growth,
+            grown_bytes - capacity_bytes,
+            "lease table growth is not its added slots"
+        );
+        let refused = build();
+        let leases = lease_table(&refused.store);
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!issued(&refused));
+        }
+        assert_eq!(
+            lease_table(&refused.store),
+            leases,
+            "a refused lease grew its table"
+        );
+        assert!(
+            issued(&refused),
+            "the store was unusable after a refused lease"
+        );
+        refused.store.assert_conserved();
+    }
+}
+
+#[test]
+fn location_heap_growth_is_admitted_before_locations_are_remembered() {
+    let source = LedgerSource::new(&line("locate"));
+    for background in [false, true] {
+        let build = || location_fixture(&source, background);
+        let exact = exact_headroom(&build, &remembered);
+        assert_boundary_at("location heap growth", &build(), &remembered, exact);
+        let fitted = build();
+        let (_, reserved, heap_bytes) = location_heap(&fitted.store);
+        let added = location_bytes(&fitted);
+        let growth = {
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+            let before = bookkeeping(&fitted.store);
+            traced(&fitted.store);
+            assert!(remembered(&fitted));
+            assert_admitted_before_allocating("location heap growth", &traced(&fitted.store));
+            fitted.store.assert_conserved();
+            assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+            bookkeeping(&fitted.store) - before
+        };
+        let (len, grown, grown_bytes) = location_heap(&fitted.store);
+        assert!(grown > reserved, "the full location heap did not grow");
+        assert!(len <= grown);
+        assert_eq!(growth, grown_bytes - heap_bytes, "growth beyond the heap");
+        assert_eq!(
+            exact,
+            added + growth,
+            "headroom is not the charge plus heap growth"
+        );
+        let refused = build();
+        let heap = location_heap(&refused.store);
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!remembered(&refused));
+        }
+        assert_eq!(
+            location_heap(&refused.store),
+            heap,
+            "a refused location grew its heap"
+        );
+        assert!(
+            remembered(&refused),
+            "the store was unusable after a refused location"
+        );
+        refused.store.assert_conserved();
+    }
+}
+
+#[test]
+fn generation_and_anchor_table_growth_is_admitted_before_classifier_publication() {
+    let source = LedgerSource::new(&lines(0..2));
+    let extras: Vec<_> = (0..8)
+        .map(|index| LedgerSource::new(&lines(index * 2 + 2..index * 2 + 4)))
+        .collect();
+    let classifier = "g".repeat(16 * 1024);
+    for background in [false, true] {
+        let build = || padded_classification(&source, &extras, &classifier, background);
+        let exact = exact_headroom(&build, &classification_published);
+        assert!(exact > 8 * 1024);
+        assert_boundary_at(
+            "padded classifier publication",
+            &build(),
+            &classification_published,
+            exact,
+        );
+        let fitted = build();
+        let (generations, anchors) = publication_tables(&fitted.store);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        let before = bookkeeping(&fitted.store);
+        traced(&fitted.store);
+        assert!(classification_published(&fitted));
+        assert_admitted_before_allocating("padded classifier publication", &traced(&fitted.store));
+        fitted.store.assert_conserved();
+        assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+        let (grown_generations, grown_anchors) = publication_tables(&fitted.store);
+        assert!(
+            grown_generations > generations,
+            "the full generation table did not grow"
+        );
+        assert!(
+            grown_anchors > anchors,
+            "the full anchor table did not grow"
+        );
+        assert!(bookkeeping(&fitted.store) > before);
     }
 }
 

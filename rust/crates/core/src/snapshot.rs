@@ -1097,6 +1097,14 @@ fn facts_anchor(facts: &Arc<crate::snapshot_prepared::PreparedFacts>) -> Anchor 
     Anchor::facts(facts_key(facts), facts.accounted_bytes())
 }
 
+fn chunk_key(chunk: &EntryChunk) -> usize {
+    Arc::as_ptr(&chunk.entries) as usize
+}
+
+fn chunk_anchor(chunk: &Arc<EntryChunk>) -> Anchor {
+    Anchor::entries(chunk_key(chunk), chunk.charge)
+}
+
 fn value_bytes(value: &Value) -> usize {
     let charge = crate::snapshot_memory::value_charge(value);
     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
@@ -1109,6 +1117,14 @@ impl Charge<String> for Lease {
 
     fn charge(&self) -> usize {
         self.claimant.capacity() + self.registry_generation.capacity()
+    }
+}
+
+impl Lease {
+    fn pledge(token: &String, context: &Value) -> Result<usize, SnapshotError> {
+        Ok(Self::key_charge(token)
+            + str_field(context, "claimant")?.len()
+            + str_field(context, "registry_generation")?.len())
     }
 }
 
@@ -1429,6 +1445,8 @@ impl StoreState {
         record: GenerationRecord,
     ) {
         let key = snapshot_key(snapshot);
+        self.generations.reserve_for(&key);
+        self.ledger.shared.reserve(record.anchors());
         snapshot
             .ledger
             .arm(&self.ledger.queue, LedgerEvent::Generation(key));
@@ -1450,9 +1468,30 @@ impl StoreState {
         }
     }
 
+    fn escaping<'a>(
+        &'a self,
+        chunks: &'a [Arc<EntryChunk>],
+    ) -> impl Iterator<Item = &'a Arc<EntryChunk>> + 'a {
+        chunks
+            .iter()
+            .filter(move |chunk| !self.escaped_chunks.contains_key(&chunk_key(chunk)))
+    }
+
+    fn escape_growth(&self, chunks: &[Arc<EntryChunk>]) -> usize {
+        self.escaped_chunks.growth(self.escaping(chunks).count())
+            + self
+                .ledger
+                .shared
+                .admission(self.escaping(chunks).map(chunk_anchor))
+    }
+
     fn escape_chunks(&mut self, chunks: &[Arc<EntryChunk>]) {
+        let additional = self.escaping(chunks).count();
+        let anchors: Vec<_> = self.escaping(chunks).map(chunk_anchor).collect();
+        self.escaped_chunks.reserve(additional);
+        self.ledger.shared.reserve(anchors);
         for chunk in chunks {
-            let key = Arc::as_ptr(&chunk.entries) as usize;
+            let key = chunk_key(chunk);
             if self.escaped_chunks.contains_key(&key) {
                 continue;
             }
@@ -1475,6 +1514,8 @@ impl StoreState {
     }
 
     fn insert_registry(&mut self, fingerprint: String, record: RegistryRecord) {
+        self.registries.reserve_for(&fingerprint);
+        self.ledger.shared.reserve(record.anchors());
         for anchor in record.anchors() {
             self.ledger.shared.acquire(anchor);
         }
@@ -1491,7 +1532,34 @@ impl StoreState {
         value: &V,
         anchors: impl IntoIterator<Item = Anchor>,
     ) -> usize {
-        charged_bytes(key, value) + self.ledger.shared.unowned_bytes(anchors)
+        charged_bytes(key, value) + self.ledger.shared.admission(anchors)
+    }
+
+    fn carried_growth(&self, lineage: &(SourceIdentity, String)) -> usize {
+        self.carried_classifications.growth_for(lineage)
+            + self.carried_expiry.growth(1)
+            + lineage.owned_bytes()
+    }
+
+    fn recent_codex_growth(&self, identity: &SourceIdentity) -> usize {
+        if self.recent_codex.contains_key(identity) {
+            return 0;
+        }
+        self.recent_codex.growth(1) + self.recent_codex_expiry.growth(1)
+    }
+
+    fn prepared_load_growth(&self, identity: &SourceIdentity) -> usize {
+        self.prepared_loads.growth_for(identity) + self.prepared_loads_expiry.growth(1)
+    }
+
+    fn insert_lease(&mut self, token: String, lease: Lease) {
+        self.leases.reserve_for(&token);
+        self.leases.insert(token, lease);
+    }
+
+    fn insert_waiter(&mut self, token: String, waiter: Waiter) {
+        self.waiters.reserve_for(&token);
+        self.waiters.insert(token, waiter);
     }
 
     fn carries(
@@ -1512,6 +1580,9 @@ impl StoreState {
         lineage: (SourceIdentity, String),
         carried: Arc<CarriedClassification>,
     ) {
+        self.carried_classifications.reserve_for(&lineage);
+        self.carried_expiry.reserve(1);
+        self.ledger.shared.reserve(carried.anchors());
         for anchor in carried.anchors() {
             self.ledger.shared.acquire(anchor);
         }
@@ -1558,6 +1629,7 @@ impl StoreState {
         snapshot: Arc<TranscriptSnapshot>,
     ) -> Option<Arc<TranscriptSnapshot>> {
         let added = codex_raw_len(&snapshot);
+        self.latest.reserve_for(&identity);
         let displaced = self.latest.insert(identity, snapshot);
         if self.recent_codex.contains_key(&identity) {
             self.recent_codex_raw_bytes -= displaced.as_ref().map_or(0, codex_raw_len);
@@ -1592,6 +1664,10 @@ impl StoreState {
     }
 
     fn insert_recent_codex(&mut self, identity: SourceIdentity, now: u64) {
+        if !self.recent_codex.contains_key(&identity) {
+            self.recent_codex.reserve(1);
+            self.recent_codex_expiry.reserve(1);
+        }
         if self.recent_codex.insert(identity, now).is_some() {
             return;
         }
@@ -1624,6 +1700,8 @@ impl StoreState {
     }
 
     fn insert_prepared_load(&mut self, identity: SourceIdentity, slot: Arc<LoadSlot>, now: u64) {
+        self.prepared_loads.reserve_for(&identity);
+        self.prepared_loads_expiry.reserve(1);
         self.prepared_loads_expiry
             .push(now.saturating_add(TOUCH_TTL_MS), identity);
         self.prepared_loads.insert(identity, (slot, now));
@@ -1650,6 +1728,8 @@ impl StoreState {
     }
 
     fn insert_location(&mut self, id: String, location: LocatedPath) {
+        self.locations.reserve_for(&id);
+        self.locations_expiry.reserve(1);
         self.locations_expiry.push(location.expires, id.clone());
         self.locations.insert(id, location);
         if self.locations_expiry.crowded(self.locations.len()) {
@@ -1698,6 +1778,7 @@ impl StoreState {
     }
 
     fn insert_label(&mut self, token: String, slot: LabelSlot) {
+        self.ledger.shared.reserve(slot.anchors());
         for anchor in slot.anchors() {
             self.ledger.shared.acquire(anchor);
         }
@@ -1731,6 +1812,7 @@ impl StoreState {
     }
 
     fn insert_classifier_stage(&mut self, key: String, slot: Arc<ClassifierSlot>) {
+        self.ledger.shared.reserve(slot.anchors());
         for anchor in slot.anchors() {
             self.ledger.shared.acquire(anchor);
         }
@@ -1834,7 +1916,13 @@ impl StoreState {
         }
     }
 
+    fn prepared_facts_growth(&self, identity: &SourceIdentity) -> usize {
+        usize::from(!self.prepared_facts.contains_key(identity))
+            * size_of::<(u64, SourceIdentity)>()
+    }
+
     fn insert_prepared_facts(&mut self, identity: SourceIdentity, cached: CachedPreparedFacts) {
+        self.ledger.shared.reserve([facts_anchor(&cached.facts)]);
         self.ledger.shared.acquire(facts_anchor(&cached.facts));
         let last_used = cached.last_used;
         if let Some(displaced) = self.prepared_facts.insert(identity, cached) {
@@ -1888,9 +1976,12 @@ impl StoreState {
     }
 
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
-        for anchor in graph.lock().expect("prepared graph").anchors() {
+        let prepared = graph.lock().expect("prepared graph");
+        self.ledger.shared.reserve(prepared.anchors());
+        for anchor in prepared.anchors() {
             self.ledger.shared.acquire(anchor);
         }
+        drop(prepared);
         if let Some(displaced) = self.prepared_graphs.insert(graph_id, graph) {
             self.release_prepared_graph(&displaced);
         }
@@ -1931,6 +2022,7 @@ impl StoreState {
         key: String,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
     ) {
+        self.ledger.shared.reserve([facts_anchor(&facts)]);
         self.ledger.shared.acquire(facts_anchor(&facts));
         graph.root_slices.insert(key, facts);
     }
@@ -1961,6 +2053,8 @@ impl StoreState {
     }
 
     fn insert_warm_membership(&mut self, key: String, membership: WarmMembership) {
+        self.warm_memberships.reserve_for(&key);
+        self.ledger.shared.reserve(membership.anchors());
         for anchor in membership.anchors() {
             self.ledger.shared.acquire(anchor);
         }
@@ -1996,6 +2090,9 @@ impl StoreState {
     }
 
     fn insert_prepared_build(&mut self, token: String, build: PreparedBuild) {
+        self.ledger
+            .shared
+            .reserve([facts_anchor(&build.root_facts)]);
         self.ledger.shared.acquire(facts_anchor(&build.root_facts));
         if let Some(displaced) = self.prepared_builds.insert(token, build) {
             self.ledger.shared.release(facts_key(&displaced.root_facts));
@@ -2463,21 +2560,21 @@ impl NativeStore {
             + fingerprint.capacity();
         let mut state = self.lock_state();
         if !state.registries.contains_key(&fingerprint) {
-            if bytes > reservation.bytes {
+            let record = RegistryRecord {
+                snapshot: registry,
+                allocations,
+            };
+            let retained =
+                bytes + state.registries.growth(1) + state.ledger.shared.growth(record.anchors());
+            if retained > reservation.bytes {
                 return Err(SnapshotError::new(
                     Status::RetainedLimit,
                     "tool registry allocation exceeds reservation",
                 ));
             }
-            state.insert_registry(
-                fingerprint.clone(),
-                RegistryRecord {
-                    snapshot: registry,
-                    allocations,
-                },
-            );
-            state.transient_bytes -= bytes;
-            reservation.bytes -= bytes;
+            state.insert_registry(fingerprint.clone(), record);
+            state.transient_bytes -= retained;
+            reservation.bytes -= retained;
         }
         Ok(fingerprint)
     }
@@ -2692,12 +2789,6 @@ impl NativeStore {
             + token.capacity()
             + handle_charge.owned_capacity_bytes
             + handle_charge.opaque_dom_accounted_bytes;
-        if slot.accounted > reservation.bytes {
-            return Err(SnapshotError::new(
-                Status::RetainedLimit,
-                "classifier retained bytes exceed reservation",
-            ));
-        }
         let mut state = self.lock_state();
         let lease = self.lease(&state, &slot.source_handle, context)?;
         slot.expires = slot.expires.min(lease.expires);
@@ -2713,8 +2804,15 @@ impl NativeStore {
                 "classifier cursor admission exhausted",
             ));
         }
-        state.transient_bytes -= slot.accounted;
-        reservation.bytes -= slot.accounted;
+        let retained = slot.accounted + state.ledger.shared.growth(slot.anchors());
+        if retained > reservation.bytes {
+            return Err(SnapshotError::new(
+                Status::RetainedLimit,
+                "classifier retained bytes exceed reservation",
+            ));
+        }
+        state.transient_bytes -= retained;
+        reservation.bytes -= retained;
         state.insert_label(token, slot);
         Ok(())
     }
@@ -2755,19 +2853,55 @@ impl NativeStore {
             + generation.indexes.capacity() * size_of::<(usize, usize)>()
             + size_of::<GenerationRecord>()
             + snapshot.id.capacity();
+        let token = self.token("lease");
+        let pledge = Lease::pledge(&token, context)?;
+        let mut state = self.lock_state();
+        let absolute_deadline = self
+            .lease(&state, source_handle, context)?
+            .absolute_deadline;
+        let key = snapshot_key(&snapshot);
+        let carried = carried
+            .filter(|(lineage, candidate)| state.carries(lineage, candidate))
+            .map(|(lineage, candidate)| (lineage, Arc::new(candidate)));
+        let published: HashSet<_> = generation.anchors().map(|anchor| anchor.id).collect();
+        let anchors = || {
+            generation.anchors().chain(
+                carried
+                    .iter()
+                    .flat_map(|(_, candidate)| candidate.anchors()),
+            )
+        };
+        let pledge = pledge + state.leases.growth(1);
+        let retained = retained
+            + pledge
+            + state.generations.growth_for(&key)
+            + state.ledger.shared.growth(anchors())
+            + carried.as_ref().map_or(0, |(lineage, candidate)| {
+                charged_bytes(lineage, candidate)
+                    + state.carried_growth(lineage)
+                    + state.ledger.shared.unowned_bytes(
+                        candidate
+                            .anchors()
+                            .filter(|anchor| !published.contains(&anchor.id)),
+                    )
+            });
         if retained > reservation.bytes {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
                 "derived classifier publication exceeds reservation",
             ));
         }
-        let mut state = self.lock_state();
-        let absolute_deadline = self
-            .lease(&state, source_handle, context)?
-            .absolute_deadline;
-        let key = snapshot_key(&snapshot);
+        state.ledger.shared.reserve(anchors());
         state.register_generation(&snapshot, generation);
-        let data = match self.issue(&mut state, snapshot, classifier, context, absolute_deadline) {
+        let data = match self.issue(
+            &mut state,
+            snapshot,
+            classifier,
+            context,
+            absolute_deadline,
+            token,
+            pledge,
+        ) {
             Ok(data) => data,
             Err(error) => {
                 state.unregister_generation(key);
@@ -2775,9 +2909,9 @@ impl NativeStore {
             }
         };
         if let Some((lineage, carried)) = carried {
-            Self::carry(&mut state, lineage, carried);
+            state.insert_carried(lineage, carried);
         }
-        state.transient_bytes -= retained;
+        state.transient_bytes -= retained - pledge;
         reservation.bytes -= retained;
         Ok(data)
     }
@@ -3178,7 +3312,13 @@ impl NativeStore {
                     stage.committed = Some(stage.activity.clone());
                 }
                 let accounted = stage.accounted_bytes();
-                self.admit_memory(&mut state, context, size_of::<ClassifierSlot>() + accounted)?;
+                let additional = size_of::<ClassifierSlot>()
+                    + accounted
+                    + state
+                        .ledger
+                        .shared
+                        .growth(seed.iter().flat_map(|seed| seed.anchors()));
+                self.admit_memory(&mut state, context, additional)?;
                 let slot = Arc::new(ClassifierSlot {
                     work: Mutex::new(stage),
                     seed,
@@ -3299,20 +3439,23 @@ impl NativeStore {
         {
             let mut state = self.lock_state();
             let carried = carried.filter(|candidate| state.carries(&lineage, candidate));
-            let additional = state.admission(
-                &snapshot_key(&derived),
-                &generation,
+            let key = snapshot_key(&derived);
+            let anchors = || {
                 generation
                     .anchors()
-                    .chain(carried.iter().flat_map(|candidate| candidate.anchors())),
-            ) + carried.as_ref().map_or(0, |candidate| {
-                charged_bytes(&lineage, candidate) + lineage.owned_bytes()
-            });
+                    .chain(carried.iter().flat_map(|candidate| candidate.anchors()))
+            };
+            let additional = state.admission(&key, &generation, anchors())
+                + state.generations.growth_for(&key)
+                + carried.as_ref().map_or(0, |candidate| {
+                    charged_bytes(&lineage, candidate) + state.carried_growth(&lineage)
+                });
             self.admit_memory(
                 &mut state,
                 context,
                 additional.saturating_sub(slot.ledgered_bytes()),
             )?;
+            state.ledger.shared.reserve(anchors());
             state.set_classifier_charge(&slot, 0);
             state.register_generation(&derived, generation);
             if let Some(candidate) = carried {
@@ -3395,16 +3538,6 @@ impl NativeStore {
             .filter(|carried| carried.extends(chunks))?;
         carried.touched.store(now_ms(), Ordering::Release);
         Some(Arc::clone(carried))
-    }
-
-    fn carry(
-        state: &mut StoreState,
-        lineage: (SourceIdentity, String),
-        candidate: CarriedClassification,
-    ) {
-        if state.carries(&lineage, &candidate) {
-            state.insert_carried(lineage, Arc::new(candidate));
-        }
     }
 
     fn prune(state: &mut StoreState) {
@@ -3660,8 +3793,12 @@ impl NativeStore {
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
+        Self::bookkeeping_bytes(state) + state.ledger.queue.buffer_bytes()
+    }
+
+    fn bookkeeping_bytes(state: &StoreState) -> usize {
         size_of::<StoreState>()
-            + state.ledger.storage_bytes()
+            + state.ledger.shared.table_bytes()
             + state.registries.capacity_bytes()
             + state.generations.capacity_bytes()
             + state.carried_classifications.capacity_bytes()
@@ -3774,10 +3911,12 @@ impl NativeStore {
         additional: usize,
     ) -> Result<(), SnapshotError> {
         let cap = self.memory_cap(context)?;
+        let bookkeeping = cfg!(debug_assertions).then(|| Self::bookkeeping_bytes(state));
         if number(&Self::gauges(state), "retained_total_accounted_bytes")?
             .saturating_add(additional)
             <= cap
         {
+            state.ledger.shared.work().admitted(additional);
             return Ok(());
         }
         self.classified
@@ -3797,11 +3936,17 @@ impl NativeStore {
             .saturating_add(additional)
             > cap
         {
+            debug_assert_eq!(
+                bookkeeping,
+                Some(Self::bookkeeping_bytes(state)),
+                "a refused admission moved retained bookkeeping"
+            );
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
                 "accounted storage admission exhausted",
             ));
         }
+        state.ledger.shared.work().admitted(additional);
         Ok(())
     }
 
@@ -3820,6 +3965,8 @@ impl NativeStore {
         classifier: Value,
         context: &Value,
         absolute_deadline: u64,
+        token: String,
+        pledged: usize,
     ) -> Result<Value, SnapshotError> {
         let cap = if Self::foreground_admission(context)? {
             self.config.leases
@@ -3845,21 +3992,22 @@ impl NativeStore {
             ));
         }
         let expires = (now + self.config.ttl).min(absolute_deadline);
-        let token = self.token("lease");
         let description = self.description(&snapshot, &classifier, &token, expires);
-        state.leases.insert(
-            token,
-            Lease {
-                claimant: str_field(context, "claimant")?.to_owned(),
-                snapshot,
-                classifier,
-                expires,
-                absolute_deadline,
-                exposed: false,
-                registry_generation: str_field(context, "registry_generation")?.to_owned(),
-                registry,
-            },
-        );
+        let lease = Lease {
+            claimant: str_field(context, "claimant")?.to_owned(),
+            snapshot,
+            classifier,
+            expires,
+            absolute_deadline,
+            exposed: false,
+            registry_generation: str_field(context, "registry_generation")?.to_owned(),
+            registry,
+        };
+        let additional =
+            (charged_bytes(&token, &lease) + state.leases.growth(1)).saturating_sub(pledged);
+        self.admit_memory(state, context, additional)?;
+        state.transient_bytes -= pledged;
+        state.insert_lease(token, lease);
         Ok(json!({"kind": "acquired", "description": description}))
     }
 
@@ -4711,7 +4859,15 @@ impl NativeStore {
                 let current_expiry = lease.expires;
                 match operation {
                     "retain" => Ok((
-                        self.issue(&mut state, snapshot, classifier, context, absolute_deadline)?,
+                        self.issue(
+                            &mut state,
+                            snapshot,
+                            classifier,
+                            context,
+                            absolute_deadline,
+                            self.token("lease"),
+                            0,
+                        )?,
                         None,
                         None,
                     )),
@@ -5118,7 +5274,7 @@ impl NativeStore {
             if cached.is_some() {
                 usage[7] += 1;
             }
-            let slot = if let Some(slot) = state.loads.get(&stamp.identity) {
+            let (slot, created) = if let Some(slot) = state.loads.get(&stamp.identity) {
                 if !Self::matches_prefix(stamp, slot.stamp)
                     && !Self::matches_prefix(slot.stamp, stamp)
                 {
@@ -5128,7 +5284,7 @@ impl NativeStore {
                     ));
                 }
                 usage[8] += 1;
-                Arc::clone(slot)
+                (Arc::clone(slot), false)
             } else {
                 let cap = if Self::foreground_admission(context)? {
                     self.config.loads
@@ -5214,9 +5370,12 @@ impl NativeStore {
                     }),
                 });
                 state.insert_load(stamp.identity, Arc::clone(&slot));
-                slot
+                (slot, true)
             };
             if state.waiters.len() >= self.lease_cap(context)? {
+                if created {
+                    state.remove_load(&stamp.identity);
+                }
                 return Err(SnapshotError::new(
                     Status::LeaseLimit,
                     "reservation admission exhausted",
@@ -5241,7 +5400,14 @@ impl NativeStore {
                 windowed: window.is_some(),
                 busy: false,
             };
-            state.waiters.insert(cursor.clone(), waiter.clone());
+            let additional = charged_bytes(&cursor, &waiter) + state.waiters.growth_for(&cursor);
+            if let Err(error) = self.admit_memory(&mut state, context, additional) {
+                if created {
+                    state.remove_load(&stamp.identity);
+                }
+                return Err(error);
+            }
+            state.insert_waiter(cursor.clone(), waiter.clone());
             waiter
         };
         self.advance(&cursor, waiter, None, cancel, usage)
@@ -5309,6 +5475,7 @@ impl NativeStore {
         if let Some(error) = &load.failure {
             return Err(SnapshotError::new(error.status, &error.reason));
         }
+        let mut lease = None;
         if load.result.is_none() {
             let read_bound = self.config.read_step.min(
                 waiter
@@ -5448,12 +5615,24 @@ impl NativeStore {
                     .sum();
                 charge + index_charge
             };
+            let pledge = generation
+                .as_ref()
+                .map(|_| {
+                    let token = self.token("lease");
+                    Lease::pledge(&token, &waiter.context).map(|bytes| (token, bytes))
+                })
+                .transpose()?;
             {
                 let mut state = self.lock_state();
                 let generation = load.result.as_ref().zip(generation);
+                let pledge = pledge.map(|(token, bytes)| (token, bytes + state.leases.growth(1)));
                 let additional = generation.as_ref().map_or(0, |(snapshot, record)| {
-                    state.admission(&snapshot_key(snapshot), record, record.anchors())
-                }) + pending_charge;
+                    let key = snapshot_key(snapshot);
+                    state.admission(&key, record, record.anchors())
+                        + state.generations.growth_for(&key)
+                        + state.escape_growth(&snapshot.chunks)
+                }) + pledge.as_ref().map_or(0, |(_, bytes)| *bytes)
+                    + pending_charge;
                 self.admit_memory(
                     &mut state,
                     &waiter.context,
@@ -5461,8 +5640,14 @@ impl NativeStore {
                 )?;
                 if let Some((snapshot, record)) = generation {
                     state.register_generation(snapshot, record);
+                    state.escape_chunks(&snapshot.chunks);
+                }
+                if let Some((_, bytes)) = &pledge {
+                    state.transient_bytes += bytes;
                 }
                 state.set_load_charge(&slot, pending_charge);
+                lease = pledge
+                    .map(|(token, bytes)| (token, ProjectionReservation { store: self, bytes }));
             }
             if let Err(error) = result {
                 if !matches!(
@@ -5492,14 +5677,23 @@ impl NativeStore {
                 .get(&slot.stamp.identity)
                 .is_some_and(|old| old.id == snapshot.id)
             {
-                if state
-                    .insert_latest(slot.stamp.identity, Arc::clone(&snapshot))
-                    .is_some()
-                {
-                    usage[10] += 1;
+                let escaping = state.escape_growth(&snapshot.chunks);
+                if let Err(error) = self.admit_memory(&mut state, &waiter.context, escaping) {
+                    state.waiters.remove(token);
+                    return Err(error);
                 }
                 state.escape_chunks(&snapshot.chunks);
                 usage[9] += 1;
+                let latest = state.latest.growth_for(&slot.stamp.identity);
+                if self
+                    .admit_memory(&mut state, &waiter.context, latest)
+                    .is_ok()
+                    && state
+                        .insert_latest(slot.stamp.identity, Arc::clone(&snapshot))
+                        .is_some()
+                {
+                    usage[10] += 1;
+                }
             }
             drop(state);
             let mut classifier_bounds = waiter.limits;
@@ -5536,6 +5730,10 @@ impl NativeStore {
                 claim.keep = true;
                 return Ok(self.loading(token, &waiter, "classifier preparation incomplete"));
             };
+            let (lease_token, mut pledge) = match lease.take() {
+                Some((lease_token, pledge)) => (lease_token, Some(pledge)),
+                None => (self.token("lease"), None),
+            };
             let mut state = self.lock_state();
             if !state.waiters.contains_key(token) {
                 return Err(SnapshotError::new(
@@ -5549,7 +5747,12 @@ impl NativeStore {
                 waiter.classifier.clone(),
                 &waiter.context,
                 waiter.deadline,
+                lease_token,
+                pledge.as_ref().map_or(0, |pledge| pledge.bytes),
             )?;
+            if let Some(pledge) = &mut pledge {
+                pledge.bytes = 0;
+            }
             state.waiters.remove(token);
             Self::prune(&mut state);
             Ok((data, None, None))
@@ -7289,25 +7492,37 @@ impl NativeStore {
         }
         let mut state = self.lock_state();
         Self::prune(&mut state);
-        let added = entries
-            .iter()
+        let remembered = || {
+            entries
+                .iter()
+                .filter(|(id, path)| id.len() + path.as_os_str().len() <= 8192)
+        };
+        let added = remembered()
             .map(|(id, path)| 2 * id.len() + path.as_os_str().len() + size_of::<LocatedPath>())
             .sum::<usize>();
         while state.locations.len() + entries.len() > 4096 && state.evict_oldest_location() {}
-        if self.admit_memory(&mut state, context, added).is_err() {
+        let (fresh, pushed) = remembered().fold((0, 0), |(fresh, pushed), (id, _)| {
+            (
+                fresh + usize::from(!state.locations.contains_key(id)),
+                pushed + 1,
+            )
+        });
+        let additional =
+            added + state.locations.growth(fresh) + state.locations_expiry.growth(pushed);
+        if self.admit_memory(&mut state, context, additional).is_err() {
             return;
         }
+        state.locations.reserve(fresh);
+        state.locations_expiry.reserve(pushed);
         let expires = now_ms().saturating_add(self.config.ttl.saturating_mul(10));
-        for (id, path) in entries {
-            if id.len() + path.as_os_str().len() <= 8192 {
-                state.insert_location(
-                    id.clone(),
-                    LocatedPath {
-                        path: path.clone(),
-                        expires,
-                    },
-                );
-            }
+        for (id, path) in remembered() {
+            state.insert_location(
+                id.clone(),
+                LocatedPath {
+                    path: path.clone(),
+                    expires,
+                },
+            );
         }
     }
 
@@ -7545,8 +7760,10 @@ impl NativeStore {
                 "location cursor admission exhausted",
             ));
         }
-        self.admit_memory(&mut state, &cursor.context, cursor.accounted_bytes())?;
+        let additional = cursor.accounted_bytes() + state.locates.growth_for(token);
+        self.admit_memory(&mut state, &cursor.context, additional)?;
         cursor.expires = (now_ms() + self.config.ttl).min(cursor.limits.deadline_unix_ms);
+        state.locates.reserve_for(token);
         state.locates.insert(token.to_owned(), cursor);
         Ok((
             data,

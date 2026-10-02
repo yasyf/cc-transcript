@@ -96,19 +96,19 @@ impl NativeStore {
             state.remove_prepared_facts(&oldest).expect("cached fact");
             used = state.ledger.shared.facts();
         }
-        self.admit_memory(&mut state, context, accounted)?;
-        state.insert_prepared_facts(
-            stamp.identity,
-            CachedPreparedFacts {
-                stamp,
-                registry_generation: registry_generation.to_owned(),
-                admission: admission.to_owned(),
-                authority: authority.clone(),
-                classifier: classifier.clone(),
-                facts: Arc::clone(&facts),
-                last_used: now_ms(),
-            },
-        );
+        let cached = CachedPreparedFacts {
+            stamp,
+            registry_generation: registry_generation.to_owned(),
+            admission: admission.to_owned(),
+            authority: authority.clone(),
+            classifier: classifier.clone(),
+            facts: Arc::clone(&facts),
+            last_used: now_ms(),
+        };
+        let additional = state.admission(&stamp.identity, &cached, [facts_anchor(&cached.facts)])
+            + state.prepared_facts_growth(&stamp.identity);
+        self.admit_memory(&mut state, context, additional)?;
+        state.insert_prepared_facts(stamp.identity, cached);
         Ok(facts)
     }
 
@@ -267,7 +267,10 @@ impl NativeStore {
         {
             let mut state = self.lock_state();
             if let Some(slot) = state.loads.get(&stamp.identity).cloned() {
-                state.insert_prepared_load(stamp.identity, slot, now_ms());
+                let growth = state.prepared_load_growth(&stamp.identity);
+                if self.admit_memory(&mut state, context, growth).is_ok() {
+                    state.insert_prepared_load(stamp.identity, slot, now_ms());
+                }
             }
         }
         let outcome = outcome?;
@@ -349,7 +352,8 @@ impl NativeStore {
                 && snapshot.codex_raw.is_some()
                 && (now_ms() as i128 * 1_000_000).saturating_sub(stamp.mtime_ns)
                     <= 30 * 60 * 1_000_000_000;
-            if recent_codex {
+            let growth = state.recent_codex_growth(&stamp.identity);
+            if recent_codex && self.admit_memory(&mut state, context, growth).is_ok() {
                 state.insert_recent_codex(stamp.identity, now_ms());
                 while state.recent_codex_raw_bytes > 128 * 1024 * 1024 {
                     let oldest = state
@@ -1181,7 +1185,8 @@ impl NativeStore {
                         .expect("full warm membership cache");
                     state.remove_warm_membership(&oldest);
                 }
-                let additional = state.admission(&key, &membership, membership.anchors());
+                let additional = state.admission(&key, &membership, membership.anchors())
+                    + state.warm_memberships.growth_for(&key);
                 self.admit_memory(&mut state, context, additional)?;
                 state.insert_warm_membership(key.clone(), membership.clone());
             }
