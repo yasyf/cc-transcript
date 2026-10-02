@@ -6219,6 +6219,11 @@ impl NativeStore {
                         context,
                         value_bytes(context),
                     ) {
+                        if let Some(pending) = &resolution.pending {
+                            let mut state = self.lock_state();
+                            state.waiters.remove(pending);
+                            Self::prune(&mut state);
+                        }
                         drop(resolution);
                         return Err(error);
                     }

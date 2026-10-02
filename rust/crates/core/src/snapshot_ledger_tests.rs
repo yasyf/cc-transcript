@@ -3761,6 +3761,88 @@ fn refused_resolution_park_releases_its_pending_source_and_lease() {
 }
 
 #[test]
+fn refused_resolution_resume_releases_its_pending_source() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let site = format!("resolution resume background={background}");
+        let build = || {
+            let fixture = resolution_fixture(&scenario, background, false, 0);
+            let first = submit(&fixture);
+            assert!(parked(&first), "{site}: {first:?}");
+            let cursor = first["cursor"].as_str().unwrap().to_owned();
+            let pending = {
+                let state = fixture.store.lock_state();
+                let pending = state
+                    .resolutions
+                    .get(&cursor)
+                    .expect("the parked resolution")
+                    .pending
+                    .clone()
+                    .expect("the parked resolution carries its pending source");
+                assert!(state.waiters.contains_key(&pending), "{site}");
+                assert_eq!(state.loads.len(), 1, "{site}");
+                pending
+            };
+            fixture.store.assert_conserved();
+            (fixture, cursor, pending)
+        };
+        let (refused, cursor, pending) = build();
+        let outcome = {
+            let _filler = fill_to(&refused.store, &refused.owner, 0);
+            refused.store.dispatch(
+                &resume_request(&cursor),
+                &refused.owner,
+                &Cancellation::default(),
+                &mut [0u64; 18],
+            )
+        };
+        assert!(
+            matches!(&outcome, Err(error) if error.status == Status::RetainedLimit),
+            "{site}: {outcome:?}"
+        );
+        refused.store.assert_conserved();
+        {
+            let state = refused.store.lock_state();
+            assert!(
+                state.resolutions.is_empty(),
+                "{site}: a refused resume left its cursor parked"
+            );
+            assert!(
+                !state.waiters.contains_key(&pending),
+                "{site}: the refused resume left its pending source waiter behind"
+            );
+            assert!(state.waiters.is_empty(), "{site}");
+            assert!(
+                state.loads.is_empty(),
+                "{site}: the pending source load outlived its resolution"
+            );
+        }
+        let (control, cursor, pending) = build();
+        {
+            let mut state = control.store.lock_state();
+            state.resolutions.remove(&cursor);
+            state.waiters.remove(&pending);
+            NativeStore::prune(&mut state);
+        }
+        evict_unpinned(&control.store, &control.owner);
+        assert_eq!(
+            (
+                settled(&refused.store),
+                audited(&refused.store),
+                bookkeeping(&refused.store)
+            ),
+            (
+                settled(&control.store),
+                audited(&control.store),
+                bookkeeping(&control.store)
+            ),
+            "{site}: a refused resume did more than consume its parked cursor and its pending source"
+        );
+        assert!(audited(&refused.store)[TOTAL] <= cap_for(&refused.owner));
+    }
+}
+
+#[test]
 fn lease_capped_resolution_park_releases_its_pending_source_and_lease() {
     let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
     for cached in [false, true] {
