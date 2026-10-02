@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The store config and its JSON schema add `max_scan_read_bytes` (8 MiB),
+  `max_scan_events` (4096), `max_scan_discovery_entries` (4096), and
+  `max_scan_sources` (256) for the whole-command budget `cc-transcript grep`
+  starts from. `NativeStore::scan_limits()` reads these keys independently of
+  `max_read_bytes_per_step`, `max_events_per_step`, and `max_items_per_page`,
+  so tuning step size no longer changes the whole-scan caps. Defaults are
+  unchanged, and zero values are rejected.
 - `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;
   absent, whole-file behavior is unchanged. For a Claude file of size `S` and window
   `W`, `S <= W` gives the same snapshot as a plain `acquire`; otherwise `q = W/2`,
