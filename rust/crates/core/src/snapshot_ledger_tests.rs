@@ -2019,7 +2019,11 @@ fn root_facts_are_reserved_at_their_entry_bytes_before_parsing() {
             &owner,
         );
         assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
-        reserved_before_the_last_admission("root facts", &traced(&store), entry_bytes(&snapshot));
+        reserved_before_the_last_admission(
+            "root facts",
+            &traced(&store),
+            entry_bytes(&[&snapshot]),
+        );
     }
 }
 
@@ -2030,11 +2034,11 @@ fn root_slices_are_reserved_at_the_root_facts_bytes_before_preparation() {
         let fixture = slice_fixture(&scenario, background);
         let root_facts = {
             let state = fixture.store.lock_state();
-            state.prepared_graphs[fixture.request["handle"]["graph_id"].as_str().unwrap()]
-                .lock()
-                .unwrap()
-                .root_facts
-                .accounted_bytes()
+            let graph = state.prepared_graphs
+                [fixture.request["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+            graph.root_facts.accounted_bytes()
         };
         traced(&fixture.store);
         let response = submit(&fixture);
