@@ -82,7 +82,7 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn audit_value_bytes(value: &Value) -> usize {
+    pub(crate) fn audit_value_bytes(value: &Value) -> usize {
         match value.get_type() {
             JsonType::Null | JsonType::Boolean => 0,
             JsonType::Number => value

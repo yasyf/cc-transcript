@@ -5,10 +5,19 @@ use std::sync::Arc;
 
 use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, ToolUse, Turn};
 #[cfg(test)]
+use crate::snapshot::NativeStore;
+#[cfg(test)]
 use crate::snapshot_ledger::arc_mirror;
 use crate::snapshot_ledger::{arc_bytes, arc_control_bytes};
 use crate::snapshot_memory::{block_charge, value_charge, MemoryCharge};
 use crate::toolcall::{parse_tool_call, ToolCall};
+#[cfg(test)]
+use crate::toolcall::{
+    ApplyPatchCall, BashCall, CodeModeCall, EditCall, EditSpan, ExitPlanModeCall, GlobCall,
+    GrepCall, MultiEditCall, NotebookEditCall, OtherCall, PatchEdit, ReadCall, SkillCall,
+    SpanEditCall, TaskCall, TaskCreateCall, TaskUpdateCall, UpdatePlanCall, WorkflowCall,
+    WriteCall, WriteStdinCall,
+};
 use crate::types::{ContentBlock, Entry};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -471,6 +480,15 @@ impl ActivityIndex {
                     + calls.capacity() * size_of::<Arc<CachedCall>>(),
             ));
             allocations.extend(calls.iter().map(|call| {
+                let audited = audited_call(call);
+                assert!(
+                    call.accounted_bytes >= audited.total(),
+                    "{audited:?} exceeds the {} byte call charge",
+                    call.accounted_bytes
+                );
+                if audited.dom == 0 {
+                    assert_eq!(call.accounted_bytes, audited.exact);
+                }
                 (
                     Arc::as_ptr(call) as usize,
                     arc_mirror::<CachedCall>() - size_of::<CachedCall>() + call.accounted_bytes,
@@ -630,10 +648,330 @@ fn call_bytes(call: &ToolCall, opaque_dom_accounted_bytes: usize) -> usize {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+struct AuditedCall {
+    exact: usize,
+    dom: usize,
+}
+
+#[cfg(test)]
+impl AuditedCall {
+    fn total(self) -> usize {
+        self.exact + self.dom
+    }
+}
+
+#[cfg(test)]
+fn audited_call(cached: &CachedCall) -> AuditedCall {
+    let CachedCall {
+        event: _,
+        ordinal: _,
+        id,
+        call,
+        edits,
+        accounted_bytes: _,
+    } = cached;
+    let text = |value: &Option<String>| value.as_ref().map_or(0, String::capacity);
+    let (fields, raw, views, decoded) = match call {
+        ToolCall::Bash(BashCall {
+            name,
+            raw,
+            command,
+            timeout,
+            description,
+            run_in_background,
+        }) => (
+            name.capacity() + command.capacity(),
+            raw,
+            vec![
+                timeout.as_ref(),
+                description.as_ref(),
+                run_in_background.as_ref(),
+            ],
+            0,
+        ),
+        ToolCall::Edit(EditCall {
+            name,
+            raw,
+            file_path,
+            old,
+            new,
+            replace_all,
+        }) => (
+            name.capacity() + file_path.capacity() + old.capacity() + new.capacity(),
+            raw,
+            vec![Some(replace_all)],
+            0,
+        ),
+        ToolCall::MultiEdit(MultiEditCall {
+            name,
+            raw,
+            file_path,
+            edits,
+        }) => (
+            name.capacity()
+                + file_path.capacity()
+                + edits.capacity() * size_of::<EditSpan>()
+                + edits
+                    .iter()
+                    .map(
+                        |EditSpan {
+                             old,
+                             new,
+                             replace_all: _,
+                         }| old.capacity() + new.capacity(),
+                    )
+                    .sum::<usize>(),
+            raw,
+            Vec::new(),
+            0,
+        ),
+        ToolCall::Write(WriteCall {
+            name,
+            raw,
+            file_path,
+            content,
+        }) => (
+            name.capacity() + file_path.capacity() + content.capacity(),
+            raw,
+            Vec::new(),
+            0,
+        ),
+        ToolCall::Read(ReadCall {
+            name,
+            raw,
+            file_path,
+            offset,
+            limit,
+        }) => (
+            name.capacity() + file_path.capacity(),
+            raw,
+            vec![offset.as_ref(), limit.as_ref()],
+            0,
+        ),
+        ToolCall::NotebookEdit(NotebookEditCall {
+            name,
+            raw,
+            notebook_path,
+            new_source,
+            cell_id,
+            edit_mode,
+        }) => (
+            name.capacity() + notebook_path.capacity() + new_source.capacity(),
+            raw,
+            vec![cell_id.as_ref(), edit_mode.as_ref()],
+            0,
+        ),
+        ToolCall::Grep(GrepCall {
+            name,
+            raw,
+            pattern,
+            path,
+            glob,
+            file_type,
+            output_mode,
+        }) => (
+            name.capacity() + pattern.capacity(),
+            raw,
+            vec![
+                path.as_ref(),
+                glob.as_ref(),
+                file_type.as_ref(),
+                output_mode.as_ref(),
+            ],
+            0,
+        ),
+        ToolCall::Glob(GlobCall {
+            name,
+            raw,
+            pattern,
+            path,
+        }) => (
+            name.capacity() + pattern.capacity(),
+            raw,
+            vec![path.as_ref()],
+            0,
+        ),
+        ToolCall::Task(TaskCall {
+            name,
+            raw,
+            prompt,
+            agent_type,
+            model,
+            agent_name,
+            run_in_background,
+        }) => (
+            name.capacity() + prompt.capacity(),
+            raw,
+            vec![
+                agent_type.as_ref(),
+                model.as_ref(),
+                agent_name.as_ref(),
+                run_in_background.as_ref(),
+            ],
+            0,
+        ),
+        ToolCall::Workflow(WorkflowCall {
+            name,
+            raw,
+            script,
+            script_path,
+            workflow_name,
+            args,
+            resume_from_run_id,
+        }) => (
+            name.capacity(),
+            raw,
+            vec![
+                script.as_ref(),
+                script_path.as_ref(),
+                workflow_name.as_ref(),
+                args.as_ref(),
+                resume_from_run_id.as_ref(),
+            ],
+            0,
+        ),
+        ToolCall::Skill(SkillCall {
+            name,
+            raw,
+            skill,
+            args,
+        }) => (
+            name.capacity() + skill.capacity(),
+            raw,
+            vec![args.as_ref()],
+            0,
+        ),
+        ToolCall::TaskCreate(TaskCreateCall {
+            name,
+            raw,
+            subject,
+            description,
+        }) => (
+            name.capacity() + subject.capacity(),
+            raw,
+            vec![description.as_ref()],
+            0,
+        ),
+        ToolCall::TaskUpdate(TaskUpdateCall {
+            name,
+            raw,
+            task_id,
+            status,
+            subject,
+            description,
+        }) => (
+            name.capacity() + task_id.capacity(),
+            raw,
+            vec![status.as_ref(), subject.as_ref(), description.as_ref()],
+            0,
+        ),
+        ToolCall::ExitPlanMode(ExitPlanModeCall { name, raw, plan }) => {
+            (name.capacity() + plan.capacity(), raw, Vec::new(), 0)
+        }
+        ToolCall::CodeMode(CodeModeCall { name, raw, source }) => {
+            (name.capacity() + source.capacity(), raw, Vec::new(), 0)
+        }
+        ToolCall::ApplyPatch(ApplyPatchCall { name, raw, edits }) => (
+            name.capacity()
+                + edits.capacity() * size_of::<PatchEdit>()
+                + edits
+                    .iter()
+                    .map(
+                        |PatchEdit {
+                             file_path,
+                             kind: _,
+                             move_path,
+                             hunks,
+                         }| {
+                            file_path.capacity()
+                                + text(move_path)
+                                + hunks.capacity() * size_of::<crate::toolcall::Hunk>()
+                                + hunks
+                                    .iter()
+                                    .map(|crate::toolcall::Hunk { old, new }| {
+                                        old.capacity() + new.capacity()
+                                    })
+                                    .sum::<usize>()
+                        },
+                    )
+                    .sum::<usize>(),
+            raw,
+            Vec::new(),
+            0,
+        ),
+        ToolCall::UpdatePlan(UpdatePlanCall {
+            name,
+            raw,
+            plan,
+            explanation,
+        }) => (
+            name.capacity() + text(explanation),
+            raw,
+            Vec::new(),
+            plan.as_ref().map_or(0, NativeStore::audit_value_bytes),
+        ),
+        ToolCall::WriteStdin(WriteStdinCall {
+            name,
+            raw,
+            chars,
+            session_id: _,
+            yield_time_ms: _,
+            max_output_tokens: _,
+        }) => (
+            name.capacity(),
+            raw,
+            Vec::new(),
+            chars.as_ref().map_or(0, NativeStore::audit_value_bytes),
+        ),
+        ToolCall::SpanEdit(SpanEditCall {
+            name,
+            raw,
+            file_path,
+            new,
+        }) => (
+            name.capacity() + file_path.capacity() + text(new),
+            raw,
+            Vec::new(),
+            0,
+        ),
+        ToolCall::Other(OtherCall { name, raw, error }) => {
+            (name.capacity() + text(error), raw, Vec::new(), 0)
+        }
+    };
+    let shared = NativeStore::audit_value_bytes(raw);
+    for view in views.into_iter().flatten() {
+        assert!(
+            NativeStore::audit_value_bytes(view) <= shared,
+            "{view:?} is not a view into {raw:?}"
+        );
+    }
+    AuditedCall {
+        exact: size_of::<CachedCall>()
+            + id.capacity()
+            + fields
+            + edits.capacity() * size_of::<(String, Vec<Hunk>)>()
+            + edits
+                .iter()
+                .map(|(path, hunks)| {
+                    path.capacity()
+                        + hunks.capacity() * size_of::<Hunk>()
+                        + hunks
+                            .iter()
+                            .map(|Hunk { old, new }| old.capacity() + new.capacity())
+                            .sum::<usize>()
+                })
+                .sum::<usize>(),
+        dom: shared + decoded,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::activity::lift_session_refs;
     use crate::parse::parse_entry;
+    use crate::toolcall::{with_registry, McpToolSpec, SpanEditMap, ToolRegistrySnapshot};
 
     fn entry(raw: &str) -> Entry {
         parse_entry(sonic_rs::from_str(raw).unwrap()).unwrap()
@@ -655,6 +993,10 @@ mod tests {
         entry(
             r#"{"type":"user","uuid":"r","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"edit","content":"first"},{"type":"tool_result","tool_use_id":"edit","content":"last","is_error":true},{"type":"tool_result","tool_use_id":"read","content":"read"}]}}"#,
         )
+    }
+
+    fn tool_use(id: &str, name: &str, input: &str) -> String {
+        format!(r#"{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}"#)
     }
 
     fn parity(index: &ActivityIndex, entries: &[&Entry], flags: Option<&[bool]>) {
@@ -882,6 +1224,145 @@ mod tests {
             call_bytes(&call, raw_charge),
             raw_charge + bash.name.capacity() + bash.command.capacity()
         );
+    }
+
+    #[test]
+    fn independent_walk_pins_every_call_variant_charge() {
+        let cases = [
+            (
+                "Bash",
+                r#"{"command":"ls","description":{"why":["list"]},"timeout":5,"run_in_background":true}"#,
+            ),
+            ("exec_command", r#""{\"cmd\":\"ls\",\"workdir\":\"/tmp\"}""#),
+            (
+                "Edit",
+                r#"{"file_path":"a.rs","old_string":"old","new_string":"new","replace_all":true}"#,
+            ),
+            (
+                "MultiEdit",
+                r#"{"file_path":"a.rs","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d","replace_all":true}]}"#,
+            ),
+            ("Write", r#"{"file_path":"w.rs","content":"body"}"#),
+            ("Read", r#"{"file_path":"r.rs","offset":1,"limit":2}"#),
+            (
+                "NotebookEdit",
+                r#"{"notebook_path":"n.ipynb","new_source":"x = 1","cell_id":"c1","edit_mode":"replace"}"#,
+            ),
+            (
+                "Grep",
+                r#"{"pattern":"p","path":"src","glob":"*.rs","type":"rust","output_mode":"content"}"#,
+            ),
+            ("Glob", r#"{"pattern":"**/*.rs","path":"src"}"#),
+            (
+                "Agent",
+                r#"{"prompt":"do","subagent_type":"x","model":"m","name":"n","run_in_background":false}"#,
+            ),
+            (
+                "Workflow",
+                r#"{"script":"s","scriptPath":"p","name":"w","args":{"k":[1,2]},"resumeFromRunId":"r"}"#,
+            ),
+            ("Skill", r#"{"skill":"s","args":"a"}"#),
+            ("TaskCreate", r#"{"subject":"s","description":"d"}"#),
+            (
+                "TaskUpdate",
+                r#"{"taskId":"1","status":"done","subject":"s","description":"d"}"#,
+            ),
+            ("ExitPlanMode", r#"{"plan":"p"}"#),
+            ("exec", r#""print(1)""#),
+            (
+                "apply_patch",
+                r#""*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-old\n+new\n*** Add File: c.rs\n+hello\n*** Delete File: d.rs\n*** End Patch""#,
+            ),
+            ("update_plan", r#""{\"explanation\":\"why\"}""#),
+            (
+                "update_plan",
+                r#""{\"plan\":[{\"step\":\"a\",\"status\":\"pending\"}],\"explanation\":\"why\"}""#,
+            ),
+            ("write_stdin", r#""{\"session_id\":1}""#),
+            (
+                "write_stdin",
+                r#""{\"session_id\":1,\"chars\":\"yes\",\"yield_time_ms\":5}""#,
+            ),
+            (
+                "mcp__srv__syn_walk_edit",
+                r#"{"path":"s.rs","content":"span"}"#,
+            ),
+            ("Edit", r#"{"file_path":"a.rs"}"#),
+        ];
+        let blocks = std::iter::once(tool_use("zero", "Unregistered", "true"))
+            .chain(
+                cases
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(position, (name, input))| {
+                        [
+                            tool_use(&format!("x{position}"), name, input),
+                            tool_use(&format!("t{position}"), "Unregistered", input),
+                        ]
+                    }),
+            )
+            .collect::<Vec<_>>()
+            .join(",");
+        let entries = [
+            user("u", "first"),
+            entry(&format!(
+                r#"{{"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"m","content":[{blocks}]}}}}"#
+            )),
+        ];
+        let refs: Vec<_> = entries.iter().collect();
+        let registry = ToolRegistrySnapshot::from_specs(HashMap::from([(
+            "syn_walk_edit".to_string(),
+            McpToolSpec {
+                behaves_like: "Edit".to_string(),
+                span_edit: Some(SpanEditMap {
+                    path: "path".to_string(),
+                    content: "content".to_string(),
+                    delete: None,
+                }),
+            },
+        )]));
+        let index = with_registry(registry, || ActivityIndex::new(&refs, None));
+        let (zero, pairs) = index.turns[0].calls.split_first().unwrap();
+        let walked = audited_call(zero);
+        assert!(matches!(
+            zero.call,
+            ToolCall::Other(OtherCall { error: Some(_), .. })
+        ));
+        assert_eq!(walked.dom, 0);
+        assert_eq!(zero.accounted_bytes, walked.exact);
+        assert_eq!(pairs.len(), 2 * cases.len());
+        let variants: std::collections::BTreeSet<_> = pairs
+            .chunks_exact(2)
+            .map(|pair| {
+                let [call, twin] = pair else { unreachable!() };
+                let (walked, twinned) = (audited_call(call), audited_call(twin));
+                assert!(matches!(
+                    twin.call,
+                    ToolCall::Other(OtherCall { error: None, .. })
+                ));
+                assert!(call.accounted_bytes >= walked.total());
+                assert!(twin.accounted_bytes >= twinned.total());
+                match &call.call {
+                    ToolCall::UpdatePlan(UpdatePlanCall { plan: Some(_), .. })
+                    | ToolCall::WriteStdin(WriteStdinCall { chars: Some(_), .. }) => {
+                        assert!(walked.dom > twinned.dom);
+                        assert!(
+                            call.accounted_bytes + twinned.exact
+                                >= twin.accounted_bytes + walked.exact + walked.dom - twinned.dom
+                        );
+                    }
+                    _ => {
+                        assert_eq!(walked.dom, twinned.dom);
+                        assert_eq!(
+                            call.accounted_bytes + twinned.exact,
+                            twin.accounted_bytes + walked.exact
+                        );
+                    }
+                }
+                call.call.type_name()
+            })
+            .collect();
+        assert_eq!(variants.len(), 20);
     }
 
     #[test]
