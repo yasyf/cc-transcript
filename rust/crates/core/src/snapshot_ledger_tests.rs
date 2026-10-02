@@ -11073,7 +11073,7 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
             let (_, cursor) = state.resolutions.iter().next().expect("parked resolution");
             assert_eq!(cursor.sessions.len(), 2);
             (cursor.sessions.capacity() - sessions_before) * size_of::<Value>()
-                + value_bytes(&cursor.sessions[1])
+                + NativeStore::audit_value_bytes(&cursor.sessions[1])
         };
         let covered = additional.min(held + context + fresh);
         assert_eq!(
@@ -11280,8 +11280,8 @@ fn resumed_projection_holds_its_cursor_charge_through_the_page() {
 
 fn discovery_record_bytes(fixture: &Fixture) -> usize {
     fixture.owner["claimant"].as_str().unwrap().len()
-        + value_bytes(&fixture.request)
-        + value_bytes(&fixture.owner)
+        + NativeStore::audit_value_bytes(&fixture.request)
+        + NativeStore::audit_value_bytes(&fixture.owner)
         + fixture.request["roots"].as_array().unwrap().len() * size_of::<PathBuf>()
         + LOCATE_PATH_SLOTS
 }
@@ -11639,7 +11639,7 @@ fn checkpointed_discovery_admits_its_previous_inventory_before_cloning_it() {
         let build = || checkpointed_discovery_fixture(&scenario, background);
         let control = build();
         let record = discovery_record_bytes(&control);
-        let roots = value_bytes(&control.request["roots"]);
+        let roots = NativeStore::audit_value_bytes(&control.request["roots"]);
         let previous = {
             let state = control.store.lock_state();
             assert_eq!(state.checkpoints.len(), 1);
@@ -11648,7 +11648,7 @@ fn checkpointed_discovery_admits_its_previous_inventory_before_cloning_it() {
             NativeStore::audit_checkpoint_bytes(token, checkpoint)
                 - token.capacity()
                 - checkpoint.claimant.capacity()
-                - value_bytes(&checkpoint.roots)
+                - NativeStore::audit_value_bytes(&checkpoint.roots)
         };
         let exact = exact_headroom(&build, &discovery_completed);
         for headroom in [0, record - 1] {
@@ -11728,8 +11728,8 @@ fn checkpointed_discovery_admits_its_previous_inventory_before_cloning_it() {
 fn resolution_record_bytes(fixture: &Fixture) -> usize {
     let ids = fixture.request["session_ids"].as_array().unwrap();
     fixture.owner["claimant"].as_str().unwrap().len()
-        + value_bytes(&fixture.owner)
-        + value_bytes(&fixture.request)
+        + NativeStore::audit_value_bytes(&fixture.owner)
+        + NativeStore::audit_value_bytes(&fixture.request)
         + ids.len() * size_of::<String>()
         + ids
             .iter()
@@ -11842,7 +11842,7 @@ fn fresh_resolution_admits_its_record_before_walking() {
             sessions.push(json!({"session_id":id,"status":"missing","description":null}));
             growth.push(
                 (sessions.capacity() - capacity) * size_of::<Value>()
-                    + value_bytes(sessions.last().unwrap()),
+                    + NativeStore::audit_value_bytes(sessions.last().unwrap()),
             );
         }
         let exact = exact_headroom(&build, &resolution_completed);
@@ -11931,7 +11931,8 @@ fn fresh_resolution_reserves_each_found_session_before_retaining_it() {
             assert_eq!(cursor.sessions.len(), 1);
             let mut mirror: Vec<Value> = Vec::new();
             mirror.push(Value::new_null());
-            mirror.capacity() * size_of::<Value>() + value_bytes(&cursor.sessions[0])
+            mirror.capacity() * size_of::<Value>()
+                + NativeStore::audit_value_bytes(&cursor.sessions[0])
         };
         assert!(
             reservations.contains(&session),
@@ -11948,7 +11949,7 @@ fn prepared_query_record_bytes(fixture: &Fixture) -> usize {
             .as_str()
             .unwrap()
             .len()
-        + value_bytes(&fixture.request["query"])
+        + NativeStore::audit_value_bytes(&fixture.request["query"])
 }
 
 fn predicate_queue_bound(fixture: &Fixture) -> (usize, usize) {
