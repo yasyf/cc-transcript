@@ -8322,7 +8322,7 @@ impl NativeStore {
                     self.extend_projection_reservation(
                         reservation,
                         &graph.context,
-                        2 * sidechain_directory_capacity(base, stem),
+                        2 * sidechain_directory_capacity(base, stem) + READ_DIR_HANDLE_BYTES,
                     )?;
                     let directory = sidechain_directory(base, stem);
                     match std::fs::canonicalize(&directory) {
@@ -9490,6 +9490,7 @@ impl NativeStore {
                             &cursor.context,
                             set_growth(&cursor.seen_directories, 1)
                                 + vec_growth(&cursor.directories, 1)
+                                + READ_DIR_HANDLE_BYTES
                                 + path.as_os_str().len(),
                         )?;
                         let predicted = (

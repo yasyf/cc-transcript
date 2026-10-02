@@ -7230,6 +7230,17 @@ fn location_parked(fixture: &Fixture) -> bool {
     }
 }
 
+fn open_directory_reservation(cursor: &LocateCursor, root: &Path) -> usize {
+    cursor.seen_directories.capacity() * size_of::<SourceIdentity>()
+        + cursor.directories.capacity() * size_of::<OpenDirectory>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + root.as_os_str().len()
+}
+
+fn location_step_peak(cursor: &LocateCursor, root: &Path) -> usize {
+    locate_record_bytes(cursor) + LOCATE_PATH_SLOTS + open_directory_reservation(cursor, root)
+}
+
 #[test]
 fn location_cursor_park_admits_its_stored_key_exactly() {
     let source = LedgerSource::new(&line("locate"));
@@ -7251,24 +7262,25 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
         }));
         assert!(location_parked(&fitted));
         *fitted.store.release_hook.lock().unwrap() = None;
-        assert_admitted_before_allocating("location park", &traced(&fitted.store));
+        let trace = traced(&fitted.store);
+        assert_admitted_before_allocating("location park", &trace);
         fitted.store.assert_conserved();
         let (token, pledged, parked) = {
             let state = fitted.store.lock_state();
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
             assert_eq!(token.capacity(), 64);
+            assert!(
+                reserved_traces(&trace)
+                    .contains(&open_directory_reservation(cursor, &source.directory)),
+                "the location step did not reserve its directory tables, root copy, and open-directory handle in one extension: {trace:?}"
+            );
             let parked = NativeStore::audit_locate_bytes(token, cursor)
                 + state.locates.capacity_bytes()
                 - capacity
                 + state.locates.pledged(token);
-            let peak = locate_record_bytes(cursor)
-                + LOCATE_PATH_SLOTS
-                + cursor.seen_directories.capacity() * size_of::<SourceIdentity>()
-                + cursor.directories.capacity() * size_of::<std::fs::ReadDir>()
-                + source.directory.as_os_str().len();
             assert_eq!(
                 exact,
-                peak.max(parked),
+                location_step_peak(cursor, &source.directory).max(parked),
                 "the location step's admission is not its peak reservation or its stored key, cursor, table growth, and pledge"
             );
             (token.clone(), state.locates.pledged(token), parked)
@@ -7629,8 +7641,8 @@ fn location_cursor_charges_its_open_directory_root_copy() {
         });
         assert_eq!(
             large - small,
-            2 * 300,
-            "{site}: the root is not charged as the scope copy plus the open directory's root copy"
+            3 * 300,
+            "{site}: the root is not reserved as the scope copy, the popped root, and the open directory's root copy"
         );
         let root = &roots[1];
         let build = || location_root_fixture(root, background);
@@ -7640,22 +7652,32 @@ fn location_cursor_charges_its_open_directory_root_copy() {
         let _filler = fill_to(&fitted.store, &fitted.owner, large);
         assert!(location_parked(&fitted));
         fitted.store.assert_conserved();
-        let state = fitted.store.lock_state();
-        let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
-        assert_eq!(cursor.directories.len(), 1);
-        assert_eq!(
-            cursor.directories[0].root_capacity,
-            root.as_os_str().len(),
-            "{site}: the open directory does not record its root copy"
-        );
-        assert!(cursor.roots.is_empty());
-        assert_eq!(cursor.scope.len(), 1);
-        assert_eq!(
-            large,
-            NativeStore::audit_locate_bytes(token, cursor) + state.locates.capacity_bytes()
+        let parked = {
+            let state = fitted.store.lock_state();
+            let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert_eq!(cursor.directories.len(), 1);
+            assert_eq!(
+                cursor.directories[0].root_capacity,
+                root.as_os_str().len(),
+                "{site}: the open directory does not record its root copy"
+            );
+            assert!(cursor.roots.is_empty());
+            assert_eq!(cursor.scope.len(), 1);
+            let parked = NativeStore::audit_locate_bytes(token, cursor)
+                + state.locates.capacity_bytes()
                 - capacity
-                + state.locates.pledged(token),
-            "{site}: the park admission is not the cursor walk, its table growth, and its pledge"
+                + state.locates.pledged(token);
+            assert_eq!(
+                large,
+                location_step_peak(cursor, root).max(parked),
+                "{site}: the step's admission is not its peak reservation or the cursor walk, its table growth, and its pledge"
+            );
+            parked
+        };
+        assert_eq!(
+            ledger(&fitted.store)[TOTAL],
+            cap_for(&fitted.owner) - large + parked,
+            "{site}: the parked cursor is not charged as its walk, which holds the open directory's root copy"
         );
     }
 }
@@ -8811,12 +8833,20 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
         .unwrap()
         .join("s")
         .join("subagents");
+    let listed_directory =
+        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
     for background in [false, true] {
         let build = || graph_fixture(&source, background, json!([]));
         let control = build();
         let capacity = control.store.lock_state().graphs.capacity_bytes();
         let delivered_before = delivered(&control.store);
+        traced(&control.store);
         assert!(parked(&submit(&control)));
+        let reservations = reserved(&control.store);
+        assert!(
+            reservations.contains(&listed_directory),
+            "the graph listing did not reserve its directory path, root copy, and open-directory handle in one extension: {reservations:?}"
+        );
         let (record, peak, stored) = {
             let state = control.store.lock_state();
             let (token, graph) = state.graphs.iter().next().expect("parked graph");
@@ -8830,7 +8860,7 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
                 record,
                 record
                     + FILESYSTEM_PATH_BYTES
-                    + 2 * directory.as_os_str().len()
+                    + listed_directory
                     + listing.children.capacity() * size_of::<PathBuf>()
                     + listing.children[0].capacity(),
                 NativeStore::audit_graph_cursor_bytes(token, graph) + state.graphs.capacity_bytes()
