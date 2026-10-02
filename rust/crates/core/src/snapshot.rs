@@ -746,6 +746,15 @@ fn stamp_bytes(stamps: &Vec<(PathBuf, SourceStamp)>) -> usize {
             .sum::<usize>()
 }
 
+fn task_bytes(task: &GraphTask) -> usize {
+    match task {
+        GraphTask::Visit {
+            path, spawned_by, ..
+        } => path.as_os_str().len() + spawned_by.as_ref().map_or(0, String::capacity),
+        GraphTask::List { parent, .. } => parent.as_os_str().len(),
+    }
+}
+
 struct PreparedBuild {
     claimant: String,
     context: Value,
@@ -789,7 +798,7 @@ struct PreparedGraph {
     root_handle: Value,
     classifier: Value,
     root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
-    root_slices: HashMap<String, Arc<crate::snapshot_prepared::PreparedFacts>>,
+    root_slices: Table<String, Arc<crate::snapshot_prepared::PreparedFacts>>,
     revision: String,
     stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
@@ -1160,7 +1169,7 @@ impl Charge<String> for Waiter {
     }
 
     fn charge(&self) -> usize {
-        self.claimant.capacity() + value_bytes(&self.context)
+        self.claimant.capacity() + value_bytes(&self.context) + value_bytes(&self.classifier)
     }
 }
 
@@ -1247,7 +1256,17 @@ impl Charge<String> for PreparedGraph {
     }
 
     fn charge(&self) -> usize {
-        size_of::<Self>() + stamp_bytes(&self.stamps)
+        size_of::<Self>()
+            + self.claimant.capacity()
+            + self.registry_generation.capacity()
+            + self.admission.capacity()
+            + self.revision.capacity()
+            + value_bytes(&self.authority)
+            + value_bytes(&self.root_handle)
+            + value_bytes(&self.classifier)
+            + stamp_bytes(&self.stamps)
+            + self.root_slices.reserved_bytes()
+            + self.root_slices.keys().map(String::capacity).sum::<usize>()
     }
 }
 
@@ -1279,8 +1298,42 @@ impl Charge<String> for PreparedBuild {
 
     fn charge(&self) -> usize {
         size_of::<PreparedBuild>()
+            + self.claimant.capacity()
+            + value_bytes(&self.context)
+            + value_bytes(&self.request)
+            + value_bytes(&self.root_handle)
+            + value_bytes(&self.classifier)
+            + self.location_cursor.as_ref().map_or(0, String::capacity)
+            + self.located.capacity() * size_of::<(String, PathBuf)>()
+            + self
+                .located
+                .iter()
+                .map(|(session, path)| session.capacity() + path.as_os_str().len())
+                .sum::<usize>()
             + self.tasks.capacity() * size_of::<GraphTask>()
+            + self.tasks.iter().map(task_bytes).sum::<usize>()
+            + self.listing.as_ref().map_or(0, |listing| {
+                listing.children.capacity() * size_of::<PathBuf>()
+                    + listing
+                        .children
+                        .iter()
+                        .map(|child| child.as_os_str().len())
+                        .sum::<usize>()
+            })
+            + self.seen.capacity() * size_of::<SourceIdentity>()
             + self.sources.capacity() * size_of::<PreparedSourceRef>()
+            + self
+                .sources
+                .iter()
+                .map(|source| source.path.as_os_str().len())
+                .sum::<usize>()
+            + stamp_bytes(&self.stamps)
+            + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + self
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
     }
 }
 
@@ -3891,9 +3944,13 @@ impl NativeStore {
             discovery: state.discoveries.audit_charged() + state.checkpoints.audit_charged(),
             projections: state.projections.audit_charged(),
             graph: state.graphs.audit_charged()
-                + state.prepared_graphs.audit_charged()
+                + state
+                    .prepared_graphs
+                    .audit_with(Self::audit_prepared_graph_bytes)
                 + state.prepared_queries.audit_charged()
-                + state.prepared_builds.audit_charged()
+                + state
+                    .prepared_builds
+                    .audit_with(Self::audit_prepared_build_bytes)
                 + state.expired_prepared_queries.audit_charged()
                 + state.prepared_facts.audit_charged()
                 + Self::audit_prepared_fact_bytes(state),

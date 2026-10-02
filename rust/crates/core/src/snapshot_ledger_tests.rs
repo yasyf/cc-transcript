@@ -1928,6 +1928,30 @@ fn stored_prepared_build_admits_exactly_before_publication() {
     }
 }
 
+#[test]
+fn stored_prepared_build_admits_its_request_exactly() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let padding = 64 * 1024;
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for background in [false, true] {
+        let build = |padding: usize| {
+            let mut fixture = direct_graph_fixture(&scenario, background);
+            fixture
+                .request
+                .insert("padding", json!("p".repeat(padding)));
+            fixture
+        };
+        let small = exact_headroom(&|| build(1), &attempt);
+        let large = exact_headroom(&|| build(padding), &attempt);
+        assert_eq!(
+            large - small,
+            value_bytes(&build(padding).request) - value_bytes(&build(1).request),
+            "the parked build's request is not charged by its bytes"
+        );
+        assert_boundary_at("store_prepared_build", &build(padding), &attempt, large);
+    }
+}
+
 fn reserved_before_the_last_admission(site: &str, traced: &[Trace], bytes: usize) {
     let reserved = traced
         .iter()
@@ -1979,11 +2003,24 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
                 .sum::<usize>()
     };
     key + size_of::<PreparedGraph>()
+        + graph.claimant.capacity()
+        + graph.registry_generation.capacity()
+        + graph.admission.capacity()
+        + graph.revision.capacity()
+        + value_bytes(&graph.authority)
+        + value_bytes(&graph.root_handle)
+        + value_bytes(&graph.classifier)
         + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
         + graph
             .stamps
             .iter()
             .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
+        + graph.root_slices.reserved_bytes()
+        + graph
+            .root_slices
+            .keys()
+            .map(String::capacity)
             .sum::<usize>()
         + sources
         + dirs

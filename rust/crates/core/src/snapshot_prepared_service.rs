@@ -6,6 +6,88 @@ impl NativeStore {
     }
 
     #[cfg(test)]
+    fn audit_prepared_graph_bytes(graph_id: &String, graph: &Arc<Mutex<PreparedGraph>>) -> usize {
+        let graph = graph.lock().expect("prepared graph");
+        graph_id.capacity()
+            + size_of::<PreparedGraph>()
+            + graph.claimant.capacity()
+            + graph.registry_generation.capacity()
+            + graph.admission.capacity()
+            + graph.revision.capacity()
+            + value_bytes(&graph.authority)
+            + value_bytes(&graph.root_handle)
+            + value_bytes(&graph.classifier)
+            + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+            + graph
+                .stamps
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+            + graph.root_slices.reserved_bytes()
+            + graph
+                .root_slices
+                .keys()
+                .map(String::capacity)
+                .sum::<usize>()
+    }
+
+    #[cfg(test)]
+    fn audit_prepared_build_bytes(token: &String, build: &PreparedBuild) -> usize {
+        token.capacity()
+            + size_of::<PreparedBuild>()
+            + build.claimant.capacity()
+            + value_bytes(&build.context)
+            + value_bytes(&build.request)
+            + value_bytes(&build.root_handle)
+            + value_bytes(&build.classifier)
+            + build.location_cursor.as_ref().map_or(0, String::capacity)
+            + build.located.capacity() * size_of::<(String, PathBuf)>()
+            + build
+                .located
+                .iter()
+                .map(|(session, path)| session.capacity() + path.as_os_str().len())
+                .sum::<usize>()
+            + build.tasks.capacity() * size_of::<GraphTask>()
+            + build
+                .tasks
+                .iter()
+                .map(|task| match task {
+                    GraphTask::Visit {
+                        path, spawned_by, ..
+                    } => path.as_os_str().len() + spawned_by.as_ref().map_or(0, String::capacity),
+                    GraphTask::List { parent, .. } => parent.as_os_str().len(),
+                })
+                .sum::<usize>()
+            + build.listing.as_ref().map_or(0, |listing| {
+                listing.children.capacity() * size_of::<PathBuf>()
+                    + listing
+                        .children
+                        .iter()
+                        .map(|child| child.as_os_str().len())
+                        .sum::<usize>()
+            })
+            + build.seen.capacity() * size_of::<SourceIdentity>()
+            + build.sources.capacity() * size_of::<PreparedSourceRef>()
+            + build
+                .sources
+                .iter()
+                .map(|source| source.path.as_os_str().len())
+                .sum::<usize>()
+            + build.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+            + build
+                .stamps
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+            + build.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + build
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+    }
+
+    #[cfg(test)]
     fn audit_prepared_fact_bytes(state: &StoreState) -> usize {
         let mut seen = HashSet::new();
         let mut bytes = 0usize;
@@ -610,10 +692,18 @@ impl NativeStore {
             } else {
                 0
             };
+            let record = str_field(context, "claimant")?.len()
+                + str_field(context, "registry_generation")?.len()
+                + str_field(context, "admission")?.len()
+                + value_bytes(&context["authority"])
+                + value_bytes(root_handle)
+                + value_bytes(&view["classifier"])
+                + 2 * <Sha256 as Digest>::output_size();
             let mut reservation = self.reserve_projection(
                 context,
                 PreparedGraph::key_charge(&graph_id)
                     + size_of::<PreparedGraph>()
+                    + record
                     + stamps_bytes
                     + buffers,
             )?;
@@ -635,6 +725,7 @@ impl NativeStore {
                 digest.update(stamp.revision().as_bytes());
             }
             let revision = format!("{:x}", digest.finalize());
+            let work = self.lock_state().ledger.shared.work().clone();
             let graph = PreparedGraph {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -644,7 +735,7 @@ impl NativeStore {
                 root_handle: root_handle.clone(),
                 classifier: view["classifier"].clone(),
                 root_facts,
-                root_slices: HashMap::new(),
+                root_slices: Table::new(work),
                 revision: revision.clone(),
                 stamps,
                 validated: false,
@@ -917,10 +1008,18 @@ impl NativeStore {
             return self.store_prepared_build(token, build);
         }
         let graph_id = self.token("prepared-graph");
+        let record = build.claimant.capacity()
+            + str_field(context, "registry_generation")?.len()
+            + str_field(context, "admission")?.len()
+            + value_bytes(&context["authority"])
+            + value_bytes(&build.root_handle)
+            + value_bytes(&build.classifier)
+            + 2 * <Sha256 as Digest>::output_size();
         let mut reservation = self.reserve_projection(
             context,
             PreparedGraph::key_charge(&graph_id)
                 + size_of::<PreparedGraph>()
+                + record
                 + stamp_bytes(&build.stamps)
                 + source_ref_bytes(&build.sources)
                 + sidechain_dir_bytes(&build.sidechain_dirs),
@@ -931,6 +1030,7 @@ impl NativeStore {
             digest.update(stamp.revision().as_bytes());
         }
         let revision = format!("{:x}", digest.finalize());
+        let work = self.lock_state().ledger.shared.work().clone();
         let graph = PreparedGraph {
             claimant: build.claimant,
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -940,7 +1040,7 @@ impl NativeStore {
             root_handle: build.root_handle,
             classifier: build.classifier,
             root_facts: build.root_facts,
-            root_slices: HashMap::new(),
+            root_slices: Table::new(work),
             revision: revision.clone(),
             stamps: build.stamps,
             validated: false,
@@ -1900,12 +2000,16 @@ impl NativeStore {
                 "prepared root selector cache exhausted",
             ));
         }
-        let retained = state.ledger.shared.admission([facts_anchor(&facts)]);
+        let retained = state.ledger.shared.admission([facts_anchor(&facts)])
+            + key.capacity()
+            + graph.root_slices.growth_for(&key);
         let covered = retained.min(reservation.bytes);
         self.admit_memory(&mut state, context, retained - covered)?;
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
         state.insert_root_slice(&mut graph, key, Arc::clone(&facts));
+        drop(graph);
+        drop(state.prepared_graphs.get_mut(token));
         Ok(facts)
     }
 }
