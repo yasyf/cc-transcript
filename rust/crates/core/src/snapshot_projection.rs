@@ -1555,6 +1555,11 @@ fn prepare_facts_limited(
         let (text, tools) = match entry {
             Entry::User(user) => {
                 let mut text = user.content.text();
+                text.reserve_exact(
+                    user.tool_results()
+                        .map(|result| result.content.len())
+                        .sum::<usize>(),
+                );
                 for result in user.tool_results() {
                     text.push_str(&result.content);
                 }

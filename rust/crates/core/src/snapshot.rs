@@ -1455,6 +1455,7 @@ pub(crate) struct StoreState {
     prepared_facts_lru: BTreeSet<(u64, SourceIdentity)>,
     counters: [u64; 18],
     transient_bytes: usize,
+    prepared_disk_index_bytes: usize,
     owned: crate::snapshot_owned::OwnedProjections,
     ledger: RetainedLedger,
     #[cfg(test)]
@@ -1513,6 +1514,7 @@ impl StoreState {
             prepared_facts_lru: BTreeSet::new(),
             counters: [0; 18],
             transient_bytes: 0,
+            prepared_disk_index_bytes: 0,
             owned: crate::snapshot_owned::OwnedProjections::default(),
             ledger: RetainedLedger::new(work),
             #[cfg(test)]
@@ -2351,6 +2353,8 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) fact_lookups: AtomicUsize,
     #[cfg(test)]
+    pub(crate) built_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -2658,6 +2662,7 @@ impl NativeStore {
             prepared_disk: crate::snapshot_prepared_disk::PreparedDiskCache::new(
                 &owner_epoch,
                 get("max_prepared_disk_bytes", 2 * 1024 * 1024 * 1024),
+                work.clone(),
             )?,
             owner_epoch,
             default_registry,
@@ -2681,6 +2686,8 @@ impl NativeStore {
             fact_builds: AtomicUsize::new(0),
             #[cfg(test)]
             fact_lookups: AtomicUsize::new(0),
+            #[cfg(test)]
+            built_facts_hook: Mutex::new(None),
             #[cfg(test)]
             audits,
         })
@@ -4024,6 +4031,7 @@ impl NativeStore {
             + state.prepared_loads_expiry.heap_bytes()
             + state.deliveries_expiry.index_bytes()
             + state.prepared_facts_lru.len() * size_of::<(u64, SourceIdentity)>()
+            + state.prepared_disk_index_bytes
     }
 
     #[cfg(test)]
@@ -4044,6 +4052,7 @@ impl NativeStore {
 
     #[cfg(test)]
     pub(crate) fn assert_conserved(&self) {
+        let disk_index = self.prepared_disk.audit_index_bytes();
         let mut state = self.lock_state();
         let audit = Self::audit_gauges(&state);
         let ledger = Self::gauges(&mut state);
@@ -4054,6 +4063,10 @@ impl NativeStore {
                 "retained ledger diverges from the audit on {key}"
             );
         }
+        assert_eq!(
+            state.prepared_disk_index_bytes, disk_index,
+            "prepared disk index ledger diverges from the index tier"
+        );
         for reservable in state.reservables() {
             reservable.audit_reserved();
         }

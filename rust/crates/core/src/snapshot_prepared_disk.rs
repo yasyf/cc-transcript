@@ -1,7 +1,11 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
+#[cfg(test)]
+use std::mem::size_of;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
@@ -11,6 +15,9 @@ use sha2::{Digest, Sha256};
 use sonic_rs::{json, Value};
 
 use crate::snapshot::{SnapshotError, SourceStamp, Status};
+#[cfg(test)]
+use crate::snapshot_ledger::Reserved;
+use crate::snapshot_ledger::{Table, Work};
 use crate::snapshot_prepared::PreparedFacts;
 
 const VERSION: &[u8; 8] = b"CTPF0001";
@@ -318,17 +325,30 @@ pub struct DiskStats {
 
 struct DiskEntry {
     bytes: usize,
+    accounted: usize,
     last_used: u64,
 }
 
-#[derive(Default)]
 struct DiskState {
-    entries: HashMap<[u8; 32], DiskEntry>,
+    entries: Table<[u8; 32], DiskEntry>,
     retired: usize,
     bytes: usize,
     clock: u64,
     writes: u64,
     write_bytes: u64,
+}
+
+impl DiskState {
+    fn new(work: Work) -> Self {
+        Self {
+            entries: Table::new(work),
+            retired: 0,
+            bytes: 0,
+            clock: 0,
+            writes: 0,
+            write_bytes: 0,
+        }
+    }
 }
 
 pub struct PreparedDiskCache {
@@ -345,11 +365,12 @@ pub struct PreparedDiskCache {
 }
 
 impl PreparedDiskCache {
-    pub fn new(owner_epoch: &str, max_bytes: usize) -> Result<Self, SnapshotError> {
+    pub fn new(owner_epoch: &str, max_bytes: usize, work: Work) -> Result<Self, SnapshotError> {
         Self::open(
             namespace_path().map_err(disk_error)?,
             owner_epoch,
             max_bytes,
+            work,
         )
     }
 
@@ -357,6 +378,7 @@ impl PreparedDiskCache {
         namespace: PathBuf,
         owner_epoch: &str,
         max_bytes: usize,
+        work: Work,
     ) -> Result<Self, SnapshotError> {
         if owner_epoch.len() != 64 || !owner_epoch.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(incomplete("invalid prepared facts owner epoch"));
@@ -419,7 +441,7 @@ impl PreparedDiskCache {
             dir_device: metadata.dev(),
             dir_inode: metadata.ino(),
             max_bytes,
-            state: Mutex::new(DiskState::default()),
+            state: Mutex::new(DiskState::new(work)),
         };
         cache.cleanup_stale_owners();
         Ok(cache)
@@ -742,15 +764,51 @@ impl PreparedDiskCache {
             .contains_key(&key.digest))
     }
 
+    pub fn decoded_bytes(&self, key: &PreparedDiskKey) -> Result<Option<usize>, SnapshotError> {
+        self.check_dir()?;
+        Ok(self
+            .state
+            .lock()
+            .expect("prepared facts disk state")
+            .entries
+            .get(&key.digest)
+            .map(|entry| entry.bytes + entry.accounted))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audit_index_bytes(&self) -> usize {
+        let state = self.state.lock().expect("prepared facts disk state");
+        state.entries.audit_reserved();
+        state.entries.reserved_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn index_capacity_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .expect("prepared facts disk state")
+            .entries
+            .capacity()
+            * size_of::<([u8; 32], DiskEntry)>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry_file_len(&self, key: &PreparedDiskKey) -> u64 {
+        fs::metadata(self.entry_path(key.digest))
+            .expect("cached entry file")
+            .len()
+    }
+
     pub fn insert(
         &self,
         key: &PreparedDiskKey,
         facts: &PreparedFacts,
-    ) -> Result<(), SnapshotError> {
+        admit: impl FnOnce(usize) -> bool,
+    ) -> Result<bool, SnapshotError> {
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
         if state.entries.contains_key(&key.digest) {
-            return Ok(());
+            return Ok(true);
         }
         let mut payload = BoundedVec {
             bytes: Vec::new(),
@@ -788,22 +846,28 @@ impl PreparedDiskCache {
             self.rename_entry(&temp, &self.entry_name(key.digest))
                 .map_err(disk_error)
         })();
-        if result.is_err() {
+        if let Err(error) = result {
             let _ = self.unlink_entry(&temp);
-            return result;
+            return Err(error);
+        }
+        if !admit(state.entries.growth_for(&key.digest)) {
+            let _ = self.unlink_entry(&self.entry_name(key.digest));
+            return Ok(false);
         }
         state.bytes += size;
         state.writes += 1;
         state.write_bytes += size as u64;
         let clock = state.clock;
+        state.entries.reserve_for(&key.digest);
         state.entries.insert(
             key.digest,
             DiskEntry {
                 bytes: size,
+                accounted: facts.accounted_bytes(),
                 last_used: clock,
             },
         );
-        Ok(())
+        Ok(true)
     }
 
     pub fn stats(&self) -> DiskStats {
@@ -911,7 +975,7 @@ mod tests {
     }
 
     fn cache(cap: usize) -> PreparedDiskCache {
-        PreparedDiskCache::new(&epoch(), cap).unwrap()
+        PreparedDiskCache::new(&epoch(), cap, Work::default()).unwrap()
     }
 
     struct ForeignScan {
@@ -1059,7 +1123,7 @@ mod tests {
     fn stores_revision_bound_facts_in_owner_private_files() {
         let cache = cache(4096);
         let first = key(stamp(1), &json!({"root":"/repo"}));
-        cache.insert(&first, &facts()).unwrap();
+        cache.insert(&first, &facts(), |_| true).unwrap();
         assert_eq!(cache.stats().entries, 1);
         assert!(cache.stats().bytes <= 4096);
         assert_eq!(cache.stats().writes, 1);
@@ -1079,7 +1143,7 @@ mod tests {
             }
             _ => panic!("expected completed facts"),
         }
-        cache.insert(&first, &facts()).unwrap();
+        cache.insert(&first, &facts(), |_| true).unwrap();
         assert_eq!(cache.stats().writes, 1);
         assert!(matches!(
             cache
@@ -1130,15 +1194,15 @@ mod tests {
         let cache = cache(cap);
         let first = key(stamp(1), &json!({"root":"/repo"}));
         let second = key(stamp(2), &json!({"root":"/repo"}));
-        cache.insert(&first, &sample).unwrap();
-        cache.insert(&second, &sample).unwrap();
+        cache.insert(&first, &sample, |_| true).unwrap();
+        cache.insert(&second, &sample, |_| true).unwrap();
         assert_eq!(cache.stats().entries, 1);
         assert_eq!(cache.stats().retired, 1);
         assert_eq!(cache.stats().writes, 2);
         assert_eq!(cache.stats().write_bytes, (2 * cap) as u64);
         assert!(matches!(cache.lookup(&first).unwrap(), DiskLookup::Miss));
         assert!(matches!(cache.lookup(&second).unwrap(), DiskLookup::Hit(_)));
-        cache.insert(&first, &sample).unwrap();
+        cache.insert(&first, &sample, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 3);
         assert_eq!(cache.stats().retired, 2);
         assert!(matches!(cache.lookup(&first).unwrap(), DiskLookup::Hit(_)));
@@ -1149,7 +1213,7 @@ mod tests {
     fn corrupted_entry_cannot_answer_a_query() {
         let cache = cache(4096);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        cache.insert(&entry, &facts()).unwrap();
+        cache.insert(&entry, &facts(), |_| true).unwrap();
         let path = cache.entry_path(entry.digest);
         let mut bytes = fs::read(&path).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
@@ -1157,7 +1221,7 @@ mod tests {
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Retired));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Miss));
-        cache.insert(&entry, &facts()).unwrap();
+        cache.insert(&entry, &facts(), |_| true).unwrap();
         assert_eq!(cache.stats().writes, 2);
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Hit(_)));
     }
@@ -1167,7 +1231,7 @@ mod tests {
         let cache = cache(HEADER_BYTES + 1);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         assert_eq!(
-            cache.insert(&entry, &facts()).unwrap_err().status,
+            cache.insert(&entry, &facts(), |_| true).unwrap_err().status,
             Status::Incomplete
         );
         assert_eq!(cache.stats().entries, 0);
@@ -1181,7 +1245,11 @@ mod tests {
         let cache = cache(cap);
         for revision in 0..256 {
             cache
-                .insert(&key(stamp(revision), &json!({"root":"/repo"})), &sample)
+                .insert(
+                    &key(stamp(revision), &json!({"root":"/repo"})),
+                    &sample,
+                    |_| true,
+                )
                 .unwrap();
         }
         assert_eq!(cache.stats().entries, 1);
@@ -1201,7 +1269,7 @@ mod tests {
         let first = cache(4096);
         let old_dir = first.dir.clone();
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        first.insert(&entry, &facts()).unwrap();
+        first.insert(&entry, &facts(), |_| true).unwrap();
         drop(first);
         assert!(!old_dir.exists());
         let restarted = cache(4096);
@@ -1232,7 +1300,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(owner_name.clone(), hook);
-        let cache = PreparedDiskCache::new(&epoch, 4096).unwrap();
+        let cache = PreparedDiskCache::new(&epoch, 4096, Work::default()).unwrap();
         PUBLISH_HOOKS.lock().unwrap().remove(&owner_name);
         let scans = std::mem::take(&mut *scans.lock().unwrap());
         let steps: Vec<PublishStep> = scans.iter().map(|(step, _)| *step).collect();
@@ -1266,7 +1334,7 @@ mod tests {
             io::ErrorKind::NotFound
         );
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        cache.insert(&entry, &facts()).unwrap();
+        cache.insert(&entry, &facts(), |_| true).unwrap();
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Hit(_)));
     }
 
@@ -1288,7 +1356,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(owner_name.clone(), hook);
-        let result = PreparedDiskCache::open(namespace.clone(), &epoch, 4096);
+        let result = PreparedDiskCache::open(namespace.clone(), &epoch, 4096, Work::default());
         PUBLISH_HOOKS.lock().unwrap().remove(&owner_name);
         let Err(error) = result else {
             panic!("rename onto a foreign owner.lock succeeded");
@@ -1313,7 +1381,7 @@ mod tests {
         let conflicting = namespace.join(&epoch);
         DirBuilder::new().mode(0o700).create(&conflicting).unwrap();
         let before = fs::metadata(&conflicting).unwrap();
-        let Err(error) = PreparedDiskCache::new(&epoch, 4096) else {
+        let Err(error) = PreparedDiskCache::new(&epoch, 4096, Work::default()) else {
             panic!("publication onto an existing owner succeeded");
         };
         assert_eq!(error.status, Status::Incomplete);
@@ -1334,7 +1402,8 @@ mod tests {
     #[test]
     fn abandoned_staging_locks_do_not_starve_stale_owner_cleanup() {
         let namespace = isolated_namespace();
-        let cleaner = PreparedDiskCache::open(namespace.clone(), &epoch(), 4096).unwrap();
+        let cleaner =
+            PreparedDiskCache::open(namespace.clone(), &epoch(), 4096, Work::default()).unwrap();
         for id in 0..MAX_SCANNED_OWNERS as u64 + 8 {
             abandoned_staging_lock(&namespace, id);
         }
@@ -1350,7 +1419,7 @@ mod tests {
     fn startup_cleanup_skips_active_owner() {
         let active = cache(4096);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        active.insert(&entry, &facts()).unwrap();
+        active.insert(&entry, &facts(), |_| true).unwrap();
         let cleaner = cache(4096);
         cleaner.cleanup_stale_owners_with_limits(128, 128 * 1024 * 1024);
         assert!(active.dir.exists());
@@ -1360,7 +1429,8 @@ mod tests {
     #[test]
     fn startup_cleanup_truncates_stale_files_within_byte_budget() {
         let namespace = isolated_namespace();
-        let cleaner = PreparedDiskCache::open(namespace.clone(), &epoch(), 4096).unwrap();
+        let cleaner =
+            PreparedDiskCache::open(namespace.clone(), &epoch(), 4096, Work::default()).unwrap();
         let (dir, file_path) = stale_owner(&cleaner, 50);
         for remaining in [34, 18, 2] {
             cleaner.cleanup_stale_owners_with_limits(128, 16);
@@ -1377,12 +1447,106 @@ mod tests {
     fn replaced_entry_symlink_cannot_escape_private_directory() {
         let cache = cache(4096);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        cache.insert(&entry, &facts()).unwrap();
+        cache.insert(&entry, &facts(), |_| true).unwrap();
         let path = cache.entry_path(entry.digest);
         fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", &path).unwrap();
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Retired));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(cache.lookup(&entry).unwrap(), DiskLookup::Miss));
+    }
+
+    fn pushed_facts(events: usize, tools: usize) -> PreparedFacts {
+        let mut override_events = Vec::new();
+        for event in 0..events {
+            let mut names = Vec::new();
+            for tool in 0..tools {
+                names.push(format!("Tool{tool}"));
+            }
+            override_events.push(OverrideEvent {
+                text: format!("event {event}"),
+                tools: names,
+            });
+        }
+        let mut facts = PreparedFacts {
+            inputs: json!({
+                "calls": [["Read", ["/repo/file.rs"]], ["Edit", ["/repo/a.rs", "/repo/b.rs"]]],
+                "commands": ["true"],
+                "edited_files": [{"path": "/repo/a.rs"}, {"path": "/repo/b.rs"}],
+                "skills": [],
+            }),
+            has_error: false,
+            override_events: Some(override_events),
+            accounted: 0,
+        };
+        facts.refresh_accounted();
+        facts
+    }
+
+    #[test]
+    fn decoded_bytes_cover_the_file_and_the_decoded_facts() {
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        assert_eq!(cache.decoded_bytes(&entry).unwrap(), None);
+        let built = pushed_facts(5, 5);
+        assert!(cache.insert(&entry, &built, |_| true).unwrap());
+        let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
+        assert_eq!(
+            cache.decoded_bytes(&entry).unwrap(),
+            Some(file + built.accounted_bytes())
+        );
+        let DiskLookup::Hit(decoded) = cache.lookup(&entry).unwrap() else {
+            panic!("expected completed facts");
+        };
+        assert!(
+            decoded.accounted_bytes() <= built.accounted_bytes(),
+            "decoded facts charge {} above the {} recorded at insertion",
+            decoded.accounted_bytes(),
+            built.accounted_bytes()
+        );
+        let (decoded_events, built_events) = (
+            decoded.override_events.as_ref().unwrap(),
+            built.override_events.as_ref().unwrap(),
+        );
+        assert_eq!(decoded_events.capacity(), built_events.capacity());
+        for (decoded_event, built_event) in decoded_events.iter().zip(built_events) {
+            assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
+            assert_eq!(decoded_event.tools.capacity(), built_event.tools.capacity());
+        }
+    }
+
+    #[test]
+    fn insert_admits_its_index_growth_before_the_index_grows() {
+        let cache = cache(64 * 1024);
+        let sample = pushed_facts(1, 1);
+        let first = key(stamp(1), &json!({"root":"/repo"}));
+        let offered = std::cell::Cell::new(0);
+        assert!(!cache
+            .insert(&first, &sample, |growth| {
+                offered.set(growth);
+                false
+            })
+            .unwrap());
+        assert!(offered.get() > 0);
+        assert!(!cache.has_entry(&first).unwrap());
+        assert!(!cache.entry_path(first.digest).exists());
+        assert_eq!(cache.index_capacity_bytes(), 0);
+        assert_eq!(cache.audit_index_bytes(), 0);
+        let stats = cache.stats();
+        assert_eq!((stats.entries, stats.bytes, stats.writes), (0, 0, 0));
+        assert!(cache.insert(&first, &sample, |_| true).unwrap());
+        assert_eq!(cache.index_capacity_bytes(), offered.get());
+        assert_eq!(cache.audit_index_bytes(), offered.get());
+        assert!(matches!(cache.lookup(&first).unwrap(), DiskLookup::Hit(_)));
+        let second = key(stamp(2), &json!({"root":"/repo"}));
+        assert!(cache
+            .insert(&second, &sample, |growth| {
+                offered.set(growth);
+                true
+            })
+            .unwrap());
+        assert_eq!(offered.get(), 0);
+        assert_eq!(cache.index_capacity_bytes(), cache.audit_index_bytes());
+        assert_eq!(cache.stats().entries, 2);
     }
 }

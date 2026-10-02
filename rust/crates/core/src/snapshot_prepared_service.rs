@@ -198,6 +198,27 @@ impl NativeStore {
         Ok(facts)
     }
 
+    fn admit_prepared_disk_growth(
+        &self,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+        growth: usize,
+    ) -> bool {
+        let mut state = self.lock_state();
+        let covered = growth.min(reservation.bytes);
+        if growth > covered
+            && self
+                .admit_memory(&mut state, context, growth - covered)
+                .is_err()
+        {
+            return false;
+        }
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
+        state.prepared_disk_index_bytes += growth;
+        true
+    }
+
     fn prepared_root_facts(
         &self,
         root: &Arc<TranscriptSnapshot>,
@@ -216,7 +237,6 @@ impl NativeStore {
         ) {
             return Ok(facts);
         }
-        let mut reservation = self.reserve_projection(context, entry_bytes(root))?;
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             root.stamp,
             registry_generation,
@@ -224,30 +244,35 @@ impl NativeStore {
             &context["authority"],
             classifier,
         )?;
-        #[cfg(test)]
-        self.fact_lookups.fetch_add(1, Ordering::Relaxed);
-        match self.prepared_disk.lookup(&key)? {
-            crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
-                let facts = Arc::new(facts);
-                return match self.cache_prepared_facts(
-                    root.stamp,
-                    Arc::clone(&facts),
-                    classifier,
-                    context,
-                    &mut reservation,
-                ) {
-                    Ok(cached) => Ok(cached),
-                    Err(error) if error.status == Status::RetainedLimit => Ok(facts),
-                    Err(error) => Err(error),
-                };
+        let decoded = self.prepared_disk.decoded_bytes(&key)?;
+        let mut reservation =
+            self.reserve_projection(context, decoded.unwrap_or(0).max(entry_bytes(root)))?;
+        if decoded.is_some() {
+            #[cfg(test)]
+            self.fact_lookups.fetch_add(1, Ordering::Relaxed);
+            match self.prepared_disk.lookup(&key)? {
+                crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                    let facts = Arc::new(facts);
+                    return match self.cache_prepared_facts(
+                        root.stamp,
+                        Arc::clone(&facts),
+                        classifier,
+                        context,
+                        &mut reservation,
+                    ) {
+                        Ok(cached) => Ok(cached),
+                        Err(error) if error.status == Status::RetainedLimit => Ok(facts),
+                        Err(error) => Err(error),
+                    };
+                }
+                crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                    return Err(SnapshotError::new(
+                        Status::Incomplete,
+                        "prepared root facts revision was evicted",
+                    ));
+                }
+                crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
-            crate::snapshot_prepared_disk::DiskLookup::Retired => {
-                return Err(SnapshotError::new(
-                    Status::Incomplete,
-                    "prepared root facts revision was evicted",
-                ));
-            }
-            crate::snapshot_prepared_disk::DiskLookup::Miss => {}
         }
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
@@ -256,7 +281,9 @@ impl NativeStore {
         self.fact_builds.fetch_add(1, Ordering::Relaxed);
         let (facts, _, _) =
             crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
-        self.prepared_disk.insert(&key, &facts)?;
+        self.prepared_disk.insert(&key, &facts, |growth| {
+            self.admit_prepared_disk_growth(context, &mut reservation, growth)
+        })?;
         let facts = Arc::new(facts);
         match self.cache_prepared_facts(
             root.stamp,
@@ -327,8 +354,8 @@ impl NativeStore {
             &context["authority"],
             &json!({"id":"native","version":"1"}),
         )?;
-        if self.prepared_disk.has_entry(&key)? {
-            let mut reservation = self.reserve_projection(context, stamp.size as usize)?;
+        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key)? {
+            let mut reservation = self.reserve_projection(context, decoded)?;
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
             match self.prepared_disk.lookup(&key)? {
@@ -486,6 +513,17 @@ impl NativeStore {
             }
         }
         let (facts, mut reservation) = prepared?;
+        #[cfg(test)]
+        {
+            let hook = self
+                .built_facts_hook
+                .lock()
+                .expect("built facts hook")
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         drop(snapshot);
         let classifier = json!({"id":"native","version":"1"});
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
@@ -495,7 +533,9 @@ impl NativeStore {
             &context["authority"],
             &classifier,
         )?;
-        self.prepared_disk.insert(&key, &facts)?;
+        self.prepared_disk.insert(&key, &facts, |growth| {
+            self.admit_prepared_disk_growth(context, &mut reservation, growth)
+        })?;
         let facts = Arc::new(facts);
         let facts = match self.cache_prepared_facts(
             stamp,
@@ -1912,7 +1952,11 @@ impl NativeStore {
         let claimant = graph.claimant.clone();
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
-        let root_facts_bytes = graph.root_facts.accounted_bytes();
+        let root_facts_bytes = if graph.root_facts.override_events.is_some() {
+            graph.root_facts.accounted_bytes()
+        } else {
+            entry_bytes(&graph.root)
+        };
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
