@@ -4608,7 +4608,7 @@ fn finish_fixture(path: &Path, background: bool) -> Fixture {
     }
 }
 
-fn finish_source(fixture: &Fixture) -> Result<PreparedSourceOutcome, SnapshotError> {
+fn finish_source(fixture: &Fixture) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
     fixture.store.finish_prepared_source(
         SourceStamp::of(&std::fs::metadata(fixture.request["path"].as_str().unwrap()).unwrap()),
         &fixture.request["outcome"],
@@ -5051,6 +5051,181 @@ fn finished_source_facts_hold_their_reservation_until_publication() {
         drop(filler);
         assert_eq!(fixture.store.lock_state().transient_bytes, 0);
         fixture.store.assert_conserved();
+    }
+}
+
+fn uncached_facts_store() -> NativeStore {
+    store_with(4096, 2048, &[("max_prepared_fact_memory_bytes", 1)])
+}
+
+fn uncached_root_facts_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = uncached_facts_store();
+    let owner = context_for("returned-root-facts", background);
+    let (root, snapshot) = acquired(&store, &source.path, &owner);
+    Fixture {
+        store,
+        owner,
+        request: prepare_request(&root, &[], &[], &[]),
+        pins: vec![snapshot],
+    }
+}
+
+fn uncached_source_facts_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let store = uncached_facts_store();
+    let owner = context_for("returned-source-facts", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let (_, sidechain) = acquired(&store, &scenario.sidechains[0], &owner);
+    let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
+    let request = graph_query(&graph, missing_tool(), json!([]));
+    let primed = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    assert_eq!(primed["status"].as_str(), Some("ok"), "{primed:?}");
+    assert_eq!(
+        store.lock_state().prepared_facts.len(),
+        0,
+        "the one-byte facts budget admitted a cache write"
+    );
+    assert!(store
+        .prepared_disk
+        .has_entry(&disk_key(&owner, sidechain.stamp))
+        .unwrap());
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: vec![root_snapshot, sidechain],
+    }
+}
+
+fn held_facts_barrier(
+    site: &str,
+    fixture: &Fixture,
+    filler: ProjectionReservation<'_>,
+    occupied: usize,
+) -> Value {
+    let cap = cap_for(&fixture.owner);
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel::<()>();
+    let resume_rx = Mutex::new(resume_rx);
+    *fixture.store.returned_facts_hook.lock().unwrap() = Some(Arc::new(move || {
+        paused_tx.send(()).unwrap();
+        resume_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(DROP_TIMEOUT)
+            .expect("the barrier was never released");
+    }));
+    std::thread::scope(|scope| {
+        let holding = scope.spawn(|| submit(fixture));
+        let paused = paused_rx.recv_timeout(DROP_TIMEOUT);
+        let observed = paused.is_ok().then(|| {
+            let held = ledger(&fixture.store)[TOTAL];
+            let audit = audited(&fixture.store)[TOTAL];
+            let refused = fixture
+                .store
+                .reserve_projection(&fixture.owner, occupied)
+                .err();
+            let after = ledger(&fixture.store)[TOTAL];
+            (held, audit, refused, after)
+        });
+        drop(filler);
+        resume_tx.send(()).unwrap();
+        let response = holding.join().unwrap();
+        paused.expect("the facts were never returned");
+        let (held, audit, refused, after) = observed.unwrap();
+        assert_eq!(
+            held, cap,
+            "{site}: the reservation is not held while the returned facts are live"
+        );
+        assert!(
+            audit <= cap,
+            "{site}: the audit exceeded the cap while the facts were held"
+        );
+        let refused = refused.expect("the headroom the returned facts occupy was admitted twice");
+        assert_eq!(refused.status, Status::RetainedLimit, "{site}: {refused:?}");
+        assert_eq!(after, cap, "{site}: the refused admission moved the ledger");
+        response
+    })
+}
+
+#[test]
+fn uncached_root_facts_hold_their_reservation_until_retention() {
+    let source = LedgerSource::new(&lines(0..4));
+    let site = "prepare_graph returned facts barrier";
+    for background in [false, true] {
+        let fixture = uncached_root_facts_fixture(&source, background);
+        let cap = cap_for(&fixture.owner);
+        let predicted = facts_bound_walk(&fixture.pins[0]);
+        let occupied = facts_walk(&built_facts(&fixture.pins[0], &json!([])));
+        assert!(
+            occupied <= predicted,
+            "{site}: the {predicted}-byte prediction does not cover the {occupied}-byte facts"
+        );
+        let probes = fact_probes(&fixture.store);
+        let filler = fill_to(
+            &fixture.store,
+            &fixture.owner,
+            REPLY_RESERVATION + predicted,
+        );
+        let response = held_facts_barrier(site, &fixture, filler, occupied);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("ok"),
+            "{site}: {response:?}"
+        );
+        assert_eq!(
+            response["data"]["kind"].as_str(),
+            Some("prepared_graph"),
+            "{site}: {response:?}"
+        );
+        assert_eq!(
+            fact_probes(&fixture.store),
+            [probes[BUILDS] + 1, probes[LOOKUPS]],
+            "{site}: the build did not construct its root facts exactly once"
+        );
+        fixture.store.assert_conserved();
+        assert!(audited(&fixture.store)[TOTAL] <= cap);
+        assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+    }
+}
+
+#[test]
+fn uncached_source_facts_hold_their_reservation_until_consumption() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let site = "prepared_query_page returned facts barrier";
+    for background in [false, true] {
+        let fixture = uncached_source_facts_fixture(&scenario, background);
+        let cap = cap_for(&fixture.owner);
+        let predicted = decoded_source_facts_prediction(&fixture);
+        let occupied = facts_walk(&built_facts(&fixture.pins[1], &json!([])));
+        let probes = fact_probes(&fixture.store);
+        let filler = fill_to(
+            &fixture.store,
+            &fixture.owner,
+            REPLY_RESERVATION + predicted,
+        );
+        let response = held_facts_barrier(site, &fixture, filler, occupied);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("ok"),
+            "{site}: {response:?}"
+        );
+        assert_eq!(
+            response["data"],
+            json!({"kind":"scalar","value":false}),
+            "{site}: {response:?}"
+        );
+        assert_eq!(
+            fact_probes(&fixture.store),
+            [probes[BUILDS], probes[LOOKUPS] + 1],
+            "{site}: the page did not decode its source facts exactly once"
+        );
+        fixture.store.assert_conserved();
+        assert!(audited(&fixture.store)[TOTAL] <= cap);
+        assert_eq!(fixture.store.lock_state().transient_bytes, 0);
     }
 }
 

@@ -294,7 +294,7 @@ impl NativeStore {
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
-    ) -> Result<(SourceStamp, PreparedSourceOutcome), SnapshotError> {
+    ) -> Result<(SourceStamp, PreparedSourceOutcome<'_>), SnapshotError> {
         cancel.check(remaining.deadline_unix_ms)?;
         let canonical = std::fs::canonicalize(path).map_err(io_error)?;
         self.authority(context, Some(&canonical))?;
@@ -332,6 +332,10 @@ impl NativeStore {
                 PreparedSourceOutcome::Ready {
                     stamp,
                     facts,
+                    reservation: ProjectionReservation {
+                        store: self,
+                        bytes: 0,
+                    },
                     cached: true,
                 },
             ));
@@ -367,6 +371,7 @@ impl NativeStore {
                         PreparedSourceOutcome::Ready {
                             stamp,
                             facts,
+                            reservation,
                             cached: false,
                         },
                     ));
@@ -415,7 +420,7 @@ impl NativeStore {
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
-    ) -> Result<PreparedSourceOutcome, SnapshotError> {
+    ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         self.authority(
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
@@ -448,7 +453,7 @@ impl NativeStore {
         context: &Value,
         remaining: &WorkLimits,
         cancel: &Cancellation,
-    ) -> Result<PreparedSourceOutcome, SnapshotError> {
+    ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         let handle = &outcome["description"]["handle"];
         let pinned = self
             .pin_scope_for_work(handle, context, remaining.deadline_unix_ms)
@@ -551,6 +556,7 @@ impl NativeStore {
         Ok(PreparedSourceOutcome::Ready {
             stamp,
             facts,
+            reservation,
             cached: false,
         })
     }
@@ -1831,12 +1837,14 @@ impl NativeStore {
             };
             let PreparedSourceOutcome::Ready {
                 stamp,
-                facts,
+                ref facts,
                 cached,
+                ..
             } = outcome
             else {
                 return Err(invalid("prepared source did not finish"));
             };
+            self.after_facts_returned();
             if stamp != source.stamp {
                 return Err(SnapshotError::new(
                     Status::Changed,

@@ -691,10 +691,11 @@ struct CachedPreparedFacts {
     last_used: u64,
 }
 
-enum PreparedSourceOutcome {
+enum PreparedSourceOutcome<'a> {
     Ready {
         stamp: SourceStamp,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+        reservation: ProjectionReservation<'a>,
         cached: bool,
     },
     Pending(String),
@@ -2501,6 +2502,8 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) built_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    pub(crate) returned_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
     pub(crate) build_records: AtomicUsize,
     #[cfg(test)]
     pub(crate) build_sources: AtomicUsize,
@@ -2879,6 +2882,8 @@ impl NativeStore {
             #[cfg(test)]
             built_facts_hook: Mutex::new(None),
             #[cfg(test)]
+            returned_facts_hook: Mutex::new(None),
+            #[cfg(test)]
             build_records: AtomicUsize::new(0),
             #[cfg(test)]
             build_sources: AtomicUsize::new(0),
@@ -3040,6 +3045,7 @@ impl NativeStore {
         if !std::ptr::eq(self, reservation.store) {
             return Err(invalid("projection reservation belongs to another owner"));
         }
+        self.after_facts_returned();
         let anchor = facts_anchor(&facts);
         let mut state = self.lock_state();
         let covered = state
@@ -6883,6 +6889,20 @@ impl NativeStore {
         #[cfg(test)]
         {
             let hook = self.locate_hook.lock().expect("locate hook").take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
+    fn after_facts_returned(&self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .returned_facts_hook
+                .lock()
+                .expect("returned facts hook")
+                .take();
             if let Some(hook) = hook {
                 hook();
             }
