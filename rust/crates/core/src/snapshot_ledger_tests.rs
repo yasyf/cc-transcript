@@ -1943,6 +1943,52 @@ fn reserved_before_the_last_admission(site: &str, traced: &[Trace], bytes: usize
     );
 }
 
+fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedGraph) -> usize {
+    let key = state
+        .prepared_graphs
+        .iter()
+        .find(|(key, _)| key.as_str() == graph_id)
+        .map(|(key, _)| key.capacity())
+        .expect("published graph key");
+    let shared_sources = state
+        .warm_memberships
+        .values()
+        .any(|membership| Arc::ptr_eq(&membership.members, &graph.sources));
+    let shared_dirs = state
+        .warm_memberships
+        .values()
+        .any(|membership| Arc::ptr_eq(&membership.sidechain_dirs, &graph.sidechain_dirs));
+    let sources = if shared_sources {
+        0
+    } else {
+        graph.sources.len() * size_of::<PreparedSourceRef>()
+            + graph
+                .sources
+                .iter()
+                .map(|source| source.path.as_os_str().len())
+                .sum::<usize>()
+    };
+    let dirs = if shared_dirs {
+        0
+    } else {
+        graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + graph
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+    };
+    key + size_of::<PreparedGraph>()
+        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+        + graph
+            .stamps
+            .iter()
+            .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
+        + sources
+        + dirs
+}
+
 #[test]
 fn registered_prepare_graph_reserves_its_stamps_and_paths_before_construction() {
     let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
@@ -1958,19 +2004,10 @@ fn registered_prepare_graph_reserves_its_stamps_and_paths_before_construction() 
             .to_owned();
         let state = fixture.store.lock_state();
         let graph = state.prepared_graphs[&graph_id].lock().unwrap();
-        let shared = state
-            .warm_memberships
-            .values()
-            .any(|membership| Arc::ptr_eq(&membership.members, &graph.sources));
-        let buffers = if shared {
-            0
-        } else {
-            source_ref_bytes(&graph.sources)
-        };
         reserved_before_the_last_admission(
             "registered prepare_graph",
             &traced,
-            charged_bytes(&graph_id, &*graph) + buffers,
+            constructed_graph_bytes(&state, &graph_id, &graph),
         );
     }
 }
@@ -1993,10 +2030,7 @@ fn direct_prepare_graph_reserves_its_source_buffers_before_construction() {
         reserved_before_the_last_admission(
             "direct prepare_graph",
             &traced,
-            PreparedGraph::key_charge(&graph_id)
-                + size_of::<PreparedGraph>()
-                + source_ref_bytes(&graph.sources)
-                + sidechain_dir_bytes(&graph.sidechain_dirs),
+            constructed_graph_bytes(&state, &graph_id, &graph),
         );
     }
 }
@@ -2019,10 +2053,20 @@ fn root_facts_are_reserved_at_their_entry_bytes_before_parsing() {
             &owner,
         );
         assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
-        reserved_before_the_last_admission(
-            "root facts",
-            &traced(&store),
-            super::entry_bytes(&snapshot),
+        let entries: usize = snapshot
+            .chunks
+            .iter()
+            .map(|chunk| {
+                chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
+            })
+            .sum();
+        reserved_before_the_last_admission("root facts", &traced(&store), entries);
+        let facts = store.lock_state().prepared_facts[&snapshot.stamp.identity]
+            .facts
+            .accounted_bytes();
+        assert!(
+            entries >= facts,
+            "root facts: the {entries}-byte entry reservation does not cover the {facts}-byte facts DOM"
         );
     }
 }
@@ -2032,18 +2076,31 @@ fn root_slices_are_reserved_at_the_root_facts_bytes_before_preparation() {
     let scenario = Scenario::new(0, |_| String::new());
     for background in [false, true] {
         let fixture = slice_fixture(&scenario, background);
-        let root_facts = {
+        let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+        let (root_facts, existing) = {
             let state = fixture.store.lock_state();
-            let graph = state.prepared_graphs
-                [fixture.request["handle"]["graph_id"].as_str().unwrap()]
-            .lock()
-            .unwrap();
-            graph.root_facts.accounted_bytes()
+            let graph = state.prepared_graphs[graph_id].lock().unwrap();
+            (
+                graph.root_facts.accounted_bytes(),
+                graph.root_slices.keys().cloned().collect::<Vec<_>>(),
+            )
         };
         traced(&fixture.store);
         let response = submit(&fixture);
         assert!(admitted(&response, "ok"), "{response:?}");
         reserved_before_the_last_admission("root slice", &traced(&fixture.store), root_facts);
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[graph_id].lock().unwrap();
+        let slice = graph
+            .root_slices
+            .iter()
+            .find(|(key, _)| !existing.contains(*key))
+            .map(|(_, facts)| facts.accounted_bytes())
+            .expect("published root slice");
+        assert!(
+            root_facts >= slice,
+            "root slice: the {root_facts}-byte root facts reservation does not cover the {slice}-byte slice"
+        );
     }
 }
 
