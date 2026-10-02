@@ -147,6 +147,7 @@ impl Drop for LedgerHook {
 pub(crate) enum Trace {
     Admitted(usize),
     Allocated(usize),
+    Reserved(usize),
 }
 
 #[cfg(test)]
@@ -193,6 +194,13 @@ impl Work {
             .push(Trace::Allocated(tier));
     }
 
+    pub(crate) fn reserved(&self, bytes: usize) {
+        self.trace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Trace::Reserved(bytes));
+    }
+
     pub(crate) fn traced(&self) -> Vec<Trace> {
         std::mem::take(&mut *self.trace.lock().unwrap_or_else(PoisonError::into_inner))
     }
@@ -207,6 +215,8 @@ impl Work {
     pub(crate) fn admitted(&self, _bytes: usize) {}
 
     pub(crate) fn allocated(&self, _tier: usize) {}
+
+    pub(crate) fn reserved(&self, _bytes: usize) {}
 }
 
 pub(crate) trait Reserved {

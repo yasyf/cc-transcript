@@ -1911,6 +1911,121 @@ fn stored_prepared_build_admits_exactly_before_publication() {
     }
 }
 
+fn reserved_before_the_last_admission(site: &str, traced: &[Trace], bytes: usize) {
+    let reserved = traced
+        .iter()
+        .position(|trace| *trace == Trace::Reserved(bytes))
+        .unwrap_or_else(|| panic!("{site}: nothing reserved {bytes} bytes: {traced:?}"));
+    let admitted = traced
+        .iter()
+        .rposition(|trace| matches!(trace, Trace::Admitted(_)))
+        .unwrap_or_else(|| panic!("{site}: nothing was admitted: {traced:?}"));
+    assert!(
+        reserved < admitted,
+        "{site}: the reservation followed the publication admission: {traced:?}"
+    );
+}
+
+#[test]
+fn registered_prepare_graph_reserves_its_stamps_and_paths_before_construction() {
+    let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = registered_graph_fixture(&scenario, background);
+        traced(&fixture.store);
+        let response = submit(&fixture);
+        assert!(admitted(&response, "ok"), "{response:?}");
+        let traced = traced(&fixture.store);
+        let graph_id = response["data"]["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+        let shared = state
+            .warm_memberships
+            .values()
+            .any(|membership| Arc::ptr_eq(&membership.members, &graph.sources));
+        let buffers = if shared {
+            0
+        } else {
+            source_ref_bytes(&graph.sources)
+        };
+        reserved_before_the_last_admission(
+            "registered prepare_graph",
+            &traced,
+            charged_bytes(&graph_id, &*graph) + buffers,
+        );
+    }
+}
+
+#[test]
+fn direct_prepare_graph_reserves_its_source_buffers_before_construction() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = direct_graph_fixture(&scenario, background);
+        traced(&fixture.store);
+        let response = submit(&fixture);
+        assert!(admitted(&response, "ok"), "{response:?}");
+        let traced = traced(&fixture.store);
+        let graph_id = response["data"]["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+        reserved_before_the_last_admission(
+            "direct prepare_graph",
+            &traced,
+            PreparedGraph::key_charge(&graph_id)
+                + size_of::<PreparedGraph>()
+                + source_ref_bytes(&graph.sources)
+                + sidechain_dir_bytes(&graph.sidechain_dirs),
+        );
+    }
+}
+
+#[test]
+fn root_facts_are_reserved_at_their_entry_bytes_before_parsing() {
+    let scenario = Scenario::new(0, |_| String::new());
+    for background in [false, true] {
+        let store = prepared_store();
+        let owner = context_for("facts", background);
+        let (root, snapshot) = acquired(&store, &scenario.root.path, &owner);
+        traced(&store);
+        let prepared = drive(
+            &store,
+            store.request(
+                &prepare_request(&root, &[], &[], &[]),
+                &owner,
+                &Cancellation::default(),
+            ),
+            &owner,
+        );
+        assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
+        reserved_before_the_last_admission("root facts", &traced(&store), entry_bytes(&snapshot));
+    }
+}
+
+#[test]
+fn root_slices_are_reserved_at_the_root_facts_bytes_before_preparation() {
+    let scenario = Scenario::new(0, |_| String::new());
+    for background in [false, true] {
+        let fixture = slice_fixture(&scenario, background);
+        let root_facts = {
+            let state = fixture.store.lock_state();
+            state.prepared_graphs[fixture.request["handle"]["graph_id"].as_str().unwrap()]
+                .lock()
+                .unwrap()
+                .root_facts
+                .accounted_bytes()
+        };
+        traced(&fixture.store);
+        let response = submit(&fixture);
+        assert!(admitted(&response, "ok"), "{response:?}");
+        reserved_before_the_last_admission("root slice", &traced(&fixture.store), root_facts);
+    }
+}
+
 #[test]
 fn prepared_query_page_admits_exactly_before_reinsertion() {
     let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
@@ -2208,7 +2323,7 @@ fn parked_cursor_pledges_its_delivery_and_converts_it_without_admission() {
             .into_iter()
             .filter_map(|trace| match trace {
                 Trace::Admitted(bytes) => Some(bytes),
-                Trace::Allocated(_) => None,
+                Trace::Allocated(_) | Trace::Reserved(_) => None,
             })
             .collect();
         fixture.store.assert_conserved();

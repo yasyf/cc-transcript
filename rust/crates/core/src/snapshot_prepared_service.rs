@@ -66,6 +66,7 @@ impl NativeStore {
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
         classifier: &Value,
         context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
@@ -107,9 +108,22 @@ impl NativeStore {
         };
         let additional = state.admission(&stamp.identity, &cached, [facts_anchor(&cached.facts)])
             + state.prepared_facts_growth(&stamp.identity);
-        self.admit_memory(&mut state, context, additional)?;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.insert_prepared_facts(stamp.identity, cached);
         Ok(facts)
+    }
+
+    fn facts_reservation(
+        &self,
+        context: &Value,
+        preferred: usize,
+    ) -> Result<ProjectionReservation<'_>, SnapshotError> {
+        let mut reservation = self.reserve_projection(context, 0)?;
+        self.grow_projection_capacity(&mut reservation, context, 0, preferred)?;
+        Ok(reservation)
     }
 
     fn prepared_root_facts(
@@ -130,6 +144,7 @@ impl NativeStore {
         ) {
             return Ok(facts);
         }
+        let mut reservation = self.facts_reservation(context, entry_bytes(root))?;
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             root.stamp,
             registry_generation,
@@ -145,6 +160,7 @@ impl NativeStore {
                     Arc::clone(&facts),
                     classifier,
                     context,
+                    &mut reservation,
                 ) {
                     Ok(cached) => Ok(cached),
                     Err(error) if error.status == Status::RetainedLimit => Ok(facts),
@@ -166,7 +182,13 @@ impl NativeStore {
             crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
         self.prepared_disk.insert(&key, &facts)?;
         let facts = Arc::new(facts);
-        match self.cache_prepared_facts(root.stamp, Arc::clone(&facts), classifier, context) {
+        match self.cache_prepared_facts(
+            root.stamp,
+            Arc::clone(&facts),
+            classifier,
+            context,
+            &mut reservation,
+        ) {
             Ok(cached) => Ok(cached),
             Err(error) if error.status == Status::RetainedLimit => Ok(facts),
             Err(error) => Err(error),
@@ -229,6 +251,7 @@ impl NativeStore {
             &context["authority"],
             &json!({"id":"native","version":"1"}),
         )?;
+        let mut reservation = self.facts_reservation(context, stamp.size as usize)?;
         match self.prepared_disk.lookup(&key)? {
             crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
                 usage[7] += 1;
@@ -238,6 +261,7 @@ impl NativeStore {
                     Arc::clone(&facts),
                     &json!({"id":"native","version":"1"}),
                     context,
+                    &mut reservation,
                 ) {
                     Ok(cached) => cached,
                     Err(error) if error.status == Status::RetainedLimit => facts,
@@ -260,6 +284,7 @@ impl NativeStore {
             }
             crate::snapshot_prepared_disk::DiskLookup::Miss => {}
         }
+        drop(reservation);
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
@@ -343,8 +368,10 @@ impl NativeStore {
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
+        let reservation = self.facts_reservation(context, entry_bytes(&snapshot))?;
         let prepared =
             crate::snapshot_projection::prepare_facts(&snapshot, &json!([]), &fact_limits, cancel);
+        drop(reservation);
         {
             let mut state = self.lock_state();
             state.leases.remove(str_field(handle, "lease_id")?);
@@ -382,7 +409,14 @@ impl NativeStore {
         )?;
         self.prepared_disk.insert(&key, &facts)?;
         let facts = Arc::new(facts);
-        let facts = match self.cache_prepared_facts(stamp, Arc::clone(&facts), &classifier, context) {
+        let mut unreserved = self.reserve_projection(context, 0)?;
+        let facts = match self.cache_prepared_facts(
+            stamp,
+            Arc::clone(&facts),
+            &classifier,
+            context,
+            &mut unreserved,
+        ) {
             Ok(cached) => cached,
             Err(error) if error.status == Status::RetainedLimit => facts,
             Err(error) => return Err(error),
@@ -554,21 +588,42 @@ impl NativeStore {
             }
             let root_facts =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
-            let sources: Arc<[PreparedSourceRef]> = if membership
+            let shares_root = membership
                 .members
                 .iter()
-                .any(|source| source.stamp.identity.file() == root.stamp.identity.file())
-            {
-                membership
-                    .members
-                    .iter()
-                    .filter(|source| source.stamp.identity.file() != root.stamp.identity.file())
-                    .cloned()
-                    .collect()
+                .any(|source| source.stamp.identity.file() == root.stamp.identity.file());
+            let members = || {
+                membership.members.iter().filter(|source| {
+                    !shares_root || source.stamp.identity.file() != root.stamp.identity.file()
+                })
+            };
+            let graph_id = self.token("prepared-graph");
+            let stamps_bytes = (members().count() + 1) * size_of::<(PathBuf, SourceStamp)>()
+                + root.canonical_path.as_os_str().len()
+                + members()
+                    .map(|source| source.path.as_os_str().len())
+                    .sum::<usize>();
+            let buffers: usize = if shares_root {
+                members()
+                    .map(|source| size_of::<PreparedSourceRef>() + source.path.as_os_str().len())
+                    .sum()
+            } else {
+                0
+            };
+            let mut reservation = self.reserve_projection(
+                context,
+                PreparedGraph::key_charge(&graph_id)
+                    + size_of::<PreparedGraph>()
+                    + stamps_bytes
+                    + buffers,
+            )?;
+            let sources: Arc<[PreparedSourceRef]> = if shares_root {
+                members().cloned().collect()
             } else {
                 Arc::clone(&membership.members)
             };
-            let mut stamps = vec![(root.canonical_path.clone(), root.stamp)];
+            let mut stamps = Vec::with_capacity(sources.len() + 1);
+            stamps.push((root.canonical_path.clone(), root.stamp));
             stamps.extend(
                 sources
                     .iter()
@@ -580,7 +635,6 @@ impl NativeStore {
                 digest.update(stamp.revision().as_bytes());
             }
             let revision = format!("{:x}", digest.finalize());
-            let graph_id = self.token("prepared-graph");
             let graph = PreparedGraph {
                 claimant: str_field(context, "claimant")?.to_owned(),
                 registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -599,23 +653,7 @@ impl NativeStore {
                 remaining,
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
             };
-            let mut state = self.lock_state();
-            Self::prune(&mut state);
-            if state.prepared_graphs.len() >= self.lease_cap(context)? {
-                return Err(SnapshotError::new(
-                    Status::LeaseLimit,
-                    "prepared graph admission exhausted",
-                ));
-            }
-            let additional = state.admission(&graph_id, &graph, graph.anchors())
-                + state.prepared_graphs.growth_for(&graph_id);
-            self.admit_memory(&mut state, context, additional)?;
-            state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
-            return Ok((
-                json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
-                None,
-                None,
-            ));
+            return self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation);
         }
         let root_facts =
             self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
@@ -878,13 +916,20 @@ impl NativeStore {
         if build.listing.is_some() || !build.tasks.is_empty() {
             return self.store_prepared_build(token, build);
         }
+        let graph_id = self.token("prepared-graph");
+        let mut reservation = self.reserve_projection(
+            context,
+            PreparedGraph::key_charge(&graph_id)
+                + size_of::<PreparedGraph>()
+                + source_ref_bytes(&build.sources)
+                + sidechain_dir_bytes(&build.sidechain_dirs),
+        )?;
         let mut digest = Sha256::new();
         for (path, stamp) in &build.stamps {
             digest.update(path.as_os_str().as_encoded_bytes());
             digest.update(stamp.revision().as_bytes());
         }
         let revision = format!("{:x}", digest.finalize());
-        let graph_id = self.token("prepared-graph");
         let graph = PreparedGraph {
             claimant: build.claimant,
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
@@ -903,16 +948,31 @@ impl NativeStore {
             remaining: build.remaining,
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
         };
+        self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation)
+    }
+
+    fn publish_prepared_graph(
+        &self,
+        graph_id: String,
+        graph: PreparedGraph,
+        revision: String,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
+        Self::prune(&mut state);
         if state.prepared_graphs.len() >= self.lease_cap(context)? {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
                 "prepared graph admission exhausted",
             ));
         }
-        let additional = state.admission(&graph_id, &graph, graph.anchors())
+        let retained = state.admission(&graph_id, &graph, graph.anchors())
             + state.prepared_graphs.growth_for(&graph_id);
-        self.admit_memory(&mut state, context, additional)?;
+        let covered = retained.min(reservation.bytes);
+        self.admit_memory(&mut state, context, retained - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
         Ok((
             json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
@@ -1746,6 +1806,7 @@ impl NativeStore {
         let claimant = graph.claimant.clone();
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
+        let root_facts_bytes = graph.root_facts.accounted_bytes();
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
@@ -1768,13 +1829,21 @@ impl NativeStore {
                 let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = root.event_count;
+                let mut reservation = self.facts_reservation(context, root_facts_bytes)?;
                 let (facts, _, _) = crate::snapshot_projection::prepare_facts(
                     &root,
                     selectors,
                     &fact_limits,
                     cancel,
                 )?;
-                self.publish_root_slice(token, &shared, key, Arc::new(facts), context)?
+                self.publish_root_slice(
+                    token,
+                    &shared,
+                    key,
+                    Arc::new(facts),
+                    context,
+                    &mut reservation,
+                )?
             }
             (None, None) => unreachable!("the root facts are always cached"),
         };
@@ -1811,6 +1880,7 @@ impl NativeStore {
         key: String,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
         context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
         let mut state = self.lock_state();
         if !state.prepared_graphs.contains_key(token) {
@@ -1829,11 +1899,11 @@ impl NativeStore {
                 "prepared root selector cache exhausted",
             ));
         }
-        let additional = state
-            .ledger
-            .shared
-            .unowned_bytes([facts_anchor(&facts)]);
-        self.admit_memory(&mut state, context, additional)?;
+        let retained = state.ledger.shared.admission([facts_anchor(&facts)]);
+        let covered = retained.min(reservation.bytes);
+        self.admit_memory(&mut state, context, retained - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.insert_root_slice(&mut graph, key, Arc::clone(&facts));
         Ok(facts)
     }

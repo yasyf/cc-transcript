@@ -1113,6 +1113,14 @@ fn chunk_anchor(chunk: &Arc<EntryChunk>) -> Anchor {
     Anchor::entries(chunk_key(chunk), chunk.charge)
 }
 
+fn entry_bytes(snapshot: &TranscriptSnapshot) -> usize {
+    snapshot
+        .chunks
+        .iter()
+        .map(|chunk| chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes)
+        .sum()
+}
+
 fn value_bytes(value: &Value) -> usize {
     let charge = crate::snapshot_memory::value_charge(value);
     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
@@ -2735,6 +2743,7 @@ impl NativeStore {
         Self::prune(&mut state);
         self.admit_memory(&mut state, context, bytes)?;
         state.transient_bytes += bytes;
+        state.ledger.shared.work().reserved(bytes);
         Ok(ProjectionReservation { store: self, bytes })
     }
 
@@ -2751,6 +2760,7 @@ impl NativeStore {
         self.admit_memory(&mut state, context, bytes)?;
         state.transient_bytes += bytes;
         reservation.bytes += bytes;
+        state.ledger.shared.work().reserved(bytes);
         Ok(())
     }
 
@@ -2775,6 +2785,7 @@ impl NativeStore {
         let growth = preferred_growth.min(available);
         state.transient_bytes += growth;
         reservation.bytes += growth;
+        state.ledger.shared.work().reserved(growth);
         Ok(())
     }
 
@@ -3074,14 +3085,7 @@ impl NativeStore {
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
             execution_id: self.token("label-execution"),
         };
-        let entry_bytes: usize = source
-            .chunks
-            .iter()
-            .map(|chunk| {
-                chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
-            })
-            .sum();
-        let max_stage_bytes = entry_bytes
+        let max_stage_bytes = entry_bytes(&source)
             .saturating_mul(4)
             .saturating_add(source.event_count.saturating_mul(512))
             .saturating_add(16 * 1024)
