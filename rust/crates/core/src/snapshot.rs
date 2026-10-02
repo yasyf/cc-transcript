@@ -6152,13 +6152,10 @@ impl NativeStore {
                     }
                 }
                 cancel.check(u64::MAX)?;
-                let (waiter, projection) = {
+                let waiter = {
                     let mut state = self.lock_state();
                     Self::prune(&mut state);
-                    (
-                        state.waiters.get(cursor).cloned(),
-                        state.projections.get(cursor).cloned(),
-                    )
+                    state.waiters.get(cursor).cloned()
                 };
                 let discovery = {
                     let mut state = self.lock_state();
@@ -6170,11 +6167,29 @@ impl NativeStore {
                             "cursor claimant differs",
                         ));
                     }
-                    state.discoveries.remove(cursor)
+                    state.discoveries.remove(cursor).map(|discovery| {
+                        let held = discovery.charge();
+                        state.transient_bytes += held;
+                        (
+                            discovery,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(mut discovery) = discovery {
+                if let Some((mut discovery, mut reservation)) = discovery {
+                    if let Err(error) = self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context),
+                    ) {
+                        drop(discovery);
+                        return Err(error);
+                    }
                     discovery.context = context.clone();
-                    return self.scan(cursor, discovery, cancel, usage);
+                    return self.scan(cursor, discovery, &mut reservation, cancel, usage);
                 }
                 let resolution = {
                     let mut state = self.lock_state();
@@ -6186,11 +6201,29 @@ impl NativeStore {
                             "cursor claimant differs",
                         ));
                     }
-                    state.resolutions.remove(cursor)
+                    state.resolutions.remove(cursor).map(|resolution| {
+                        let held = resolution.charge();
+                        state.transient_bytes += held;
+                        (
+                            resolution,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(mut resolution) = resolution {
+                if let Some((mut resolution, mut reservation)) = resolution {
+                    if let Err(error) = self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context),
+                    ) {
+                        drop(resolution);
+                        return Err(error);
+                    }
                     resolution.context = context.clone();
-                    return self.resolve_step(cursor, resolution, cancel, usage);
+                    return self.resolve_step(cursor, resolution, &mut reservation, cancel, usage);
                 }
                 let locate = {
                     let mut state = self.lock_state();
@@ -6278,10 +6311,27 @@ impl NativeStore {
                             "prepared query claimant differs",
                         ));
                     }
-                    state.prepared_queries.remove(cursor)
+                    state.prepared_queries.remove(cursor).map(|query| {
+                        let held = query.charge();
+                        state.transient_bytes += held;
+                        (
+                            query,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(query) = prepared_query {
-                    return self.prepared_query_page(cursor, query, context, cancel, usage);
+                if let Some((query, mut reservation)) = prepared_query {
+                    return self.prepared_query_page(
+                        cursor,
+                        query,
+                        context,
+                        &mut reservation,
+                        cancel,
+                        usage,
+                    );
                 }
                 if let Some((claimant, _)) = self
                     .lock_state()
@@ -6347,20 +6397,42 @@ impl NativeStore {
                     self.rebind_waiter(&mut self.lock_state(), cursor, context)?;
                     return self.advance(cursor, waiter, None, cancel, usage);
                 }
-                if let Some(projection) = projection {
-                    if projection.claimant != str_field(context, "claimant")? {
+                let projection = {
+                    let mut state = self.lock_state();
+                    if state.projections.get(cursor).is_some_and(|projection| {
+                        projection.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
                         return Err(SnapshotError::new(
                             Status::StaleCursor,
                             "cursor claimant differs",
                         ));
                     }
-                    self.lock_state().projections.remove(cursor);
+                    state.projections.remove(cursor).map(|projection| {
+                        let held = projection.charge();
+                        state.transient_bytes += held;
+                        (
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                            projection,
+                        )
+                    })
+                };
+                if let Some((mut reservation, projection)) = projection {
+                    let ProjectionCursor {
+                        request,
+                        limits,
+                        next,
+                        ..
+                    } = projection;
                     return self.project_request(
-                        &projection.request,
+                        Cow::Owned(request),
                         context,
                         cancel,
-                        projection.limits,
-                        projection.next,
+                        limits,
+                        next,
+                        &mut reservation,
                     );
                 }
                 Err(SnapshotError::new(
@@ -6529,7 +6601,19 @@ impl NativeStore {
                 self.graph(request, context, cancel, usage)
             }
             "query" | "capture" | "activity_probe" | "hydrate" | "mine" => {
-                self.project_request(request, context, cancel, limits(request)?, 0)
+                let bound = limits(request)?;
+                let mut reservation = ProjectionReservation {
+                    store: self,
+                    bytes: 0,
+                };
+                self.project_request(
+                    Cow::Borrowed(request),
+                    context,
+                    cancel,
+                    bound,
+                    0,
+                    &mut reservation,
+                )
             }
             "discover" | "resolve" => self.discover(request, context, cancel, usage),
             "locate" => self.locate(request, context, cancel, usage),
@@ -8792,16 +8876,17 @@ impl NativeStore {
 
     fn project_request(
         &self,
-        request: &Value,
+        request: Cow<'_, Value>,
         context: &Value,
         cancel: &Cancellation,
         mut bound: WorkLimits,
         next: usize,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         cancel.check(bound.deadline_unix_ms)?;
         bound.max_output_bytes = bound.max_output_bytes.min(self.config.output);
-        if str_field(request, "operation")? == "hydrate" {
-            return self.hydrate(request, context, cancel, bound, next);
+        if str_field(&request, "operation")? == "hydrate" {
+            return self.hydrate(request, context, cancel, bound, next, reservation);
         }
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         let handle = view
@@ -8818,7 +8903,7 @@ impl NativeStore {
         let mut page = bound;
         page.max_output_bytes = page.max_output_bytes.min(MAX_DATA_BYTES);
         page.max_items = page.max_items.min(self.config.page_items);
-        let projection = if str_field(request, "operation")? == "mine" {
+        let projection = if str_field(&request, "operation")? == "mine" {
             let policy = request
                 .get("policy")
                 .ok_or_else(|| invalid("missing policy"))?;
@@ -8834,21 +8919,22 @@ impl NativeStore {
                 .get(&key)
                 .cloned()
                 .ok_or_else(|| invalid("policy version is not registered with this owner"))?;
-            callback(snapshot, request, &page, cancel, next)?
+            callback(snapshot, &request, &page, cancel, next)?
         } else {
-            let mut local = request.clone();
+            let mut local = Value::clone(&request);
             local["view"].insert("attachments", json!([]));
             crate::snapshot_projection::project(&snapshot, &local, &page, cancel, next)?
         };
-        self.projection_result(request, context, bound, projection)
+        self.projection_result(request, context, bound, projection, reservation)
     }
 
     fn projection_result(
         &self,
-        request: &Value,
+        request: Cow<'_, Value>,
         context: &Value,
         mut bound: WorkLimits,
         projection: Projection,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let bytes = sonic_rs::to_vec(&projection.data)
             .map_err(|error| invalid(error.to_string()))?
@@ -8884,7 +8970,7 @@ impl NativeStore {
                     claimant: str_field(context, "claimant")?.to_owned(),
                     registry_generation: str_field(context, "registry_generation")?.to_owned(),
                     admission: str_field(context, "admission")?.to_owned(),
-                    request: request.clone(),
+                    request: request.into_owned(),
                     limits: bound,
                     next,
                     expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
@@ -8893,7 +8979,10 @@ impl NativeStore {
                 let additional = state.admission(&token, &cursor, [])
                     + state.projections.growth_for(&token)
                     + pledge;
-                self.admit_memory(&mut state, context, additional)?;
+                let covered = additional.min(reservation.bytes);
+                self.admit_memory(&mut state, context, additional - covered)?;
+                state.transient_bytes -= covered;
+                reservation.bytes -= covered;
                 state.projections.reserve_for(&token);
                 state.projections.insert(token.clone(), cursor);
                 state.projections.pledge(&token, pledge);
@@ -8919,11 +9008,12 @@ impl NativeStore {
 
     fn hydrate(
         &self,
-        request: &Value,
+        request: Cow<'_, Value>,
         context: &Value,
         cancel: &Cancellation,
         mut bound: WorkLimits,
         next: usize,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let handles = request
             .get("handles")
@@ -8973,7 +9063,7 @@ impl NativeStore {
             let window = crate::context::ContextWindow::from_json(text)
                 .map_err(|error| invalid(error.to_string()))?;
             let item = if let Some(snapshot) = sessions.get(window.anchor.session_id.as_str()) {
-                let mut single = request.clone();
+                let mut single = Value::clone(&request);
                 single.insert("windows_json", json!([text]));
                 let projected =
                     crate::snapshot_projection::project(snapshot, &single, &remaining, cancel, 0)?;
@@ -9005,20 +9095,16 @@ impl NativeStore {
             at += 1;
         }
         let count = output.len();
-        self.projection_result(
-            request,
-            context,
-            bound,
-            Projection {
-                data: json!({"kind": "hydrated", "windows": output}),
-                complete: at == windows.len(),
-                next: (at < windows.len() && at > next).then_some(at),
-                reason: (at < windows.len()).then(|| "hydration work incomplete".to_owned()),
-                read_bytes,
-                events,
-                items: count,
-            },
-        )
+        let projection = Projection {
+            data: json!({"kind": "hydrated", "windows": output}),
+            complete: at == windows.len(),
+            next: (at < windows.len() && at > next).then_some(at),
+            reason: (at < windows.len()).then(|| "hydration work incomplete".to_owned()),
+            read_bytes,
+            events,
+            items: count,
+        };
+        self.projection_result(request, context, bound, projection, reservation)
     }
 
     fn discover(
@@ -9083,13 +9169,18 @@ impl NativeStore {
             walking: true,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
         };
-        self.scan(&token, cursor, cancel, usage)
+        let mut reservation = ProjectionReservation {
+            store: self,
+            bytes: 0,
+        };
+        self.scan(&token, cursor, &mut reservation, cancel, usage)
     }
 
     fn scan(
         &self,
         token: &str,
         mut scan: DiscoveryCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -9285,7 +9376,10 @@ impl NativeStore {
             let pledge = Delivery::cursor_pledge(&scan.claimant, &token);
             let additional =
                 state.admission(&token, &scan, []) + state.discoveries.growth_for(&token) + pledge;
-            self.admit_memory(&mut state, &scan.context, additional)?;
+            let covered = additional.min(reservation.bytes);
+            self.admit_memory(&mut state, &scan.context, additional - covered)?;
+            state.transient_bytes -= covered;
+            reservation.bytes -= covered;
             state.discoveries.reserve_for(&token);
             state.discoveries.insert(token.clone(), scan);
             state.discoveries.pledge(&token, pledge);
@@ -9905,13 +9999,18 @@ impl NativeStore {
             complete_scan: complete,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
         };
-        self.resolve_step(&token, cursor, cancel, usage)
+        let mut reservation = ProjectionReservation {
+            store: self,
+            bytes: 0,
+        };
+        self.resolve_step(&token, cursor, &mut reservation, cancel, usage)
     }
 
     fn resolve_step(
         &self,
         token: &str,
         mut cursor: ResolutionCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -9924,7 +10023,7 @@ impl NativeStore {
             .filter_map(|session| session["description"]["handle"]["lease_id"].as_str())
             .map(str::to_owned)
             .collect();
-        let reply = stepped.and_then(|()| self.resolution_page(token, cursor));
+        let reply = stepped.and_then(|()| self.resolution_page(token, cursor, reservation));
         if reply.is_err() {
             let mut state = self.lock_state();
             if let Some(pending) = &pending {
@@ -10038,6 +10137,7 @@ impl NativeStore {
         &self,
         token: &str,
         mut cursor: ResolutionCursor,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         if cursor.next == cursor.ids.len() {
             let data = json!({"kind":"resolved","sessions":cursor.sessions});
@@ -10083,7 +10183,10 @@ impl NativeStore {
         let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         let additional =
             state.admission(&token, &cursor, []) + state.resolutions.growth_for(&token) + pledge;
-        self.admit_memory(&mut state, &cursor.context, additional)?;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, &cursor.context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.resolutions.reserve_for(&token);
         state.resolutions.insert(token.clone(), cursor);
         state.resolutions.pledge(&token, pledge);

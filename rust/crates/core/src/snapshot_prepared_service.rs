@@ -1775,6 +1775,7 @@ impl NativeStore {
         token: &str,
         mut cursor: PreparedQueryCursor,
         context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -1783,7 +1784,7 @@ impl NativeStore {
         let reply = page.and_then(|page| match page {
             QueryPage::Complete(data) => Ok((data, None, None)),
             QueryPage::Incomplete(data) => {
-                self.park_prepared_query(token, cursor, data, context, cancel)
+                self.park_prepared_query(token, cursor, data, context, reservation, cancel)
             }
         });
         if reply.is_err() {
@@ -2007,6 +2008,7 @@ impl NativeStore {
         cursor: PreparedQueryCursor,
         data: Value,
         context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
@@ -2024,7 +2026,10 @@ impl NativeStore {
         let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         let additional =
             state.admission(&token, &cursor, []) + state.prepared_queries.growth_for(&token) + pledge;
-        self.admit_memory(&mut state, context, additional)?;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.prepared_queries.reserve_for(&token);
         state.prepared_queries.insert(token.clone(), cursor);
         state.prepared_queries.pledge(&token, pledge);
@@ -2198,7 +2203,18 @@ impl NativeStore {
             remaining: bounds,
             expires,
         };
-        self.prepared_query_page(&self.token("prepared-query"), cursor, context, cancel, usage)
+        let mut reservation = ProjectionReservation {
+            store: self,
+            bytes: 0,
+        };
+        self.prepared_query_page(
+            &self.token("prepared-query"),
+            cursor,
+            context,
+            &mut reservation,
+            cancel,
+            usage,
+        )
     }
 
     fn publish_root_slice(

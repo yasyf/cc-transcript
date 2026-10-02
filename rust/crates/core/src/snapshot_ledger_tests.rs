@@ -10322,3 +10322,493 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
         );
     }
 }
+
+struct ResumedArm {
+    site: &'static str,
+    extends_context: bool,
+    reparks: bool,
+    parked: fn(&StoreState) -> (String, usize, usize),
+    len: fn(&StoreState) -> usize,
+    table_bytes: fn(&StoreState) -> usize,
+    remove: fn(&mut StoreState, &str),
+}
+
+fn admitted_traces(trace: &[Trace]) -> Vec<usize> {
+    trace
+        .iter()
+        .filter_map(|entry| match entry {
+            Trace::Admitted(bytes) => Some(*bytes),
+            _ => None,
+        })
+        .collect()
+}
+
+fn released_by(store: &NativeStore, run: impl FnOnce()) -> Vec<usize> {
+    let released = Arc::new(Mutex::new(Vec::new()));
+    *store.release_hook.lock().unwrap() = Some(Arc::new({
+        let released = Arc::clone(&released);
+        move |bytes: usize| released.lock().unwrap().push(bytes)
+    }));
+    run();
+    *store.release_hook.lock().unwrap() = None;
+    let released = released.lock().unwrap().clone();
+    released
+}
+
+fn resumed(fixture: &Fixture) -> bool {
+    match fixture.store.dispatch(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &mut [0u64; 18],
+    ) {
+        Ok(_) => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("resume failed outside admission: {error:?}"),
+    }
+}
+
+fn held_by(arm: &ResumedArm, fixture: &Fixture) -> (usize, usize, usize) {
+    let state = fixture.store.lock_state();
+    assert_eq!((arm.len)(&state), 1, "{}: one cursor is parked", arm.site);
+    let (token, walked, pledged) = (arm.parked)(&state);
+    assert_eq!(
+        pledged, 0,
+        "{}: the delivered first page left its pledge on the parked cursor",
+        arm.site
+    );
+    (
+        token.capacity(),
+        walked - token.capacity(),
+        (arm.table_bytes)(&state),
+    )
+}
+
+fn reparked_by(arm: &ResumedArm, fixture: &Fixture, key: usize, capacity: usize) -> usize {
+    let state = fixture.store.lock_state();
+    assert_eq!(
+        (arm.len)(&state),
+        usize::from(arm.reparks),
+        "{}: the resumed page did not leave the cursor count it should",
+        arm.site
+    );
+    if !arm.reparks {
+        return 0;
+    }
+    let (token, walked, pledged) = (arm.parked)(&state);
+    assert_eq!(token.capacity(), key);
+    walked + (arm.table_bytes)(&state) - capacity + pledged
+}
+
+fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fixture) {
+    let sample = build();
+    let (key, held, capacity) = held_by(arm, &sample);
+    let context = value_bytes(&sample.owner);
+    let extension = if arm.extends_context { context } else { 0 };
+    if arm.extends_context {
+        let fits = |fixture: &Fixture| {
+            traced(&fixture.store);
+            resumed(fixture);
+            reserved(&fixture.store).first() == Some(&context)
+        };
+        assert_eq!(
+            exact_headroom(build, &fits) + key,
+            context,
+            "{}: the resume freed more than its stored key before admitting its new context",
+            arm.site
+        );
+    }
+    let page = exact_headroom(build, &resumed);
+    for headroom in [0, page - 1] {
+        let refused = build();
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, headroom);
+            assert!(
+                !resumed(&refused),
+                "{}: headroom {headroom} admitted the resumed page",
+                arm.site
+            );
+        }
+        refused.store.assert_conserved();
+        let control = build();
+        {
+            let mut state = control.store.lock_state();
+            let (token, _, _) = (arm.parked)(&state);
+            (arm.remove)(&mut state, &token);
+        }
+        evict_unpinned(&control.store, &control.owner);
+        assert_eq!(
+            (arm.len)(&refused.store.lock_state()),
+            0,
+            "{}: a refused resume left its cursor parked",
+            arm.site
+        );
+        assert_eq!(
+            (
+                settled(&refused.store),
+                audited(&refused.store),
+                bookkeeping(&refused.store)
+            ),
+            (
+                settled(&control.store),
+                audited(&control.store),
+                bookkeeping(&control.store)
+            ),
+            "{}: a refused resume at headroom {headroom} did more than consume its parked cursor",
+            arm.site
+        );
+        assert!(audited(&refused.store)[TOTAL] <= cap_for(&refused.owner));
+    }
+    let fitted = build();
+    let leases_before = lease_walk(&fitted.store);
+    let lease_capacity_before = fitted.store.lock_state().leases.capacity_bytes();
+    let _filler = fill_to(&fitted.store, &fitted.owner, page);
+    traced(&fitted.store);
+    let released = released_by(&fitted.store, || {
+        assert!(resumed(&fitted), "{}: the exact fit was refused", arm.site);
+    });
+    let trace = traced(&fitted.store);
+    fitted.store.assert_conserved();
+    let leases_after = lease_walk(&fitted.store);
+    let lease_capacity_after = fitted.store.lock_state().leases.capacity_bytes();
+    let leases = leases_after - leases_before + lease_capacity_after - lease_capacity_before;
+    let additional = reparked_by(arm, &fitted, key, capacity);
+    let covered = additional.min(held + extension);
+    assert_eq!(
+        page + key,
+        extension + leases + additional - covered,
+        "{}: the resumed page is not admitted at its new context, its step's leases, and the part of its re-parked record that its held charge does not cover",
+        arm.site
+    );
+    assert_eq!(
+        reserved_traces(&trace),
+        if arm.extends_context {
+            vec![extension]
+        } else {
+            Vec::new()
+        },
+        "{}: the step reserved something besides its new context: {trace:?}",
+        arm.site
+    );
+    let admitted = admitted_traces(&trace);
+    if arm.reparks {
+        assert_eq!(
+            admitted.last(),
+            Some(&(additional - covered)),
+            "{}: the re-park admitted bytes its held charge already covered: {trace:?}",
+            arm.site
+        );
+    }
+    assert_eq!(
+        admitted.iter().sum::<usize>(),
+        extension + leases + additional - covered,
+        "{}: the resumed page admitted bytes outside its context, leases, and re-park: {trace:?}",
+        arm.site
+    );
+    assert_eq!(
+        released,
+        vec![held + extension - covered],
+        "{}: the step released more or less than the uncovered remainder of its held charge",
+        arm.site
+    );
+    assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+}
+
+fn parked_discovery(state: &StoreState) -> (String, usize, usize) {
+    let (token, scan) = state.discoveries.iter().next().expect("parked discovery");
+    (
+        token.clone(),
+        NativeStore::audit_discovery_bytes(token, scan),
+        state.discoveries.pledged(token),
+    )
+}
+
+fn discovery_resume_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+    let mut fixture = discovery_fixture(scenario, background, padding);
+    let first = submit(&fixture);
+    assert!(parked(&first), "{first:?}");
+    fixture.request = resume_request(first["cursor"].as_str().unwrap());
+    fixture
+}
+
+#[test]
+fn resumed_discovery_scan_holds_its_cursor_charge_through_the_page() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let arm = ResumedArm {
+        site: "resumed discovery",
+        extends_context: true,
+        reparks: true,
+        parked: parked_discovery,
+        len: |state| state.discoveries.len(),
+        table_bytes: |state| state.discoveries.capacity_bytes(),
+        remove: |state, token| {
+            state.discoveries.remove(token);
+        },
+    };
+    for background in [false, true] {
+        for padding in [0, 4096] {
+            assert_resumed_arm_holds_its_charge(&arm, &|| {
+                discovery_resume_fixture(&scenario, background, padding)
+            });
+        }
+    }
+}
+
+fn parked_resolution(state: &StoreState) -> (String, usize, usize) {
+    let (token, cursor) = state.resolutions.iter().next().expect("parked resolution");
+    (
+        token.clone(),
+        NativeStore::audit_resolution_bytes(token, cursor),
+        state.resolutions.pledged(token),
+    )
+}
+
+fn resolution_resume_fixture(
+    scenario: &Scenario,
+    background: bool,
+    padding: usize,
+    ids: Vec<String>,
+) -> Fixture {
+    let store = fast_store();
+    let mut owner = context_for("resolve-resume", background);
+    owner.insert("padding", json!("p".repeat(padding)));
+    let pins = scenario
+        .sidechains
+        .iter()
+        .map(|path| {
+            let (handle, snapshot) = acquired(&store, path, &owner);
+            release_lease(&store, &handle, &owner);
+            snapshot
+        })
+        .collect();
+    let wanted = ids.len();
+    let mut fixture = Fixture {
+        store,
+        request: json!({"schema":SCHEMA,"id":"ledger-resolve","operation":"resolve","session_ids":ids,"roots":scenario.roots(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        owner,
+        pins,
+    };
+    let first = submit(&fixture);
+    assert!(parked(&first), "{first:?}");
+    {
+        let state = fixture.store.lock_state();
+        let (_, cursor) = state.resolutions.iter().next().expect("parked resolution");
+        assert!(
+            cursor.pending.is_none() && cursor.next == 1 && cursor.ids.len() == wanted,
+            "the resolution did not park after its first cached session"
+        );
+    }
+    fixture.request = resume_request(first["cursor"].as_str().unwrap());
+    fixture
+}
+
+fn resolution_arm() -> ResumedArm {
+    ResumedArm {
+        site: "resumed resolution",
+        extends_context: true,
+        reparks: false,
+        parked: parked_resolution,
+        len: |state| state.resolutions.len(),
+        table_bytes: |state| state.resolutions.capacity_bytes(),
+        remove: |state, token| {
+            state.resolutions.remove(token);
+        },
+    }
+}
+
+#[test]
+fn resumed_resolution_step_holds_its_cursor_charge_through_the_page() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    let arm = resolution_arm();
+    for background in [false, true] {
+        for padding in [0, 4096] {
+            assert_resumed_arm_holds_its_charge(&arm, &|| {
+                resolution_resume_fixture(
+                    &scenario,
+                    background,
+                    padding,
+                    vec![scenario.ids()[0].clone(), "absent".to_owned()],
+                )
+            });
+        }
+    }
+}
+
+#[test]
+fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
+    let scenario = Scenario::new(3, |index| session_line(&format!("thread-{index:04}")));
+    let arm = ResumedArm {
+        reparks: true,
+        ..resolution_arm()
+    };
+    for background in [false, true] {
+        let fixture = resolution_resume_fixture(&scenario, background, 0, scenario.ids());
+        let (key, held, capacity) = held_by(&arm, &fixture);
+        let context = value_bytes(&fixture.owner);
+        traced(&fixture.store);
+        let released = released_by(&fixture.store, || {
+            assert!(resumed(&fixture), "the resumed resolution was refused");
+        });
+        let trace = traced(&fixture.store);
+        fixture.store.assert_conserved();
+        let additional = reparked_by(&arm, &fixture, key, capacity);
+        let covered = additional.min(held + context);
+        assert_eq!(
+            reserved_traces(&trace).first(),
+            Some(&context),
+            "the resumed resolution did not admit its new context first: {trace:?}"
+        );
+        assert_eq!(
+            admitted_traces(&trace).last(),
+            Some(&(additional - covered)),
+            "the resolution park admitted bytes its held charge already covered: {trace:?}"
+        );
+        assert_eq!(
+            released.last(),
+            Some(&(held + context - covered)),
+            "the resolution step released more or less than the uncovered remainder of its held charge: {released:?}"
+        );
+        assert!(audited(&fixture.store)[TOTAL] <= cap_for(&fixture.owner));
+    }
+}
+
+fn parked_prepared_query(state: &StoreState) -> (String, usize, usize) {
+    let (token, cursor) = state
+        .prepared_queries
+        .iter()
+        .next()
+        .expect("parked prepared query");
+    (
+        token.clone(),
+        NativeStore::audit_prepared_query_bytes(token, cursor),
+        state.prepared_queries.pledged(token),
+    )
+}
+
+fn command_line(id: &str, bytes: usize) -> String {
+    format!(
+        "{}\n",
+        json!({"type":"assistant","uuid":id,"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"m","content":[{"type":"tool_use","id":format!("{id}-call"),"name":"Bash","input":{"command":"x".repeat(bytes)}}]}})
+    )
+}
+
+fn chunked_inputs_source() -> LedgerSource {
+    LedgerSource::new(&format!(
+        "{}{}",
+        line("root"),
+        (0..160)
+            .map(|index| command_line(&format!("command-{index}"), 4096))
+            .collect::<String>()
+    ))
+}
+
+fn prepared_cursor_store() -> NativeStore {
+    store_with(4096, 2048, &[("max_items_per_page", 1)])
+}
+
+fn chunked_query_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let store = prepared_cursor_store();
+    let owner = context_for(&"q".repeat(300 * 1024), background);
+    let (root, root_snapshot) = acquired(&store, &source.path, &owner);
+    let graph = prepared_graph(&store, &root, &[], &owner);
+    let mut fixture = Fixture {
+        store,
+        owner,
+        request: graph_query(
+            &graph,
+            json!({"kind":"deep_predicate_inputs","order":"forward"}),
+            json!([]),
+        ),
+        pins: vec![root_snapshot],
+    };
+    let first = submit(&fixture);
+    assert!(parked(&first), "{first:?}");
+    {
+        let state = fixture.store.lock_state();
+        let (_, cursor) = state
+            .prepared_queries
+            .iter()
+            .next()
+            .expect("parked prepared query");
+        assert!(
+            cursor.pending.is_none()
+                && cursor.next == 0
+                && cursor
+                    .input_records
+                    .as_ref()
+                    .is_some_and(|records| records.len() >= 2),
+            "the prepared query did not park with two chunked records still queued"
+        );
+    }
+    fixture.request = resume_request(first["cursor"].as_str().unwrap());
+    fixture
+}
+
+#[test]
+fn resumed_prepared_query_page_holds_its_cursor_charge_through_the_page() {
+    let source = chunked_inputs_source();
+    let arm = ResumedArm {
+        site: "resumed prepared query",
+        extends_context: false,
+        reparks: true,
+        parked: parked_prepared_query,
+        len: |state| state.prepared_queries.len(),
+        table_bytes: |state| state.prepared_queries.capacity_bytes(),
+        remove: |state, token| {
+            state.prepared_queries.remove(token);
+        },
+    };
+    for background in [false, true] {
+        assert_resumed_arm_holds_its_charge(&arm, &|| chunked_query_fixture(&source, background));
+    }
+}
+
+fn parked_projection(state: &StoreState) -> (String, usize, usize) {
+    let (token, cursor) = state.projections.iter().next().expect("parked projection");
+    (
+        token.clone(),
+        NativeStore::audit_projection_bytes(token, cursor),
+        state.projections.pledged(token),
+    )
+}
+
+fn projection_resume_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let mut fixture = projection_fixture(source, background, "projection-resume");
+    let first = submit(&fixture);
+    assert!(parked(&first), "{first:?}");
+    fixture.request = resume_request(first["cursor"].as_str().unwrap());
+    fixture
+}
+
+#[test]
+fn resumed_projection_holds_its_cursor_charge_through_the_page() {
+    let source = LedgerSource::new(&lines(0..3));
+    let arm = ResumedArm {
+        site: "resumed projection",
+        extends_context: false,
+        reparks: true,
+        parked: parked_projection,
+        len: |state| state.projections.len(),
+        table_bytes: |state| state.projections.capacity_bytes(),
+        remove: |state, token| {
+            state.projections.remove(token);
+        },
+    };
+    for background in [false, true] {
+        let build = || projection_resume_fixture(&source, background);
+        assert_resumed_arm_holds_its_charge(&arm, &build);
+        let fitted = build();
+        let (key, held, capacity) = held_by(&arm, &fitted);
+        assert!(resumed(&fitted));
+        let reparked = reparked_by(&arm, &fitted, key, capacity);
+        let pledged = {
+            let state = fitted.store.lock_state();
+            parked_projection(&state).2
+        };
+        assert_eq!(
+            reparked,
+            key + held + pledged,
+            "the re-parked projection does not carry the resumed cursor's request and identity strings byte for byte"
+        );
+    }
+}
