@@ -7780,6 +7780,7 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
         + prefix_fence.capacity()
         + fence.capacity()
         + session_id.as_ref().map_or(0, String::capacity)
+        + chunks.capacity() * size_of::<Arc<EntryChunk>>()
         + chunks
             .iter()
             .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
@@ -8144,6 +8145,7 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         + load.prefix_fence.capacity()
         + load.fence.capacity()
         + load.session_id.as_ref().map_or(0, String::capacity)
+        + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
         + load
             .chunks
             .iter()
@@ -8342,6 +8344,46 @@ fn refused_unpublished_build_frees_its_load_slot() {
         3
     );
     store.assert_conserved();
+}
+
+#[test]
+fn published_loads_release_their_decode_buffers() {
+    let source = LedgerSource::new(&lines(0..4));
+    for background in [false, true] {
+        let requests = publishing_request(&source.path, background);
+        let fixture = parked_load(&source.path, background, requests);
+        let slot = pin_prepared_load(&fixture);
+        {
+            let load = slot.work.lock().unwrap();
+            assert!(load.result.is_none() && !load.chunks.is_empty());
+            assert!(load.chunks.capacity() * size_of::<Arc<EntryChunk>>() > 0);
+        }
+        let walk = cold_load_walk(&slot);
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            walk,
+            "the parked load's charge misses its chunk buffer"
+        );
+        let pending = fixture.store.lock_state().ledger.pending;
+        assert_eq!(pending, NativeStore::audit_load_record_bytes(&slot) + walk);
+        assert!(advance_published(&fixture));
+        fixture.store.assert_conserved();
+        let load = slot.work.lock().unwrap();
+        assert!(load.result.is_some());
+        assert_eq!(
+            (
+                load.pending.capacity(),
+                load.chunks.capacity(),
+                load.fence.capacity(),
+                load.origin_fence.capacity(),
+                load.seal_fence.capacity(),
+                load.session_id.as_ref().map_or(0, String::capacity),
+            ),
+            (0, 0, 0, 0, 0, 0),
+            "the published load kept its decode buffers"
+        );
+        assert_eq!(slot.accounted.load(Ordering::Acquire), 0);
+    }
 }
 
 fn location_root_fixture(root: &Path, background: bool) -> Fixture {

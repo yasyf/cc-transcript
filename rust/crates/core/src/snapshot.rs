@@ -7135,6 +7135,7 @@ impl NativeStore {
                     + load.prefix_fence.capacity()
                     + load.fence.capacity()
                     + load.session_id.as_ref().map_or(0, String::capacity)
+                    + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
                     + load
                         .chunks
                         .iter()
@@ -7936,6 +7937,11 @@ impl NativeStore {
             codex_append: load.codex_append.clone(),
         }));
         load.pending = Vec::new();
+        load.chunks = Vec::new();
+        load.fence = Vec::new();
+        load.origin_fence = Vec::new();
+        load.seal_fence = Vec::new();
+        load.session_id = None;
         Ok(())
     }
 
