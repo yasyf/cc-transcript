@@ -1987,6 +1987,30 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
 }
 
 #[test]
+fn startup_footprint_bounds_the_retained_cap() {
+    let footprint = NativeStore::new(&json!({}))
+        .unwrap()
+        .retained_accounted_bytes();
+    assert!(footprint > 0);
+    let with_cap = |cap: usize| NativeStore::new(&json!({"max_retained_bytes": cap}));
+    assert_eq!(
+        with_cap(footprint - 1)
+            .err()
+            .expect("a cap below the startup footprint")
+            .status,
+        Status::InvalidRequest
+    );
+    assert_eq!(
+        with_cap(footprint).unwrap().retained_accounted_bytes(),
+        footprint
+    );
+    assert_eq!(
+        with_cap(footprint + 1).unwrap().retained_accounted_bytes(),
+        footprint
+    );
+}
+
+#[test]
 fn advance_publication_admits_exactly_before_registering_the_generation() {
     let source = LedgerSource::new(&line("anchor"));
     let deep = deep_source(&source, &line("advance"));

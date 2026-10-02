@@ -2578,6 +2578,9 @@ impl NativeStore {
                 );
             }
         }
+        if number(&Self::gauges(&mut state), "retained_total_accounted_bytes")? > config.retained {
+            return Err(invalid("retained cap below startup footprint"));
+        }
         #[cfg(test)]
         let audits = Arc::clone(&state.audits);
         Ok(Self {
@@ -12844,6 +12847,15 @@ mod tests {
             store
                 .register_tool_registry(&specs, &review)
                 .unwrap_err()
+                .status,
+            Status::RetainedLimit
+        );
+        assert!(store.retained_accounted_bytes() > 0);
+        assert_eq!(
+            store
+                .reserve_projection(&review, 0)
+                .err()
+                .expect("the startup footprint exceeds the background cap")
                 .status,
             Status::RetainedLimit
         );
