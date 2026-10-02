@@ -147,3 +147,47 @@ def test_corpus_match_checks_output_before_rendering(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["matches"] == []
     assert "output" in payload["outcome"]["reason"]
+
+
+def test_repeated_grep_on_an_appended_file_reads_only_new_bytes(tmp_path: Path) -> None:
+    path = source(tmp_path / "live.jsonl", ["needle", *(f"filler {index} {'x' * 500}" for index in range(200))])
+    cold = run_scan(tmp_path, "needle", str(path), "--scan-json", "--max-matches", "0")
+    assert cold.returncode == 0, cold.stderr
+    assert json.loads(cold.stdout)["outcome"]["progress"]["source_bytes"] == path.stat().st_size
+    hit = len(path.read_bytes().split(b"\n")[0])
+    before = path.stat().st_size
+    appended = source(tmp_path / "suffix.jsonl", ["needle later", "tail"]).read_bytes()
+    with path.open("ab") as handle:
+        handle.write(appended)
+    warm = run_scan(tmp_path, "needle", str(path), "--scan-json", "--max-matches", "0")
+    assert warm.returncode == 0, warm.stderr
+    payload = json.loads(warm.stdout)
+    assert payload["counts"] == [2]
+    assert payload["outcome"]["complete"] is True
+    progress = payload["outcome"]["progress"]
+    assert progress["cache_hits"] == 1
+    assert progress["source_bytes"] == 64 + hit + len(appended)
+    assert progress["validated_bytes"] == before
+    assert path.stat().st_size == before + len(appended)
+
+
+def test_growth_after_a_prefix_rewrite_matches_a_fresh_scan(tmp_path: Path) -> None:
+    path = source(tmp_path / "live.jsonl", [f"filler {index} {'x' * 500}" for index in range(200)])
+    cold = run_scan(tmp_path, "needle", str(path), "--scan-json")
+    assert cold.returncode == 1, cold.stderr
+    before = path.stat().st_size
+    path.write_bytes(path.read_bytes().replace(b"filler 5 ", b"needle 5 "))
+    with path.open("ab") as handle:
+        handle.write(source(tmp_path / "suffix.jsonl", ["tail"]).read_bytes())
+    warm = run_scan(tmp_path, "needle", str(path), "--scan-json")
+    fresh_path = tmp_path / "fresh.jsonl"
+    fresh_path.write_bytes(path.read_bytes())
+    fresh = run_scan(tmp_path, "needle", str(fresh_path), "--scan-json")
+    assert warm.returncode == fresh.returncode == 0, warm.stderr
+    payload, expected = json.loads(warm.stdout), json.loads(fresh.stdout)
+    assert payload["counts"] == expected["counts"] == [1]
+    assert payload["outcome"]["complete"] is expected["outcome"]["complete"] is True
+    progress = payload["outcome"]["progress"]
+    assert progress["cache_hits"] == 0
+    assert progress["cache_invalidations"] == 1
+    assert progress["validated_bytes"] == before

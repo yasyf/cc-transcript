@@ -15,6 +15,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cc-transcript grep` searches Claude transcripts as it reads them, so a scan
+  that runs out of budget can print the matches it reached. `--max-matches` stops
+  reading once the requested context and completion lookahead are available,
+  subject to buffered read-ahead. Codex sources, `--errors`, and `--with-result`
+  keep using prepared snapshots.
+- A streaming `grep` read reports `source_read_limit` only when the source-byte
+  cap is exhausted. When the combined source and projection cap prevents the
+  read, it reports `cumulative scan work budget exhausted`.
+- Repeated `cc-transcript grep` invocations reuse checkpoints for Claude sources,
+  replaying saved matches and context before continuing from the saved prefix.
+  Budget-capped runs save partial progress and still report incomplete coverage.
+  Checkpoints bind the source, query, and CLI build; stale or corrupt records are
+  discarded and the source is rescanned from byte 0.
+- A grep checkpoint could miss an earlier nonmatching line rewritten into a
+  match before an append, reporting zero matches with complete coverage. Grown
+  Claude transcripts now require a digest check of the committed prefix before
+  reuse. Fixed `4 MiB` `SipHash` segments plus at most one partial segment keep the
+  proof at `ceil(committed / 4 MiB)` entries across append runs. Validation stops
+  at the first mismatching segment, invalidates the record, and rescans from
+  byte 0; success leaves the partial hash open for extension without more reads.
+  Extending a partial checkpoint on an unchanged file re-reads at most `4 MiB`
+  to reopen that hash; a mismatch returns `changed` and deletes the record.
+  Growth during a scan now triggers another prefix check, including any parsed
+  unterminated final line, in that same run. The run now checks that the open
+  file's and path's stats stay unchanged across the re-read. A digest mismatch or
+  stat change returns `changed`, and insufficient validation budget returns
+  `incomplete`; neither reports complete coverage. These reads charge
+  `validated_bytes` separately from `source_bytes`. Single spans charge only
+  after a successful read, so cancellation, an expired deadline, or a staging
+  refusal before I/O adds no validation bytes.
+  When nonzero, the human summary adds
+  ` · re-read {validated_bytes} bytes for validation`.
+- Streamed `cc-transcript grep` labels an early `--max-matches` stop as a partial
+  view when an emitted `--tool` decision or compact tool-result name (`← Name`)
+  depends on tool names resolved only through a file prefix. The warning reports
+  the byte offset without changing the `result_limit` exit status. A checkpoint
+  names layer validated through the current EOF removes the label; a later
+  conflicting name for a used `tool_use` id makes the source incomplete and
+  deletes its checkpoint record.
 - The `render` query charges its input budget for the windowed events only, plus
   the prompt of each turn the window starts and the names of tools whose calls
   and results both fall inside it, instead of every event of each overlapping
@@ -42,6 +81,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The store config and its JSON schema add `max_scan_read_bytes` (8 MiB),
+  `max_scan_events` (4096), `max_scan_discovery_entries` (4096), and
+  `max_scan_sources` (256) for the whole-command budget `cc-transcript grep`
+  starts from. `NativeStore::scan_limits()` reads these keys independently of
+  `max_read_bytes_per_step`, `max_events_per_step`, and `max_items_per_page`,
+  so tuning step size no longer changes the whole-scan caps. Defaults are
+  unchanged, and zero values are rejected.
+- The store config and JSON schema add `max_scan_validate_bytes` to cap grep
+  prefix validation at `1 GiB` per command by default; zero is rejected. If a
+  grown checkpoint's prefix exceeds the remaining cap, the run starts fresh under
+  the normal source budget. Reopening a partial segment on an unchanged file
+  requires room in that cap; otherwise, the run returns results but saves no
+  checkpoint. An in-scan growth check that exceeds the remaining cap returns
+  `incomplete`. Existing scan budgets
+  are unchanged.
 - `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;
   absent, whole-file behavior is unchanged. For a Claude file of size `S` and window
   `W`, `S <= W` gives the same snapshot as a plain `acquire`; otherwise `q = W/2`,

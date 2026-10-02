@@ -393,6 +393,11 @@ struct Config {
     read_step: usize,
     event_step: usize,
     page_items: usize,
+    scan_read: usize,
+    scan_events: usize,
+    scan_discovery: usize,
+    scan_sources: usize,
+    scan_validate: usize,
     hook_loads: usize,
     hook_leases: usize,
     hook_bytes: usize,
@@ -1244,6 +1249,11 @@ impl NativeStore {
             read_step: get("max_read_bytes_per_step", 8 * 1024 * 1024),
             event_step: get("max_events_per_step", 4096),
             page_items: get("max_items_per_page", 256).min(256),
+            scan_read: get("max_scan_read_bytes", 8 * 1024 * 1024),
+            scan_events: get("max_scan_events", 4096),
+            scan_discovery: get("max_scan_discovery_entries", 4096),
+            scan_sources: get("max_scan_sources", 256),
+            scan_validate: get("max_scan_validate_bytes", 1024 * 1024 * 1024),
             hook_loads: get("reserved_hook_loads", 1),
             hook_leases: get("reserved_hook_leases", 32),
             hook_bytes: get("reserved_hook_accounted_bytes", 512 * 1024 * 1024),
@@ -1254,6 +1264,11 @@ impl NativeStore {
             || config.read_step == 0
             || config.event_step == 0
             || config.page_items == 0
+            || config.scan_read == 0
+            || config.scan_events == 0
+            || config.scan_discovery == 0
+            || config.scan_sources == 0
+            || config.scan_validate == 0
             || config.leases == 0
             || config.loads == 0
             || config.ttl == 0
@@ -1304,15 +1319,19 @@ impl NativeStore {
 
     pub fn scan_limits(&self) -> WorkLimits {
         WorkLimits {
-            max_read_bytes: self.config.read_step,
-            max_source_read_bytes: self.config.read_step,
-            max_events: self.config.event_step,
-            max_items: self.config.event_step,
+            max_read_bytes: self.config.scan_read,
+            max_source_read_bytes: self.config.scan_read,
+            max_events: self.config.scan_events,
+            max_items: self.config.scan_events,
             max_output_bytes: self.config.output,
-            max_discovery_entries: self.config.event_step,
-            max_sources: self.config.page_items,
+            max_discovery_entries: self.config.scan_discovery,
+            max_sources: self.config.scan_sources,
             deadline_unix_ms: now_ms().saturating_add(self.config.preparation),
         }
+    }
+
+    pub fn scan_validate_bytes(&self) -> usize {
+        self.config.scan_validate
     }
 
     pub fn default_registry_generation(&self) -> String {

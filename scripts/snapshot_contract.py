@@ -787,6 +787,11 @@ class StoreConfig(WireModel):
     max_read_bytes_per_step: Positive = 8 * 1024 * 1024
     max_events_per_step: Positive = 4096
     max_items_per_page: Positive = 256
+    max_scan_read_bytes: Positive = 8 * 1024 * 1024
+    max_scan_events: Positive = 4096
+    max_scan_discovery_entries: Positive = 4096
+    max_scan_sources: Positive = 256
+    max_scan_validate_bytes: Positive = 1024 * 1024 * 1024
     reserved_hook_loads: Positive = 1
     reserved_hook_leases: Positive = 32
     reserved_hook_accounted_bytes: Positive = 512 * 1024 * 1024

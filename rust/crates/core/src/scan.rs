@@ -23,6 +23,8 @@ pub struct ScanProgress {
     pub output_bytes: usize,
     pub source_opens: usize,
     pub cache_hits: usize,
+    pub cache_invalidations: usize,
+    pub validated_bytes: usize,
 }
 
 pub struct ScanBudget<'store> {
@@ -31,6 +33,7 @@ pub struct ScanBudget<'store> {
     store: &'store NativeStore,
     context: Value,
     staging: ProjectionArena<'store>,
+    validation: usize,
 }
 
 pub type StagingReservation<'store> = crate::snapshot::ProjectionAllocation<'store>;
@@ -45,6 +48,7 @@ impl<'store> ScanBudget<'store> {
             store,
             staging: ProjectionArena::new(store, context.clone()),
             context,
+            validation: store.scan_validate_bytes(),
         }
     }
 
@@ -148,6 +152,40 @@ impl<'store> ScanBudget<'store> {
         Ok(())
     }
 
+    pub fn validation_remaining(&self) -> usize {
+        self.validation
+            .saturating_sub(self.progress.validated_bytes)
+    }
+
+    pub fn charge_validation(&mut self, bytes: usize) {
+        self.progress.validated_bytes += bytes;
+    }
+
+    pub fn charge_source(&mut self, bytes: usize) -> Result<(), SnapshotError> {
+        if bytes > self.remaining().max_source_read_bytes {
+            return Err(self.read_exhausted());
+        }
+        self.progress.source_bytes += bytes;
+        Ok(())
+    }
+
+    pub fn read_exhausted(&self) -> SnapshotError {
+        if self.progress.source_bytes >= self.limits.max_source_read_bytes {
+            crate::snapshot::source_read_limit()
+        } else {
+            incomplete("cumulative scan work budget exhausted")
+        }
+    }
+
+    pub fn charge_parse(&mut self, cancel: &Cancellation) -> Result<(), SnapshotError> {
+        self.checkpoint(cancel)?;
+        if self.remaining().max_events == 0 {
+            return Err(incomplete("cumulative scan work budget exhausted"));
+        }
+        self.progress.parsed_events += 1;
+        Ok(())
+    }
+
     pub fn charge_output(
         &mut self,
         bytes: usize,
@@ -227,7 +265,10 @@ pub struct ScanOutcome {
 
 pub enum ScanControl {
     Continue,
-    Stop { source_complete: bool },
+    Stop {
+        source_complete: bool,
+        names_through: Option<u64>,
+    },
 }
 
 pub struct ScanSession<'a> {
@@ -402,6 +443,15 @@ impl<'a> ScanSession<'a> {
             &Cancellation,
         ) -> Result<ScanControl, SnapshotError>,
     {
+        self.each_source(plan, |session, path| {
+            session.visit_snapshot(path, &mut visit)
+        })
+    }
+
+    pub fn each_source<F>(&mut self, plan: &ScanPlan, mut source: F) -> ScanOutcome
+    where
+        F: FnMut(&mut Self, &Path) -> Result<ScanControl, SnapshotError>,
+    {
         let mut selected_sources = 0;
         let mut available_sources = 0;
         let result = (|| {
@@ -413,54 +463,28 @@ impl<'a> ScanSession<'a> {
                     return Err(incomplete("source budget exhausted"));
                 }
                 self.budget.progress.sources += 1;
-                let mut request = self.bounded_request("acquire");
-                request.insert("path", json!(path.to_string_lossy().as_ref()));
-                request.insert("classifier", json!({"id":"native","version":"1"}));
-                loop {
-                    let response = self.request(request)?;
-                    if let Some(cursor) = response["cursor"].as_str() {
-                        request = json!({"operation":"resume","cursor":cursor});
-                        if let Err(error) = self.budget.checkpoint(&self.cancel) {
-                            self.store.discard_response(&response, &self.context)?;
-                            return Err(error);
-                        }
-                        continue;
-                    }
-                    let guarded = ResponseGuard {
-                        store: self.store,
-                        context: &self.context,
-                        response,
-                        keep: false,
-                    };
-                    if guarded.response["status"].as_str() != Some("ok") {
-                        return Err(response_error(&guarded.response));
-                    }
-                    let snapshot = self
-                        .store
-                        .pin_scope_for_work(
-                            &guarded.response["data"]["description"]["handle"],
-                            &self.context,
-                            self.budget.limits.deadline_unix_ms,
-                        )?
-                        .0;
-                    if snapshot.event_count > self.budget.remaining().max_events {
-                        return Err(incomplete("preparation event budget exhausted"));
-                    }
-                    self.budget.progress.preparation_reserved_events += snapshot.event_count;
-                    match visit(&path, &snapshot, &mut self.budget, &self.cancel)? {
-                        ScanControl::Continue => {}
-                        ScanControl::Stop { source_complete } => {
-                            return Ok(source_complete && source_index + 1 == selected_sources)
-                        }
-                    }
-                    break;
+                if let ScanControl::Stop {
+                    source_complete,
+                    names_through,
+                } = source(self, &path)?
+                {
+                    return Ok((
+                        source_complete && source_index + 1 == selected_sources,
+                        names_through,
+                    ));
                 }
             }
-            Ok(true)
+            Ok((true, None))
         })();
         let (complete, reason) = match result {
-            Ok(true) => (true, None),
-            Ok(false) => (false, Some("result_limit".to_owned())),
+            Ok((true, _)) => (true, None),
+            Ok((false, None)) => (false, Some("result_limit".to_owned())),
+            Ok((false, Some(through))) => (
+                false,
+                Some(format!(
+                    "result_limit; tool names resolved through byte {through}"
+                )),
+            ),
             Err(error) => (
                 false,
                 Some(format!("{}: {}", error.status.as_str(), error.reason)),
@@ -472,6 +496,57 @@ impl<'a> ScanSession<'a> {
             selected_sources,
             available_sources,
             progress: self.budget.progress.clone(),
+        }
+    }
+
+    pub fn visit_snapshot<F>(
+        &mut self,
+        path: &Path,
+        visit: &mut F,
+    ) -> Result<ScanControl, SnapshotError>
+    where
+        F: FnMut(
+            &Path,
+            &TranscriptSnapshot,
+            &mut ScanBudget<'a>,
+            &Cancellation,
+        ) -> Result<ScanControl, SnapshotError>,
+    {
+        let mut request = self.bounded_request("acquire");
+        request.insert("path", json!(path.to_string_lossy().as_ref()));
+        request.insert("classifier", json!({"id":"native","version":"1"}));
+        loop {
+            let response = self.request(request)?;
+            if let Some(cursor) = response["cursor"].as_str() {
+                request = json!({"operation":"resume","cursor":cursor});
+                if let Err(error) = self.budget.checkpoint(&self.cancel) {
+                    self.store.discard_response(&response, &self.context)?;
+                    return Err(error);
+                }
+                continue;
+            }
+            let guarded = ResponseGuard {
+                store: self.store,
+                context: &self.context,
+                response,
+                keep: false,
+            };
+            if guarded.response["status"].as_str() != Some("ok") {
+                return Err(response_error(&guarded.response));
+            }
+            let snapshot = self
+                .store
+                .pin_scope_for_work(
+                    &guarded.response["data"]["description"]["handle"],
+                    &self.context,
+                    self.budget.limits.deadline_unix_ms,
+                )?
+                .0;
+            if snapshot.event_count > self.budget.remaining().max_events {
+                return Err(incomplete("preparation event budget exhausted"));
+            }
+            self.budget.progress.preparation_reserved_events += snapshot.event_count;
+            return visit(path, &snapshot, &mut self.budget, &self.cancel);
         }
     }
 }

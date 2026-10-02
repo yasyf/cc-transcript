@@ -386,78 +386,17 @@ impl<'store> GrepReducer<'store> {
             windows_staging: None,
         };
         for index in 0..snapshot.event_count {
-            budget.charge_projection(0, 1, cancel)?;
-            self.mark_skipped_patterns();
-            let event = snapshot.entry(index);
-            if !self.options.kinds.is_empty()
-                && !self
-                    .options
-                    .kinds
-                    .iter()
-                    .any(|kind| kind == event_kind(event))
-            {
-                continue;
-            }
-            if !self.options.errors
-                && self.tool_names.is_some()
-                && !self.uses_tool(event, &output.names)
-            {
-                continue;
-            }
-            if self.options.errors && !self.options.where_tools {
-                continue;
-            }
-            let _event_staging =
-                budget.reserve_staging(entry_bytes(snapshot, index).saturating_mul(4), cancel)?;
-            let _match_staging = budget.reserve_staging(
-                self.patterns.len().saturating_mul(size_of::<bool>()),
+            let Some((matched, _match_staging)) = self.matches(
+                snapshot.entry(index),
+                entry_bytes(snapshot, index),
+                &output.names,
+                &output.results,
+                budget,
                 cancel,
-            )?;
-            let mut matched = vec![false; self.patterns.len()];
-            if self.options.errors {
-                for block in event.blocks() {
-                    budget.checkpoint(cancel)?;
-                    let id = match block {
-                        ContentBlock::ToolUse(tool) => tool.id.as_str(),
-                        ContentBlock::ToolResult(result) => result.tool_use_id.as_str(),
-                        _ => continue,
-                    };
-                    if !output
-                        .results
-                        .get(id)
-                        .is_some_and(|result| result.is_error && self.tool_matches(result.tool))
-                    {
-                        continue;
-                    }
-                    let bytes = tool_haystack_bound(block, budget.remaining().max_read_bytes)?;
-                    let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
-                    budget.charge_projection(bytes, 0, cancel)?;
-                    let text = tool_haystack(block);
-                    self.haystacks_built += 1;
-                    self.match_text(&text, &mut matched, budget, cancel)?;
-                }
-            } else {
-                let bytes = haystack_bound(
-                    event,
-                    self.options.where_text,
-                    self.options.where_thinking,
-                    self.options.where_tools,
-                    budget.remaining().max_read_bytes,
-                )?;
-                let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
-                budget.charge_projection(bytes, 0, cancel)?;
-                let text = haystack(
-                    event,
-                    self.options.where_text,
-                    self.options.where_thinking,
-                    self.options.where_tools,
-                );
-                self.haystacks_built += 1;
-                self.match_text(&text, &mut matched, budget, cancel)?;
-            }
-            if !matched.iter().any(|matched| *matched) {
+            )?
+            else {
                 continue;
-            }
+            };
             reserve_next(&mut output.hits, &mut output.hits_staging, budget, cancel)?;
             reserve_next(
                 &mut output.windows,
@@ -495,6 +434,88 @@ impl<'store> GrepReducer<'store> {
         Ok(output)
     }
 
+    pub fn streams(&self) -> bool {
+        !self.options.errors && !self.options.with_result
+    }
+
+    fn matches(
+        &mut self,
+        event: &Entry,
+        charge: usize,
+        names: &HashMap<&str, &str>,
+        results: &HashMap<&str, GrepResultMetadata<'_>>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<Option<(Vec<bool>, StagingReservation<'store>)>, SnapshotError> {
+        budget.charge_projection(0, 1, cancel)?;
+        self.mark_skipped_patterns();
+        if !self.options.kinds.is_empty()
+            && !self
+                .options
+                .kinds
+                .iter()
+                .any(|kind| kind == event_kind(event))
+        {
+            return Ok(None);
+        }
+        if !self.options.errors && self.tool_names.is_some() && !self.uses_tool(event, names) {
+            return Ok(None);
+        }
+        if self.options.errors && !self.options.where_tools {
+            return Ok(None);
+        }
+        let _event_staging = budget.reserve_staging(charge.saturating_mul(4), cancel)?;
+        let match_staging = budget.reserve_staging(
+            self.patterns.len().saturating_mul(size_of::<bool>()),
+            cancel,
+        )?;
+        let mut matched = vec![false; self.patterns.len()];
+        if self.options.errors {
+            for block in event.blocks() {
+                budget.checkpoint(cancel)?;
+                let id = match block {
+                    ContentBlock::ToolUse(tool) => tool.id.as_str(),
+                    ContentBlock::ToolResult(result) => result.tool_use_id.as_str(),
+                    _ => continue,
+                };
+                if !results
+                    .get(id)
+                    .is_some_and(|result| result.is_error && self.tool_matches(result.tool))
+                {
+                    continue;
+                }
+                let bytes = tool_haystack_bound(block, budget.remaining().max_read_bytes)?;
+                let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
+                budget.charge_projection(bytes, 0, cancel)?;
+                let text = tool_haystack(block);
+                self.haystacks_built += 1;
+                self.match_text(&text, &mut matched, budget, cancel)?;
+            }
+        } else {
+            let bytes = haystack_bound(
+                event,
+                self.options.where_text,
+                self.options.where_thinking,
+                self.options.where_tools,
+                budget.remaining().max_read_bytes,
+            )?;
+            let _text_staging = budget.reserve_staging(bytes.saturating_mul(3), cancel)?;
+            budget.charge_projection(bytes, 0, cancel)?;
+            let text = haystack(
+                event,
+                self.options.where_text,
+                self.options.where_thinking,
+                self.options.where_tools,
+            );
+            self.haystacks_built += 1;
+            self.match_text(&text, &mut matched, budget, cancel)?;
+        }
+        Ok(matched
+            .iter()
+            .any(|matched| *matched)
+            .then_some((matched, match_staging)))
+    }
+
     fn match_text(
         &self,
         text: &str,
@@ -529,40 +550,141 @@ impl<'store> GrepSourceResult<'_, 'store> {
         if index >= snapshot.event_count {
             return Err(invalid("render event index is outside snapshot"));
         }
-        let mut bytes = entry_bytes(snapshot, index)
-            .saturating_mul(16)
-            .saturating_add(
-                snapshot
-                    .canonical_path
-                    .as_os_str()
-                    .len()
-                    .saturating_add(snapshot.id.len())
-                    .saturating_mul(8),
-            )
-            .saturating_add(4096);
-        for result in snapshot.entry(index).tool_results() {
-            bytes = bytes.saturating_add(
-                self.names
-                    .get(result.tool_use_id.as_str())
-                    .map_or(0, |name| name.len())
-                    .saturating_mul(8),
-            );
+        preflight_render(
+            snapshot.entry(index),
+            index,
+            entry_bytes(snapshot, index),
+            snapshot
+                .canonical_path
+                .as_os_str()
+                .len()
+                .saturating_add(snapshot.id.len()),
+            &self.names,
+            budget,
+            cancel,
+        )
+    }
+
+    pub fn emit<E>(
+        &self,
+        snapshot: &TranscriptSnapshot,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+        mut emit: E,
+    ) -> Result<(), SnapshotError>
+    where
+        E: FnMut(
+            GrepEvent<'_>,
+            &mut ScanBudget<'store>,
+            &Cancellation,
+        ) -> Result<(), SnapshotError>,
+    {
+        for (window_index, window) in self.windows.iter().enumerate() {
+            for index in window.clone() {
+                emit(
+                    GrepEvent {
+                        index,
+                        entry: snapshot.entry(index),
+                        pattern_ids: self
+                            .hits
+                            .iter()
+                            .find(|hit| hit.event_index == index)
+                            .map(|hit| hit.pattern_ids.as_slice()),
+                        names: &self.names,
+                        results: &self.results,
+                        generation: &snapshot.id,
+                        opens_source: window_index == 0 && index == window.start,
+                        opens_window: index == window.start,
+                        charge: entry_bytes(snapshot, index),
+                        source_bytes: snapshot
+                            .canonical_path
+                            .as_os_str()
+                            .len()
+                            .saturating_add(snapshot.id.len()),
+                    },
+                    budget,
+                    cancel,
+                )?;
+            }
         }
-        if bytes > budget.remaining().max_output_bytes {
-            return Err(SnapshotError::new(
-                Status::OutputLimit,
-                "event render exceeds remaining output budget",
-            ));
-        }
-        let staging = budget.reserve_staging(bytes, cancel)?;
-        let projected = crate::snapshot_codec::encoded_size(
-            &crate::snapshot_codec::EventWire::new(index, snapshot.entry(index)),
-            budget.remaining().max_read_bytes,
-        )?;
-        budget.charge_projection(projected, 1, cancel)?;
-        Ok(staging)
+        Ok(())
     }
 }
+
+pub struct GrepEvent<'e> {
+    pub index: usize,
+    pub entry: &'e Entry,
+    pub pattern_ids: Option<&'e [usize]>,
+    pub names: &'e HashMap<&'e str, &'e str>,
+    pub results: &'e HashMap<&'e str, GrepResultMetadata<'e>>,
+    pub generation: &'e str,
+    pub opens_source: bool,
+    pub opens_window: bool,
+    charge: usize,
+    source_bytes: usize,
+}
+
+impl GrepEvent<'_> {
+    pub fn preflight_render<'store>(
+        &self,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<StagingReservation<'store>, SnapshotError> {
+        budget.checkpoint(cancel)?;
+        preflight_render(
+            self.entry,
+            self.index,
+            self.charge,
+            self.source_bytes,
+            self.names,
+            budget,
+            cancel,
+        )
+    }
+}
+
+fn preflight_render<'store>(
+    entry: &Entry,
+    index: usize,
+    charge: usize,
+    source_bytes: usize,
+    names: &HashMap<&str, &str>,
+    budget: &mut ScanBudget<'store>,
+    cancel: &Cancellation,
+) -> Result<StagingReservation<'store>, SnapshotError> {
+    let mut bytes = charge
+        .saturating_mul(16)
+        .saturating_add(source_bytes.saturating_mul(8))
+        .saturating_add(4096);
+    for result in entry.tool_results() {
+        bytes = bytes.saturating_add(
+            names
+                .get(result.tool_use_id.as_str())
+                .map_or(0, |name| name.len())
+                .saturating_mul(8),
+        );
+    }
+    if bytes > budget.remaining().max_output_bytes {
+        return Err(SnapshotError::new(
+            Status::OutputLimit,
+            "event render exceeds remaining output budget",
+        ));
+    }
+    let staging = budget.reserve_staging(bytes, cancel)?;
+    let projected = crate::snapshot_codec::encoded_size(
+        &crate::snapshot_codec::EventWire::new(index, entry),
+        budget.remaining().max_read_bytes,
+    )?;
+    budget.charge_projection(projected, 1, cancel)?;
+    Ok(staging)
+}
+
+#[path = "scan_grep_stream.rs"]
+mod stream;
+
+#[cfg(test)]
+#[path = "scan_grep_stream_tests.rs"]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {

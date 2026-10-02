@@ -62,6 +62,7 @@ fn quota_stops_before_opening_later_sources() {
         assert_eq!(snapshot.event_count, 1);
         Ok(ScanControl::Stop {
             source_complete: true,
+            names_through: None,
         })
     });
     assert_eq!(visits, 1);
@@ -485,4 +486,52 @@ fn staging_growth_near_shared_cap_admits_available_slack_once() {
     assert!(second.progress.staging_peak_reserved_bytes >= 7 * 1024 * 1024);
     assert!(second.progress.staging_peak_reserved_bytes < 8 * 1024 * 1024);
     assert!(store.retained_accounted_bytes() <= 16 * 1024 * 1024);
+}
+
+#[test]
+fn whole_scan_caps_ignore_per_step_knobs() {
+    let caps = |config: Value| {
+        let limits = NativeStore::new(&config).unwrap().scan_limits();
+        (
+            limits.max_read_bytes,
+            limits.max_source_read_bytes,
+            limits.max_events,
+            limits.max_items,
+            limits.max_output_bytes,
+            limits.max_discovery_entries,
+            limits.max_sources,
+        )
+    };
+    let defaults = (
+        8 * 1024 * 1024,
+        8 * 1024 * 1024,
+        4096,
+        4096,
+        16 * 1024 * 1024,
+        4096,
+        256,
+    );
+    assert_eq!(caps(json!({})), defaults);
+    assert_eq!(
+        caps(json!({"max_read_bytes_per_step":16,"max_events_per_step":1,"max_items_per_page":3})),
+        defaults
+    );
+    assert_eq!(
+        caps(
+            json!({"max_scan_read_bytes":1024,"max_scan_events":7,"max_scan_discovery_entries":9,"max_scan_sources":2})
+        ),
+        (1024, 1024, 7, 7, 16 * 1024 * 1024, 9, 2)
+    );
+    assert!(NativeStore::new(&json!({"max_scan_events":0})).is_err());
+}
+
+#[test]
+fn prefix_validation_has_its_own_finite_cap() {
+    let cap = |config: Value| NativeStore::new(&config).unwrap().scan_validate_bytes();
+    assert_eq!(cap(json!({})), 1024 * 1024 * 1024);
+    assert_eq!(
+        cap(json!({"max_scan_validate_bytes":4096,"max_scan_read_bytes":1024})),
+        4096
+    );
+    assert!(NativeStore::new(&json!({"max_scan_validate_bytes":0})).is_err());
 }
