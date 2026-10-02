@@ -358,21 +358,40 @@ A later matching run checks a fence of up to 64 bytes and the saved hit, context
 and pending lines. At the same size, reuse also requires matching mtime and ctime.
 After validation, it replays saved matches and resumes from the saved offset.
 
-On growth, it re-reads and hashes the whole committed prefix against the saved
-segment digests before reuse. These reads charge `validated_bytes`, separately
-from `source_bytes`, under the command's `max_scan_validate_bytes` store config
-cap of `1 GiB` by default; zero is rejected. A mismatch discards the record,
-increments `cache_invalidations`, and rescans from byte 0. If the prefix exceeds
-the remaining validation cap, the run scans from byte 0 under the normal source
-budget, adds no validation bytes or invalidation, and replaces the record on save.
-Budget-capped runs save partial progress but still report incomplete coverage.
+The prefix proof covers `[0, committed)` with `SipHash` digests of fixed `4 MiB`
+segments and at most one trailing partial segment. Its length is always
+`ceil(committed / 4 MiB)`, regardless of the number of append runs: about 40
+segments for a 166 MB transcript. Even a `64 GiB` transcript's segment list uses
+less than a quarter of the `8 MiB` record limit.
 
-Each run reads only below the file size pinned at open. The final stat check
-rejects shrinkage, replacement, and same-size changes but accepts growth. An
-in-place rewrite plus growth can pass that check; the result reports the bytes
-actually read below the pinned size. The checkpoint keeps the pinned size
-and digests of those bytes, so the next run checks the grown prefix and rescans
-on a mismatch.
+On growth, reuse requires re-reading the committed prefix segment by segment.
+Validation stops at the first mismatch, discards the record, increments
+`cache_invalidations`, and rescans from byte 0. A successful check keeps the
+trailing partial segment's hash open, so extending the proof needs no further
+reads. Validation reads charge `validated_bytes`, separately from `source_bytes`,
+under the command's `max_scan_validate_bytes` store config cap of `1 GiB` by
+default; zero is rejected. If the prefix exceeds the remaining cap, the run scans
+from byte 0 under the normal source budget, adds no validation bytes or invalidation,
+and replaces the record on save. Budget-capped scans can save partial progress
+while reporting incomplete coverage.
+
+A run that extends a partial checkpoint on an unchanged file first re-reads the
+trailing partial segment, at most `4 MiB`, to reopen its hash. This read charges
+`validated_bytes`, including when resuming a budget-capped scan.
+If that read exceeds the remaining cap, the run returns its results but saves no
+checkpoint. A digest mismatch fails the run as `changed` and deletes the record.
+Other unchanged runs add no validation reads.
+
+Each streamed scan hashes the bytes it commits below the file size pinned at
+open. The final stat check rejects shrinkage, replacement, and same-size changes.
+If it detects growth, the same run re-reads the committed prefix and any
+unterminated final line it parsed, comparing digests before reporting completion.
+A mismatch returns `changed`; a prefix plus final line larger than the remaining
+validation cap returns `incomplete`. Neither reports complete coverage. This
+additional read charges `validated_bytes`; no scan budget is extended.
+
+When `validated_bytes` is nonzero, the human summary appends
+` · re-read {validated_bytes} bytes for validation` to `N files, M matches`.
 
 Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
 If `--max-matches` stops before EOF after output used names for `--tool` filtering

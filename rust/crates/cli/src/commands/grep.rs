@@ -389,9 +389,17 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             String::new()
         };
+        let validated = if session.budget.progress.validated_bytes > 0 {
+            format!(
+                " · re-read {} bytes for validation",
+                session.budget.progress.validated_bytes
+            )
+        } else {
+            String::new()
+        };
         if let Err(error) = render.emitter.emit(
             format!(
-                "{} files, {} matches{note}",
+                "{} files, {} matches{note}{validated}",
                 render.files,
                 counts.iter().sum::<usize>()
             ),

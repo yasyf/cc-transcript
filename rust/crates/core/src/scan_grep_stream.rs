@@ -9,7 +9,8 @@ use super::{incomplete, GrepEvent, GrepReducer};
 use crate::gateway::{sniff_provider, Provider};
 use crate::scan::{ScanBudget, ScanControl, StagingReservation};
 use crate::scan_checkpoint::{
-    FileLayer, GrepCheckpoints, QueryLayer, Queued, ReducerState, Replayed, SourceRecord, Span,
+    FileLayer, GrepCheckpoints, Prefix, QueryLayer, Queued, ReducerState, Replayed, SourceRecord,
+    Span, PREFIX_SEGMENT,
 };
 use crate::scan_stream::{LineSpan, SourceStream};
 use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
@@ -63,9 +64,10 @@ struct GrepStream<'store> {
     names_final: bool,
     capture: Option<(FileLayer, QueryLayer)>,
     poisoned: bool,
-    prefix: Vec<(u64, u64)>,
-    hasher: DefaultHasher,
-    hash_from: u64,
+    prefix: Prefix,
+    proof: Option<Prefix>,
+    frozen: bool,
+    tail: Option<(LineSpan, u64)>,
 }
 
 fn unresolved(names: &HashMap<String, ToolName>, entry: &Entry) -> bool {
@@ -237,9 +239,10 @@ impl<'store> GrepReducer<'store> {
             names_final: false,
             capture: None,
             poisoned: false,
-            prefix: Vec::new(),
-            hasher: DefaultHasher::new(),
-            hash_from: 0,
+            prefix: Prefix::new(checkpoints.map_or(PREFIX_SEGMENT, GrepCheckpoints::segment)),
+            proof: None,
+            frozen: false,
+            tail: None,
         };
         let mut existing = None;
         if let (Some(store), Some((file_key, query_key))) = (checkpoints, &keys) {
@@ -316,7 +319,9 @@ impl<'store> GrepReducer<'store> {
         let Some(eof) = result? else {
             return Ok(None);
         };
-        source.verify()?;
+        if source.verify()? {
+            stream.reverify(&mut source, budget, cancel)?;
+        }
         let names_used = stream.names.values().any(|slot| slot.referenced);
         Ok(Some(match stream.stopped {
             Some(hit) => ScanControl::Stop {
@@ -358,6 +363,9 @@ impl<'store> GrepReducer<'store> {
                 stream.capture = stream.capture(self);
             }
             let bytes = source.bytes(&line);
+            if !line.terminated {
+                stream.tail = Some((line, digest(bytes)));
+            }
             if !stream.sniffed && !bytes.iter().all(u8::is_ascii_whitespace) {
                 stream.sniffed = true;
                 if sniff_provider(bytes) == Provider::Codex {
@@ -368,7 +376,7 @@ impl<'store> GrepReducer<'store> {
                 stream.push(line, digest(bytes), entry, budget, cancel)?;
             }
             if line.terminated {
-                stream.commit(line, source.bytes(&line));
+                stream.commit(line, source, budget, cancel)?;
             }
             stream.decide(self, false, budget, cancel)?;
             stream.emit(self, false, budget, cancel, emit)?;
@@ -416,8 +424,6 @@ impl<'store> GrepReducer<'store> {
             cancel,
         )?;
         stream.adopt(file, budget, cancel)?;
-        stream.prefix.clone_from(&file.prefix);
-        stream.hash_from = file.committed;
         for (id, used) in &layer.referenced {
             match stream.names.get_mut(id) {
                 Some(slot) if slot.name == *used => slot.referenced = true,
@@ -521,11 +527,15 @@ impl<'store> GrepStream<'store> {
             .collect();
         self.names_base = file.committed;
         self.names_final = file.committed == self.size;
+        self.prefix = self
+            .proof
+            .take()
+            .unwrap_or_else(|| Prefix::adopt(self.prefix.span(), &file.prefix));
         Ok(())
     }
 
     fn validates(
-        &self,
+        &mut self,
         record: &SourceRecord,
         source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
@@ -559,14 +569,47 @@ impl<'store> GrepStream<'store> {
         if file.committed > budget.validation_remaining() as u64 {
             return Ok(Validity::Unverified);
         }
-        Ok(if source.validate_prefix(&file.prefix, budget, cancel)? {
+        self.proof = source.validate_prefix(&file.prefix, self.prefix.span(), budget, cancel)?;
+        Ok(if self.proof.is_some() {
             Validity::Valid
         } else {
             Validity::Invalid
         })
     }
 
+    fn reverify(
+        &self,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let tail = self.tail.map_or(0, |(line, _)| line.len);
+        if self.frozen || self.prefix.end() as usize + tail > budget.validation_remaining() {
+            return Err(incomplete(
+                "source grew during the scan and its prefix exceeds the validation cap",
+            ));
+        }
+        let intact = source
+            .validate_prefix(&self.prefix.segments(), self.prefix.span(), budget, cancel)?
+            .is_some()
+            && match self.tail {
+                Some((line, sum)) => digest(&source.revalidate_span(&line, budget, cancel)?) == sum,
+                None => true,
+            };
+        if intact {
+            Ok(())
+        } else {
+            Err(SnapshotError::new(
+                Status::Changed,
+                "source rewritten while it grew during the scan",
+            ))
+        }
+    }
+
     fn capture(&self, grep: &GrepReducer<'store>) -> Option<(FileLayer, QueryLayer)> {
+        if self.frozen {
+            return None;
+        }
         Some((
             FileLayer {
                 committed: self.committed,
@@ -578,15 +621,7 @@ impl<'store> GrepStream<'store> {
                     .iter()
                     .map(|(id, slot)| (id.clone(), slot.name.clone()))
                     .collect(),
-                prefix: self
-                    .prefix
-                    .iter()
-                    .copied()
-                    .chain(
-                        (self.committed > self.hash_from)
-                            .then(|| (self.committed, self.hasher.finish())),
-                    )
-                    .collect(),
+                prefix: self.prefix.segments(),
             },
             QueryLayer {
                 key: self.query_key.clone()?,
@@ -618,17 +653,40 @@ impl<'store> GrepStream<'store> {
         ))
     }
 
-    fn commit(&mut self, line: LineSpan, bytes: &[u8]) {
+    fn commit(
+        &mut self,
+        line: LineSpan,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let extends = line.offset >= self.prefix.end() && !self.frozen;
+        if let Some(open) = self.prefix.unread().filter(|_| extends) {
+            if open.len > budget.validation_remaining() {
+                self.frozen = true;
+            } else if !self
+                .prefix
+                .seed(&source.revalidate_span(&open, budget, cancel)?)
+            {
+                self.poisoned = true;
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "source changed under its checkpoint",
+                ));
+            }
+        }
+        let bytes = source.bytes(&line);
         self.committed = line.end();
-        if line.offset >= self.hash_from {
-            self.hasher.write(bytes);
-            self.hasher.write(b"\n");
+        if extends && !self.frozen {
+            self.prefix.write(bytes);
+            self.prefix.write(b"\n");
         }
         let tail = &bytes[bytes.len().saturating_sub(FENCE_BYTES - 1)..];
         self.fence.extend_from_slice(tail);
         self.fence.push(b'\n');
         let excess = self.fence.len().saturating_sub(FENCE_BYTES);
         self.fence.drain(..excess);
+        Ok(())
     }
 
     fn push(

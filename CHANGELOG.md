@@ -23,9 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded and the source is rescanned from byte 0.
 - A grep checkpoint could miss an earlier nonmatching line rewritten into a
   match before an append, reporting zero matches with complete coverage. Grown
-  Claude transcripts now require a digest check of the whole committed prefix
-  before reuse; a mismatch invalidates the record and rescans from byte 0.
-  `validated_bytes` reports these reads separately from `source_bytes`.
+  Claude transcripts now require a digest check of the committed prefix before
+  reuse. Fixed `4 MiB` `SipHash` segments plus at most one partial segment keep the
+  proof at `ceil(committed / 4 MiB)` entries across append runs. Validation stops
+  at the first mismatching segment, invalidates the record, and rescans from
+  byte 0; success leaves the partial hash open for extension without more reads.
+  Extending a partial checkpoint on an unchanged file re-reads at most `4 MiB`
+  to reopen that hash; a mismatch returns `changed` and deletes the record.
+  Growth during a scan now triggers another prefix check, including any parsed
+  unterminated final line, in that same run. A mismatch returns `changed`, and
+  insufficient validation budget returns `incomplete`; neither reports complete
+  coverage. These reads charge `validated_bytes` separately from `source_bytes`.
+  When nonzero, the human summary adds
+  ` · re-read {validated_bytes} bytes for validation`.
 - Streamed `cc-transcript grep` labels an early `--max-matches` stop as a partial
   view when an emitted `--tool` decision or compact tool-result name (`← Name`)
   depends on tool names resolved only through a file prefix. The warning reports
@@ -68,9 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so tuning step size no longer changes the whole-scan caps. Defaults are
   unchanged, and zero values are rejected.
 - The store config and JSON schema add `max_scan_validate_bytes` to cap grep
-  checkpoint validation at `1 GiB` per command by default; zero is rejected. A
-  prefix larger than the remaining cap triggers a fresh scan under the normal
-  source budget.
+  prefix validation at `1 GiB` per command by default; zero is rejected. If a
+  grown checkpoint's prefix exceeds the remaining cap, the run starts fresh under
+  the normal source budget. Reopening a partial segment on an unchanged file
+  requires room in that cap; otherwise, the run returns results but saves no
+  checkpoint. An in-scan growth check that exceeds the remaining cap returns
+  `incomplete`. Existing scan budgets
+  are unchanged.
 - `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;
   absent, whole-file behavior is unchanged. For a Claude file of size `S` and window
   `W`, `S <= W` gives the same snapshot as a plain `acquire`; otherwise `q = W/2`,

@@ -1,9 +1,9 @@
 use std::fs::File;
-use std::hash::{DefaultHasher, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::scan::{ScanBudget, StagingReservation};
+use crate::scan_checkpoint::Prefix;
 use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
 
 const READ_BLOCK: usize = 64 * 1024;
@@ -164,11 +164,30 @@ impl<'store> SourceStream<'store> {
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, SnapshotError> {
+        budget.charge_source(line.len)?;
+        self.read_at(line, budget, cancel)
+    }
+
+    pub fn revalidate_span(
+        &mut self,
+        line: &LineSpan,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>, SnapshotError> {
+        budget.charge_validation(line.len);
+        self.read_at(line, budget, cancel)
+    }
+
+    fn read_at(
+        &mut self,
+        line: &LineSpan,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<Vec<u8>, SnapshotError> {
         budget.checkpoint(cancel)?;
         if line.end() > self.stamp.size {
             return Err(changed("source shrank below a recorded line"));
         }
-        budget.charge_source(line.len)?;
         let _staging = budget.reserve_staging(line.len, cancel)?;
         let mut bytes = vec![0; line.len];
         self.file
@@ -182,40 +201,34 @@ impl<'store> SourceStream<'store> {
     pub fn validate_prefix(
         &mut self,
         segments: &[(u64, u64)],
+        span: u64,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
-    ) -> Result<bool, SnapshotError> {
+    ) -> Result<Option<Prefix>, SnapshotError> {
         let end = segments.last().map_or(0, |(end, _)| *end);
         let block = VALIDATE_BLOCK.min(end as usize);
         let _staging = budget.reserve_staging(block, cancel)?;
         let mut buffer = vec![0; block];
         self.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        let mut at = 0;
-        let mut intact = true;
-        for (stop, expected) in segments {
-            let mut hasher = DefaultHasher::new();
-            while at < *stop {
-                budget.checkpoint(cancel)?;
-                let count = buffer.len().min((stop - at) as usize);
-                self.file
-                    .read_exact(&mut buffer[..count])
-                    .map_err(|_| changed("source changed while validating"))?;
-                budget.charge_validation(count);
-                hasher.write(&buffer[..count]);
-                at += count as u64;
-            }
-            intact = hasher.finish() == *expected;
-            if !intact {
-                break;
-            }
+        let mut prefix = Prefix::new(span);
+        while prefix.end() < end && prefix.agrees(segments) {
+            budget.checkpoint(cancel)?;
+            let count = block
+                .min((end - prefix.end()) as usize)
+                .min(prefix.room() as usize);
+            self.file
+                .read_exact(&mut buffer[..count])
+                .map_err(|_| changed("source changed while validating"))?;
+            budget.charge_validation(count);
+            prefix.write(&buffer[..count]);
         }
         self.file
             .seek(SeekFrom::Start(self.offset))
             .map_err(io_error)?;
-        Ok(intact)
+        Ok((prefix.segments() == segments).then_some(prefix))
     }
 
-    pub fn verify(&self) -> Result<(), SnapshotError> {
+    pub fn verify(&self) -> Result<bool, SnapshotError> {
         let open = SourceStamp::of(&self.file.metadata().map_err(io_error)?);
         let linked = SourceStamp::of(&std::fs::metadata(&self.path).map_err(io_error)?);
         if [open, linked].iter().any(|current| {
@@ -224,6 +237,6 @@ impl<'store> SourceStream<'store> {
         }) {
             return Err(changed("source changed during scan"));
         }
-        Ok(())
+        Ok(open != self.stamp || linked != self.stamp)
     }
 }

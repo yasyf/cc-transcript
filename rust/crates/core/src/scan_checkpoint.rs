@@ -1,4 +1,5 @@
 use std::fs::{DirBuilder, OpenOptions};
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
@@ -10,7 +11,8 @@ use sonic_rs::Value;
 
 use crate::scan_stream::LineSpan;
 
-const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+pub const PREFIX_SEGMENT: u64 = 4 * 1024 * 1024;
 const MAX_RECORDS: usize = 256;
 const MAX_LISTED: usize = 1024;
 const MAX_QUERIES: usize = 16;
@@ -18,6 +20,16 @@ const MAX_QUERIES: usize = 16;
 pub struct GrepCheckpoints {
     dir: PathBuf,
     producer: String,
+    segment: u64,
+}
+
+pub struct Prefix {
+    span: u64,
+    whole: Vec<(u64, u64)>,
+    open: DefaultHasher,
+    start: u64,
+    end: u64,
+    unread: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,14 +144,113 @@ impl SourceRecord {
     }
 }
 
+impl Prefix {
+    pub fn new(span: u64) -> Self {
+        Self {
+            span,
+            whole: Vec::new(),
+            open: DefaultHasher::new(),
+            start: 0,
+            end: 0,
+            unread: None,
+        }
+    }
+
+    pub fn adopt(span: u64, segments: &[(u64, u64)]) -> Self {
+        let open = segments
+            .split_last()
+            .map(|(&(end, sum), rest)| (end, sum, rest.last().map_or(0, |(end, _)| *end)))
+            .filter(|(end, _, start)| end - start < span);
+        let whole = segments[..segments.len() - usize::from(open.is_some())].to_vec();
+        let start = whole.last().map_or(0, |(end, _)| *end);
+        Self {
+            span,
+            whole,
+            open: DefaultHasher::new(),
+            start,
+            end: open.map_or(start, |(end, _, _)| end),
+            unread: open.map(|(_, sum, _)| sum),
+        }
+    }
+
+    pub fn span(&self) -> u64 {
+        self.span
+    }
+
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+
+    pub fn room(&self) -> u64 {
+        self.start + self.span - self.end
+    }
+
+    pub fn unread(&self) -> Option<LineSpan> {
+        self.unread.map(|_| LineSpan {
+            offset: self.start,
+            len: (self.end - self.start) as usize,
+            terminated: false,
+        })
+    }
+
+    pub fn seed(&mut self, bytes: &[u8]) -> bool {
+        self.open.write(bytes);
+        self.unread.take() == Some(self.open.finish())
+    }
+
+    pub fn write(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let (head, rest) = bytes.split_at((self.room() as usize).min(bytes.len()));
+            self.open.write(head);
+            self.end += head.len() as u64;
+            if self.room() == 0 {
+                self.whole.push((self.end, self.open.finish()));
+                self.open = DefaultHasher::new();
+                self.start = self.end;
+            }
+            bytes = rest;
+        }
+    }
+
+    pub fn agrees(&self, segments: &[(u64, u64)]) -> bool {
+        self.whole
+            .iter()
+            .zip(segments)
+            .all(|(ours, theirs)| ours == theirs)
+    }
+
+    pub fn segments(&self) -> Vec<(u64, u64)> {
+        self.whole
+            .iter()
+            .copied()
+            .chain(
+                (self.end > self.start)
+                    .then(|| (self.end, self.unread.unwrap_or_else(|| self.open.finish()))),
+            )
+            .collect()
+    }
+}
+
 impl GrepCheckpoints {
     pub fn new(dir: PathBuf, producer: String) -> Self {
-        Self { dir, producer }
+        Self {
+            dir,
+            producer,
+            segment: PREFIX_SEGMENT,
+        }
+    }
+
+    pub fn segmented(self, segment: u64) -> Self {
+        Self { segment, ..self }
+    }
+
+    pub fn segment(&self) -> u64 {
+        self.segment
     }
 
     pub fn key(&self, binding: Value) -> Result<String, String> {
         let binding = sonic_rs::json!({
-            "version": "grep-checkpoint/3",
+            "version": "grep-checkpoint/4",
             "parser": crate::snapshot::PARSER_VERSION,
             "producer": self.producer,
             "binding": binding,
