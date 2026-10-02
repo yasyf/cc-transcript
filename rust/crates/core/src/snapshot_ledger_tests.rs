@@ -2062,7 +2062,56 @@ fn issued_lease_pledges_its_delivery_and_converts_it_without_admission() {
 }
 
 #[test]
-fn delivery_tracking_admits_exactly_its_record_and_releases_a_refused_cursor() {
+fn parked_cursor_pledges_its_delivery_and_converts_it_without_admission() {
+    let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = input_page_fixture(&scenario, background, 0);
+        let (capacity, delivered) = {
+            let state = fixture.store.lock_state();
+            (
+                state.prepared_queries.capacity_bytes(),
+                state.deliveries.charged() + state.deliveries_expiry.index_bytes(),
+            )
+        };
+        traced(&fixture.store);
+        let response = submit(&fixture);
+        assert!(parked(&response), "{response:?}");
+        let admitted: Vec<usize> = traced(&fixture.store)
+            .into_iter()
+            .filter_map(|trace| match trace {
+                Trace::Admitted(bytes) => Some(bytes),
+                Trace::Allocated(_) => None,
+            })
+            .collect();
+        fixture.store.assert_conserved();
+        let token = response["cursor"].as_str().unwrap().to_owned();
+        let pledge = Delivery::cursor_pledge(fixture.owner["claimant"].as_str().unwrap(), &token);
+        let state = fixture.store.lock_state();
+        assert_eq!(
+            state.prepared_queries.pledged(&token),
+            0,
+            "the delivered cursor kept its pledge"
+        );
+        assert_eq!(
+            state.deliveries.charged() + state.deliveries_expiry.index_bytes() - delivered,
+            pledge,
+            "the delivery record differs from its pledge"
+        );
+        assert_eq!(
+            admitted.last().copied(),
+            Some(
+                charged_bytes(&token, &state.prepared_queries[&token])
+                    + state.prepared_queries.capacity_bytes()
+                    - capacity
+                    + pledge
+            ),
+            "the park admission did not cover the cursor, its table growth, and its delivery pledge: {admitted:?}"
+        );
+    }
+}
+
+#[test]
+fn redelivered_cursor_admits_exactly_its_record_and_releases_a_refused_cursor() {
     let source = LedgerSource::new(&lines(0..8));
     for background in [false, true] {
         let build = || parked_load(&source.path, background, 2);
@@ -3190,7 +3239,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
             key.clone(),
             charged_bytes(key, membership),
             source_ref_bytes(&membership.members) + sidechain_dir_bytes(&membership.sidechain_dirs),
-            first.charge(),
+            charged_bytes(&first_id, &state.prepared_graphs[&first_id]),
         )
     };
     assert!(shared > 0);
@@ -3211,10 +3260,10 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         .unwrap()
         .to_owned();
     store.assert_conserved();
-    let second_charge = store.lock_state().prepared_graphs[&second_id]
-        .lock()
-        .unwrap()
-        .charge();
+    let second_charge = {
+        let state = store.lock_state();
+        charged_bytes(&second_id, &state.prepared_graphs[&second_id])
+    };
     let two_graphs = settled_charges(store);
     eprintln!(
         "shared warm buffers: shared={shared} graph={second_charge} one_graph={one_graph} two_graphs={two_graphs}"

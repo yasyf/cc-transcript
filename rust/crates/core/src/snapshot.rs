@@ -1134,7 +1134,7 @@ impl Lease {
         Ok(Self::key_charge(token)
             + claimant.len()
             + str_field(context, "registry_generation")?.len()
-            + Delivery::pledge(claimant, token))
+            + Delivery::lease_pledge(claimant, token))
     }
 }
 
@@ -1342,14 +1342,17 @@ impl Delivery {
         charged_bytes(key, delivery) + size_of::<(u64, Arc<str>)>()
     }
 
-    fn pledge(claimant: &str, lease: &str) -> usize {
+    fn cursor_pledge(claimant: &str, cursor: &str) -> usize {
         size_of::<Self>()
             + claimant.len()
-            + size_of::<String>()
-            + lease.len()
+            + cursor.len()
             + 2 * size_of::<usize>()
             + 2 * <Sha256 as Digest>::output_size()
             + size_of::<(u64, Arc<str>)>()
+    }
+
+    fn lease_pledge(claimant: &str, lease: &str) -> usize {
+        Self::cursor_pledge(claimant, lease) + size_of::<String>()
     }
 }
 
@@ -2135,6 +2138,18 @@ impl StoreState {
         }
     }
 
+    fn consume_delivery_pledge(&mut self, cursor: &str) -> usize {
+        self.labels.consume_pledge(cursor)
+            + self.graphs.consume_pledge(cursor)
+            + self.prepared_builds.consume_pledge(cursor)
+            + self.prepared_queries.consume_pledge(cursor)
+            + self.projections.consume_pledge(cursor)
+            + self.discoveries.consume_pledge(cursor)
+            + self.resolutions.consume_pledge(cursor)
+            + self.locates.consume_pledge(cursor)
+            + self.waiters.consume_pledge(cursor)
+    }
+
     fn insert_warm_membership(&mut self, key: String, membership: WarmMembership) {
         self.warm_memberships.reserve_for(&key);
         self.ledger.shared.reserve(membership.anchors());
@@ -2877,6 +2892,8 @@ impl NativeStore {
             + token.capacity()
             + handle_charge.owned_capacity_bytes
             + handle_charge.opaque_dom_accounted_bytes;
+        let pledge = Delivery::cursor_pledge(str_field(context, "claimant")?, &token);
+        self.extend_projection_reservation(reservation, context, pledge)?;
         let mut state = self.lock_state();
         let lease = self.lease(&state, &slot.source_handle, context)?;
         slot.expires = slot.expires.min(lease.expires);
@@ -2894,7 +2911,8 @@ impl NativeStore {
         }
         let retained = charged_bytes(&token, &slot)
             + state.labels.growth_for(&token)
-            + state.ledger.shared.growth(slot.anchors());
+            + state.ledger.shared.growth(slot.anchors())
+            + pledge;
         if retained > reservation.bytes {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -2903,7 +2921,8 @@ impl NativeStore {
         }
         state.transient_bytes -= retained;
         reservation.bytes -= retained;
-        state.insert_label(token, slot);
+        state.insert_label(token.clone(), slot);
+        state.labels.pledge(&token, pledge);
         Ok(())
     }
 
@@ -4106,7 +4125,7 @@ impl NativeStore {
             expires,
             absolute_deadline,
             exposed: false,
-            delivery: Delivery::pledge(claimant, &token),
+            delivery: Delivery::lease_pledge(claimant, &token),
             registry_generation: str_field(context, "registry_generation")?.to_owned(),
             registry,
         };
@@ -4547,10 +4566,14 @@ impl NativeStore {
             state.remove_delivery(&key);
             return Ok(());
         }
-        let pledged: usize = leases
+        let lease_pledges: usize = leases
             .iter()
             .map(|token| state.leases[token].delivery)
             .sum();
+        let cursor_pledge = cursor
+            .as_deref()
+            .map_or(0, |cursor| state.consume_delivery_pledge(cursor));
+        let pledged = lease_pledges + cursor_pledge;
         let key: Arc<str> = Arc::from(key);
         let delivery = Delivery {
             claimant: claimant.to_owned(),
@@ -5544,7 +5567,9 @@ impl NativeStore {
                 windowed: window.is_some(),
                 busy: false,
             };
-            let additional = charged_bytes(&cursor, &waiter) + state.waiters.growth_for(&cursor);
+            let pledge = Delivery::cursor_pledge(&waiter.claimant, &cursor);
+            let additional =
+                charged_bytes(&cursor, &waiter) + state.waiters.growth_for(&cursor) + pledge;
             if let Err(error) = self.admit_memory(&mut state, context, additional) {
                 if created {
                     state.remove_load(&stamp.identity);
@@ -5552,6 +5577,7 @@ impl NativeStore {
                 return Err(error);
             }
             state.insert_waiter(cursor.clone(), waiter.clone());
+            state.waiters.pledge(&cursor, pledge);
             waiter
         };
         self.advance(&cursor, waiter, None, cancel, usage)
@@ -6603,7 +6629,9 @@ impl NativeStore {
             ));
         }
         let token = token.to_owned();
-        let additional = state.admission(&token, &graph, []) + state.graphs.growth_for(&token);
+        let pledge = Delivery::cursor_pledge(&graph.claimant, &token);
+        let additional =
+            state.admission(&token, &graph, []) + state.graphs.growth_for(&token) + pledge;
         if let Err(error) = self.admit_memory(&mut state, &graph.context, additional) {
             Self::rollback_graph_page(&mut state, &mut graph);
             return Err(error);
@@ -6611,6 +6639,7 @@ impl NativeStore {
         graph.published_members.clear();
         state.graphs.reserve_for(&token);
         state.graphs.insert(token.clone(), graph);
+        state.graphs.pledge(&token, pledge);
         Ok((data, Some(token), Some("graph work incomplete".to_owned())))
     }
 
@@ -7202,9 +7231,11 @@ impl NativeStore {
                     ));
                 }
                 let token = self.token("projection");
+                let pledge = Delivery::cursor_pledge(str_field(context, "claimant")?, &token);
                 let additional = ProjectionCursor::key_charge(&token)
                     + value_bytes(request)
-                    + state.projections.growth_for(&token);
+                    + state.projections.growth_for(&token)
+                    + pledge;
                 self.admit_memory(&mut state, context, additional)?;
                 state.projections.reserve_for(&token);
                 state.projections.insert(
@@ -7219,6 +7250,7 @@ impl NativeStore {
                         expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
                     },
                 );
+                state.projections.pledge(&token, pledge);
                 Some(token)
             }
         } else {
@@ -7611,11 +7643,13 @@ impl NativeStore {
         } else {
             scan.expires = (now_ms() + self.config.ttl).min(scan.limits.deadline_unix_ms);
             let token = token.to_owned();
+            let pledge = Delivery::cursor_pledge(&scan.claimant, &token);
             let additional =
-                state.admission(&token, &scan, []) + state.discoveries.growth_for(&token);
+                state.admission(&token, &scan, []) + state.discoveries.growth_for(&token) + pledge;
             self.admit_memory(&mut state, &scan.context, additional)?;
             state.discoveries.reserve_for(&token);
             state.discoveries.insert(token.clone(), scan);
+            state.discoveries.pledge(&token, pledge);
             Ok((
                 json!({"kind":"discovered","entries":output,"checkpoint":null}),
                 Some(token),
@@ -7929,11 +7963,13 @@ impl NativeStore {
                 "location cursor admission exhausted",
             ));
         }
-        let additional = cursor.accounted_bytes() + state.locates.growth_for(token);
+        let pledge = Delivery::cursor_pledge(&cursor.claimant, token);
+        let additional = cursor.accounted_bytes() + state.locates.growth_for(token) + pledge;
         self.admit_memory(&mut state, &cursor.context, additional)?;
         cursor.expires = (now_ms() + self.config.ttl).min(cursor.limits.deadline_unix_ms);
         state.locates.reserve_for(token);
         state.locates.insert(token.to_owned(), cursor);
+        state.locates.pledge(token, pledge);
         Ok((
             data,
             Some(token.to_owned()),
@@ -8185,11 +8221,13 @@ impl NativeStore {
         }
         cursor.expires = (now_ms() + self.config.ttl).min(cursor.remaining.deadline_unix_ms);
         let token = token.to_owned();
+        let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         let additional =
-            state.admission(&token, &cursor, []) + state.resolutions.growth_for(&token);
+            state.admission(&token, &cursor, []) + state.resolutions.growth_for(&token) + pledge;
         self.admit_memory(&mut state, &cursor.context, additional)?;
         state.resolutions.reserve_for(&token);
         state.resolutions.insert(token.clone(), cursor);
+        state.resolutions.pledge(&token, pledge);
         Ok((
             data,
             Some(token),

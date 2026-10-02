@@ -935,10 +935,13 @@ impl NativeStore {
         }
         build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
         let token = token.to_owned();
+        let pledge = Delivery::cursor_pledge(&build.claimant, &token);
         let additional = state.admission(&token, &build, [facts_anchor(&build.root_facts)])
-            + state.prepared_builds.growth_for(&token);
+            + state.prepared_builds.growth_for(&token)
+            + pledge;
         self.admit_memory(&mut state, &build.context, additional)?;
         state.insert_prepared_build(token.clone(), build);
+        state.prepared_builds.pledge(&token, pledge);
         Ok((
             Value::new_null(),
             Some(token),
@@ -1636,11 +1639,13 @@ impl NativeStore {
             ));
         }
         let token = token.to_owned();
+        let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         let additional =
-            state.admission(&token, &cursor, []) + state.prepared_queries.growth_for(&token);
+            state.admission(&token, &cursor, []) + state.prepared_queries.growth_for(&token) + pledge;
         self.admit_memory(&mut state, context, additional)?;
         state.prepared_queries.reserve_for(&token);
         state.prepared_queries.insert(token.clone(), cursor);
+        state.prepared_queries.pledge(&token, pledge);
         Ok((data, Some(token), Some("prepared query page incomplete".to_owned())))
     }
 

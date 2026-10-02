@@ -886,6 +886,7 @@ struct Slot<V> {
     value: V,
     key_charge: usize,
     charge: usize,
+    pledge: usize,
 }
 
 pub(crate) struct Ledgered<K, V> {
@@ -1008,6 +1009,41 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         })
     }
 
+    pub(crate) fn pledge<Q>(&mut self, key: &Q, bytes: usize)
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        let slot = self.map.get_mut(key).expect("pledged entry");
+        slot.pledge += bytes;
+        self.charged += bytes;
+    }
+
+    pub(crate) fn consume_pledge<Q>(&mut self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        let Some(slot) = self.map.get_mut(key) else {
+            return 0;
+        };
+        let pledge = replace(&mut slot.pledge, 0);
+        self.charged = self
+            .charged
+            .checked_sub(pledge)
+            .expect("balanced retained ledger");
+        pledge
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pledged<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.map.get(key).map_or(0, |slot| slot.pledge)
+    }
+
     pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.work.tick(1);
         let charge = value.charge();
@@ -1028,6 +1064,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
                 value,
                 key_charge,
                 charge,
+                pledge: 0,
             },
         );
         None
@@ -1050,7 +1087,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         let (key, slot) = self.map.remove_entry(key)?;
         self.charged = self
             .charged
-            .checked_sub(slot.key_charge + slot.charge)
+            .checked_sub(slot.key_charge + slot.charge + slot.pledge)
             .expect("balanced retained ledger");
         Some((key, slot.value))
     }
@@ -1064,7 +1101,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
             if !kept {
                 work.reclaim(1);
                 *charged = charged
-                    .checked_sub(slot.key_charge + slot.charge)
+                    .checked_sub(slot.key_charge + slot.charge + slot.pledge)
                     .expect("balanced retained ledger");
             }
             kept
@@ -1090,7 +1127,7 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
     pub(crate) fn audit_charged(&self) -> usize {
         self.map
             .iter()
-            .map(|(key, slot)| V::key_charge(key) + slot.value.charge())
+            .map(|(key, slot)| V::key_charge(key) + slot.value.charge() + slot.pledge)
             .sum()
     }
 }
