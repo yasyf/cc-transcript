@@ -227,7 +227,9 @@ pub struct EntryChunk {
 impl EntryChunk {
     pub fn new(start: usize, entries: Vec<Entry>) -> Self {
         let mut charge = MemoryCharge {
-            owned_capacity_bytes: size_of::<Self>() + entries.capacity() * size_of::<Entry>(),
+            owned_capacity_bytes: size_of::<Self>()
+                + size_of::<ChunkRows>()
+                + entries.capacity() * size_of::<Entry>(),
             opaque_dom_accounted_bytes: 0,
         };
         let entry_charges: Vec<_> = entries.iter().map(entry_charge).collect();

@@ -2541,6 +2541,29 @@ fn prepared_query_dom_is_charged_in_full_and_counts_against_the_cap() {
 }
 
 #[test]
+fn native_chunk_charge_covers_its_rows_header() {
+    let source = LedgerSource::new(&lines(0..3));
+    let store = fast_store();
+    let owner = context_for("chunks", false);
+    let (_handle, snapshot) = acquired(&store, &source.path, &owner);
+    let chunk = &snapshot.chunks[0];
+    let entries: usize = chunk
+        .entry_charges
+        .iter()
+        .map(|charge| charge.owned_capacity_bytes)
+        .sum();
+    assert!(size_of::<ChunkRows>() > size_of::<Vec<Entry>>());
+    assert_eq!(
+        chunk.charge.owned_capacity_bytes,
+        size_of::<EntryChunk>()
+            + size_of::<ChunkRows>()
+            + chunk.entries.capacity() * size_of::<Entry>()
+            + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+            + entries
+    );
+}
+
+#[test]
 fn exact_fill_refuses_one_more_byte_and_reuses_released_capacity() {
     let sources: Vec<_> = (0..6)
         .map(|index| LedgerSource::new(&lines(index * 3..index * 3 + 3)))
