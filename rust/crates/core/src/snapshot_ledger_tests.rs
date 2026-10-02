@@ -2123,6 +2123,78 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
 }
 
 #[test]
+fn warm_anchor_churn_leaves_tombstones_without_moving_the_shared_charge() {
+    let scenario = scaling_scenario(8);
+    let warmed = warmed_registry(prepared_store(), &scenario);
+    let store = &warmed.store;
+    let churned = {
+        let state = store.lock_state();
+        let membership = state
+            .warm_memberships
+            .values()
+            .next()
+            .expect("warmed membership");
+        WarmMembership {
+            members: membership.members.iter().cloned().collect(),
+            sidechain_dirs: membership.sidechain_dirs.iter().cloned().collect(),
+            ..membership.clone()
+        }
+    };
+    let mut next = 1usize;
+    let mut live = Vec::new();
+    let mut dipped = false;
+    let mut rounds = 0;
+    while !dipped && rounds < 256 {
+        let table = {
+            let mut state = store.lock_state();
+            if !live.is_empty() {
+                state.ledger.shared.release(live.remove(0));
+            }
+            while state.ledger.shared.len() + 2 < state.ledger.shared.reserved() {
+                state.ledger.shared.acquire(Anchor::facts(next, 0));
+                live.push(next);
+                next += 1;
+            }
+            state.ledger.shared.work().traced();
+            state.ledger.shared.table_bytes()
+        };
+        let charged = settled_charges(store);
+        store
+            .lock_state()
+            .insert_warm_membership("churn".to_owned(), churned.clone());
+        let inserted = {
+            let state = store.lock_state();
+            let traced = state.ledger.shared.work().traced();
+            let inserted = state.ledger.shared.table_bytes();
+            if inserted == table {
+                assert!(traced.is_empty(), "allocation without a charge change");
+            } else {
+                assert_eq!(
+                    traced,
+                    vec![Trace::Allocated(state.ledger.shared.reserved())]
+                );
+            }
+            inserted
+        };
+        store.assert_conserved();
+        store.lock_state().remove_warm_membership("churn");
+        {
+            let state = store.lock_state();
+            assert_eq!(
+                state.ledger.shared.table_bytes(),
+                inserted,
+                "release moved the charge"
+            );
+            dipped |= state.ledger.shared.capacity() < state.ledger.shared.reserved();
+        }
+        store.assert_conserved();
+        assert_eq!(settled_charges(store), charged);
+        rounds += 1;
+    }
+    assert!(dipped, "no erase left a tombstone in {rounds} rounds");
+}
+
+#[test]
 fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
     let mut every_hit = Vec::new();
     for count in SCALING_COUNTS {
