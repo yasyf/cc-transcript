@@ -7178,70 +7178,7 @@ impl NativeStore {
             let pending_charge = if publishing {
                 0
             } else {
-                let shared: HashSet<_> = load
-                    .previous
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|snapshot| {
-                        snapshot
-                            .chunks
-                            .iter()
-                            .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
-                    })
-                    .collect();
-                let charge = load.pending.capacity()
-                    + load.codex_raw.as_ref().map_or(0, |raw| {
-                        if load
-                            .previous
-                            .as_ref()
-                            .and_then(|previous| previous.codex_raw.as_ref())
-                            .is_some_and(|previous| Arc::ptr_eq(previous, raw))
-                        {
-                            0
-                        } else {
-                            arc_bytes::<Vec<u8>>() + raw.capacity()
-                        }
-                    })
-                    + load.codex_append.as_ref().map_or(0, |index| {
-                        if load
-                            .previous
-                            .as_ref()
-                            .and_then(|previous| previous.codex_append.as_ref())
-                            .is_some_and(|previous| Arc::ptr_eq(previous, index))
-                        {
-                            0
-                        } else {
-                            index.accounted_bytes()
-                        }
-                    })
-                    + load.origin_fence.capacity()
-                    + load.seal_fence.capacity()
-                    + load.prefix_fence.capacity()
-                    + load.fence.capacity()
-                    + load.session_id.as_ref().map_or(0, String::capacity)
-                    + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
-                    + load
-                        .chunks
-                        .iter()
-                        .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
-                        .map(|chunk| {
-                            chunk.charge.owned_capacity_bytes
-                                + chunk.charge.opaque_dom_accounted_bytes
-                        })
-                        .sum::<usize>();
-                let prior_indexes: HashSet<_> = load
-                    .previous
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| id))
-                    .collect();
-                let index_charge: usize = load
-                    .activity
-                    .heap_allocations()
-                    .filter(|(id, _)| !prior_indexes.contains(id))
-                    .map(|(_, bytes)| bytes)
-                    .sum();
-                charge + index_charge
+                Self::unpublished_load_charge(&load)
             };
             let pledge = generation
                 .as_ref()
@@ -7289,7 +7226,6 @@ impl NativeStore {
                     }
                     Err(error) => {
                         if !publishing {
-                            state.remove_load(&slot.stamp.identity);
                             state.prepared_loads.remove(&slot.stamp.identity);
                         }
                         Err(error)
@@ -7298,7 +7234,10 @@ impl NativeStore {
             };
             if let Err(error) = admitted {
                 if !publishing {
+                    Self::discard_unpublished_build(&mut load);
                     load.failure = Some(SnapshotError::new(error.status, &error.reason));
+                    let remaining = Self::unpublished_load_charge(&load);
+                    self.lock_state().set_load_charge(&slot, remaining);
                 }
                 return Err(error);
             }
@@ -7494,6 +7433,88 @@ impl NativeStore {
         usage[1] += current.len() as u64;
         remaining.max_source_read_bytes -= current.len();
         Ok(current == fence)
+    }
+
+    fn unpublished_load_charge(load: &Load) -> usize {
+        let shared: HashSet<_> = load
+            .previous
+            .as_ref()
+            .into_iter()
+            .flat_map(|snapshot| {
+                snapshot
+                    .chunks
+                    .iter()
+                    .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+            })
+            .collect();
+        let charge = load.pending.capacity()
+            + load.codex_raw.as_ref().map_or(0, |raw| {
+                if load
+                    .previous
+                    .as_ref()
+                    .and_then(|previous| previous.codex_raw.as_ref())
+                    .is_some_and(|previous| Arc::ptr_eq(previous, raw))
+                {
+                    0
+                } else {
+                    arc_bytes::<Vec<u8>>() + raw.capacity()
+                }
+            })
+            + load.codex_append.as_ref().map_or(0, |index| {
+                if load
+                    .previous
+                    .as_ref()
+                    .and_then(|previous| previous.codex_append.as_ref())
+                    .is_some_and(|previous| Arc::ptr_eq(previous, index))
+                {
+                    0
+                } else {
+                    index.accounted_bytes()
+                }
+            })
+            + load.origin_fence.capacity()
+            + load.seal_fence.capacity()
+            + load.prefix_fence.capacity()
+            + load.fence.capacity()
+            + load.session_id.as_ref().map_or(0, String::capacity)
+            + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+            + load
+                .chunks
+                .iter()
+                .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
+                .map(|chunk| {
+                    chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
+                })
+                .sum::<usize>();
+        let prior_indexes: HashSet<_> = load
+            .previous
+            .as_ref()
+            .into_iter()
+            .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| id))
+            .collect();
+        let index_charge: usize = load
+            .activity
+            .heap_allocations()
+            .filter(|(id, _)| !prior_indexes.contains(id))
+            .map(|(_, bytes)| bytes)
+            .sum();
+        charge + index_charge
+    }
+
+    fn discard_unpublished_build(load: &mut Load) {
+        load.pending = Vec::new();
+        load.chunks = Vec::new();
+        load.codex_raw = None;
+        load.codex_append = None;
+        load.count = 0;
+        load.activity = ActivityIndex::default();
+        load.indexed = 0;
+        load.session_id = None;
+        load.origin_fence = Vec::new();
+        load.seal_fence = Vec::new();
+        load.prefix_fence = Vec::new();
+        load.previous = None;
+        load.fence = Vec::new();
     }
 
     fn decoded_line_bytes(

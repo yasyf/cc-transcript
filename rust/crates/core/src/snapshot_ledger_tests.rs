@@ -8302,18 +8302,25 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
     }
 }
 
-#[test]
-fn refused_unpublished_build_frees_its_load_slot() {
+struct Backstop {
+    store: &'static NativeStore,
+    source: LedgerSource,
+    parked_owner: Value,
+    parked_response: Value,
+    slot: Arc<LoadSlot>,
+    held: Arc<Mutex<Option<ProjectionReservation<'static>>>>,
+}
+
+fn refused_backstop(joined: bool) -> Backstop {
     let source = LedgerSource::new(&lines(0..3));
     let store: &'static NativeStore = Box::leak(Box::new(prepared_store()));
-    let background = context_for("backstop", true);
-    let foreground = context_for("filler", false);
-    let response = store.request(
+    let parked_owner = context_for("backstop-parked", true);
+    let parked_response = store.request(
         &acquire(&source.path),
-        &background,
+        &parked_owner,
         &Cancellation::default(),
     );
-    assert!(parked(&response), "{response:?}");
+    assert!(parked(&parked_response), "{parked_response:?}");
     let slot = store
         .lock_state()
         .loads
@@ -8324,6 +8331,8 @@ fn refused_unpublished_build_frees_its_load_slot() {
     store
         .lock_state()
         .insert_prepared_load(slot.stamp.identity, Arc::clone(&slot), now_ms());
+    store.assert_conserved();
+    let foreground = context_for("filler", false);
     let held: Arc<Mutex<Option<ProjectionReservation<'static>>>> = Arc::new(Mutex::new(None));
     *store.read_hook.lock().unwrap() = Some(Arc::new({
         let held = Arc::clone(&held);
@@ -8333,7 +8342,15 @@ fn refused_unpublished_build_frees_its_load_slot() {
             *held.lock().unwrap() = Some(store.reserve_projection(&foreground, headroom).unwrap());
         }
     }));
-    let refused = resume(store, &response, &background);
+    let refused = if joined {
+        store.request(
+            &acquire(&source.path),
+            &context_for("backstop-joined", true),
+            &Cancellation::default(),
+        )
+    } else {
+        resume(store, &parked_response, &parked_owner)
+    };
     assert_eq!(
         refused["status"].as_str(),
         Some("retained_limit"),
@@ -8346,48 +8363,176 @@ fn refused_unpublished_build_frees_its_load_slot() {
     assert!(held.lock().unwrap().is_some());
     store.assert_conserved();
     assert!(audited(store)[TOTAL] <= cap_for(&foreground));
-    {
-        let state = store.lock_state();
-        assert!(state.loads.is_empty(), "the refused build kept its slot");
-        assert!(!state.prepared_loads.contains_key(&slot.stamp.identity));
-        assert!(state.waiters.is_empty());
+    Backstop {
+        store,
+        source,
+        parked_owner,
+        parked_response,
+        slot,
+        held,
     }
-    assert_eq!(slot.ledgered_bytes(), 0);
+}
+
+fn assert_discarded_build(store: &NativeStore, slot: &Arc<LoadSlot>) -> usize {
+    let walk = cold_load_walk(slot);
     assert_eq!(
-        Arc::strong_count(&slot),
-        1,
-        "the refused build is still held"
+        walk,
+        empty_index_walk(slot),
+        "the refused build left buffers behind"
+    );
+    assert_eq!(
+        slot.accounted.load(Ordering::Acquire),
+        walk,
+        "the slot charge is not its heap walked once"
     );
     {
-        let load = slot.work.lock().unwrap();
+        let state = store.lock_state();
         assert!(
-            load.failure
-                .as_ref()
-                .is_some_and(|failure| failure.status == Status::RetainedLimit),
-            "{:?}",
-            load.failure
+            state.loads.values().any(|kept| Arc::ptr_eq(kept, slot)),
+            "the refused build detached its slot"
         );
-        assert_eq!(load.count, 3, "the refused step built nothing");
+        assert!(!state.prepared_loads.contains_key(&slot.stamp.identity));
+        assert_eq!(
+            state.ledger.pending,
+            NativeStore::audit_load_record_bytes(slot) + walk,
+            "the pending gauge is not the slot record plus its heap"
+        );
     }
+    let load = slot.work.lock().unwrap();
+    assert!(
+        load.failure
+            .as_ref()
+            .is_some_and(|failure| failure.status == Status::RetainedLimit),
+        "{:?}",
+        load.failure
+    );
+    assert_eq!(
+        (
+            load.count,
+            load.indexed,
+            load.chunks.len(),
+            load.pending.capacity(),
+            load.fence.capacity(),
+            load.origin_fence.capacity(),
+            load.seal_fence.capacity(),
+            load.prefix_fence.capacity(),
+            load.session_id.is_none(),
+        ),
+        (0, 0, 0, 0, 0, 0, 0, 0, true),
+        "the refused build kept part of what it built"
+    );
+    walk
+}
+
+#[test]
+fn refused_unpublished_build_keeps_its_slot_charged_until_pruned() {
+    let Backstop {
+        store,
+        source,
+        parked_owner,
+        slot,
+        held,
+        ..
+    } = refused_backstop(false);
+    assert!(store.lock_state().waiters.is_empty());
+    let walk = assert_discarded_build(store, &slot);
+    assert_eq!(
+        Arc::strong_count(&slot),
+        2,
+        "the refused build is held outside the loads table"
+    );
+    assert_eq!(
+        settled(store)[PENDING],
+        NativeStore::audit_load_record_bytes(&slot) + walk,
+        "the failed slot stopped carrying its record before it was pruned"
+    );
+    drop(slot);
+    assert_eq!(
+        settled(store)[PENDING],
+        0,
+        "the pruned slot left its record charged"
+    );
+    assert!(store.lock_state().loads.is_empty());
     drop(held.lock().unwrap().take());
     let retried = drive(
         store,
         store.request(
             &acquire(&source.path),
-            &background,
+            &parked_owner,
             &Cancellation::default(),
         ),
-        &background,
+        &parked_owner,
     );
     assert_eq!(retried["status"].as_str(), Some("ok"), "{retried:?}");
     assert_eq!(
         store
-            .pin(&ok_handle(&retried), &background)
+            .pin(&ok_handle(&retried), &parked_owner)
             .unwrap()
             .event_count,
         3
     );
     store.assert_conserved();
+}
+
+#[test]
+fn refused_unpublished_build_fails_its_joined_waiter_once() {
+    let Backstop {
+        store,
+        source,
+        parked_owner,
+        parked_response,
+        slot,
+        held,
+    } = refused_backstop(true);
+    {
+        let state = store.lock_state();
+        assert_eq!(
+            state.waiters.len(),
+            1,
+            "the refusal removed more than its own waiter"
+        );
+        assert!(state.waiters.values().all(|waiter| {
+            waiter.claimant == "backstop-parked" && Arc::ptr_eq(&waiter.load, &slot)
+        }));
+    }
+    let walk = assert_discarded_build(store, &slot);
+    let failed = resume(store, &parked_response, &parked_owner);
+    assert_eq!(
+        failed["status"].as_str(),
+        Some("retained_limit"),
+        "{failed:?}"
+    );
+    store.assert_conserved();
+    assert!(
+        store.lock_state().waiters.is_empty(),
+        "the joined waiter outlived the failure it was handed"
+    );
+    assert_eq!(assert_discarded_build(store, &slot), walk);
+    let stale = resume(store, &parked_response, &parked_owner);
+    assert_eq!(stale["status"].as_str(), Some("stale_cursor"), "{stale:?}");
+    store.assert_conserved();
+    assert_eq!(
+        settled(store)[PENDING],
+        NativeStore::audit_load_record_bytes(&slot) + walk,
+        "the failed slot stopped carrying its record before it was pruned"
+    );
+    drop(slot);
+    assert_eq!(settled(store)[PENDING], 0);
+    assert!(store.lock_state().loads.is_empty());
+    drop(held.lock().unwrap().take());
+    for owner in [parked_owner, context_for("backstop-joined", true)] {
+        let retried = drive(
+            store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(retried["status"].as_str(), Some("ok"), "{retried:?}");
+        assert_eq!(
+            store.pin(&ok_handle(&retried), &owner).unwrap().event_count,
+            3
+        );
+        store.assert_conserved();
+    }
 }
 
 #[test]
