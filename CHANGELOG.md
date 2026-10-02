@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `signal_texts` snapshot query takes a required `thinking` flag. With
+  `thinking: false` it leaves assistant thinking blocks out of the scored texts,
+  so a signal can score only what the agent wrote. `thinking: true` keeps the
+  previous behavior.
+
 ### Fixed
 
 - The `render` query charges its input budget for the windowed events only, plus

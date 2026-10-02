@@ -245,6 +245,7 @@ class SignalTexts(WireModel):
     kind: Literal["signal_texts"]
     window: Count | Literal["current_turn"]
     origin: Literal["assistant", "any"]
+    thinking: bool
 
 
 class RenderBudget(WireModel):

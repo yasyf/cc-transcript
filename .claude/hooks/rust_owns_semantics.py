@@ -12,15 +12,9 @@ from captain_hook import (
     llm_gate,
 )
 
-RULE = (
-    "AGENTS.md § Ownership & Layering: 'The Rust core is the implementation — new domains "
-    "included' / 'Python keeps exactly four shapes.' Semantic computation (parsing, detection, "
-    "scoring, selection, sampling, transformation) never lands in cc_transcript/*.py — the "
-    "command splice layer (19126a8) and the CLI scratchpad (c85d850) were both implemented in "
-    "Python first and had to be re-ported to Rust days later. Land the semantics in the Rust "
-    "workspace (rust/crates/core, or the crate that owns the domain) with re-pinned goldens and "
-    "the regenerated _native.pyi stub in the same commit — or, when the core already computes "
-    "this, expose the missing binding instead of recomputing it in Python."
+MESSAGE = (
+    "Semantic computation belongs in the Rust core, never in `cc_transcript/*.py`. "
+    "Implement it in `rust/crates/core`, then regenerate `_native.pyi` with `cargo run -p cc-transcript-py --bin stub_gen`."
 )
 
 llm_gate(
@@ -41,7 +35,7 @@ llm_gate(
     "or Protocol declarations and their trivial accessors; spawnllm or prompt-building "
     "orchestration; subprocess and filesystem glue around external tools; type coercion at the "
     "FFI edge. If unsure, allow.",
-    message=lambda r: f"{RULE} Judge: {r.reasoning}",
+    message=MESSAGE,
     label="rust-owns-semantics",
     events=Event.PreToolUse,
     only_if=[Tool("Edit", "Write"), FilePath("cc_transcript/*.py", "cc_transcript/**/*.py")],
@@ -59,7 +53,7 @@ llm_gate(
                 "    keep = [t for t in turns if t % RADIUS == 0]\n"
                 "    return sorted(rng.sample(keep, min(3, len(keep))))\n"
             ),
-        ): Block(pattern="Ownership & Layering"),
+        ): Block(pattern="Rust core"),
         Input(
             tool="Edit",
             file="cc_transcript/mining/sampling.py",
