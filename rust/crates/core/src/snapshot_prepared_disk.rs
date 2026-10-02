@@ -1249,6 +1249,7 @@ mod tests {
                     &key(stamp(revision), &json!({"root":"/repo"})),
                     &sample,
                     |_| true,
+                    |_| true,
                 )
                 .unwrap();
         }
