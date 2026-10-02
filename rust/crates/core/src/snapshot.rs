@@ -7249,18 +7249,12 @@ impl NativeStore {
                         });
                         Ok(())
                     }
-                    Err(error) => {
-                        if !publishing {
-                            state.prepared_loads.remove(&slot.stamp.identity);
-                        }
-                        Err(error)
-                    }
+                    Err(error) => Err(error),
                 }
             };
             if let Err(error) = admitted {
                 if !publishing {
-                    Self::discard_unpublished_build(&mut load);
-                    load.failure = Some(SnapshotError::new(error.status, &error.reason));
+                    Self::restart_unpublished_build(&slot, &mut load);
                     let remaining = Self::unpublished_load_charge(&load);
                     self.lock_state().set_load_charge(&slot, remaining);
                 }
@@ -7526,20 +7520,30 @@ impl NativeStore {
         charge + index_charge
     }
 
-    fn discard_unpublished_build(load: &mut Load) {
+    fn restart_unpublished_build(slot: &LoadSlot, load: &mut Load) {
+        load.offset = 0;
         load.pending = Vec::new();
+        load.pending_start = 0;
+        load.provider = None;
         load.chunks = Vec::new();
         load.codex_raw = None;
         load.codex_append = None;
         load.count = 0;
         load.activity = ActivityIndex::default();
         load.indexed = 0;
+        load.decoded = false;
         load.session_id = None;
         load.origin_fence = Vec::new();
+        load.origin_complete = false;
         load.seal_fence = Vec::new();
+        load.sealed = false;
         load.prefix_fence = Vec::new();
-        load.previous = None;
+        load.prefix_checked = false;
+        load.window_scanned = 0;
+        load.window_start = (slot.stamp.identity.window_base == 0).then_some(0);
         load.fence = Vec::new();
+        load.committed = 0;
+        load.provisional = false;
     }
 
     fn decoded_line_bytes(
