@@ -127,15 +127,21 @@ pub struct ToolRegistrySnapshot {
 
 impl ToolRegistrySnapshot {
     pub fn from_specs(specs: HashMap<String, McpToolSpec>) -> Arc<Self> {
-        let value = sonic_rs::to_value(&specs).expect("tool registry serialization");
+        let fingerprint = Self::fingerprint_of(&specs);
+        Arc::new(Self { specs, fingerprint })
+    }
+
+    pub fn fingerprint_of(specs: &HashMap<String, McpToolSpec>) -> String {
+        let value = sonic_rs::to_value(specs).expect("tool registry serialization");
         let canonical = crate::ids::canonical_json(&value).expect("tool registry canonicalization");
-        Arc::new(Self {
-            specs,
-            fingerprint: format!("{:x}", Sha256::digest(canonical.as_bytes())),
-        })
+        format!("{:x}", Sha256::digest(canonical.as_bytes()))
     }
 
     pub fn from_specs_json(value: &Value) -> Result<Arc<Self>, String> {
+        Ok(Self::from_specs(Self::specs_from_json(value)?))
+    }
+
+    pub fn specs_from_json(value: &Value) -> Result<HashMap<String, McpToolSpec>, String> {
         let definitions = value
             .as_array()
             .ok_or_else(|| "tool registry definitions must be a list".to_string())?;
@@ -163,20 +169,18 @@ impl ToolRegistrySnapshot {
         }
         let definitions: Vec<ToolRegistryDefinition> =
             sonic_rs::from_value(value).map_err(|error| error.to_string())?;
-        Ok(Self::from_specs(
-            definitions
-                .into_iter()
-                .map(|definition| {
-                    (
-                        definition.name,
-                        McpToolSpec {
-                            behaves_like: definition.behaves_like,
-                            span_edit: definition.span_edit,
-                        },
-                    )
-                })
-                .collect(),
-        ))
+        Ok(definitions
+            .into_iter()
+            .map(|definition| {
+                (
+                    definition.name,
+                    McpToolSpec {
+                        behaves_like: definition.behaves_like,
+                        span_edit: definition.span_edit,
+                    },
+                )
+            })
+            .collect())
     }
 
     pub fn capture_scoped() -> Option<Arc<Self>> {
@@ -2396,6 +2400,22 @@ mod tests {
         assert_eq!(first.fingerprint(), reordered.fingerprint());
         assert_ne!(first.fingerprint(), changed.fingerprint());
         assert_eq!(first.fingerprint().len(), 64);
+        for (raw, constructed) in [
+            (
+                r#"[{"name":"reader","behaves_like":"Read","span_edit":null},{"name":"writer","behaves_like":"Edit","span_edit":{"path":"file","content":"body","delete":null}}]"#,
+                &first,
+            ),
+            (
+                r#"[{"name":"reader","behaves_like":"Read","span_edit":null},{"name":"writer","behaves_like":"Edit","span_edit":{"path":"file","content":"changed","delete":null}}]"#,
+                &changed,
+            ),
+        ] {
+            let specs = ToolRegistrySnapshot::specs_from_json(&obj(raw)).unwrap();
+            assert_eq!(
+                ToolRegistrySnapshot::fingerprint_of(&specs),
+                constructed.fingerprint()
+            );
+        }
         assert_eq!(
             ToolRegistrySnapshot::from_specs_json(&obj("[]"))
                 .unwrap()

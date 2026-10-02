@@ -1325,14 +1325,24 @@ impl NativeStore {
         context: &Value,
     ) -> Result<String, SnapshotError> {
         self.authority(context, None)?;
+        let definitions =
+            crate::toolcall::ToolRegistrySnapshot::specs_from_json(specs).map_err(invalid)?;
+        let fingerprint = crate::toolcall::ToolRegistrySnapshot::fingerprint_of(&definitions);
+        if self
+            .state
+            .lock()
+            .expect("snapshot state")
+            .registries
+            .contains_key(&fingerprint)
+        {
+            return Ok(fingerprint);
+        }
         let charge = crate::snapshot_memory::value_charge(specs);
         let reserve = (charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
             .saturating_mul(4)
             .saturating_add(64 * 1024);
         let mut reservation = self.reserve_projection(context, reserve)?;
-        let registry =
-            crate::toolcall::ToolRegistrySnapshot::from_specs_json(specs).map_err(invalid)?;
-        let fingerprint = registry.fingerprint().to_owned();
+        let registry = crate::toolcall::ToolRegistrySnapshot::from_specs(definitions);
         let allocations = registry.accounted_allocations();
         let bytes = allocations.iter().map(|(_, bytes)| *bytes).sum::<usize>()
             + allocations.capacity() * size_of::<(usize, usize)>()
@@ -11378,6 +11388,51 @@ mod tests {
             fingerprint
         );
         let state = store.state.lock().unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &state.registries[&fingerprint].snapshot
+        ));
+        assert_eq!(state.transient_bytes, 0);
+    }
+
+    #[test]
+    fn reregistering_an_interned_registry_reserves_nothing() {
+        let store = NativeStore::new(
+            &json!({"max_retained_bytes":8*1024*1024,"reserved_hook_accounted_bytes":8*1024*1024}),
+        )
+        .unwrap();
+        let hook = context("owner");
+        let mut review = hook.clone();
+        review.insert("admission", json!("review"));
+        let other_uid = json!({"claimant":"owner","admission":"hook","authority":{"kind":"user","effective_uid":"0"},"registry_generation":hook["registry_generation"]});
+        let specs = json!([{"name":"fetch","behaves_like":"Read","span_edit":null}]);
+        let reordered = json!([{"span_edit":null,"behaves_like":"Read","name":"fetch"}]);
+        let fingerprint = store.register_tool_registry(&specs, &hook).unwrap();
+        let registered = store.state.lock().unwrap().registries.len();
+        let first = Arc::clone(&store.state.lock().unwrap().registries[&fingerprint].snapshot);
+        assert_eq!(
+            store.register_tool_registry(&reordered, &review).unwrap(),
+            fingerprint
+        );
+        assert_eq!(
+            store
+                .register_tool_registry(&specs, &other_uid)
+                .unwrap_err()
+                .status,
+            Status::PermissionDenied
+        );
+        assert_eq!(
+            store
+                .register_tool_registry(
+                    &json!([{"name":"","behaves_like":"Read","span_edit":null}]),
+                    &hook
+                )
+                .unwrap_err()
+                .status,
+            Status::InvalidRequest
+        );
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.registries.len(), registered);
         assert!(Arc::ptr_eq(
             &first,
             &state.registries[&fingerprint].snapshot
