@@ -524,6 +524,7 @@ def test_grep_warns_when_the_cap_truncates(transcript: Path) -> None:
     assert result.stderr == (
         "warning: stopped at --max-matches 2; more matches may exist"
         " — raise it, or pass --max-matches 0 for no cap\n"
+        "warning: partial view: tool names resolved through byte 1695\n"
     )
 
 
