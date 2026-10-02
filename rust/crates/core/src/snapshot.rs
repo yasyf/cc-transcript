@@ -3145,7 +3145,7 @@ impl NativeStore {
             provider: snapshot.provider,
             session_id: snapshot.session_id.clone(),
             chunks: snapshot.chunks.clone(),
-            activity: Arc::new(std::mem::take(&mut stage.activity)),
+            activity: Arc::new(stage.activity.clone()),
             window_start: snapshot.window_start,
             committed_bytes: snapshot.committed_bytes,
             provisional_tail: snapshot.provisional_tail,
@@ -3155,7 +3155,7 @@ impl NativeStore {
             codex_append: snapshot.codex_append.clone(),
         });
         let generation = GenerationRecord::new(&derived, registry);
-        let carried = CarriedClassification::of(&derived, stage.committed.take()).map(Arc::new);
+        let carried = CarriedClassification::of(&derived, stage.committed.clone()).map(Arc::new);
         {
             let mut state = self.lock_state();
             let carried = carried.filter(|candidate| state.carries(&lineage, candidate));
@@ -3179,6 +3179,8 @@ impl NativeStore {
                 state.insert_carried(lineage, candidate);
             }
         }
+        stage.activity = ActivityIndex::default();
+        stage.committed = None;
         stage.result = Some(Arc::clone(&derived));
         self.classified
             .lock()
