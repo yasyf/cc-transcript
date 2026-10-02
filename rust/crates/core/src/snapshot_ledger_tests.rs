@@ -1,5 +1,6 @@
 use super::*;
 use crate::activity::lower_edit;
+use crate::snapshot_activity::{CachedCall, CachedTurn, ResultPosition};
 use crate::snapshot_ledger::Trace;
 use crate::snapshot_prepared::{OverrideEvent, PreparedFacts};
 use crate::snapshot_prepared_disk::PreparedDiskKey;
@@ -2422,6 +2423,93 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
         + carried.capacity() * size_of::<usize>()
 }
 
+fn append_reservation_mirror(
+    activity: &ActivityIndex,
+    shared_with: &ActivityIndex,
+    indexed: &[&Entry],
+    entries: usize,
+    calls: usize,
+    results: usize,
+) -> usize {
+    let growth = |capacity: usize, needed: usize, width: usize| {
+        if needed > capacity {
+            (needed.max(capacity) * 2).max(8) * width
+        } else {
+            0
+        }
+    };
+    let carried: HashSet<usize> = shared_with
+        .audited_allocations(true)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let rows = activity.audited_allocations(false);
+    let [_, (turns_id, turns_row), (uuids_id, uuids_row), (results_id, results_row), turn_rows @ ..] =
+        rows.as_slice()
+    else {
+        panic!("an activity index walks its three containers first: {rows:?}");
+    };
+    assert_eq!(
+        (turn_rows.len(), activity.calls().count(), calls),
+        (activity.turn_count(), 0, 0),
+        "the mirror covers call-free indexes and appends"
+    );
+    let uuid_keys: usize = indexed
+        .iter()
+        .filter_map(|entry| entry.meta())
+        .map(|meta| meta.uuid.len())
+        .sum();
+    let uuids = indexed
+        .iter()
+        .filter(|entry| entry.meta().is_some())
+        .count();
+    let result_keys: usize = indexed
+        .iter()
+        .flat_map(|entry| entry.tool_results())
+        .map(|result| result.tool_use_id.len())
+        .sum();
+    let indexed_results = indexed
+        .iter()
+        .flat_map(|entry| entry.tool_results())
+        .count();
+    let turns_capacity =
+        (turns_row - arc_mirror::<Vec<Arc<CachedTurn>>>()) / size_of::<Arc<CachedTurn>>();
+    let uuids_capacity = (uuids_row - arc_mirror::<HashMap<String, usize>>() - uuid_keys)
+        / size_of::<(String, usize)>();
+    let results_capacity =
+        (results_row - arc_mirror::<HashMap<String, ResultPosition>>() - result_keys)
+            / size_of::<(String, ResultPosition)>();
+    let copied = |id: &usize, row: &usize| if carried.contains(id) { *row } else { 0 };
+    let open_turn = turn_rows.last().map_or(0, |(id, row)| {
+        if carried.contains(id) || carried.contains(turns_id) {
+            *row
+        } else {
+            0
+        }
+    });
+    copied(uuids_id, uuids_row)
+        + copied(results_id, results_row)
+        + copied(turns_id, turns_row)
+        + open_turn
+        + growth(
+            uuids_capacity,
+            uuids + entries,
+            size_of::<(String, usize)>(),
+        )
+        + growth(
+            results_capacity,
+            indexed_results + results,
+            size_of::<(String, ResultPosition)>(),
+        )
+        + growth(
+            turns_capacity,
+            activity.turn_count() + entries,
+            size_of::<Arc<CachedTurn>>(),
+        )
+        + entries * arc_mirror::<CachedTurn>()
+        + calls * (arc_mirror::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>())
+}
+
 fn seeded_step_reserve(fixture: &Fixture) -> (usize, usize) {
     let native = &fixture.pins[0];
     let (bytes, calls, results) = (SEEDED_EVENTS..SEEDED_EVENTS + SEEDED_STEP)
@@ -2440,11 +2528,19 @@ fn seeded_step_reserve(fixture: &Fixture) -> (usize, usize) {
     let slot = seeded_slot(fixture);
     let stage = slot.work.lock().unwrap();
     assert_eq!(stage.indexed, SEEDED_EVENTS);
+    let indexed: Vec<&Entry> = (0..SEEDED_EVENTS)
+        .map(|position| native.entry(position))
+        .collect();
     let reserve = 2 * bytes
         + SEEDED_STEP * (size_of::<&Entry>() + size_of::<bool>())
-        + stage
-            .activity
-            .append_container_reservation_bytes(SEEDED_STEP, calls, results);
+        + append_reservation_mirror(
+            &stage.activity,
+            slot.seed.as_ref().expect("seeded stage").activity(),
+            &indexed,
+            SEEDED_STEP,
+            calls,
+            results,
+        );
     (reserve, 2 * bytes + SEEDED_STEP)
 }
 
@@ -8317,12 +8413,24 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
             let appended = load.count - load.indexed;
             assert_eq!(appended, 2 * SEEDED_STEP);
             let heuristic = 2 * bytes + appended * size_of::<&Entry>();
+            let previous = load
+                .previous
+                .as_ref()
+                .expect("the load extends a published snapshot");
+            let indexed: Vec<&Entry> = (0..load.indexed)
+                .map(|position| previous.entry(position))
+                .collect();
             (
                 reservation,
                 heuristic
-                    + load
-                        .activity
-                        .append_container_reservation_bytes(appended, calls, results),
+                    + append_reservation_mirror(
+                        &load.activity,
+                        &previous.activity,
+                        &indexed,
+                        appended,
+                        calls,
+                        results,
+                    ),
                 heuristic,
             )
         };
@@ -10674,7 +10782,7 @@ fn reparked_by(arm: &ResumedArm, fixture: &Fixture, key: usize, capacity: usize)
 fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fixture) {
     let sample = build();
     let (key, held, capacity) = held_by(arm, &sample);
-    let context = value_bytes(&sample.owner);
+    let context = NativeStore::audit_value_bytes(&sample.owner);
     let extension = if arm.extends_context { context } else { 0 };
     if arm.extends_context {
         let fits = |fixture: &Fixture| {
@@ -10915,7 +11023,7 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
     for background in [false, true] {
         let fixture = resolution_resume_fixture(&scenario, background, 0, scenario.ids());
         let (key, held, capacity) = held_by(&arm, &fixture);
-        let context = value_bytes(&fixture.owner);
+        let context = NativeStore::audit_value_bytes(&fixture.owner);
         traced(&fixture.store);
         let released = released_by(&fixture.store, || {
             assert!(resumed(&fixture), "the resumed resolution was refused");

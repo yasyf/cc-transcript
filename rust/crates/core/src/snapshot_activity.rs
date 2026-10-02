@@ -19,7 +19,7 @@ pub struct ActivityWork {
 }
 
 #[derive(Debug)]
-struct CachedCall {
+pub(crate) struct CachedCall {
     event: usize,
     ordinal: usize,
     id: String,
@@ -29,7 +29,7 @@ struct CachedCall {
 }
 
 #[derive(Debug, Clone)]
-struct CachedTurn {
+pub(crate) struct CachedTurn {
     prompt: String,
     bounds: Range<usize>,
     started: Option<usize>,
@@ -38,7 +38,7 @@ struct CachedTurn {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ResultPosition {
+pub(crate) struct ResultPosition {
     event: usize,
     ordinal: usize,
     charge: MemoryCharge,
