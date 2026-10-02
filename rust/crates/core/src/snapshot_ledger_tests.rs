@@ -11409,6 +11409,10 @@ fn assert_denied_directory_admission_opens_nothing(
         },
     );
     let fit = exact_headroom(build, &opened);
+    assert!(
+        fit > 0,
+        "{site}: the directory opened at zero headroom, so no admission was denied"
+    );
     let fixture = build();
     {
         let _filler = fill_to(&fixture.store, &fixture.owner, fit - 1);
