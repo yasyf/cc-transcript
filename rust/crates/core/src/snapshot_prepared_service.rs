@@ -591,18 +591,14 @@ impl NativeStore {
 
     fn validate_warm_membership(
         &self,
-        membership: &WarmMembership,
+        members: &[PreparedSourceRef],
+        sidechain_dirs: &[(PathBuf, Option<SourceStamp>)],
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
     ) -> Result<bool, SnapshotError> {
-        Ok(self.validate_source_stamps(&membership.members, context, cancel, deadline)?
-            && self.validate_sidechain_dirs(
-                &membership.sidechain_dirs,
-                context,
-                cancel,
-                deadline,
-            )?)
+        Ok(self.validate_source_stamps(members, context, cancel, deadline)?
+            && self.validate_sidechain_dirs(sidechain_dirs, context, cancel, deadline)?)
     }
 
     fn validate_source_stamps(
@@ -706,16 +702,24 @@ impl NativeStore {
         }
         if !ids.is_empty() {
             let key = Self::warm_membership_key(request, context)?;
-            let membership = self.lock_state()
+            let (members, sidechain_dirs, complete) = self
+                .lock_state()
                 .warm_memberships
                 .get(&key)
-                .cloned()
+                .map(|membership| {
+                    (
+                        Arc::clone(&membership.members),
+                        Arc::clone(&membership.sidechain_dirs),
+                        membership.complete,
+                    )
+                })
                 .ok_or_else(|| {
                     SnapshotError::new(Status::Incomplete, "registered membership is not warmed")
                 })?;
-            if !membership.complete
+            if !complete
                 || !self.validate_warm_membership(
-                    &membership,
+                    &members,
+                    &sidechain_dirs,
                     context,
                     cancel,
                     remaining.deadline_unix_ms,
@@ -729,23 +733,22 @@ impl NativeStore {
             }
             let (retained, mut reservation) =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
-            let shares_root = membership
-                .members
+            let shared = members
                 .iter()
-                .any(|source| source.stamp.identity.file() == root.stamp.identity.file());
-            let members = || {
-                membership.members.iter().filter(|source| {
-                    !shares_root || source.stamp.identity.file() != root.stamp.identity.file()
-                })
+                .position(|source| source.stamp.identity.file() == root.stamp.identity.file());
+            let (before, after) = match shared {
+                Some(index) => (&members[..index], &members[index + 1..]),
+                None => (&members[..], &members[members.len()..]),
             };
+            let others = || before.iter().chain(after);
             let graph_id = self.token("prepared-graph");
-            let stamps_bytes = (members().count() + 1) * size_of::<(PathBuf, SourceStamp)>()
+            let stamps_bytes = (others().count() + 1) * size_of::<(PathBuf, SourceStamp)>()
                 + root.canonical_path.as_os_str().len()
-                + members()
+                + others()
                     .map(|source| source.path.as_os_str().len())
                     .sum::<usize>();
-            let buffers: usize = if shares_root {
-                members()
+            let buffers: usize = if shared.is_some() {
+                others()
                     .map(|source| size_of::<PreparedSourceRef>() + source.path.as_os_str().len())
                     .sum()
             } else {
@@ -767,10 +770,12 @@ impl NativeStore {
                     + stamps_bytes
                     + buffers,
             )?;
-            let sources: Arc<[PreparedSourceRef]> = if shares_root {
-                members().cloned().collect()
+            let sources: Arc<[PreparedSourceRef]> = if shared.is_some() {
+                #[cfg(test)]
+                self.registered_sources.fetch_add(1, Ordering::Relaxed);
+                others().cloned().collect()
             } else {
-                Arc::clone(&membership.members)
+                Arc::clone(&members)
             };
             let mut stamps = Vec::with_capacity(sources.len() + 1);
             stamps.push((root.canonical_path.clone(), root.stamp));
@@ -800,7 +805,7 @@ impl NativeStore {
                 stamps,
                 validated: false,
                 sources,
-                sidechain_dirs: membership.sidechain_dirs,
+                sidechain_dirs,
                 remaining,
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
             };
@@ -1451,7 +1456,8 @@ impl NativeStore {
         let membership = if let Some(cached) = cached {
             if start > 0
                 || self.validate_warm_membership(
-                    &cached,
+                    &cached.members,
+                    &cached.sidechain_dirs,
                     context,
                     cancel,
                     remaining.deadline_unix_ms,
@@ -1607,7 +1613,8 @@ impl NativeStore {
         let complete = next == members.len();
         if complete {
             if !self.validate_warm_membership(
-                &membership,
+                &membership.members,
+                &membership.sidechain_dirs,
                 context,
                 cancel,
                 remaining.deadline_unix_ms,

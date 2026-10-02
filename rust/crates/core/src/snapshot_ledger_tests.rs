@@ -409,11 +409,10 @@ fn prepared_graph(store: &NativeStore, root: &Value, direct: &[String], owner: &
     prepared["data"]["handle"].clone()
 }
 
-fn warm(store: &NativeStore, scenario: &Scenario, owner: &Value) {
+fn warm_with(store: &NativeStore, mut request: Value, rounds: usize, owner: &Value) {
     let mut background = owner.clone();
     background.insert("work_class", json!("background"));
-    let mut request = warm_request(scenario);
-    for _ in 0..scenario.sidechains.len() + 16 {
+    for _ in 0..rounds {
         let reply = store.request(&request, &background, &Cancellation::default());
         assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
         if reply["data"]["complete"].as_bool() == Some(true) {
@@ -426,6 +425,15 @@ fn warm(store: &NativeStore, scenario: &Scenario, owner: &Value) {
         );
     }
     panic!("registered warming never completed");
+}
+
+fn warm(store: &NativeStore, scenario: &Scenario, owner: &Value) {
+    warm_with(
+        store,
+        warm_request(scenario),
+        scenario.sidechains.len() + 16,
+        owner,
+    );
 }
 
 fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
@@ -898,29 +906,32 @@ fn parked(response: &Value) -> bool {
     accepted
 }
 
-fn exact_headroom(build: &dyn Fn() -> Fixture, attempt: &dyn Fn(&Fixture) -> bool) -> usize {
-    let probe = |headroom: usize| {
-        let fixture = build();
-        let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
-        attempt(&fixture)
-    };
+fn exact_fit(fits: &dyn Fn(usize) -> bool) -> usize {
     assert!(
-        probe(SEARCH_LIMIT),
+        fits(SEARCH_LIMIT),
         "nothing was admitted within {SEARCH_LIMIT} bytes of headroom"
     );
-    if probe(0) {
+    if fits(0) {
         return 0;
     }
-    let (mut refused, mut fits) = (0, SEARCH_LIMIT);
-    while fits - refused > 1 {
-        let middle = refused + (fits - refused) / 2;
-        if probe(middle) {
-            fits = middle;
+    let (mut refused, mut fitted) = (0, SEARCH_LIMIT);
+    while fitted - refused > 1 {
+        let middle = refused + (fitted - refused) / 2;
+        if fits(middle) {
+            fitted = middle;
         } else {
             refused = middle;
         }
     }
-    fits
+    fitted
+}
+
+fn exact_headroom(build: &dyn Fn() -> Fixture, attempt: &dyn Fn(&Fixture) -> bool) -> usize {
+    exact_fit(&|headroom| {
+        let fixture = build();
+        let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+        attempt(&fixture)
+    })
 }
 
 fn assert_boundary_at(
@@ -7240,26 +7251,33 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
         assert!(location_parked(&fitted));
         assert_admitted_before_allocating("location park", &traced(&fitted.store));
         fitted.store.assert_conserved();
-        assert_eq!(
-            ledger(&fitted.store)[TOTAL],
-            cap_for(&fitted.owner),
-            "the exact fit did not land on the cap"
-        );
-        assert_eq!(audited(&fitted.store)[TOTAL], cap_for(&fitted.owner));
-        let (token, pledged) = {
+        let (token, pledged, parked) = {
             let state = fitted.store.lock_state();
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
             assert_eq!(token.capacity(), 64);
+            let parked = NativeStore::audit_locate_bytes(token, cursor)
+                + state.locates.capacity_bytes()
+                - capacity
+                + state.locates.pledged(token);
+            let peak = locate_record_bytes(cursor)
+                + LOCATE_PATH_SLOTS
+                + cursor.seen_directories.capacity() * size_of::<SourceIdentity>()
+                + cursor.directories.capacity() * size_of::<std::fs::ReadDir>()
+                + source.directory.as_os_str().len();
             assert_eq!(
                 exact,
-                NativeStore::audit_locate_bytes(token, cursor)
-                    + state.locates.capacity_bytes()
-                    - capacity
-                    + state.locates.pledged(token),
-                "the park admission is not the stored key, the cursor, its table growth, and its pledge"
+                peak.max(parked),
+                "the location step's admission is not its peak reservation or its stored key, cursor, table growth, and pledge"
             );
-            (token.clone(), state.locates.pledged(token))
+            (token.clone(), state.locates.pledged(token), parked)
         };
+        let cap = cap_for(&fitted.owner);
+        assert_eq!(
+            ledger(&fitted.store)[TOTAL],
+            cap - exact + parked,
+            "the fitted location step retained more than its parked record"
+        );
+        assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + parked);
         let before = delivered(&fitted.store);
         traced(&fitted.store);
         fitted
@@ -8172,6 +8190,634 @@ fn label_extraction_carries_the_seed_anchors_it_last_owned() {
             before[TOTAL] - ledger(&store)[TOTAL],
             walked + pledged + payload,
             "dropping the extracted label released other than its walk, pledge, and seed payload"
+        );
+    }
+}
+
+fn reached(probe: fn(&NativeStore) -> usize, run: impl Fn(&Fixture)) -> impl Fn(&Fixture) -> bool {
+    move |fixture: &Fixture| {
+        let before = probe(&fixture.store);
+        run(fixture);
+        probe(&fixture.store) > before
+    }
+}
+
+fn settled_or_refused(response: &Value) {
+    assert!(
+        matches!(
+            response["status"].as_str(),
+            Some("ok" | "incomplete" | "retained_limit")
+        ),
+        "{response:?}"
+    );
+}
+
+fn reserved(store: &NativeStore) -> Vec<usize> {
+    reserved_traces(&traced(store))
+}
+
+fn subagent_graph_source() -> LedgerSource {
+    let source = LedgerSource::new(&line("root"));
+    let children = source.directory.join("s/subagents");
+    std::fs::create_dir_all(&children).unwrap();
+    for index in 0..9 {
+        std::fs::write(
+            children.join(format!("agent-{index}.jsonl")),
+            line(&format!("agent-{index}")),
+        )
+        .unwrap();
+    }
+    source
+}
+
+fn graph_fixture(source: &LedgerSource, background: bool, attachments: Value) -> Fixture {
+    let store = cursor_store();
+    let owner = context_for("graph-admission", background);
+    let (root, snapshot) = acquired(&store, &source.path, &owner);
+    Fixture {
+        request: json!({"schema":SCHEMA,"id":"ledger-graph","operation":"query","view":{"handle":root,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":attachments},"query":missing_tool(),"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        store,
+        owner,
+        pins: vec![snapshot],
+    }
+}
+
+fn graph_record_bytes(graph: &GraphCursor) -> usize {
+    let root = &graph.nodes[0];
+    size_of::<GraphCursor>()
+        + graph.claimant.capacity()
+        + value_bytes(&graph.context)
+        + value_bytes(&graph.request)
+        + value_bytes(&graph.root_handle)
+        + graph.nodes.capacity() * size_of::<GraphNode>()
+        + root.path.capacity()
+        + value_bytes(&root.description)
+        + graph.seen.capacity() * size_of::<SourceIdentity>()
+        + graph.tasks.capacity() * size_of::<GraphTask>()
+        + root.path.capacity()
+}
+
+fn locate_record_bytes(cursor: &LocateCursor) -> usize {
+    size_of::<LocateCursor>()
+        + cursor.claimant.capacity()
+        + value_bytes(&cursor.context)
+        + cursor.ids.capacity() * size_of::<String>()
+        + cursor.ids.iter().map(String::capacity).sum::<usize>()
+        + cursor.wanted.capacity() * size_of::<String>()
+        + cursor.wanted.iter().map(String::capacity).sum::<usize>()
+        + cursor.scope.capacity() * size_of::<PathBuf>()
+        + 2 * cursor.scope.iter().map(PathBuf::capacity).sum::<usize>()
+        + cursor.roots.capacity() * size_of::<PathBuf>()
+}
+
+#[test]
+fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
+    let source = subagent_graph_source();
+    let directory = std::fs::canonicalize(&source.directory)
+        .unwrap()
+        .join("s")
+        .join("subagents");
+    for background in [false, true] {
+        let build = || graph_fixture(&source, background, json!([]));
+        let control = build();
+        let capacity = control.store.lock_state().graphs.capacity_bytes();
+        let delivered_before = delivered(&control.store);
+        assert!(parked(&submit(&control)));
+        let (record, peak, stored) = {
+            let state = control.store.lock_state();
+            let (token, graph) = state.graphs.iter().next().expect("parked graph");
+            assert_eq!((graph.nodes.len(), graph.nodes.capacity()), (1, 1));
+            assert!(graph.tasks.is_empty());
+            assert_eq!(graph.tasks.capacity(), 1);
+            let listing = graph.listing.as_ref().expect("parked listing");
+            assert_eq!(listing.children.len(), 1);
+            let record = graph_record_bytes(graph);
+            (
+                record,
+                record
+                    + FILESYSTEM_PATH_BYTES
+                    + 2 * directory.as_os_str().len()
+                    + listing.children.capacity() * size_of::<PathBuf>()
+                    + listing.children[0].capacity(),
+                NativeStore::audit_graph_cursor_bytes(token, graph) + state.graphs.capacity_bytes()
+                    - capacity,
+            )
+        };
+        let parked_bytes = stored + delivered(&control.store) - delivered_before;
+        let site = reached(
+            |store| store.graph_records.load(Ordering::Relaxed),
+            |fixture| settled_or_refused(&submit(fixture)),
+        );
+        let exact = exact_headroom(&build, &site);
+        assert_eq!(
+            exact,
+            REPLY_RESERVATION + record,
+            "the fresh graph cursor's reservation is not its constructed record"
+        );
+        for headroom in [REPLY_RESERVATION, exact - 1] {
+            let fixture = build();
+            let leases = lease_table(&fixture.store);
+            let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+            traced(&fixture.store);
+            assert!(
+                !site(&fixture),
+                "the graph record was built before its admission"
+            );
+            assert_eq!(reserved(&fixture.store), vec![REPLY_RESERVATION]);
+            assert!(fixture.store.lock_state().graphs.is_empty());
+            assert_eq!(lease_table(&fixture.store), leases);
+        }
+        refused_at_site(
+            "fresh graph record",
+            &build,
+            &site,
+            REPLY_RESERVATION,
+            exact,
+        );
+        let step = exact_headroom(&build, &|fixture: &Fixture| parked(&submit(fixture)));
+        assert_eq!(
+            step,
+            REPLY_RESERVATION + peak.max(parked_bytes),
+            "the graph step's admission is not its peak reservation or its parked record"
+        );
+        assert_boundary_at(
+            "graph step",
+            &build(),
+            &|fixture: &Fixture| parked(&submit(fixture)),
+            step,
+        );
+    }
+}
+
+#[test]
+fn graph_source_admits_its_node_before_pinning_it() {
+    let source = subagent_graph_source();
+    let member = std::fs::canonicalize(source.directory.join("s/subagents/agent-0.jsonl")).unwrap();
+    for background in [false, true] {
+        let setup = || {
+            let fixture = graph_fixture(&source, background, json!([]));
+            assert!(parked(&submit(&fixture)));
+            let (_, pin) = acquired(&fixture.store, &member, &fixture.owner);
+            let graph = {
+                let mut state = fixture.store.lock_state();
+                let token = state
+                    .graphs
+                    .iter()
+                    .next()
+                    .map(|(token, _)| token.clone())
+                    .expect("parked graph");
+                state.graphs.remove(&token).expect("parked graph")
+            };
+            let (data, pending, _) = fixture
+                .store
+                .acquire(
+                    &acquire(&member),
+                    &graph.context,
+                    &Cancellation::default(),
+                    &mut [0u64; 18],
+                )
+                .unwrap();
+            assert!(pending.is_none(), "the member acquire was not a cache hit");
+            (fixture, graph, data, pin)
+        };
+        let add = |headroom: usize| {
+            let (fixture, mut graph, data, pin) = setup();
+            let before = (
+                graph.nodes.capacity(),
+                graph.seen.capacity(),
+                graph.tasks.capacity(),
+            );
+            let added = {
+                let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+                let mut reservation = fixture.store.reserve_projection(&fixture.owner, 0).unwrap();
+                fixture.store.graph_add_source(
+                    &mut graph,
+                    member.clone(),
+                    1,
+                    Some("0".to_owned()),
+                    &data,
+                    &mut reservation,
+                )
+            };
+            (fixture, graph, data, pin, before, added)
+        };
+        let delta = {
+            let (_fixture, graph, _data, _pin, before, added) = add(SEARCH_LIMIT);
+            added.unwrap();
+            let node = graph.nodes.last().expect("added node");
+            (graph.nodes.capacity() - before.0) * size_of::<GraphNode>()
+                + node.path.capacity()
+                + value_bytes(&node.description)
+                + (graph.seen.capacity() - before.1) * size_of::<SourceIdentity>()
+                + (graph.tasks.capacity() - before.2) * size_of::<GraphTask>()
+        };
+        let exact = exact_fit(&|headroom| match add(headroom).5 {
+            Ok(()) => true,
+            Err(error) if error.status == Status::RetainedLimit => false,
+            Err(error) => panic!("graph source failed outside admission: {error:?}"),
+        });
+        assert_eq!(
+            exact, delta,
+            "the member node was not admitted by its stored bytes"
+        );
+        for headroom in [0, exact - 1] {
+            let (refused, graph, _data, _pin, _, added) = add(headroom);
+            assert_eq!(added.unwrap_err().status, Status::RetainedLimit);
+            assert_eq!(
+                refused.store.graph_sources.load(Ordering::Relaxed),
+                0,
+                "the member was pinned before its node was admitted"
+            );
+            assert_eq!(graph.nodes.len(), 1);
+            let (control, _, data, _control_pin) = setup();
+            control
+                .store
+                .lock_state()
+                .leases
+                .remove(str_field(&data["description"]["handle"], "lease_id").unwrap());
+            evict_unpinned(&control.store, &control.owner);
+            assert_eq!(lease_table(&refused.store), lease_table(&control.store));
+            assert_eq!(
+                (
+                    settled(&refused.store),
+                    audited(&refused.store),
+                    bookkeeping(&refused.store)
+                ),
+                (
+                    settled(&control.store),
+                    audited(&control.store),
+                    bookkeeping(&control.store)
+                ),
+                "a refused member admission leaked its lease or state"
+            );
+        }
+    }
+}
+
+fn pending_graph_fixture(
+    source: &LedgerSource,
+    attachment: &Path,
+    background: bool,
+    padding: usize,
+) -> Fixture {
+    let mut fixture = graph_fixture(
+        source,
+        background,
+        json!([attachment.to_string_lossy().as_ref()]),
+    );
+    let first = submit(&fixture);
+    assert!(parked(&first));
+    assert!(
+        fixture
+            .store
+            .lock_state()
+            .graphs
+            .values()
+            .all(|graph| graph.pending.is_some()),
+        "the graph did not park on its pending source"
+    );
+    fixture.request = resume_request(first["cursor"].as_str().unwrap());
+    fixture.owner.insert("padding", json!("p".repeat(padding)));
+    fixture
+}
+
+#[test]
+fn resumed_graph_cursor_admits_its_context_and_releases_its_sources_on_refusal() {
+    let source = LedgerSource::new(&line("root"));
+    let attachment = source.file("a.jsonl", &lines(0..64));
+    let fits = |fixture: &Fixture| {
+        traced(&fixture.store);
+        settled_or_refused(&submit(fixture));
+        reserved(&fixture.store).get(1) == Some(&value_bytes(&fixture.owner))
+    };
+    for background in [false, true] {
+        let exact_for = |padding: usize| {
+            let build = || pending_graph_fixture(&source, &attachment, background, padding);
+            let sample = build();
+            let key = sample
+                .store
+                .lock_state()
+                .graphs
+                .iter()
+                .next()
+                .map(|(token, _)| token.capacity())
+                .expect("parked graph");
+            let exact = exact_headroom(&build, &fits);
+            assert_eq!(
+                exact + key,
+                REPLY_RESERVATION + value_bytes(&sample.owner),
+                "the resumed graph did not admit its new context before cloning it"
+            );
+            exact
+        };
+        let (short, long) = (exact_for(0), exact_for(4096));
+        assert_eq!(long - short, 4096);
+        let build = || pending_graph_fixture(&source, &attachment, background, 4096);
+        for headroom in [REPLY_RESERVATION, long - 1] {
+            let refused = build();
+            {
+                let _filler = fill_to(&refused.store, &refused.owner, headroom);
+                assert!(!fits(&refused));
+            }
+            let control = build();
+            {
+                let mut state = control.store.lock_state();
+                let token = state
+                    .graphs
+                    .iter()
+                    .next()
+                    .map(|(token, _)| token.clone())
+                    .expect("parked graph");
+                let mut graph = state.graphs.remove(&token).expect("parked graph");
+                NativeStore::rollback_graph_page(&mut state, &mut graph);
+            }
+            evict_unpinned(&control.store, &control.owner);
+            {
+                let state = refused.store.lock_state();
+                assert!(state.graphs.is_empty() && state.waiters.is_empty());
+            }
+            assert_eq!(
+                (
+                    settled(&refused.store),
+                    audited(&refused.store),
+                    bookkeeping(&refused.store)
+                ),
+                (
+                    settled(&control.store),
+                    audited(&control.store),
+                    bookkeeping(&control.store)
+                ),
+                "a refused graph resume leaked its source waiter or leases"
+            );
+        }
+        assert_fitted_at("resumed graph context", &build(), &fits, long);
+    }
+}
+
+fn located(fixture: &Fixture) {
+    let mut usage = [0u64; 18];
+    match fixture.store.locate(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &mut usage,
+    ) {
+        Ok(_) => {}
+        Err(error) if error.status == Status::RetainedLimit => {}
+        Err(error) => panic!("location failed outside admission: {error:?}"),
+    }
+}
+
+#[test]
+fn fresh_location_cursor_admits_its_record_before_constructing_it() {
+    let source = LedgerSource::new(&line("locate"));
+    for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+        source.file(name, &line(name));
+    }
+    for background in [false, true] {
+        let build = || location_park_fixture(&source, background);
+        let control = build();
+        assert!(location_parked(&control));
+        let record = {
+            let state = control.store.lock_state();
+            let (_, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert!(cursor.roots.is_empty() && cursor.found.is_empty());
+            locate_record_bytes(cursor)
+        };
+        let site = reached(
+            |store| store.locate_records.load(Ordering::Relaxed),
+            located,
+        );
+        let exact = exact_headroom(&build, &site);
+        assert_eq!(
+            exact, record,
+            "the location cursor's reservation is not its constructed record"
+        );
+        for headroom in [0, exact - 1] {
+            let fixture = build();
+            let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+            let before = (
+                ledger(&fixture.store),
+                audited(&fixture.store),
+                bookkeeping(&fixture.store),
+            );
+            traced(&fixture.store);
+            let mut usage = [0u64; 18];
+            let error = fixture
+                .store
+                .locate(
+                    &fixture.request,
+                    &fixture.owner,
+                    &Cancellation::default(),
+                    &mut usage,
+                )
+                .unwrap_err();
+            assert_eq!(error.status, Status::RetainedLimit);
+            assert_eq!(usage[17], 0, "the refused location examined entries");
+            assert!(traced(&fixture.store).is_empty());
+            assert_eq!(fixture.store.locate_records.load(Ordering::Relaxed), 0);
+            assert!(fixture.store.lock_state().locates.is_empty());
+            assert_eq!(
+                (
+                    ledger(&fixture.store),
+                    audited(&fixture.store),
+                    bookkeeping(&fixture.store)
+                ),
+                before
+            );
+        }
+        refused_at_site("fresh location record", &build, &site, 0, exact);
+    }
+}
+
+fn location_resume_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let store = cursor_store();
+    let owner = context_for("locate-resume", background);
+    let first = store.request(
+        &json!({"schema":SCHEMA,"id":"ledger-locate","operation":"locate","session_ids":scenario.ids(),"roots":scenario.roots(),"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        &owner,
+        &Cancellation::default(),
+    );
+    assert!(parked(&first));
+    Fixture {
+        store,
+        owner,
+        request: resume_request(first["cursor"].as_str().unwrap()),
+        pins: Vec::new(),
+    }
+}
+
+#[test]
+fn resumed_location_step_admits_each_found_session_before_retaining_it() {
+    let scenario = Scenario::new(9, |index| session_line(&format!("thread-{index:04}")));
+    let root = PathBuf::from(&scenario.roots()[0]);
+    for background in [false, true] {
+        let build = || location_resume_fixture(&scenario, background);
+        let control = build();
+        let (key, mut found, pending) = {
+            let state = control.store.lock_state();
+            let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert!(cursor.pending.is_empty());
+            (
+                token.capacity(),
+                cursor.found.clone(),
+                cursor.pending.capacity(),
+            )
+        };
+        let reply = submit(&control);
+        let first = &reply["data"]["sessions"][0];
+        let (id, path, revision) = (
+            first["session_id"].as_str().unwrap().to_owned(),
+            first["path"].as_str().unwrap().to_owned(),
+            first["revision"].as_str().unwrap().to_owned(),
+        );
+        let found_before = found.capacity();
+        found.insert(id.clone());
+        let mut queued = VecDeque::<Value>::with_capacity(pending);
+        queued.push_back(Value::new_null());
+        let mut updates = Vec::<(String, PathBuf)>::new();
+        updates.push(Default::default());
+        let site = (found.capacity() - found_before) * size_of::<String>()
+            + id.len()
+            + (queued.capacity() - pending) * size_of::<Value>()
+            + value_bytes(&json!({"session_id":id,"status":"ok","path":path,"revision":revision}))
+            + updates.capacity() * size_of::<(String, PathBuf)>()
+            + id.len()
+            + root.join(Path::new(&path).file_name().unwrap()).capacity();
+        let attempt = reached(
+            |store| store.locate_items.load(Ordering::Relaxed),
+            |fixture| settled_or_refused(&submit(fixture)),
+        );
+        let exact = exact_headroom(&build, &attempt);
+        assert_eq!(
+            exact + key,
+            REPLY_RESERVATION + value_bytes(&control.owner) + LOCATE_PATH_SLOTS + site,
+            "the first found session was not admitted by its retained bytes"
+        );
+        for headroom in [REPLY_RESERVATION, exact - 1] {
+            let refused = build();
+            let probe = refused.store.locate_items.load(Ordering::Relaxed);
+            {
+                let _filler = fill_to(&refused.store, &refused.owner, headroom);
+                assert!(!attempt(&refused));
+            }
+            assert_eq!(refused.store.locate_items.load(Ordering::Relaxed), probe);
+            let control = build();
+            {
+                let mut state = control.store.lock_state();
+                let token = state
+                    .locates
+                    .iter()
+                    .next()
+                    .map(|(token, _)| token.clone())
+                    .expect("parked location cursor");
+                state.locates.remove(&token);
+            }
+            evict_unpinned(&control.store, &control.owner);
+            assert!(refused.store.lock_state().locates.is_empty());
+            assert_eq!(
+                (
+                    settled(&refused.store),
+                    audited(&refused.store),
+                    bookkeeping(&refused.store)
+                ),
+                (
+                    settled(&control.store),
+                    audited(&control.store),
+                    bookkeeping(&control.store)
+                ),
+                "a refused location resume leaked state"
+            );
+        }
+        assert_fitted_at("resumed found session", &build(), &attempt, exact);
+    }
+}
+
+fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("shared-root", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let direct = vec![scenario.root.path.to_string_lossy().into_owned()];
+    let mut warming = warm_request(scenario);
+    warming.insert("direct_paths", json!(direct));
+    warm_with(&store, warming, scenario.sidechains.len() + 16, &owner);
+    let request = prepare_request(&root, &scenario.ids(), &scenario.roots(), &direct);
+    let first = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+    let mut pins = vec![root_snapshot];
+    pins.extend(
+        scenario
+            .sidechains
+            .iter()
+            .map(|path| acquired(&store, path, &owner).1),
+    );
+    Fixture {
+        store,
+        owner,
+        request,
+        pins,
+    }
+}
+
+#[test]
+fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocation() {
+    let scenario = Scenario::new(3, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let build = || shared_root_fixture(&scenario, background);
+        let control = build();
+        let response = submit(&control);
+        assert!(admitted(&response, "ok"), "{response:?}");
+        let graph_id = response["data"]["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let bytes = {
+            let state = control.store.lock_state();
+            let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+            let root = graph.root.stamp.identity.file();
+            let membership = state
+                .warm_memberships
+                .values()
+                .find(|membership| {
+                    membership
+                        .members
+                        .iter()
+                        .any(|member| member.stamp.identity.file() == root)
+                })
+                .expect("a warm membership sharing the root");
+            assert!(!Arc::ptr_eq(&membership.members, &graph.sources));
+            assert_eq!(graph.sources.len() + 1, membership.members.len());
+            assert!(graph
+                .sources
+                .iter()
+                .map(|source| &source.path)
+                .eq(membership
+                    .members
+                    .iter()
+                    .filter(|member| member.stamp.identity.file() != root)
+                    .map(|member| &member.path)));
+            constructed_graph_bytes(&state, &graph_id, &graph)
+        };
+        let site = reached(
+            |store| store.registered_sources.load(Ordering::Relaxed),
+            |fixture| settled_or_refused(&submit(fixture)),
+        );
+        let exact = exact_headroom(&build, &site);
+        assert_eq!(
+            exact,
+            REPLY_RESERVATION + bytes,
+            "the shared-root slice was built before its record was admitted"
+        );
+        refused_at_site(
+            "registered shared root",
+            &build,
+            &site,
+            REPLY_RESERVATION,
+            exact,
         );
     }
 }

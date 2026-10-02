@@ -20,7 +20,7 @@ use crate::toolcall::{
 };
 use crate::types::{matches_names, AttachmentDetail, ContentBlock, Entry, UserContent};
 
-const JSON_LITERAL_OBJECT_CAPACITY: usize = 8;
+pub(crate) const JSON_LITERAL_OBJECT_CAPACITY: usize = 8;
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)

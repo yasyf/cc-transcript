@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut, Index};
@@ -112,6 +112,14 @@ pub(crate) fn vec_growth<T>(vec: &Vec<T>, additional: usize) -> usize {
 
 pub(crate) fn set_growth<T>(set: &HashSet<T>, additional: usize) -> usize {
     (set_capacity_for(set, additional) - set.capacity()) * size_of::<T>()
+}
+
+pub(crate) fn deque_capacity_for<T>(deque: &VecDeque<T>, additional: usize) -> usize {
+    vec_capacity_after(deque.capacity(), deque.len(), additional, size_of::<T>())
+}
+
+pub(crate) fn deque_growth<T>(deque: &VecDeque<T>, additional: usize) -> usize {
+    (deque_capacity_for(deque, additional) - deque.capacity()) * size_of::<T>()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

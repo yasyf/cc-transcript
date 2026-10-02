@@ -1,5 +1,6 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -18,11 +19,12 @@ use crate::snapshot_activity::ActivityIndex;
 #[cfg(test)]
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{
-    charged_bytes, set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge,
-    DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table,
-    TicketKey, Work,
+    charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier, set_capacity_for, set_growth,
+    vec_capacity_for, vec_growth, Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent,
+    LedgerHook, Ledgered, RetainedLedger, Table, TicketKey, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
+use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
 use crate::types::Entry;
 
 pub const SCHEMA: &str = "cc-transcript.snapshot/1";
@@ -30,6 +32,7 @@ pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
 pub const MAX_REPLY_BYTES: usize = 1_044_480;
 const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = libc::PATH_MAX as usize + size_of::<libc::dirent>();
+const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -628,6 +631,20 @@ impl LocateCursor {
     }
 }
 
+fn located_item_bytes(id: &str, status: &str, located: Option<(&Path, &str)>) -> usize {
+    let pair = size_of::<(Value, Value)>();
+    hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair) * pair
+        + ["session_id", "status", "path", "revision"]
+            .iter()
+            .map(|key| key.len())
+            .sum::<usize>()
+        + id.len()
+        + status.len()
+        + located.map_or(0, |(path, revision)| {
+            path.to_string_lossy().len() + revision.len()
+        })
+}
+
 fn inventory_bytes(inventory: &HashMap<String, Value>) -> usize {
     inventory.capacity() * size_of::<(String, Value)>()
         + inventory
@@ -811,6 +828,26 @@ fn spawner(path: &Path) -> &str {
         .and_then(|stem| stem.to_str())
         .unwrap_or("");
     stem.strip_prefix("agent-").unwrap_or(stem)
+}
+
+fn graph_spawned_by(path: &Path) -> Cow<'_, str> {
+    let stem = path.file_stem().expect("sidechain filename");
+    match stem.to_string_lossy() {
+        Cow::Borrowed(stem) => Cow::Borrowed(stem.strip_prefix("agent-").unwrap_or(stem)),
+        Cow::Owned(stem) => Cow::Owned(stem.strip_prefix("agent-").unwrap_or_default().to_owned()),
+    }
+}
+
+fn sidechain_directory_capacity(base: &Path, stem: &OsStr) -> usize {
+    base.as_os_str().len() + 1 + stem.len() + 1 + "subagents".len()
+}
+
+fn sidechain_directory(base: &Path, stem: &OsStr) -> PathBuf {
+    let mut directory = PathBuf::with_capacity(sidechain_directory_capacity(base, stem));
+    directory.push(base);
+    directory.push(stem);
+    directory.push("subagents");
+    directory
 }
 
 fn realpath(path: &Path) -> std::io::Result<PathBuf> {
@@ -2538,6 +2575,16 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) build_sources: AtomicUsize,
     #[cfg(test)]
+    pub(crate) graph_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) graph_sources: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) locate_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) locate_items: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) registered_sources: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -2927,6 +2974,16 @@ impl NativeStore {
             #[cfg(test)]
             build_sources: AtomicUsize::new(0),
             #[cfg(test)]
+            graph_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            graph_sources: AtomicUsize::new(0),
+            #[cfg(test)]
+            locate_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            locate_items: AtomicUsize::new(0),
+            #[cfg(test)]
+            registered_sources: AtomicUsize::new(0),
+            #[cfg(test)]
             audits,
         })
     }
@@ -3067,8 +3124,17 @@ impl NativeStore {
         if !std::ptr::eq(self, reservation.store) {
             return Err(invalid("projection reservation belongs to another owner"));
         }
-        let mut state = self.lock_state();
-        self.admit_memory(&mut state, context, bytes)?;
+        self.extend_projection_reservation_in(&mut self.lock_state(), reservation, context, bytes)
+    }
+
+    fn extend_projection_reservation_in(
+        &self,
+        state: &mut StoreState,
+        reservation: &mut ProjectionReservation<'_>,
+        context: &Value,
+        bytes: usize,
+    ) -> Result<(), SnapshotError> {
+        self.admit_memory(state, context, bytes)?;
         state.transient_bytes += bytes;
         reservation.bytes += bytes;
         state.ledger.shared.work().reserved(bytes);
@@ -5861,11 +5927,26 @@ impl NativeStore {
                             "location cursor claimant differs",
                         ));
                     }
-                    state.locates.remove(cursor)
+                    state.locates.remove(cursor).map(|locate| {
+                        let held = locate.charge();
+                        state.transient_bytes += held;
+                        (
+                            locate,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(mut locate) = locate {
+                if let Some((mut locate, mut reservation)) = locate {
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context) + LOCATE_PATH_SLOTS,
+                    )?;
                     locate.context = context.clone();
-                    return self.locate_step(cursor, locate, cancel, usage);
+                    return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
                 }
                 let prepared_build = {
                     let mut state = self.lock_state();
@@ -5951,11 +6032,29 @@ impl NativeStore {
                             "graph cursor claimant differs",
                         ));
                     }
-                    state.graphs.remove(cursor)
+                    state.graphs.remove(cursor).map(|graph| {
+                        let held = graph.charge();
+                        state.transient_bytes += held;
+                        (
+                            graph,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(mut graph) = graph {
+                if let Some((mut graph, mut reservation)) = graph {
+                    if let Err(error) = self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context),
+                    ) {
+                        Self::rollback_graph_page(&mut self.lock_state(), &mut graph);
+                        return Err(error);
+                    }
                     graph.context = context.clone();
-                    return self.graph_step(cursor, graph, cancel, usage);
+                    return self.graph_step(cursor, graph, &mut reservation, cancel, usage);
                 }
                 if let Some(mut waiter) = waiter {
                     if waiter.claimant != str_field(context, "claimant")? {
@@ -7448,10 +7547,9 @@ impl NativeStore {
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         let root_handle = view
             .get("handle")
-            .ok_or_else(|| invalid("missing root handle"))?
-            .clone();
+            .ok_or_else(|| invalid("missing root handle"))?;
         let (root, description) =
-            self.pin_scope_for_work(&root_handle, context, bounds.deadline_unix_ms)?;
+            self.pin_scope_for_work(root_handle, context, bounds.deadline_unix_ms)?;
         bounds.deadline_unix_ms = bounds
             .deadline_unix_ms
             .min(number(&description, "lease_expires_unix_ms")? as u64);
@@ -7479,18 +7577,45 @@ impl NativeStore {
         } else {
             true
         };
-        let mut tasks = Vec::new();
         let attachments = view
             .get("attachments")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing attachments"))?;
+        let attachment_bytes = attachments
+            .iter()
+            .filter(|_| !direct)
+            .map(|attachment| {
+                attachment
+                    .as_str()
+                    .map(str::len)
+                    .ok_or_else(|| invalid("invalid attachment"))
+            })
+            .sum::<Result<usize, _>>()?;
+        let task_count = if direct { 0 } else { attachments.len() } + usize::from(selected);
+        let claimant = str_field(context, "claimant")?;
+        let root_path = root.canonical_path.as_os_str().len();
+        let mut reservation = self.reserve_projection(
+            context,
+            size_of::<GraphCursor>()
+                + claimant.len()
+                + value_bytes(context)
+                + value_bytes(request)
+                + value_bytes(root_handle)
+                + size_of::<GraphNode>()
+                + root_path
+                + value_bytes(&description)
+                + set_growth(&HashSet::<SourceIdentity>::new(), 1)
+                + task_count * size_of::<GraphTask>()
+                + attachment_bytes
+                + if selected { root_path } else { 0 },
+        )?;
+        #[cfg(test)]
+        self.graph_records.fetch_add(1, Ordering::Relaxed);
+        let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
+        let mut tasks = Vec::with_capacity(task_count);
         for attachment in attachments.iter().rev().filter(|_| !direct) {
             tasks.push(GraphTask::Visit {
-                path: PathBuf::from(
-                    attachment
-                        .as_str()
-                        .ok_or_else(|| invalid("invalid attachment"))?,
-                ),
+                path: PathBuf::from(attachment.as_str().expect("validated attachment")),
                 depth: 1,
                 spawned_by: None,
             });
@@ -7503,10 +7628,10 @@ impl NativeStore {
         }
         let identity = root.stamp.identity.file();
         let graph = GraphCursor {
-            claimant: str_field(context, "claimant")?.to_owned(),
+            claimant: claimant.to_owned(),
             context: context.clone(),
             request: request.clone(),
-            root_handle,
+            root_handle: root_handle.clone(),
             remaining: bounds,
             nodes: vec![GraphNode {
                 path: root.canonical_path.clone(),
@@ -7527,7 +7652,11 @@ impl NativeStore {
             published_members: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(bounds.deadline_unix_ms),
         };
-        self.graph_step(&self.token("graph"), graph, cancel, usage)
+        assert_eq!(
+            (graph.seen.capacity(), graph.tasks.capacity()),
+            (seen_capacity, task_count)
+        );
+        self.graph_step(&self.token("graph"), graph, &mut reservation, cancel, usage)
     }
 
     fn graph_member_request(graph: &GraphCursor, index: usize) -> Value {
@@ -7559,10 +7688,11 @@ impl NativeStore {
         &self,
         token: &str,
         mut graph: GraphCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let (data, complete) = match self.graph_work(&mut graph, cancel, usage) {
+        let (data, complete) = match self.graph_work(&mut graph, reservation, cancel, usage) {
             Ok(GraphYield::Complete(data)) => (data, true),
             Ok(GraphYield::Pending(data)) => (data, false),
             Err(error) => {
@@ -7601,10 +7731,13 @@ impl NativeStore {
         let pledge = Delivery::cursor_pledge(&graph.claimant, &token);
         let additional =
             state.admission(&token, &graph, []) + state.graphs.growth_for(&token) + pledge;
-        if let Err(error) = self.admit_memory(&mut state, &graph.context, additional) {
+        let covered = additional.min(reservation.bytes);
+        if let Err(error) = self.admit_memory(&mut state, &graph.context, additional - covered) {
             Self::rollback_graph_page(&mut state, &mut graph);
             return Err(error);
         }
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         graph.published_members.clear();
         state.graphs.reserve_for(&token);
         state.graphs.insert(token.clone(), graph);
@@ -7619,15 +7752,35 @@ impl NativeStore {
         depth: usize,
         spawned_by: Option<String>,
         data: &Value,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(), SnapshotError> {
         let acquired = data
             .get("description")
             .ok_or_else(|| invalid("acquire returned no source description"))?;
-        let pinned = self.pin_scope_for_work(
-            &acquired["handle"],
-            &graph.context,
-            graph.remaining.deadline_unix_ms,
-        );
+        let direct = graph.request["query"]["kind"].as_str() == Some("direct_sidechains");
+        let pinned = self
+            .extend_projection_reservation(
+                reservation,
+                &graph.context,
+                value_bytes(acquired)
+                    + set_growth(&graph.seen, 1)
+                    + vec_growth(&graph.nodes, 1)
+                    + path.as_os_str().len()
+                    + if direct {
+                        0
+                    } else {
+                        vec_growth(&graph.tasks, 1)
+                    },
+            )
+            .and_then(|()| {
+                #[cfg(test)]
+                self.graph_sources.fetch_add(1, Ordering::Relaxed);
+                self.pin_scope_for_work(
+                    &acquired["handle"],
+                    &graph.context,
+                    graph.remaining.deadline_unix_ms,
+                )
+            });
         if pinned.is_err() {
             self.lock_state()
                 .leases
@@ -7635,14 +7788,20 @@ impl NativeStore {
         }
         let (snapshot, description) = pinned?;
         let identity = snapshot.stamp.identity.file();
-        if !graph.seen.insert(identity)
-            && graph.request["query"]["kind"].as_str() != Some("direct_sidechains")
-        {
+        if !graph.seen.insert(identity) && !direct {
             self.lock_state()
                 .leases
                 .remove(str_field(&description["handle"], "lease_id")?);
             return Ok(());
         }
+        let predicted = (
+            vec_capacity_for(&graph.nodes, 1),
+            if direct {
+                graph.tasks.capacity()
+            } else {
+                vec_capacity_for(&graph.tasks, 1)
+            },
+        );
         graph.nodes.push(GraphNode {
             path: path.clone(),
             depth,
@@ -7660,12 +7819,13 @@ impl NativeStore {
                 )?)
                 .expect("validated internal graph lease");
         }
-        if graph.request["query"]["kind"].as_str() != Some("direct_sidechains") {
+        if !direct {
             graph.tasks.push(GraphTask::List {
                 parent: path,
                 depth: depth + 1,
             });
         }
+        assert_eq!((graph.nodes.capacity(), graph.tasks.capacity()), predicted);
         Ok(())
     }
 
@@ -7704,6 +7864,7 @@ impl NativeStore {
         &self,
         graph: &mut GraphCursor,
         pending: GraphPending,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
         work: &mut usize,
@@ -7744,6 +7905,7 @@ impl NativeStore {
                 pending.depth,
                 pending.spawned_by,
                 &outcome.0,
+                reservation,
             )?;
             return Ok(true);
         }
@@ -7752,6 +7914,7 @@ impl NativeStore {
     fn graph_work(
         &self,
         graph: &mut GraphCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<GraphYield, SnapshotError> {
@@ -7762,7 +7925,7 @@ impl NativeStore {
             graph.remaining.deadline_unix_ms,
         )?;
         self.renew_graph_members(graph)?;
-        let kind = str_field(&graph.request["query"], "kind")?.to_owned();
+        let kind = str_field(&graph.request["query"], "kind")?;
         let direct = kind == "direct_sidechains";
         let membership = direct || kind == "sidechain_membership";
         let inputs = kind == "deep_predicate_inputs";
@@ -7795,12 +7958,14 @@ impl NativeStore {
                 return Ok(GraphYield::Complete(projection.data));
             }
         }
+        self.extend_projection_reservation(reservation, &graph.context, FILESYSTEM_PATH_BYTES)?;
         let work_stop = self.config.event_step.min(self.config.page_items);
         let mut examined = 0usize;
         if let Some(pending) = graph.pending.take() {
             if !self.advance_graph_source(
                 graph,
                 pending,
+                reservation,
                 cancel,
                 usage,
                 &mut examined,
@@ -7829,13 +7994,15 @@ impl NativeStore {
                     graph.remaining.max_discovery_entries -= 1;
                     examined += 1;
                     usage[17] += 1;
-                    let entry = entry.map_err(io_error)?;
-                    let path = entry.path();
-                    let name = entry.file_name();
+                    let path = entry.map_err(io_error)?.path();
                     if path
                         .extension()
                         .is_some_and(|extension| extension == "jsonl")
-                        && !name.to_string_lossy().starts_with("._")
+                        && !path
+                            .file_name()
+                            .expect("directory entry name")
+                            .as_encoded_bytes()
+                            .starts_with(b"._")
                     {
                         if direct {
                             let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
@@ -7858,29 +8025,38 @@ impl NativeStore {
                                 "graph source discovery budget exhausted",
                             ));
                         }
+                        self.extend_projection_reservation(
+                            reservation,
+                            &graph.context,
+                            path.capacity() + vec_growth(&listing.children, 1),
+                        )?;
+                        let predicted = vec_capacity_for(&listing.children, 1);
                         listing.children.push(path);
+                        assert_eq!(listing.children.capacity(), predicted);
                     }
                 }
-                listing.children.sort();
+                listing.children.sort_unstable();
+                self.extend_projection_reservation(
+                    reservation,
+                    &graph.context,
+                    vec_growth(&graph.tasks, listing.children.len())
+                        + listing
+                            .children
+                            .iter()
+                            .map(|path| graph_spawned_by(path).len())
+                            .sum::<usize>(),
+                )?;
+                let predicted = vec_capacity_for(&graph.tasks, listing.children.len());
+                graph.tasks.reserve(listing.children.len());
                 for path in listing.children.into_iter().rev() {
-                    let spawned_by = path
-                        .file_stem()
-                        .expect("sidechain filename")
-                        .to_string_lossy()
-                        .strip_prefix("agent-")
-                        .unwrap_or_else(|| {
-                            path.file_stem()
-                                .expect("sidechain filename")
-                                .to_str()
-                                .unwrap_or("")
-                        })
-                        .to_owned();
+                    let spawned_by = graph_spawned_by(&path).into_owned();
                     graph.tasks.push(GraphTask::Visit {
                         path,
                         depth: listing.depth,
                         spawned_by: Some(spawned_by),
                     });
                 }
+                assert_eq!(graph.tasks.capacity(), predicted);
                 continue;
             }
             let Some(task) = graph.tasks.pop() else {
@@ -7889,15 +8065,18 @@ impl NativeStore {
             };
             match task {
                 GraphTask::List { parent, depth } => {
-                    let directory = parent
+                    let base = parent
                         .parent()
-                        .ok_or_else(|| invalid("source has no parent"))?
-                        .join(
-                            parent
-                                .file_stem()
-                                .ok_or_else(|| invalid("source has no stem"))?,
-                        )
-                        .join("subagents");
+                        .ok_or_else(|| invalid("source has no parent"))?;
+                    let stem = parent
+                        .file_stem()
+                        .ok_or_else(|| invalid("source has no stem"))?;
+                    self.extend_projection_reservation(
+                        reservation,
+                        &graph.context,
+                        2 * sidechain_directory_capacity(base, stem),
+                    )?;
+                    let directory = sidechain_directory(base, stem);
                     match std::fs::canonicalize(&directory) {
                         Ok(canonical) => {
                             self.authority(&graph.context, Some(&canonical))?;
@@ -7917,24 +8096,32 @@ impl NativeStore {
                     spawned_by,
                 } => {
                     examined += 1;
-                    let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
-                    self.authority(&graph.context, Some(&canonical))?;
-                    let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                    if !metadata.is_file() {
-                        return Err(invalid("graph source must be a file"));
-                    }
-                    if !direct && graph.seen.contains(&SourceStamp::of(&metadata).identity) {
-                        continue;
-                    }
-                    if graph.nodes.len() >= graph.remaining.max_sources {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "graph source budget exhausted",
-                        ));
-                    }
-                    let bounds = graph.remaining;
-                    let acquire = json!({"schema":SCHEMA,"id":"graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":bounds.deadline_unix_ms,
-                        "limits":bounds.to_json()});
+                    let acquire = {
+                        let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                        self.authority(&graph.context, Some(&canonical))?;
+                        let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+                        if !metadata.is_file() {
+                            return Err(invalid("graph source must be a file"));
+                        }
+                        if !direct && graph.seen.contains(&SourceStamp::of(&metadata).identity) {
+                            continue;
+                        }
+                        if graph.nodes.len() >= graph.remaining.max_sources {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "graph source budget exhausted",
+                            ));
+                        }
+                        let bounds = graph.remaining;
+                        let canonical = canonical.to_string_lossy();
+                        json!({"schema":SCHEMA,"id":"graph-source","operation":"acquire","path":canonical.as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":bounds.deadline_unix_ms,
+                            "limits":bounds.to_json()})
+                    };
+                    self.extend_projection_reservation(
+                        reservation,
+                        &graph.context,
+                        2 * <Sha256 as Digest>::output_size(),
+                    )?;
                     let before_bytes = usage[1];
                     let before_events = usage[3];
                     let outcome = self.acquire(&acquire, &graph.context, cancel, usage)?;
@@ -7955,6 +8142,7 @@ impl NativeStore {
                                 depth,
                                 spawned_by,
                             },
+                            reservation,
                             cancel,
                             usage,
                             &mut examined,
@@ -7963,7 +8151,14 @@ impl NativeStore {
                             return Ok(GraphYield::Pending(Value::new_null()));
                         }
                     } else {
-                        self.graph_add_source(graph, path, depth, spawned_by, &outcome.0)?;
+                        self.graph_add_source(
+                            graph,
+                            path,
+                            depth,
+                            spawned_by,
+                            &outcome.0,
+                            reservation,
+                        )?;
                     }
                 }
             }
@@ -7990,8 +8185,10 @@ impl NativeStore {
             if records.len() >= page_limit {
                 break;
             }
-            let (index, record) = if let Some(pending) = graph.pending_records.pop_front() {
-                pending
+            let (index, record, fresh) = if let Some((index, record)) =
+                graph.pending_records.pop_front()
+            {
+                (index, record, false)
             } else {
                 let position = if reverse {
                     total - 1 - graph.projection_at
@@ -8017,6 +8214,7 @@ impl NativeStore {
                     (
                         index,
                         sonic_rs::to_string(&record).map_err(|error| invalid(error.to_string()))?,
+                        true,
                     )
                 } else {
                     let request = Self::graph_member_request(graph, index);
@@ -8064,18 +8262,42 @@ impl NativeStore {
                         graph.remaining.max_read_bytes.saturating_sub(read_bytes);
                     graph.remaining.max_events = graph.remaining.max_events.saturating_sub(events);
                     graph.projection_at += 1;
-                    let mut member_records =
-                        member_records.into_iter().map(|record| (index, record));
+                    let mut member_records = member_records.into_iter();
                     let first = member_records.next().expect("predicate member record");
-                    graph.pending_records.extend(member_records);
-                    first
+                    self.extend_projection_reservation(
+                        reservation,
+                        &graph.context,
+                        deque_growth(&graph.pending_records, member_records.len())
+                            + member_records
+                                .as_slice()
+                                .iter()
+                                .map(String::capacity)
+                                .sum::<usize>(),
+                    )?;
+                    let predicted =
+                        deque_capacity_for(&graph.pending_records, member_records.len());
+                    graph.pending_records.reserve(member_records.len());
+                    graph
+                        .pending_records
+                        .extend(member_records.map(|record| (index, record)));
+                    assert_eq!(graph.pending_records.capacity(), predicted);
+                    (index, first, true)
                 }
             };
             let record_bytes = encoded_size(&json!(&record), MAX_DATA_BYTES)?;
             if output_bytes.saturating_add(record_bytes)
                 > graph.remaining.max_output_bytes.min(MAX_DATA_BYTES)
             {
+                if fresh {
+                    self.extend_projection_reservation(
+                        reservation,
+                        &graph.context,
+                        deque_growth(&graph.pending_records, 1) + record.capacity(),
+                    )?;
+                }
+                let predicted = deque_capacity_for(&graph.pending_records, 1);
                 graph.pending_records.push_front((index, record));
+                assert_eq!(graph.pending_records.capacity(), predicted);
                 if records.is_empty() {
                     return Err(SnapshotError::new(
                         Status::OutputLimit,
@@ -8086,8 +8308,15 @@ impl NativeStore {
             }
             output_bytes += record_bytes + 1;
             if membership {
+                self.extend_projection_reservation(
+                    reservation,
+                    &graph.context,
+                    vec_growth(&graph.published_members, 1),
+                )?;
                 graph.nodes[index].transferred = true;
+                let predicted = vec_capacity_for(&graph.published_members, 1);
                 graph.published_members.push(index);
+                assert_eq!(graph.published_members.capacity(), predicted);
             }
             records.push(record);
         }
@@ -8627,6 +8856,35 @@ impl NativeStore {
             .find_map(|(index, _)| wanted.get(&stem[index + 1..]).map(String::as_str))
     }
 
+    fn queue_unfound_locations(
+        &self,
+        cursor: &mut LocateCursor,
+        reservation: &mut ProjectionReservation<'_>,
+        status: &str,
+    ) -> Result<(), SnapshotError> {
+        let unfound = || cursor.ids.iter().filter(|id| !cursor.found.contains(*id));
+        let count = unfound().count();
+        self.extend_projection_reservation(
+            reservation,
+            &cursor.context,
+            deque_growth(&cursor.pending, count)
+                + unfound()
+                    .map(|id| located_item_bytes(id, status, None))
+                    .sum::<usize>(),
+        )?;
+        let predicted = deque_capacity_for(&cursor.pending, count);
+        cursor.pending.reserve(count);
+        for id in &cursor.ids {
+            if !cursor.found.contains(id) {
+                cursor.pending.push_back(
+                    json!({"session_id":id,"status":status,"path":null,"revision":null}),
+                );
+            }
+        }
+        assert_eq!(cursor.pending.capacity(), predicted);
+        Ok(())
+    }
+
     fn location_candidate(
         &self,
         path: &Path,
@@ -8706,17 +8964,25 @@ impl NativeStore {
         if requested.is_empty() || requested.len() > 1024 || requested.len() > bound.max_items {
             return Err(invalid("location request exceeds session item bound"));
         }
-        let mut ids = Vec::with_capacity(requested.len());
-        let mut wanted = HashSet::with_capacity(requested.len());
-        for value in requested.iter() {
-            let id = value
-                .as_str()
-                .ok_or_else(|| invalid("invalid session id"))?;
-            if id.is_empty() || id.len() > 256 || !wanted.insert(id.to_owned()) {
-                return Err(invalid("invalid or duplicate session id"));
-            }
-            ids.push(id.to_owned());
-        }
+        let id_bytes = requested
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let id = value
+                    .as_str()
+                    .ok_or_else(|| invalid("invalid session id"))?;
+                if id.is_empty()
+                    || id.len() > 256
+                    || requested
+                        .iter()
+                        .take(index)
+                        .any(|prior| prior.as_str() == Some(id))
+                {
+                    return Err(invalid("invalid or duplicate session id"));
+                }
+                Ok(id.len())
+            })
+            .sum::<Result<usize, _>>()?;
         let roots = request
             .get("roots")
             .and_then(Value::as_array)
@@ -8724,6 +8990,37 @@ impl NativeStore {
         if roots.is_empty() || roots.len() > 64 {
             return Err(invalid("invalid root count"));
         }
+        let claimant = str_field(context, "claimant")?;
+        let paths = roots.len() * size_of::<PathBuf>()
+            + roots
+                .iter()
+                .map(|root| root.as_str().map_or(0, str::len))
+                .sum::<usize>();
+        let mut reservation = self.reserve_projection(
+            context,
+            size_of::<LocateCursor>()
+                + claimant.len()
+                + value_bytes(context)
+                + requested.len() * size_of::<String>()
+                + set_growth(&HashSet::<String>::new(), requested.len())
+                + 2 * id_bytes
+                + 2 * paths,
+        )?;
+        #[cfg(test)]
+        self.locate_records.fetch_add(1, Ordering::Relaxed);
+        let wanted_capacity = set_capacity_for(&HashSet::<String>::new(), requested.len());
+        let mut ids = Vec::with_capacity(requested.len());
+        let mut wanted = HashSet::with_capacity(requested.len());
+        for value in requested.iter() {
+            let id = value.as_str().expect("validated session id");
+            wanted.insert(id.to_owned());
+            ids.push(id.to_owned());
+        }
+        assert_eq!(
+            (ids.capacity(), wanted.capacity()),
+            (requested.len(), wanted_capacity)
+        );
+        self.extend_projection_reservation(&mut reservation, context, LOCATE_PATH_SLOTS)?;
         let mut scope = Vec::with_capacity(roots.len());
         for root in roots.iter() {
             let path = PathBuf::from(root.as_str().ok_or_else(|| invalid("invalid root"))?);
@@ -8732,30 +9029,67 @@ impl NativeStore {
             scope.push(path);
         }
         let cached = {
-            let state = self.lock_state();
-            ids.iter()
+            let mut state = self.lock_state();
+            let (count, bytes) = ids
+                .iter()
                 .filter_map(|id| {
                     state
                         .locations
                         .get(id)
-                        .map(|location| (id.clone(), location.path.clone()))
+                        .map(|location| id.len() + location.path.as_os_str().len())
                 })
-                .collect::<Vec<_>>()
+                .fold((0, 0), |(count, bytes), hit| (count + 1, bytes + hit));
+            self.extend_projection_reservation_in(
+                &mut state,
+                &mut reservation,
+                context,
+                count * size_of::<(String, PathBuf)>() + bytes,
+            )?;
+            let mut cached = Vec::with_capacity(count);
+            cached.extend(ids.iter().filter_map(|id| {
+                state
+                    .locations
+                    .get(id)
+                    .map(|location| (id.clone(), location.path.clone()))
+            }));
+            cached
         };
         let mut found = HashSet::new();
         let mut pending = VecDeque::new();
         let mut refreshed = Vec::new();
         for (id, path) in cached {
             if let Some(stamp) = self.location_candidate(&path, &scope, context)? {
+                let revision = stamp.revision();
+                self.extend_projection_reservation(
+                    &mut reservation,
+                    context,
+                    set_growth(&found, 1)
+                        + id.len()
+                        + deque_growth(&pending, 1)
+                        + located_item_bytes(&id, "ok", Some((path.as_path(), revision.as_str())))
+                        + vec_growth(&refreshed, 1),
+                )?;
+                #[cfg(test)]
+                self.locate_items.fetch_add(1, Ordering::Relaxed);
+                let predicted = (
+                    set_capacity_for(&found, 1),
+                    deque_capacity_for(&pending, 1),
+                    vec_capacity_for(&refreshed, 1),
+                );
                 found.insert(id.clone());
-                pending.push_back(json!({"session_id":id,"status":"ok","path":path.to_string_lossy().as_ref(),"revision":stamp.revision()}));
+                pending.push_back(json!({"session_id":id,"status":"ok","path":path.to_string_lossy().as_ref(),"revision":revision}));
                 refreshed.push((id, path));
+                assert_eq!(
+                    (found.capacity(), pending.capacity(), refreshed.capacity()),
+                    predicted
+                );
             }
         }
         self.remember_locations(&refreshed, context);
+        drop(refreshed);
         let token = self.token("location");
         let cursor = LocateCursor {
-            claimant: str_field(context, "claimant")?.to_owned(),
+            claimant: claimant.to_owned(),
             context: context.clone(),
             limits: bound,
             ids,
@@ -8773,13 +9107,14 @@ impl NativeStore {
             exhausted: false,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
         };
-        self.locate_step(&token, cursor, cancel, usage)
+        self.locate_step(&token, cursor, &mut reservation, cancel, usage)
     }
 
     fn locate_step(
         &self,
         token: &str,
         mut cursor: LocateCursor,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -8794,16 +9129,22 @@ impl NativeStore {
         loop {
             while let Some(mut item) = cursor.pending.pop_front() {
                 if item["status"].as_str() == Some("ok") {
-                    let path = PathBuf::from(str_field(&item, "path")?);
-                    let id = str_field(&item, "session_id")?.to_owned();
-                    if let Some(stamp) =
-                        self.location_candidate(&path, &cursor.scope, &cursor.context)?
-                    {
-                        item.insert("revision", json!(stamp.revision()));
-                    } else {
-                        cursor.found.remove(&id);
+                    let Some(stamp) = self.location_candidate(
+                        Path::new(str_field(&item, "path")?),
+                        &cursor.scope,
+                        &cursor.context,
+                    )?
+                    else {
+                        cursor.found.remove(str_field(&item, "session_id")?);
                         continue;
-                    }
+                    };
+                    let revision = stamp.revision();
+                    self.extend_projection_reservation(
+                        reservation,
+                        &cursor.context,
+                        revision.len(),
+                    )?;
+                    item.insert("revision", json!(revision));
                 }
                 let bytes = encoded_size(&item, MAX_DATA_BYTES)?;
                 if cursor.output_bytes + bytes + 2
@@ -8855,32 +9196,47 @@ impl NativeStore {
                     root
                 } else {
                     cursor.finished = true;
-                    for id in &cursor.ids {
-                        if !cursor.found.contains(id) {
-                            cursor.pending.push_back(json!({"session_id":id,"status":"missing","path":null,"revision":null}));
-                        }
-                    }
+                    self.queue_unfound_locations(&mut cursor, reservation, "missing")?;
                     continue;
                 };
-                let canonical = match std::fs::canonicalize(&path) {
-                    Ok(path) => path,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(io_error(error)),
-                };
-                self.authority(&cursor.context, Some(&canonical))?;
-                let metadata = match std::fs::metadata(&canonical) {
-                    Ok(metadata) => metadata,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(io_error(error)),
+                let metadata = {
+                    let canonical = match std::fs::canonicalize(&path) {
+                        Ok(path) => path,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(io_error(error)),
+                    };
+                    self.authority(&cursor.context, Some(&canonical))?;
+                    match std::fs::metadata(&canonical) {
+                        Ok(metadata) => metadata,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(io_error(error)),
+                    }
                 };
                 if metadata.is_dir() {
-                    if cursor
-                        .seen_directories
-                        .insert(SourceStamp::of(&metadata).identity)
-                    {
+                    let identity = SourceStamp::of(&metadata).identity;
+                    if !cursor.seen_directories.contains(&identity) {
+                        self.extend_projection_reservation(
+                            reservation,
+                            &cursor.context,
+                            set_growth(&cursor.seen_directories, 1)
+                                + vec_growth(&cursor.directories, 1)
+                                + path.as_os_str().len(),
+                        )?;
+                        let predicted = (
+                            set_capacity_for(&cursor.seen_directories, 1),
+                            vec_capacity_for(&cursor.directories, 1),
+                        );
+                        cursor.seen_directories.insert(identity);
                         cursor
                             .directories
                             .push(std::fs::read_dir(&path).map_err(io_error)?);
+                        assert_eq!(
+                            (
+                                cursor.seen_directories.capacity(),
+                                cursor.directories.capacity()
+                            ),
+                            predicted
+                        );
                     }
                     continue;
                 }
@@ -8891,20 +9247,46 @@ impl NativeStore {
                 let Some(id) = Self::requested_location(&stem, &cursor.wanted) else {
                     continue;
                 };
-                if cursor.found.insert(id.to_owned()) {
+                if !cursor.found.contains(id) {
                     let stamp = SourceStamp::of(&metadata);
-                    cursor.pending.push_back(json!({"session_id":id,"status":"ok","path":path.to_string_lossy().as_ref(),"revision":stamp.revision()}));
+                    let revision = stamp.revision();
+                    self.extend_projection_reservation(
+                        reservation,
+                        &cursor.context,
+                        set_growth(&cursor.found, 1)
+                            + id.len()
+                            + deque_growth(&cursor.pending, 1)
+                            + located_item_bytes(
+                                id,
+                                "ok",
+                                Some((path.as_path(), revision.as_str())),
+                            )
+                            + vec_growth(&updates, 1)
+                            + id.len()
+                            + path.capacity(),
+                    )?;
+                    #[cfg(test)]
+                    self.locate_items.fetch_add(1, Ordering::Relaxed);
+                    let predicted = (
+                        deque_capacity_for(&cursor.pending, 1),
+                        vec_capacity_for(&updates, 1),
+                    );
+                    cursor.found.insert(id.to_owned());
+                    cursor.pending.push_back(json!({"session_id":id,"status":"ok","path":path.to_string_lossy().as_ref(),"revision":revision}));
                     updates.push((id.to_owned(), path));
+                    assert_eq!((cursor.pending.capacity(), updates.capacity()), predicted);
                 }
                 continue;
             }
-            for id in &cursor.ids {
-                if !cursor.found.contains(id) {
-                    cursor.pending.push_back(json!({"session_id":id,"status":if cursor.exhausted {"incomplete"} else {"missing"},"path":null,"revision":null}));
-                }
-            }
+            let status = if cursor.exhausted {
+                "incomplete"
+            } else {
+                "missing"
+            };
+            self.queue_unfound_locations(&mut cursor, reservation, status)?;
         }
         self.remember_locations(&updates, &cursor.context);
+        drop(updates);
         let complete = cursor.finished && cursor.pending.is_empty();
         let data = json!({"kind":"located","sessions":output});
         if complete {
@@ -8929,7 +9311,10 @@ impl NativeStore {
         let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         let additional =
             state.admission(&token, &cursor, []) + state.locates.growth_for(&token) + pledge;
-        self.admit_memory(&mut state, &cursor.context, additional)?;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, &cursor.context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.locates.reserve_for(&token);
         state.locates.insert(token.clone(), cursor);
         state.locates.pledge(&token, pledge);
