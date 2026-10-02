@@ -26,7 +26,6 @@ const LEASES: usize = 5;
 const LOADS: usize = 6;
 const GENERATIONS: usize = 7;
 const PRE_SIZED_SLOTS: usize = 1792;
-const DEFAULT_STARTUP_FOOTPRINT: usize = 362_072;
 
 struct LedgerSource {
     directory: PathBuf,
@@ -2013,9 +2012,9 @@ fn startup_footprint_bounds_the_retained_cap() {
 }
 
 #[test]
-fn default_startup_footprint_is_the_pre_sized_tables() {
+fn default_startup_footprint_is_the_pre_sized_tables_and_the_default_registries() {
     let store = NativeStore::new(&json!({})).unwrap();
-    {
+    let registries = {
         let state = store.lock_state();
         assert_eq!(
             state.deliveries.capacity_bytes(),
@@ -2025,8 +2024,19 @@ fn default_startup_footprint_is_the_pre_sized_tables() {
             state.expired_prepared_queries.capacity_bytes(),
             PRE_SIZED_SLOTS * Ledgered::<String, (String, u64)>::entry_bytes()
         );
-    }
-    assert_eq!(store.retained_accounted_bytes(), DEFAULT_STARTUP_FOOTPRINT);
+        state.registries.capacity_bytes()
+            + state.registries.charged()
+            + state.ledger.shared.table_bytes()
+            + state.ledger.shared.indexes()
+    };
+    assert_eq!(
+        store.retained_accounted_bytes(),
+        size_of::<StoreState>()
+            + PRE_SIZED_SLOTS
+                * (Ledgered::<Arc<str>, Delivery>::entry_bytes()
+                    + Ledgered::<String, (String, u64)>::entry_bytes())
+            + registries
+    );
 }
 
 #[test]
