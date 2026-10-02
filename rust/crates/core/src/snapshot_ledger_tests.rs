@@ -1524,6 +1524,28 @@ fn every_cursor_kind_takes_out_and_reinserts_conserved() {
     assert_eq!(queried["status"].as_str(), Some("ok"), "{queried:?}");
     assert_eq!(queried["data"]["value"].as_bool(), Some(false));
     store.assert_conserved();
+    let state = store.lock_state();
+    let tables = [
+        ("projections", state.projections.capacity_bytes()),
+        ("discoveries", state.discoveries.capacity_bytes()),
+        ("checkpoints", state.checkpoints.capacity_bytes()),
+        ("resolutions", state.resolutions.capacity_bytes()),
+        ("locates", state.locates.capacity_bytes()),
+        ("prepared_builds", state.prepared_builds.capacity_bytes()),
+        ("prepared_graphs", state.prepared_graphs.capacity_bytes()),
+        ("prepared_queries", state.prepared_queries.capacity_bytes()),
+        ("prepared_facts", state.prepared_facts.capacity_bytes()),
+        ("loads", state.loads.reserved_bytes()),
+        ("deliveries", state.deliveries.capacity_bytes()),
+    ];
+    for (table, capacity) in tables {
+        assert!(capacity > 0, "{table} never reserved a tier");
+    }
+    assert!(
+        NativeStore::fixed_metadata_bytes(&state)
+            >= tables.iter().map(|(_, capacity)| capacity).sum::<usize>(),
+        "cursor table capacity is missing from the bookkeeping"
+    );
 }
 
 #[test]

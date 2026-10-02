@@ -1149,24 +1149,40 @@ impl Charge<String> for Waiter {
 }
 
 impl Charge<String> for ProjectionCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         value_bytes(&self.request)
     }
 }
 
 impl Charge<String> for DiscoveryCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         self.accounted
     }
 }
 
 impl Charge<String> for Checkpoint {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         self.accounted
     }
 }
 
 impl Charge<String> for ResolutionCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         value_bytes(&self.request)
             + self.ids.iter().map(String::capacity).sum::<usize>()
@@ -1200,12 +1216,20 @@ impl Charge<String> for LocateCursor {
 }
 
 impl Charge<String> for GraphCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         self.accounted
     }
 }
 
 impl Charge<String> for PreparedGraph {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         size_of::<Self>()
             + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
@@ -1218,6 +1242,10 @@ impl Charge<String> for PreparedGraph {
 }
 
 impl Charge<String> for Arc<Mutex<PreparedGraph>> {
+    fn key_charge(key: &String) -> usize {
+        PreparedGraph::key_charge(key)
+    }
+
     fn charge(&self) -> usize {
         self.lock().expect("prepared graph").charge()
     }
@@ -1235,6 +1263,10 @@ impl PreparedGraph {
 }
 
 impl Charge<String> for PreparedBuild {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         size_of::<PreparedBuild>()
             + self.tasks.capacity() * size_of::<GraphTask>()
@@ -1243,6 +1275,10 @@ impl Charge<String> for PreparedBuild {
 }
 
 impl Charge<String> for PreparedQueryCursor {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
     fn charge(&self) -> usize {
         size_of::<PreparedQueryCursor>()
             + self.claimant.capacity()
@@ -1320,13 +1356,13 @@ impl Delivery {
 pub(crate) struct StoreState {
     latest: Table<SourceIdentity, Arc<TranscriptSnapshot>>,
     recent_codex: Table<SourceIdentity, u64>,
-    loads: HashMap<SourceIdentity, Arc<LoadSlot>>,
+    loads: Table<SourceIdentity, Arc<LoadSlot>>,
     prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
     leases: Ledgered<String, Lease>,
     waiters: Ledgered<String, Waiter>,
     projections: Ledgered<String, ProjectionCursor>,
     generations: Ledgered<usize, GenerationRecord>,
-    classifier_stages: HashMap<String, Arc<ClassifierSlot>>,
+    classifier_stages: Table<String, Arc<ClassifierSlot>>,
     carried_classifications: Ledgered<(SourceIdentity, String), Arc<CarriedClassification>>,
     graphs: Ledgered<String, GraphCursor>,
     prepared_graphs: Ledgered<String, Arc<Mutex<PreparedGraph>>>,
@@ -1360,6 +1396,7 @@ pub(crate) struct StoreState {
 }
 
 const TOUCH_TTL_MS: u64 = 30 * 60_000;
+const EXPIRED_QUERY_TOMBSTONES: usize = 1024;
 
 fn codex_raw_len(snapshot: &Arc<TranscriptSnapshot>) -> usize {
     snapshot.codex_raw.as_ref().map_or(0, |raw| raw.len())
@@ -1377,13 +1414,13 @@ impl StoreState {
         Self {
             latest: Table::new(work.clone()),
             recent_codex: Table::new(work.clone()),
-            loads: HashMap::new(),
+            loads: Table::new(work.clone()),
             prepared_loads: Table::new(work.clone()),
             leases: Ledgered::new(work.clone()),
             waiters: Ledgered::new(work.clone()),
             projections: Ledgered::new(work.clone()),
             generations: Ledgered::new(work.clone()),
-            classifier_stages: HashMap::new(),
+            classifier_stages: Table::new(work.clone()),
             carried_classifications: Ledgered::new(work.clone()),
             graphs: Ledgered::new(work.clone()),
             prepared_graphs: Ledgered::new(work.clone()),
@@ -1418,7 +1455,7 @@ impl StoreState {
     }
 
     #[cfg(test)]
-    fn reservables(&self) -> [&dyn Reserved; 17] {
+    fn reservables(&self) -> [&dyn Reserved; 31] {
         [
             &self.ledger.shared,
             &self.registries,
@@ -1426,6 +1463,20 @@ impl StoreState {
             &self.carried_classifications,
             &self.leases,
             &self.waiters,
+            &self.deliveries,
+            &self.projections,
+            &self.graphs,
+            &self.prepared_graphs,
+            &self.prepared_builds,
+            &self.prepared_queries,
+            &self.expired_prepared_queries,
+            &self.prepared_facts,
+            &self.labels,
+            &self.discoveries,
+            &self.checkpoints,
+            &self.resolutions,
+            &self.loads,
+            &self.classifier_stages,
             &self.latest,
             &self.escaped_chunks,
             &self.prepared_loads,
@@ -1804,6 +1855,7 @@ impl StoreState {
     }
 
     fn insert_label(&mut self, token: String, slot: LabelSlot) {
+        self.labels.reserve_for(&token);
         self.ledger.shared.reserve(slot.anchors());
         for anchor in slot.anchors() {
             self.ledger.shared.acquire(anchor);
@@ -1838,6 +1890,7 @@ impl StoreState {
     }
 
     fn insert_classifier_stage(&mut self, key: String, slot: Arc<ClassifierSlot>) {
+        self.classifier_stages.reserve_for(&key);
         self.ledger.shared.reserve(slot.anchors());
         for anchor in slot.anchors() {
             self.ledger.shared.acquire(anchor);
@@ -1887,6 +1940,7 @@ impl StoreState {
     }
 
     fn insert_load(&mut self, identity: SourceIdentity, slot: Arc<LoadSlot>) {
+        self.loads.reserve_for(&identity);
         slot.attached.store(true, Ordering::Release);
         self.ledger.pending += slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.loads.insert(identity, slot) {
@@ -1943,11 +1997,13 @@ impl StoreState {
     }
 
     fn prepared_facts_growth(&self, identity: &SourceIdentity) -> usize {
-        usize::from(!self.prepared_facts.contains_key(identity))
-            * size_of::<(u64, SourceIdentity)>()
+        self.prepared_facts.growth_for(identity)
+            + usize::from(!self.prepared_facts.contains_key(identity))
+                * size_of::<(u64, SourceIdentity)>()
     }
 
     fn insert_prepared_facts(&mut self, identity: SourceIdentity, cached: CachedPreparedFacts) {
+        self.prepared_facts.reserve_for(&identity);
         self.ledger.shared.reserve([facts_anchor(&cached.facts)]);
         self.ledger.shared.acquire(facts_anchor(&cached.facts));
         let last_used = cached.last_used;
@@ -2002,6 +2058,7 @@ impl StoreState {
     }
 
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
+        self.prepared_graphs.reserve_for(&graph_id);
         let prepared = graph.lock().expect("prepared graph");
         self.ledger.shared.reserve(prepared.anchors());
         for anchor in prepared.anchors() {
@@ -2116,6 +2173,7 @@ impl StoreState {
     }
 
     fn insert_prepared_build(&mut self, token: String, build: PreparedBuild) {
+        self.prepared_builds.reserve_for(&token);
         self.ledger
             .shared
             .reserve([facts_anchor(&build.root_facts)]);
@@ -2490,6 +2548,9 @@ impl NativeStore {
         let work = Work::default();
         let mut state = StoreState::new(work.clone());
         state.deliveries.reserve(config.leases.saturating_mul(4));
+        state
+            .expired_prepared_queries
+            .reserve(EXPIRED_QUERY_TOMBSTONES);
         for registry in [captured, builtin] {
             let fingerprint = registry.fingerprint().to_owned();
             if !state.registries.contains_key(&fingerprint) {
@@ -2831,7 +2892,9 @@ impl NativeStore {
                 "classifier cursor admission exhausted",
             ));
         }
-        let retained = slot.accounted + state.ledger.shared.growth(slot.anchors());
+        let retained = charged_bytes(&token, &slot)
+            + state.labels.growth_for(&token)
+            + state.ledger.shared.growth(slot.anchors());
         if retained > reservation.bytes {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -3341,6 +3404,7 @@ impl NativeStore {
                 let accounted = stage.accounted_bytes();
                 let additional = size_of::<ClassifierSlot>()
                     + accounted
+                    + state.classifier_stages.growth_for(&key)
                     + state
                         .ledger
                         .shared
@@ -3599,7 +3663,7 @@ impl NativeStore {
                     state.waiters.remove(&pending.token);
                 }
                 if query.remaining.deadline_unix_ms <= now {
-                    if state.expired_prepared_queries.len() >= 1024 {
+                    if state.expired_prepared_queries.len() >= EXPIRED_QUERY_TOMBSTONES {
                         let oldest = state
                             .expired_prepared_queries
                             .iter()
@@ -3832,6 +3896,19 @@ impl NativeStore {
             + state.leases.capacity_bytes()
             + state.waiters.capacity_bytes()
             + state.deliveries.capacity_bytes()
+            + state.projections.capacity_bytes()
+            + state.graphs.capacity_bytes()
+            + state.prepared_graphs.capacity_bytes()
+            + state.prepared_builds.capacity_bytes()
+            + state.prepared_queries.capacity_bytes()
+            + state.expired_prepared_queries.capacity_bytes()
+            + state.prepared_facts.capacity_bytes()
+            + state.labels.capacity_bytes()
+            + state.discoveries.capacity_bytes()
+            + state.checkpoints.capacity_bytes()
+            + state.resolutions.capacity_bytes()
+            + state.loads.reserved_bytes()
+            + state.classifier_stages.reserved_bytes()
             + state.latest.reserved_bytes()
             + state.escaped_chunks.reserved_bytes()
             + state.prepared_loads.reserved_bytes()
@@ -5366,15 +5443,13 @@ impl NativeStore {
                         "preparation admission exhausted",
                     ));
                 }
-                self.admit_memory(
-                    &mut state,
-                    context,
-                    if cached.is_some() {
+                let additional = state.loads.growth_for(&stamp.identity)
+                    + if cached.is_some() {
                         size_of::<LoadSlot>()
                     } else {
                         self.config.read_step.min(stamp.size as usize)
-                    },
-                )?;
+                    };
+                self.admit_memory(&mut state, context, additional)?;
                 let previous = state
                     .latest
                     .get(&stamp.identity)
@@ -6527,17 +6602,16 @@ impl NativeStore {
                 "graph cursor admission exhausted",
             ));
         }
-        if let Err(error) = self.admit_memory(&mut state, &graph.context, graph.accounted) {
+        let token = token.to_owned();
+        let additional = state.admission(&token, &graph, []) + state.graphs.growth_for(&token);
+        if let Err(error) = self.admit_memory(&mut state, &graph.context, additional) {
             Self::rollback_graph_page(&mut state, &mut graph);
             return Err(error);
         }
         graph.published_members.clear();
-        state.graphs.insert(token.to_owned(), graph);
-        Ok((
-            data,
-            Some(token.to_owned()),
-            Some("graph work incomplete".to_owned()),
-        ))
+        state.graphs.reserve_for(&token);
+        state.graphs.insert(token.clone(), graph);
+        Ok((data, Some(token), Some("graph work incomplete".to_owned())))
     }
 
     fn graph_add_source(
@@ -7127,13 +7201,12 @@ impl NativeStore {
                         "projection cursor admission exhausted",
                     ));
                 }
-                let charge = crate::snapshot_memory::value_charge(request);
-                self.admit_memory(
-                    &mut state,
-                    context,
-                    charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
-                )?;
                 let token = self.token("projection");
+                let additional = ProjectionCursor::key_charge(&token)
+                    + value_bytes(request)
+                    + state.projections.growth_for(&token);
+                self.admit_memory(&mut state, context, additional)?;
+                state.projections.reserve_for(&token);
                 state.projections.insert(
                     token.clone(),
                     ProjectionCursor {
@@ -7507,9 +7580,13 @@ impl NativeStore {
                 "discovery cursor admission exhausted",
             ));
         }
-        self.admit_memory(&mut state, &scan.context, scan.accounted)?;
         if complete {
             let checkpoint = self.token("checkpoint");
+            let additional = Checkpoint::key_charge(&checkpoint)
+                + scan.accounted
+                + state.checkpoints.growth_for(&checkpoint);
+            self.admit_memory(&mut state, &scan.context, additional)?;
+            state.checkpoints.reserve_for(&checkpoint);
             state.checkpoints.insert(
                 checkpoint.clone(),
                 Checkpoint {
@@ -7533,10 +7610,15 @@ impl NativeStore {
             ))
         } else {
             scan.expires = (now_ms() + self.config.ttl).min(scan.limits.deadline_unix_ms);
-            state.discoveries.insert(token.to_owned(), scan);
+            let token = token.to_owned();
+            let additional =
+                state.admission(&token, &scan, []) + state.discoveries.growth_for(&token);
+            self.admit_memory(&mut state, &scan.context, additional)?;
+            state.discoveries.reserve_for(&token);
+            state.discoveries.insert(token.clone(), scan);
             Ok((
                 json!({"kind":"discovered","entries":output,"checkpoint":null}),
-                Some(token.to_owned()),
+                Some(token),
                 Some("discovery page incomplete".to_owned()),
             ))
         }
@@ -8101,12 +8183,16 @@ impl NativeStore {
                 "resolution cursor admission exhausted",
             ));
         }
-        self.admit_memory(&mut state, &cursor.context, bytes * 2)?;
         cursor.expires = (now_ms() + self.config.ttl).min(cursor.remaining.deadline_unix_ms);
-        state.resolutions.insert(token.to_owned(), cursor);
+        let token = token.to_owned();
+        let additional =
+            state.admission(&token, &cursor, []) + state.resolutions.growth_for(&token);
+        self.admit_memory(&mut state, &cursor.context, additional)?;
+        state.resolutions.reserve_for(&token);
+        state.resolutions.insert(token.clone(), cursor);
         Ok((
             data,
-            Some(token.to_owned()),
+            Some(token),
             Some("resolution preparation incomplete".to_owned()),
         ))
     }

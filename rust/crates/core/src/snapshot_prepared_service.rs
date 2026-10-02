@@ -607,7 +607,8 @@ impl NativeStore {
                     "prepared graph admission exhausted",
                 ));
             }
-            let additional = state.admission(&graph_id, &graph, graph.anchors());
+            let additional = state.admission(&graph_id, &graph, graph.anchors())
+                + state.prepared_graphs.growth_for(&graph_id);
             self.admit_memory(&mut state, context, additional)?;
             state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
             return Ok((
@@ -909,7 +910,8 @@ impl NativeStore {
                 "prepared graph admission exhausted",
             ));
         }
-        let additional = state.admission(&graph_id, &graph, graph.anchors());
+        let additional = state.admission(&graph_id, &graph, graph.anchors())
+            + state.prepared_graphs.growth_for(&graph_id);
         self.admit_memory(&mut state, context, additional)?;
         state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
         Ok((
@@ -933,7 +935,8 @@ impl NativeStore {
         }
         build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
         let token = token.to_owned();
-        let additional = state.admission(&token, &build, [facts_anchor(&build.root_facts)]);
+        let additional = state.admission(&token, &build, [facts_anchor(&build.root_facts)])
+            + state.prepared_builds.growth_for(&token);
         self.admit_memory(&mut state, &build.context, additional)?;
         state.insert_prepared_build(token.clone(), build);
         Ok((
@@ -1633,8 +1636,10 @@ impl NativeStore {
             ));
         }
         let token = token.to_owned();
-        let additional = state.admission(&token, &cursor, []);
+        let additional =
+            state.admission(&token, &cursor, []) + state.prepared_queries.growth_for(&token);
         self.admit_memory(&mut state, context, additional)?;
+        state.prepared_queries.reserve_for(&token);
         state.prepared_queries.insert(token.clone(), cursor);
         Ok((data, Some(token), Some("prepared query page incomplete".to_owned())))
     }
