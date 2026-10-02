@@ -7,10 +7,17 @@ use crate::scan_stream::{LineSpan, SourceStream, VALIDATE_HOOKS};
 use crate::snapshot::{NativeStore, WorkLimits};
 use sonic_rs::{json, Value};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
+
+const LOCKED_SCAN_WAIT: Duration = Duration::from_secs(30);
+
+type Interrupt = fn(&mut ScanBudget<'_>, &Cancellation);
 
 struct Source(PathBuf);
 
@@ -220,17 +227,25 @@ fn configured(
             Ok(())
         },
     );
-    let run = control.map(|control| {
+    let run = run_of(control, &grep, &mut emitted);
+    (run, emitted, budget.progress.clone())
+}
+
+fn run_of(
+    control: Result<Option<ScanControl>, SnapshotError>,
+    grep: &GrepReducer<'_>,
+    emitted: &mut Vec<Emitted>,
+) -> Result<Run, SnapshotError> {
+    control.map(|control| {
         let (stop, names_through) = stop(&control.expect("claude source streams"));
         Run {
-            emitted: std::mem::take(&mut emitted),
+            emitted: std::mem::take(emitted),
             counts: grep.counts().to_vec(),
             stop,
             names_through,
             complete: grep.complete(),
         }
-    });
-    (run, emitted, budget.progress.clone())
+    })
 }
 
 fn prepared(path: &Path, patterns: &[(&str, Option<usize>)], options: GrepOptions) -> Run {
@@ -2539,4 +2554,129 @@ fn orphaned_index_directories_are_reclaimed_after_a_publish() {
     build(&source, &cache);
     assert!(!orphan.exists());
     assert!(index_files(&cache).exists());
+}
+
+fn seeded_record(source: &Source, cache: &Cache) -> (String, Vec<u8>) {
+    checkpointed(
+        &source.0,
+        &[("zq-never", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    (
+        cache.record().key,
+        std::fs::read(&cache.records()[0]).unwrap(),
+    )
+}
+
+fn hold_record_lock(cache: &Cache, key: &str) -> std::fs::File {
+    let held = crate::scan_index::open_private(&cache.0.join(format!("{key}.lock")), true).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    held
+}
+
+fn scanned_while_locked(
+    held: std::fs::File,
+    source: &Source,
+    cache: &Cache,
+    patterns: &[(&str, Option<usize>)],
+    after_event: Interrupt,
+) -> (Result<Run, SnapshotError>, Vec<Emitted>) {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let store = NativeStore::new(&json!({})).unwrap();
+            let mut budget = ScanBudget::new(&store, limits());
+            let mut grep = reducer(patterns, options(), &mut budget);
+            let mut emitted = Vec::new();
+            let control = grep.scan_stream(
+                &source.0,
+                true,
+                Some(&cache.1),
+                &mut budget,
+                &Cancellation::default(),
+                |event, budget, cancel| {
+                    let _staging = event.preflight_render(budget, cancel)?;
+                    emitted.push(Emitted::of(&event));
+                    after_event(budget, cancel);
+                    Ok(())
+                },
+            );
+            let run = run_of(control, &grep, &mut emitted);
+            sender.send((run, emitted)).unwrap();
+        });
+        let outcome = receiver.recv_timeout(LOCKED_SCAN_WAIT);
+        drop(held);
+        outcome.expect("the scan returned while the record lock was held")
+    })
+}
+
+#[test]
+fn a_held_record_lock_skips_publication_and_keeps_the_result() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(20, &[3, 9]), true);
+    let (key, before) = seeded_record(&source, &cache);
+    let fresh = streamed(&source.0, &[("needle", None)], options(), true, limits())
+        .0
+        .unwrap();
+    let held = hold_record_lock(&cache, &key);
+    let (run, _) = scanned_while_locked(held, &source, &cache, &[("needle", None)], |_, _| {});
+    assert_eq!(run.unwrap(), fresh);
+    assert_eq!(std::fs::read(&cache.records()[0]).unwrap(), before);
+    let (after, _, _) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(after.unwrap(), fresh);
+    assert_eq!(cache.record().queries.len(), 2);
+}
+
+#[test]
+fn an_interrupted_partial_scan_returns_without_the_record_lock() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(20, &[3, 9]), true);
+    let (key, before) = seeded_record(&source, &cache);
+    let interrupts: [(Interrupt, Status); 2] = [
+        (|_, cancel| cancel.cancel(), Status::Cancelled),
+        (
+            |budget, _| budget.limits.deadline_unix_ms = 0,
+            Status::Deadline,
+        ),
+    ];
+    for (interrupt, status) in interrupts {
+        let held = hold_record_lock(&cache, &key);
+        let (run, emitted) =
+            scanned_while_locked(held, &source, &cache, &[("needle", None)], interrupt);
+        assert_eq!(run.unwrap_err().status, status);
+        assert_eq!(emitted.len(), 1, "{status:?}");
+        assert_eq!(
+            std::fs::read(&cache.records()[0]).unwrap(),
+            before,
+            "{status:?}"
+        );
+    }
+    let fresh = streamed(&source.0, &[("needle", None)], options(), true, limits())
+        .0
+        .unwrap();
+    let (after, _, _) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(after.unwrap(), fresh);
+    assert_eq!(cache.record().queries.len(), 2);
 }

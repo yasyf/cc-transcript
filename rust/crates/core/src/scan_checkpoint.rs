@@ -138,19 +138,12 @@ pub fn digest(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-fn lock(file: &File, blocking: bool) -> bool {
-    let mode = if blocking {
-        libc::LOCK_EX
-    } else {
-        libc::LOCK_EX | libc::LOCK_NB
-    };
-    unsafe { libc::flock(file.as_raw_fd(), mode) == 0 }
+fn lock(file: &File) -> bool {
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 fn try_lock(path: &Path) -> Option<File> {
-    open_private(path, true)
-        .ok()
-        .filter(|file| lock(file, false))
+    open_private(path, true).ok().filter(lock)
 }
 
 fn version(metadata: &std::fs::Metadata) -> Version {
@@ -465,10 +458,12 @@ impl GrepCheckpoints {
                 read: 0,
             });
         }
-        let guard = open_private(&self.dir.join(format!("{}.lock", ours.key)), true)?;
-        if !lock(&guard, true) {
-            return Err(std::io::Error::last_os_error());
-        }
+        let Some(guard) = try_lock(&self.dir.join(format!("{}.lock", ours.key))) else {
+            return Ok(Saved {
+                published: false,
+                read: 0,
+            });
+        };
         let current = std::fs::symlink_metadata(self.path(&ours.key))
             .ok()
             .map(|metadata| version(&metadata));
