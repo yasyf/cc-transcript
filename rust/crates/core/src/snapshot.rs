@@ -10790,13 +10790,7 @@ mod tests {
         );
         assert_eq!(first["data"]["value"].as_bool(), Some(false), "{first:?}");
         let identity = SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity;
-        store
-            .state
-            .lock()
-            .unwrap()
-            .prepared_facts
-            .remove(&identity)
-            .unwrap();
+        store.lock_state().remove_prepared_facts(&identity).unwrap();
         let writes = store.prepared_disk.stats().writes;
         let before = store.state.lock().unwrap().counters;
         let from_disk = finish_prepared(
