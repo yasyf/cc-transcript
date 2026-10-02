@@ -3482,7 +3482,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
             key.clone(),
             charged_bytes(key, membership),
             source_ref_bytes(&membership.members) + sidechain_dir_bytes(&membership.sidechain_dirs),
-            charged_bytes(&first_id, &state.prepared_graphs[&first_id]),
+            charged_bytes(&first_id, &*first),
         )
     };
     assert!(shared > 0);
