@@ -1044,6 +1044,11 @@ impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
         self.map.get(key).map_or(0, |slot| slot.pledge)
     }
 
+    #[cfg(test)]
+    pub(crate) fn entry_bytes() -> usize {
+        size_of::<(K, Slot<V>)>()
+    }
+
     pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.work.tick(1);
         let charge = value.charge();
