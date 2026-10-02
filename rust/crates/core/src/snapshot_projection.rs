@@ -1,7 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 use std::ops::Range;
-use std::sync::LazyLock;
 
 use regex::RegexBuilder;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
@@ -15,10 +14,13 @@ use crate::snapshot::{
     Cancellation, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
+use crate::snapshot_ledger::{hashbrown_tier, vec_capacity_after};
 use crate::toolcall::{
     expand_tool_names, tool_name_matches, with_registry, ToolCall, ToolRegistrySnapshot,
 };
 use crate::types::{matches_names, AttachmentDetail, ContentBlock, Entry, UserContent};
+
+const JSON_LITERAL_OBJECT_CAPACITY: usize = 8;
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
@@ -1513,16 +1515,66 @@ pub fn prepare_facts(
     prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024)
 }
 
-pub fn empty_facts_bytes() -> usize {
-    static BYTES: LazyLock<usize> = LazyLock::new(|| {
-        let charge = crate::snapshot_memory::value_charge(
-            &json!({"calls":[],"commands":[],"edited_files":[],"skills":[]}),
-        );
-        std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
-            + charge.owned_capacity_bytes
-            + charge.opaque_dom_accounted_bytes
-    });
-    *BYTES
+fn pushed_capacity(count: usize, element: usize) -> usize {
+    (0..count).fold(0, |capacity, len| {
+        vec_capacity_after(capacity, len, 1, element)
+    })
+}
+
+pub fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
+    let slot = std::mem::size_of::<Value>();
+    let pair = std::mem::size_of::<(Value, Value)>();
+    let name = std::mem::size_of::<String>();
+    let event = std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>();
+    let edited_file = slot + hashbrown_tier(1, pair) * pair + "path".len();
+    let inputs = snapshot
+        .activity
+        .calls()
+        .map(|(call, edits)| {
+            let paths = call.file_paths();
+            3 * slot
+                + call.name().len()
+                + paths.len() * slot
+                + paths.iter().map(|path| path.len()).sum::<usize>()
+                + edits
+                    .iter()
+                    .map(|(path, _)| edited_file + path.len())
+                    .sum::<usize>()
+                + match call {
+                    ToolCall::Bash(bash) => slot + bash.command.len(),
+                    ToolCall::Skill(skill) => slot + skill.skill.len(),
+                    _ => 0,
+                }
+        })
+        .sum::<usize>();
+    let overrides = (0..snapshot.event_count)
+        .map(|index| snapshot.entry(index))
+        .map(|entry| match entry {
+            Entry::User(user) => {
+                user.content.text_len()
+                    + user
+                        .tool_results()
+                        .map(|result| result.content.len())
+                        .sum::<usize>()
+            }
+            Entry::Assistant(assistant) => {
+                crate::types::joined_text_len(&assistant.blocks)
+                    + pushed_capacity(entry.tool_uses().count(), name) * name
+                    + entry.tool_uses().map(|tool| tool.name.len()).sum::<usize>()
+            }
+            Entry::System(system) => system.content.as_ref().map_or(0, String::len),
+            _ => 0,
+        })
+        .sum::<usize>();
+    std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
+        + hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair) * pair
+        + ["calls", "commands", "edited_files", "skills"]
+            .iter()
+            .map(|key| key.len())
+            .sum::<usize>()
+        + inputs
+        + pushed_capacity(snapshot.event_count, event) * event
+        + overrides
 }
 
 fn prepare_facts_limited(
@@ -1602,37 +1654,19 @@ fn prepare_facts_limited(
             .expect("bounded override facts")
             .push(crate::snapshot_prepared::OverrideEvent { text, tools });
     }
-    let input_charge = crate::snapshot_memory::value_charge(&inputs);
-    let override_charge = override_events.as_ref().map_or(0, |events| {
-        events.capacity() * std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>()
-            + events
-                .iter()
-                .map(|event| {
-                    event.text.capacity()
-                        + event.tools.capacity() * std::mem::size_of::<String>()
-                        + event.tools.iter().map(String::capacity).sum::<usize>()
-                })
-                .sum::<usize>()
-    });
-    let accounted = std::mem::size_of::<crate::snapshot_prepared::PreparedFacts>()
-        + input_charge.owned_capacity_bytes
-        + input_charge.opaque_dom_accounted_bytes
-        + override_charge;
-    Ok((
-        crate::snapshot_prepared::PreparedFacts {
-            inputs,
-            has_error: session
-                .tool_calls()
-                .with_errors()
-                .items()
-                .iter()
-                .any(|use_| use_.result.is_some_and(|result| result.is_error)),
-            override_events,
-            accounted,
-        },
-        work.bytes,
-        work.events,
-    ))
+    let mut facts = crate::snapshot_prepared::PreparedFacts {
+        inputs,
+        has_error: session
+            .tool_calls()
+            .with_errors()
+            .items()
+            .iter()
+            .any(|use_| use_.result.is_some_and(|result| result.is_error)),
+        override_events,
+        accounted: 0,
+    };
+    facts.refresh_accounted();
+    Ok((facts, work.bytes, work.events))
 }
 
 fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, SnapshotError> {
@@ -2087,6 +2121,70 @@ mod tests {
             assert_eq!(
                 user_prefix(&content, prefix),
                 crate::pystr::strip(&content.text()).starts_with(prefix)
+            );
+        }
+    }
+
+    #[test]
+    fn facts_bound_capacity_facts_hold_for_the_pinned_sonic_rs() {
+        let pair = std::mem::size_of::<(Value, Value)>();
+        let paths = vec!["pkg/a.rs", "pkg/bb.rs", "pkg/ccc.rs"];
+        let inputs = json!({
+            "calls":(0..5).map(|_| json!(["apply_patch",paths])).collect::<Vec<_>>(),
+            "commands":paths,
+            "edited_files":paths.iter().map(|path| json!({"path":path})).collect::<Vec<_>>(),
+            "skills":Vec::<&str>::new()
+        });
+        assert_eq!(
+            inputs.as_object().unwrap().capacity(),
+            hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair)
+        );
+        let calls = inputs["calls"].as_array().unwrap();
+        assert_eq!(calls.capacity(), 5);
+        for call in calls.iter() {
+            assert_eq!(call.as_array().unwrap().capacity(), 2);
+            assert_eq!(call[1].as_array().unwrap().capacity(), paths.len());
+        }
+        assert_eq!(
+            inputs["commands"].as_array().unwrap().capacity(),
+            paths.len()
+        );
+        let edited = inputs["edited_files"].as_array().unwrap();
+        assert_eq!(edited.capacity(), paths.len());
+        for file in edited.iter() {
+            assert_eq!(
+                file.as_object().unwrap().capacity(),
+                hashbrown_tier(1, pair)
+            );
+        }
+        assert_eq!(inputs["skills"].as_array().unwrap().capacity(), 0);
+    }
+
+    #[test]
+    fn pushed_capacity_matches_std_growth_for_pushes_and_collects() {
+        let (name, event) = (
+            std::mem::size_of::<String>(),
+            std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>(),
+        );
+        for count in 0..70 {
+            let mut names = Vec::new();
+            let mut events = Vec::new();
+            for _ in 0..count {
+                names.push(String::new());
+                events.push(crate::snapshot_prepared::OverrideEvent {
+                    text: String::new(),
+                    tools: Vec::new(),
+                });
+            }
+            let collected: Vec<String> = (0..count).filter_map(|_| Some(String::new())).collect();
+            assert_eq!(
+                (names.capacity(), collected.capacity(), events.capacity()),
+                (
+                    pushed_capacity(count, name),
+                    pushed_capacity(count, name),
+                    pushed_capacity(count, event)
+                ),
+                "{count} elements"
             );
         }
     }

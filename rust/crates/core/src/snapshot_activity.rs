@@ -223,6 +223,13 @@ impl ActivityIndex {
             .map(|call| &call.call)
     }
 
+    pub fn calls(&self) -> impl Iterator<Item = (&ToolCall, &[(String, Vec<Hunk>)])> + '_ {
+        self.turns
+            .iter()
+            .flat_map(|turn| turn.calls.iter())
+            .map(|cached| (&cached.call, cached.edits.as_slice()))
+    }
+
     pub fn work(&self) -> ActivityWork {
         self.work
     }

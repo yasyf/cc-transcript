@@ -229,9 +229,9 @@ impl NativeStore {
             &context["authority"],
             classifier,
         )?;
+        let bound = crate::snapshot_projection::facts_bound(root);
         let decoded = self.prepared_disk.decoded_bytes(&key)?;
-        let mut reservation =
-            self.reserve_projection(context, decoded.unwrap_or(0).max(facts_bound(root)))?;
+        let mut reservation = self.reserve_projection(context, decoded.unwrap_or(0).max(bound))?;
         if decoded.is_some() {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
@@ -269,6 +269,10 @@ impl NativeStore {
         self.fact_builds.fetch_add(1, Ordering::Relaxed);
         let (facts, _, _) =
             crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
+        assert!(
+            facts.accounted_bytes() <= bound,
+            "prepared root facts outgrew their bound"
+        );
         self.prepared_disk.insert(&key, &facts, |growth| {
             self.admit_prepared_disk_growth(context, growth)
         })?;
@@ -475,8 +479,9 @@ impl NativeStore {
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
+        let bound = crate::snapshot_projection::facts_bound(&snapshot);
         let prepared = self
-            .reserve_projection(context, facts_bound(&snapshot))
+            .reserve_projection(context, bound)
             .and_then(|reservation| {
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
@@ -486,7 +491,13 @@ impl NativeStore {
                     &fact_limits,
                     cancel,
                 )
-                .map(|(facts, _, _)| (reservation, facts))
+                .map(|(facts, _, _)| {
+                    assert!(
+                        facts.accounted_bytes() <= bound,
+                        "prepared source facts outgrew their bound"
+                    );
+                    (reservation, facts)
+                })
             });
         {
             let mut state = self.lock_state();
@@ -2035,7 +2046,6 @@ impl NativeStore {
         let claimant = graph.claimant.clone();
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
-        let root_facts_bytes = facts_bound(&graph.root);
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
@@ -2058,7 +2068,8 @@ impl NativeStore {
                 let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = root.event_count;
-                let mut reservation = self.reserve_projection(context, root_facts_bytes)?;
+                let bound = crate::snapshot_projection::facts_bound(&root);
+                let mut reservation = self.reserve_projection(context, bound)?;
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
                 let (facts, _, _) = crate::snapshot_projection::prepare_facts(
@@ -2067,6 +2078,10 @@ impl NativeStore {
                     &fact_limits,
                     cancel,
                 )?;
+                assert!(
+                    facts.accounted_bytes() <= bound,
+                    "prepared root slice outgrew its root bound"
+                );
                 self.publish_root_slice(
                     token,
                     &shared,

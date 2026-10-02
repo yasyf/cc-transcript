@@ -58,7 +58,7 @@ fn capacity_to_buckets(cap: usize, element_size: usize) -> usize {
     (cap.checked_mul(8).expect("hashbrown capacity") / 7).next_power_of_two()
 }
 
-fn hashbrown_tier(cap: usize, element_size: usize) -> usize {
+pub(crate) fn hashbrown_tier(cap: usize, element_size: usize) -> usize {
     bucket_mask_to_capacity(capacity_to_buckets(cap, element_size) - 1)
 }
 
@@ -77,7 +77,12 @@ fn min_non_zero_cap(element_size: usize) -> usize {
     }
 }
 
-fn vec_capacity_after(cap: usize, len: usize, additional: usize, element_size: usize) -> usize {
+pub(crate) fn vec_capacity_after(
+    cap: usize,
+    len: usize,
+    additional: usize,
+    element_size: usize,
+) -> usize {
     if additional <= cap - len {
         cap
     } else {

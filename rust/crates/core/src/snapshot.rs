@@ -1273,10 +1273,6 @@ fn entry_bytes(snapshot: &TranscriptSnapshot) -> usize {
         .sum()
 }
 
-fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
-    entry_bytes(snapshot) + crate::snapshot_projection::empty_facts_bytes()
-}
-
 fn value_bytes(value: &Value) -> usize {
     let charge = crate::snapshot_memory::value_charge(value);
     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
