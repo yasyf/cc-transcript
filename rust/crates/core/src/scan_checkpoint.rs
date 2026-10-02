@@ -80,7 +80,7 @@ pub struct QueryLayer {
     pub last_hit: Option<usize>,
     pub stopped: Option<usize>,
     pub reducer: ReducerState,
-    pub referenced: Vec<String>,
+    pub referenced: Vec<(String, String)>,
     pub replay: Vec<Replayed>,
     pub queue: Vec<Queued>,
 }

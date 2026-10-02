@@ -217,8 +217,11 @@ impl Emitter {
         }
         self.out.finish()?;
         if let Some(reason) = &outcome.reason {
-            if reason == "result_limit" {
+            if let Some(scope) = reason.strip_prefix("result_limit") {
                 eline(&format!("warning: stopped at --max-matches {}; more matches may exist — raise it, or pass --max-matches 0 for no cap",counts.first().copied().unwrap_or(0)));
+                if let Some(scope) = scope.strip_prefix("; ") {
+                    eline(&format!("warning: partial view: {scope}"));
+                }
             } else {
                 eline(&format!("warning: scan incomplete: {reason}"));
                 return Err(CliExit(3));
@@ -365,6 +368,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             Ok(if result.quota_reached {
                 ScanControl::Stop {
                     source_complete: result.source_complete,
+                    names_through: None,
                 }
             } else {
                 ScanControl::Continue

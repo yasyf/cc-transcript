@@ -62,6 +62,7 @@ fn quota_stops_before_opening_later_sources() {
         assert_eq!(snapshot.event_count, 1);
         Ok(ScanControl::Stop {
             source_complete: true,
+            names_through: None,
         })
     });
     assert_eq!(visits, 1);

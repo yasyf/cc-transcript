@@ -53,6 +53,8 @@ struct GrepStream<'store> {
     committed: u64,
     fence: Vec<u8>,
     sniffed: bool,
+    names_base: u64,
+    names_final: bool,
     capture: Option<(FileLayer, QueryLayer)>,
     poisoned: bool,
 }
@@ -222,6 +224,8 @@ impl<'store> GrepReducer<'store> {
             committed: 0,
             fence: Vec::new(),
             sniffed: false,
+            names_base: 0,
+            names_final: false,
             capture: None,
             poisoned: false,
         };
@@ -239,15 +243,25 @@ impl<'store> GrepReducer<'store> {
                     .cloned();
                 let valid = stream.validates(&record, &mut source, budget, cancel)?
                     && match layer {
-                        Some(layer) => self.restore(
-                            &mut stream,
-                            &mut source,
-                            &record.file,
-                            layer,
-                            budget,
-                            cancel,
-                            &mut emit,
-                        )?,
+                        Some(layer) => {
+                            let restored = self.restore(
+                                &mut stream,
+                                &mut source,
+                                &record.file,
+                                layer,
+                                budget,
+                                cancel,
+                                &mut emit,
+                            );
+                            if stream.poisoned {
+                                store.discard(file_key);
+                            }
+                            restored?
+                        }
+                        None if record.file.committed == stream.size => {
+                            stream.adopt(&record.file, budget, cancel)?;
+                            true
+                        }
                         None => true,
                     };
                 if valid {
@@ -283,9 +297,12 @@ impl<'store> GrepReducer<'store> {
             return Ok(None);
         };
         source.verify()?;
+        let names_used = stream.names.values().any(|slot| slot.referenced);
         Ok(Some(match stream.stopped {
             Some(hit) => ScanControl::Stop {
                 source_complete: eof && stream.parsed == hit + 1 && self.coverage_complete,
+                names_through: (names_used && !eof && !stream.names_final)
+                    .then(|| stream.committed.max(stream.names_base)),
             },
             None => ScanControl::Continue,
         }))
@@ -373,32 +390,21 @@ impl<'store> GrepReducer<'store> {
             lines.push(bytes);
         }
         budget.progress.cache_hits += 1;
-        let names_bytes: usize = file
-            .names
-            .iter()
-            .map(|(id, name)| id.len() + name.len() + size_of::<(String, ToolName)>())
-            .sum();
         budget.extend_staging(
             &mut stream.staging,
-            names_bytes + layer.replay.len() * size_of::<Replayed>(),
+            layer.replay.len() * size_of::<Replayed>(),
             cancel,
         )?;
-        stream.names = file
-            .names
-            .iter()
-            .map(|(id, name)| {
-                (
-                    id.clone(),
-                    ToolName {
-                        name: name.clone(),
-                        referenced: false,
-                    },
-                )
-            })
-            .collect();
-        for id in &layer.referenced {
-            if let Some(slot) = stream.names.get_mut(id) {
-                slot.referenced = true;
+        stream.adopt(file, budget, cancel)?;
+        for (id, used) in &layer.referenced {
+            match stream.names.get_mut(id) {
+                Some(slot) if slot.name == *used => slot.referenced = true,
+                _ => {
+                    stream.poisoned = true;
+                    return Err(incomplete(
+                        "tool_use id redefined with a different name after use",
+                    ));
+                }
             }
         }
         let mut lines = lines.into_iter();
@@ -464,6 +470,38 @@ impl<'store> GrepStream<'store> {
             .is_some_and(|hit| self.parsed > hit + context.max(1) && self.emitted > hit + context)
     }
 
+    fn adopt(
+        &mut self,
+        file: &FileLayer,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        budget.extend_staging(
+            &mut self.staging,
+            file.names
+                .iter()
+                .map(|(id, name)| id.len() + name.len() + size_of::<(String, ToolName)>())
+                .sum(),
+            cancel,
+        )?;
+        self.names = file
+            .names
+            .iter()
+            .map(|(id, name)| {
+                (
+                    id.clone(),
+                    ToolName {
+                        name: name.clone(),
+                        referenced: false,
+                    },
+                )
+            })
+            .collect();
+        self.names_base = file.committed;
+        self.names_final = file.committed == self.size;
+        Ok(())
+    }
+
     fn validates(
         &self,
         record: &SourceRecord,
@@ -519,7 +557,7 @@ impl<'store> GrepStream<'store> {
                     .names
                     .iter()
                     .filter(|(_, slot)| slot.referenced)
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, slot)| (id.clone(), slot.name.clone()))
                     .collect(),
                 replay: self.history.clone(),
                 queue: self
@@ -564,7 +602,7 @@ impl<'store> GrepStream<'store> {
             budget.charge_projection(bytes.saturating_add(1), 0, cancel)?;
         }
         let mut names_bytes = 0usize;
-        for tool in entry.tool_uses() {
+        for tool in entry.tool_uses().filter(|_| !self.names_final) {
             match self.names.get(tool.id.as_str()) {
                 Some(slot) if slot.name == tool.name => {}
                 Some(slot) if slot.referenced => {
@@ -586,7 +624,7 @@ impl<'store> GrepStream<'store> {
         let staging =
             budget.reserve_staging(charge.saturating_add(size_of::<StreamSlot>()), cancel)?;
         budget.extend_staging(&mut self.staging, names_bytes, cancel)?;
-        for tool in entry.tool_uses() {
+        for tool in entry.tool_uses().filter(|_| !self.names_final) {
             self.names
                 .entry(tool.id.clone())
                 .and_modify(|slot| slot.name.clone_from(&tool.name))

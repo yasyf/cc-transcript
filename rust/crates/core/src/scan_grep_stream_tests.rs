@@ -1,5 +1,5 @@
 use super::*;
-use crate::scan::{ScanControl, ScanProgress, ScanSession};
+use crate::scan::{ScanControl, ScanPlan, ScanProgress, ScanSession};
 use crate::scan_checkpoint::GrepCheckpoints;
 use crate::scan_stream::SourceStream;
 use crate::snapshot::{NativeStore, WorkLimits};
@@ -76,6 +76,7 @@ struct Run {
     emitted: Vec<Emitted>,
     counts: Vec<usize>,
     stop: Option<bool>,
+    names_through: Option<u64>,
     complete: bool,
 }
 
@@ -152,10 +153,13 @@ fn reducer<'store>(
     .unwrap()
 }
 
-fn stop(control: ScanControl) -> Option<bool> {
+fn stop(control: &ScanControl) -> (Option<bool>, Option<u64>) {
     match control {
-        ScanControl::Continue => None,
-        ScanControl::Stop { source_complete } => Some(source_complete),
+        ScanControl::Continue => (None, None),
+        ScanControl::Stop {
+            source_complete,
+            names_through,
+        } => (Some(*source_complete), *names_through),
     }
 }
 
@@ -193,11 +197,15 @@ fn checkpointed(
             Ok(())
         },
     );
-    let run = control.map(|control| Run {
-        emitted: std::mem::take(&mut emitted),
-        counts: grep.counts().to_vec(),
-        stop: stop(control.expect("claude source streams")),
-        complete: grep.complete(),
+    let run = control.map(|control| {
+        let (stop, names_through) = stop(&control.expect("claude source streams"));
+        Run {
+            emitted: std::mem::take(&mut emitted),
+            counts: grep.counts().to_vec(),
+            stop,
+            names_through,
+            complete: grep.complete(),
+        }
     });
     (run, emitted, budget.progress.clone())
 }
@@ -218,6 +226,7 @@ fn prepared(path: &Path, patterns: &[(&str, Option<usize>)], options: GrepOption
             Ok(if result.quota_reached {
                 ScanControl::Stop {
                     source_complete: result.source_complete,
+                    names_through: None,
                 }
             } else {
                 ScanControl::Continue
@@ -227,7 +236,8 @@ fn prepared(path: &Path, patterns: &[(&str, Option<usize>)], options: GrepOption
     Run {
         emitted,
         counts: grep.counts().to_vec(),
-        stop: stop(control),
+        stop: stop(&control).0,
+        names_through: None,
         complete: grep.complete(),
     }
 }
@@ -341,6 +351,8 @@ fn streamed_grep_matches_the_prepared_snapshot_path() {
                 let (actual, _, _) =
                     streamed(&source.0, &patterns, options, render_names, limits());
                 let mut actual = actual.unwrap();
+                assert!(actual.names_through.is_none() || actual.stop == Some(false));
+                actual.names_through = None;
                 if !render_names {
                     for emitted in expected.emitted.iter_mut().chain(&mut actual.emitted) {
                         emitted.names.clear();
@@ -973,4 +985,208 @@ fn queries_share_one_file_record_and_resume_independently() {
     );
     assert_eq!(again.unwrap().counts, vec![1]);
     assert_eq!(progress.cache_hits, 1);
+}
+
+fn redefined() -> Vec<String> {
+    vec![
+        line(assistant("a0", "u", json!([tool("t", "Bash", json!({}))]))),
+        line(result("u1", "a0", "t", "needle")),
+        line(user("u2", Some("u1"), json!("filler"))),
+        line(assistant("a1", "u2", json!([tool("t", "Read", json!({}))]))),
+    ]
+}
+
+fn through(lines: &[String], count: usize) -> u64 {
+    lines[..count]
+        .iter()
+        .map(|line| line.len() as u64 + 1)
+        .sum()
+}
+
+fn tool_filter(name: &str) -> GrepOptions {
+    let mut options = options();
+    options.tool = Some(name.into());
+    options
+}
+
+#[test]
+fn early_stop_after_a_name_lookup_reports_the_resolved_prefix() {
+    let lines = redefined();
+    let source = Source::new(&lines, true);
+    let (run, _, _) = streamed(
+        &source.0,
+        &[("needle", Some(1))],
+        tool_filter("Bash"),
+        true,
+        limits(),
+    );
+    let run = run.unwrap();
+    assert_eq!(run.counts, vec![1]);
+    assert_eq!(run.stop, Some(false));
+    assert_eq!(run.names_through, Some(through(&lines, 3)));
+    assert_eq!(
+        prepared(&source.0, &[("needle", Some(1))], tool_filter("Bash")).counts,
+        vec![0]
+    );
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut session = ScanSession::new(&store, limits(), Cancellation::default());
+    let mut grep = reducer(
+        &[("needle", Some(1))],
+        tool_filter("Bash"),
+        &mut session.budget,
+    );
+    let outcome = session.each_source(
+        &ScanPlan {
+            paths: vec![source.0.clone()],
+            root: std::env::temp_dir(),
+            project: None,
+            contains: None,
+            source_limit: None,
+        },
+        |session, path| {
+            Ok(grep
+                .scan_stream(
+                    path,
+                    true,
+                    None,
+                    &mut session.budget,
+                    &Cancellation::default(),
+                    |_, _, _| Ok(()),
+                )?
+                .unwrap())
+        },
+    );
+    assert_eq!(
+        outcome.reason,
+        Some(format!(
+            "result_limit; tool names resolved through byte {}",
+            through(&lines, 3)
+        ))
+    );
+}
+
+#[test]
+fn unique_ids_label_only_name_dependent_early_stops() {
+    let lines = vec![
+        line(user("u0", None, json!("start"))),
+        line(assistant("a0", "u0", json!([tool("t", "Bash", json!({}))]))),
+        line(result("u1", "a0", "t", "needle result")),
+        line(user("u2", Some("u1"), json!("needle text"))),
+        line(user("u3", Some("u2"), json!("needle text"))),
+        line(user("u4", Some("u3"), json!("tail"))),
+    ];
+    let source = Source::new(&lines, true);
+    let (compact, _, _) = streamed(&source.0, &[("needle", Some(1))], options(), true, limits());
+    assert_eq!(compact.unwrap().names_through, Some(through(&lines, 4)));
+    let (json_mode, _, _) = streamed(
+        &source.0,
+        &[("needle", Some(1))],
+        options(),
+        false,
+        limits(),
+    );
+    assert_eq!(json_mode.unwrap().names_through, None);
+    let (text_only, _, _) = streamed(
+        &source.0,
+        &[("needle text", Some(1))],
+        options(),
+        true,
+        limits(),
+    );
+    let text_only = text_only.unwrap();
+    assert_eq!(text_only.stop, Some(false));
+    assert_eq!(text_only.names_through, None);
+    let (to_eof, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(to_eof.unwrap().names_through, None);
+}
+
+#[test]
+fn warm_names_layer_through_eof_makes_early_stops_exact() {
+    for (lines, options) in [
+        (redefined(), tool_filter("Bash")),
+        (
+            vec![
+                line(assistant("a0", "u", json!([tool("t", "Bash", json!({}))]))),
+                line(result("u1", "a0", "t", "needle")),
+                line(user("u2", Some("u1"), json!("needle"))),
+                line(user("u3", Some("u2"), json!("tail"))),
+            ],
+            self::options(),
+        ),
+    ] {
+        let cache = Cache::new();
+        let source = Source::new(&lines, true);
+        checkpointed(
+            &source.0,
+            &[("absent", None)],
+            self::options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        )
+        .0
+        .unwrap();
+        let (warm, _, _) = checkpointed(
+            &source.0,
+            &[("needle", Some(1))],
+            GrepOptions {
+                tool: options.tool.clone(),
+                ..self::options()
+            },
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        let warm = warm.unwrap();
+        assert_eq!(warm.names_through, None);
+        assert_eq!(
+            warm,
+            prepared(
+                &source.0,
+                &[("needle", Some(1))],
+                GrepOptions {
+                    tool: options.tool,
+                    ..self::options()
+                }
+            )
+        );
+    }
+}
+
+#[test]
+fn a_used_name_contradicted_by_a_later_full_layer_is_incomplete() {
+    let cache = Cache::new();
+    let lines = redefined();
+    let source = Source::new(&lines, true);
+    let (first, _, _) = checkpointed(
+        &source.0,
+        &[("needle", Some(1))],
+        tool_filter("Bash"),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(first.unwrap().names_through, Some(through(&lines, 3)));
+    checkpointed(
+        &source.0,
+        &[("absent", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    let (again, _, _) = checkpointed(
+        &source.0,
+        &[("needle", Some(1))],
+        tool_filter("Bash"),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let error = again.err().unwrap();
+    assert_eq!(error.status, Status::Incomplete);
+    assert!(error.reason.contains("redefined"), "{}", error.reason);
+    assert!(cache.records().is_empty());
 }

@@ -358,6 +358,16 @@ and pending lines, validates them, then continues from the saved prefix,
 including appended bytes. Invalid records cause a rescan from byte 0.
 Budget-capped runs save partial progress but still report incomplete coverage.
 Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
+If `--max-matches` stops before EOF after output used names for `--tool` filtering
+or compact `← Name` labels, the outcome reason becomes
+`result_limit; tool names resolved through byte X` and stderr adds
+`warning: partial view: tool names resolved through byte X`, where `X` marks the
+byte offset reached by name resolution; exit status is unchanged from plain
+`result_limit`. The label is omitted when the checkpoint's per-file names layer
+is validated through the current EOF, so names are final and results match the
+full-file path. If a `tool_use` id whose name was used is later read with a
+different name, in the same run or in a later full-file names layer, the source
+is incomplete and its checkpoint record is deleted.
 
 Work counters separate source reads and logical projected payload bytes from
 `staging_peak_reserved_bytes`, the conservative peak allocation reservation.

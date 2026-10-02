@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Budget-capped runs save partial progress and still report incomplete coverage.
   Checkpoints bind the source, query, and CLI build; stale or corrupt records are
   discarded and the source is rescanned from byte 0.
+- Streamed `cc-transcript grep` labels an early `--max-matches` stop as a partial
+  view when an emitted `--tool` decision or compact tool-result name (`← Name`)
+  depends on tool names resolved only through a file prefix. The warning reports
+  the byte offset without changing the `result_limit` exit status. A checkpoint
+  names layer validated through the current EOF removes the label; a later
+  conflicting name for a used `tool_use` id makes the source incomplete and
+  deletes its checkpoint record.
 - The `render` query charges its input budget for the windowed events only, plus
   the prompt of each turn the window starts and the names of tools whose calls
   and results both fall inside it, instead of every event of each overlapping

@@ -253,7 +253,10 @@ pub struct ScanOutcome {
 
 pub enum ScanControl {
     Continue,
-    Stop { source_complete: bool },
+    Stop {
+        source_complete: bool,
+        names_through: Option<u64>,
+    },
 }
 
 pub struct ScanSession<'a> {
@@ -448,15 +451,28 @@ impl<'a> ScanSession<'a> {
                     return Err(incomplete("source budget exhausted"));
                 }
                 self.budget.progress.sources += 1;
-                if let ScanControl::Stop { source_complete } = source(self, &path)? {
-                    return Ok(source_complete && source_index + 1 == selected_sources);
+                if let ScanControl::Stop {
+                    source_complete,
+                    names_through,
+                } = source(self, &path)?
+                {
+                    return Ok((
+                        source_complete && source_index + 1 == selected_sources,
+                        names_through,
+                    ));
                 }
             }
-            Ok(true)
+            Ok((true, None))
         })();
         let (complete, reason) = match result {
-            Ok(true) => (true, None),
-            Ok(false) => (false, Some("result_limit".to_owned())),
+            Ok((true, _)) => (true, None),
+            Ok((false, None)) => (false, Some("result_limit".to_owned())),
+            Ok((false, Some(through))) => (
+                false,
+                Some(format!(
+                    "result_limit; tool names resolved through byte {through}"
+                )),
+            ),
             Err(error) => (
                 false,
                 Some(format!("{}: {}", error.status.as_str(), error.reason)),
