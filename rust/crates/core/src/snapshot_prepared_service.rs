@@ -452,13 +452,24 @@ impl NativeStore {
         cancel: &Cancellation,
     ) -> Result<PreparedSourceOutcome, SnapshotError> {
         let handle = &outcome["description"]["handle"];
-        let (snapshot, _) = self.pin_scope_for_work(handle, context, remaining.deadline_unix_ms)?;
-        if snapshot.stamp != stamp {
-            return Err(SnapshotError::new(
-                Status::Changed,
-                "prepared source revision changed",
-            ));
+        let pinned = self
+            .pin_scope_for_work(handle, context, remaining.deadline_unix_ms)
+            .and_then(|(snapshot, _)| {
+                if snapshot.stamp == stamp {
+                    Ok(snapshot)
+                } else {
+                    Err(SnapshotError::new(
+                        Status::Changed,
+                        "prepared source revision changed",
+                    ))
+                }
+            });
+        if pinned.is_err() {
+            self.lock_state()
+                .leases
+                .remove(str_field(handle, "lease_id")?);
         }
+        let snapshot = pinned?;
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
@@ -1143,6 +1154,34 @@ impl NativeStore {
         ))
     }
 
+    fn collect_located(
+        page: &Value,
+        located: &mut HashMap<String, PathBuf>,
+    ) -> Result<(), SnapshotError> {
+        for item in page["sessions"]
+            .as_array()
+            .ok_or_else(|| invalid("invalid registered location result"))?
+        {
+            match str_field(item, "status")? {
+                "ok" => {
+                    located.insert(
+                        str_field(item, "session_id")?.to_owned(),
+                        PathBuf::from(str_field(item, "path")?),
+                    );
+                }
+                "missing" => {}
+                "incomplete" => {
+                    return Err(SnapshotError::new(
+                        Status::Incomplete,
+                        "registered location incomplete",
+                    ));
+                }
+                _ => return Err(invalid("invalid registered location status")),
+            }
+        }
+        Ok(())
+    }
+
     fn build_warm_membership(
         &self,
         request: &Value,
@@ -1166,43 +1205,32 @@ impl NativeStore {
             let before = usage[17];
             let mut outcome = self.locate(&location, context, cancel, usage)?;
             loop {
-                for item in outcome.0["sessions"]
-                    .as_array()
-                    .ok_or_else(|| invalid("invalid registered location result"))?
-                {
-                    match str_field(item, "status")? {
-                        "ok" => {
-                            located.insert(
-                                str_field(item, "session_id")?.to_owned(),
-                                PathBuf::from(str_field(item, "path")?),
-                            );
-                        }
-                        "missing" => {}
-                        "incomplete" => {
-                            return Err(SnapshotError::new(
-                                Status::Incomplete,
-                                "registered location incomplete",
-                            ));
-                        }
-                        _ => return Err(invalid("invalid registered location status")),
+                let page = Self::collect_located(&outcome.0, &mut located);
+                let Some(cursor) = outcome.1.take() else {
+                    page?;
+                    if outcome.2.is_some() {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "registered location incomplete",
+                        ));
                     }
-                }
-                if let Some(cursor) = outcome.1 {
-                    outcome = self.dispatch(
-                        &json!({"schema":SCHEMA,"id":"warm-registered-locate-resume","operation":"resume","cursor":cursor}),
+                    break;
+                };
+                let resumed = page.and_then(|()| {
+                    self.dispatch(
+                        &json!({"schema":SCHEMA,"id":"warm-registered-locate-resume","operation":"resume","cursor":&cursor}),
                         context,
                         cancel,
                         usage,
-                    )?;
-                    continue;
-                }
-                if outcome.2.is_some() {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "registered location incomplete",
-                    ));
-                }
-                break;
+                    )
+                });
+                outcome = match resumed {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        self.lock_state().locates.remove(&cursor);
+                        return Err(error);
+                    }
+                };
             }
             remaining.max_discovery_entries = remaining
                 .max_discovery_entries
@@ -1433,6 +1461,11 @@ impl NativeStore {
                 Err(error) => return Err(error),
             };
             if stamp != source.stamp {
+                if let PreparedSourceOutcome::Pending(token) = &outcome {
+                    self.lock_state()
+                        .waiters
+                        .remove(token);
+                }
                 return Err(SnapshotError::new(
                     Status::Changed,
                     "registered source changed",

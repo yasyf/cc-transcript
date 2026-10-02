@@ -3251,6 +3251,612 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
     }
 }
 
+fn resolve_request(scenario: &Scenario, first: usize, padding: usize) -> Value {
+    let ids = scenario.ids();
+    let session_ids = vec![ids[first].clone(), ids[1 - first].clone()];
+    json!({"schema":SCHEMA,"id":"ledger-resolve","operation":"resolve","session_ids":session_ids,"roots":scenario.roots(),"classifier":{"id":"native","version":"1"},"padding":"p".repeat(padding),"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()})
+}
+
+fn resolution_fixture(
+    scenario: &Scenario,
+    background: bool,
+    cached: bool,
+    padding: usize,
+) -> Fixture {
+    let store = slow_store();
+    let owner = context_for("resolution", background);
+    let (handle, snapshot) = acquired(&store, &scenario.sidechains[0], &owner);
+    release_lease(&store, &handle, &owner);
+    Fixture {
+        store,
+        owner,
+        request: resolve_request(scenario, usize::from(!cached), padding),
+        pins: vec![snapshot],
+    }
+}
+
+fn assert_owner_released(store: &NativeStore, site: &str) {
+    let state = store.lock_state();
+    assert!(
+        state.waiters.is_empty(),
+        "{site}: a pending source waiter outlived its failed owner"
+    );
+    assert!(
+        state.loads.is_empty(),
+        "{site}: a pending source load outlived its failed owner"
+    );
+    assert!(
+        state.leases.is_empty(),
+        "{site}: a lease issued to the failed owner outlived it"
+    );
+}
+
+fn refused_resolution(site: &str, fixture: &Fixture, opens: u64, cache_hits: u64) -> bool {
+    let response = submit(fixture);
+    if parked(&response) {
+        return true;
+    }
+    let usage = &response["usage"];
+    assert_eq!(
+        usage["requests_failed"].as_u64(),
+        Some(1),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        usage["source_opens"].as_u64(),
+        Some(opens),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        usage["cache_hits"].as_u64(),
+        Some(cache_hits),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        usage["source_bytes_read"].as_u64().unwrap() > 0,
+        opens > cache_hits,
+        "{site}: {response:?}"
+    );
+    assert_owner_released(&fixture.store, site);
+    false
+}
+
+fn attached_graph_fixture(source: &LedgerSource, member: &Path, background: bool) -> Fixture {
+    let store = cursor_store();
+    let owner = context_for("graph", background);
+    let (root, root_snapshot) = acquired(&store, &source.path, &owner);
+    Fixture {
+        request: json!({"schema":SCHEMA,"id":"ledger-graph","operation":"query","view":{"handle":root,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[member.to_string_lossy().as_ref()]},"query":missing_tool(),"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()}),
+        store,
+        owner,
+        pins: vec![root_snapshot],
+    }
+}
+
+fn parked_graph_member(fixture: &Fixture) -> (Value, String) {
+    let mut page = submit(fixture);
+    loop {
+        let cursor = page["cursor"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the graph settled before parking its member: {page:?}"))
+            .to_owned();
+        let held = fixture
+            .store
+            .lock_state()
+            .graphs
+            .get(&cursor)
+            .and_then(|graph| graph.pending.as_ref().map(|pending| pending.token.clone()));
+        if let Some(token) = held {
+            assert!(fixture.store.lock_state().waiters.contains_key(&token));
+            return (page, token);
+        }
+        page = resume(&fixture.store, &page, &fixture.owner);
+    }
+}
+
+fn fail_next_pin(store: &NativeStore, spared_lease: Option<String>) {
+    *store.pin_hook.lock().unwrap() = Some(Arc::new(move |handle: &Value| {
+        if handle["lease_id"].as_str() == spared_lease.as_deref() {
+            return Ok(());
+        }
+        Err(SnapshotError::new(Status::Deadline, "pin hook"))
+    }));
+}
+
+fn assert_pin_failed(site: &str, response: &Value) {
+    assert_eq!(
+        response["status"].as_str(),
+        Some("deadline"),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        response["reason"].as_str(),
+        Some("pin hook"),
+        "{site}: {response:?}"
+    );
+}
+
+#[test]
+fn refused_resolution_park_releases_its_pending_source_and_lease() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    let padding = 64 * 1024;
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for cached in [false, true] {
+        for background in [false, true] {
+            let site = format!("resolution park cached={cached} background={background}");
+            let build = |padding: usize| resolution_fixture(&scenario, background, cached, padding);
+            let small = exact_headroom(&|| build(0), &attempt);
+            let large = exact_headroom(&|| build(padding), &attempt);
+            assert_eq!(
+                large - small,
+                padding,
+                "{site}: the parked cursor is not the binding admission"
+            );
+            assert_refused_at(
+                &site,
+                &build(padding),
+                &|fixture: &Fixture| refused_resolution(&site, fixture, 0, 0),
+                1,
+            );
+            assert_refused_at(
+                &site,
+                &build(padding),
+                &|fixture: &Fixture| refused_resolution(&site, fixture, 1, u64::from(cached)),
+                large,
+            );
+            let fitted = build(padding);
+            let _filler = fill_to(&fitted.store, &fitted.owner, large);
+            let response = submit(&fitted);
+            assert!(
+                parked(&response),
+                "{site}: the exact fit was refused: {response:?}"
+            );
+            fitted.store.assert_conserved();
+            assert!(
+                audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner),
+                "{site}"
+            );
+            let cursor = response["cursor"].as_str().unwrap();
+            {
+                let state = fitted.store.lock_state();
+                let pending = state
+                    .resolutions
+                    .get(cursor)
+                    .expect("the parked resolution")
+                    .pending
+                    .clone();
+                assert_eq!(pending.is_none(), cached, "{site}");
+                assert_eq!(state.waiters.len(), usize::from(!cached), "{site}");
+                assert!(
+                    pending.is_none_or(|token| state.waiters.contains_key(&token)),
+                    "{site}"
+                );
+                assert_eq!(state.leases.len(), usize::from(cached), "{site}");
+            }
+            release_cursor(&fitted.store, cursor, &fitted.owner);
+            assert!(fitted.store.lock_state().waiters.is_empty(), "{site}");
+            fitted.store.assert_conserved();
+        }
+    }
+}
+
+#[test]
+fn lease_capped_resolution_park_releases_its_pending_source_and_lease() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    for cached in [false, true] {
+        for background in [false, true] {
+            let site =
+                format!("lease-capped resolution park cached={cached} background={background}");
+            let cap = 16 - usize::from(background);
+            for fillers in [cap - 1, cap] {
+                let fixture = resolution_fixture(&scenario, background, cached, 0);
+                for _ in 0..fillers {
+                    let filler = fixture.store.request(
+                        &resolve_request(&scenario, 0, 0),
+                        &fixture.owner,
+                        &Cancellation::default(),
+                    );
+                    assert!(parked(&filler), "{site}: {filler:?}");
+                    release_lease(
+                        &fixture.store,
+                        &filler["data"]["sessions"][0]["description"]["handle"],
+                        &fixture.owner,
+                    );
+                }
+                assert_eq!(
+                    fixture.store.lock_state().resolutions.len(),
+                    fillers,
+                    "{site}"
+                );
+                let before = (
+                    settled(&fixture.store),
+                    audited(&fixture.store),
+                    bookkeeping(&fixture.store),
+                );
+                let response = submit(&fixture);
+                if fillers < cap {
+                    assert!(
+                        parked(&response),
+                        "{site}: the last cursor slot was refused: {response:?}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("lease_limit"),
+                    "{site}: {response:?}"
+                );
+                assert_eq!(
+                    response["reason"].as_str(),
+                    Some("resolution cursor admission exhausted"),
+                    "{site}: {response:?}"
+                );
+                assert_eq!(
+                    response["usage"]["source_opens"].as_u64(),
+                    Some(1),
+                    "{site}: {response:?}"
+                );
+                assert_eq!(
+                    response["usage"]["cache_hits"].as_u64(),
+                    Some(u64::from(cached)),
+                    "{site}: {response:?}"
+                );
+                assert_owner_released(&fixture.store, &site);
+                fixture.store.assert_conserved();
+                assert_eq!(
+                    (
+                        ledger(&fixture.store),
+                        audited(&fixture.store),
+                        bookkeeping(&fixture.store)
+                    ),
+                    before,
+                    "{site}: the lease-capped park leaked state"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_resolution_pages_release_their_pending_source_and_lease() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        for cached in [false, true] {
+            let site = format!("output-limited resolution cached={cached} background={background}");
+            let fixture = resolution_fixture(&scenario, background, cached, 0);
+            let mut request = fixture.request.clone();
+            request["limits"].insert("max_output_bytes", json!(64));
+            let before = (
+                settled(&fixture.store),
+                audited(&fixture.store),
+                bookkeeping(&fixture.store),
+            );
+            let response =
+                fixture
+                    .store
+                    .request(&request, &fixture.owner, &Cancellation::default());
+            assert_eq!(
+                response["status"].as_str(),
+                Some("output_limit"),
+                "{site}: {response:?}"
+            );
+            assert_eq!(
+                response["usage"]["source_opens"].as_u64(),
+                Some(1),
+                "{site}: {response:?}"
+            );
+            assert_owner_released(&fixture.store, &site);
+            fixture.store.assert_conserved();
+            assert_eq!(
+                (
+                    ledger(&fixture.store),
+                    audited(&fixture.store),
+                    bookkeeping(&fixture.store)
+                ),
+                before,
+                "{site}: the output-limited page leaked state"
+            );
+        }
+        let site = format!("stale resumed resolution background={background}");
+        let fixture = resolution_fixture(&scenario, background, true, 0);
+        let first = submit(&fixture);
+        assert!(parked(&first), "{site}: {first:?}");
+        let second = resume(&fixture.store, &first, &fixture.owner);
+        assert!(parked(&second), "{site}: {second:?}");
+        let cursor = second["cursor"].as_str().unwrap();
+        let pending = fixture
+            .store
+            .lock_state()
+            .resolutions
+            .get(cursor)
+            .and_then(|resolution| resolution.pending.clone())
+            .expect("the second page parks a pending source");
+        assert!(
+            fixture.store.lock_state().waiters.contains_key(&pending),
+            "{site}"
+        );
+        release_lease(
+            &fixture.store,
+            &first["data"]["sessions"][0]["description"]["handle"],
+            &fixture.owner,
+        );
+        let failed = resume(&fixture.store, &second, &fixture.owner);
+        assert_eq!(
+            failed["status"].as_str(),
+            Some("stale_handle"),
+            "{site}: {failed:?}"
+        );
+        assert_owner_released(&fixture.store, &site);
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn failed_resolution_pin_releases_its_candidate_lease() {
+    let scenario = Scenario::new(2, |index| session_line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let site = format!("resolution pin background={background}");
+        let fixture = resolution_fixture(&scenario, background, true, 0);
+        let before = (
+            settled(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store),
+        );
+        fail_next_pin(&fixture.store, None);
+        let response = submit(&fixture);
+        assert_pin_failed(&site, &response);
+        assert!(
+            fixture.store.pin_hook.lock().unwrap().is_none(),
+            "{site}: the candidate pin never ran"
+        );
+        assert_eq!(
+            response["usage"]["source_opens"].as_u64(),
+            Some(1),
+            "{site}: {response:?}"
+        );
+        assert_eq!(
+            response["usage"]["cache_hits"].as_u64(),
+            Some(1),
+            "{site}: {response:?}"
+        );
+        assert_owner_released(&fixture.store, &site);
+        assert!(fixture.store.lock_state().resolutions.is_empty(), "{site}");
+        fixture.store.assert_conserved();
+        assert_eq!(
+            (
+                ledger(&fixture.store),
+                audited(&fixture.store),
+                bookkeeping(&fixture.store)
+            ),
+            before,
+            "{site}: the failed candidate pin leaked state"
+        );
+    }
+}
+
+#[test]
+fn changed_registered_member_releases_its_pending_source_waiter() {
+    let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
+    let store = slow_store();
+    let owner = context_for("warming", true);
+    let changed = scenario.sidechains[1].clone();
+    let recorded = SourceStamp::of(&std::fs::metadata(&changed).unwrap());
+    let appended = lines(0..2);
+    *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&changed)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+    }));
+    let response = store.request(&warm_request(&scenario), &owner, &Cancellation::default());
+    assert_eq!(response["status"].as_str(), Some("changed"), "{response:?}");
+    assert_eq!(
+        response["reason"].as_str(),
+        Some("registered source changed"),
+        "{response:?}"
+    );
+    assert!(
+        store.read_hook.lock().unwrap().is_none(),
+        "the barrier never fired between membership and open"
+    );
+    let current = SourceStamp::of(&std::fs::metadata(&scenario.sidechains[1]).unwrap());
+    assert_ne!(current, recorded);
+    {
+        let state = store.lock_state();
+        assert!(
+            state.waiters.is_empty(),
+            "the changed member left its pending source waiter behind"
+        );
+        assert!(
+            state.leases.is_empty(),
+            "the warm left an internal source lease behind"
+        );
+        assert_eq!(
+            state.loads.len(),
+            1,
+            "a load outlived the failed warm outside the prepared-load cache"
+        );
+        let slot = state
+            .loads
+            .get(&current.identity)
+            .expect("the changed revision's load");
+        assert_eq!(slot.stamp, current);
+        let (pinned, _) = state
+            .prepared_loads
+            .get(&current.identity)
+            .expect("the prepared-load cache pin");
+        assert!(Arc::ptr_eq(slot, pinned));
+        assert_eq!(
+            Arc::strong_count(slot),
+            2,
+            "a waiter still holds the changed revision's load"
+        );
+    }
+    store.assert_conserved();
+    assert!(audited(&store)[TOTAL] <= cap_for(&owner));
+    warm(&store, &scenario, &owner);
+    assert!(store.lock_state().waiters.is_empty());
+    assert_eq!(
+        settled(&store)[LOADS],
+        0,
+        "the rebuilt membership never consumed the pinned load"
+    );
+    store.assert_conserved();
+}
+
+#[test]
+fn vanished_graph_member_releases_its_pending_source_waiter() {
+    for background in [false, true] {
+        let site = format!("vanished graph member background={background}");
+        let source = LedgerSource::new(&line("root"));
+        let member = source.file("agent-a.jsonl", &lines(0..4));
+        let fixture = attached_graph_fixture(&source, &member, background);
+        let (page, pending) = parked_graph_member(&fixture);
+        std::fs::remove_file(&member).unwrap();
+        let failed = resume(&fixture.store, &page, &fixture.owner);
+        assert_eq!(
+            failed["status"].as_str(),
+            Some("missing"),
+            "{site}: {failed:?}"
+        );
+        {
+            let state = fixture.store.lock_state();
+            assert!(
+                !state.waiters.contains_key(&pending),
+                "{site}: the vanished member left its pending source waiter behind"
+            );
+            assert!(state.waiters.is_empty(), "{site}");
+            assert_eq!(
+                state.leases.len(),
+                1,
+                "{site}: only the client's root lease survives the failed page"
+            );
+            assert!(
+                state.leases.contains_key(
+                    fixture.request["view"]["handle"]["lease_id"]
+                        .as_str()
+                        .unwrap()
+                ),
+                "{site}"
+            );
+            assert!(
+                state.loads.is_empty(),
+                "{site}: the vanished member's load outlived the failed page"
+            );
+            assert!(state.graphs.is_empty(), "{site}");
+        }
+        fixture.store.assert_conserved();
+        assert_eq!(settled(&fixture.store)[LOADS], 0, "{site}");
+    }
+}
+
+#[test]
+fn failed_graph_member_pin_releases_its_internal_lease() {
+    for background in [false, true] {
+        let site = format!("graph member pin background={background}");
+        let source = LedgerSource::new(&line("root"));
+        let member = source.file("agent-a.jsonl", &lines(0..4));
+        let fixture = attached_graph_fixture(&source, &member, background);
+        let (page, pending) = parked_graph_member(&fixture);
+        let root_lease = fixture.request["view"]["handle"]["lease_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fail_next_pin(&fixture.store, Some(root_lease.clone()));
+        let failed = settle(&fixture.store, page, &fixture.owner);
+        assert_pin_failed(&site, &failed);
+        assert!(
+            fixture.store.pin_hook.lock().unwrap().is_none(),
+            "{site}: the member pin never ran"
+        );
+        {
+            let state = fixture.store.lock_state();
+            assert!(
+                !state.waiters.contains_key(&pending),
+                "{site}: the member's pending source waiter outlived the failed pin"
+            );
+            assert!(state.waiters.is_empty(), "{site}");
+            assert_eq!(
+                state.leases.len(),
+                1,
+                "{site}: only the client's root lease survives the failed page"
+            );
+            assert!(state.leases.contains_key(&root_lease), "{site}");
+            assert!(state.loads.is_empty(), "{site}");
+            assert!(state.graphs.is_empty(), "{site}");
+        }
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn failed_prepared_source_pin_releases_its_internal_lease() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let site = format!("finish_prepared_source pin background={background}");
+        let fixture = finish_fixture(&scenario.sidechains[0], background);
+        assert_eq!(settled(&fixture.store)[LEASES], 1, "{site}");
+        fail_next_pin(&fixture.store, None);
+        let Err(error) = finish_source(&fixture) else {
+            panic!("{site}: the forced pin failure was adopted");
+        };
+        assert_eq!(
+            (error.status, error.reason.as_str()),
+            (Status::Deadline, "pin hook"),
+            "{site}"
+        );
+        assert!(fixture.store.pin_hook.lock().unwrap().is_none(), "{site}");
+        {
+            let state = fixture.store.lock_state();
+            assert!(
+                state.leases.is_empty(),
+                "{site}: the internal source lease outlived the failed pin"
+            );
+            assert!(state.waiters.is_empty(), "{site}");
+            assert!(state.prepared_loads.is_empty(), "{site}");
+        }
+        assert_eq!(
+            fact_probes(&fixture.store),
+            [0, 0],
+            "{site}: the failed pin reached fact construction"
+        );
+        fixture.store.assert_conserved();
+        assert_eq!(ledger(&fixture.store)[LEASES], 0, "{site}");
+    }
+}
+
+#[test]
+fn cancelled_registered_warming_releases_its_location_cursor() {
+    let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
+    let store = cursor_store();
+    let owner = context_for("warming", true);
+    let cancel = Cancellation::default();
+    let armed = cancel.clone();
+    *store.locate_hook.lock().unwrap() = Some(Arc::new(move || armed.cancel()));
+    let response = store.request(&warm_request(&scenario), &owner, &cancel);
+    assert_eq!(
+        response["status"].as_str(),
+        Some("cancelled"),
+        "{response:?}"
+    );
+    assert!(
+        store.locate_hook.lock().unwrap().is_none(),
+        "the location page never parked"
+    );
+    assert_eq!(
+        response["usage"]["discovery_entries_examined"].as_u64(),
+        Some(2),
+        "{response:?}"
+    );
+    assert!(
+        store.lock_state().locates.is_empty(),
+        "the cancelled warm left its location cursor behind"
+    );
+    store.assert_conserved();
+}
+
 fn restricted_context(claimant: &str, background: bool, root: &Path, padding: usize) -> Value {
     let mut context = context_for(claimant, background);
     let root = std::fs::canonicalize(root).unwrap();

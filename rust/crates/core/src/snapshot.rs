@@ -2345,6 +2345,10 @@ pub struct NativeStore {
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    pin_hook: Mutex<Option<Arc<dyn Fn(&Value) -> Result<(), SnapshotError> + Send + Sync>>>,
+    #[cfg(test)]
+    locate_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
     pub(crate) retained_work: Arc<AtomicUsize>,
@@ -2678,6 +2682,10 @@ impl NativeStore {
             classified: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
+            #[cfg(test)]
+            pin_hook: Mutex::new(None),
+            #[cfg(test)]
+            locate_hook: Mutex::new(None),
             #[cfg(test)]
             membership_metadata_checks: AtomicUsize::new(0),
             #[cfg(test)]
@@ -4299,6 +4307,16 @@ impl NativeStore {
         context: &Value,
         deadline: u64,
     ) -> Result<(Arc<TranscriptSnapshot>, Value), SnapshotError> {
+        #[cfg(test)]
+        {
+            let hook = self.pin_hook.lock().expect("pin hook").clone();
+            if let Some(hook) = hook {
+                if let Err(error) = hook(handle) {
+                    self.pin_hook.lock().expect("pin hook").take();
+                    return Err(error);
+                }
+            }
+        }
         if deadline <= now_ms() {
             return Err(SnapshotError::new(
                 Status::Deadline,
@@ -6072,6 +6090,16 @@ impl NativeStore {
         }
     }
 
+    fn after_location_park(&self) {
+        #[cfg(test)]
+        {
+            let hook = self.locate_hook.lock().expect("locate hook").take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
     fn matches_prefix(current: SourceStamp, pinned: SourceStamp) -> bool {
         let current = current.viewed_as(pinned);
         current == pinned || current.identity == pinned.identity && current.size > pinned.size
@@ -6654,6 +6682,7 @@ impl NativeStore {
             graph.nodes[index].transferred = false;
         }
         Self::release_graph_state(state, graph);
+        Self::prune(state);
     }
 
     fn graph_step(
@@ -6754,11 +6783,17 @@ impl NativeStore {
         let acquired = data
             .get("description")
             .ok_or_else(|| invalid("acquire returned no source description"))?;
-        let (snapshot, description) = self.pin_scope_for_work(
+        let pinned = self.pin_scope_for_work(
             &acquired["handle"],
             &graph.context,
             graph.remaining.deadline_unix_ms,
-        )?;
+        );
+        if pinned.is_err() {
+            self.lock_state()
+                .leases
+                .remove(str_field(&acquired["handle"], "lease_id")?);
+        }
+        let (snapshot, description) = pinned?;
         let identity = snapshot.stamp.identity.file();
         if !graph.seen.insert(identity)
             && graph.request["query"]["kind"].as_str() != Some("direct_sidechains")
@@ -6834,12 +6869,10 @@ impl NativeStore {
         work: &mut usize,
         work_stop: usize,
     ) -> Result<bool, SnapshotError> {
-        self.authority(
-            &graph.context,
-            Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
-        )?;
+        let canonical = std::fs::canonicalize(&pending.path).map_err(io_error);
         let token = pending.token.clone();
         graph.pending = Some(pending);
+        self.authority(&graph.context, Some(&canonical?))?;
         loop {
             if *work >= work_stop {
                 return Ok(false);
@@ -8070,6 +8103,8 @@ impl NativeStore {
         state.locates.reserve_for(token);
         state.locates.insert(token.to_owned(), cursor);
         state.locates.pledge(token, pledge);
+        drop(state);
+        self.after_location_park();
         Ok((
             data,
             Some(token.to_owned()),
@@ -8194,6 +8229,35 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let delivered = cursor.sessions.len();
+        let stepped = self.resolution_steps(&mut cursor, cancel, usage);
+        let pending = cursor.pending.clone();
+        let issued: Vec<String> = cursor.sessions[delivered..]
+            .iter()
+            .filter(|session| session["status"].as_str() == Some("ok"))
+            .filter_map(|session| session["description"]["handle"]["lease_id"].as_str())
+            .map(str::to_owned)
+            .collect();
+        let reply = stepped.and_then(|()| self.resolution_page(token, cursor));
+        if reply.is_err() {
+            let mut state = self.lock_state();
+            if let Some(pending) = &pending {
+                state.waiters.remove(pending);
+            }
+            for lease in &issued {
+                state.leases.remove(lease);
+            }
+            Self::prune(&mut state);
+        }
+        reply
+    }
+
+    fn resolution_steps(
+        &self,
+        cursor: &mut ResolutionCursor,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<(), SnapshotError> {
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         {
             let mut state = self.lock_state();
@@ -8259,20 +8323,24 @@ impl NativeStore {
             cursor.pending = outcome.1;
             if cursor.pending.is_none() {
                 let handle = &outcome.0["description"]["handle"];
-                let (resolved, description) = self.pin_scope_for_work(
-                    handle,
-                    &cursor.context,
-                    cursor.remaining.deadline_unix_ms,
-                )?;
-                if resolved.session_id != *id {
+                let adopted = self
+                    .pin_scope_for_work(handle, &cursor.context, cursor.remaining.deadline_unix_ms)
+                    .and_then(|(resolved, description)| {
+                        if resolved.session_id == *id {
+                            Ok(description)
+                        } else {
+                            Err(SnapshotError::new(
+                                Status::Changed,
+                                "candidate source session differs from requested identity",
+                            ))
+                        }
+                    });
+                if adopted.is_err() {
                     self.lock_state()
                         .leases
                         .remove(str_field(handle, "lease_id")?);
-                    return Err(SnapshotError::new(
-                        Status::Changed,
-                        "candidate source session differs from requested identity",
-                    ));
                 }
+                let description = adopted?;
                 cursor
                     .sessions
                     .push(json!({"session_id":id,"status":"ok","description":description}));
@@ -8280,6 +8348,14 @@ impl NativeStore {
             }
             break;
         }
+        Ok(())
+    }
+
+    fn resolution_page(
+        &self,
+        token: &str,
+        mut cursor: ResolutionCursor,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         if cursor.next == cursor.ids.len() {
             let data = json!({"kind":"resolved","sessions":cursor.sessions});
             let bytes = sonic_rs::to_vec(&data)
