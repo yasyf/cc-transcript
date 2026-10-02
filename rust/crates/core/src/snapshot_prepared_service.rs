@@ -712,6 +712,7 @@ impl NativeStore {
             }
             let (root_facts, mut reservation) =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+            let retained = self.retain_facts(&mut reservation, context, root_facts)?;
             let shares_root = membership
                 .members
                 .iter()
@@ -777,7 +778,7 @@ impl NativeStore {
                 root,
                 root_handle: root_handle.clone(),
                 classifier: view["classifier"].clone(),
-                root_facts,
+                root_facts: Arc::clone(retained.facts()),
                 root_slices: Table::new(work),
                 revision: revision.clone(),
                 stamps,
@@ -791,6 +792,7 @@ impl NativeStore {
         }
         let (root_facts, mut reservation) =
             self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+        let retained = self.retain_facts(&mut reservation, context, root_facts)?;
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         self.extend_projection_reservation(
             &mut reservation,
@@ -814,7 +816,7 @@ impl NativeStore {
             root: Arc::clone(&root),
             root_handle: root_handle.clone(),
             classifier: view["classifier"].clone(),
-            root_facts,
+            root_facts: Arc::clone(retained.facts()),
             remaining,
             tasks: Vec::new(),
             listing: None,
@@ -1010,7 +1012,7 @@ impl NativeStore {
                     )?;
                     let predicted = vec_capacity_for(&build.sidechain_dirs, 1);
                     let directory = base.join(stem).join("subagents");
-                    let canonical = match std::fs::canonicalize(&directory) {
+                    let canonical = match realpath(&directory) {
                         Ok(canonical) => canonical,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                             build.sidechain_dirs.push((directory, None));
@@ -1048,7 +1050,7 @@ impl NativeStore {
                     spawned_by: _,
                 } => {
                     examined += 1;
-                    let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                    let canonical = realpath(&path).map_err(io_error)?;
                     self.authority(context, Some(&canonical))?;
                     let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
                     if build.seen.contains(&stamp.identity.file()) {

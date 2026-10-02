@@ -1,8 +1,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::ops::Range;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -792,6 +794,30 @@ fn spawner(path: &Path) -> &str {
         .and_then(|stem| stem.to_str())
         .unwrap_or("");
     stem.strip_prefix("agent-").unwrap_or(stem)
+}
+
+fn realpath(path: &Path) -> std::io::Result<PathBuf> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if bytes.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file name contained an unexpected NUL byte",
+        ));
+    }
+    if bytes.len() >= libc::PATH_MAX as usize {
+        return Err(std::io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
+    let mut input = [0u8; libc::PATH_MAX as usize];
+    input[..bytes.len()].copy_from_slice(bytes);
+    let mut resolved = [0u8; libc::PATH_MAX as usize];
+    if unsafe { libc::realpath(input.as_ptr().cast(), resolved.as_mut_ptr().cast()) }.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let len = resolved
+        .iter()
+        .position(|byte| *byte == 0)
+        .expect("realpath terminates its result");
+    Ok(PathBuf::from(OsString::from_vec(resolved[..len].to_vec())))
 }
 
 struct PreparedBuild {
@@ -2459,6 +2485,8 @@ pub struct NativeStore {
     #[cfg(test)]
     locate_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+    #[cfg(test)]
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
     pub(crate) retained_work: Arc<AtomicUsize>,
@@ -2487,7 +2515,41 @@ pub(crate) struct ProjectionReservation<'a> {
 
 impl Drop for ProjectionReservation<'_> {
     fn drop(&mut self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .store
+                .release_hook
+                .lock()
+                .expect("release hook")
+                .clone();
+            if let Some(hook) = hook {
+                hook(self.bytes);
+            }
+        }
         self.store.lock_state().transient_bytes -= self.bytes;
+    }
+}
+
+struct RetainedFacts<'a> {
+    store: &'a NativeStore,
+    facts: Option<Arc<crate::snapshot_prepared::PreparedFacts>>,
+}
+
+impl RetainedFacts<'_> {
+    fn facts(&self) -> &Arc<crate::snapshot_prepared::PreparedFacts> {
+        self.facts
+            .as_ref()
+            .expect("retained facts are released once")
+    }
+}
+
+impl Drop for RetainedFacts<'_> {
+    fn drop(&mut self) {
+        let mut state = self.store.lock_state();
+        let facts = self.facts.take().expect("retained facts are released once");
+        state.ledger.shared.release(facts_key(&facts));
+        drop(facts);
     }
 }
 
@@ -2801,6 +2863,8 @@ impl NativeStore {
             #[cfg(test)]
             locate_hook: Mutex::new(None),
             #[cfg(test)]
+            release_hook: Mutex::new(None),
+            #[cfg(test)]
             membership_metadata_checks: AtomicUsize::new(0),
             #[cfg(test)]
             retained_work: work.counter(),
@@ -2965,6 +3029,34 @@ impl NativeStore {
         reservation.bytes += bytes;
         state.ledger.shared.work().reserved(bytes);
         Ok(())
+    }
+
+    fn retain_facts(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        context: &Value,
+        facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    ) -> Result<RetainedFacts<'_>, SnapshotError> {
+        if !std::ptr::eq(self, reservation.store) {
+            return Err(invalid("projection reservation belongs to another owner"));
+        }
+        let anchor = facts_anchor(&facts);
+        let mut state = self.lock_state();
+        let covered = state
+            .ledger
+            .shared
+            .unowned_bytes([anchor])
+            .min(reservation.bytes);
+        let fresh = state.ledger.shared.admission([anchor]) - covered;
+        self.admit_memory(&mut state, context, fresh)?;
+        state.ledger.shared.reserve([anchor]);
+        state.ledger.shared.acquire(anchor);
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
+        Ok(RetainedFacts {
+            store: self,
+            facts: Some(facts),
+        })
     }
 
     fn grow_projection_capacity(
@@ -5715,23 +5807,23 @@ impl NativeStore {
                             "prepared build claimant differs",
                         ));
                     }
-                    state.remove_prepared_build(cursor).map(|build| {
-                        let held = build.charge()
-                            + state
-                                .ledger
-                                .shared
-                                .unowned_bytes([facts_anchor(&build.root_facts)]);
+                    state.prepared_builds.remove(cursor).map(|build| {
+                        let held = build.charge();
                         state.transient_bytes += held;
                         (
-                            build,
                             ProjectionReservation {
                                 store: self,
                                 bytes: held,
                             },
+                            RetainedFacts {
+                                store: self,
+                                facts: Some(Arc::clone(&build.root_facts)),
+                            },
+                            build,
                         )
                     })
                 };
-                if let Some((mut build, mut reservation)) = prepared_build {
+                if let Some((mut reservation, _retained, mut build)) = prepared_build {
                     if build.context["authority"] != context["authority"]
                         || build.context["admission"] != context["admission"]
                         || build.context["registry_generation"] != context["registry_generation"]

@@ -55,7 +55,7 @@ impl LedgerSource {
     fn new(contents: &str) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "cc-ledger-{}-{}-{}",
+            "cc-ledger-{}-{}-{:06}",
             std::process::id(),
             now_ms(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -5481,6 +5481,202 @@ fn resumed_prepared_build_admits_each_source_before_retaining_it() {
         }
         assert_fitted_at(site, &build(&scenarios[0]), &sourced, short);
     }
+}
+
+#[test]
+fn stale_prepared_build_frees_its_buffers_before_releasing_their_reservation() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = parked_build_fixture(&scenario, background);
+        let facts = {
+            let mut state = fixture.store.lock_state();
+            let cached = state
+                .remove_prepared_facts(&fixture.pins[0].stamp.identity)
+                .expect("cached root facts");
+            Arc::downgrade(&cached.facts)
+        };
+        assert!(
+            facts.upgrade().is_some(),
+            "the parked build does not hold the root facts alone"
+        );
+        let releases = Arc::new(AtomicUsize::new(0));
+        *fixture.store.release_hook.lock().unwrap() = Some(Arc::new({
+            let (facts, releases) = (facts.clone(), Arc::clone(&releases));
+            move |bytes: usize| {
+                releases.fetch_add(1, Ordering::Relaxed);
+                assert!(
+                    facts.upgrade().is_none(),
+                    "a {bytes}-byte reservation was released while its build was still live"
+                );
+            }
+        }));
+        let stale = fixture.store.request(
+            &fixture.request,
+            &restricted_context("resumed-build", background, &scenario.root.directory, 0),
+            &Cancellation::default(),
+        );
+        *fixture.store.release_hook.lock().unwrap() = None;
+        assert_eq!(stale["status"].as_str(), Some("stale_cursor"), "{stale:?}");
+        assert_eq!(
+            releases.load(Ordering::Relaxed),
+            2,
+            "the stale resume did not release its step and reply reservations"
+        );
+        assert!(facts.upgrade().is_none());
+        assert!(fixture.store.lock_state().prepared_builds.is_empty());
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn retained_root_facts_stay_counted_across_a_cache_replacement() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let classifier = json!({"id":"native","version":"1"});
+    for background in [false, true] {
+        let store = prepared_store();
+        let owner = context_for("facts-owner", background);
+        let other = restricted_context("facts-owner", background, &scenario.root.directory, 0);
+        let (_, root) = acquired(&store, &scenario.root.path, &owner);
+        let (facts, mut reservation) = store
+            .prepared_root_facts(
+                &root,
+                &classifier,
+                &owner,
+                &work_bounds(),
+                &Cancellation::default(),
+            )
+            .unwrap();
+        let bytes = facts.accounted_bytes();
+        let retained = store.retain_facts(&mut reservation, &owner, facts).unwrap();
+        assert_eq!(store.lock_state().ledger.shared.facts(), bytes);
+        let (replacement, replacement_reservation) = store
+            .prepared_root_facts(
+                &root,
+                &classifier,
+                &other,
+                &work_bounds(),
+                &Cancellation::default(),
+            )
+            .unwrap();
+        {
+            let state = store.lock_state();
+            assert!(Arc::ptr_eq(
+                &state.prepared_facts[&root.stamp.identity].facts,
+                &replacement
+            ));
+            assert!(!Arc::ptr_eq(retained.facts(), &replacement));
+            assert_eq!(
+                state.ledger.shared.facts(),
+                bytes + replacement.accounted_bytes(),
+                "the replaced root facts lost their in-flight owner"
+            );
+        }
+        drop(retained);
+        assert_eq!(
+            store.lock_state().ledger.shared.facts(),
+            replacement.accounted_bytes()
+        );
+        drop(replacement_reservation);
+        drop(reservation);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn resumed_prepared_build_keeps_its_root_facts_counted_after_a_cache_replacement() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let fixture = parked_build_fixture(&scenario, background);
+        let other = restricted_context("other", background, &scenario.root.directory, 0);
+        let (root, _pin) = acquired(&fixture.store, &scenario.root.path, &other);
+        let replaced = drive(
+            &fixture.store,
+            fixture.store.request(
+                &prepare_request(&root, &[], &[], &scenario.direct()),
+                &other,
+                &Cancellation::default(),
+            ),
+            &other,
+        );
+        assert_eq!(replaced["status"].as_str(), Some("ok"), "{replaced:?}");
+        let (parked, cached) = {
+            let state = fixture.store.lock_state();
+            let build = state.prepared_builds.values().next().expect("parked build");
+            (
+                Arc::clone(&build.root_facts),
+                Arc::clone(&state.prepared_facts[&fixture.pins[0].stamp.identity].facts),
+            )
+        };
+        assert!(
+            !Arc::ptr_eq(&parked, &cached),
+            "the other authority did not replace the cached root facts"
+        );
+        let counted = fixture.store.lock_state().ledger.shared.facts();
+        assert_eq!(counted, parked.accounted_bytes() + cached.accounted_bytes());
+        let resumed = drive(&fixture.store, submit(&fixture), &fixture.owner);
+        assert_eq!(resumed["status"].as_str(), Some("ok"), "{resumed:?}");
+        assert_eq!(
+            fixture.store.lock_state().ledger.shared.facts(),
+            counted,
+            "the resumed build dropped or double counted its root facts"
+        );
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn realpath_resolves_within_the_filesystem_path_slot() {
+    let source = LedgerSource::new(&line("root"));
+    let resolved = realpath(&source.path).unwrap();
+    assert_eq!(resolved, std::fs::canonicalize(&source.path).unwrap());
+    assert_eq!(resolved.capacity(), resolved.as_os_str().len());
+    assert!(resolved.as_os_str().len() < libc::PATH_MAX as usize);
+    assert_eq!(
+        realpath(Path::new(".")).unwrap(),
+        std::fs::canonicalize(".").unwrap()
+    );
+    assert_eq!(
+        realpath(&source.directory.join("missing"))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        realpath(Path::new(&"x".repeat(libc::PATH_MAX as usize)))
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ENAMETOOLONG)
+    );
+    assert_eq!(
+        realpath(Path::new("a\0b")).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "moves the process working directory below PATH_MAX"]
+fn realpath_refuses_a_working_directory_longer_than_path_max() {
+    struct WorkingDirectory(PathBuf);
+
+    impl Drop for WorkingDirectory {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).unwrap();
+        }
+    }
+
+    let _restored = WorkingDirectory(std::env::current_dir().unwrap());
+    let source = LedgerSource::new(&line("root"));
+    std::env::set_current_dir(&source.directory).unwrap();
+    let component = "d".repeat(200);
+    for _ in 0..=libc::PATH_MAX as usize / component.len() {
+        std::fs::create_dir(&component).unwrap();
+        std::env::set_current_dir(&component).unwrap();
+    }
+    assert_eq!(
+        realpath(Path::new(".")).unwrap_err().raw_os_error(),
+        Some(libc::ENAMETOOLONG)
+    );
 }
 
 #[test]
