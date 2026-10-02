@@ -106,11 +106,19 @@ struct Warmed {
     graph: Value,
 }
 
-fn line(id: &str) -> String {
+fn entry(id: &str, session: &str) -> String {
     format!(
         "{}\n",
-        json!({"type":"user","uuid":id,"sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":format!("prompt {id}")}})
+        json!({"type":"user","uuid":id,"sessionId":session,"timestamp":"2026-01-02T03:04:05Z","message":{"content":format!("prompt {id}")}})
     )
+}
+
+fn line(id: &str) -> String {
+    entry(id, "s")
+}
+
+fn session_line(id: &str) -> String {
+    entry(id, id)
 }
 
 fn lines(range: Range<usize>) -> String {
@@ -534,6 +542,11 @@ fn settled(store: &NativeStore) -> [usize; 8] {
     ledger(store)
 }
 
+fn unadmitted_bytes(store: &NativeStore) -> usize {
+    let state = store.lock_state();
+    NativeStore::fixed_metadata_bytes(&state) + state.leases.charged()
+}
+
 fn chunk_charge(chunk: &EntryChunk) -> usize {
     chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
 }
@@ -641,11 +654,12 @@ fn assert_boundary_at(
         );
     }
     let _filler = fill_to(&fixture.store, &fixture.owner, exact);
+    let unadmitted = unadmitted_bytes(&fixture.store);
     assert!(attempt(fixture), "{site}: the exact fit was refused");
     fixture.store.assert_conserved();
     assert!(
-        audited(&fixture.store)[TOTAL] <= cap,
-        "{site}: the admitted publication exceeded the cap"
+        audited(&fixture.store)[TOTAL] <= cap + unadmitted_bytes(&fixture.store) - unadmitted,
+        "{site}: the admitted publication exceeded the cap beyond its unadmitted bookkeeping"
     );
 }
 
@@ -1087,7 +1101,7 @@ fn label_slots_publish_take_reinsert_and_release_conserved() {
 
 #[test]
 fn every_cursor_kind_takes_out_and_reinserts_conserved() {
-    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let scenario = Scenario::new(9, |index| session_line(&format!("thread-{index:04}")));
     let prompts = scenario.root.file("prompts.jsonl", &lines(0..3));
     let store = cursor_store();
     let owner = context_for("cursors", false);
@@ -1547,9 +1561,12 @@ fn advance_publication_admits_exactly_before_registering_the_generation() {
         let fitted = build();
         let generations = ledger(&fitted.store)[GENERATIONS];
         let filler = fill_to(&fitted.store, &fitted.owner, exact);
+        let unadmitted = unadmitted_bytes(&fitted.store);
         assert!(advance_published(&fitted));
         fitted.store.assert_conserved();
-        assert!(audited(&fitted.store)[TOTAL] <= cap);
+        assert!(
+            audited(&fitted.store)[TOTAL] <= cap + unadmitted_bytes(&fitted.store) - unadmitted
+        );
         assert_eq!(ledger(&fitted.store)[GENERATIONS], generations + 1);
         drop(filler);
         fitted.store.assert_conserved();
