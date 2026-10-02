@@ -9314,6 +9314,11 @@ fn invalidated_location_fixture(scenario: &Scenario, background: bool) -> Fixtur
     let token = fixture.request["cursor"].as_str().unwrap().to_owned();
     {
         let mut state = fixture.store.lock_state();
+        assert_eq!(
+            state.locates.pledged(&token),
+            0,
+            "the delivered location cursor kept its pledge"
+        );
         let mut cursor = state
             .locates
             .remove(&token)
@@ -9325,10 +9330,8 @@ fn invalidated_location_fixture(scenario: &Scenario, background: bool) -> Fixtur
             .expect("an unfound session");
         cursor.pending.push_back(json!({"session_id":forgotten.as_str(),"status":"ok","path":scenario.root.directory.join("gone.jsonl").to_string_lossy().as_ref(),"revision":"gone"}));
         cursor.found.insert(forgotten);
-        let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
         state.locates.reserve_for(&token);
         state.locates.insert(token.clone(), cursor);
-        state.locates.pledge(&token, pledge);
     }
     fixture
 }

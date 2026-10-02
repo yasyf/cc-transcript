@@ -470,6 +470,15 @@ struct RenewedScope {
     description_bytes: usize,
 }
 
+// Sized exactly like an acquire reply's re-serialized copy, whose bytes admit graph members.
+#[derive(serde::Serialize)]
+struct LeaseHandle<'a> {
+    owner_epoch: &'a str,
+    snapshot_id: &'a str,
+    generation: &'a str,
+    lease_id: &'a str,
+}
+
 #[derive(Clone)]
 struct Waiter {
     claimant: String,
@@ -5376,7 +5385,7 @@ impl NativeStore {
         lease: &str,
         expires: u64,
     ) -> Value {
-        json!({"handle": {"owner_epoch": self.owner_epoch, "snapshot_id": snapshot.id, "generation": snapshot.id, "lease_id": lease},
+        json!({"handle": LeaseHandle {owner_epoch: &self.owner_epoch, snapshot_id: &snapshot.id, generation: &snapshot.id, lease_id: lease},
             "canonical_path": snapshot.canonical_path.to_string_lossy().as_ref(),
             "source_id": format!("{}:{}", snapshot.stamp.identity.device, snapshot.stamp.identity.inode),
             "device": snapshot.stamp.identity.device.to_string(), "inode": snapshot.stamp.identity.inode.to_string(),
