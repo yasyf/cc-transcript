@@ -2347,6 +2347,10 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) warm_copies: AtomicUsize,
     #[cfg(test)]
+    pub(crate) fact_builds: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) fact_lookups: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -2673,6 +2677,10 @@ impl NativeStore {
             reclaims: work.reclaims(),
             #[cfg(test)]
             warm_copies: AtomicUsize::new(0),
+            #[cfg(test)]
+            fact_builds: AtomicUsize::new(0),
+            #[cfg(test)]
+            fact_lookups: AtomicUsize::new(0),
             #[cfg(test)]
             audits,
         })
@@ -13482,7 +13490,14 @@ mod tests {
             assert_eq!(slices(&prepared), 0);
             let idle = store.retained_accounted_bytes();
             let capacities = idle - settled_bytes(&store);
-            let room = cap - idle - slice_bytes - REPLY_RESERVATION;
+            let root_facts = store.lock_state().prepared_graphs
+                [prepared["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap()
+            .root_facts
+            .accounted_bytes();
+            let bound = slice_bytes.max(root_facts);
+            let room = cap - idle - bound - REPLY_RESERVATION;
             let crowded = store.reserve_projection(&owner, room + 1).unwrap();
             let refused = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
             assert_refused(&store, &refused);
@@ -13492,7 +13507,10 @@ mod tests {
             let fitted = store.reserve_projection(&owner, room).unwrap();
             let exact = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
             assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
-            assert_eq!(settled_bytes(&store), cap - REPLY_RESERVATION - capacities);
+            assert_eq!(
+                settled_bytes(&store),
+                cap - REPLY_RESERVATION - capacities - (bound - slice_bytes)
+            );
             assert_eq!(slices(&prepared), 1);
             store.assert_conserved();
             drop(fitted);

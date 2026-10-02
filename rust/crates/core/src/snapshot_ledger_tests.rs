@@ -26,6 +26,20 @@ const LEASES: usize = 5;
 const LOADS: usize = 6;
 const GENERATIONS: usize = 7;
 const PRE_SIZED_SLOTS: usize = 1792;
+const BUILDS: usize = 0;
+const LOOKUPS: usize = 1;
+const NO_LOADS: LoadResidue = LoadResidue {
+    slots: 0,
+    pinned: 0,
+};
+const UNPINNED_LOAD: LoadResidue = LoadResidue {
+    slots: 1,
+    pinned: 0,
+};
+const PINNED_LOAD: LoadResidue = LoadResidue {
+    slots: 1,
+    pinned: 1,
+};
 
 struct LedgerSource {
     directory: PathBuf,
@@ -113,6 +127,12 @@ struct Warmed {
     owner: Value,
     root: Value,
     graph: Value,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoadResidue {
+    slots: usize,
+    pinned: usize,
 }
 
 fn entry(id: &str, session: &str) -> String {
@@ -2738,25 +2758,17 @@ fn codex_acquired(fixture: &Fixture) -> (Value, Arc<TranscriptSnapshot>) {
     (acquired["data"].clone(), snapshot)
 }
 
-fn finished_recent_codex(fixture: &Fixture, acquired: &Value) -> bool {
-    let stamp =
-        SourceStamp::of(&std::fs::metadata(fixture.request["path"].as_str().unwrap()).unwrap());
-    match fixture.store.finish_prepared_source(
-        stamp,
-        acquired,
-        &fixture.owner,
-        &work_bounds(),
-        &Cancellation::default(),
-    ) {
-        Ok(PreparedSourceOutcome::Ready { .. }) => {}
-        Ok(PreparedSourceOutcome::Pending(cursor)) => panic!("prepared source parked: {cursor}"),
-        Err(error) => panic!("prepared source completion failed: {error:?}"),
-    }
+fn codex_finish_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    let mut fixture = Fixture {
+        store: fast_store(),
+        owner: context_for("codex", background),
+        request: acquire(&source.path),
+        pins: Vec::new(),
+    };
+    let (data, pinned) = codex_acquired(&fixture);
+    fixture.request.insert("outcome", data);
+    fixture.pins.push(pinned);
     fixture
-        .store
-        .lock_state()
-        .recent_codex
-        .contains_key(&stamp.identity)
 }
 
 #[test]
@@ -3037,44 +3049,85 @@ fn resumed_root_warming_admits_its_waiter_exactly() {
 #[test]
 fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
     let source = LedgerSource::new(&codex_lines());
+    let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+    let site = "recent codex completion";
     for background in [false, true] {
-        let build = || Fixture {
-            store: fast_store(),
-            owner: context_for("codex", background),
-            request: acquire(&source.path),
-            pins: Vec::new(),
+        let build = || codex_finish_fixture(&source, background);
+        let finished = |fixture: &Fixture| {
+            constructed(site, &fixture.store, [1, 0], false, || {
+                finish_source(fixture).map(|_| ())
+            })
         };
-        let fitted = build();
+        let cached = |fixture: &Fixture| {
+            finished(fixture)
+                && fixture
+                    .store
+                    .lock_state()
+                    .recent_codex
+                    .contains_key(&identity)
+        };
+        let probe = build();
+        let predicted = chunk_entry_bytes(&probe.pins[0]);
         let growth = {
-            let state = fitted.store.lock_state();
+            let state = probe.store.lock_state();
             state.recent_codex.growth(1) + state.recent_codex_expiry.growth(1)
         };
         assert!(growth > 0);
-        let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
-        let (data, _pinned) = codex_acquired(&fitted);
-        assert!(fitted.store.lock_state().latest.contains_key(&identity));
+        let exact = exact_headroom(&build, &finished);
+        assert_eq!(
+            exact, predicted,
+            "{site}: completion is not gated on its full facts reservation"
+        );
+        let with_cache = exact_headroom(&build, &cached);
+        assert!(
+            exact < with_cache && with_cache <= exact + growth,
+            "the cache write costs its growth: exact={exact} with_cache={with_cache} growth={growth}"
+        );
         {
-            let _filler = fill_to(&fitted.store, &fitted.owner, 0);
-            assert!(!finished_recent_codex(&fitted, &data));
-            fitted.store.assert_conserved();
-            assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
-            let state = fitted.store.lock_state();
+            let refused = build();
+            let leases = lease_table(&refused.store).0;
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!finished(&refused));
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap_for(&refused.owner));
+            let state = refused.store.lock_state();
+            assert_eq!(
+                state.leases.len(),
+                leases - 1,
+                "{site}: the refusal leaked its source lease"
+            );
+            assert!(!state.prepared_facts.contains_key(&identity));
+            assert_eq!(
+                state.latest.contains_key(&identity),
+                state.recent_codex.contains_key(&identity),
+                "{site}: the refusal split the raw codex cache from its snapshot"
+            );
+        }
+        {
+            let skipped = build();
+            let _filler = fill_to(&skipped.store, &skipped.owner, with_cache - 1);
+            assert!(
+                finished(&skipped),
+                "{site}: the completion itself was refused"
+            );
+            skipped.store.assert_conserved();
+            assert!(audited(&skipped.store)[TOTAL] <= cap_for(&skipped.owner));
+            let state = skipped.store.lock_state();
             assert!(!state.latest.contains_key(&identity));
             assert_eq!(state.recent_codex.reserved(), 0);
             assert_eq!(state.recent_codex_expiry.reserved(), 0);
             assert_eq!(state.recent_codex_raw_bytes, 0);
         }
         let admitted = build();
-        let (data, pinned) = codex_acquired(&admitted);
-        let _filler = fill_to(&admitted.store, &admitted.owner, growth);
-        assert!(finished_recent_codex(&admitted, &data));
+        let _filler = fill_to(&admitted.store, &admitted.owner, with_cache);
+        assert!(cached(&admitted));
         admitted.store.assert_conserved();
         assert!(audited(&admitted.store)[TOTAL] <= cap_for(&admitted.owner));
         let state = admitted.store.lock_state();
         assert!(state.latest.contains_key(&identity));
         assert_eq!(
             state.recent_codex_raw_bytes,
-            pinned.codex_raw.as_ref().unwrap().len()
+            admitted.pins[0].codex_raw.as_ref().unwrap().len()
         );
     }
 }
@@ -3279,6 +3332,709 @@ fn prepared_facts_cache_admits_its_authority_metadata_exactly() {
         assert!(cached(&written));
         written.store.assert_conserved();
         assert!(audited(&written.store)[TOTAL] <= cap);
+    }
+}
+
+fn fact_probes(store: &NativeStore) -> [usize; 2] {
+    [
+        store.fact_builds.load(Ordering::Relaxed),
+        store.fact_lookups.load(Ordering::Relaxed),
+    ]
+}
+
+fn chunk_entry_bytes(snapshot: &Arc<TranscriptSnapshot>) -> usize {
+    entry_bytes(&[snapshot]) - snapshot.accounted_allocations()[0].1.owned_capacity_bytes
+}
+
+fn decoded_root_facts_prediction(root: &Arc<TranscriptSnapshot>) -> usize {
+    chunk_entry_bytes(root)
+}
+
+fn decoded_source_facts_prediction(path: &Path) -> usize {
+    std::fs::metadata(path).unwrap().len() as usize
+}
+
+fn constructed(
+    site: &str,
+    store: &NativeStore,
+    built: [usize; 2],
+    refusable_after: bool,
+    attempt: impl FnOnce() -> Result<(), SnapshotError>,
+) -> bool {
+    let before = fact_probes(store);
+    let result = attempt();
+    let after = fact_probes(store);
+    let moved = [
+        after[BUILDS] - before[BUILDS],
+        after[LOOKUPS] - before[LOOKUPS],
+    ];
+    match result {
+        Err(error) if error.status != Status::RetainedLimit => {
+            panic!("{site}: failed outside admission: {error:?}")
+        }
+        Err(_) if moved == [0, 0] => false,
+        Err(error) if !refusable_after => {
+            panic!("{site}: refused after constructing its facts: {error:?}")
+        }
+        _ => {
+            assert_eq!(
+                moved, built,
+                "{site}: the admitted attempt did not construct exactly once"
+            );
+            true
+        }
+    }
+}
+
+fn assert_refusal_contract(site: &str, response: &Value) {
+    assert_eq!(
+        response["status"].as_str(),
+        Some("retained_limit"),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        response["reason"].as_str(),
+        Some("accounted storage admission exhausted"),
+        "{site}: {response:?}"
+    );
+    assert_eq!(
+        response["complete"].as_bool(),
+        Some(false),
+        "{site}: {response:?}"
+    );
+    assert!(
+        response["data"].is_null() && response["cursor"].is_null(),
+        "{site}: {response:?}"
+    );
+    for (counter, expected) in [
+        ("requests_failed", 1),
+        ("requests_cancelled", 0),
+        ("source_bytes_read", 0),
+        ("events_parsed", 0),
+        ("cold_parses", 0),
+        ("generations_published", 0),
+    ] {
+        assert_eq!(
+            response["usage"][counter].as_u64(),
+            Some(expected),
+            "{site}: {counter}: {response:?}"
+        );
+    }
+}
+
+fn submitted(site: &str, fixture: &Fixture, built: [usize; 2]) -> bool {
+    let before = fact_probes(&fixture.store);
+    let response = submit(fixture);
+    let after = fact_probes(&fixture.store);
+    let moved = [
+        after[BUILDS] - before[BUILDS],
+        after[LOOKUPS] - before[LOOKUPS],
+    ];
+    if moved == [0, 0] {
+        assert_refusal_contract(site, &response);
+        return false;
+    }
+    assert_eq!(moved, built, "{site}: {response:?}");
+    assert!(
+        matches!(
+            response["status"].as_str(),
+            Some("ok" | "incomplete" | "retained_limit")
+        ),
+        "{site}: {response:?}"
+    );
+    true
+}
+
+fn assert_refused_reply(site: &str, fixture: &Fixture, headroom: usize, cache_hits: u64) {
+    let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+    let failed = fixture.store.lock_state().counters[12];
+    let response = submit(fixture);
+    assert_refusal_contract(site, &response);
+    assert_eq!(
+        response["usage"]["cache_hits"].as_u64(),
+        Some(cache_hits),
+        "{site}: {response:?}"
+    );
+    assert_eq!(fixture.store.lock_state().counters[12], failed + 1);
+    fixture.store.assert_conserved();
+}
+
+fn assert_facts_admitted_in_full(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    offset: usize,
+    predicted: usize,
+    reserved: &[Trace],
+    residue: LoadResidue,
+) {
+    assert!(predicted > 0, "{site}: nothing was predicted");
+    assert_eq!(
+        exact_headroom(build, attempt),
+        offset + predicted,
+        "{site}: construction is not gated on the full {predicted}-byte prediction"
+    );
+    for headroom in [0, predicted - 1] {
+        let fixture = build();
+        let cap = cap_for(&fixture.owner);
+        let filler = fill_to(&fixture.store, &fixture.owner, offset + headroom);
+        fixture.store.assert_conserved();
+        let before = ledger(&fixture.store);
+        let before_audited = audited(&fixture.store);
+        let before_bookkeeping = bookkeeping(&fixture.store);
+        let probes = fact_probes(&fixture.store);
+        let disk = fixture.store.prepared_disk.stats();
+        let leases = lease_table(&fixture.store);
+        let held = {
+            let state = fixture.store.lock_state();
+            (
+                state.prepared_facts.len(),
+                state.waiters.len(),
+                state.prepared_loads.len(),
+            )
+        };
+        traced(&fixture.store);
+        assert!(
+            !attempt(&fixture),
+            "{site}: headroom {headroom} below the prediction was admitted"
+        );
+        let trace = traced(&fixture.store);
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|entry| matches!(entry, Trace::Reserved(_)))
+                .copied()
+                .collect::<Vec<_>>(),
+            reserved,
+            "{site}: the refusal at headroom {headroom} reserved facts bytes: {trace:?}"
+        );
+        assert!(
+            !trace
+                .iter()
+                .any(|entry| matches!(entry, Trace::Allocated(_))),
+            "{site}: the refusal at headroom {headroom} allocated bookkeeping: {trace:?}"
+        );
+        assert!(offset > 0 || trace.is_empty(), "{site}: {trace:?}");
+        fixture.store.assert_conserved();
+        let after = ledger(&fixture.store);
+        let slots = after[LOADS] - before[LOADS];
+        assert!(
+            slots <= residue.slots,
+            "{site}: the refusal at headroom {headroom} left {slots} load slots behind"
+        );
+        let mut expected = before;
+        expected[LOADS] += slots;
+        let mut expected_audited = before_audited;
+        expected_audited[LOADS] += slots;
+        assert_eq!(
+            (after, audited(&fixture.store), bookkeeping(&fixture.store)),
+            (expected, expected_audited, before_bookkeeping),
+            "{site}: the refusal at headroom {headroom} leaked state"
+        );
+        assert!(
+            audited(&fixture.store)[TOTAL] <= cap,
+            "{site}: the refusal left the audit above the cap"
+        );
+        assert_eq!(
+            fact_probes(&fixture.store),
+            probes,
+            "{site}: facts were built or decoded before the refusal at headroom {headroom}"
+        );
+        let stats = fixture.store.prepared_disk.stats();
+        assert_eq!(
+            (stats.entries, stats.bytes, stats.writes),
+            (disk.entries, disk.bytes, disk.writes),
+            "{site}: the refusal wrote the facts disk cache"
+        );
+        assert_eq!(
+            lease_table(&fixture.store),
+            leases,
+            "{site}: the refusal leaked a lease"
+        );
+        drop(filler);
+        let pinned = {
+            let state = fixture.store.lock_state();
+            assert_eq!(
+                (state.prepared_facts.len(), state.waiters.len()),
+                (held.0, held.1),
+                "{site}: the refusal left facts or a waiter behind"
+            );
+            assert_eq!(
+                state.transient_bytes, 0,
+                "{site}: the refusal left a reservation behind"
+            );
+            state.prepared_loads.len() - held.2
+        };
+        assert!(
+            pinned <= residue.pinned,
+            "{site}: the refusal at headroom {headroom} pinned {pinned} prepared loads"
+        );
+        assert_eq!(
+            settled(&fixture.store)[LOADS],
+            before[LOADS] + pinned,
+            "{site}: the refusal left a load slot that is neither pinned nor pruned"
+        );
+    }
+    assert_fitted_at(site, &build(), attempt, offset + predicted);
+}
+
+fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("root-facts", background);
+    let (root, snapshot) = acquired(&store, &source.path, &owner);
+    let classifier = json!({"id":"native","version":"1"});
+    if primed {
+        store
+            .prepared_root_facts(
+                &snapshot,
+                &classifier,
+                &owner,
+                &work_bounds(),
+                &Cancellation::default(),
+            )
+            .unwrap();
+        store
+            .lock_state()
+            .remove_prepared_facts(&snapshot.stamp.identity)
+            .expect("primed root facts");
+    }
+    let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+        snapshot.stamp,
+        owner["registry_generation"].as_str().unwrap(),
+        "hook",
+        &owner["authority"],
+        &classifier,
+    )
+    .unwrap();
+    assert_eq!(store.prepared_disk.has_entry(&key).unwrap(), primed);
+    assert!(!store
+        .lock_state()
+        .prepared_facts
+        .contains_key(&snapshot.stamp.identity));
+    Fixture {
+        store,
+        owner,
+        request: prepare_request(&root, &[], &[], &[]),
+        pins: vec![snapshot],
+    }
+}
+
+fn root_facts_prediction(root: &Arc<TranscriptSnapshot>, primed: bool) -> usize {
+    if primed {
+        decoded_root_facts_prediction(root)
+    } else {
+        chunk_entry_bytes(root)
+    }
+}
+
+#[test]
+fn root_facts_are_admitted_in_full_before_construction_or_decoding() {
+    let source = LedgerSource::new(&lines(0..4));
+    for background in [false, true] {
+        for (primed, built) in [(false, [1, 1]), (true, [0, 1])] {
+            let build = || root_facts_fixture(&source, background, primed);
+            let probe = build();
+            assert_eq!(
+                settled(&probe.store)[ENTRIES],
+                entry_bytes(&[&probe.pins[0]])
+            );
+            assert_facts_admitted_in_full(
+                "prepared_root_facts",
+                &build,
+                &|fixture: &Fixture| {
+                    constructed("prepared_root_facts", &fixture.store, built, false, || {
+                        fixture
+                            .store
+                            .prepared_root_facts(
+                                &fixture.pins[0],
+                                &json!({"id":"native","version":"1"}),
+                                &fixture.owner,
+                                &work_bounds(),
+                                &Cancellation::default(),
+                            )
+                            .map(|_| ())
+                    })
+                },
+                0,
+                root_facts_prediction(&probe.pins[0], primed),
+                &[],
+                NO_LOADS,
+            );
+        }
+    }
+}
+
+#[test]
+fn prepare_graph_refuses_root_facts_before_construction_or_decoding() {
+    let source = LedgerSource::new(&lines(0..4));
+    let site = "prepare_graph root facts";
+    for background in [false, true] {
+        for (primed, built) in [(false, [1, 1]), (true, [0, 1])] {
+            let build = || root_facts_fixture(&source, background, primed);
+            let predicted = root_facts_prediction(&build().pins[0], primed);
+            assert_facts_admitted_in_full(
+                site,
+                &build,
+                &|fixture: &Fixture| submitted(site, fixture, built),
+                REPLY_RESERVATION,
+                predicted,
+                &[Trace::Reserved(REPLY_RESERVATION)],
+                NO_LOADS,
+            );
+            for headroom in [0, predicted - 1] {
+                assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+            }
+        }
+    }
+}
+
+fn warm_root_facts_fixture(source: &LedgerSource) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("warm-root-facts", true);
+    let (_, snapshot) = acquired(&store, &source.path, &owner);
+    let (spare, _) = acquired(&store, &source.path, &owner);
+    release_lease(&store, &spare, &owner);
+    Fixture {
+        store,
+        owner,
+        request: warm_root_request(&source.path),
+        pins: vec![snapshot],
+    }
+}
+
+#[test]
+fn warm_root_refuses_root_facts_before_construction() {
+    let source = LedgerSource::new(&prompt_line("root", 32 * 1024));
+    let site = "warm_root root facts";
+    let build = || warm_root_facts_fixture(&source);
+    let probe = build();
+    assert_eq!(
+        settled(&probe.store)[ENTRIES],
+        entry_bytes(&[&probe.pins[0]])
+    );
+    let predicted = chunk_entry_bytes(&probe.pins[0]);
+    assert_facts_admitted_in_full(
+        site,
+        &build,
+        &|fixture: &Fixture| submitted(site, fixture, [1, 1]),
+        REPLY_RESERVATION,
+        predicted,
+        &[Trace::Reserved(REPLY_RESERVATION)],
+        UNPINNED_LOAD,
+    );
+    assert_refused_reply(site, &build(), REPLY_RESERVATION + predicted - 1, 1);
+}
+
+#[test]
+fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let path = &scenario.sidechains[0];
+    let predicted = decoded_source_facts_prediction(path);
+    let site = "prepared_source disk hit";
+    for background in [false, true] {
+        let build = || facts_cache_fixture(&scenario, background, 0);
+        let attempt = |fixture: &Fixture| {
+            let mut usage = [0u64; 18];
+            let fitted = constructed(site, &fixture.store, [0, 1], false, || {
+                let (_, outcome) = fixture.store.prepared_source(
+                    path,
+                    &fixture.owner,
+                    &mut work_bounds(),
+                    &Cancellation::default(),
+                    &mut usage,
+                )?;
+                assert!(matches!(
+                    outcome,
+                    PreparedSourceOutcome::Ready { cached: false, .. }
+                ));
+                Ok(())
+            });
+            let mut expected = [0u64; 18];
+            expected[7] = u64::from(fitted);
+            assert_eq!(usage, expected, "{site}: usage misreported the attempt");
+            fitted
+        };
+        assert_facts_admitted_in_full(site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+    }
+}
+
+#[test]
+fn query_graph_refuses_a_source_disk_hit_before_decoding() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let predicted = decoded_source_facts_prediction(&scenario.sidechains[0]);
+    let site = "query_graph source disk hit";
+    for background in [false, true] {
+        let build = || facts_cache_fixture(&scenario, background, 0);
+        assert_facts_admitted_in_full(
+            site,
+            &build,
+            &|fixture: &Fixture| submitted(site, fixture, [0, 1]),
+            REPLY_RESERVATION,
+            predicted,
+            &[Trace::Reserved(REPLY_RESERVATION)],
+            NO_LOADS,
+        );
+        for headroom in [0, predicted - 1] {
+            assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+        }
+    }
+}
+
+fn finish_fixture(path: &Path, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("finish", background);
+    let mut request = acquire(path);
+    let acquired = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    let snapshot = store.pin(&ok_handle(&acquired), &owner).unwrap();
+    request.insert("outcome", acquired["data"].clone());
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: vec![snapshot],
+    }
+}
+
+fn finish_source(fixture: &Fixture) -> Result<PreparedSourceOutcome, SnapshotError> {
+    fixture.store.finish_prepared_source(
+        SourceStamp::of(&std::fs::metadata(fixture.request["path"].as_str().unwrap()).unwrap()),
+        &fixture.request["outcome"],
+        &fixture.owner,
+        &work_bounds(),
+        &Cancellation::default(),
+    )
+}
+
+fn lease_id(fixture: &Fixture) -> String {
+    fixture.request["outcome"]["description"]["handle"]["lease_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn finished_source_facts_are_admitted_in_full_before_construction() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let site = "finish_prepared_source";
+    for background in [false, true] {
+        let build = || finish_fixture(&scenario.sidechains[0], background);
+        let attempt = |fixture: &Fixture| {
+            constructed(site, &fixture.store, [1, 0], false, || {
+                finish_source(fixture).map(|_| ())
+            })
+        };
+        let probe = build();
+        assert_eq!(
+            settled(&probe.store)[ENTRIES],
+            entry_bytes(&[&probe.pins[0]])
+        );
+        let predicted = chunk_entry_bytes(&probe.pins[0]);
+        assert_eq!(exact_headroom(&build, &attempt), predicted);
+        for headroom in [0, predicted - 1] {
+            let control = build();
+            let refused = build();
+            let identity = refused.pins[0].stamp.identity;
+            let _control_filler = fill_to(&control.store, &control.owner, headroom);
+            control
+                .store
+                .lock_state()
+                .leases
+                .remove(&lease_id(&control));
+            let _filler = fill_to(&refused.store, &refused.owner, headroom);
+            refused.store.assert_conserved();
+            let (before, probes, disk) = (
+                ledger(&refused.store),
+                fact_probes(&refused.store),
+                refused.store.prepared_disk.stats(),
+            );
+            traced(&refused.store);
+            assert!(
+                !attempt(&refused),
+                "{site}: headroom {headroom} below the prediction was admitted"
+            );
+            assert!(
+                traced(&refused.store).is_empty(),
+                "{site}: the refusal admitted, reserved, or allocated"
+            );
+            refused.store.assert_conserved();
+            assert_eq!(
+                ledger(&refused.store)[LEASES],
+                before[LEASES] - 1,
+                "{site}: the refusal leaked its source lease"
+            );
+            assert_eq!(
+                (
+                    ledger(&refused.store),
+                    audited(&refused.store),
+                    bookkeeping(&refused.store),
+                    lease_table(&refused.store),
+                ),
+                (
+                    ledger(&control.store),
+                    audited(&control.store),
+                    bookkeeping(&control.store),
+                    lease_table(&control.store),
+                ),
+                "{site}: the refusal changed more than consuming its lease"
+            );
+            assert_eq!(fact_probes(&refused.store), probes);
+            let stats = refused.store.prepared_disk.stats();
+            assert_eq!(
+                (stats.entries, stats.bytes, stats.writes),
+                (disk.entries, disk.bytes, disk.writes)
+            );
+            let state = refused.store.lock_state();
+            assert!(
+                state.latest.contains_key(&identity),
+                "{site}: a Claude source keeps its parsed snapshot cached"
+            );
+            assert!(!state.prepared_facts.contains_key(&identity));
+            assert!(state.waiters.is_empty());
+            assert!(state.prepared_loads.is_empty());
+        }
+        assert_fitted_at(site, &build(), &attempt, predicted);
+    }
+}
+
+fn completion_query_fixture(scenario: &Scenario, index: usize, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("completion", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let path = &scenario.sidechains[index];
+    let (_, sidechain) = acquired(&store, path, &owner);
+    let (spare, _) = acquired(&store, path, &owner);
+    release_lease(&store, &spare, &owner);
+    let graph = prepared_graph(
+        &store,
+        &root,
+        &[path.to_string_lossy().into_owned()],
+        &owner,
+    );
+    assert!(!store
+        .lock_state()
+        .prepared_facts
+        .contains_key(&sidechain.stamp.identity));
+    Fixture {
+        store,
+        owner,
+        request: graph_query(&graph, missing_tool(), json!([])),
+        pins: vec![root_snapshot, sidechain],
+    }
+}
+
+#[test]
+fn prepared_query_refuses_source_completion_before_construction() {
+    let scenario = Scenario::new(2, |index| match index {
+        0 => line("thread-0000"),
+        _ => prompt_line("thread-0001", 16 * 1024),
+    });
+    let site = "source completion";
+    let attempt = |fixture: &Fixture| submitted(site, fixture, [1, 0]);
+    for background in [false, true] {
+        let build = |index: usize| completion_query_fixture(&scenario, index, background);
+        let (small_bytes, large_bytes) = (
+            chunk_entry_bytes(&build(0).pins[1]),
+            chunk_entry_bytes(&build(1).pins[1]),
+        );
+        let small = exact_headroom(&|| build(0), &attempt);
+        let large = exact_headroom(&|| build(1), &attempt);
+        assert_eq!(
+            large - small,
+            large_bytes - small_bytes,
+            "{site}: completion is not gated on its entry bytes"
+        );
+        let offset = large - large_bytes;
+        assert!(
+            offset > REPLY_RESERVATION,
+            "{site}: the internal source lease was not charged before completion"
+        );
+        assert_facts_admitted_in_full(
+            site,
+            &|| build(1),
+            &attempt,
+            offset,
+            large_bytes,
+            &[Trace::Reserved(REPLY_RESERVATION)],
+            PINNED_LOAD,
+        );
+        assert_refused_reply(site, &build(1), large - 1, 1);
+    }
+}
+
+fn root_slice_prediction(fixture: &Fixture) -> usize {
+    crate::snapshot_projection::prepare_facts(
+        &fixture.pins[0],
+        &json!([]),
+        &work_bounds(),
+        &Cancellation::default(),
+    )
+    .unwrap()
+    .0
+    .accounted_bytes()
+}
+
+#[test]
+fn root_slice_is_admitted_in_full_before_construction() {
+    let scenario = Scenario::new(0, |_| String::new());
+    let site = "query_graph root slice";
+    for background in [false, true] {
+        let build = || slice_fixture(&scenario, background);
+        let probe = build();
+        let predicted = root_slice_prediction(&probe);
+        let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
+        assert_eq!(
+            predicted,
+            probe.store.lock_state().prepared_graphs[graph_id]
+                .lock()
+                .unwrap()
+                .root_facts
+                .accounted_bytes()
+        );
+        let attempt = |fixture: &Fixture| {
+            let mut usage = [0u64; 18];
+            let fitted = constructed(site, &fixture.store, [1, 0], true, || {
+                fixture
+                    .store
+                    .query_graph(
+                        &fixture.request,
+                        &fixture.owner,
+                        &Cancellation::default(),
+                        &mut usage,
+                    )
+                    .map(|_| ())
+            });
+            if !fitted {
+                assert_eq!(usage, [0u64; 18], "{site}: the refusal reported work");
+            }
+            fitted
+        };
+        assert_facts_admitted_in_full(site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+    }
+}
+
+#[test]
+fn query_graph_refuses_a_root_slice_before_construction() {
+    let scenario = Scenario::new(0, |_| String::new());
+    let site = "query_graph root slice reply";
+    for background in [false, true] {
+        let build = || slice_fixture(&scenario, background);
+        let predicted = root_slice_prediction(&build());
+        assert_facts_admitted_in_full(
+            site,
+            &build,
+            &|fixture: &Fixture| submitted(site, fixture, [1, 0]),
+            REPLY_RESERVATION,
+            predicted,
+            &[Trace::Reserved(REPLY_RESERVATION)],
+            NO_LOADS,
+        );
+        for headroom in [0, predicted - 1] {
+            assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+        }
     }
 }
 
