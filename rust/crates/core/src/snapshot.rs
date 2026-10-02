@@ -2046,6 +2046,18 @@ impl StoreState {
         Some(slot)
     }
 
+    fn extract_label(
+        &mut self,
+        token: &str,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Option<LabelSlot> {
+        let slot = self.remove_label(token)?;
+        let held = slot.accounted + self.ledger.shared.unowned_bytes(slot.anchors());
+        self.transient_bytes += held;
+        reservation.bytes += held;
+        Some(slot)
+    }
+
     fn retain_labels(&mut self, mut keep: impl FnMut(&String, &LabelSlot) -> bool) {
         let mut released = Vec::new();
         self.labels.retain(|token, slot| {
@@ -3410,12 +3422,11 @@ impl NativeStore {
         let mut slot = {
             let mut state = self.lock_state();
             self.lease(&state, &source_handle, context)?;
-            let slot = state.remove_label(cursor).ok_or_else(|| {
-                SnapshotError::new(Status::StaleCursor, "classifier cursor already consumed")
-            })?;
-            state.transient_bytes += slot.accounted;
-            reservation.bytes += slot.accounted;
-            slot
+            state
+                .extract_label(cursor, &mut reservation)
+                .ok_or_else(|| {
+                    SnapshotError::new(Status::StaleCursor, "classifier cursor already consumed")
+                })?
         };
         let working = slot.preparation.next_operation_reservation_bytes();
         self.extend_projection_reservation(&mut reservation, context, working)?;
@@ -4845,6 +4856,9 @@ impl NativeStore {
         let Some(current) = state.waiters.get(token) else {
             return Ok(None);
         };
+        if current.busy {
+            return Ok(Some(current.clone()));
+        }
         let growth = value_bytes(context).saturating_sub(value_bytes(&current.context));
         if growth > 0 {
             self.admit_memory(state, context, growth)?;

@@ -6125,11 +6125,7 @@ fn resolution_cursor_charges_and_admits_its_context_and_nested_tables() {
 #[test]
 fn waiter_context_rebind_admits_its_growth_before_replacing_the_context() {
     let source = LedgerSource::new(&lines(0..8));
-    let padded = |owner: &Value| {
-        let mut padded = owner.clone();
-        padded.insert("padding", json!("p".repeat(4096)));
-        padded
-    };
+    let padded = padded_context;
     let rebound = |fixture: &Fixture| {
         let token = fixture.request["cursor"].as_str().unwrap();
         match fixture.store.rebind_waiter(
@@ -6490,5 +6486,311 @@ fn label_republication_reserves_seed_anchors_its_carried_record_released() {
             "the seed payload released by the carried record was not reserved"
         );
         assert!(publish(exact).0, "the exact reservation was refused");
+    }
+}
+
+fn padded_context(owner: &Value) -> Value {
+    let mut padded = owner.clone();
+    padded.insert("padding", json!("p".repeat(4096)));
+    padded
+}
+
+#[test]
+fn busy_waiter_rebind_leaves_its_context_and_charge_in_place() {
+    let source = LedgerSource::new(&lines(0..8));
+    for background in [false, true] {
+        let fixture = parked_load(&source.path, background, 2);
+        let token = fixture.request["cursor"].as_str().unwrap().to_owned();
+        let large = padded_context(&fixture.owner);
+        let growth = value_bytes(&large) - value_bytes(&fixture.owner);
+        assert!(matches!(
+            fixture
+                .store
+                .rebind_waiter(&mut fixture.store.lock_state(), &token, &large),
+            Ok(Some(_))
+        ));
+        fixture
+            .store
+            .lock_state()
+            .waiters
+            .get_mut(&token)
+            .expect("parked waiter")
+            .busy = true;
+        let _filler = fill_to(&fixture.store, &fixture.owner, 0);
+        let before = ledger(&fixture.store);
+        let walked = fixture
+            .store
+            .lock_state()
+            .waiters
+            .audit_with(NativeStore::audit_waiter_bytes);
+        {
+            let mut state = fixture.store.lock_state();
+            let rebound = fixture
+                .store
+                .rebind_waiter(&mut state, &token, &fixture.owner)
+                .unwrap()
+                .expect("busy waiter");
+            assert_eq!(
+                rebound.context, large,
+                "the rebind returned a context its owner is not running"
+            );
+            assert_eq!(
+                state.waiters[&token].context, large,
+                "a busy waiter's context was replaced"
+            );
+        }
+        assert_eq!(
+            ledger(&fixture.store),
+            before,
+            "a busy rebind moved the ledger"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .lock_state()
+                .waiters
+                .audit_with(NativeStore::audit_waiter_bytes),
+            walked
+        );
+        assert_eq!(
+            fixture
+                .store
+                .reserve_projection(&fixture.owner, 1)
+                .err()
+                .map(|error| error.status),
+            Some(Status::RetainedLimit),
+            "an admission fit into a busy waiter's context bytes"
+        );
+        {
+            let mut state = fixture.store.lock_state();
+            let mut returned = state.waiters[&token].clone();
+            returned.busy = false;
+            state.waiters.insert(token.clone(), returned);
+        }
+        assert_eq!(ledger(&fixture.store), before);
+        fixture.store.assert_conserved();
+        assert!(matches!(
+            fixture
+                .store
+                .rebind_waiter(&mut fixture.store.lock_state(), &token, &fixture.owner),
+            Ok(Some(_))
+        ));
+        assert_eq!(
+            before[TOTAL] - ledger(&fixture.store)[TOTAL],
+            growth,
+            "an idle rebind did not release the context difference"
+        );
+        assert_eq!(
+            fixture.store.lock_state().waiters[&token].context,
+            fixture.owner
+        );
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn concurrent_resume_cannot_rebind_a_busy_waiter() {
+    let source = LedgerSource::new(&lines(0..8));
+    for background in [false, true] {
+        let store = Arc::new(slow_store());
+        let owner = context_for("busy-resume", background);
+        let parked = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+        assert_eq!(parked["status"].as_str(), Some("incomplete"), "{parked:?}");
+        let token = parked["cursor"].as_str().unwrap().to_owned();
+        let large = padded_context(&owner);
+        let observed = Arc::new(Mutex::new(None));
+        *store.read_hook.lock().unwrap() = Some(Arc::new({
+            let store = Arc::clone(&store);
+            let owner = owner.clone();
+            let token = token.clone();
+            let observed = Arc::clone(&observed);
+            move || {
+                let before = {
+                    let state = store.lock_state();
+                    (
+                        state.waiters.audit_with(NativeStore::audit_waiter_bytes),
+                        state.waiters.charged(),
+                    )
+                };
+                let response =
+                    store.request(&resume_request(&token), &owner, &Cancellation::default());
+                let state = store.lock_state();
+                *observed.lock().unwrap() = Some((
+                    response,
+                    state.waiters[&token].context.clone(),
+                    before,
+                    (
+                        state.waiters.audit_with(NativeStore::audit_waiter_bytes),
+                        state.waiters.charged(),
+                    ),
+                ));
+            }
+        }));
+        let outer = store.request(&resume_request(&token), &large, &Cancellation::default());
+        assert_eq!(outer["status"].as_str(), Some("incomplete"), "{outer:?}");
+        let (response, stored, before, after) = observed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the concurrent resume never ran");
+        assert_eq!(
+            response["reason"].as_str(),
+            Some("reservation preparation is running"),
+            "{response:?}"
+        );
+        assert_eq!(
+            stored, large,
+            "the concurrent resume replaced a busy waiter's context"
+        );
+        assert_eq!(
+            after, before,
+            "the concurrent resume moved a busy waiter's charge"
+        );
+        assert_eq!(store.lock_state().waiters[&token].context, large);
+        store.assert_conserved();
+    }
+}
+
+fn sole_owner_label(
+    background: bool,
+) -> (
+    LedgerSource,
+    NativeStore,
+    Value,
+    String,
+    Vec<Arc<TranscriptSnapshot>>,
+    Arc<CarriedClassification>,
+) {
+    let source = LedgerSource::new(&lines(0..4));
+    let store = fast_store();
+    let owner = context_for("seeded-labels", background);
+    recording_classifier(&store, "overlap");
+    let (_, first) = classified(&store, &source.path, "overlap", &owner);
+    source.append(&lines(4..300));
+    let (native, latest) = acquired(&store, &source.path, &owner);
+    let page = store
+        .prepare_classifier(
+            &native,
+            &json!({"id":"overlap","version":"1"}),
+            &owner,
+            &Cancellation::default(),
+            label_bounds(),
+        )
+        .unwrap();
+    assert_eq!(
+        page["event_start"].as_u64(),
+        Some(4),
+        "the label preparation was not seeded: {page:?}"
+    );
+    let token = page["cursor"].as_str().unwrap().to_owned();
+    let (_, newer) = classified(&store, &source.path, "overlap", &owner);
+    let carried = {
+        let mut state = store.lock_state();
+        let seed = Arc::clone(
+            state.labels[&token]
+                .preparation
+                .seed()
+                .expect("seeded label slot"),
+        );
+        let seeded_stage = state
+            .classifier_stages
+            .iter()
+            .find(|(_, slot)| {
+                slot.seed
+                    .as_ref()
+                    .is_some_and(|held| Arc::ptr_eq(held, &seed))
+            })
+            .map(|(key, _)| key.clone());
+        if let Some(key) = seeded_stage {
+            state.remove_classifier_stage(&key);
+        }
+        let carried = state
+            .carried_classifications
+            .values()
+            .next()
+            .map(Arc::clone)
+            .expect("carried classification");
+        assert!(
+            !Arc::ptr_eq(&carried, &seed),
+            "the newer classification did not replace the carried record"
+        );
+        assert!(
+            state.classifier_stages.values().all(|slot| slot
+                .seed
+                .as_ref()
+                .is_none_or(|held| !Arc::ptr_eq(held, &seed))),
+            "a classifier stage still owns the label's seed"
+        );
+        carried
+    };
+    (
+        source,
+        store,
+        owner,
+        token,
+        vec![first, latest, newer],
+        carried,
+    )
+}
+
+#[test]
+fn label_extraction_carries_the_seed_anchors_it_last_owned() {
+    for background in [false, true] {
+        let (_source, store, owner, token, _pins, _carried) = sole_owner_label(background);
+        let (payload, walked, pledged) = {
+            let state = store.lock_state();
+            let slot = &state.labels[&token];
+            let seed = slot.preparation.seed().expect("seeded label slot");
+            for (id, _) in seed.activity.accounted_allocations() {
+                assert!(
+                    state
+                        .generations
+                        .values()
+                        .any(|record| record.indexes.iter().any(|(owned, _)| *owned == id)),
+                    "the seed index is not owned by its generation"
+                );
+            }
+            (
+                size_of::<CarriedClassification>()
+                    + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>(),
+                NativeStore::audit_label_bytes(&token, slot),
+                state.labels.pledged(&token),
+            )
+        };
+        let _filler = fill_to(&store, &owner, 0);
+        let before = ledger(&store);
+        let mut reservation = store.reserve_projection(&owner, 0).unwrap();
+        let slot = store
+            .lock_state()
+            .extract_label(&token, &mut reservation)
+            .expect("published label slot");
+        store.assert_conserved();
+        let during = ledger(&store);
+        assert_eq!(
+            before[TOTAL] - during[TOTAL],
+            pledged,
+            "label extraction released more than its delivery pledge while its seed is live"
+        );
+        assert_eq!(
+            before[INDEXES] - during[INDEXES],
+            payload,
+            "the extracted seed payload did not leave the shared index gauge"
+        );
+        assert_eq!(
+            store
+                .reserve_projection(&owner, pledged + 1)
+                .err()
+                .map(|error| error.status),
+            Some(Status::RetainedLimit),
+            "an admission fit into the extracted seed's bytes"
+        );
+        drop(slot);
+        drop(reservation);
+        store.assert_conserved();
+        assert_eq!(
+            before[TOTAL] - ledger(&store)[TOTAL],
+            walked + pledged + payload,
+            "dropping the extracted label released other than its walk, pledge, and seed payload"
+        );
     }
 }
