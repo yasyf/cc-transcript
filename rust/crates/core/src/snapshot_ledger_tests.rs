@@ -3206,10 +3206,22 @@ fn facts_cache_fixture(scenario: &Scenario, background: bool, padding: usize) ->
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let (_, sidechain_snapshot) = acquired(&store, &scenario.sidechains[0], &owner);
     let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
+    let request = graph_query(&graph, missing_tool(), json!([]));
+    let primed = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    assert_eq!(primed["status"].as_str(), Some("ok"), "{primed:?}");
+    let identity = SourceStamp::of(&std::fs::metadata(&scenario.sidechains[0]).unwrap()).identity;
+    store
+        .lock_state()
+        .remove_prepared_facts(&identity)
+        .expect("primed sidechain facts");
     Fixture {
         store,
         owner,
-        request: graph_query(&graph, missing_tool(), json!([])),
+        request,
         pins: vec![root_snapshot, sidechain_snapshot],
     }
 }
