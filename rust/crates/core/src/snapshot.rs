@@ -1899,18 +1899,18 @@ impl StoreState {
             self.ledger.shared.acquire(anchor);
         }
         slot.attached.store(true, Ordering::Release);
-        self.ledger.classifier += slot.accounted.load(Ordering::Acquire);
+        self.ledger.classifier += key.capacity() + slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.classifier_stages.insert(key, slot) {
-            self.detach_classifier_stage(&displaced);
+            self.detach_classifier_stage(0, &displaced);
         }
     }
 
-    fn detach_classifier_stage(&mut self, slot: &ClassifierSlot) {
+    fn detach_classifier_stage(&mut self, key_bytes: usize, slot: &ClassifierSlot) {
         slot.attached.store(false, Ordering::Release);
         self.ledger.classifier = self
             .ledger
             .classifier
-            .checked_sub(slot.accounted.load(Ordering::Acquire))
+            .checked_sub(key_bytes + slot.accounted.load(Ordering::Acquire))
             .expect("balanced retained ledger");
         for anchor in slot.anchors() {
             self.ledger.shared.release(anchor.id);
@@ -1918,8 +1918,8 @@ impl StoreState {
     }
 
     fn remove_classifier_stage(&mut self, key: &str) -> Option<Arc<ClassifierSlot>> {
-        let slot = self.classifier_stages.remove(key)?;
-        self.detach_classifier_stage(&slot);
+        let (key, slot) = self.classifier_stages.remove_entry(key)?;
+        self.detach_classifier_stage(key.capacity(), &slot);
         Some(slot)
     }
 
@@ -2212,12 +2212,12 @@ impl StoreState {
         self.classifier_stages.retain(|key, slot| {
             let kept = keep(key, slot);
             if !kept {
-                detached.push(Arc::clone(slot));
+                detached.push((key.capacity(), Arc::clone(slot)));
             }
             kept
         });
-        for slot in detached {
-            self.detach_classifier_stage(&slot);
+        for (key_bytes, slot) in detached {
+            self.detach_classifier_stage(key_bytes, &slot);
         }
     }
 }
@@ -3421,9 +3421,11 @@ impl NativeStore {
                     stage.committed = Some(stage.activity.clone());
                 }
                 let accounted = stage.accounted_bytes();
+                let stored = key.clone();
                 let additional = size_of::<ClassifierSlot>()
+                    + stored.capacity()
                     + accounted
-                    + state.classifier_stages.growth_for(&key)
+                    + state.classifier_stages.growth_for(&stored)
                     + state
                         .ledger
                         .shared
@@ -3437,7 +3439,7 @@ impl NativeStore {
                     deadline: now_ms() + self.config.preparation,
                     complete: AtomicBool::new(false),
                 });
-                state.insert_classifier_stage(key.clone(), Arc::clone(&slot));
+                state.insert_classifier_stage(stored, Arc::clone(&slot));
                 slot
             }
         };
@@ -3873,8 +3875,8 @@ impl NativeStore {
                 .sum(),
             classifier: state
                 .classifier_stages
-                .values()
-                .map(|slot| slot.accounted.load(Ordering::Acquire))
+                .iter()
+                .map(|(key, slot)| key.capacity() + slot.accounted.load(Ordering::Acquire))
                 .sum(),
             label: state.labels.audit_charged(),
             discovery: state.discoveries.audit_charged() + state.checkpoints.audit_charged(),

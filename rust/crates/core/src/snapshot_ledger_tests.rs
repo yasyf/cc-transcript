@@ -1136,6 +1136,45 @@ fn classification_published(fixture: &Fixture) -> bool {
     }
 }
 
+fn classifier_stage_fixture(source: &LedgerSource, classifier: &str, background: bool) -> Fixture {
+    let store = fast_store();
+    let owner = context_for("classify", background);
+    let (_, native) = acquired(&store, &source.path, &owner);
+    store
+        .register_classifier(
+            classifier,
+            "1",
+            Arc::new(|_, range| Ok(vec![false; range.len()])),
+        )
+        .unwrap();
+    Fixture {
+        store,
+        owner,
+        request: json!({"id":classifier,"version":"1"}),
+        pins: vec![native],
+    }
+}
+
+fn stage_created(fixture: &Fixture) -> bool {
+    let bounds = WorkLimits {
+        max_events: 0,
+        ..work_bounds()
+    };
+    match fixture.store.classify(
+        Arc::clone(&fixture.pins[0]),
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &bounds,
+        &mut [0u64; 18],
+    ) {
+        Ok(_) => panic!("classifier stage creation progressed past its event budget"),
+        Err(error) if error.status == Status::Incomplete => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("classifier stage creation failed outside admission: {error:?}"),
+    }
+}
+
 fn publishing_request(path: &Path, background: bool) -> usize {
     let store = slow_store();
     let owner = context_for("advance", background);
@@ -1907,6 +1946,42 @@ fn classifier_publication_admits_exactly_before_registering_the_generation() {
             &|| interrupted_classification(&source, &classifier, background),
             &classification_published,
             8 * 1024,
+        );
+    }
+}
+
+#[test]
+fn classifier_stage_admits_its_lineage_key_exactly() {
+    let source = LedgerSource::new(&lines(0..2));
+    let long = "c".repeat(16 * 1024);
+    for background in [false, true] {
+        let small = exact_headroom(
+            &|| classifier_stage_fixture(&source, "c", background),
+            &stage_created,
+        );
+        let large = exact_headroom(
+            &|| classifier_stage_fixture(&source, &long, background),
+            &stage_created,
+        );
+        assert_eq!(
+            large - small,
+            long.len() - 1,
+            "the classifier stage key is not charged by its length"
+        );
+        let fixture = classifier_stage_fixture(&source, &long, background);
+        let before = fixture.store.lock_state().ledger.classifier;
+        assert_boundary_at("classifier stage", &fixture, &stage_created, large);
+        let state = fixture.store.lock_state();
+        let (key, slot) = state
+            .classifier_stages
+            .iter()
+            .next()
+            .expect("created classifier stage");
+        assert!(key.capacity() > 16 * 1024);
+        assert_eq!(
+            state.ledger.classifier - before,
+            key.capacity() + slot.accounted.load(Ordering::Acquire),
+            "the classifier gauge misses the stage key"
         );
     }
 }
