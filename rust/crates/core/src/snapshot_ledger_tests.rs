@@ -2121,20 +2121,14 @@ fn root_facts_are_reserved_at_their_entry_bytes_before_parsing() {
             &owner,
         );
         assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
-        let entries: usize = snapshot
-            .chunks
-            .iter()
-            .map(|chunk| {
-                chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
-            })
-            .sum();
-        reserved_before_the_last_admission("root facts", &traced(&store), entries);
+        let bound = facts_bound_walk(&snapshot);
+        reserved_before_the_last_admission("root facts", &traced(&store), bound);
         let facts = store.lock_state().prepared_facts[&snapshot.stamp.identity]
             .facts
             .accounted_bytes();
         assert!(
-            entries >= facts,
-            "root facts: the {entries}-byte entry reservation does not cover the {facts}-byte facts DOM"
+            bound >= facts,
+            "root facts: the {bound}-byte facts bound reservation does not cover the {facts}-byte facts DOM"
         );
     }
 }
@@ -2145,18 +2139,16 @@ fn root_slices_are_reserved_at_the_root_facts_bytes_before_preparation() {
     for background in [false, true] {
         let fixture = slice_fixture(&scenario, background);
         let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
-        let (root_facts, existing) = {
+        let bound = root_slice_prediction(&fixture);
+        let existing = {
             let state = fixture.store.lock_state();
             let graph = state.prepared_graphs[graph_id].lock().unwrap();
-            (
-                graph.root_facts.accounted_bytes(),
-                graph.root_slices.keys().cloned().collect::<Vec<_>>(),
-            )
+            graph.root_slices.keys().cloned().collect::<Vec<_>>()
         };
         traced(&fixture.store);
         let response = submit(&fixture);
         assert!(admitted(&response, "ok"), "{response:?}");
-        reserved_before_the_last_admission("root slice", &traced(&fixture.store), root_facts);
+        reserved_before_the_last_admission("root slice", &traced(&fixture.store), bound);
         let state = fixture.store.lock_state();
         let graph = state.prepared_graphs[graph_id].lock().unwrap();
         let slice = graph
@@ -2166,8 +2158,8 @@ fn root_slices_are_reserved_at_the_root_facts_bytes_before_preparation() {
             .map(|(_, facts)| facts.accounted_bytes())
             .expect("published root slice");
         assert!(
-            root_facts >= slice,
-            "root slice: the {root_facts}-byte root facts reservation does not cover the {slice}-byte slice"
+            bound >= slice,
+            "root slice: the {bound}-byte root facts bound reservation does not cover the {slice}-byte slice"
         );
     }
 }
@@ -4065,6 +4057,16 @@ fn completion_query_fixture(scenario: &Scenario, index: usize, background: bool)
         .lock_state()
         .prepared_facts
         .contains_key(&sidechain.stamp.identity));
+    {
+        let mut state = store.lock_state();
+        state.prepared_loads.reserve(1);
+        state.prepared_loads_expiry.reserve(1);
+        assert_eq!(
+            state.prepared_load_growth(&sidechain.stamp.identity),
+            0,
+            "the completion's prepared load pin still grows its tables"
+        );
+    }
     Fixture {
         store,
         owner,
