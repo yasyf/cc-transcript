@@ -10377,7 +10377,7 @@ struct ResumedArm {
     remove: fn(&mut StoreState, &str),
 }
 
-fn admitted_traces(trace: &[Trace]) -> Vec<usize> {
+fn admitted_bytes_of(trace: &[Trace]) -> Vec<usize> {
     trace
         .iter()
         .filter_map(|entry| match entry {
@@ -10534,7 +10534,7 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
         "{}: the step reserved something besides its new context: {trace:?}",
         arm.site
     );
-    let admitted = admitted_traces(&trace);
+    let admitted = admitted_bytes_of(&trace);
     if arm.reparks {
         assert_eq!(
             admitted.last(),
@@ -10703,7 +10703,7 @@ fn resumed_resolution_park_draws_its_record_from_the_held_charge() {
             "the resumed resolution did not admit its new context first: {trace:?}"
         );
         assert_eq!(
-            admitted_traces(&trace).last(),
+            admitted_bytes_of(&trace).last(),
             Some(&(additional - covered)),
             "the resolution park admitted bytes its held charge already covered: {trace:?}"
         );
