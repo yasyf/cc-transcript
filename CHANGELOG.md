@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Budget-capped runs save partial progress and still report incomplete coverage.
   Checkpoints bind the source, query, and CLI build; stale or corrupt records are
   discarded and the source is rescanned from byte 0.
+- A grep checkpoint could miss an earlier nonmatching line rewritten into a
+  match before an append, reporting zero matches with complete coverage. Grown
+  Claude transcripts now require a digest check of the whole committed prefix
+  before reuse; a mismatch invalidates the record and rescans from byte 0.
+  `validated_bytes` reports these reads separately from `source_bytes`.
 - Streamed `cc-transcript grep` labels an early `--max-matches` stop as a partial
   view when an emitted `--tool` decision or compact tool-result name (`← Name`)
   depends on tool names resolved only through a file prefix. The warning reports
@@ -62,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_read_bytes_per_step`, `max_events_per_step`, and `max_items_per_page`,
   so tuning step size no longer changes the whole-scan caps. Defaults are
   unchanged, and zero values are rejected.
+- The store config and JSON schema add `max_scan_validate_bytes` to cap grep
+  checkpoint validation at `1 GiB` per command by default; zero is rejected. A
+  prefix larger than the remaining cap triggers a fresh scan under the normal
+  source budget.
 - `acquire` and `warm_root` accept optional `tail_bytes`, a positive integer;
   absent, whole-file behavior is unchanged. For a Claude file of size `S` and window
   `W`, `S <= W` gives the same snapshot as a plain `acquire`; otherwise `q = W/2`,

@@ -524,3 +524,14 @@ fn whole_scan_caps_ignore_per_step_knobs() {
     );
     assert!(NativeStore::new(&json!({"max_scan_events":0})).is_err());
 }
+
+#[test]
+fn prefix_validation_has_its_own_finite_cap() {
+    let cap = |config: Value| NativeStore::new(&config).unwrap().scan_validate_bytes();
+    assert_eq!(cap(json!({})), 1024 * 1024 * 1024);
+    assert_eq!(
+        cap(json!({"max_scan_validate_bytes":4096,"max_scan_read_bytes":1024})),
+        4096
+    );
+    assert!(NativeStore::new(&json!({"max_scan_validate_bytes":0})).is_err());
+}

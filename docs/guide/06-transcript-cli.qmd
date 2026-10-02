@@ -353,10 +353,27 @@ binds the CLI build, parser, snapshot schema, classifier, and file identity, and
 holds a per-file layer plus one layer per query; a query layer also binds the
 tool registry, patterns and match caps, search options, output mode, and starting
 counts. Work budgets are excluded.
-A later matching run reads a fence of up to 64 bytes and the saved hit, context,
-and pending lines, validates them, then continues from the saved prefix,
-including appended bytes. Invalid records cause a rescan from byte 0.
+
+A later matching run checks a fence of up to 64 bytes and the saved hit, context,
+and pending lines. At the same size, reuse also requires matching mtime and ctime.
+After validation, it replays saved matches and resumes from the saved offset.
+
+On growth, it re-reads and hashes the whole committed prefix against the saved
+segment digests before reuse. These reads charge `validated_bytes`, separately
+from `source_bytes`, under the command's `max_scan_validate_bytes` store config
+cap of `1 GiB` by default; zero is rejected. A mismatch discards the record,
+increments `cache_invalidations`, and rescans from byte 0. If the prefix exceeds
+the remaining validation cap, the run scans from byte 0 under the normal source
+budget, adds no validation bytes or invalidation, and replaces the record on save.
 Budget-capped runs save partial progress but still report incomplete coverage.
+
+Each run reads only below the file size pinned at open. The final stat check
+rejects shrinkage, replacement, and same-size changes but accepts growth. An
+in-place rewrite plus growth can pass that check; the result reports the bytes
+actually read below the pinned size. The checkpoint keeps the pinned size
+and digests of those bytes, so the next run checks the grown prefix and rescans
+on a mismatch.
+
 Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
 If `--max-matches` stops before EOF after output used names for `--tool` filtering
 or compact `← Name` labels, the outcome reason becomes

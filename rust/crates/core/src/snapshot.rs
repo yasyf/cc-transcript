@@ -397,6 +397,7 @@ struct Config {
     scan_events: usize,
     scan_discovery: usize,
     scan_sources: usize,
+    scan_validate: usize,
     hook_loads: usize,
     hook_leases: usize,
     hook_bytes: usize,
@@ -1252,6 +1253,7 @@ impl NativeStore {
             scan_events: get("max_scan_events", 4096),
             scan_discovery: get("max_scan_discovery_entries", 4096),
             scan_sources: get("max_scan_sources", 256),
+            scan_validate: get("max_scan_validate_bytes", 1024 * 1024 * 1024),
             hook_loads: get("reserved_hook_loads", 1),
             hook_leases: get("reserved_hook_leases", 32),
             hook_bytes: get("reserved_hook_accounted_bytes", 512 * 1024 * 1024),
@@ -1266,6 +1268,7 @@ impl NativeStore {
             || config.scan_events == 0
             || config.scan_discovery == 0
             || config.scan_sources == 0
+            || config.scan_validate == 0
             || config.leases == 0
             || config.loads == 0
             || config.ttl == 0
@@ -1325,6 +1328,10 @@ impl NativeStore {
             max_sources: self.config.scan_sources,
             deadline_unix_ms: now_ms().saturating_add(self.config.preparation),
         }
+    }
+
+    pub fn scan_validate_bytes(&self) -> usize {
+        self.config.scan_validate
     }
 
     pub fn default_registry_generation(&self) -> String {

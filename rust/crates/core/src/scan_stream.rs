@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -6,6 +7,7 @@ use crate::scan::{ScanBudget, StagingReservation};
 use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
 
 const READ_BLOCK: usize = 64 * 1024;
+const VALIDATE_BLOCK: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineSpan {
@@ -175,6 +177,42 @@ impl<'store> SourceStream<'store> {
             .and_then(|()| self.file.seek(SeekFrom::Start(self.offset)))
             .map_err(|_| changed("source changed while reading"))?;
         Ok(bytes)
+    }
+
+    pub fn validate_prefix(
+        &mut self,
+        segments: &[(u64, u64)],
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<bool, SnapshotError> {
+        let end = segments.last().map_or(0, |(end, _)| *end);
+        let block = VALIDATE_BLOCK.min(end as usize);
+        let _staging = budget.reserve_staging(block, cancel)?;
+        let mut buffer = vec![0; block];
+        self.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        let mut at = 0;
+        let mut intact = true;
+        for (stop, expected) in segments {
+            let mut hasher = DefaultHasher::new();
+            while at < *stop {
+                budget.checkpoint(cancel)?;
+                let count = buffer.len().min((stop - at) as usize);
+                self.file
+                    .read_exact(&mut buffer[..count])
+                    .map_err(|_| changed("source changed while validating"))?;
+                budget.charge_validation(count);
+                hasher.write(&buffer[..count]);
+                at += count as u64;
+            }
+            intact = hasher.finish() == *expected;
+            if !intact {
+                break;
+            }
+        }
+        self.file
+            .seek(SeekFrom::Start(self.offset))
+            .map_err(io_error)?;
+        Ok(intact)
     }
 
     pub fn verify(&self) -> Result<(), SnapshotError> {

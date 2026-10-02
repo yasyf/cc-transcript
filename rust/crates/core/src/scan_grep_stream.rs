@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
 use std::path::Path;
 
@@ -33,6 +33,12 @@ struct StreamSlot<'store> {
     staging: StagingReservation<'store>,
 }
 
+enum Validity {
+    Valid,
+    Invalid,
+    Unverified,
+}
+
 struct GrepStream<'store> {
     query_key: Option<String>,
     size: u64,
@@ -57,6 +63,9 @@ struct GrepStream<'store> {
     names_final: bool,
     capture: Option<(FileLayer, QueryLayer)>,
     poisoned: bool,
+    prefix: Vec<(u64, u64)>,
+    hasher: DefaultHasher,
+    hash_from: u64,
 }
 
 fn unresolved(names: &HashMap<String, ToolName>, entry: &Entry) -> bool {
@@ -101,7 +110,7 @@ fn parse(
 }
 
 fn digest(bytes: &[u8]) -> u64 {
-    let mut hasher = std::hash::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     hasher.finish()
 }
@@ -228,6 +237,9 @@ impl<'store> GrepReducer<'store> {
             names_final: false,
             capture: None,
             poisoned: false,
+            prefix: Vec::new(),
+            hasher: DefaultHasher::new(),
+            hash_from: 0,
         };
         let mut existing = None;
         if let (Some(store), Some((file_key, query_key))) = (checkpoints, &keys) {
@@ -241,8 +253,8 @@ impl<'store> GrepReducer<'store> {
                         &layer.key == query_key && layer.committed <= record.file.committed
                     })
                     .cloned();
-                let valid = stream.validates(&record, &mut source, budget, cancel)?
-                    && match layer {
+                let validity = match stream.validates(&record, &mut source, budget, cancel)? {
+                    Validity::Valid => match layer {
                         Some(layer) => {
                             let restored = self.restore(
                                 &mut stream,
@@ -256,19 +268,27 @@ impl<'store> GrepReducer<'store> {
                             if stream.poisoned {
                                 store.discard(file_key);
                             }
-                            restored?
+                            if restored? {
+                                Validity::Valid
+                            } else {
+                                Validity::Invalid
+                            }
                         }
                         None if record.file.committed == stream.size => {
                             stream.adopt(&record.file, budget, cancel)?;
-                            true
+                            Validity::Valid
                         }
-                        None => true,
-                    };
-                if valid {
-                    existing = Some(record);
-                } else {
-                    store.discard(file_key);
-                    budget.progress.cache_invalidations += 1;
+                        None => Validity::Valid,
+                    },
+                    unproven => unproven,
+                };
+                match validity {
+                    Validity::Valid => existing = Some(record),
+                    Validity::Invalid => {
+                        store.discard(file_key);
+                        budget.progress.cache_invalidations += 1;
+                    }
+                    Validity::Unverified => {}
                 }
             }
         }
@@ -396,6 +416,8 @@ impl<'store> GrepReducer<'store> {
             cancel,
         )?;
         stream.adopt(file, budget, cancel)?;
+        stream.prefix.clone_from(&file.prefix);
+        stream.hash_from = file.committed;
         for (id, used) in &layer.referenced {
             match stream.names.get_mut(id) {
                 Some(slot) if slot.name == *used => slot.referenced = true,
@@ -508,15 +530,16 @@ impl<'store> GrepStream<'store> {
         source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
-    ) -> Result<bool, SnapshotError> {
+    ) -> Result<Validity, SnapshotError> {
         let file = &record.file;
         if self.size < record.size
             || self.size == record.size && self.revision != record.revision
             || file.committed > record.size
             || file.fence.len() > FENCE_BYTES
             || file.fence.len() as u64 > file.committed
+            || file.prefix.last().map_or(0, |(end, _)| *end) != file.committed
         {
-            return Ok(false);
+            return Ok(Validity::Invalid);
         }
         let fence = source.read_span(
             &LineSpan {
@@ -527,7 +550,20 @@ impl<'store> GrepStream<'store> {
             budget,
             cancel,
         )?;
-        Ok(fence == file.fence)
+        if fence != file.fence {
+            return Ok(Validity::Invalid);
+        }
+        if self.size == record.size {
+            return Ok(Validity::Valid);
+        }
+        if file.committed > budget.validation_remaining() as u64 {
+            return Ok(Validity::Unverified);
+        }
+        Ok(if source.validate_prefix(&file.prefix, budget, cancel)? {
+            Validity::Valid
+        } else {
+            Validity::Invalid
+        })
     }
 
     fn capture(&self, grep: &GrepReducer<'store>) -> Option<(FileLayer, QueryLayer)> {
@@ -541,6 +577,15 @@ impl<'store> GrepStream<'store> {
                     .names
                     .iter()
                     .map(|(id, slot)| (id.clone(), slot.name.clone()))
+                    .collect(),
+                prefix: self
+                    .prefix
+                    .iter()
+                    .copied()
+                    .chain(
+                        (self.committed > self.hash_from)
+                            .then(|| (self.committed, self.hasher.finish())),
+                    )
                     .collect(),
             },
             QueryLayer {
@@ -575,6 +620,10 @@ impl<'store> GrepStream<'store> {
 
     fn commit(&mut self, line: LineSpan, bytes: &[u8]) {
         self.committed = line.end();
+        if line.offset >= self.hash_from {
+            self.hasher.write(bytes);
+            self.hasher.write(b"\n");
+        }
         let tail = &bytes[bytes.len().saturating_sub(FENCE_BYTES - 1)..];
         self.fence.extend_from_slice(tail);
         self.fence.push(b'\n');

@@ -67,6 +67,7 @@ pub struct FileLayer {
     pub sniffed: bool,
     pub events: usize,
     pub names: Vec<(String, String)>,
+    pub prefix: Vec<(u64, u64)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -138,7 +139,7 @@ impl GrepCheckpoints {
 
     pub fn key(&self, binding: Value) -> Result<String, String> {
         let binding = sonic_rs::json!({
-            "version": "grep-checkpoint/2",
+            "version": "grep-checkpoint/3",
             "parser": crate::snapshot::PARSER_VERSION,
             "producer": self.producer,
             "binding": binding,

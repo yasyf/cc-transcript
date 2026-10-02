@@ -114,6 +114,13 @@
       "title": "Max Scan Sources",
       "type": "integer"
     },
+    "max_scan_validate_bytes": {
+      "default": 1073741824,
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "title": "Max Scan Validate Bytes",
+      "type": "integer"
+    },
     "max_source_bytes": {
       "default": 536870912,
       "exclusiveMinimum": 0,

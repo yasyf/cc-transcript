@@ -5,6 +5,7 @@ use crate::scan_stream::SourceStream;
 use crate::snapshot::{NativeStore, WorkLimits};
 use sonic_rs::{json, Value};
 use std::io::Write;
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -181,7 +182,27 @@ fn checkpointed(
     limits: WorkLimits,
     checkpoints: Option<&GrepCheckpoints>,
 ) -> (Result<Run, SnapshotError>, Vec<Emitted>, ScanProgress) {
-    let store = NativeStore::new(&json!({})).unwrap();
+    configured(
+        &json!({}),
+        path,
+        patterns,
+        options,
+        render_names,
+        limits,
+        checkpoints,
+    )
+}
+
+fn configured(
+    config: &Value,
+    path: &Path,
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+    render_names: bool,
+    limits: WorkLimits,
+    checkpoints: Option<&GrepCheckpoints>,
+) -> (Result<Run, SnapshotError>, Vec<Emitted>, ScanProgress) {
+    let store = NativeStore::new(config).unwrap();
     let mut budget = ScanBudget::new(&store, limits);
     let mut grep = reducer(patterns, options, &mut budget);
     let mut emitted = Vec::new();
@@ -614,6 +635,7 @@ fn warm_run_replays_hits_without_rereading_the_prefix() {
         64 + line_bytes(&source.0, &[5, 200, 390])
     );
     assert_eq!(progress.parsed_events, 3);
+    assert_eq!(progress.validated_bytes, 0);
 }
 
 #[test]
@@ -630,6 +652,7 @@ fn appended_run_reads_only_the_fence_hits_and_new_bytes() {
     )
     .0
     .unwrap();
+    let before = std::fs::metadata(&source.0).unwrap().len() as usize;
     let appended = append(&source.0, &sparse(450, &[420])[400..]);
     let (warm, _, progress) = checkpointed(
         &source.0,
@@ -647,6 +670,176 @@ fn appended_run_reads_only_the_fence_hits_and_new_bytes() {
     );
     assert_eq!(progress.parsed_events, 2 + 50);
     assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, before);
+}
+
+#[test]
+fn growth_after_an_equal_length_prefix_rewrite_matches_a_fresh_scan() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[]), true);
+    let (cold, _, _) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(cold.unwrap().counts, vec![0]);
+    let text = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .replace("filler 5 ", "needle 5 ");
+    std::fs::write(&source.0, &text).unwrap();
+    append(&source.0, &sparse(101, &[])[100..]);
+    let (warm, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let warm = warm.unwrap();
+    assert_eq!(warm, fresh.unwrap());
+    assert_eq!(warm.counts, vec![1]);
+    assert!(warm.complete);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.validated_bytes, text.len());
+    assert_eq!(
+        progress.source_bytes as u64,
+        64 + std::fs::metadata(&source.0).unwrap().len()
+    );
+}
+
+#[test]
+fn each_append_extends_the_prefix_proof_by_one_segment() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[5]), true);
+    let warm = || {
+        checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        )
+    };
+    warm().0.unwrap();
+    let first = std::fs::metadata(&source.0).unwrap().len() as usize;
+    append(&source.0, &sparse(150, &[120])[100..]);
+    let (_, _, progress) = warm();
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, first);
+    let second = std::fs::metadata(&source.0).unwrap().len() as usize;
+    append(&source.0, &sparse(200, &[])[150..]);
+    let (run, _, progress) = warm();
+    assert_eq!(run.unwrap().counts, vec![2]);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, second);
+    let text = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .replace("filler 130 ", "needle 130 ");
+    std::fs::write(&source.0, &text).unwrap();
+    append(&source.0, &sparse(201, &[])[200..]);
+    let (run, _, progress) = warm();
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let run = run.unwrap();
+    assert_eq!(run, fresh.unwrap());
+    assert_eq!(run.counts, vec![3]);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.validated_bytes, second);
+}
+
+#[test]
+fn growth_past_the_validation_cap_rescans_without_the_record() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[5]), true);
+    let config = json!({"max_scan_validate_bytes": 1000});
+    let capped = || {
+        configured(
+            &config,
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        )
+    };
+    capped().0.unwrap();
+    append(&source.0, &sparse(101, &[100])[100..]);
+    let size = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let (run, _, progress) = capped();
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let run = run.unwrap();
+    assert_eq!(run, fresh.unwrap());
+    assert_eq!(run.counts, vec![2]);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.cache_invalidations, 0);
+    assert_eq!(progress.validated_bytes, 0);
+    assert_eq!(progress.source_bytes, 64 + size);
+    let (again, _, progress) = capped();
+    assert_eq!(again.unwrap(), run);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, 0);
+}
+
+#[test]
+fn a_rewrite_racing_a_scan_is_caught_by_the_next_run() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[50]), true);
+    let pinned = std::fs::metadata(&source.0).unwrap().len();
+    let rewrite = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .find("filler 5 ")
+        .unwrap() as u64;
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(&[("needle", None)], options(), &mut budget);
+    let mut raced = false;
+    grep.scan_stream(
+        &source.0,
+        true,
+        Some(&cache.1),
+        &mut budget,
+        &Cancellation::default(),
+        |_, _, _| {
+            if !raced {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&source.0)
+                    .unwrap()
+                    .write_all_at(b"needle 5 ", rewrite)
+                    .unwrap();
+                append(&source.0, &sparse(101, &[])[100..]);
+                raced = true;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(raced);
+    assert_eq!(grep.counts().to_vec(), vec![1]);
+    assert!(grep.complete());
+    assert!(std::fs::metadata(&source.0).unwrap().len() > pinned);
+    let (warm, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    let warm = warm.unwrap();
+    assert_eq!(warm, fresh.unwrap());
+    assert_eq!(warm.counts, vec![2]);
+    assert_eq!(progress.cache_invalidations, 1);
+    assert_eq!(progress.validated_bytes as u64, pinned);
 }
 
 #[test]

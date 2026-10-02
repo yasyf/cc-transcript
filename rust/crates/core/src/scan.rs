@@ -24,6 +24,7 @@ pub struct ScanProgress {
     pub source_opens: usize,
     pub cache_hits: usize,
     pub cache_invalidations: usize,
+    pub validated_bytes: usize,
 }
 
 pub struct ScanBudget<'store> {
@@ -32,6 +33,7 @@ pub struct ScanBudget<'store> {
     store: &'store NativeStore,
     context: Value,
     staging: ProjectionArena<'store>,
+    validation: usize,
 }
 
 pub type StagingReservation<'store> = crate::snapshot::ProjectionAllocation<'store>;
@@ -46,6 +48,7 @@ impl<'store> ScanBudget<'store> {
             store,
             staging: ProjectionArena::new(store, context.clone()),
             context,
+            validation: store.scan_validate_bytes(),
         }
     }
 
@@ -147,6 +150,15 @@ impl<'store> ScanBudget<'store> {
         self.progress.projection_bytes += bytes;
         self.progress.examined_events += events;
         Ok(())
+    }
+
+    pub fn validation_remaining(&self) -> usize {
+        self.validation
+            .saturating_sub(self.progress.validated_bytes)
+    }
+
+    pub fn charge_validation(&mut self, bytes: usize) {
+        self.progress.validated_bytes += bytes;
     }
 
     pub fn charge_source(&mut self, bytes: usize) -> Result<(), SnapshotError> {
