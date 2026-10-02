@@ -1962,7 +1962,8 @@ impl StoreState {
             self.ledger.shared.acquire(anchor);
         }
         slot.attached.store(true, Ordering::Release);
-        self.ledger.classifier += key.capacity() + slot.accounted.load(Ordering::Acquire);
+        self.ledger.classifier +=
+            size_of::<ClassifierSlot>() + key.capacity() + slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.classifier_stages.insert(key, slot) {
             self.detach_classifier_stage(0, &displaced);
         }
@@ -1973,7 +1974,9 @@ impl StoreState {
         self.ledger.classifier = self
             .ledger
             .classifier
-            .checked_sub(key_bytes + slot.accounted.load(Ordering::Acquire))
+            .checked_sub(
+                size_of::<ClassifierSlot>() + key_bytes + slot.accounted.load(Ordering::Acquire),
+            )
             .expect("balanced retained ledger");
         for anchor in slot.anchors() {
             self.ledger.shared.release(anchor.id);
@@ -3938,7 +3941,11 @@ impl NativeStore {
             classifier: state
                 .classifier_stages
                 .iter()
-                .map(|(key, slot)| key.capacity() + slot.accounted.load(Ordering::Acquire))
+                .map(|(key, slot)| {
+                    size_of::<ClassifierSlot>()
+                        + key.capacity()
+                        + slot.accounted.load(Ordering::Acquire)
+                })
                 .sum(),
             label: state.labels.audit_charged(),
             discovery: state.discoveries.audit_charged() + state.checkpoints.audit_charged(),

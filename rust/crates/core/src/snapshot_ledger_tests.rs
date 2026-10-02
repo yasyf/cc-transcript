@@ -2211,8 +2211,8 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
         assert!(key.capacity() > 16 * 1024);
         assert_eq!(
             state.ledger.classifier - before,
-            key.capacity() + slot.accounted.load(Ordering::Acquire),
-            "the classifier gauge misses the stage key"
+            size_of::<ClassifierSlot>() + key.capacity() + slot.accounted.load(Ordering::Acquire),
+            "the classifier gauge misses the stage slot or its key"
         );
     }
 }
