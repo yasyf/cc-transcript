@@ -331,7 +331,7 @@ impl NativeStore {
                     state.remove_recent_codex(&oldest);
                     state.remove_latest(&oldest);
                 }
-            } else {
+            } else if snapshot.provider == Provider::Codex {
                 state.remove_recent_codex(&stamp.identity);
                 state.remove_latest(&stamp.identity);
             }

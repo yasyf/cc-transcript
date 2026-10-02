@@ -7,6 +7,10 @@ const HOOK_BYTES: usize = 4096;
 const REPLY_RESERVATION: usize = 2 * MAX_REPLY_BYTES;
 const SEARCH_LIMIT: usize = 4 * 1024 * 1024;
 const SLOW_READ_STEP: usize = 64;
+const WARM_HIT_BOUND: usize = 768;
+const PER_SOURCE_BOUND: usize = 16;
+const PAGE_STEPS: usize = 256;
+const PAGE_BOUND: usize = PER_SOURCE_BOUND * PAGE_STEPS + WARM_HIT_BOUND;
 const DROP_TIMEOUT: Duration = Duration::from_secs(30);
 const CHURN_TIMEOUT: Duration = Duration::from_secs(120);
 const SCALING_COUNTS: [usize; 3] = [100, 500, 923];
@@ -258,6 +262,10 @@ fn graph_query(graph: &Value, query: Value, selectors: Value) -> Value {
 
 fn missing_tool() -> Value {
     json!({"kind":"has_tool","pattern":"Missing","subagents":true})
+}
+
+fn marker_tool() -> Value {
+    json!({"kind":"has_tool","pattern":"Bash","subagents":true})
 }
 
 fn warm_request(scenario: &Scenario) -> Value {
@@ -561,6 +569,16 @@ fn entry_bytes(snapshots: &[&Arc<TranscriptSnapshot>]) -> usize {
         .sum()
 }
 
+fn measured(store: &NativeStore, operation: impl FnOnce()) -> (usize, usize) {
+    let work = store.retained_work.load(Ordering::Relaxed);
+    let copies = store.warm_copies.load(Ordering::Relaxed);
+    operation();
+    (
+        store.retained_work.load(Ordering::Relaxed) - work,
+        store.warm_copies.load(Ordering::Relaxed) - copies,
+    )
+}
+
 fn fill_to<'a>(
     store: &'a NativeStore,
     owner: &Value,
@@ -578,6 +596,35 @@ fn fill_to<'a>(
         .unwrap();
     assert_eq!(ledger(store)[TOTAL], cap - headroom);
     filler
+}
+
+fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Vec<(usize, usize)>) {
+    let mut next = request;
+    let mut costs = Vec::new();
+    loop {
+        let mut reply = None;
+        costs.push(measured(store, || {
+            reply = Some(store.request(&next, owner, &Cancellation::default()));
+        }));
+        let reply = reply.unwrap();
+        match reply["cursor"].as_str() {
+            Some(cursor) => next = resume_request(cursor),
+            None => return (reply, costs),
+        }
+    }
+}
+
+fn assert_page_costs(pass: &str, count: usize, pages: &[(usize, usize)]) {
+    for (page, (work, copies)) in pages.iter().copied().enumerate() {
+        assert!(
+            work <= PAGE_BOUND,
+            "{pass} over {count} sources did {work} units of retained work on page request {page}"
+        );
+        assert!(
+            copies <= WARM_HIT_BOUND,
+            "{pass} over {count} sources copied {copies} retained elements on page request {page}"
+        );
+    }
 }
 
 fn submit(fixture: &Fixture) -> Value {
@@ -1867,6 +1914,147 @@ fn concurrent_root_slice_queries_stay_conserved() {
     store.assert_conserved();
     release_graph(&store, &graph, &owner);
     store.assert_conserved();
+}
+
+#[test]
+fn f2_prepared_sidechain_generations_stay_charged_until_pressure_evicts_them() {
+    let scenario = Scenario::new(8, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let store = prepared_store();
+        let owner = context_for("retained", background);
+        let (_, root) = acquired(&store, &scenario.root.path, &owner);
+        warm(&store, &scenario, &owner);
+        store.assert_conserved();
+        assert_eq!(settled(&store)[GENERATIONS], scenario.sidechains.len() + 1);
+        evict_unpinned(&store, &owner);
+        store.assert_conserved();
+        let evicted = ledger(&store);
+        assert_eq!(evicted[GENERATIONS], 1);
+        assert_eq!(evicted[ENTRIES], entry_bytes(&[&root]));
+    }
+}
+
+#[test]
+fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
+    for count in SCALING_COUNTS {
+        let scenario = scaling_scenario(count);
+        let warmed = warmed_registry(prepared_store(), &scenario);
+        let (store, owner) = (&warmed.store, &warmed.owner);
+        assert!(
+            ledger(store)[GENERATIONS] > count,
+            "F2 must retain every prepared sidechain at {count}"
+        );
+        store.assert_conserved();
+        let path = &scenario.sidechains[count / 2];
+        let audits = store.audits.load(Ordering::Relaxed);
+        let mut hits = Vec::new();
+        for hit in 0..8 {
+            let (work, copies) = measured(store, || {
+                let response = store.request(&acquire(path), owner, &Cancellation::default());
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("ok"),
+                    "hit {hit} at {count}: {response:?}"
+                );
+                assert!(
+                    response["cursor"].is_null(),
+                    "hit {hit} at {count} was not cached: {response:?}"
+                );
+                let handle = &response["data"]["description"]["handle"];
+                store.validate_scope(handle, owner).unwrap();
+                release_lease(store, handle, owner);
+            });
+            assert!(
+                work <= WARM_HIT_BOUND,
+                "hit {hit} at {count} did {work} units of retained work"
+            );
+            assert!(
+                copies <= WARM_HIT_BOUND,
+                "hit {hit} at {count} copied {copies} retained elements"
+            );
+            hits.push((work, copies));
+        }
+        eprintln!("cached hits: count={count} retained_work_and_warm_copies={hits:?}");
+        assert_eq!(store.audits.load(Ordering::Relaxed), audits);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn f2_graph_pages_cost_bounded_work_per_page_request() {
+    for count in SCALING_COUNTS {
+        let scenario = scaling_scenario(count);
+        let warmed = warmed_registry(prepared_store(), &scenario);
+        let (store, owner, graph) = (&warmed.store, &warmed.owner, &warmed.graph);
+        assert!(
+            ledger(store)[GENERATIONS] > count,
+            "F2 must retain every prepared sidechain at {count}"
+        );
+        let audits = store.audits.load(Ordering::Relaxed);
+        let mut markers = Vec::new();
+        for query in 0..4 {
+            let (work, copies) = measured(store, || {
+                let reply = settle(
+                    store,
+                    store.request(
+                        &graph_query(graph, marker_tool(), json!([])),
+                        owner,
+                        &Cancellation::default(),
+                    ),
+                    owner,
+                );
+                assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+                assert_eq!(reply["data"]["value"].as_bool(), Some(true));
+            });
+            assert!(
+                work <= WARM_HIT_BOUND,
+                "marker query {query} at {count} did {work} units of retained work"
+            );
+            assert!(
+                copies <= WARM_HIT_BOUND,
+                "marker query {query} at {count} copied {copies} retained elements"
+            );
+            markers.push((work, copies));
+        }
+        eprintln!("marker queries: count={count} retained_work_and_warm_copies={markers:?}");
+        let (reply, pages) =
+            paged_costs(store, graph_query(graph, missing_tool(), json!([])), owner);
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        assert_eq!(reply["data"]["value"].as_bool(), Some(false));
+        eprintln!(
+            "graph pages: count={count} page_requests={} retained_work_and_warm_copies={pages:?}",
+            pages.len()
+        );
+        assert_page_costs("a negative pass", count, &pages);
+        assert_eq!(store.audits.load(Ordering::Relaxed), audits);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn f2_facts_over_budget_pages_cost_bounded_work_per_page_request() {
+    for count in [100, 500] {
+        let scenario = scaling_scenario(count);
+        let warmed = warmed_registry(
+            store_with(4096, 2048, &[("max_prepared_fact_memory_bytes", 16 * 1024)]),
+            &scenario,
+        );
+        let (store, owner, graph) = (&warmed.store, &warmed.owner, &warmed.graph);
+        assert!(
+            ledger(store)[GENERATIONS] > count,
+            "F2 must retain every prepared sidechain at {count}"
+        );
+        let (reply, pages) =
+            paged_costs(store, graph_query(graph, missing_tool(), json!([])), owner);
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        assert_eq!(reply["data"]["value"].as_bool(), Some(false));
+        eprintln!(
+            "facts over budget: count={count} page_requests={} retained_work_and_warm_copies={pages:?}",
+            pages.len()
+        );
+        assert_page_costs("evicting facts", count, &pages);
+        store.assert_conserved();
+    }
 }
 
 #[test]
