@@ -3993,7 +3993,27 @@ impl NativeStore {
                 "classifier read budget exhausted before callback",
             ));
         }
-        let reserve = bytes.saturating_mul(2).saturating_add(stop - start);
+        let reserve = if stop > start {
+            let (calls, results) = (start..stop).map(|position| snapshot.entry(position)).fold(
+                (0usize, 0usize),
+                |(calls, results), entry| {
+                    (
+                        calls + entry.tool_uses().count(),
+                        results + entry.tool_results().count(),
+                    )
+                },
+            );
+            bytes
+                .saturating_mul(2)
+                .saturating_add((stop - start) * (size_of::<&Entry>() + size_of::<bool>()))
+                .saturating_add(stage.activity.append_container_reservation_bytes(
+                    stop - start,
+                    calls,
+                    results,
+                ))
+        } else {
+            0
+        };
         {
             let mut state = self.lock_state();
             self.admit_memory(&mut state, context, reserve)?;
@@ -4017,8 +4037,22 @@ impl NativeStore {
             }
             usage[6] += 1;
         }
-        self.lock_state()
-            .set_classifier_charge(&slot, stage.accounted_bytes());
+        let accounted = stage.accounted_bytes();
+        {
+            let mut state = self.lock_state();
+            if let Err(error) = self.admit_memory(
+                &mut state,
+                context,
+                accounted.saturating_sub(slot.ledgered_bytes()),
+            ) {
+                stage.activity = ActivityIndex::default();
+                stage.indexed = 0;
+                stage.committed = None;
+                state.set_classifier_charge(&slot, stage.accounted_bytes());
+                return Err(error);
+            }
+            state.set_classifier_charge(&slot, accounted);
+        }
         cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
         if stop < snapshot.event_count {
             return Ok(ClassifierProgress {

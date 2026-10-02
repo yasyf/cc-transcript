@@ -13,6 +13,8 @@ const HOOK_BYTES: usize = 4096;
 const REPLY_RESERVATION: usize = 2 * MAX_REPLY_BYTES;
 const SEARCH_LIMIT: usize = 4 * 1024 * 1024;
 const SLOW_READ_STEP: usize = 64;
+const SEEDED_EVENTS: usize = 32;
+const SEEDED_STEP: usize = 2;
 const WARM_HIT_BOUND: usize = 768;
 const HIT_SPREAD_BOUND: usize = 4;
 const STEADY_HITS: usize = 1024;
@@ -2313,6 +2315,201 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
                 + key.capacity()
                 + slot.accounted.load(Ordering::Acquire),
             "the classifier gauge misses the stage slot, its mutex storage, or its key"
+        );
+    }
+}
+
+fn seeded_classifier_fixture(source: &LedgerSource, classifier: &str, background: bool) -> Fixture {
+    std::fs::write(&source.path, lines(0..SEEDED_EVENTS)).unwrap();
+    let store = fast_store();
+    let owner = context_for("seeded", background);
+    recording_classifier(&store, classifier);
+    let (_, seeded) = classified(&store, &source.path, classifier, &owner);
+    assert_eq!(seeded.event_count, SEEDED_EVENTS);
+    source.append(&lines(SEEDED_EVENTS..SEEDED_EVENTS + 2 * SEEDED_STEP));
+    let (_, native) = acquired(&store, &source.path, &owner);
+    assert_eq!(native.event_count, SEEDED_EVENTS + 2 * SEEDED_STEP);
+    let request = json!({"id":classifier,"version":"1"});
+    let created = store.classify(
+        Arc::clone(&native),
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &WorkLimits {
+            max_events: 0,
+            ..work_bounds()
+        },
+        &mut [0u64; 18],
+    );
+    assert!(matches!(created, Err(error) if error.status == Status::Incomplete));
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: vec![native],
+    }
+}
+
+fn seeded_slot(fixture: &Fixture) -> Arc<ClassifierSlot> {
+    let mut state = fixture.store.lock_state();
+    NativeStore::prune(&mut state);
+    let slots: Vec<_> = state.classifier_stages.values().cloned().collect();
+    let [slot] = slots.as_slice() else {
+        panic!(
+            "expected one seeded classifier stage, found {}",
+            slots.len()
+        );
+    };
+    Arc::clone(slot)
+}
+
+fn seeded_step_parked(fixture: &Fixture) -> bool {
+    let bounds = WorkLimits {
+        max_events: SEEDED_STEP,
+        ..work_bounds()
+    };
+    match fixture.store.classify(
+        Arc::clone(&fixture.pins[0]),
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &bounds,
+        &mut [0u64; 18],
+    ) {
+        Ok(progress) => {
+            assert!(
+                progress.snapshot.is_none() && progress.stage.is_some(),
+                "the seeded step published past its event budget"
+            );
+            assert_eq!(progress.events, SEEDED_STEP);
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("seeded classifier step failed outside admission: {error:?}"),
+    }
+}
+
+fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
+    let stage = slot.work.lock().unwrap();
+    let ClassifierStage {
+        activity,
+        indexed: _,
+        carried,
+        committed,
+        result: _,
+    } = &*stage;
+    let seed: HashSet<usize> = slot
+        .seed
+        .as_ref()
+        .expect("seeded stage")
+        .activity()
+        .audited_allocations(true)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let mut seen = HashSet::new();
+    activity
+        .audited_heap_allocations()
+        .into_iter()
+        .chain(
+            committed
+                .iter()
+                .flat_map(ActivityIndex::audited_heap_allocations),
+        )
+        .filter(|(id, _)| !seed.contains(id) && seen.insert(*id))
+        .map(|(_, bytes)| bytes)
+        .sum::<usize>()
+        + carried.capacity() * size_of::<usize>()
+}
+
+fn seeded_step_reserve(fixture: &Fixture) -> (usize, usize) {
+    let native = &fixture.pins[0];
+    let (bytes, calls, results) = (SEEDED_EVENTS..SEEDED_EVENTS + SEEDED_STEP)
+        .map(|position| native.entry(position))
+        .fold(
+            (0usize, 0usize, 0usize),
+            |(bytes, calls, results), entry| {
+                let charge = entry_charge(entry);
+                (
+                    bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                    calls + entry.tool_uses().count(),
+                    results + entry.tool_results().count(),
+                )
+            },
+        );
+    let slot = seeded_slot(fixture);
+    let stage = slot.work.lock().unwrap();
+    assert_eq!(stage.indexed, SEEDED_EVENTS);
+    let reserve = 2 * bytes
+        + SEEDED_STEP * (size_of::<&Entry>() + size_of::<bool>())
+        + stage
+            .activity
+            .append_container_reservation_bytes(SEEDED_STEP, calls, results);
+    (reserve, 2 * bytes + SEEDED_STEP)
+}
+
+#[test]
+fn seeded_classifier_step_admits_its_append_growth_before_appending() {
+    let source = LedgerSource::new("");
+    let site = "seeded classifier step";
+    for background in [false, true] {
+        let build = || seeded_classifier_fixture(&source, "seeded", background);
+        let exact = exact_headroom(&build, &seeded_step_parked);
+        let (reserve, old_reserve) = seeded_step_reserve(&build());
+        assert_eq!(
+            exact, reserve,
+            "{site}: the step admission is not the input heuristic plus the container growth"
+        );
+        let refused = build();
+        let slot = seeded_slot(&refused);
+        let before = slot.accounted.load(Ordering::Acquire);
+        assert_refused_at(site, &refused, &seeded_step_parked, exact);
+        {
+            let stage = slot.work.lock().unwrap();
+            assert_eq!(stage.indexed, SEEDED_EVENTS, "{site}: the refusal appended");
+            assert_eq!(stage.activity.entry_count(), SEEDED_EVENTS);
+            assert!(stage.committed.is_none());
+        }
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            before,
+            "{site}: the refusal moved the stage charge"
+        );
+        assert_eq!(seeded_stage_walk(&slot), before);
+        let fitted = build();
+        let slot = seeded_slot(&fitted);
+        let before = slot.accounted.load(Ordering::Acquire);
+        assert_fitted_at(site, &fitted, &seeded_step_parked, exact);
+        let after = slot.accounted.load(Ordering::Acquire);
+        assert_eq!(
+            slot.work.lock().unwrap().indexed,
+            SEEDED_EVENTS + SEEDED_STEP
+        );
+        assert_eq!(
+            after,
+            seeded_stage_walk(&slot),
+            "{site}: the stage charge is not its owned heap walked once"
+        );
+        assert!(
+            after - before > old_reserve,
+            "{site}: the copy-on-write growth {} fits the former reserve {old_reserve}",
+            after - before
+        );
+        assert!(
+            after - before <= exact,
+            "{site}: the retained growth {} exceeds its admission {exact}",
+            after - before
+        );
+        let state = fitted.store.lock_state();
+        let (key, _) = state
+            .classifier_stages
+            .iter()
+            .next()
+            .expect("seeded classifier stage");
+        assert_eq!(
+            state.ledger.classifier,
+            arc_mirror::<ClassifierSlot>() + MUTEX_STORAGE_MIRROR + key.capacity() + after,
+            "{site}: the classifier gauge is not the slot, its key, and its owned heap"
         );
     }
 }
