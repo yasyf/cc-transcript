@@ -1,10 +1,4 @@
 impl NativeStore {
-    fn release_prepared_build_state(state: &mut StoreState, build: &PreparedBuild) {
-        if let Some(token) = &build.location_cursor {
-            state.locates.remove(token);
-        }
-    }
-
     #[cfg(test)]
     fn audit_prepared_graph_bytes(graph_id: &String, graph: &Arc<Mutex<PreparedGraph>>) -> usize {
         let graph = graph.lock().expect("prepared graph");
@@ -40,13 +34,6 @@ impl NativeStore {
             + value_bytes(&build.request)
             + value_bytes(&build.root_handle)
             + value_bytes(&build.classifier)
-            + build.location_cursor.as_ref().map_or(0, String::capacity)
-            + build.located.capacity() * size_of::<(String, PathBuf)>()
-            + build
-                .located
-                .iter()
-                .map(|(session, path)| session.capacity() + path.as_os_str().len())
-                .sum::<usize>()
             + build.tasks.capacity() * size_of::<GraphTask>()
             + build
                 .tasks
@@ -214,7 +201,13 @@ impl NativeStore {
         context: &Value,
         remaining: &WorkLimits,
         cancel: &Cancellation,
-    ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
+    ) -> Result<
+        (
+            Arc<crate::snapshot_prepared::PreparedFacts>,
+            ProjectionReservation<'_>,
+        ),
+        SnapshotError,
+    > {
         let registry_generation = str_field(context, "registry_generation")?;
         if let Some(facts) = self.lock_state().touch_prepared_facts(
             root.stamp,
@@ -223,7 +216,13 @@ impl NativeStore {
             &context["authority"],
             classifier,
         ) {
-            return Ok(facts);
+            return Ok((
+                facts,
+                ProjectionReservation {
+                    store: self,
+                    bytes: 0,
+                },
+            ));
         }
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             root.stamp,
@@ -248,8 +247,10 @@ impl NativeStore {
                         context,
                         &mut reservation,
                     ) {
-                        Ok(cached) => Ok(cached),
-                        Err(error) if error.status == Status::RetainedLimit => Ok(facts),
+                        Ok(cached) => Ok((cached, reservation)),
+                        Err(error) if error.status == Status::RetainedLimit => {
+                            Ok((facts, reservation))
+                        }
                         Err(error) => Err(error),
                     };
                 }
@@ -280,8 +281,8 @@ impl NativeStore {
             context,
             &mut reservation,
         ) {
-            Ok(cached) => Ok(cached),
-            Err(error) if error.status == Status::RetainedLimit => Ok(facts),
+            Ok(cached) => Ok((cached, reservation)),
+            Err(error) if error.status == Status::RetainedLimit => Ok((facts, reservation)),
             Err(error) => Err(error),
         }
     }
@@ -709,7 +710,7 @@ impl NativeStore {
                     "registered membership changed or is incomplete",
                 ));
             }
-            let root_facts =
+            let (root_facts, mut reservation) =
                 self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
             let shares_root = membership
                 .members
@@ -740,7 +741,8 @@ impl NativeStore {
                 + value_bytes(root_handle)
                 + value_bytes(&view["classifier"])
                 + 2 * <Sha256 as Digest>::output_size();
-            let mut reservation = self.reserve_projection(
+            self.extend_projection_reservation(
+                &mut reservation,
                 context,
                 PreparedGraph::key_charge(&graph_id)
                     + size_of::<PreparedGraph>()
@@ -787,8 +789,24 @@ impl NativeStore {
             };
             return self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation);
         }
-        let root_facts =
+        let (root_facts, mut reservation) =
             self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+        let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
+        self.extend_projection_reservation(
+            &mut reservation,
+            context,
+            size_of::<PreparedBuild>()
+                + str_field(context, "claimant")?.len()
+                + value_bytes(context)
+                + value_bytes(request)
+                + value_bytes(root_handle)
+                + value_bytes(&view["classifier"])
+                + set_growth(&HashSet::<SourceIdentity>::new(), 1)
+                + size_of::<(PathBuf, SourceStamp)>()
+                + root.canonical_path.as_os_str().len(),
+        )?;
+        #[cfg(test)]
+        self.build_records.fetch_add(1, Ordering::Relaxed);
         let build = PreparedBuild {
             claimant: str_field(context, "claimant")?.to_owned(),
             context: context.clone(),
@@ -798,10 +816,6 @@ impl NativeStore {
             classifier: view["classifier"].clone(),
             root_facts,
             remaining,
-            location_started: false,
-            location_finished: ids.is_empty(),
-            location_cursor: None,
-            located: HashMap::new(),
             tasks: Vec::new(),
             listing: None,
             seen: HashSet::from([root.stamp.identity.file()]),
@@ -810,13 +824,25 @@ impl NativeStore {
             sidechain_dirs: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
         };
-        self.prepare_graph_step(&self.token("prepared-build"), build, cancel, usage)
+        assert_eq!(
+            (build.seen.capacity(), build.stamps.capacity()),
+            (seen_capacity, 1),
+            "prepared build collections landed off their predicted capacities"
+        );
+        self.prepare_graph_step(
+            &self.token("prepared-build"),
+            build,
+            &mut reservation,
+            cancel,
+            usage,
+        )
     }
 
     fn prepare_graph_step(
         &self,
         token: &str,
         mut build: PreparedBuild,
+        reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
@@ -835,73 +861,41 @@ impl NativeStore {
                 "prepared graph root generation changed",
             ));
         }
-        if !build.location_finished {
-            let before = usage[17];
-            let outcome = if let Some(cursor) = build.location_cursor.take() {
-                self.dispatch(
-                    &json!({"schema":SCHEMA,"id":"prepare-graph-locate-resume","operation":"resume","cursor":cursor}),
-                    context,
-                    cancel,
-                    usage,
-                )?
-            } else {
-                let ids = &build.request["thread_ids"];
-                let roots = &build.request["roots"];
-                let bounds = build.remaining;
-                let location = json!({"schema":SCHEMA,"id":"prepare-graph-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":bounds.deadline_unix_ms,"limits":bounds.to_json()});
-                build.location_started = true;
-                self.locate(&location, context, cancel, usage)?
-            };
-            build.remaining.max_discovery_entries = build
-                .remaining
-                .max_discovery_entries
-                .saturating_sub((usage[17] - before) as usize);
-            for item in outcome.0["sessions"]
-                .as_array()
-                .ok_or_else(|| invalid("invalid location result"))?
-            {
-                match str_field(item, "status")? {
-                    "ok" => {
-                        build.located.insert(
-                            str_field(item, "session_id")?.to_owned(),
-                            PathBuf::from(str_field(item, "path")?),
-                        );
-                    }
-                    "missing" => {}
-                    "incomplete" => {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "prepared registry location incomplete",
-                        ))
-                    }
-                    _ => return Err(invalid("invalid location status")),
-                }
-            }
-            if let Some(cursor) = outcome.1 {
-                build.location_cursor = Some(cursor);
-                return self.store_prepared_build(token, build);
-            }
-            if outcome.2.is_some() {
-                return Err(SnapshotError::new(
-                    Status::Incomplete,
-                    "prepared registry location incomplete",
-                ));
-            }
-            build.location_finished = true;
-        }
-        if !build.location_started {
-            build.location_started = true;
-        }
         if build.tasks.is_empty() && build.sources.is_empty() && build.listing.is_none() {
             let direct = build.request["direct_paths"]
                 .as_array()
                 .expect("validated direct paths");
-            let mut distinct = Vec::new();
-            let mut paths = HashSet::new();
+            let direct_bytes = direct
+                .iter()
+                .map(|path| {
+                    path.as_str()
+                        .map(str::len)
+                        .ok_or_else(|| invalid("invalid direct path"))
+                })
+                .sum::<Result<usize, SnapshotError>>()?;
+            self.extend_projection_reservation(
+                reservation,
+                context,
+                direct.len() * size_of::<PathBuf>()
+                    + set_growth(&HashSet::<&str>::new(), direct.len())
+                    + direct_bytes
+                    + vec_growth(&build.tasks, direct.len() + 1)
+                    + build.root.canonical_path.as_os_str().len(),
+            )?;
+            let predicted = (
+                vec_capacity_for(&build.tasks, direct.len() + 1),
+                set_capacity_for(&HashSet::<&str>::new(), direct.len()),
+            );
+            build.tasks.reserve(direct.len() + 1);
+            let mut distinct = Vec::with_capacity(direct.len());
+            let mut paths = HashSet::with_capacity(direct.len());
+            assert_eq!(
+                (build.tasks.capacity(), paths.capacity()),
+                predicted,
+                "prepared build collections landed off their predicted capacities"
+            );
             for path in direct {
-                let path = path
-                    .as_str()
-                    .ok_or_else(|| invalid("invalid direct path"))?;
+                let path = path.as_str().expect("validated direct path");
                 if paths.insert(path) {
                     distinct.push(PathBuf::from(path));
                 }
@@ -913,26 +907,12 @@ impl NativeStore {
                     spawned_by: None,
                 });
             }
-            let ids = build.request["thread_ids"]
-                .as_array()
-                .expect("validated thread ids");
-            for id in ids.iter().rev() {
-                if let Some(path) = build
-                    .located
-                    .get(id.as_str().ok_or_else(|| invalid("invalid thread id"))?)
-                {
-                    build.tasks.push(GraphTask::Visit {
-                        path: path.clone(),
-                        depth: 1,
-                        spawned_by: None,
-                    });
-                }
-            }
             build.tasks.push(GraphTask::List {
                 parent: build.root.canonical_path.clone(),
                 depth: 1,
             });
         }
+        self.extend_projection_reservation(reservation, context, FILESYSTEM_PATH_BYTES)?;
         let mut examined = 0usize;
         while examined < 8 {
             cancel.check(build.remaining.deadline_unix_ms)?;
@@ -957,22 +937,48 @@ impl NativeStore {
                     if path
                         .extension()
                         .is_some_and(|extension| extension == "jsonl")
-                        && !entry.file_name().to_string_lossy().starts_with("._")
+                        && !path
+                            .file_name()
+                            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"._"))
                     {
+                        self.extend_projection_reservation(
+                            reservation,
+                            context,
+                            path.as_os_str().len() + vec_growth(&listing.children, 1),
+                        )?;
+                        let predicted = vec_capacity_for(&listing.children, 1);
                         listing.children.push(path);
+                        assert_eq!(
+                            listing.children.capacity(),
+                            predicted,
+                            "prepared build collections landed off their predicted capacities"
+                        );
                     }
                 }
                 if !complete {
                     build.listing = Some(listing);
                     break;
                 }
-                listing.children.sort();
+                listing.children.sort_unstable();
+                self.extend_projection_reservation(
+                    reservation,
+                    context,
+                    vec_growth(&build.tasks, listing.children.len())
+                        + listing
+                            .children
+                            .iter()
+                            .map(|path| spawner(path).len())
+                            .sum::<usize>(),
+                )?;
+                let predicted = vec_capacity_for(&build.tasks, listing.children.len());
+                build.tasks.reserve(listing.children.len());
+                assert_eq!(
+                    build.tasks.capacity(),
+                    predicted,
+                    "prepared build collections landed off their predicted capacities"
+                );
                 for path in listing.children.into_iter().rev() {
-                    let stem = path
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or("");
-                    let spawned_by = stem.strip_prefix("agent-").unwrap_or(stem).to_owned();
+                    let spawned_by = spawner(&path).to_owned();
                     build.tasks.push(GraphTask::Visit {
                         path,
                         depth: listing.depth,
@@ -986,28 +992,50 @@ impl NativeStore {
             };
             match task {
                 GraphTask::List { parent, depth } => {
-                    let directory = parent
+                    let base = parent
                         .parent()
-                        .ok_or_else(|| invalid("source has no parent"))?
-                        .join(
-                            parent
-                                .file_stem()
-                                .ok_or_else(|| invalid("source has no stem"))?,
-                        )
-                        .join("subagents");
+                        .ok_or_else(|| invalid("source has no parent"))?;
+                    let stem = parent
+                        .file_stem()
+                        .ok_or_else(|| invalid("source has no stem"))?;
+                    self.extend_projection_reservation(
+                        reservation,
+                        context,
+                        base.as_os_str().len()
+                            + 1
+                            + stem.len()
+                            + 1
+                            + "subagents".len()
+                            + vec_growth(&build.sidechain_dirs, 1),
+                    )?;
+                    let predicted = vec_capacity_for(&build.sidechain_dirs, 1);
+                    let directory = base.join(stem).join("subagents");
                     let canonical = match std::fs::canonicalize(&directory) {
                         Ok(canonical) => canonical,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                             build.sidechain_dirs.push((directory, None));
+                            assert_eq!(
+                                build.sidechain_dirs.capacity(),
+                                predicted,
+                                "prepared build collections landed off their predicted capacities"
+                            );
                             continue;
                         }
                         Err(error) => return Err(io_error(error)),
                     };
                     self.authority(context, Some(&canonical))?;
-                    build.sidechain_dirs.push((
-                        canonical.clone(),
-                        Some(SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?)),
-                    ));
+                    let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                    self.extend_projection_reservation(
+                        reservation,
+                        context,
+                        canonical.as_os_str().len() + directory.as_os_str().len(),
+                    )?;
+                    build.sidechain_dirs.push((canonical, Some(stamp)));
+                    assert_eq!(
+                        build.sidechain_dirs.capacity(),
+                        predicted,
+                        "prepared build collections landed off their predicted capacities"
+                    );
                     build.listing = Some(GraphListing {
                         entries: std::fs::read_dir(&directory).map_err(io_error)?,
                         children: Vec::new(),
@@ -1022,17 +1050,33 @@ impl NativeStore {
                     examined += 1;
                     let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
                     self.authority(context, Some(&canonical))?;
-                    let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                    if !build.seen.insert(SourceStamp::of(&metadata).identity.file()) {
+                    let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                    if build.seen.contains(&stamp.identity.file()) {
                         continue;
                     }
-                    if build.seen.len() > build.remaining.max_sources {
+                    if build.seen.len() >= build.remaining.max_sources {
                         return Err(SnapshotError::new(
                             Status::Incomplete,
                             "prepared graph source budget exhausted",
                         ));
                     }
-                    let stamp = SourceStamp::of(&metadata);
+                    self.extend_projection_reservation(
+                        reservation,
+                        context,
+                        set_growth(&build.seen, 1)
+                            + vec_growth(&build.stamps, 1)
+                            + vec_growth(&build.sources, 1)
+                            + 3 * canonical.as_os_str().len(),
+                    )?;
+                    let predicted = (
+                        set_capacity_for(&build.seen, 1),
+                        vec_capacity_for(&build.stamps, 1),
+                        vec_capacity_for(&build.sources, 1),
+                        build.tasks.capacity(),
+                    );
+                    #[cfg(test)]
+                    self.build_sources.fetch_add(1, Ordering::Relaxed);
+                    build.seen.insert(stamp.identity.file());
                     build.stamps.push((canonical.clone(), stamp));
                     build.sources.push(PreparedSourceRef {
                         path: canonical.clone(),
@@ -1042,28 +1086,34 @@ impl NativeStore {
                         parent: canonical,
                         depth: depth + 1,
                     });
+                    assert_eq!(
+                        (
+                            build.seen.capacity(),
+                            build.stamps.capacity(),
+                            build.sources.capacity(),
+                            build.tasks.capacity(),
+                        ),
+                        predicted,
+                        "prepared build collections landed off their predicted capacities"
+                    );
                 }
             }
         }
         if build.listing.is_some() || !build.tasks.is_empty() {
-            return self.store_prepared_build(token, build);
+            return self.store_prepared_build(token, build, reservation);
         }
         let graph_id = self.token("prepared-graph");
-        let record = build.claimant.capacity()
-            + str_field(context, "registry_generation")?.len()
-            + str_field(context, "admission")?.len()
-            + value_bytes(&context["authority"])
-            + value_bytes(&build.root_handle)
-            + value_bytes(&build.classifier)
-            + 2 * <Sha256 as Digest>::output_size();
-        let mut reservation = self.reserve_projection(
+        self.extend_projection_reservation(
+            reservation,
             context,
             PreparedGraph::key_charge(&graph_id)
                 + size_of::<PreparedGraph>()
-                + record
-                + stamp_bytes(&build.stamps)
-                + source_ref_bytes(&build.sources)
-                + sidechain_dir_bytes(&build.sidechain_dirs),
+                + str_field(context, "registry_generation")?.len()
+                + str_field(context, "admission")?.len()
+                + value_bytes(&context["authority"])
+                + 2 * <Sha256 as Digest>::output_size()
+                + build.sources.len() * size_of::<PreparedSourceRef>()
+                + build.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>(),
         )?;
         let mut digest = Sha256::new();
         for (path, stamp) in &build.stamps {
@@ -1090,7 +1140,7 @@ impl NativeStore {
             remaining: build.remaining,
             expires: (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms),
         };
-        self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation)
+        self.publish_prepared_graph(graph_id, graph, revision, context, reservation)
     }
 
     fn publish_prepared_graph(
@@ -1109,10 +1159,13 @@ impl NativeStore {
                 "prepared graph admission exhausted",
             ));
         }
-        let retained = state.admission(&graph_id, &graph, graph.anchors())
+        let record =
+            charged_bytes(&graph_id, &graph) + state.ledger.shared.unowned_bytes(graph.anchors());
+        let covered = record.min(reservation.bytes);
+        let fresh = record - covered
+            + state.ledger.shared.growth(graph.anchors())
             + state.prepared_graphs.growth_for(&graph_id);
-        let covered = retained.min(reservation.bytes);
-        self.admit_memory(&mut state, context, retained - covered)?;
+        self.admit_memory(&mut state, context, fresh)?;
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
         state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
@@ -1127,6 +1180,7 @@ impl NativeStore {
         &self,
         token: &str,
         mut build: PreparedBuild,
+        reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
         if state.prepared_builds.len() >= self.lease_cap(&build.context)? {
@@ -1141,7 +1195,10 @@ impl NativeStore {
         let additional = state.admission(&token, &build, [facts_anchor(&build.root_facts)])
             + state.prepared_builds.growth_for(&token)
             + pledge;
-        self.admit_memory(&mut state, &build.context, additional)?;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, &build.context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
         state.insert_prepared_build(token.clone(), build);
         state.prepared_builds.pledge(&token, pledge);
         Ok((

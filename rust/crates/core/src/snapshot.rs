@@ -16,8 +16,9 @@ use crate::snapshot_activity::ActivityIndex;
 #[cfg(test)]
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{
-    charged_bytes, Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered,
-    RetainedLedger, Table, TicketKey, Work,
+    charged_bytes, set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge,
+    DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table,
+    TicketKey, Work,
 };
 use crate::snapshot_memory::{entry_charge, MemoryCharge};
 use crate::types::Entry;
@@ -26,6 +27,7 @@ pub const SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
 pub const MAX_REPLY_BYTES: usize = 1_044_480;
 const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
+const FILESYSTEM_PATH_BYTES: usize = libc::PATH_MAX as usize + size_of::<libc::dirent>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -784,6 +786,14 @@ fn task_bytes(task: &GraphTask) -> usize {
     }
 }
 
+fn spawner(path: &Path) -> &str {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    stem.strip_prefix("agent-").unwrap_or(stem)
+}
+
 struct PreparedBuild {
     claimant: String,
     context: Value,
@@ -793,10 +803,6 @@ struct PreparedBuild {
     classifier: Value,
     root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
     remaining: WorkLimits,
-    location_started: bool,
-    location_finished: bool,
-    location_cursor: Option<String>,
-    located: HashMap<String, PathBuf>,
     tasks: Vec<GraphTask>,
     listing: Option<GraphListing>,
     seen: HashSet<SourceIdentity>,
@@ -1406,13 +1412,6 @@ impl Charge<String> for PreparedBuild {
             + value_bytes(&self.request)
             + value_bytes(&self.root_handle)
             + value_bytes(&self.classifier)
-            + self.location_cursor.as_ref().map_or(0, String::capacity)
-            + self.located.capacity() * size_of::<(String, PathBuf)>()
-            + self
-                .located
-                .iter()
-                .map(|(session, path)| session.capacity() + path.as_os_str().len())
-                .sum::<usize>()
             + self.tasks.capacity() * size_of::<GraphTask>()
             + self.tasks.iter().map(task_bytes).sum::<usize>()
             + self.listing.as_ref().map_or(0, |listing| {
@@ -2474,6 +2473,10 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) built_facts_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    pub(crate) build_records: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) build_sources: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -2811,6 +2814,10 @@ impl NativeStore {
             fact_lookups: AtomicUsize::new(0),
             #[cfg(test)]
             built_facts_hook: Mutex::new(None),
+            #[cfg(test)]
+            build_records: AtomicUsize::new(0),
+            #[cfg(test)]
+            build_sources: AtomicUsize::new(0),
             #[cfg(test)]
             audits,
         })
@@ -3909,9 +3916,7 @@ impl NativeStore {
             .map(|(token, _)| token.clone())
             .collect();
         for token in expired_builds {
-            if let Some(build) = state.remove_prepared_build(&token) {
-                Self::release_prepared_build_state(state, &build);
-            }
+            state.remove_prepared_build(&token);
         }
         let expired_graphs: Vec<_> = state
             .graphs
@@ -5504,10 +5509,7 @@ impl NativeStore {
             }
             released = true;
         }
-        if let Some(build) = state.remove_prepared_build(token) {
-            Self::release_prepared_build_state(&mut state, &build);
-            released = true;
-        }
+        released |= state.remove_prepared_build(token).is_some();
         released |= state.discoveries.remove(token).is_some();
         released |= state.checkpoints.remove(token).is_some();
         released |= state.waiters.remove(token).is_some();
@@ -5713,21 +5715,39 @@ impl NativeStore {
                             "prepared build claimant differs",
                         ));
                     }
-                    state.remove_prepared_build(cursor)
+                    state.remove_prepared_build(cursor).map(|build| {
+                        let held = build.charge()
+                            + state
+                                .ledger
+                                .shared
+                                .unowned_bytes([facts_anchor(&build.root_facts)]);
+                        state.transient_bytes += held;
+                        (
+                            build,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
                 };
-                if let Some(mut build) = prepared_build {
+                if let Some((mut build, mut reservation)) = prepared_build {
                     if build.context["authority"] != context["authority"]
                         || build.context["admission"] != context["admission"]
                         || build.context["registry_generation"] != context["registry_generation"]
                     {
-                        Self::release_prepared_build_state(&mut self.lock_state(), &build);
                         return Err(SnapshotError::new(
                             Status::StaleCursor,
                             "prepared build context differs",
                         ));
                     }
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context),
+                    )?;
                     build.context = context.clone();
-                    return self.prepare_graph_step(cursor, build, cancel, usage);
+                    return self.prepare_graph_step(cursor, build, &mut reservation, cancel, usage);
                 }
                 let prepared_query = {
                     let mut state = self.lock_state();
@@ -13928,6 +13948,61 @@ mod tests {
         store.assert_conserved();
     }
 
+    fn direct_build_peak(
+        store: &NativeStore,
+        prepared: &Value,
+        owner: &Value,
+        request: &Value,
+    ) -> usize {
+        let state = store.lock_state();
+        let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap();
+        let key = state
+            .prepared_graphs
+            .iter()
+            .find(|(key, _)| key.as_str() == graph_id)
+            .map(|(key, _)| key.capacity())
+            .unwrap();
+        let graph = state.prepared_graphs[graph_id].lock().unwrap();
+        assert!(state
+            .prepared_facts
+            .contains_key(&graph.root.stamp.identity));
+        let mut tasks = Vec::<GraphTask>::new();
+        tasks.reserve(1);
+        let mut dirs = Vec::<(PathBuf, Option<SourceStamp>)>::new();
+        dirs.push((PathBuf::new(), None));
+        size_of::<PreparedBuild>()
+            + graph.claimant.capacity()
+            + value_bytes(&owner.clone())
+            + value_bytes(&request.clone())
+            + value_bytes(&graph.root_handle)
+            + value_bytes(&graph.classifier)
+            + HashSet::from([graph.root.stamp.identity.file()]).capacity()
+                * size_of::<SourceIdentity>()
+            + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+            + graph
+                .stamps
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+            + tasks.capacity() * size_of::<GraphTask>()
+            + graph.root.canonical_path.as_os_str().len()
+            + FILESYSTEM_PATH_BYTES
+            + dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
+            + graph
+                .sidechain_dirs
+                .iter()
+                .map(|(path, _)| path.as_os_str().len())
+                .sum::<usize>()
+            + key
+            + size_of::<PreparedGraph>()
+            + graph.registry_generation.capacity()
+            + graph.admission.capacity()
+            + value_bytes(&graph.authority)
+            + graph.revision.capacity()
+            + graph.sources.len() * size_of::<PreparedSourceRef>()
+            + graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+    }
+
     #[test]
     fn a_parked_prepared_query_is_charged_beyond_its_struct_and_query_strings() {
         let source = Source::new(&format!("{}\n", user("root")));
@@ -14146,9 +14221,14 @@ mod tests {
             assert_eq!(measured["status"].as_str(), Some("ok"), "{measured:?}");
             let graph_bytes = store.retained_accounted_bytes() - idle;
             assert!(graph_bytes > 0);
+            let build_bytes = direct_build_peak(&store, &measured, &owner, &prepare);
+            assert!(
+                build_bytes > graph_bytes,
+                "the build's buffers are not admitted beyond its graph"
+            );
             release_graph(&store, &measured, &owner);
             assert_eq!(store.retained_accounted_bytes(), idle);
-            let room = cap - idle - graph_bytes - REPLY_RESERVATION;
+            let room = cap - idle - build_bytes - REPLY_RESERVATION;
             let crowded = store.reserve_projection(&owner, room + 1).unwrap();
             let refused = store.request(&prepare, &owner, &Cancellation::default());
             assert_refused(&store, &refused);
@@ -14162,7 +14242,10 @@ mod tests {
                 &owner,
             );
             assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
-            assert_eq!(store.retained_accounted_bytes(), cap - REPLY_RESERVATION);
+            assert_eq!(
+                store.retained_accounted_bytes(),
+                cap - REPLY_RESERVATION - (build_bytes - graph_bytes)
+            );
             store.assert_conserved();
             release_graph(&store, &exact, &owner);
             drop(fitted);

@@ -87,6 +87,28 @@ fn vec_capacity_after(cap: usize, len: usize, additional: usize, element_size: u
     }
 }
 
+pub(crate) fn vec_capacity_for<T>(vec: &Vec<T>, additional: usize) -> usize {
+    vec_capacity_after(vec.capacity(), vec.len(), additional, size_of::<T>())
+}
+
+pub(crate) fn set_capacity_for<T>(set: &HashSet<T>, additional: usize) -> usize {
+    if additional <= set.capacity() - set.len() {
+        return set.capacity();
+    }
+    hashbrown_tier(
+        (set.len() + additional).max(set.capacity() + 1),
+        size_of::<T>(),
+    )
+}
+
+pub(crate) fn vec_growth<T>(vec: &Vec<T>, additional: usize) -> usize {
+    (vec_capacity_for(vec, additional) - vec.capacity()) * size_of::<T>()
+}
+
+pub(crate) fn set_growth<T>(set: &HashSet<T>, additional: usize) -> usize {
+    (set_capacity_for(set, additional) - set.capacity()) * size_of::<T>()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LedgerEvent {
     Generation(usize),

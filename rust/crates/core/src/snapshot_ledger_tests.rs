@@ -31,6 +31,8 @@ const GENERATIONS: usize = 7;
 const PRE_SIZED_SLOTS: usize = 1792;
 const BUILDS: usize = 0;
 const LOOKUPS: usize = 1;
+const RECORDS: usize = 0;
+const SOURCES: usize = 1;
 const NO_LOADS: LoadResidue = LoadResidue {
     slots: 0,
     pinned: 0,
@@ -2057,6 +2059,44 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
         + dirs
 }
 
+fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &PreparedGraph) -> usize {
+    state
+        .prepared_graphs
+        .iter()
+        .find(|(key, _)| key.as_str() == graph_id)
+        .map(|(key, _)| key.capacity())
+        .expect("published graph key")
+        + size_of::<PreparedGraph>()
+        + graph.registry_generation.capacity()
+        + graph.admission.capacity()
+        + graph.revision.capacity()
+        + value_bytes(&graph.authority)
+        + graph.sources.len() * size_of::<PreparedSourceRef>()
+        + graph.sidechain_dirs.len() * size_of::<(PathBuf, Option<SourceStamp>)>()
+}
+
+fn moved_build_bytes(graph: &PreparedGraph) -> usize {
+    graph.claimant.capacity()
+        + value_bytes(&graph.root_handle)
+        + value_bytes(&graph.classifier)
+        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
+        + graph
+            .stamps
+            .iter()
+            .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
+        + graph
+            .sources
+            .iter()
+            .map(|source| source.path.as_os_str().len())
+            .sum::<usize>()
+        + graph
+            .sidechain_dirs
+            .iter()
+            .map(|(path, _)| path.as_os_str().len())
+            .sum::<usize>()
+}
+
 #[test]
 fn registered_prepare_graph_reserves_its_stamps_and_paths_before_construction() {
     let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
@@ -2095,10 +2135,20 @@ fn direct_prepare_graph_reserves_its_source_buffers_before_construction() {
             .to_owned();
         let state = fixture.store.lock_state();
         let graph = state.prepared_graphs[&graph_id].lock().unwrap();
-        reserved_before_the_last_admission(
-            "direct prepare_graph",
-            &traced,
+        let allocated = published_graph_allocations(&state, &graph_id, &graph);
+        reserved_before_the_last_admission("direct prepare_graph", &traced, allocated);
+        let publication = traced
+            .iter()
+            .position(|trace| *trace == Trace::Reserved(allocated))
+            .unwrap();
+        assert!(
+            reserved_traces(&traced[..publication]).iter().sum::<usize>()
+                >= REPLY_RESERVATION + moved_build_bytes(&graph),
+            "direct prepare_graph: buffers moved into the graph were not reserved before publication: {traced:?}"
+        );
+        assert_eq!(
             constructed_graph_bytes(&state, &graph_id, &graph),
+            allocated + moved_build_bytes(&graph)
         );
     }
 }
@@ -5159,6 +5209,277 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         assert!(landed(&fitted), "{site}: the exact growth was refused");
         fitted.store.assert_conserved();
         assert!(audited(&fitted.store)[TOTAL] <= cap);
+    }
+}
+
+fn build_probes(store: &NativeStore) -> [usize; 2] {
+    [
+        store.build_records.load(Ordering::Relaxed),
+        store.build_sources.load(Ordering::Relaxed),
+    ]
+}
+
+fn reserved_traces(trace: &[Trace]) -> Vec<usize> {
+    trace
+        .iter()
+        .filter_map(|entry| match entry {
+            Trace::Reserved(bytes) => Some(*bytes),
+            _ => None,
+        })
+        .collect()
+}
+
+fn build_site(site: &str, probe: usize) -> impl Fn(&Fixture) -> bool + '_ {
+    move |fixture: &Fixture| {
+        let before = build_probes(&fixture.store);
+        let response = submit(fixture);
+        match build_probes(&fixture.store)[probe] - before[probe] {
+            0 => {
+                assert_refusal_contract(site, &response);
+                assert_eq!(
+                    response["usage"]["discovery_entries_examined"].as_u64(),
+                    Some(0),
+                    "{site}: {response:?}"
+                );
+                false
+            }
+            1 => true,
+            moved => panic!("{site}: one attempt crossed the site {moved} times: {response:?}"),
+        }
+    }
+}
+
+fn parked_build_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let store = prepared_store();
+    let owner = context_for("resumed-build", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let first = store.request(
+        &prepare_request(&root, &[], &[], &scenario.direct()),
+        &owner,
+        &Cancellation::default(),
+    );
+    assert!(
+        parked(&first),
+        "the build finished in its first step: {first:?}"
+    );
+    assert_eq!(store.lock_state().prepared_builds.len(), 1);
+    Fixture {
+        store,
+        owner,
+        request: resume_request(first["cursor"].as_str().unwrap()),
+        pins: vec![root_snapshot],
+    }
+}
+
+fn grown_by_one<T: Clone>(vec: &Vec<T>) -> usize {
+    let mut scratch = Vec::with_capacity(vec.capacity());
+    scratch.extend(vec.iter().cloned());
+    scratch.push(vec[0].clone());
+    (scratch.capacity() - vec.capacity()) * size_of::<T>()
+}
+
+fn assert_resumed_refusal(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    headroom: usize,
+    reserved: usize,
+) {
+    let (refused, control) = (build(), build());
+    let _filler = fill_to(&refused.store, &refused.owner, headroom);
+    let _control_filler = fill_to(&control.store, &control.owner, headroom);
+    control
+        .store
+        .lock_state()
+        .remove_prepared_build(control.request["cursor"].as_str().unwrap())
+        .expect("parked control build");
+    evict_unpinned(&control.store, &control.owner);
+    refused.store.assert_conserved();
+    let probes = build_probes(&refused.store);
+    traced(&refused.store);
+    assert!(
+        !attempt(&refused),
+        "{site}: headroom {headroom} admitted the site"
+    );
+    let trace = traced(&refused.store);
+    assert_eq!(
+        reserved_traces(&trace).iter().sum::<usize>(),
+        reserved,
+        "{site}: headroom {headroom} reserved past its refusal: {trace:?}"
+    );
+    assert!(
+        !trace
+            .iter()
+            .any(|entry| matches!(entry, Trace::Allocated(_))),
+        "{site}: headroom {headroom} allocated bookkeeping: {trace:?}"
+    );
+    refused.store.assert_conserved();
+    assert_eq!(
+        build_probes(&refused.store),
+        probes,
+        "{site}: the buffer was built before its admission at headroom {headroom}"
+    );
+    assert_eq!(
+        (
+            ledger(&refused.store),
+            audited(&refused.store),
+            bookkeeping(&refused.store),
+            lease_table(&refused.store),
+        ),
+        (
+            ledger(&control.store),
+            audited(&control.store),
+            bookkeeping(&control.store),
+            lease_table(&control.store),
+        ),
+        "{site}: the refusal at headroom {headroom} did more than consume its parked build"
+    );
+    assert!(audited(&refused.store)[TOTAL] <= cap_for(&refused.owner));
+    assert!(refused.store.lock_state().prepared_builds.is_empty());
+}
+
+fn parked_build_record_bytes(fixture: &Fixture) -> usize {
+    let root = &fixture.pins[0];
+    let state = fixture.store.lock_state();
+    let builds: Vec<_> = state.prepared_builds.values().collect();
+    let [build] = builds.as_slice() else {
+        panic!("expected one parked build, found {}", builds.len());
+    };
+    assert!(
+        state.prepared_facts.contains_key(&root.stamp.identity),
+        "root facts are not cached"
+    );
+    size_of::<PreparedBuild>()
+        + build.claimant.capacity()
+        + value_bytes(&build.context)
+        + value_bytes(&build.request)
+        + value_bytes(&build.root_handle)
+        + value_bytes(&build.classifier)
+        + HashSet::from([root.stamp.identity.file()]).capacity() * size_of::<SourceIdentity>()
+        + vec![(root.canonical_path.clone(), root.stamp)].capacity()
+            * size_of::<(PathBuf, SourceStamp)>()
+        + root.canonical_path.as_os_str().len()
+}
+
+#[test]
+fn fresh_prepared_build_admits_its_record_before_constructing_it() {
+    let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
+    let site = "fresh prepared build record";
+    let recorded = build_site(site, RECORDS);
+    for background in [false, true] {
+        let build = || direct_graph_fixture(&scenario, background);
+        let probe = build();
+        assert!(
+            parked(&submit(&probe)),
+            "{site}: the first step did not park"
+        );
+        let record = parked_build_record_bytes(&probe);
+        assert_eq!(
+            exact_headroom(&build, &recorded),
+            REPLY_RESERVATION + record,
+            "{site}: the record is not admitted at exactly its constructed bytes"
+        );
+        for headroom in [0, record - 1] {
+            let fixture = build();
+            let probes = build_probes(&fixture.store);
+            assert_refused_at(
+                site,
+                &fixture,
+                &|fixture: &Fixture| {
+                    let admitted = recorded(fixture);
+                    let trace = traced(&fixture.store);
+                    assert_eq!(
+                        reserved_traces(&trace),
+                        [REPLY_RESERVATION],
+                        "{site}: headroom {headroom} reserved build bytes: {trace:?}"
+                    );
+                    assert!(!trace
+                        .iter()
+                        .any(|entry| matches!(entry, Trace::Allocated(_))));
+                    admitted
+                },
+                REPLY_RESERVATION + headroom + 1,
+            );
+            assert_eq!(
+                build_probes(&fixture.store),
+                probes,
+                "{site}: the record was built before its admission at headroom {headroom}"
+            );
+            assert!(fixture.store.lock_state().prepared_builds.is_empty());
+        }
+        assert_fitted_at(site, &build(), &recorded, REPLY_RESERVATION + record);
+    }
+}
+
+fn resumed_source_bytes(fixture: &Fixture, scenario: &Scenario) -> (usize, usize, usize) {
+    let listed = std::fs::canonicalize(&scenario.sidechains[7]).unwrap();
+    let directory = listed
+        .parent()
+        .unwrap()
+        .join(listed.file_stem().unwrap())
+        .join("subagents");
+    let visited = std::fs::canonicalize(&scenario.sidechains[8]).unwrap();
+    let identity = SourceStamp::of(&std::fs::metadata(&visited).unwrap())
+        .identity
+        .file();
+    let state = fixture.store.lock_state();
+    let (key, build) = state.prepared_builds.iter().next().expect("parked build");
+    let mut seen = build.seen.clone();
+    assert_eq!(seen.capacity(), build.seen.capacity());
+    let before = seen.capacity();
+    assert!(seen.insert(identity));
+    (
+        key.capacity(),
+        value_bytes(&fixture.owner.clone())
+            + directory.as_os_str().len()
+            + grown_by_one(&build.sidechain_dirs),
+        (seen.capacity() - before) * size_of::<SourceIdentity>()
+            + grown_by_one(&build.stamps)
+            + grown_by_one(&build.sources)
+            + 3 * visited.as_os_str().len(),
+    )
+}
+
+#[test]
+fn resumed_prepared_build_admits_each_source_before_retaining_it() {
+    let site = "resumed prepared build source";
+    let padding = 192;
+    let scenarios = [0, padding].map(|pad| {
+        let mut scenario = Scenario::new(8, |index| line(&format!("thread-{index:04}")));
+        let path = scenario.root.file(
+            &format!("thread-0008{}.jsonl", "p".repeat(pad)),
+            &line("thread-0008"),
+        );
+        scenario.sidechains.push(path);
+        scenario
+    });
+    let sourced = build_site(site, SOURCES);
+    for background in [false, true] {
+        let build = |scenario: &Scenario| parked_build_fixture(scenario, background);
+        let [short, long] = [&scenarios[0], &scenarios[1]]
+            .map(|scenario| exact_headroom(&|| build(scenario), &sourced));
+        assert_eq!(
+            long - short,
+            3 * padding,
+            "{site}: a source's canonical path is not admitted once per retained copy"
+        );
+        let (released_key, before_site, at_site) =
+            resumed_source_bytes(&build(&scenarios[0]), &scenarios[0]);
+        assert_eq!(
+            short + released_key,
+            REPLY_RESERVATION + before_site + FILESYSTEM_PATH_BYTES + at_site,
+            "{site}: the resumed step's admissions are not its measured buffers plus one path slot, net of the cursor key it releases"
+        );
+        for (headroom, reserved) in [
+            (REPLY_RESERVATION, REPLY_RESERVATION),
+            (
+                short - 1,
+                REPLY_RESERVATION + before_site + FILESYSTEM_PATH_BYTES,
+            ),
+        ] {
+            assert_resumed_refusal(site, &|| build(&scenarios[0]), &sourced, headroom, reserved);
+        }
+        assert_fitted_at(site, &build(&scenarios[0]), &sourced, short);
     }
 }
 
