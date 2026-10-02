@@ -403,7 +403,10 @@ Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
 
 For Claude transcripts of `8 MiB` or more, streaming `grep` also builds a persistent
 per-file index in `~/.claude/cc-transcript/scan/<key>.idx`, private to your account.
-The index opens only after its checkpoint record passes the validation above.
+The index opens only after its checkpoint record passes the validation above;
+on growth, an immediate stat re-check rejects same-size changes, truncation, or
+path replacement since open as `changed`, while further growth reaches the
+end-of-scan check.
 On an unchanged transcript, a new query reads the index, validation fence,
 matching source lines, and requested context. Extending a partial checkpoint
 also requires the partial-segment read described above, or saves nothing if the
@@ -414,9 +417,11 @@ retains the validated partial hash, so extending the proof needs no extra read.
 
 If the transcript grows during an index-backed query, that same run re-reads its
 committed prefix and any parsed unterminated final line before reporting.
-These reads charge `validated_bytes`; a mismatch returns `changed`, and a check
-over the remaining validation cap returns `incomplete`. Candidates are verified
-exactly, so completed results are identical to a full scan of the pinned source.
+The streamed scan's stat re-check across validation applies here too. These reads
+charge `validated_bytes` only after success; a mismatch returns `changed`, and a
+check over the remaining validation cap returns `incomplete`. Candidates are
+verified exactly, so completed results are identical to a full scan of the pinned
+source.
 
 A failed prefix proof invalidates the index with the record; the rescan and
 `cache_invalidations` behavior above apply, and a later run rebuilds the index.

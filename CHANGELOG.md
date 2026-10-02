@@ -86,11 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fence, matching lines, and context; extending a partial checkpoint also re-reads
   at most `4 MiB`, or saves nothing if the validation cap cannot cover it. Grown
   files still require whole-prefix validation before index reuse, plus reads of
-  appended bytes. The index shares the fixed `4 MiB` prefix segments and keeps the
+  appended bytes. A stat re-check immediately after prefix validation rejects
+  same-size changes, truncation, or path replacement since open as `changed`,
+  before any index or saved query layer opens; further growth reaches the final
+  check. The index shares the fixed `4 MiB` prefix segments and keeps the
   validated partial hash for extension without another read. Growth during an
   index-backed query triggers another prefix check in that run, including any
-  parsed unterminated final line. A mismatch returns `changed`, and insufficient
-  validation budget returns `incomplete`. These checks charge `validated_bytes`.
+  parsed unterminated final line, with the same stat re-check across validation
+  as streamed scans. A mismatch returns `changed`, and insufficient validation
+  budget returns `incomplete`. The shared stream reader charges `validated_bytes`
+  only after successful reads.
   Candidates are verified exactly, preserving the results of a full scan.
 - The store config and its JSON schema add `max_scan_read_bytes` (8 MiB),
   `max_scan_events` (4096), `max_scan_discovery_entries` (4096), and

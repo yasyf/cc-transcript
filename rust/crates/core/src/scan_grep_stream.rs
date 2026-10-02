@@ -707,6 +707,7 @@ impl<'store> GrepStream<'store> {
             return Ok(Validity::Unverified);
         }
         self.proof = source.validate_prefix(&file.prefix, self.prefix.span(), budget, cancel)?;
+        source.verify()?;
         Ok(if self.proof.is_some() {
             Validity::Valid
         } else {

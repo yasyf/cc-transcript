@@ -982,42 +982,46 @@ fn an_append_racing_a_scan_revalidates_its_prefix_in_that_scan() {
     assert_eq!(progress.validated_bytes, pinned);
 }
 
+fn rewrite_between_validation_blocks(source: &Source, replaced: bool) {
+    let path = source.0.clone();
+    let at = std::fs::read_to_string(&path)
+        .unwrap()
+        .find("filler 5 ")
+        .unwrap() as u64;
+    let mut fired = false;
+    VALIDATE_HOOKS.lock().unwrap().insert(
+        source.0.clone(),
+        Box::new(move |validated| {
+            if fired || validated < 2 * SEGMENT as u64 {
+                return;
+            }
+            fired = true;
+            if replaced {
+                let staged = path.with_extension("replaced");
+                std::fs::write(
+                    &staged,
+                    std::fs::read_to_string(&path)
+                        .unwrap()
+                        .replace("filler 5 ", "needle 5 "),
+                )
+                .unwrap();
+                std::fs::rename(&staged, &path).unwrap();
+            } else {
+                let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                file.write_all_at(b"needle 5 ", at).unwrap();
+                file.set_modified(std::time::UNIX_EPOCH).unwrap();
+            }
+        }),
+    );
+}
+
 #[test]
 fn a_rewrite_during_growth_validation_fails_that_scan() {
     for replaced in [false, true] {
         let cache = Cache::segmented(SEGMENT as u64);
         let source = Source::new(&sparse(100, &[50]), true);
         let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
-        let at = std::fs::read_to_string(&source.0)
-            .unwrap()
-            .find("filler 5 ")
-            .unwrap() as u64;
-        let path = source.0.clone();
-        let mut fired = false;
-        VALIDATE_HOOKS.lock().unwrap().insert(
-            source.0.clone(),
-            Box::new(move |validated| {
-                if fired || validated < 2 * SEGMENT as u64 {
-                    return;
-                }
-                fired = true;
-                if replaced {
-                    let staged = path.with_extension("replaced");
-                    std::fs::write(
-                        &staged,
-                        std::fs::read_to_string(&path)
-                            .unwrap()
-                            .replace("filler 5 ", "needle 5 "),
-                    )
-                    .unwrap();
-                    std::fs::rename(&staged, &path).unwrap();
-                } else {
-                    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-                    file.write_all_at(b"needle 5 ", at).unwrap();
-                    file.set_modified(std::time::UNIX_EPOCH).unwrap();
-                }
-            }),
-        );
+        rewrite_between_validation_blocks(&source, replaced);
         let (result, _, progress) = racing(&source, &json!({}), Some(&cache.1), None);
         VALIDATE_HOOKS.lock().unwrap().remove(&source.0);
         assert_eq!(result.err().unwrap().status, Status::Changed, "{replaced}");
@@ -1103,6 +1107,70 @@ fn a_rewrite_racing_an_indexed_query_fails_that_query() {
     assert_eq!(result.err().unwrap().status, Status::Changed);
     assert_eq!(progress.cache_hits, 1);
     assert_eq!(progress.validated_bytes, pinned);
+}
+
+#[test]
+fn a_rewrite_during_growth_validation_fails_an_indexed_query() {
+    for replaced in [false, true] {
+        let cache = Cache::with(0, SEGMENT as u64);
+        let source = Source::new(&sparse(100, &[50]), true);
+        build(&source, &cache);
+        let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+        rewrite_between_validation_blocks(&source, replaced);
+        let (result, _, progress) = racing(&source, &json!({}), Some(&cache.1), None);
+        VALIDATE_HOOKS.lock().unwrap().remove(&source.0);
+        assert_eq!(result.err().unwrap().status, Status::Changed, "{replaced}");
+        assert_eq!(progress.cache_hits, 1, "{replaced}");
+        assert_eq!(progress.validated_bytes, pinned, "{replaced}");
+        let (next, _, _) = checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+        let next = next.unwrap();
+        assert_eq!(next, fresh.unwrap(), "{replaced}");
+        assert_eq!(next.counts, vec![2], "{replaced}");
+    }
+}
+
+#[test]
+fn an_index_stays_closed_when_its_prefix_proof_sees_a_rewrite() {
+    for replaced in [false, true] {
+        let cache = Cache::with(0, SEGMENT as u64);
+        let source = Source::new(&sparse(100, &[50]), true);
+        build(&source, &cache);
+        let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+        append(&source.0, &sparse(101, &[])[100..]);
+        rewrite_between_validation_blocks(&source, replaced);
+        let (result, _, progress) = checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        VALIDATE_HOOKS.lock().unwrap().remove(&source.0);
+        assert_eq!(result.err().unwrap().status, Status::Changed, "{replaced}");
+        assert_eq!(progress.cache_hits, 0, "{replaced}");
+        assert_eq!(progress.validated_bytes, pinned, "{replaced}");
+        let (next, _, _) = checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+        let next = next.unwrap();
+        assert_eq!(next, fresh.unwrap(), "{replaced}");
+        assert_eq!(next.counts, vec![2], "{replaced}");
+    }
 }
 
 #[test]
