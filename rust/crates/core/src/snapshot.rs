@@ -5476,7 +5476,7 @@ impl NativeStore {
             return Err(SnapshotError::new(error.status, &error.reason));
         }
         let mut lease = None;
-        if load.result.is_none() {
+        let stepped = if load.result.is_none() {
             let read_bound = self.config.read_step.min(
                 waiter
                     .limits
@@ -5539,6 +5539,17 @@ impl NativeStore {
                 } else {
                     0
                 };
+            Some(result)
+        } else {
+            None
+        };
+        let unpublished = load.result.as_ref().is_some_and(|snapshot| {
+            !self
+                .lock_state()
+                .generations
+                .contains_key(&snapshot_key(snapshot))
+        });
+        if stepped.is_some() || unpublished {
             let generation = load
                 .result
                 .as_ref()
@@ -5624,7 +5635,13 @@ impl NativeStore {
                 .transpose()?;
             {
                 let mut state = self.lock_state();
-                let generation = load.result.as_ref().zip(generation);
+                let generation = load
+                    .result
+                    .as_ref()
+                    .zip(generation)
+                    .filter(|(snapshot, _)| {
+                        !state.generations.contains_key(&snapshot_key(snapshot))
+                    });
                 let pledge = pledge.map(|(token, bytes)| (token, bytes + state.leases.growth(1)));
                 let additional = generation.as_ref().map_or(0, |(snapshot, record)| {
                     let key = snapshot_key(snapshot);
@@ -5649,16 +5666,16 @@ impl NativeStore {
                 lease = pledge
                     .map(|(token, bytes)| (token, ProjectionReservation { store: self, bytes }));
             }
-            if let Err(error) = result {
-                if !matches!(
-                    error.status,
-                    Status::Cancelled | Status::Deadline | Status::Incomplete
-                ) {
-                    load.failure = Some(SnapshotError::new(error.status, &error.reason));
-                }
-                self.lock_state().waiters.remove(token);
-                return Err(error);
+        }
+        if let Some(Err(error)) = stepped {
+            if !matches!(
+                error.status,
+                Status::Cancelled | Status::Deadline | Status::Incomplete
+            ) {
+                load.failure = Some(SnapshotError::new(error.status, &error.reason));
             }
+            self.lock_state().waiters.remove(token);
+            return Err(error);
         }
         if let Err(error) = cancel.check(waiter.deadline) {
             self.lock_state().waiters.remove(token);
@@ -5671,12 +5688,13 @@ impl NativeStore {
                 self.lock_state().waiters.remove(token);
                 return Err(invalid("tail_bytes requires a Claude source"));
             }
+            let source = Arc::clone(&snapshot);
             let mut state = self.lock_state();
-            if !state
+            let fresh = !state
                 .latest
                 .get(&slot.stamp.identity)
-                .is_some_and(|old| old.id == snapshot.id)
-            {
+                .is_some_and(|old| old.id == snapshot.id);
+            if fresh {
                 let escaping = state.escape_growth(&snapshot.chunks);
                 if let Err(error) = self.admit_memory(&mut state, &waiter.context, escaping) {
                     state.waiters.remove(token);
@@ -5684,16 +5702,6 @@ impl NativeStore {
                 }
                 state.escape_chunks(&snapshot.chunks);
                 usage[9] += 1;
-                let latest = state.latest.growth_for(&slot.stamp.identity);
-                if self
-                    .admit_memory(&mut state, &waiter.context, latest)
-                    .is_ok()
-                    && state
-                        .insert_latest(slot.stamp.identity, Arc::clone(&snapshot))
-                        .is_some()
-                {
-                    usage[10] += 1;
-                }
             }
             drop(state);
             let mut classifier_bounds = waiter.limits;
@@ -5752,6 +5760,16 @@ impl NativeStore {
             )?;
             if let Some(pledge) = &mut pledge {
                 pledge.bytes = 0;
+            }
+            if fresh {
+                let latest = state.latest.growth_for(&slot.stamp.identity);
+                if self
+                    .admit_memory(&mut state, &waiter.context, latest)
+                    .is_ok()
+                    && state.insert_latest(slot.stamp.identity, source).is_some()
+                {
+                    usage[10] += 1;
+                }
             }
             state.waiters.remove(token);
             Self::prune(&mut state);

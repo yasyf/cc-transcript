@@ -2106,6 +2106,410 @@ fn generation_and_anchor_table_growth_is_admitted_before_classifier_publication(
     }
 }
 
+fn parked_slot(fixture: &Fixture) -> Arc<LoadSlot> {
+    fixture
+        .store
+        .lock_state()
+        .loads
+        .values()
+        .next()
+        .cloned()
+        .expect("parked load")
+}
+
+fn pin_prepared_load(fixture: &Fixture) -> Arc<LoadSlot> {
+    let slot = parked_slot(fixture);
+    fixture.store.lock_state().insert_prepared_load(
+        slot.stamp.identity,
+        Arc::clone(&slot),
+        now_ms(),
+    );
+    slot
+}
+
+fn codex_lines() -> String {
+    [
+        r#"{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"s","cwd":"/tmp"}}"#,
+        r#"{"timestamp":"2026-01-02T03:04:06Z","type":"event_msg","payload":{"type":"agent_message","message":"recent"}}"#,
+    ]
+    .map(|line| format!("{line}\n"))
+    .concat()
+}
+
+fn warm_root_request(path: &Path) -> Value {
+    json!({"schema":SCHEMA,"id":"ledger-warm-root","operation":"warm_root","path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()})
+}
+
+fn warm_root_fixture(source: &LedgerSource, warmed_once: bool) -> Fixture {
+    let store = slow_store();
+    let owner = context_for("warm-root", true);
+    let request = warm_root_request(&source.path);
+    if warmed_once {
+        let parked = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(parked["status"].as_str(), Some("ok"), "{parked:?}");
+        assert_eq!(parked["data"]["complete"].as_bool(), Some(false));
+        assert!(!store.lock_state().prepared_loads.is_empty());
+    }
+    Fixture {
+        store,
+        owner,
+        request,
+        pins: Vec::new(),
+    }
+}
+
+fn codex_acquired(fixture: &Fixture) -> (Value, Arc<TranscriptSnapshot>) {
+    let acquired = drive(
+        &fixture.store,
+        fixture
+            .store
+            .request(&fixture.request, &fixture.owner, &Cancellation::default()),
+        &fixture.owner,
+    );
+    let handle = ok_handle(&acquired);
+    let snapshot = fixture.store.pin(&handle, &fixture.owner).unwrap();
+    assert_eq!(snapshot.provider, Provider::Codex);
+    assert!(snapshot.codex_raw.is_some());
+    (acquired["data"].clone(), snapshot)
+}
+
+fn finished_recent_codex(fixture: &Fixture, acquired: &Value) -> bool {
+    let stamp =
+        SourceStamp::of(&std::fs::metadata(fixture.request["path"].as_str().unwrap()).unwrap());
+    match fixture.store.finish_prepared_source(
+        stamp,
+        acquired,
+        &fixture.owner,
+        &work_bounds(),
+        &Cancellation::default(),
+    ) {
+        Ok(PreparedSourceOutcome::Ready { .. }) => {}
+        Ok(PreparedSourceOutcome::Pending(cursor)) => panic!("prepared source parked: {cursor}"),
+        Err(error) => panic!("prepared source completion failed: {error:?}"),
+    }
+    fixture
+        .store
+        .lock_state()
+        .recent_codex
+        .contains_key(&stamp.identity)
+}
+
+#[test]
+fn refused_publication_keeps_the_parsed_result_unpublished_until_the_retry_admits_it() {
+    let source = LedgerSource::new(&line("anchor"));
+    let deep = deep_source(&source, &line("retry"));
+    for background in [false, true] {
+        let requests = publishing_request(&deep, background);
+        let build = || parked_load(&deep, background, requests);
+        let exact = exact_headroom(&build, &advance_published);
+        let refused = build();
+        let slot = pin_prepared_load(&refused);
+        let cap = cap_for(&refused.owner);
+        let generations = ledger(&refused.store)[GENERATIONS];
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(!advance_published(&refused));
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap);
+        }
+        let parsed = slot
+            .work
+            .lock()
+            .unwrap()
+            .result
+            .clone()
+            .expect("the parsed result survives the refused publication");
+        {
+            let state = refused.store.lock_state();
+            assert!(!state.generations.contains_key(&snapshot_key(&parsed)));
+            assert!(state.latest.get(&slot.stamp.identity).is_none());
+            assert!(state.escaped_chunks.is_empty());
+            assert!(state.waiters.is_empty());
+            assert!(state.prepared_loads.contains_key(&slot.stamp.identity));
+        }
+        assert_eq!(settled(&refused.store)[GENERATIONS], generations);
+        assert!(Arc::ptr_eq(&parked_slot(&refused), &slot));
+        let retried = drive(
+            &refused.store,
+            refused
+                .store
+                .request(&acquire(&deep), &refused.owner, &Cancellation::default()),
+            &refused.owner,
+        );
+        let handle = ok_handle(&retried);
+        assert_eq!(retried["usage"]["source_bytes_read"].as_u64(), Some(0));
+        assert!(retried["usage"]["inflight_joins"].as_u64().unwrap() >= 1);
+        let pinned = refused.store.pin(&handle, &refused.owner).unwrap();
+        assert!(
+            Arc::ptr_eq(&pinned, &parsed),
+            "the retry re-parsed instead of publishing the parsed result"
+        );
+        refused.store.assert_conserved();
+        assert!(audited(&refused.store)[TOTAL] <= cap);
+        assert_eq!(ledger(&refused.store)[GENERATIONS], generations + 1);
+        {
+            let state = refused.store.lock_state();
+            assert!(state.generations.contains_key(&snapshot_key(&parsed)));
+            assert_eq!(state.escaped_chunks.len(), parsed.chunks.len());
+            assert_eq!(slot.ledgered_bytes(), 0);
+        }
+        let charge = chunk_charge(&parsed.chunks[0]);
+        let rows = Arc::clone(&parsed.chunks[0].entries);
+        release_lease(&refused.store, &handle, &refused.owner);
+        drop(pinned);
+        drop(parsed);
+        drop(slot);
+        refused.store.lock_state().prepared_loads.clear();
+        evict_unpinned(&refused.store, &refused.owner);
+        refused.store.assert_conserved();
+        let escaped = ledger(&refused.store);
+        assert_eq!(escaped[GENERATIONS], generations);
+        assert!(escaped[ENTRIES] >= charge, "{escaped:?}");
+        drop(rows);
+        refused.store.assert_conserved();
+        assert!(ledger(&refused.store)[ENTRIES] < escaped[ENTRIES]);
+    }
+}
+
+fn published_follower(path: &Path, background: bool, requests: usize) -> Fixture {
+    let parked = parked_load(path, background, requests);
+    let slot = pin_prepared_load(&parked);
+    let completed = drive(
+        &parked.store,
+        resume(&parked.store, &parked.request, &parked.owner),
+        &parked.owner,
+    );
+    let snapshot = parked
+        .store
+        .pin(&ok_handle(&completed), &parked.owner)
+        .unwrap();
+    {
+        let mut state = parked.store.lock_state();
+        assert!(state.remove_latest(&slot.stamp.identity).is_some());
+        assert!(state.generations.contains_key(&snapshot_key(&snapshot)));
+        assert!(Arc::ptr_eq(
+            state.loads.get(&slot.stamp.identity).expect("pinned load"),
+            &slot
+        ));
+        for inode in 1u64.. {
+            if state.latest.len() == state.latest.reserved() {
+                break;
+            }
+            state.insert_latest(
+                SourceIdentity {
+                    device: 0,
+                    inode,
+                    window_base: 0,
+                },
+                Arc::clone(&snapshot),
+            );
+        }
+        assert!(state.latest.growth(1) > 0);
+    }
+    Fixture {
+        store: parked.store,
+        owner: parked.owner,
+        request: acquire(path),
+        pins: vec![snapshot],
+    }
+}
+
+#[test]
+fn latest_cache_write_is_skipped_when_only_its_table_growth_does_not_fit() {
+    let source = LedgerSource::new(&line("anchor"));
+    let deep = deep_source(&source, &line("latest"));
+    let identity = SourceStamp::of(&std::fs::metadata(&deep).unwrap()).identity;
+    for background in [false, true] {
+        let requests = publishing_request(&deep, background);
+        let build = || published_follower(&deep, background, requests);
+        let joined = |fixture: &Fixture| {
+            let response = submit(fixture);
+            let joined = admitted(&response, "ok");
+            if joined {
+                assert_eq!(response["usage"]["inflight_joins"].as_u64(), Some(1));
+                assert_eq!(response["usage"]["source_bytes_read"].as_u64(), Some(0));
+            }
+            joined
+        };
+        let cached = |fixture: &Fixture| {
+            joined(fixture) && fixture.store.lock_state().latest.contains_key(&identity)
+        };
+        let exact = exact_headroom(&build, &joined);
+        let with_cache = exact_headroom(&build, &cached);
+        let skipped = build();
+        let (growth, reserved) = {
+            let state = skipped.store.lock_state();
+            (state.latest.growth(1), state.latest.reserved())
+        };
+        assert!(growth > 0);
+        assert!(
+            exact < with_cache && with_cache <= exact + growth,
+            "the cache write costs its table growth: exact={exact} with_cache={with_cache} growth={growth}"
+        );
+        {
+            let _filler = fill_to(&skipped.store, &skipped.owner, with_cache - 1);
+            assert!(joined(&skipped), "the request itself was refused");
+            skipped.store.assert_conserved();
+            assert!(audited(&skipped.store)[TOTAL] <= cap_for(&skipped.owner));
+            let state = skipped.store.lock_state();
+            assert!(
+                !state.latest.contains_key(&identity),
+                "the refused cache write landed"
+            );
+            assert_eq!(
+                state.latest.reserved(),
+                reserved,
+                "the refused cache write grew its table"
+            );
+        }
+        let written = build();
+        let _filler = fill_to(&written.store, &written.owner, with_cache);
+        assert!(cached(&written));
+        written.store.assert_conserved();
+        assert!(audited(&written.store)[TOTAL] <= cap_for(&written.owner));
+        assert!(written.store.lock_state().latest.reserved() > reserved);
+    }
+}
+
+fn padded_warm_root_fixture(source: &LedgerSource) -> Fixture {
+    let fixture = warm_root_fixture(source, true);
+    let slot = parked_slot(&fixture);
+    let mut state = fixture.store.lock_state();
+    state.prepared_loads.remove(&slot.stamp.identity);
+    for inode in 1u64.. {
+        let padded = state.prepared_loads.len() == state.prepared_loads.reserved()
+            && state.prepared_loads.len() >= 112;
+        if padded {
+            break;
+        }
+        state.insert_prepared_load(
+            SourceIdentity {
+                device: 0,
+                inode,
+                window_base: 0,
+            },
+            Arc::clone(&slot),
+            now_ms(),
+        );
+    }
+    drop(state);
+    fixture
+}
+
+#[test]
+fn root_warming_skips_the_prepared_load_pin_when_only_its_growth_does_not_fit() {
+    let source = LedgerSource::new(&lines(0..8));
+    let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+    let build = || padded_warm_root_fixture(&source);
+    let warmed = |fixture: &Fixture| admitted(&submit(fixture), "ok");
+    let pinned = |fixture: &Fixture| {
+        warmed(fixture)
+            && fixture
+                .store
+                .lock_state()
+                .prepared_loads
+                .contains_key(&identity)
+    };
+    let exact = exact_headroom(&build, &warmed);
+    let with_pin = exact_headroom(&build, &pinned);
+    let skipped = build();
+    let (growth, reserved) = {
+        let state = skipped.store.lock_state();
+        (
+            state.prepared_loads.growth(1) + state.prepared_loads_expiry.growth(1),
+            state.prepared_loads.reserved(),
+        )
+    };
+    assert!(growth > 0);
+    assert!(
+        exact < with_pin && with_pin <= exact + growth,
+        "the pin costs its growth: exact={exact} with_pin={with_pin} growth={growth}"
+    );
+    {
+        let _filler = fill_to(&skipped.store, &skipped.owner, with_pin - 1);
+        assert!(warmed(&skipped), "the request itself was refused");
+        skipped.store.assert_conserved();
+        assert!(audited(&skipped.store)[TOTAL] <= cap_for(&skipped.owner));
+        let state = skipped.store.lock_state();
+        assert!(
+            !state.prepared_loads.contains_key(&identity),
+            "the refused pin landed"
+        );
+        assert_eq!(
+            state.prepared_loads.reserved(),
+            reserved,
+            "the refused pin grew its table"
+        );
+        assert!(
+            state.loads.contains_key(&identity),
+            "the parked load itself is kept"
+        );
+    }
+    let written = build();
+    let _filler = fill_to(&written.store, &written.owner, with_pin);
+    assert!(pinned(&written));
+    written.store.assert_conserved();
+    assert!(audited(&written.store)[TOTAL] <= cap_for(&written.owner));
+    assert!(written.store.lock_state().prepared_loads.reserved() > reserved);
+}
+
+#[test]
+fn resumed_root_warming_admits_its_waiter_exactly() {
+    let source = LedgerSource::new(&lines(0..8));
+    let build = || warm_root_fixture(&source, true);
+    let attempt = |fixture: &Fixture| admitted(&submit(fixture), "ok");
+    let exact = exact_headroom(&build, &attempt);
+    assert!(exact > 0);
+    let refused = build();
+    assert_boundary_at("resume_warm_root", &refused, &attempt, exact);
+    assert!(refused.store.lock_state().waiters.is_empty());
+}
+
+#[test]
+fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
+    let source = LedgerSource::new(&codex_lines());
+    for background in [false, true] {
+        let build = || Fixture {
+            store: fast_store(),
+            owner: context_for("codex", background),
+            request: acquire(&source.path),
+            pins: Vec::new(),
+        };
+        let fitted = build();
+        let growth = {
+            let state = fitted.store.lock_state();
+            state.recent_codex.growth(1) + state.recent_codex_expiry.growth(1)
+        };
+        assert!(growth > 0);
+        let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+        let (data, _pinned) = codex_acquired(&fitted);
+        assert!(fitted.store.lock_state().latest.contains_key(&identity));
+        {
+            let _filler = fill_to(&fitted.store, &fitted.owner, 0);
+            assert!(!finished_recent_codex(&fitted, &data));
+            fitted.store.assert_conserved();
+            assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+            let state = fitted.store.lock_state();
+            assert!(!state.latest.contains_key(&identity));
+            assert_eq!(state.recent_codex.reserved(), 0);
+            assert_eq!(state.recent_codex_expiry.reserved(), 0);
+            assert_eq!(state.recent_codex_raw_bytes, 0);
+        }
+        let admitted = build();
+        let (data, pinned) = codex_acquired(&admitted);
+        let _filler = fill_to(&admitted.store, &admitted.owner, growth);
+        assert!(finished_recent_codex(&admitted, &data));
+        admitted.store.assert_conserved();
+        assert!(audited(&admitted.store)[TOTAL] <= cap_for(&admitted.owner));
+        let state = admitted.store.lock_state();
+        assert!(state.latest.contains_key(&identity));
+        assert_eq!(
+            state.recent_codex_raw_bytes,
+            pinned.codex_raw.as_ref().unwrap().len()
+        );
+    }
+}
+
 #[test]
 fn prepared_query_dom_is_charged_in_full_and_counts_against_the_cap() {
     let scenario = Scenario::new(2, |index| line(&format!("thread-{index:04}")));
