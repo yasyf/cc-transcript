@@ -2540,6 +2540,89 @@ fn prepared_query_dom_is_charged_in_full_and_counts_against_the_cap() {
     }
 }
 
+fn restricted_context(claimant: &str, background: bool, root: &Path, padding: usize) -> Value {
+    let mut context = context_for(claimant, background);
+    let root = std::fs::canonicalize(root).unwrap();
+    let roots: Vec<Value> = std::iter::once(json!(root.to_string_lossy().as_ref()))
+        .chain((0..padding).map(|_| json!("r".repeat(4096))))
+        .collect();
+    context.insert(
+        "authority",
+        json!({"kind":"restricted_roots","effective_uid":unsafe { libc::geteuid() }.to_string(),"roots":roots}),
+    );
+    context
+}
+
+fn facts_cache_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+    let store = prepared_store();
+    let owner = restricted_context("facts", background, &scenario.root.directory, padding);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let (_, sidechain_snapshot) = acquired(&store, &scenario.sidechains[0], &owner);
+    let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
+    Fixture {
+        store,
+        owner,
+        request: graph_query(&graph, missing_tool(), json!([])),
+        pins: vec![root_snapshot, sidechain_snapshot],
+    }
+}
+
+#[test]
+fn prepared_facts_cache_admits_its_authority_metadata_exactly() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let identity = SourceStamp::of(&std::fs::metadata(&scenario.sidechains[0]).unwrap()).identity;
+    let facts_cached = |fixture: &Fixture| {
+        fixture
+            .store
+            .lock_state()
+            .prepared_facts
+            .contains_key(&identity)
+    };
+    let cached = |fixture: &Fixture| {
+        admitted(
+            &drive(&fixture.store, submit(fixture), &fixture.owner),
+            "ok",
+        ) && facts_cached(fixture)
+    };
+    let authority = |padding: usize| {
+        value_bytes(
+            &restricted_context("facts", false, &scenario.root.directory, padding)["authority"],
+        )
+    };
+    for background in [false, true] {
+        let build = |padding: usize| facts_cache_fixture(&scenario, background, padding);
+        let small = exact_headroom(&|| build(16), &cached);
+        let large = exact_headroom(&|| build(63), &cached);
+        assert_eq!(
+            large - small,
+            authority(63) - authority(16),
+            "the cache write is admitted with its authority metadata"
+        );
+        let retained = |padding: usize| {
+            let fixture = build(padding);
+            let before = settled(&fixture.store)[TOTAL];
+            assert!(cached(&fixture));
+            settled(&fixture.store)[TOTAL] - before
+        };
+        assert_eq!(retained(63) - retained(16), large - small);
+        let skipped = build(63);
+        let cap = cap_for(&skipped.owner);
+        {
+            let _filler = fill_to(&skipped.store, &skipped.owner, large - 1);
+            let reply = drive(&skipped.store, submit(&skipped), &skipped.owner);
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert!(!facts_cached(&skipped), "the refused cache write landed");
+            skipped.store.assert_conserved();
+            assert!(audited(&skipped.store)[TOTAL] <= cap);
+        }
+        let written = build(63);
+        let _filler = fill_to(&written.store, &written.owner, large);
+        assert!(cached(&written));
+        written.store.assert_conserved();
+        assert!(audited(&written.store)[TOTAL] <= cap);
+    }
+}
+
 #[test]
 fn native_chunk_charge_covers_its_rows_header() {
     let source = LedgerSource::new(&lines(0..3));
