@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::mem::size_of;
+use std::sync::atomic::AtomicBool;
 
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -19,6 +20,7 @@ pub const DOMAIN_PREFIX: &str = "domain-projection:";
 pub const MAX_OWNED_RECORDS: usize = 65_536;
 pub const MAX_OWNED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PAGE_RECORDS: usize = 256;
+const CANCELLATION_BYTES: usize = crate::snapshot_ledger::arc_bytes::<AtomicBool>();
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
@@ -127,7 +129,7 @@ impl OwnedOperation {
                 .map(|record| record.len())
                 .sum::<usize>()
             + self.plans.capacity() * size_of::<PagePlan>()
-            + crate::snapshot_ledger::arc_bytes::<std::sync::atomic::AtomicBool>()
+            + CANCELLATION_BYTES
     }
 
     fn valid(
@@ -178,36 +180,48 @@ impl OwnedProjections {
         self.accounted
     }
 
+    fn operations(&self) -> impl Iterator<Item = &OwnedOperation> {
+        std::iter::successors(self.head.as_deref(), |node| node.next.as_deref())
+            .map(|node| &node.operation)
+    }
+
     fn find(&self, token: &str) -> Option<&OwnedOperation> {
-        let mut link = self.head.as_deref();
-        while let Some(node) = link {
-            if node.operation.token == token {
-                return Some(&node.operation);
-            }
-            link = node.next.as_deref();
+        self.operations().find(|operation| operation.token == token)
+    }
+
+    fn shared_cancellation_bytes(&self, cancel: &Cancellation) -> usize {
+        if self
+            .operations()
+            .any(|operation| operation.cancel.shares(cancel))
+        {
+            CANCELLATION_BYTES
+        } else {
+            0
         }
-        None
     }
 
     fn take(&mut self, token: &str) -> Option<OwnedOperation> {
         let mut link = &mut self.head;
-        loop {
+        let operation = loop {
             let matches = link.as_ref().map(|node| node.operation.token == token)?;
             if matches {
                 let mut node = link.take().expect("matching node");
                 *link = node.next.take();
-                self.accounted -= node.operation.accounted_bytes();
-                return Some(node.operation);
+                break node.operation;
             }
             link = &mut link.as_mut().expect("existing node").next;
-        }
+        };
+        self.accounted -=
+            operation.accounted_bytes() - self.shared_cancellation_bytes(&operation.cancel);
+        Some(operation)
     }
 
     fn insert(&mut self, operation: OwnedOperation) -> Result<(), SnapshotError> {
         if self.find(&operation.token).is_some() {
             return Err(invalid("owned operation token collision"));
         }
-        self.accounted += operation.accounted_bytes();
+        self.accounted +=
+            operation.accounted_bytes() - self.shared_cancellation_bytes(&operation.cancel);
         self.head = Some(Box::new(OwnedLink {
             operation,
             next: self.head.take(),
@@ -216,15 +230,27 @@ impl OwnedProjections {
     }
 
     fn remove_if(&mut self, mut remove: impl FnMut(&OwnedOperation) -> bool) {
+        let mut removed = Vec::new();
         let mut link = &mut self.head;
         while link.is_some() {
             if remove(&link.as_ref().expect("existing node").operation) {
                 let mut node = link.take().expect("existing node");
                 *link = node.next.take();
-                self.accounted -= node.operation.accounted_bytes();
+                removed.push(node.operation);
             } else {
                 link = &mut link.as_mut().expect("existing node").next;
             }
+        }
+        for (index, operation) in removed.iter().enumerate() {
+            let shared = if removed[..index]
+                .iter()
+                .any(|earlier| earlier.cancel.shares(&operation.cancel))
+            {
+                CANCELLATION_BYTES
+            } else {
+                self.shared_cancellation_bytes(&operation.cancel)
+            };
+            self.accounted -= operation.accounted_bytes() - shared;
         }
     }
 
@@ -881,6 +907,7 @@ impl NativeStore {
 mod tests {
     use super::*;
     use crate::snapshot::SCHEMA;
+    use crate::snapshot_ledger::arc_mirror;
     use sonic_rs::json;
     use std::cell::Cell;
     use std::path::PathBuf;
@@ -1051,6 +1078,58 @@ mod tests {
             .store
             .resume_projection(cursor, &fixture.context, &Cancellation::default())
             .is_err());
+    }
+
+    fn cursor_of(reply: &OwnedProjectionReply<'_>) -> String {
+        let value: Value = sonic_rs::from_str(reply.json()).unwrap();
+        value["cursor"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn shared_cancellations_are_charged_once_until_their_last_owner_leaves() {
+        let fixture = Fixture::new();
+        let shared = Cancellation::default();
+        let cancellation = arc_mirror::<AtomicBool>();
+        let first = cursor_of(&fixture.publish(&shared));
+        let one = fixture.retained();
+        let second = cursor_of(&fixture.publish(&shared));
+        let two = fixture.retained();
+        let third = cursor_of(&fixture.publish(&Cancellation::default()));
+        let three = fixture.retained();
+        let operation = two - one;
+        assert_eq!(
+            one,
+            operation + cancellation,
+            "the first owner does not carry the shared cancellation once"
+        );
+        assert_eq!(
+            three - two,
+            operation + cancellation,
+            "a distinct cancellation is not charged with its operation"
+        );
+        let complete = |cursor: &str| {
+            let reply = fixture
+                .store
+                .resume_projection(cursor, &fixture.context, &Cancellation::default())
+                .unwrap()
+                .unwrap();
+            let value: Value = sonic_rs::from_str(reply.json()).unwrap();
+            assert_eq!(value["complete"].as_bool(), Some(true));
+        };
+        complete(&first);
+        assert_eq!(
+            fixture.retained(),
+            three - operation,
+            "removing one shared owner released the shared cancellation"
+        );
+        complete(&second);
+        assert_eq!(
+            fixture.retained(),
+            operation + cancellation,
+            "removing the last shared owner kept the shared cancellation"
+        );
+        complete(&third);
+        assert_eq!(fixture.retained(), 0);
     }
 
     #[test]

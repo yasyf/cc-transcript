@@ -250,10 +250,10 @@ impl LabelPreparation {
             + self.binding.accounted_bytes()
             + self.carried.capacity() * size_of::<usize>()
             + owned_index_bytes(
-                self.activity.accounted_allocations().into_iter().chain(
+                self.activity.heap_allocations().chain(
                     self.committed
                         .iter()
-                        .flat_map(ActivityIndex::accounted_allocations),
+                        .flat_map(ActivityIndex::heap_allocations),
                 ),
                 &self.carried,
             )
@@ -302,12 +302,12 @@ impl LabelPreparation {
             .sum::<usize>()
             + carried.capacity() * size_of::<usize>()
             + activity
-                .audited_allocations(false)
+                .audited_heap_allocations()
                 .into_iter()
                 .chain(
                     committed
                         .iter()
-                        .flat_map(|committed| committed.audited_allocations(false)),
+                        .flat_map(ActivityIndex::audited_heap_allocations),
                 )
                 .filter(|(id, _)| !carried.contains(id) && seen.insert(*id))
                 .map(|(_, bytes)| bytes)

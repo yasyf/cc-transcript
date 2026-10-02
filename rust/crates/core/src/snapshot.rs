@@ -129,6 +129,10 @@ impl Cancellation {
         self.cancelled.store(true, Ordering::Release);
     }
 
+    pub(crate) fn shares(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
+
     pub fn check(&self, deadline_unix_ms: u64) -> Result<(), SnapshotError> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(SnapshotError::new(Status::Cancelled, "request cancelled"));
@@ -1108,14 +1112,13 @@ impl ClassifierStage {
 
     fn accounted_bytes(&self) -> usize {
         owned_index_bytes(
-            self.activity.accounted_allocations().into_iter().chain(
+            self.activity.heap_allocations().chain(
                 self.committed
                     .iter()
-                    .flat_map(ActivityIndex::accounted_allocations),
+                    .flat_map(ActivityIndex::heap_allocations),
             ),
             &self.carried,
         ) + self.carried.capacity() * size_of::<usize>()
-            + size_of::<Self>()
     }
 }
 
@@ -4559,27 +4562,9 @@ impl NativeStore {
                 + fence.capacity(),
         ))
         .chain(chunks.iter().map(|chunk| {
-            let EntryChunk {
-                entries,
-                start: _,
-                charge: _,
-                entry_charges,
-                user_count: _,
-                sidechain_user_count: _,
-            } = &**chunk;
             (
-                Arc::as_ptr(entries) as usize,
-                arc_mirror::<EntryChunk>()
-                    + arc_mirror::<ChunkRows>()
-                    + entries.capacity() * size_of::<Entry>()
-                    + entry_charges.capacity() * size_of::<MemoryCharge>()
-                    + entries
-                        .iter()
-                        .map(|entry| {
-                            let charge = entry_charge(entry);
-                            charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
-                        })
-                        .sum::<usize>(),
+                Arc::as_ptr(&chunk.entries) as usize,
+                Self::audit_chunk_bytes(chunk),
             )
         }))
         .chain(codex_raw.iter().map(|raw| {
@@ -4595,6 +4580,29 @@ impl NativeStore {
             )
         }))
         .collect()
+    }
+
+    #[cfg(test)]
+    fn audit_chunk_bytes(chunk: &EntryChunk) -> usize {
+        let EntryChunk {
+            entries,
+            start: _,
+            charge: _,
+            entry_charges,
+            user_count: _,
+            sidechain_user_count: _,
+        } = chunk;
+        arc_mirror::<EntryChunk>()
+            + arc_mirror::<ChunkRows>()
+            + entries.capacity() * size_of::<Entry>()
+            + entry_charges.capacity() * size_of::<MemoryCharge>()
+            + entries
+                .iter()
+                .map(|entry| {
+                    let charge = entry_charge(entry);
+                    charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+                })
+                .sum::<usize>()
     }
 
     #[cfg(test)]
@@ -7078,6 +7086,8 @@ impl NativeStore {
                     + load.origin_fence.capacity()
                     + load.seal_fence.capacity()
                     + load.prefix_fence.capacity()
+                    + load.fence.capacity()
+                    + load.session_id.as_ref().map_or(0, String::capacity)
                     + load
                         .chunks
                         .iter()
@@ -7091,18 +7101,11 @@ impl NativeStore {
                     .previous
                     .as_ref()
                     .into_iter()
-                    .flat_map(|snapshot| {
-                        snapshot
-                            .activity
-                            .accounted_allocations()
-                            .into_iter()
-                            .map(|(id, _)| id)
-                    })
+                    .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| id))
                     .collect();
                 let index_charge: usize = load
                     .activity
-                    .accounted_allocations()
-                    .into_iter()
+                    .heap_allocations()
                     .filter(|(id, _)| !prior_indexes.contains(id))
                     .map(|(_, bytes)| bytes)
                     .sum();

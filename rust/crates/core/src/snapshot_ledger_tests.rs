@@ -7360,10 +7360,14 @@ fn empty_index_walk(slot: &LoadSlot) -> usize {
         .lock()
         .unwrap()
         .activity
-        .audited_allocations(false)[1..]
+        .audited_heap_allocations()
         .iter()
         .map(|(_, bytes)| bytes)
         .sum()
+}
+
+fn nested_name(byte: &str) -> String {
+    format!("{0}/{0}", byte.repeat(150))
 }
 
 #[test]
@@ -7371,7 +7375,7 @@ fn load_slot_admits_and_charges_its_record_once() {
     let source = LedgerSource::new(&line("anchor"));
     let site = "load slot";
     for background in [false, true] {
-        let [small, large] = ["d".to_owned(), "d".repeat(301)].map(|name| {
+        let [small, large] = ["d".to_owned(), nested_name("d")].map(|name| {
             exact_headroom(
                 &|| load_slot_fixture(&source, &name, background),
                 &cached_acquire,
@@ -7382,7 +7386,7 @@ fn load_slot_admits_and_charges_its_record_once() {
             300,
             "{site}: the slot path is not charged once by its bytes"
         );
-        let name = "d".repeat(301);
+        let name = nested_name("d");
         let build = || load_slot_fixture(&source, &name, background);
         assert_refused_at(site, &build(), &cached_acquire, 1);
         {
@@ -7459,6 +7463,142 @@ fn load_slot_admits_and_charges_its_record_once() {
     }
 }
 
+fn cold_load_fixture(source: &LedgerSource, background: bool) -> Fixture {
+    Fixture {
+        store: slow_store(),
+        owner: context_for("cold-load", background),
+        request: acquire(&source.path),
+        pins: Vec::new(),
+    }
+}
+
+fn cold_acquire(fixture: &Fixture) -> bool {
+    match fixture.store.acquire(
+        &fixture.request,
+        &fixture.owner,
+        &Cancellation::default(),
+        &mut [0u64; 18],
+    ) {
+        Ok((data, cursor, reason)) => {
+            assert!(cursor.is_some() && reason.is_some(), "{data:?}");
+            assert_eq!(data["kind"].as_str(), Some("loading"), "{data:?}");
+            true
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("cold acquire failed outside admission: {error:?}"),
+    }
+}
+
+fn cold_load_walk(slot: &LoadSlot) -> usize {
+    let load = slot.work.lock().unwrap();
+    let Load {
+        file: _,
+        offset: _,
+        pending,
+        pending_start: _,
+        provider: _,
+        chunks,
+        codex_raw,
+        codex_append,
+        count: _,
+        activity,
+        indexed: _,
+        decoded: _,
+        session_id,
+        origin_fence,
+        origin_complete: _,
+        seal_fence,
+        sealed: _,
+        prefix_fence,
+        previous,
+        previous_index_compatible: _,
+        prefix_checked: _,
+        window_scanned: _,
+        window_start: _,
+        fence,
+        committed: _,
+        provisional: _,
+        result,
+        failure: _,
+    } = &*load;
+    assert!(
+        previous.is_none() && result.is_none(),
+        "the load is not cold"
+    );
+    assert!(codex_raw.is_none() && codex_append.is_none());
+    pending.capacity()
+        + origin_fence.capacity()
+        + seal_fence.capacity()
+        + prefix_fence.capacity()
+        + fence.capacity()
+        + session_id.as_ref().map_or(0, String::capacity)
+        + chunks
+            .iter()
+            .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
+            .sum::<usize>()
+        + activity
+            .audited_heap_allocations()
+            .iter()
+            .map(|(_, bytes)| bytes)
+            .sum::<usize>()
+}
+
+#[test]
+fn incomplete_loads_charge_their_inline_index_once() {
+    let source = LedgerSource::new(&lines(0..4));
+    let site = "cold load";
+    for background in [false, true] {
+        let build = || cold_load_fixture(&source, background);
+        let exact = exact_headroom(&build, &cold_acquire);
+        assert_refused_at(site, &build(), &cold_acquire, 1);
+        {
+            let released = settled_charges(&build().store);
+            let refused = build();
+            let cap = cap_for(&refused.owner);
+            let filler = fill_to(&refused.store, &refused.owner, exact - 1);
+            assert!(
+                !cold_acquire(&refused),
+                "{site}: one byte over the exact fit was admitted"
+            );
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap);
+            drop(filler);
+            assert_eq!(
+                settled_charges(&refused.store),
+                released,
+                "{site}: the refused acquire left its slot behind"
+            );
+            assert!(refused.store.lock_state().loads.is_empty());
+        }
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        assert!(cold_acquire(&fitted), "{site}: the exact fit was refused");
+        fitted.store.assert_conserved();
+        assert!(audited(&fitted.store)[TOTAL] <= cap);
+        let slot = fitted
+            .store
+            .lock_state()
+            .loads
+            .values()
+            .next()
+            .cloned()
+            .expect("parked cold load");
+        let walk = cold_load_walk(&slot);
+        assert!(walk > empty_index_walk(&slot));
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            walk,
+            "{site}: the slot charge is not its heap walked once"
+        );
+        assert_eq!(
+            fitted.store.lock_state().ledger.pending,
+            NativeStore::audit_load_record_bytes(&slot) + walk,
+            "{site}: the pending gauge is not the slot record plus its heap"
+        );
+    }
+}
+
 fn location_root_fixture(root: &Path, background: bool) -> Fixture {
     Fixture {
         store: cursor_store(),
@@ -7471,9 +7611,9 @@ fn location_root_fixture(root: &Path, background: bool) -> Fixture {
 #[test]
 fn location_cursor_charges_its_open_directory_root_copy() {
     let source = LedgerSource::new(&line("locate"));
-    let roots = ["r".to_owned(), "r".repeat(301)].map(|name| {
+    let roots = ["r".to_owned(), nested_name("r")].map(|name| {
         let root = source.directory.join(name);
-        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         for file in ["a.jsonl", "b.jsonl", "c.jsonl"] {
             std::fs::write(root.join(file), line(file)).unwrap();
         }

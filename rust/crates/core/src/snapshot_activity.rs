@@ -364,8 +364,13 @@ impl ActivityIndex {
     }
 
     pub fn accounted_allocations(&self) -> Vec<(usize, usize)> {
-        let mut allocations = vec![
-            (self as *const Self as usize, size_of::<Self>()),
+        std::iter::once((self as *const Self as usize, size_of::<Self>()))
+            .chain(self.heap_allocations())
+            .collect()
+    }
+
+    pub fn heap_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        [
             (
                 Arc::as_ptr(&self.turns) as usize,
                 arc_bytes::<Vec<Arc<CachedTurn>>>()
@@ -383,28 +388,36 @@ impl ActivityIndex {
                     + self.results.capacity() * size_of::<(String, ResultPosition)>()
                     + self.results.keys().map(String::capacity).sum::<usize>(),
             ),
-        ];
-        for turn in self.turns.iter() {
-            allocations.push((
+        ]
+        .into_iter()
+        .chain(self.turns.iter().flat_map(|turn| {
+            std::iter::once((
                 Arc::as_ptr(turn) as usize,
                 arc_bytes::<CachedTurn>()
                     + turn.prompt.capacity()
                     + turn.calls.capacity() * size_of::<Arc<CachedCall>>(),
-            ));
-            allocations.extend(turn.calls.iter().map(|call| {
+            ))
+            .chain(turn.calls.iter().map(|call| {
                 (
                     Arc::as_ptr(call) as usize,
                     arc_control_bytes::<CachedCall>() + call.accounted_bytes,
                 )
-            }));
-        }
-        allocations
+            }))
+        }))
     }
 
     pub fn shared_allocations(self: &Arc<Self>) -> Vec<(usize, usize)> {
         let mut allocations = self.accounted_allocations();
         allocations[0].1 = arc_bytes::<Self>();
         allocations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audited_heap_allocations(&self) -> Vec<(usize, usize)> {
+        self.audited_allocations(false)
+            .into_iter()
+            .skip(1)
+            .collect()
     }
 
     #[cfg(test)]
