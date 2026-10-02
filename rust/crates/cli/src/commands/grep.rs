@@ -563,17 +563,14 @@ fn run_over_corpus(
 }
 
 fn checkpoints() -> GrepCheckpoints {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(
-            || PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache"),
-            PathBuf::from,
-        );
     let exe = std::env::current_exe()
         .and_then(std::fs::metadata)
         .expect("current executable metadata");
     GrepCheckpoints::new(
-        cache.join("cc-transcript").join("scan"),
+        crate::target::home_dir()
+            .join(".claude")
+            .join("cc-transcript")
+            .join("scan"),
         format!(
             "{} {} {}.{}",
             crate::pkg_version(),

@@ -23,6 +23,7 @@ pub struct ScanProgress {
     pub output_bytes: usize,
     pub source_opens: usize,
     pub cache_hits: usize,
+    pub cache_invalidations: usize,
 }
 
 pub struct ScanBudget<'store> {

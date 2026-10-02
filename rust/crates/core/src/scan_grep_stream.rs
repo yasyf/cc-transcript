@@ -8,7 +8,9 @@ use sonic_rs::json;
 use super::{incomplete, GrepEvent, GrepReducer};
 use crate::gateway::{sniff_provider, Provider};
 use crate::scan::{ScanBudget, ScanControl, StagingReservation};
-use crate::scan_checkpoint::{Checkpoint, GrepCheckpoints, Queued, ReducerState, Replayed, Span};
+use crate::scan_checkpoint::{
+    FileLayer, GrepCheckpoints, QueryLayer, Queued, ReducerState, Replayed, SourceRecord, Span,
+};
 use crate::scan_stream::{LineSpan, SourceStream};
 use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
 use crate::snapshot_memory::entry_charge;
@@ -32,7 +34,7 @@ struct StreamSlot<'store> {
 }
 
 struct GrepStream<'store> {
-    key: Option<String>,
+    query_key: Option<String>,
     size: u64,
     revision: String,
     generation: String,
@@ -51,7 +53,7 @@ struct GrepStream<'store> {
     committed: u64,
     fence: Vec<u8>,
     sniffed: bool,
-    capture: Option<Checkpoint>,
+    capture: Option<(FileLayer, QueryLayer)>,
     poisoned: bool,
 }
 
@@ -142,30 +144,41 @@ impl<'store> GrepReducer<'store> {
         }
     }
 
-    fn binding(
+    fn keys(
         &self,
+        store: &GrepCheckpoints,
         path: &Path,
         source: &SourceStream<'_>,
         render_names: bool,
-    ) -> Result<sonic_rs::Value, SnapshotError> {
+    ) -> Result<(String, String), SnapshotError> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|error| SnapshotError::new(Status::Incomplete, error.to_string()))?;
-        Ok(json!({
-            "path": canonical.to_string_lossy().as_ref(),
-            "device": source.stamp.identity.device.to_string(),
-            "inode": source.stamp.identity.inode.to_string(),
-            "registry": self.registry.fingerprint(),
-            "patterns": self.patterns.iter().map(|pattern| json!([pattern.id.to_string(), pattern.regex.as_str(), pattern.max_matches.map(|cap| cap.to_string())])).collect::<Vec<_>>(),
-            "options": {
-                "kinds": self.options.kinds,
-                "tool": self.options.tool,
-                "ignore_case": self.options.ignore_case,
-                "where": [self.options.where_text, self.options.where_thinking, self.options.where_tools],
-                "context": self.options.context.to_string(),
-            },
-            "render_names": render_names,
-            "start": sonic_rs::to_string(&self.state()).expect("reducer state is json"),
-        }))
+        let file = store
+            .key(json!({
+                "schema": crate::snapshot::SCHEMA,
+                "classifier": {"id": "native", "version": "1"},
+                "path": canonical.to_string_lossy().as_ref(),
+                "device": source.stamp.identity.device.to_string(),
+                "inode": source.stamp.identity.inode.to_string(),
+            }))
+            .map_err(|error| SnapshotError::new(Status::InvalidRequest, error))?;
+        let query = store
+            .key(json!({
+                "file": file,
+                "registry": self.registry.fingerprint(),
+                "patterns": self.patterns.iter().map(|pattern| json!([pattern.id.to_string(), pattern.regex.as_str(), pattern.max_matches.map(|cap| cap.to_string())])).collect::<Vec<_>>(),
+                "options": {
+                    "kinds": self.options.kinds,
+                    "tool": self.options.tool,
+                    "ignore_case": self.options.ignore_case,
+                    "where": [self.options.where_text, self.options.where_thinking, self.options.where_tools],
+                    "context": self.options.context.to_string(),
+                },
+                "render_names": render_names,
+                "start": sonic_rs::to_string(&self.state()).expect("reducer state is json"),
+            }))
+            .map_err(|error| SnapshotError::new(Status::InvalidRequest, error))?;
+        Ok((file, query))
     }
 
     pub fn scan_stream<E>(
@@ -186,15 +199,11 @@ impl<'store> GrepReducer<'store> {
     {
         let mut source = SourceStream::open(path, 0, budget, cancel)?;
         let generation = source.generation();
-        let key = checkpoints
-            .map(|store| {
-                store
-                    .key(self.binding(path, &source, render_names)?)
-                    .map_err(|error| SnapshotError::new(Status::InvalidRequest, error))
-            })
+        let keys = checkpoints
+            .map(|store| self.keys(store, path, &source, render_names))
             .transpose()?;
         let mut stream = GrepStream {
-            key,
+            query_key: keys.as_ref().map(|(_, query)| query.clone()),
             size: source.stamp.size,
             revision: revision(&source.stamp),
             source_bytes: path.as_os_str().len().saturating_add(generation.len()),
@@ -216,27 +225,58 @@ impl<'store> GrepReducer<'store> {
             capture: None,
             poisoned: false,
         };
-        let key = stream.key.clone();
-        if let (Some(store), Some(key)) = (checkpoints, &key) {
-            let (record, bytes) = store.load(key, budget.remaining().max_read_bytes);
+        let mut existing = None;
+        if let (Some(store), Some((file_key, query_key))) = (checkpoints, &keys) {
+            let (record, bytes) = store.load(file_key, budget.remaining().max_read_bytes);
             budget.charge_projection(bytes, 0, cancel)?;
             if let Some(record) = record {
-                if !self.restore(&mut stream, &mut source, record, budget, cancel, &mut emit)? {
-                    store.discard(key);
+                let layer = record
+                    .queries
+                    .iter()
+                    .find(|layer| {
+                        &layer.key == query_key && layer.committed <= record.file.committed
+                    })
+                    .cloned();
+                let valid = stream.validates(&record, &mut source, budget, cancel)?
+                    && match layer {
+                        Some(layer) => self.restore(
+                            &mut stream,
+                            &mut source,
+                            &record.file,
+                            layer,
+                            budget,
+                            cancel,
+                            &mut emit,
+                        )?,
+                        None => true,
+                    };
+                if valid {
+                    existing = Some(record);
+                } else {
+                    store.discard(file_key);
+                    budget.progress.cache_invalidations += 1;
                 }
             }
         }
         let result = self.drive(&mut stream, &mut source, budget, cancel, &mut emit);
-        if let (Some(store), false) = (checkpoints, stream.poisoned) {
+        if let (Some(store), Some((file_key, _)), false) = (checkpoints, &keys, stream.poisoned) {
             if result.as_ref().map_or_else(saves, Option::is_some) {
-                if let Some(record) = stream.capture.take().or_else(|| stream.capture(self)) {
-                    let _ = store.save(&record);
+                if let Some((file, query)) = stream.capture.take().or_else(|| stream.capture(self))
+                {
+                    let _ = store.save(&SourceRecord::merge(
+                        existing,
+                        file_key.clone(),
+                        stream.size,
+                        stream.revision.clone(),
+                        file,
+                        query,
+                    ));
                 }
             }
         }
         if stream.poisoned {
-            if let (Some(store), Some(key)) = (checkpoints, &key) {
-                store.discard(key);
+            if let (Some(store), Some((file_key, _))) = (checkpoints, &keys) {
+                store.discard(file_key);
             }
         }
         let Some(eof) = result? else {
@@ -303,7 +343,8 @@ impl<'store> GrepReducer<'store> {
         &mut self,
         stream: &mut GrepStream<'store>,
         source: &mut SourceStream<'store>,
-        record: Checkpoint,
+        file: &FileLayer,
+        layer: QueryLayer,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
         emit: &mut E,
@@ -315,34 +356,16 @@ impl<'store> GrepReducer<'store> {
             &Cancellation,
         ) -> Result<(), SnapshotError>,
     {
-        let rewritten = source.stamp.size < record.size
-            || source.stamp.size == record.size && stream.revision != record.revision;
-        if rewritten
-            || record.committed > record.size
-            || record.fence.len() > FENCE_BYTES
-            || record.fence.len() as u64 > record.committed
-        {
-            return Ok(false);
-        }
-        let fence = source.read_span(
-            &LineSpan {
-                offset: record.committed - record.fence.len() as u64,
-                len: record.fence.len(),
-                terminated: false,
-            },
-            budget,
-            cancel,
-        )?;
-        if fence != record.fence {
-            return Ok(false);
-        }
-        let mut lines = Vec::with_capacity(record.queue.len() + record.replay.len());
-        for span in record
+        let mut lines = Vec::with_capacity(layer.queue.len() + layer.replay.len());
+        for span in layer
             .queue
             .iter()
             .map(|queued| queued.span)
-            .chain(record.replay.iter().map(|replayed| replayed.span))
+            .chain(layer.replay.iter().map(|replayed| replayed.span))
         {
+            if span.offset + span.len as u64 > layer.committed {
+                return Ok(false);
+            }
             let bytes = source.read_span(&span.into(), budget, cancel)?;
             if digest(&bytes) != span.digest {
                 return Ok(false);
@@ -350,23 +373,36 @@ impl<'store> GrepReducer<'store> {
             lines.push(bytes);
         }
         budget.progress.cache_hits += 1;
-        let names_bytes: usize = record
+        let names_bytes: usize = file
             .names
             .iter()
-            .map(|(id, name, _)| id.len() + name.len() + size_of::<(String, ToolName)>())
+            .map(|(id, name)| id.len() + name.len() + size_of::<(String, ToolName)>())
             .sum();
         budget.extend_staging(
             &mut stream.staging,
-            names_bytes + record.replay.len() * size_of::<Replayed>(),
+            names_bytes + layer.replay.len() * size_of::<Replayed>(),
             cancel,
         )?;
-        stream.names = record
+        stream.names = file
             .names
-            .into_iter()
-            .map(|(id, name, referenced)| (id, ToolName { name, referenced }))
+            .iter()
+            .map(|(id, name)| {
+                (
+                    id.clone(),
+                    ToolName {
+                        name: name.clone(),
+                        referenced: false,
+                    },
+                )
+            })
             .collect();
+        for id in &layer.referenced {
+            if let Some(slot) = stream.names.get_mut(id) {
+                slot.referenced = true;
+            }
+        }
         let mut lines = lines.into_iter();
-        for (queued, bytes) in record.queue.iter().zip(lines.by_ref()) {
+        for (queued, bytes) in layer.queue.iter().zip(lines.by_ref()) {
             let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| {
                 SnapshotError::new(Status::Changed, "checkpointed event no longer parses")
             })?;
@@ -382,21 +418,20 @@ impl<'store> GrepReducer<'store> {
                     .reserve_staging(charge.saturating_add(size_of::<StreamSlot>()), cancel)?,
             });
         }
-        self.counts = record.reducer.counts;
-        self.matched_items = record.reducer.matched_items;
-        self.coverage_complete = record.reducer.coverage_complete;
-        stream.parsed = record.parsed;
-        stream.decided = record.decided;
-        stream.emitted = record.emitted;
-        stream.last_emitted = record.last_emitted;
-        stream.last_hit = record.last_hit;
-        stream.stopped = record.stopped;
-        stream.committed = record.committed;
-        stream.fence = record.fence;
-        stream.sniffed = record.sniffed;
-        source.seek(record.committed)?;
+        self.counts = layer.reducer.counts;
+        self.matched_items = layer.reducer.matched_items;
+        self.coverage_complete = layer.reducer.coverage_complete;
+        stream.parsed = layer.parsed;
+        stream.decided = layer.decided;
+        stream.emitted = layer.emitted;
+        stream.last_emitted = layer.last_emitted;
+        stream.last_hit = layer.last_hit;
+        stream.stopped = layer.stopped;
+        stream.committed = layer.committed;
+        stream.sniffed = file.sniffed;
+        source.seek(layer.committed)?;
         let results = HashMap::new();
-        for (position, (replayed, bytes)) in record.replay.iter().zip(lines).enumerate() {
+        for (position, (replayed, bytes)) in layer.replay.iter().zip(lines).enumerate() {
             let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| {
                 SnapshotError::new(Status::Changed, "checkpointed event no longer parses")
             })?;
@@ -418,7 +453,7 @@ impl<'store> GrepReducer<'store> {
                 cancel,
             )?;
         }
-        stream.history = record.replay;
+        stream.history = layer.replay;
         Ok(true)
     }
 }
@@ -429,37 +464,75 @@ impl<'store> GrepStream<'store> {
             .is_some_and(|hit| self.parsed > hit + context.max(1) && self.emitted > hit + context)
     }
 
-    fn capture(&self, grep: &GrepReducer<'store>) -> Option<Checkpoint> {
-        Some(Checkpoint {
-            key: self.key.clone()?,
-            size: self.size,
-            revision: self.revision.clone(),
-            committed: self.committed,
-            fence: self.fence.clone(),
-            sniffed: self.sniffed,
-            parsed: self.parsed,
-            decided: self.decided,
-            emitted: self.emitted,
-            last_emitted: self.last_emitted,
-            last_hit: self.last_hit,
-            stopped: self.stopped,
-            reducer: grep.state(),
-            names: self
-                .names
-                .iter()
-                .map(|(id, slot)| (id.clone(), slot.name.clone(), slot.referenced))
-                .collect(),
-            replay: self.history.clone(),
-            queue: self
-                .queue
-                .iter()
-                .map(|slot| Queued {
-                    index: slot.index,
-                    span: span(slot.line, slot.digest),
-                    pattern_ids: slot.pattern_ids.clone(),
-                })
-                .collect(),
-        })
+    fn validates(
+        &self,
+        record: &SourceRecord,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<bool, SnapshotError> {
+        let file = &record.file;
+        if self.size < record.size
+            || self.size == record.size && self.revision != record.revision
+            || file.committed > record.size
+            || file.fence.len() > FENCE_BYTES
+            || file.fence.len() as u64 > file.committed
+        {
+            return Ok(false);
+        }
+        let fence = source.read_span(
+            &LineSpan {
+                offset: file.committed - file.fence.len() as u64,
+                len: file.fence.len(),
+                terminated: false,
+            },
+            budget,
+            cancel,
+        )?;
+        Ok(fence == file.fence)
+    }
+
+    fn capture(&self, grep: &GrepReducer<'store>) -> Option<(FileLayer, QueryLayer)> {
+        Some((
+            FileLayer {
+                committed: self.committed,
+                fence: self.fence.clone(),
+                sniffed: self.sniffed,
+                events: self.parsed,
+                names: self
+                    .names
+                    .iter()
+                    .map(|(id, slot)| (id.clone(), slot.name.clone()))
+                    .collect(),
+            },
+            QueryLayer {
+                key: self.query_key.clone()?,
+                committed: self.committed,
+                parsed: self.parsed,
+                decided: self.decided,
+                emitted: self.emitted,
+                last_emitted: self.last_emitted,
+                last_hit: self.last_hit,
+                stopped: self.stopped,
+                reducer: grep.state(),
+                referenced: self
+                    .names
+                    .iter()
+                    .filter(|(_, slot)| slot.referenced)
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+                replay: self.history.clone(),
+                queue: self
+                    .queue
+                    .iter()
+                    .map(|slot| Queued {
+                        index: slot.index,
+                        span: span(slot.line, slot.digest),
+                        pattern_ids: slot.pattern_ids.clone(),
+                    })
+                    .collect(),
+            },
+        ))
     }
 
     fn commit(&mut self, line: LineSpan, bytes: &[u8]) {

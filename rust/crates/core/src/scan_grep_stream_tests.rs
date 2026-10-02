@@ -723,6 +723,7 @@ fn rewritten_or_corrupt_records_rescan_from_the_start() {
         Some(&cache.1),
     );
     assert_eq!(progress.cache_hits, 0);
+    assert_eq!(progress.cache_invalidations, 1);
     assert_eq!(progress.source_bytes, text.len());
     assert_eq!(rewritten.unwrap().counts, vec![1]);
     let grown = text.replace("needle 5", "thread 5");
@@ -915,4 +916,61 @@ fn large_integer_options_bind_a_checkpoint_key() {
         Some(&cache.1),
     );
     assert_eq!(run.unwrap().emitted.len(), 3);
+}
+
+#[test]
+fn queries_share_one_file_record_and_resume_independently() {
+    let cache = Cache::new();
+    let mut lines = sparse(600, &[50, 500]);
+    lines[300] = line(assistant(
+        "a",
+        "u",
+        json!([tool("t9", "Bash", json!({"command":"ls"}))]),
+    ));
+    lines[310] = line(result("r", "a", "t9", "needle result"));
+    let source = Source::new(&lines, true);
+    let mut capped = limits();
+    capped.max_source_read_bytes = 120_000;
+    let (partial, _, _) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        capped,
+        Some(&cache.1),
+    );
+    assert_eq!(partial.err().unwrap().reason, "source_read_limit");
+    let (other, _, progress) = checkpointed(
+        &source.0,
+        &[("filler 7 ", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(other.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(cache.records().len(), 1);
+    let (resumed, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(progress.cache_hits, 1);
+    assert!(progress.source_bytes < std::fs::metadata(&source.0).unwrap().len() as usize);
+    assert_eq!(resumed.unwrap(), fresh.unwrap());
+    let (again, _, progress) = checkpointed(
+        &source.0,
+        &[("filler 7 ", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(again.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
 }

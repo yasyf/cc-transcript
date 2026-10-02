@@ -13,6 +13,7 @@ use crate::scan_stream::LineSpan;
 const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORDS: usize = 256;
 const MAX_LISTED: usize = 1024;
+const MAX_QUERIES: usize = 16;
 
 pub struct GrepCheckpoints {
     dir: PathBuf,
@@ -60,13 +61,18 @@ pub struct ReducerState {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Checkpoint {
-    pub key: String,
-    pub size: u64,
-    pub revision: String,
+pub struct FileLayer {
     pub committed: u64,
     pub fence: Vec<u8>,
     pub sniffed: bool,
+    pub events: usize,
+    pub names: Vec<(String, String)>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct QueryLayer {
+    pub key: String,
+    pub committed: u64,
     pub parsed: usize,
     pub decided: usize,
     pub emitted: usize,
@@ -74,9 +80,55 @@ pub struct Checkpoint {
     pub last_hit: Option<usize>,
     pub stopped: Option<usize>,
     pub reducer: ReducerState,
-    pub names: Vec<(String, String, bool)>,
+    pub referenced: Vec<String>,
     pub replay: Vec<Replayed>,
     pub queue: Vec<Queued>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SourceRecord {
+    pub key: String,
+    pub size: u64,
+    pub revision: String,
+    pub file: FileLayer,
+    pub queries: Vec<QueryLayer>,
+}
+
+impl SourceRecord {
+    pub fn merge(
+        existing: Option<Self>,
+        key: String,
+        size: u64,
+        revision: String,
+        file: FileLayer,
+        query: QueryLayer,
+    ) -> Self {
+        let mut record = match existing {
+            Some(record) if record.file.committed >= file.committed => Self {
+                size,
+                revision,
+                ..record
+            },
+            Some(record) => Self {
+                key,
+                size,
+                revision,
+                file,
+                queries: record.queries,
+            },
+            None => Self {
+                key,
+                size,
+                revision,
+                file,
+                queries: Vec::new(),
+            },
+        };
+        record.queries.retain(|layer| layer.key != query.key);
+        record.queries.insert(0, query);
+        record.queries.truncate(MAX_QUERIES);
+        record
+    }
 }
 
 impl GrepCheckpoints {
@@ -86,7 +138,7 @@ impl GrepCheckpoints {
 
     pub fn key(&self, binding: Value) -> Result<String, String> {
         let binding = sonic_rs::json!({
-            "version": "grep-checkpoint/1",
+            "version": "grep-checkpoint/2",
             "parser": crate::snapshot::PARSER_VERSION,
             "producer": self.producer,
             "binding": binding,
@@ -114,7 +166,7 @@ impl GrepCheckpoints {
             })
     }
 
-    pub fn load(&self, key: &str, limit: usize) -> (Option<Checkpoint>, usize) {
+    pub fn load(&self, key: &str, limit: usize) -> (Option<SourceRecord>, usize) {
         if !self.private_dir() {
             return (None, 0);
         }
@@ -142,7 +194,7 @@ impl GrepCheckpoints {
         {
             return (None, bytes.len());
         }
-        match sonic_rs::from_slice::<Checkpoint>(&bytes) {
+        match sonic_rs::from_slice::<SourceRecord>(&bytes) {
             Ok(record) if record.key == key => (Some(record), bytes.len()),
             _ => {
                 self.discard(key);
@@ -155,7 +207,7 @@ impl GrepCheckpoints {
         let _ = std::fs::remove_file(self.path(key));
     }
 
-    pub fn save(&self, record: &Checkpoint) -> std::io::Result<()> {
+    pub fn save(&self, record: &SourceRecord) -> std::io::Result<()> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let bytes = sonic_rs::to_vec(record).map_err(std::io::Error::other)?;
         if bytes.len() > MAX_RECORD_BYTES || !self.private_dir() {

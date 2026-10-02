@@ -348,9 +348,11 @@ still performs a full preparation pass; its unchanged cost is separate from
 bounded searching.
 
 Claude `grep` streams matches as it reads and saves checkpoints in
-`$XDG_CACHE_HOME/cc-transcript/scan` (or `~/.cache/cc-transcript/scan`). Each record
-binds the CLI build, parser, tool registry, file identity, patterns and match
-caps, search options, output mode, and starting counts; work budgets are excluded.
+`~/.claude/cc-transcript/scan`, one owner-private record per transcript. The record
+binds the CLI build, parser, snapshot schema, classifier, and file identity, and
+holds a per-file layer plus one layer per query; a query layer also binds the
+tool registry, patterns and match caps, search options, output mode, and starting
+counts. Work budgets are excluded.
 A later matching run reads a fence of up to 64 bytes and the saved hit, context,
 and pending lines, validates them, then continues from the saved prefix,
 including appended bytes. Invalid records cause a rescan from byte 0.
