@@ -2540,6 +2540,84 @@ fn prepared_query_dom_is_charged_in_full_and_counts_against_the_cap() {
     }
 }
 
+fn pending_page_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+    let store = slow_store();
+    let owner = context_for("pending", background);
+    let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
+    let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
+    Fixture {
+        store,
+        owner,
+        request: graph_query(
+            &graph,
+            json!({"kind":"has_read","pattern":format!("missing-{}", "x".repeat(padding)),"subagents":true}),
+            json!([]),
+        ),
+        pins: vec![root_snapshot],
+    }
+}
+
+#[test]
+fn refused_prepared_query_page_releases_its_pending_source_waiter() {
+    let scenario = Scenario::new(1, |_| lines(0..24));
+    let padding = 64 * 1024;
+    let attempt = |fixture: &Fixture| parked(&submit(fixture));
+    for background in [false, true] {
+        let build = |padding: usize| pending_page_fixture(&scenario, background, padding);
+        let small = exact_headroom(&|| build(0), &attempt);
+        let large = exact_headroom(&|| build(padding), &attempt);
+        assert_eq!(
+            large - small,
+            padding,
+            "the parked page is bound by its own cursor admission"
+        );
+        let refused = build(padding);
+        let cap = cap_for(&refused.owner);
+        {
+            let _filler = fill_to(&refused.store, &refused.owner, large - 1);
+            for _ in 0..3 {
+                let copies = refused.store.warm_copies.load(Ordering::Relaxed);
+                assert!(
+                    !attempt(&refused),
+                    "one byte over the exact fit parked the page"
+                );
+                assert!(
+                    refused.store.warm_copies.load(Ordering::Relaxed) > copies,
+                    "the refused page never parked a source"
+                );
+                refused.store.assert_conserved();
+                assert!(audited(&refused.store)[TOTAL] <= cap);
+                assert!(
+                    refused.store.lock_state().waiters.is_empty(),
+                    "the refused page left its pending source waiter behind"
+                );
+            }
+        }
+        let page = build(padding);
+        let _filler = fill_to(&page.store, &page.owner, large);
+        let response = submit(&page);
+        assert!(parked(&response));
+        let cursor = response["cursor"].as_str().unwrap();
+        {
+            let state = page.store.lock_state();
+            let pending = state
+                .prepared_queries
+                .get(cursor)
+                .expect("the parked page")
+                .pending
+                .as_ref()
+                .expect("the parked page carries its pending source");
+            assert_eq!(state.waiters.len(), 1);
+            assert!(state.waiters.contains_key(&pending.token));
+        }
+        page.store.assert_conserved();
+        assert!(audited(&page.store)[TOTAL] <= cap);
+        release_cursor(&page.store, cursor, &page.owner);
+        assert!(page.store.lock_state().waiters.is_empty());
+        page.store.assert_conserved();
+    }
+}
+
 fn restricted_context(claimant: &str, background: bool, root: &Path, padding: usize) -> Value {
     let mut context = context_for(claimant, background);
     let root = std::fs::canonicalize(root).unwrap();

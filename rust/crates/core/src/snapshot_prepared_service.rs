@@ -1392,6 +1392,29 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 18],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let page = self.prepared_query_steps(&mut cursor, context, cancel, usage);
+        let pending = cursor.pending.as_ref().map(|pending| pending.token.clone());
+        let reply = page.and_then(|page| match page {
+            QueryPage::Complete(data) => Ok((data, None, None)),
+            QueryPage::Incomplete(data) => {
+                self.park_prepared_query(token, cursor, data, context, cancel)
+            }
+        });
+        if reply.is_err() {
+            if let Some(pending) = pending {
+                self.lock_state().waiters.remove(&pending);
+            }
+        }
+        reply
+    }
+
+    fn prepared_query_steps(
+        &self,
+        cursor: &mut PreparedQueryCursor,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 18],
+    ) -> Result<QueryPage, SnapshotError> {
         if cursor.claimant != str_field(context, "claimant")? {
             return Err(SnapshotError::new(
                 Status::StaleCursor,
@@ -1540,7 +1563,7 @@ impl NativeStore {
             } else if facts.query(&cursor.query)?["value"].as_bool() == Some(true) {
                 let data = json!({"kind":"scalar","value":true});
                 encoded_size(&data, output_limit)?;
-                return Ok((data, None, None));
+                return Ok(QueryPage::Complete(data));
             }
             cursor.next += 1;
             steps += 1;
@@ -1572,7 +1595,7 @@ impl NativeStore {
                 json!({"kind":"scalar","value":false})
             };
             encoded_size(&data, output_limit)?;
-            return Ok((data, None, None));
+            return Ok(QueryPage::Complete(data));
         }
         let data = if inputs {
             json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
@@ -1587,6 +1610,17 @@ impl NativeStore {
                 .and_then(Value::as_array)
                 .map_or(0, |items| items.len()),
         );
+        Ok(QueryPage::Incomplete(data))
+    }
+
+    fn park_prepared_query(
+        &self,
+        token: &str,
+        cursor: PreparedQueryCursor,
+        data: Value,
+        context: &Value,
+        cancel: &Cancellation,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         if !state.prepared_graphs.contains_key(&cursor.graph_id) {

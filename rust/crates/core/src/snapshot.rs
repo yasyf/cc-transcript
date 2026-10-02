@@ -666,6 +666,11 @@ enum PreparedSourceOutcome {
     Pending(String),
 }
 
+enum QueryPage {
+    Complete(Value),
+    Incomplete(Value),
+}
+
 struct PendingPreparedSource {
     token: String,
     path: PathBuf,
