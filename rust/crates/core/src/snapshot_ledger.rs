@@ -344,6 +344,7 @@ pub(crate) enum AnchorKind {
     Entries,
     Indexes,
     Facts,
+    Warm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,6 +378,14 @@ impl Anchor {
             kind: AnchorKind::Facts,
         }
     }
+
+    pub(crate) fn warm(id: usize, bytes: usize) -> Self {
+        Self {
+            id,
+            bytes,
+            kind: AnchorKind::Warm,
+        }
+    }
 }
 
 struct Shared {
@@ -390,6 +399,7 @@ pub(crate) struct SharedAllocations {
     entries: usize,
     indexes: usize,
     facts: usize,
+    warm: usize,
     work: Work,
 }
 
@@ -400,6 +410,7 @@ impl SharedAllocations {
             entries: 0,
             indexes: 0,
             facts: 0,
+            warm: 0,
             work,
         }
     }
@@ -414,6 +425,10 @@ impl SharedAllocations {
 
     pub(crate) fn facts(&self) -> usize {
         self.facts
+    }
+
+    pub(crate) fn warm(&self) -> usize {
+        self.warm
     }
 
     pub(crate) fn table_bytes(&self) -> usize {
@@ -439,6 +454,7 @@ impl SharedAllocations {
             AnchorKind::Entries => &mut self.entries,
             AnchorKind::Indexes => &mut self.indexes,
             AnchorKind::Facts => &mut self.facts,
+            AnchorKind::Warm => &mut self.warm,
         }
     }
 

@@ -30,6 +30,36 @@ impl NativeStore {
         bytes
     }
 
+    #[cfg(test)]
+    fn audit_warm_buffer_bytes(state: &StoreState) -> usize {
+        let mut seen = HashSet::new();
+        let mut bytes = 0usize;
+        let mut add = |key: usize, buffer_bytes: usize| {
+            if seen.insert(key) {
+                bytes += buffer_bytes;
+            }
+        };
+        for membership in state.warm_memberships.values() {
+            add(
+                slice_key(&membership.members),
+                source_ref_bytes(&membership.members),
+            );
+            add(
+                slice_key(&membership.sidechain_dirs),
+                sidechain_dir_bytes(&membership.sidechain_dirs),
+            );
+        }
+        for graph in state.prepared_graphs.values() {
+            let graph = graph.lock().expect("prepared graph");
+            add(slice_key(&graph.sources), source_ref_bytes(&graph.sources));
+            add(
+                slice_key(&graph.sidechain_dirs),
+                sidechain_dir_bytes(&graph.sidechain_dirs),
+            );
+        }
+        bytes
+    }
+
     fn cache_prepared_facts(
         &self,
         stamp: SourceStamp,
@@ -512,9 +542,7 @@ impl NativeStore {
                     remaining.deadline_unix_ms,
                 )?
             {
-                self.lock_state()
-                    .warm_memberships
-                    .remove(&key);
+                self.lock_state().remove_warm_membership(&key);
                 return Err(SnapshotError::new(
                     Status::Incomplete,
                     "registered membership changed or is incomplete",
@@ -1128,9 +1156,7 @@ impl NativeStore {
             {
                 cached
             } else {
-                self.lock_state()
-                    .warm_memberships
-                    .remove(&key);
+                self.lock_state().remove_warm_membership(&key);
                 self.build_warm_membership(request, context, cancel, usage, &mut remaining)?
             }
         } else {
@@ -1153,14 +1179,11 @@ impl NativeStore {
                         .min_by_key(|(_, membership)| membership.expires)
                         .map(|(key, _)| key.clone())
                         .expect("full warm membership cache");
-                    state.warm_memberships.remove(&oldest);
+                    state.remove_warm_membership(&oldest);
                 }
-                self.admit_memory(
-                    &mut state,
-                    context,
-                    membership.accounted_bytes() + key.capacity(),
-                )?;
-                state.warm_memberships.insert(key.clone(), membership.clone());
+                let additional = state.admission(&key, &membership, membership.anchors());
+                self.admit_memory(&mut state, context, additional)?;
+                state.insert_warm_membership(key.clone(), membership.clone());
             }
         }
         let members = &membership.members;
@@ -1280,9 +1303,7 @@ impl NativeStore {
                 cancel,
                 remaining.deadline_unix_ms,
             )? {
-                self.lock_state()
-                    .warm_memberships
-                    .remove(&key);
+                self.lock_state().remove_warm_membership(&key);
                 return Err(SnapshotError::new(
                     Status::Changed,
                     "registered warming membership changed",

@@ -108,6 +108,7 @@ struct Fixture {
 struct Warmed {
     store: NativeStore,
     owner: Value,
+    root: Value,
     graph: Value,
 }
 
@@ -419,6 +420,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     Warmed {
         store,
         owner,
+        root,
         graph,
     }
 }
@@ -549,6 +551,21 @@ fn audited(store: &NativeStore) -> [usize; 8] {
 fn settled(store: &NativeStore) -> [usize; 8] {
     NativeStore::prune(&mut store.lock_state());
     ledger(store)
+}
+
+fn settled_charges(store: &NativeStore) -> usize {
+    let mut state = store.lock_state();
+    NativeStore::prune(&mut state);
+    number(
+        &NativeStore::gauges(&mut state),
+        "retained_total_accounted_bytes",
+    )
+    .unwrap()
+        - NativeStore::fixed_metadata_bytes(&state)
+}
+
+fn warm_buffer_charge(store: &NativeStore) -> usize {
+    store.lock_state().ledger.shared.warm()
 }
 
 fn unadmitted_bytes(store: &NativeStore) -> usize {
@@ -1988,6 +2005,81 @@ fn f2_prepared_sidechain_generations_stay_charged_until_pressure_evicts_them() {
         assert_eq!(evicted[GENERATIONS], 1);
         assert_eq!(evicted[ENTRIES], entry_bytes(&[&root]));
     }
+}
+
+#[test]
+fn shared_warm_buffers_are_charged_once_across_their_owners() {
+    let scenario = scaling_scenario(8);
+    let warmed = warmed_registry(prepared_store(), &scenario);
+    let (store, owner) = (&warmed.store, &warmed.owner);
+    store.assert_conserved();
+    let first_id = warmed.graph["graph_id"].as_str().unwrap().to_owned();
+    let (membership_key, membership_charge, shared, first_charge) = {
+        let state = store.lock_state();
+        let (key, membership) = state
+            .warm_memberships
+            .iter()
+            .next()
+            .expect("warmed membership");
+        let first = state.prepared_graphs[&first_id].lock().unwrap();
+        assert!(Arc::ptr_eq(&first.sources, &membership.members));
+        assert!(Arc::ptr_eq(
+            &first.sidechain_dirs,
+            &membership.sidechain_dirs
+        ));
+        (
+            key.clone(),
+            charged_bytes(key, membership),
+            source_ref_bytes(&membership.members) + sidechain_dir_bytes(&membership.sidechain_dirs),
+            first.charge(),
+        )
+    };
+    assert!(shared > 0);
+    assert_eq!(warm_buffer_charge(store), shared);
+    let one_graph = settled_charges(store);
+    let second = settle(
+        store,
+        store.request(
+            &prepare_request(&warmed.root, &scenario.ids(), &scenario.roots(), &[]),
+            owner,
+            &Cancellation::default(),
+        ),
+        owner,
+    );
+    assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+    let second_id = second["data"]["handle"]["graph_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    store.assert_conserved();
+    let second_charge = store.lock_state().prepared_graphs[&second_id]
+        .lock()
+        .unwrap()
+        .charge();
+    let two_graphs = settled_charges(store);
+    eprintln!(
+        "shared warm buffers: shared={shared} graph={second_charge} one_graph={one_graph} two_graphs={two_graphs}"
+    );
+    assert_eq!(two_graphs - one_graph, second_charge);
+    assert_eq!(warm_buffer_charge(store), shared);
+    store.lock_state().remove_prepared_graph(&first_id);
+    store.assert_conserved();
+    assert_eq!(settled_charges(store), two_graphs - first_charge);
+    assert_eq!(warm_buffer_charge(store), shared);
+    store.lock_state().remove_warm_membership(&membership_key);
+    store.assert_conserved();
+    assert_eq!(
+        settled_charges(store),
+        two_graphs - first_charge - membership_charge
+    );
+    assert_eq!(warm_buffer_charge(store), shared);
+    store.lock_state().remove_prepared_graph(&second_id);
+    store.assert_conserved();
+    assert_eq!(
+        settled_charges(store),
+        two_graphs - first_charge - membership_charge - second_charge - shared
+    );
+    assert_eq!(warm_buffer_charge(store), 0);
 }
 
 #[test]

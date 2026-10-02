@@ -685,11 +685,31 @@ struct WarmMembership {
 
 impl WarmMembership {
     fn accounted_bytes(&self) -> usize {
-        size_of::<Self>()
-            + self.revision.capacity()
-            + source_ref_bytes(&self.members)
-            + sidechain_dir_bytes(&self.sidechain_dirs)
+        size_of::<Self>() + self.revision.capacity()
     }
+
+    fn anchors(&self) -> impl Iterator<Item = Anchor> {
+        [
+            sources_anchor(&self.members),
+            sidechain_dirs_anchor(&self.sidechain_dirs),
+        ]
+        .into_iter()
+    }
+}
+
+fn slice_key<T>(buffer: &Arc<[T]>) -> usize {
+    Arc::as_ptr(buffer) as *const T as usize
+}
+
+fn sources_anchor(sources: &Arc<[PreparedSourceRef]>) -> Anchor {
+    Anchor::warm(slice_key(sources), source_ref_bytes(sources))
+}
+
+fn sidechain_dirs_anchor(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>) -> Anchor {
+    Anchor::warm(
+        slice_key(sidechain_dirs),
+        sidechain_dir_bytes(sidechain_dirs),
+    )
 }
 
 fn source_ref_bytes(sources: &[PreparedSourceRef]) -> usize {
@@ -1148,8 +1168,6 @@ impl Charge<String> for GraphCursor {
 impl Charge<String> for PreparedGraph {
     fn charge(&self) -> usize {
         size_of::<Self>()
-            + source_ref_bytes(&self.sources)
-            + sidechain_dir_bytes(&self.sidechain_dirs)
             + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
             + self
                 .stamps
@@ -1169,6 +1187,10 @@ impl PreparedGraph {
     fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
         std::iter::once(facts_anchor(&self.root_facts))
             .chain(self.root_slices.values().map(facts_anchor))
+            .chain([
+                sources_anchor(&self.sources),
+                sidechain_dirs_anchor(&self.sidechain_dirs),
+            ])
     }
 }
 
@@ -1894,6 +1916,41 @@ impl StoreState {
     ) {
         self.ledger.shared.acquire(facts_anchor(&facts));
         graph.root_slices.insert(key, facts);
+    }
+
+    fn insert_warm_membership(&mut self, key: String, membership: WarmMembership) {
+        for anchor in membership.anchors() {
+            self.ledger.shared.acquire(anchor);
+        }
+        if let Some(displaced) = self.warm_memberships.insert(key, membership) {
+            self.release_warm_membership(&displaced);
+        }
+    }
+
+    fn release_warm_membership(&mut self, membership: &WarmMembership) {
+        for anchor in membership.anchors() {
+            self.ledger.shared.release(anchor.id);
+        }
+    }
+
+    fn remove_warm_membership(&mut self, key: &str) -> Option<WarmMembership> {
+        let membership = self.warm_memberships.remove(key)?;
+        self.release_warm_membership(&membership);
+        Some(membership)
+    }
+
+    fn retain_warm_memberships(&mut self, mut keep: impl FnMut(&String, &WarmMembership) -> bool) {
+        let mut released = Vec::new();
+        self.warm_memberships.retain(|key, membership| {
+            let kept = keep(key, membership);
+            if !kept {
+                released.extend(membership.anchors());
+            }
+            kept
+        });
+        for anchor in released {
+            self.ledger.shared.release(anchor.id);
+        }
     }
 
     fn insert_prepared_build(&mut self, token: String, build: PreparedBuild) {
@@ -3398,9 +3455,7 @@ impl NativeStore {
         for identity in state.expired_prepared_loads(now) {
             state.prepared_loads.remove(&identity);
         }
-        state
-            .warm_memberships
-            .retain(|_, membership| membership.expires > now);
+        state.retain_warm_memberships(|_, membership| membership.expires > now);
         state.retain_loads(|id, slot| {
             (active.contains(id) && slot.deadline.load(Ordering::Acquire) > now)
                 || Arc::strong_count(slot) > 1
@@ -3444,6 +3499,7 @@ impl NativeStore {
                 + state.waiters.charged()
                 + state.resolutions.charged()
                 + state.warm_memberships.charged()
+                + state.ledger.shared.warm()
                 + state.locations.charged()
                 + state.locates.charged(),
             live_generations: state.generations.len(),
@@ -3541,6 +3597,7 @@ impl NativeStore {
                 + state.waiters.audit_charged()
                 + state.resolutions.audit_charged()
                 + state.warm_memberships.audit_charged()
+                + Self::audit_warm_buffer_bytes(state)
                 + state.locations.audit_charged()
                 + state.locates.audit_charged(),
             live_generations: snapshots.len(),
