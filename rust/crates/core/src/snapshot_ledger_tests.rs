@@ -4528,6 +4528,37 @@ fn assert_refused_reply(site: &str, fixture: &Fixture, headroom: usize, cache_hi
     fixture.store.assert_conserved();
 }
 
+fn load_slot_ids(store: &NativeStore) -> HashSet<String> {
+    store
+        .lock_state()
+        .loads
+        .values()
+        .map(|slot| slot.id.clone())
+        .collect()
+}
+
+fn cached_slot_walk(slot: &LoadSlot) -> usize {
+    assert!(
+        slot.work.lock().unwrap().result.is_some(),
+        "the residue load slot does not hold a cached snapshot"
+    );
+    NativeStore::audit_load_record_bytes(slot) + empty_index_walk(slot)
+}
+
+fn residue_walk(store: &NativeStore, held: &HashSet<String>) -> (usize, usize) {
+    let residue: Vec<_> = store
+        .lock_state()
+        .loads
+        .values()
+        .filter(|slot| !held.contains(&slot.id))
+        .cloned()
+        .collect();
+    (
+        residue.len(),
+        residue.iter().map(|slot| cached_slot_walk(slot)).sum(),
+    )
+}
+
 fn assert_facts_admitted_in_full(
     site: &str,
     build: &dyn Fn() -> Fixture,
@@ -4554,6 +4585,7 @@ fn assert_facts_admitted_in_full(
         let probes = fact_probes(&fixture.store);
         let disk = fixture.store.prepared_disk.stats();
         let leases = lease_table(&fixture.store);
+        let slot_ids = load_slot_ids(&fixture.store);
         let held = {
             let state = fixture.store.lock_state();
             (
@@ -4586,15 +4618,17 @@ fn assert_facts_admitted_in_full(
         assert!(offset > 0 || trace.is_empty(), "{site}: {trace:?}");
         fixture.store.assert_conserved();
         let after = ledger(&fixture.store);
-        let slots = after[LOADS] - before[LOADS];
+        let (slots, slot_bytes) = residue_walk(&fixture.store, &slot_ids);
         assert!(
             slots <= residue.slots,
             "{site}: the refusal at headroom {headroom} left {slots} load slots behind"
         );
-        let mut expected = before;
-        expected[LOADS] += slots;
-        let mut expected_audited = before_audited;
-        expected_audited[LOADS] += slots;
+        let [expected, expected_audited] = [before, before_audited].map(|mut gauges| {
+            gauges[LOADS] += slots;
+            gauges[PENDING] += slot_bytes;
+            gauges[TOTAL] += slot_bytes;
+            gauges
+        });
         assert_eq!(
             (after, audited(&fixture.store), bookkeeping(&fixture.store)),
             (expected, expected_audited, before_bookkeeping),
@@ -4820,16 +4854,26 @@ fn warm_root_refuses_root_facts_before_construction() {
         entry_bytes(&[&probe.pins[0]])
     );
     let predicted = facts_bound_walk(&probe.pins[0]);
+    let held = load_slot_ids(&probe.store);
+    let tier = probe.store.lock_state().loads.reserved_bytes();
+    assert!(submitted(site, &probe, [1, 0]));
+    let (slots, slot_bytes) = residue_walk(&probe.store, &held);
+    assert_eq!(
+        slots, 1,
+        "{site}: the root acquire did not cache one load slot"
+    );
+    let offset =
+        REPLY_RESERVATION + slot_bytes + probe.store.lock_state().loads.reserved_bytes() - tier;
     assert_facts_admitted_in_full(
         site,
         &build,
         &|fixture: &Fixture| submitted(site, fixture, [1, 0]),
-        REPLY_RESERVATION,
+        offset,
         predicted,
         &[Trace::Reserved(REPLY_RESERVATION)],
         UNPINNED_LOAD,
     );
-    assert_refused_reply(site, &build(), REPLY_RESERVATION + predicted - 1, 1);
+    assert_refused_reply(site, &build(), offset + predicted - 1, 1);
 }
 
 #[test]

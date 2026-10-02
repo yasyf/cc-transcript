@@ -19,10 +19,10 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_ledger::{
-    arc_bytes, arc_control_bytes, arc_slice_bytes, charged_bytes, deque_capacity_for, deque_growth,
-    hashbrown_tier, set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge,
-    DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table,
-    TicketKey, Work, MUTEX_STORAGE_BYTES,
+    arc_bytes, arc_slice_bytes, charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier,
+    set_capacity_for, set_growth, vec_capacity_for, vec_growth, Anchor, Charge, DeadlineIndex,
+    ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger, Table, TicketKey, Work,
+    MUTEX_STORAGE_BYTES,
 };
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
@@ -15026,7 +15026,22 @@ mod tests {
         assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
         assert!(steps > 1);
         store.assert_conserved();
-        assert_eq!(store.lock_state().ledger.pending, 0);
+        let mut state = store.lock_state();
+        let slot = Arc::clone(state.loads.values().next().expect("published load slot"));
+        assert_eq!(
+            (state.loads.len(), slot.accounted.load(Ordering::Acquire)),
+            (1, 0),
+            "the published load slot still carries load charges"
+        );
+        assert_eq!(
+            state.ledger.pending,
+            NativeStore::audit_load_record_bytes(&slot),
+            "the published load slot is not charged its record alone"
+        );
+        drop(slot);
+        NativeStore::prune(&mut state);
+        assert!(state.loads.is_empty());
+        assert_eq!(state.ledger.pending, 0);
     }
 
     const REPLY_RESERVATION: usize = MAX_REPLY_BYTES * 2;
