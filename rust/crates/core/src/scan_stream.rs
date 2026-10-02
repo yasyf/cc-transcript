@@ -1,6 +1,10 @@
+#[cfg(test)]
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{LazyLock, Mutex};
 
 use crate::scan::{ScanBudget, StagingReservation};
 use crate::scan_checkpoint::Prefix;
@@ -8,6 +12,20 @@ use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
 
 const READ_BLOCK: usize = 64 * 1024;
 const VALIDATE_BLOCK: usize = 1024 * 1024;
+
+#[cfg(test)]
+type ValidateHook = Box<dyn FnMut(u64) + Send>;
+
+#[cfg(test)]
+pub(crate) static VALIDATE_HOOKS: LazyLock<Mutex<HashMap<PathBuf, ValidateHook>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn run_validate_hook(path: &Path, validated: u64) {
+    if let Some(hook) = VALIDATE_HOOKS.lock().expect("validate hooks").get_mut(path) {
+        hook(validated);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineSpan {
@@ -174,8 +192,9 @@ impl<'store> SourceStream<'store> {
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<Vec<u8>, SnapshotError> {
-        budget.charge_validation(line.len);
-        self.read_at(line, budget, cancel)
+        let bytes = self.read_at(line, budget, cancel)?;
+        budget.charge_validation(bytes.len());
+        Ok(bytes)
     }
 
     fn read_at(
@@ -221,6 +240,8 @@ impl<'store> SourceStream<'store> {
                 .map_err(|_| changed("source changed while validating"))?;
             budget.charge_validation(count);
             prefix.write(&buffer[..count]);
+            #[cfg(test)]
+            run_validate_hook(&self.path, prefix.end());
         }
         self.file
             .seek(SeekFrom::Start(self.offset))
@@ -228,15 +249,24 @@ impl<'store> SourceStream<'store> {
         Ok((prefix.segments() == segments).then_some(prefix))
     }
 
-    pub fn verify(&self) -> Result<bool, SnapshotError> {
-        let open = SourceStamp::of(&self.file.metadata().map_err(io_error)?);
-        let linked = SourceStamp::of(&std::fs::metadata(&self.path).map_err(io_error)?);
-        if [open, linked].iter().any(|current| {
+    pub fn observe(&self) -> Result<[SourceStamp; 2], SnapshotError> {
+        Ok([
+            SourceStamp::of(&self.file.metadata().map_err(io_error)?),
+            SourceStamp::of(&std::fs::metadata(&self.path).map_err(io_error)?),
+        ])
+    }
+
+    pub fn verify(&self) -> Result<Option<[SourceStamp; 2]>, SnapshotError> {
+        let observed = self.observe()?;
+        if observed.iter().any(|current| {
             *current != self.stamp
                 && (current.identity != self.stamp.identity || current.size <= self.stamp.size)
         }) {
             return Err(changed("source changed during scan"));
         }
-        Ok(open != self.stamp || linked != self.stamp)
+        Ok(observed
+            .iter()
+            .any(|current| *current != self.stamp)
+            .then_some(observed))
     }
 }

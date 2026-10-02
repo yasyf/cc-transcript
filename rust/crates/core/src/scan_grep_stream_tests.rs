@@ -1,7 +1,7 @@
 use super::*;
 use crate::scan::{ScanControl, ScanPlan, ScanProgress, ScanSession};
 use crate::scan_checkpoint::{GrepCheckpoints, SourceRecord, MAX_RECORD_BYTES, PREFIX_SEGMENT};
-use crate::scan_stream::SourceStream;
+use crate::scan_stream::{LineSpan, SourceStream, VALIDATE_HOOKS};
 use crate::snapshot::{NativeStore, WorkLimits};
 use sonic_rs::{json, Value};
 use std::io::Write;
@@ -531,7 +531,7 @@ fn stream_reads_the_pinned_prefix_and_rejects_truncation() {
     }
     assert_eq!(lines, vec![b"a".to_vec(), b"b".to_vec()]);
     assert_eq!(budget.progress.source_bytes, 4);
-    assert!(stream.verify().unwrap());
+    assert!(stream.verify().unwrap().is_some());
     std::fs::File::options()
         .write(true)
         .open(&source.0)
@@ -539,6 +539,45 @@ fn stream_reads_the_pinned_prefix_and_rejects_truncation() {
         .set_len(1)
         .unwrap();
     assert_eq!(stream.verify().unwrap_err().status, Status::Changed);
+}
+
+#[test]
+fn refused_span_revalidation_charges_no_validation_bytes() {
+    let source = Source::raw(b"");
+    let size = 17 * 1024 * 1024;
+    std::fs::File::options()
+        .write(true)
+        .open(&source.0)
+        .unwrap()
+        .set_len(size as u64)
+        .unwrap();
+    let store = NativeStore::new(
+        &json!({"max_retained_bytes":16*1024*1024,"reserved_hook_accounted_bytes":0}),
+    )
+    .unwrap();
+    let span = LineSpan {
+        offset: 0,
+        len: size,
+        terminated: false,
+    };
+    let cancelled = Cancellation::default();
+    cancelled.cancel();
+    for (cancel, status) in [
+        (cancelled, Status::Cancelled),
+        (Cancellation::default(), Status::RetainedLimit),
+    ] {
+        let mut budget = ScanBudget::new(&store, limits());
+        let mut stream =
+            SourceStream::open(&source.0, 0, &mut budget, &Cancellation::default()).unwrap();
+        assert_eq!(
+            stream
+                .revalidate_span(&span, &mut budget, &cancel)
+                .unwrap_err()
+                .status,
+            status
+        );
+        assert_eq!(budget.progress.validated_bytes, 0, "{status:?}");
+    }
 }
 
 struct Cache(PathBuf, GrepCheckpoints);
@@ -928,16 +967,110 @@ fn an_append_racing_a_scan_revalidates_its_prefix_in_that_scan() {
 }
 
 #[test]
-fn a_racing_append_past_the_validation_cap_is_incomplete() {
-    let source = Source::new(&sparse(100, &[50]), true);
-    let (result, _, progress) = racing(
-        &source,
-        &json!({"max_scan_validate_bytes": 1000}),
-        None,
-        None,
+fn a_rewrite_during_growth_validation_fails_that_scan() {
+    for replaced in [false, true] {
+        let cache = Cache::segmented(SEGMENT as u64);
+        let source = Source::new(&sparse(100, &[50]), true);
+        let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+        let at = std::fs::read_to_string(&source.0)
+            .unwrap()
+            .find("filler 5 ")
+            .unwrap() as u64;
+        let path = source.0.clone();
+        let mut fired = false;
+        VALIDATE_HOOKS.lock().unwrap().insert(
+            source.0.clone(),
+            Box::new(move |validated| {
+                if fired || validated < 2 * SEGMENT as u64 {
+                    return;
+                }
+                fired = true;
+                if replaced {
+                    let staged = path.with_extension("replaced");
+                    std::fs::write(
+                        &staged,
+                        std::fs::read_to_string(&path)
+                            .unwrap()
+                            .replace("filler 5 ", "needle 5 "),
+                    )
+                    .unwrap();
+                    std::fs::rename(&staged, &path).unwrap();
+                } else {
+                    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                    file.write_all_at(b"needle 5 ", at).unwrap();
+                    file.set_modified(std::time::UNIX_EPOCH).unwrap();
+                }
+            }),
+        );
+        let (result, _, progress) = racing(&source, &json!({}), Some(&cache.1), None);
+        VALIDATE_HOOKS.lock().unwrap().remove(&source.0);
+        assert_eq!(result.err().unwrap().status, Status::Changed, "{replaced}");
+        assert_eq!(progress.validated_bytes, pinned, "{replaced}");
+        let (next, _, _) = checkpointed(
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+        let next = next.unwrap();
+        assert_eq!(next, fresh.unwrap(), "{replaced}");
+        assert_eq!(next.counts, vec![2], "{replaced}");
+    }
+}
+
+#[test]
+fn a_resumed_unterminated_tail_rewritten_as_it_grows_fails_that_scan() {
+    let cache = Cache::new();
+    let source = Source::new(&sparse(100, &[99]), false);
+    let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+    let tail = std::fs::read_to_string(&source.0)
+        .unwrap()
+        .find("needle 99")
+        .unwrap() as u64;
+    let (cold, _, _) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
     );
-    assert_eq!(result.err().unwrap().status, Status::Incomplete);
-    assert_eq!(progress.validated_bytes, 0);
+    assert_eq!(cold.unwrap().counts, vec![1]);
+    assert!(cache.record().file.committed < pinned as u64);
+    let (result, _, progress) = racing(&source, &json!({}), Some(&cache.1), Some(tail));
+    assert_eq!(result.err().unwrap().status, Status::Changed);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(progress.validated_bytes, pinned);
+}
+
+#[test]
+fn a_racing_append_past_the_validation_cap_is_incomplete() {
+    let capped = json!({"max_scan_validate_bytes": 1000});
+    let open = json!({});
+    for (config, hits) in [(&capped, 0), (&open, 1)] {
+        let cache = Cache::new();
+        let source = Source::new(&sparse(100, &[50]), true);
+        let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+        let (result, _, progress) = racing(&source, &capped, Some(&cache.1), None);
+        assert_eq!(result.err().unwrap().status, Status::Incomplete, "{hits}");
+        assert_eq!(progress.validated_bytes, 0, "{hits}");
+        let (next, _, progress) = configured(
+            config,
+            &source.0,
+            &[("needle", None)],
+            options(),
+            true,
+            limits(),
+            Some(&cache.1),
+        );
+        let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+        assert_eq!(next.unwrap(), fresh.unwrap(), "{hits}");
+        assert_eq!(progress.cache_hits, hits, "{hits}");
+        assert_eq!(progress.validated_bytes, hits * pinned, "{hits}");
+    }
 }
 
 #[test]

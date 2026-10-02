@@ -386,9 +386,15 @@ Each streamed scan hashes the bytes it commits below the file size pinned at
 open. The final stat check rejects shrinkage, replacement, and same-size changes.
 If it detects growth, the same run re-reads the committed prefix and any
 unterminated final line it parsed, comparing digests before reporting completion.
+The run records the stats of the open file and its path when it detects growth,
+then checks both again after the re-read. If either changed, the run returns
+`changed`, including for rewrites of already-hashed bytes, further appends, or
+path replacements during validation.
+
 A mismatch returns `changed`; a prefix plus final line larger than the remaining
 validation cap returns `incomplete`. Neither reports complete coverage. This
-additional read charges `validated_bytes`; no scan budget is extended.
+additional read charges `validated_bytes` only after each block or span is read
+successfully; no scan budget is extended.
 
 When `validated_bytes` is nonzero, the human summary appends
 ` · re-read {validated_bytes} bytes for validation` to `N files, M matches`.

@@ -319,8 +319,8 @@ impl<'store> GrepReducer<'store> {
         let Some(eof) = result? else {
             return Ok(None);
         };
-        if source.verify()? {
-            stream.reverify(&mut source, budget, cancel)?;
+        if let Some(grown) = source.verify()? {
+            stream.reverify(grown, &mut source, budget, cancel)?;
         }
         let names_used = stream.names.values().any(|slot| slot.referenced);
         Ok(Some(match stream.stopped {
@@ -579,6 +579,7 @@ impl<'store> GrepStream<'store> {
 
     fn reverify(
         &self,
+        grown: [SourceStamp; 2],
         source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
@@ -595,7 +596,8 @@ impl<'store> GrepStream<'store> {
             && match self.tail {
                 Some((line, sum)) => digest(&source.revalidate_span(&line, budget, cancel)?) == sum,
                 None => true,
-            };
+            }
+            && source.observe()? == grown;
         if intact {
             Ok(())
         } else {

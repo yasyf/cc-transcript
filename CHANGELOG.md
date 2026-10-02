@@ -31,9 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Extending a partial checkpoint on an unchanged file re-reads at most `4 MiB`
   to reopen that hash; a mismatch returns `changed` and deletes the record.
   Growth during a scan now triggers another prefix check, including any parsed
-  unterminated final line, in that same run. A mismatch returns `changed`, and
-  insufficient validation budget returns `incomplete`; neither reports complete
-  coverage. These reads charge `validated_bytes` separately from `source_bytes`.
+  unterminated final line, in that same run. The run now checks that the open
+  file's and path's stats stay unchanged across the re-read. A digest mismatch or
+  stat change returns `changed`, and insufficient validation budget returns
+  `incomplete`; neither reports complete coverage. These reads charge
+  `validated_bytes` separately from `source_bytes`. Single spans charge only
+  after a successful read, so cancellation, an expired deadline, or a staging
+  refusal before I/O adds no validation bytes.
   When nonzero, the human summary adds
   ` · re-read {validated_bytes} bytes for validation`.
 - Streamed `cc-transcript grep` labels an early `--max-matches` stop as a partial
