@@ -10788,7 +10788,7 @@ fn reparked_by(arm: &ResumedArm, fixture: &Fixture, key: usize, capacity: usize)
     walked + (arm.table_bytes)(&state) - capacity + pledged
 }
 
-fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fixture) {
+fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fixture) -> usize {
     let sample = build();
     let (key, held, capacity) = held_by(arm, &sample);
     let context = NativeStore::audit_value_bytes(&sample.owner);
@@ -10811,6 +10811,11 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
         );
     }
     let page = exact_headroom(build, &resumed);
+    assert!(
+        page > 0,
+        "{}: the resumed page fit at zero headroom, so it has no refusal boundary to test",
+        arm.site
+    );
     for headroom in [0, page - 1] {
         let refused = build();
         {
@@ -10913,6 +10918,7 @@ fn assert_resumed_arm_holds_its_charge(arm: &ResumedArm, build: &dyn Fn() -> Fix
         arm.site
     );
     assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
+    page
 }
 
 fn parked_discovery(state: &StoreState) -> (String, usize, usize) {
@@ -11151,14 +11157,16 @@ fn chunked_query_fixture(source: &LedgerSource, background: bool) -> Fixture {
             .iter()
             .next()
             .expect("parked prepared query");
+        let records = cursor.input_records.as_ref().expect("queued input records");
         assert!(
-            cursor.pending.is_none()
-                && cursor.next == 0
-                && cursor
-                    .input_records
-                    .as_ref()
-                    .is_some_and(|records| records.len() >= 2),
+            cursor.pending.is_none() && cursor.next == 0 && records.len() >= 2,
             "the prepared query did not park with two chunked records still queued"
+        );
+        assert!(
+            records[0].capacity() < cursor.claimant.len(),
+            "the {}-byte record the resume pops is not smaller than the {}-byte claimant its re-park pledges, so the resumed page needs no fresh bytes",
+            records[0].capacity(),
+            cursor.claimant.len()
         );
     }
     fixture.request = resume_request(first["cursor"].as_str().unwrap());
@@ -11182,7 +11190,39 @@ fn resumed_prepared_query_page_holds_its_cursor_charge_through_the_page() {
         },
     };
     for background in [false, true] {
-        assert_resumed_arm_holds_its_charge(&arm, &|| chunked_query_fixture(&source, background));
+        let build = || chunked_query_fixture(&source, background);
+        let page = assert_resumed_arm_holds_its_charge(&arm, &build);
+        let sample = build();
+        let (delivered, popped) = {
+            let state = sample.store.lock_state();
+            let (token, cursor) = state
+                .prepared_queries
+                .iter()
+                .next()
+                .expect("parked prepared query");
+            let delivered: Vec<usize> = state
+                .deliveries
+                .iter()
+                .filter(|(_, delivery)| delivery.cursor.as_deref() == Some(token.as_str()))
+                .map(|(key, delivery)| {
+                    NativeStore::audit_delivery_bytes(key, delivery) + size_of::<(u64, Arc<str>)>()
+                })
+                .collect();
+            assert_eq!(
+                delivered.len(),
+                1,
+                "the first page was not delivered exactly once"
+            );
+            (
+                delivered[0],
+                cursor.input_records.as_ref().expect("queued input records")[0].capacity(),
+            )
+        };
+        assert_eq!(
+            page,
+            delivered - popped,
+            "the resumed page is not the delivery record its re-park pledges less the record it pops"
+        );
     }
 }
 
