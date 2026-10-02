@@ -886,41 +886,58 @@ fn assert_boundary_at(
     attempt: &dyn Fn(&Fixture) -> bool,
     exact: usize,
 ) {
+    assert_refused_at(site, fixture, attempt, exact);
+    assert_fitted_at(site, fixture, attempt, exact);
+}
+
+fn assert_refused_at(
+    site: &str,
+    fixture: &Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    exact: usize,
+) {
     let cap = cap_for(&fixture.owner);
-    {
-        let _filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
-        fixture.store.assert_conserved();
-        let before = (
+    let _filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
+    fixture.store.assert_conserved();
+    let before = (
+        ledger(&fixture.store),
+        audited(&fixture.store),
+        bookkeeping(&fixture.store),
+    );
+    traced(&fixture.store);
+    assert!(
+        !attempt(fixture),
+        "{site}: one byte over the exact fit was admitted"
+    );
+    fixture.store.assert_conserved();
+    assert_eq!(
+        (
             ledger(&fixture.store),
             audited(&fixture.store),
             bookkeeping(&fixture.store),
-        );
-        traced(&fixture.store);
-        assert!(
-            !attempt(fixture),
-            "{site}: one byte over the exact fit was admitted"
-        );
-        fixture.store.assert_conserved();
-        assert_eq!(
-            (
-                ledger(&fixture.store),
-                audited(&fixture.store),
-                bookkeeping(&fixture.store),
-            ),
-            before,
-            "{site}: the refused admission leaked state"
-        );
-        assert!(
-            !traced(&fixture.store)
-                .iter()
-                .any(|trace| matches!(trace, Trace::Allocated(_))),
-            "{site}: the refused admission allocated retained bookkeeping"
-        );
-        assert!(
-            audited(&fixture.store)[TOTAL] <= cap,
-            "{site}: the refusal left the audit above the cap"
-        );
-    }
+        ),
+        before,
+        "{site}: the refused admission leaked state"
+    );
+    assert!(
+        !traced(&fixture.store)
+            .iter()
+            .any(|trace| matches!(trace, Trace::Allocated(_))),
+        "{site}: the refused admission allocated retained bookkeeping"
+    );
+    assert!(
+        audited(&fixture.store)[TOTAL] <= cap,
+        "{site}: the refusal left the audit above the cap"
+    );
+}
+
+fn assert_fitted_at(
+    site: &str,
+    fixture: &Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    exact: usize,
+) {
+    let cap = cap_for(&fixture.owner);
     let _filler = fill_to(&fixture.store, &fixture.owner, exact);
     assert!(attempt(fixture), "{site}: the exact fit was refused");
     fixture.store.assert_conserved();
@@ -2911,8 +2928,12 @@ fn resumed_root_warming_admits_its_waiter_exactly() {
     let exact = exact_headroom(&build, &attempt);
     assert!(exact > 0);
     let refused = build();
-    assert_boundary_at("resume_warm_root", &refused, &attempt, exact);
+    assert_refused_at("resume_warm_root", &refused, &attempt, exact);
     assert!(refused.store.lock_state().waiters.is_empty());
+    assert!(refused.store.lock_state().prepared_loads.is_empty());
+    let fitted = build();
+    assert_fitted_at("resume_warm_root", &fitted, &attempt, exact);
+    assert!(fitted.store.lock_state().waiters.is_empty());
 }
 
 #[test]
