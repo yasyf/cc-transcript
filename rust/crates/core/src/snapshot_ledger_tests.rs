@@ -4795,6 +4795,16 @@ fn completion_query_fixture(scenario: &Scenario, index: usize, background: bool)
         .lock_state()
         .prepared_facts
         .contains_key(&sidechain.stamp.identity));
+    {
+        let mut state = store.lock_state();
+        state.prepared_loads.reserve(1);
+        state.prepared_loads_expiry.reserve(1);
+        assert_eq!(
+            state.prepared_load_growth(&sidechain.stamp.identity),
+            0,
+            "the completion's prepared load pin still grows its tables"
+        );
+    }
     Fixture {
         store,
         owner,
