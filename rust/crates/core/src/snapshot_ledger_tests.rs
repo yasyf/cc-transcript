@@ -7248,7 +7248,13 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
         let capacity = fitted.store.lock_state().locates.capacity_bytes();
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         traced(&fitted.store);
+        let released = Arc::new(Mutex::new(Vec::new()));
+        *fitted.store.release_hook.lock().unwrap() = Some(Arc::new({
+            let released = Arc::clone(&released);
+            move |bytes: usize| released.lock().unwrap().push(bytes)
+        }));
         assert!(location_parked(&fitted));
+        *fitted.store.release_hook.lock().unwrap() = None;
         assert_admitted_before_allocating("location park", &traced(&fitted.store));
         fitted.store.assert_conserved();
         let (token, pledged, parked) = {
@@ -7271,6 +7277,11 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
             );
             (token.clone(), state.locates.pledged(token), parked)
         };
+        assert_eq!(
+            *released.lock().unwrap(),
+            vec![exact - parked],
+            "the location park did not draw its stored key, cursor, table growth, and pledge from the step's reservation"
+        );
         let cap = cap_for(&fitted.owner);
         assert_eq!(
             ledger(&fitted.store)[TOTAL],
@@ -8517,7 +8528,19 @@ fn resumed_graph_cursor_admits_its_context_and_releases_its_sources_on_refusal()
             let refused = build();
             {
                 let _filler = fill_to(&refused.store, &refused.owner, headroom);
+                let root = Arc::downgrade(&refused.pins[0]);
+                let pinned = Arc::strong_count(&refused.pins[0]);
+                *refused.store.release_hook.lock().unwrap() = Some(Arc::new(
+                    move |bytes: usize| {
+                        assert_eq!(
+                            root.strong_count() + 1,
+                            pinned,
+                            "a {bytes}-byte reservation was released while the refused graph cursor still held its root"
+                        );
+                    },
+                ));
                 assert!(!fits(&refused));
+                *refused.store.release_hook.lock().unwrap() = None;
             }
             let control = build();
             {
@@ -8730,6 +8753,153 @@ fn resumed_location_step_admits_each_found_session_before_retaining_it() {
             );
         }
         assert_fitted_at("resumed found session", &build(), &attempt, exact);
+    }
+}
+
+fn invalidated_location_fixture(scenario: &Scenario, background: bool) -> Fixture {
+    let fixture = location_resume_fixture(scenario, background);
+    let token = fixture.request["cursor"].as_str().unwrap().to_owned();
+    {
+        let mut state = fixture.store.lock_state();
+        let mut cursor = state
+            .locates
+            .remove(&token)
+            .expect("parked location cursor");
+        let forgotten = scenario
+            .ids()
+            .into_iter()
+            .find(|id| !cursor.found.contains(id))
+            .expect("an unfound session");
+        cursor.pending.push_back(json!({"session_id":forgotten.as_str(),"status":"ok","path":scenario.root.directory.join("gone.jsonl").to_string_lossy().as_ref(),"revision":"gone"}));
+        cursor.found.insert(forgotten);
+        let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
+        state.locates.reserve_for(&token);
+        state.locates.insert(token.clone(), cursor);
+        state.locates.pledge(&token, pledge);
+    }
+    fixture
+}
+
+#[test]
+fn resumed_location_step_forgets_an_invalid_session_before_admitting_the_next_one() {
+    let scenario = Scenario::new(9, |index| session_line(&format!("thread-{index:04}")));
+    let root = PathBuf::from(&scenario.roots()[0]);
+    for background in [false, true] {
+        let build = || invalidated_location_fixture(&scenario, background);
+        let control = build();
+        let (key, found, forgotten, pending) = {
+            let state = control.store.lock_state();
+            let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert_eq!(cursor.pending.len(), 1);
+            (
+                token.capacity(),
+                cursor.found.clone(),
+                cursor.pending[0]["session_id"].as_str().unwrap().to_owned(),
+                cursor.pending.capacity(),
+            )
+        };
+        let reply = submit(&control);
+        let first = &reply["data"]["sessions"][0];
+        assert_eq!(first["status"].as_str(), Some("ok"), "{reply:?}");
+        let (id, path, revision) = (
+            first["session_id"].as_str().unwrap().to_owned(),
+            first["path"].as_str().unwrap().to_owned(),
+            first["revision"].as_str().unwrap().to_owned(),
+        );
+        let mut kept = HashSet::with_capacity(found.capacity());
+        kept.extend(found.iter().filter(|member| **member != forgotten).cloned());
+        assert_eq!(
+            (kept.len(), kept.capacity()),
+            (found.len() - 1, found.capacity())
+        );
+        let kept_before = kept.capacity();
+        kept.insert(id.clone());
+        let mut queued = VecDeque::<Value>::with_capacity(pending);
+        queued.push_back(Value::new_null());
+        let mut updates = Vec::<(String, PathBuf)>::new();
+        updates.push(Default::default());
+        let site = (kept.capacity() - kept_before) * size_of::<String>()
+            + id.len()
+            + (queued.capacity() - pending) * size_of::<Value>()
+            + value_bytes(&json!({"session_id":id,"status":"ok","path":path,"revision":revision}))
+            + updates.capacity() * size_of::<(String, PathBuf)>()
+            + id.len()
+            + root.join(Path::new(&path).file_name().unwrap()).capacity();
+        let attempt = reached(
+            |store| store.locate_items.load(Ordering::Relaxed),
+            |fixture| settled_or_refused(&submit(fixture)),
+        );
+        let exact = exact_headroom(&build, &attempt);
+        assert_eq!(
+            exact + key,
+            REPLY_RESERVATION
+                + value_bytes(&control.owner)
+                + LOCATE_PATH_SLOTS
+                + found.len() * size_of::<String>()
+                + site,
+            "the session found after forgetting an invalid one was not admitted by its retained bytes"
+        );
+        for headroom in [REPLY_RESERVATION, exact - 1] {
+            let refused = build();
+            let probe = refused.store.locate_items.load(Ordering::Relaxed);
+            {
+                let _filler = fill_to(&refused.store, &refused.owner, headroom);
+                assert!(!attempt(&refused));
+            }
+            assert_eq!(refused.store.locate_items.load(Ordering::Relaxed), probe);
+            let control = build();
+            {
+                let mut state = control.store.lock_state();
+                let token = state
+                    .locates
+                    .iter()
+                    .next()
+                    .map(|(token, _)| token.clone())
+                    .expect("parked location cursor");
+                state.locates.remove(&token);
+            }
+            evict_unpinned(&control.store, &control.owner);
+            assert!(refused.store.lock_state().locates.is_empty());
+            assert_eq!(
+                (
+                    settled(&refused.store),
+                    audited(&refused.store),
+                    bookkeeping(&refused.store)
+                ),
+                (
+                    settled(&control.store),
+                    audited(&control.store),
+                    bookkeeping(&control.store)
+                ),
+                "a refused location resume leaked state after forgetting a session"
+            );
+        }
+        assert_fitted_at(
+            "resumed found session after an invalidation",
+            &build(),
+            &attempt,
+            exact,
+        );
+    }
+}
+
+#[test]
+fn filesystem_path_slot_covers_a_joined_directory_entry_path() {
+    for root in (1..libc::PATH_MAX as usize).map(|length| "r".repeat(length)) {
+        for name in [1, 255, 3 * 255].map(|length| "n".repeat(length)) {
+            let joined = Path::new(&root).join(&name);
+            assert!(
+                joined.capacity() + size_of::<libc::dirent>() <= FILESYSTEM_PATH_BYTES,
+                "a {}-byte root joined with a {}-byte name grew to {} bytes",
+                root.len(),
+                name.len(),
+                joined.capacity()
+            );
+            assert!(
+                joined.capacity() + libc::PATH_MAX as usize + 2 * size_of::<libc::dirent>()
+                    <= LOCATE_PATH_SLOTS
+            );
+        }
     }
 }
 

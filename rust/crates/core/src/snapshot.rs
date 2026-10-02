@@ -31,7 +31,7 @@ pub const SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
 pub const MAX_REPLY_BYTES: usize = 1_044_480;
 const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
-const FILESYSTEM_PATH_BYTES: usize = libc::PATH_MAX as usize + size_of::<libc::dirent>();
+const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,6 +448,13 @@ struct Lease {
     delivery: usize,
     registry_generation: String,
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
+}
+
+struct RenewedScope {
+    snapshot: Arc<TranscriptSnapshot>,
+    classifier: Value,
+    expires: u64,
+    description_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -5218,6 +5225,22 @@ impl NativeStore {
         context: &Value,
         deadline: u64,
     ) -> Result<(Arc<TranscriptSnapshot>, Value), SnapshotError> {
+        let scope = self.renew_scope_for_work(handle, context, deadline)?;
+        let description = self.description(
+            &scope.snapshot,
+            &scope.classifier,
+            str_field(handle, "lease_id")?,
+            scope.expires,
+        );
+        Ok((scope.snapshot, description))
+    }
+
+    fn renew_scope_for_work(
+        &self,
+        handle: &Value,
+        context: &Value,
+        deadline: u64,
+    ) -> Result<RenewedScope, SnapshotError> {
         #[cfg(test)]
         {
             let hook = self.pin_hook.lock().expect("pin hook").clone();
@@ -5234,19 +5257,22 @@ impl NativeStore {
                 "borrow deadline expired",
             ));
         }
-        let (snapshot, _) = self.pin_scope(handle, context)?;
+        let (snapshot, probe) = self.pin_scope(handle, context)?;
         let mut state = self.lock_state();
         let lease = self.lease(&state, handle, context)?;
         let expires = lease.expires.max(deadline.min(lease.absolute_deadline));
         let classifier = lease.classifier.clone();
-        let token = str_field(handle, "lease_id")?;
         state
             .leases
-            .get_mut(token)
+            .get_mut(str_field(handle, "lease_id")?)
             .expect("validated lease")
             .expires = expires;
-        let description = self.description(&snapshot, &classifier, token, expires);
-        Ok((snapshot, description))
+        Ok(RenewedScope {
+            snapshot,
+            classifier,
+            expires,
+            description_bytes: value_bytes(&probe),
+        })
     }
 
     fn lease<'a>(
@@ -5940,11 +5966,14 @@ impl NativeStore {
                     })
                 };
                 if let Some((mut locate, mut reservation)) = locate {
-                    self.extend_projection_reservation(
+                    if let Err(error) = self.extend_projection_reservation(
                         &mut reservation,
                         context,
                         value_bytes(context) + LOCATE_PATH_SLOTS,
-                    )?;
+                    ) {
+                        drop(locate);
+                        return Err(error);
+                    }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
                 }
@@ -6051,6 +6080,7 @@ impl NativeStore {
                         value_bytes(context),
                     ) {
                         Self::rollback_graph_page(&mut self.lock_state(), &mut graph);
+                        drop(graph);
                         return Err(error);
                     }
                     graph.context = context.clone();
@@ -7548,12 +7578,9 @@ impl NativeStore {
         let root_handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing root handle"))?;
-        let (root, description) =
-            self.pin_scope_for_work(root_handle, context, bounds.deadline_unix_ms)?;
-        bounds.deadline_unix_ms = bounds
-            .deadline_unix_ms
-            .min(number(&description, "lease_expires_unix_ms")? as u64);
-        if !classifier_eq(&view["classifier"], &description["classifier"])? {
+        let scope = self.renew_scope_for_work(root_handle, context, bounds.deadline_unix_ms)?;
+        bounds.deadline_unix_ms = bounds.deadline_unix_ms.min(scope.expires);
+        if !classifier_eq(&view["classifier"], &scope.classifier)? {
             return Err(invalid("view classifier differs from root generation"));
         }
         let direct = str_field(&request["query"], "kind")? == "direct_sidechains";
@@ -7593,7 +7620,8 @@ impl NativeStore {
             .sum::<Result<usize, _>>()?;
         let task_count = if direct { 0 } else { attachments.len() } + usize::from(selected);
         let claimant = str_field(context, "claimant")?;
-        let root_path = root.canonical_path.as_os_str().len();
+        let lease_id = str_field(root_handle, "lease_id")?;
+        let root_path = scope.snapshot.canonical_path.as_os_str().len();
         let mut reservation = self.reserve_projection(
             context,
             size_of::<GraphCursor>()
@@ -7603,7 +7631,7 @@ impl NativeStore {
                 + value_bytes(root_handle)
                 + size_of::<GraphNode>()
                 + root_path
-                + value_bytes(&description)
+                + scope.description_bytes
                 + set_growth(&HashSet::<SourceIdentity>::new(), 1)
                 + task_count * size_of::<GraphTask>()
                 + attachment_bytes
@@ -7611,6 +7639,14 @@ impl NativeStore {
         )?;
         #[cfg(test)]
         self.graph_records.fetch_add(1, Ordering::Relaxed);
+        let RenewedScope {
+            snapshot: root,
+            classifier,
+            expires,
+            ..
+        } = scope;
+        let description = self.description(&root, &classifier, lease_id, expires);
+        drop(classifier);
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         let mut tasks = Vec::with_capacity(task_count);
         for attachment in attachments.iter().rev().filter(|_| !direct) {
@@ -8885,6 +8921,25 @@ impl NativeStore {
         Ok(())
     }
 
+    fn forget_location(
+        &self,
+        cursor: &mut LocateCursor,
+        reservation: &mut ProjectionReservation<'_>,
+        id: &str,
+    ) -> Result<(), SnapshotError> {
+        self.extend_projection_reservation(
+            reservation,
+            &cursor.context,
+            cursor.found.len() * size_of::<String>(),
+        )?;
+        let capacity = cursor.found.capacity();
+        let mut kept = Vec::with_capacity(cursor.found.len());
+        kept.extend(cursor.found.drain().filter(|found| found.as_str() != id));
+        cursor.found.extend(kept);
+        assert_eq!(cursor.found.capacity(), capacity);
+        Ok(())
+    }
+
     fn location_candidate(
         &self,
         path: &Path,
@@ -9135,7 +9190,11 @@ impl NativeStore {
                         &cursor.context,
                     )?
                     else {
-                        cursor.found.remove(str_field(&item, "session_id")?);
+                        self.forget_location(
+                            &mut cursor,
+                            reservation,
+                            str_field(&item, "session_id")?,
+                        )?;
                         continue;
                     };
                     let revision = stamp.revision();
