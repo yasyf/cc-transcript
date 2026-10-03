@@ -16,7 +16,9 @@ use crate::scan_stream::LineSpan;
 
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub const PREFIX_SEGMENT: u64 = 4 * 1024 * 1024;
-const MAX_RECORDS: usize = 256;
+pub const MAX_RECORDS: usize = 256;
+pub const LOCK_STRIPES: usize = 1024;
+pub const PROTOCOL_DIR: &str = "stripes-1";
 const MAX_LISTED: usize = 4096;
 const MAX_QUERIES: usize = 16;
 const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -144,6 +146,11 @@ fn lock(file: &File) -> bool {
 
 fn try_lock(path: &Path) -> Option<File> {
     open_private(path, true).ok().filter(lock)
+}
+
+fn stripe(key: &str) -> usize {
+    let digest = Sha256::digest(key.as_bytes());
+    usize::from(u16::from_be_bytes([digest[0], digest[1]])) % LOCK_STRIPES
 }
 
 fn version(metadata: &std::fs::Metadata) -> Version {
@@ -328,7 +335,7 @@ impl Prefix {
 impl GrepCheckpoints {
     pub fn new(dir: PathBuf, producer: String) -> Self {
         Self {
-            dir,
+            dir: dir.join(PROTOCOL_DIR),
             producer,
             segment: PREFIX_SEGMENT,
             index_from: MIN_SOURCE_BYTES,
@@ -372,18 +379,33 @@ impl GrepCheckpoints {
         self.dir.join(format!("{key}.idx"))
     }
 
+    fn lock_dir(&self) -> PathBuf {
+        self.dir.join("locks")
+    }
+
     fn build_lock_path(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{key}.build.lock"))
+        self.lock_dir()
+            .join(format!("build-{:03x}.lock", stripe(key)))
+    }
+
+    fn record_lock_path(&self, key: &str) -> PathBuf {
+        self.lock_dir()
+            .join(format!("record-{:03x}.lock", stripe(key)))
     }
 
     fn private_dir(&self) -> bool {
         private(&self.dir)
     }
 
+    fn locks(&self) -> bool {
+        self.private_dir() && private(&self.lock_dir())
+    }
+
     pub fn build_lock(&self, key: &str) -> Option<File> {
-        (self.private_dir() && private(&self.index_dir(key)))
+        self.locks()
             .then(|| try_lock(&self.build_lock_path(key)))
             .flatten()
+            .filter(|_| private(&self.index_dir(key)))
     }
 
     pub fn load(&self, key: &str, limit: usize) -> (Option<Loaded>, usize) {
@@ -452,13 +474,13 @@ impl GrepCheckpoints {
         limit: usize,
     ) -> std::io::Result<Saved> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        if !self.private_dir() {
+        if !self.locks() {
             return Ok(Saved {
                 published: false,
                 read: 0,
             });
         }
-        let Some(guard) = try_lock(&self.dir.join(format!("{}.lock", ours.key))) else {
+        let Some(guard) = try_lock(&self.record_lock_path(&ours.key)) else {
             return Ok(Saved {
                 published: false,
                 read: 0,
@@ -512,14 +534,23 @@ impl GrepCheckpoints {
         }
         written?;
         drop(guard);
-        self.evict(builds);
+        self.evict(builds.then_some(record.key.as_str()));
         Ok(Saved {
             published: record.file.index == fresh,
             read,
         })
     }
 
-    fn evict(&self, indexes: bool) {
+    fn victim(&self, key: &str, holder: Option<&str>) -> Option<(Option<File>, File)> {
+        let build = if holder.is_some_and(|holder| stripe(holder) == stripe(key)) {
+            None
+        } else {
+            Some(try_lock(&self.build_lock_path(key))?)
+        };
+        Some((build, try_lock(&self.record_lock_path(key))?))
+    }
+
+    fn evict(&self, holder: Option<&str>) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
         };
@@ -547,20 +578,17 @@ impl GrepCheckpoints {
         records.sort();
         let excess = records.len().saturating_sub(MAX_RECORDS);
         for (_, key) in records.drain(..excess) {
-            if let Some(_held) = try_lock(&self.build_lock_path(&key)) {
+            if let Some(_held) = self.victim(&key, holder) {
                 self.discard(&key);
-                let _ = std::fs::remove_file(self.dir.join(format!("{key}.lock")));
-                let _ = std::fs::remove_file(self.build_lock_path(&key));
             }
         }
-        if !indexes {
+        if holder.is_none() {
             return;
         }
         let kept: HashSet<&str> = records.iter().map(|(_, key)| key.as_str()).collect();
         for key in dirs.iter().filter(|key| !kept.contains(key.as_str())) {
-            if let Some(_held) = try_lock(&self.build_lock_path(key)) {
+            if let Some(_held) = self.victim(key, holder) {
                 self.discard_index(key);
-                let _ = std::fs::remove_file(self.build_lock_path(key));
             }
         }
         let mut total = 0u64;
@@ -568,7 +596,7 @@ impl GrepCheckpoints {
             match total.saturating_add(dir_bytes(&self.index_dir(key))) {
                 within if within <= MAX_INDEX_BYTES => total = within,
                 _ => {
-                    if let Some(_held) = try_lock(&self.build_lock_path(key)) {
+                    if let Some(_held) = self.victim(key, holder) {
                         self.discard_index(key);
                     }
                 }

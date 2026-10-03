@@ -1,14 +1,17 @@
 use super::*;
 use crate::scan::{ScanControl, ScanPlan, ScanProgress, ScanSession};
 use crate::scan_checkpoint::{
-    GrepCheckpoints, QueryLayer, ReducerState, SourceRecord, MAX_RECORD_BYTES, PREFIX_SEGMENT,
+    GrepCheckpoints, QueryLayer, ReducerState, SourceRecord, LOCK_STRIPES, MAX_RECORDS,
+    MAX_RECORD_BYTES, PREFIX_SEGMENT, PROTOCOL_DIR,
 };
 use crate::scan_stream::{LineSpan, SourceStream, VALIDATE_HOOKS};
 use crate::snapshot::{NativeStore, WorkLimits};
+use sha2::{Digest, Sha256};
 use sonic_rs::{json, Value};
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -620,11 +623,15 @@ impl Cache {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         Self(
-            dir.clone(),
+            dir.join(PROTOCOL_DIR),
             GrepCheckpoints::new(dir, "test".into())
                 .indexing_from(from)
                 .segmented(segment),
         )
+    }
+
+    fn root(&self) -> &Path {
+        self.0.parent().unwrap()
     }
 
     fn record(&self) -> crate::scan_checkpoint::SourceRecord {
@@ -645,7 +652,7 @@ impl Cache {
 
 impl Drop for Cache {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+        std::fs::remove_dir_all(self.root()).unwrap();
     }
 }
 
@@ -2261,7 +2268,8 @@ fn damaged_index_files_are_discarded_and_rebuilt() {
 fn a_held_build_lock_leaves_the_index_to_its_holder() {
     let cache = Cache::indexing(0);
     let source = Source::new(&bulk(300, &[5]), true);
-    let unindexed = GrepCheckpoints::new(cache.0.clone(), "test".into()).indexing_from(u64::MAX);
+    let unindexed =
+        GrepCheckpoints::new(cache.root().to_path_buf(), "test".into()).indexing_from(u64::MAX);
     checkpointed(
         &source.0,
         &[("needle", None)],
@@ -2573,13 +2581,38 @@ fn seeded_record(source: &Source, cache: &Cache) -> (String, Vec<u8>) {
     )
 }
 
-fn hold_record_lock(cache: &Cache, key: &str) -> std::fs::File {
-    let held = crate::scan_index::open_private(&cache.0.join(format!("{key}.lock")), true).unwrap();
+fn stripe_mirror(key: &str) -> usize {
+    let digest = Sha256::digest(key.as_bytes());
+    (usize::from(digest[0]) << 8 | usize::from(digest[1])) % 1024
+}
+
+fn stripe_name(kind: &str, key: &str) -> String {
+    format!("{kind}-{:03x}.lock", stripe_mirror(key))
+}
+
+fn stripe_file(cache: &Cache, kind: &str, key: &str) -> PathBuf {
+    cache.0.join("locks").join(stripe_name(kind, key))
+}
+
+fn unlocked(path: &Path) -> std::fs::File {
+    crate::scan_index::open_private(path, true).unwrap()
+}
+
+fn lock(file: &std::fs::File) {
     assert_eq!(
-        unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
+}
+
+fn hold(path: &Path) -> std::fs::File {
+    let held = unlocked(path);
+    lock(&held);
     held
+}
+
+fn hold_record_lock(cache: &Cache, key: &str) -> std::fs::File {
+    hold(&stripe_file(cache, "record", key))
 }
 
 fn scanned_while_locked(
@@ -2679,4 +2712,434 @@ fn an_interrupted_partial_scan_returns_without_the_record_lock() {
     );
     assert_eq!(after.unwrap(), fresh);
     assert_eq!(cache.record().queries.len(), 2);
+}
+
+fn colliding(key: &str) -> String {
+    (0..)
+        .map(|attempt| format!("{key}-{attempt}"))
+        .find(|candidate| stripe_mirror(candidate) == stripe_mirror(key))
+        .unwrap()
+}
+
+fn apart(key: &str, name: &str) -> String {
+    (0..)
+        .map(|attempt| format!("{name}-{attempt}"))
+        .find(|candidate| stripe_mirror(candidate) != stripe_mirror(key))
+        .unwrap()
+}
+
+fn keyed_record(key: &str) -> SourceRecord {
+    SourceRecord {
+        key: key.into(),
+        ..source_record("r1", 90, &[(90, 1)], &[("q", 90)])
+    }
+}
+
+fn keyed(cache: &Cache, key: &str) -> SourceRecord {
+    sonic_rs::from_slice(&std::fs::read(cache.0.join(format!("{key}.json"))).unwrap()).unwrap()
+}
+
+fn saved(cache: &Cache, key: &str) -> (bool, usize) {
+    let saved = cache
+        .1
+        .save(keyed_record(key), false, None, MAX_RECORD_BYTES)
+        .unwrap();
+    (saved.published, saved.read)
+}
+
+fn age(cache: &Cache, key: &str) {
+    std::fs::File::options()
+        .write(true)
+        .open(cache.0.join(format!("{key}.json")))
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+        .unwrap();
+}
+
+fn fill(cache: &Cache) {
+    for index in 0..MAX_RECORDS {
+        std::fs::write(cache.0.join(format!("filler-{index}.json")), b"{}").unwrap();
+    }
+}
+
+fn lock_files(cache: &Cache) -> Vec<(String, u64)> {
+    let mut files: Vec<(String, u64)> = std::fs::read_dir(cache.0.join("locks"))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .map(|entry| {
+            (
+                entry.file_name().into_string().unwrap(),
+                entry.metadata().unwrap().ino(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn assert_referenced(cache: &Cache, key: &str, layer: &crate::scan_index::IndexLayer) {
+    let dir = cache.0.join(format!("{key}.idx"));
+    let len = |name: String| std::fs::metadata(dir.join(name)).unwrap().len();
+    assert!(len(format!("proj-{}", layer.generation)) >= layer.proj);
+    assert!(len(format!("events-{}", layer.generation)) >= layer.events as u64 * 20);
+    for segment in &layer.segments {
+        assert!(len(segment.name.clone()) >= segment.len, "{}", segment.name);
+    }
+}
+
+#[test]
+fn colliding_keys_share_one_stripe_file() {
+    let cache = Cache::new();
+    let first = "collide".to_owned();
+    let second = colliding(&first);
+    assert_ne!(first, second);
+    assert_eq!(saved(&cache, &first), (true, 0));
+    let held = hold_record_lock(&cache, &first);
+    assert_eq!(saved(&cache, &second), (false, 0));
+    assert!(!cache.0.join(format!("{second}.json")).exists());
+    drop(held);
+    let building = cache.1.build_lock(&first).unwrap();
+    assert!(cache.1.build_lock(&second).is_none());
+    assert!(!cache.0.join(format!("{second}.idx")).exists());
+    drop(building);
+    assert!(cache.1.build_lock(&second).is_some());
+    assert_eq!(saved(&cache, &second), (true, 0));
+    assert_eq!(keyed(&cache, &second).key, second);
+    assert_eq!(
+        lock_files(&cache)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        vec![stripe_name("build", &first), stripe_name("record", &first)]
+    );
+}
+
+#[test]
+fn lock_files_are_stable_bounded_and_never_unlinked() {
+    assert_eq!(LOCK_STRIPES, 1024);
+    let cache = Cache::new();
+    let keys: Vec<String> = (0..300).map(|index| format!("key-{index}")).collect();
+    for key in &keys {
+        assert_eq!(saved(&cache, key), (true, 0));
+    }
+    assert_eq!(cache.records().len(), MAX_RECORDS);
+    let evicted: Vec<&String> = keys
+        .iter()
+        .filter(|key| !cache.0.join(format!("{key}.json")).exists())
+        .collect();
+    assert_eq!(evicted.len(), keys.len() - MAX_RECORDS);
+    let expected: BTreeSet<String> = keys
+        .iter()
+        .map(|key| stripe_name("record", key))
+        .chain(evicted.iter().map(|key| stripe_name("build", key)))
+        .collect();
+    let before = lock_files(&cache);
+    assert_eq!(
+        before
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<BTreeSet<_>>(),
+        expected
+    );
+    assert!(before.len() <= 2 * LOCK_STRIPES);
+    assert!(std::fs::read_dir(&cache.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .all(|path| path.extension().is_none_or(|extension| extension != "lock")));
+    for index in 300..350 {
+        assert_eq!(saved(&cache, &format!("key-{index}")), (true, 0));
+    }
+    let after = lock_files(&cache);
+    assert!(before.iter().all(|file| after.contains(file)));
+    assert!(after.len() <= 2 * LOCK_STRIPES);
+}
+
+#[test]
+fn eviction_skips_a_victim_whose_stripe_is_held() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(300, &[5]), true);
+    let layer = build(&source, &cache);
+    let key = cache.record().key;
+    let record = cache.0.join(format!("{key}.json"));
+    age(&cache, &key);
+    let before = std::fs::read(&record).unwrap();
+    fill(&cache);
+    for kind in ["record", "build"] {
+        let held = hold(&stripe_file(&cache, kind, &key));
+        assert_eq!(saved(&cache, &apart(&key, kind)), (true, 0));
+        assert_eq!(std::fs::read(&record).unwrap(), before, "{kind}");
+        assert_referenced(&cache, &key, &layer);
+        drop(held);
+    }
+    assert_eq!(saved(&cache, "trigger-free"), (true, 0));
+    assert!(!record.exists());
+    assert!(!cache.0.join(format!("{key}.idx")).exists());
+    assert!(stripe_file(&cache, "build", &key).exists());
+    assert!(stripe_file(&cache, "record", &key).exists());
+}
+
+#[test]
+fn a_descriptor_opened_before_eviction_still_excludes_later_builders() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(300, &[5]), true);
+    build(&source, &cache);
+    let key = cache.record().key;
+    let path = stripe_file(&cache, "build", &key);
+    let paused = unlocked(&path);
+    age(&cache, &key);
+    fill(&cache);
+    assert_eq!(saved(&cache, "trigger"), (true, 0));
+    assert!(!cache.0.join(format!("{key}.json")).exists());
+    assert!(!cache.0.join(format!("{key}.idx")).exists());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().ino(),
+        paused.metadata().unwrap().ino()
+    );
+    lock(&paused);
+    assert!(cache.1.build_lock(&key).is_none());
+    let fresh = streamed(&source.0, &[("needle", None)], options(), true, limits())
+        .0
+        .unwrap();
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap(), fresh);
+    assert_eq!(progress.cache_hits, 0);
+    assert_eq!(keyed(&cache, &key).file.index, None);
+    assert!(!cache.0.join(format!("{key}.idx")).exists());
+    drop(paused);
+    checkpointed(
+        &source.0,
+        &[("zq-never", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    )
+    .0
+    .unwrap();
+    let layer = keyed(&cache, &key).file.index.unwrap();
+    assert_referenced(&cache, &key, &layer);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 5", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle 5", None)], options(), true, limits());
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.cache_hits, 1);
+}
+
+#[test]
+fn a_held_publication_stripe_blocks_publication_and_retirement() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[900]), true);
+    let layer = build(&source, &cache);
+    let key = cache.record().key;
+    let record = cache.0.join(format!("{key}.json"));
+    let before = std::fs::read(&record).unwrap();
+    let path = stripe_file(&cache, "record", &key);
+    let paused = unlocked(&path);
+    assert_eq!(saved(&cache, "trigger"), (true, 0));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().ino(),
+        paused.metadata().unwrap().ino()
+    );
+    lock(&paused);
+    append(&source.0, &sparse(2450, &[2420])[2400..]);
+    let (run, _) =
+        scanned_while_locked(paused, &source, &cache, &[("needle 2420", None)], |_, _| {});
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(std::fs::read(&record).unwrap(), before);
+    assert_referenced(&cache, &key, &layer);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 2420", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
+    let extended = keyed(&cache, &key).file.index.unwrap();
+    assert_eq!(
+        extended.committed,
+        std::fs::metadata(&source.0).unwrap().len()
+    );
+    assert_ne!(extended, layer);
+    assert_referenced(&cache, &key, &extended);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!((progress.cache_hits, progress.cache_invalidations), (1, 0));
+}
+
+#[test]
+fn a_builder_reclaims_an_orphan_on_its_own_build_stripe() {
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[900]), true);
+    build(&source, &cache);
+    let key = cache.record().key;
+    let orphan = cache.0.join(format!("{}.idx", colliding(&key)));
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&orphan)
+        .unwrap();
+    std::fs::write(orphan.join("proj-x"), b"stale").unwrap();
+    append(&source.0, &sparse(2450, &[2420])[2400..]);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 2420", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
+    assert!(!orphan.exists());
+    let layer = cache.record().file.index.unwrap();
+    assert_eq!(layer.committed, std::fs::metadata(&source.0).unwrap().len());
+    assert_referenced(&cache, &key, &layer);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!(progress.cache_hits, 1);
+}
+
+fn legacy_victims(root: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json" || extension == "idx")
+        })
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_stripe_protocol_shares_no_entry_with_a_legacy_cache() {
+    assert!(!PROTOCOL_DIR.contains('.'));
+    let cache = Cache::indexing(0);
+    let source = Source::new(&bulk(2400, &[900]), true);
+    let layer = build(&source, &cache);
+    let key = cache.record().key;
+    let root = cache.root();
+    let legacy: Vec<(PathBuf, &[u8])> = (0..MAX_RECORDS + 8)
+        .map(|index| (root.join(format!("legacy-{index}.json")), &b"{}"[..]))
+        .chain([
+            (root.join(format!("{key}.json")), &b"legacy record"[..]),
+            (
+                root.join(format!("{key}.idx"))
+                    .join(format!("proj-{}", layer.generation)),
+                &b"legacy index"[..],
+            ),
+            (
+                root.join("orphan.idx").join("proj-x"),
+                &b"legacy orphan"[..],
+            ),
+        ])
+        .collect();
+    for (path, bytes) in &legacy {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+    }
+    let planted = legacy_victims(root);
+    let legacy_builder = hold(&root.join(format!("{key}.build.lock")));
+    let legacy_saver = hold(&root.join(format!("{key}.lock")));
+    fill(&cache);
+    for index in 0..MAX_RECORDS {
+        age(&cache, &format!("filler-{index}"));
+    }
+    append(&source.0, &sparse(2450, &[2420])[2400..]);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle 2420", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    assert_eq!(run.unwrap().counts, vec![1]);
+    assert_eq!(progress.cache_hits, 1);
+    assert_eq!(cache.records().len(), MAX_RECORDS);
+    let extended = keyed(&cache, &key).file.index.unwrap();
+    assert_eq!(
+        extended.committed,
+        std::fs::metadata(&source.0).unwrap().len()
+    );
+    for (path, bytes) in &legacy {
+        assert_eq!(
+            &std::fs::read(path).unwrap()[..],
+            *bytes,
+            "{}",
+            path.display()
+        );
+    }
+    assert_eq!(legacy_victims(root), planted);
+    assert_eq!(
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<BTreeSet<_>>(),
+        planted
+            .iter()
+            .cloned()
+            .chain([
+                PROTOCOL_DIR.to_owned(),
+                format!("{key}.build.lock"),
+                format!("{key}.lock"),
+            ])
+            .collect::<BTreeSet<_>>()
+    );
+    drop((legacy_builder, legacy_saver));
+    for path in planted.iter().map(|name| root.join(name)) {
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+    assert_referenced(&cache, &key, &extended);
+    let (run, _, progress) = checkpointed(
+        &source.0,
+        &[("needle", None)],
+        options(),
+        true,
+        limits(),
+        Some(&cache.1),
+    );
+    let (fresh, _, _) = streamed(&source.0, &[("needle", None)], options(), true, limits());
+    assert_eq!(run.unwrap(), fresh.unwrap());
+    assert_eq!((progress.cache_hits, progress.cache_invalidations), (1, 0));
 }

@@ -348,7 +348,7 @@ still performs a full preparation pass; its unchanged cost is separate from
 bounded searching.
 
 Claude `grep` streams matches as it reads and saves checkpoints in
-`~/.claude/cc-transcript/scan`, one owner-private record per transcript. The record
+`~/.claude/cc-transcript/scan/stripes-1`, one owner-private record per transcript. The record
 binds the CLI build, parser, snapshot schema, classifier, and file identity, and
 holds a per-file layer plus one layer per query; a query layer also binds the
 tool registry, patterns and match caps, search options, output mode, and starting
@@ -402,7 +402,7 @@ When `validated_bytes` is nonzero, the human summary appends
 Codex sources, `--errors`, and `--with-result` keep using prepared snapshots.
 
 For Claude transcripts of `8 MiB` or more, streaming `grep` also builds a persistent
-per-file index in `~/.claude/cc-transcript/scan/<key>.idx`, private to your account.
+per-file index in `~/.claude/cc-transcript/scan/stripes-1/<key>.idx`, private to your account.
 The index opens only after its checkpoint record passes the validation above;
 on growth, an immediate stat re-check rejects same-size changes, truncation, or
 path replacement since open as `changed`, while further growth reaches the
