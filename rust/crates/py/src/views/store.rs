@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cc_transcript_core::snapshot::ChunkRows;
 use cc_transcript_core::toolcall::ToolRegistrySnapshot;
 
 use cc_transcript_core::types::{
@@ -8,16 +9,16 @@ use cc_transcript_core::types::{
 };
 
 /// One event's slot in the shared parse output: every event-scoped view is an
-/// `Arc<Vec<Entry>>` plus an index, resolved fresh on each getter access.
+/// `Arc<ChunkRows>` plus an index, resolved fresh on each getter access.
 #[derive(Clone)]
 pub(crate) struct EventRef {
-    pub entries: Arc<Vec<Entry>>,
+    pub entries: Arc<ChunkRows>,
     pub idx: usize,
     pub registry: Option<Arc<ToolRegistrySnapshot>>,
 }
 
 impl EventRef {
-    pub fn new(entries: Arc<Vec<Entry>>, idx: usize) -> Self {
+    pub fn new(entries: Arc<ChunkRows>, idx: usize) -> Self {
         Self {
             entries,
             idx,

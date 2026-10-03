@@ -5,6 +5,8 @@ use sonic_rs::Value;
 
 use crate::protocol::{interrupt_marker, is_agent_injection};
 
+const TEXT_SEPARATOR: &str = " ";
+
 /// Envelope metadata shared by the conversational entry kinds (user, assistant,
 /// system). Mode and Other entries carry no envelope on disk.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -127,6 +129,13 @@ impl UserContent {
         match self {
             UserContent::Plain(s) => s.clone(),
             UserContent::Blocks(blocks) => joined_text(blocks),
+        }
+    }
+
+    pub(crate) fn text_len(&self) -> usize {
+        match self {
+            UserContent::Plain(s) => s.len(),
+            UserContent::Blocks(blocks) => joined_text_len(blocks),
         }
     }
 }
@@ -503,22 +512,28 @@ pub fn matches_names(actual: &str, names: &HashSet<String>) -> bool {
         })
 }
 
-/// The space-joined text of the ``Text`` blocks — the ``text`` field of the
-/// Python ``AssistantEvent``/``PrintMessage``.
 /// Python `round(dt.timestamp() * 1000)`: half-even over the float product.
 pub fn epoch_ms(dt: DateTime<FixedOffset>) -> i64 {
     ((dt.timestamp_micros() as f64 / 1_000_000.0) * 1000.0).round_ties_even() as i64
 }
 
+fn text_blocks(blocks: &[ContentBlock]) -> impl Iterator<Item = &str> + Clone {
+    blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text(t) => Some(t.as_str()),
+        _ => None,
+    })
+}
+
+/// The space-joined text of the ``Text`` blocks — the ``text`` field of the
+/// Python ``AssistantEvent``/``PrintMessage``.
 pub fn joined_text(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text(t) => Some(t.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    text_blocks(blocks).collect::<Vec<_>>().join(TEXT_SEPARATOR)
+}
+
+pub(crate) fn joined_text_len(blocks: &[ContentBlock]) -> usize {
+    let texts = text_blocks(blocks);
+    texts.clone().map(str::len).sum::<usize>()
+        + texts.count().saturating_sub(1) * TEXT_SEPARATOR.len()
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

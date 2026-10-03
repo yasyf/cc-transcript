@@ -6,6 +6,7 @@ use pyo3::types::{PyCFunction, PyDict, PyFrozenSet, PyMapping, PyTuple};
 use sonic_rs::Value;
 
 use cc_transcript_core::ids;
+use cc_transcript_core::snapshot::ChunkRows;
 use cc_transcript_core::toolcall::{self, EditSpan, McpToolSpec, PatchEdit, SpanEditMap, ToolCall};
 use cc_transcript_core::value::normalize_last_wins;
 
@@ -31,6 +32,7 @@ use crate::views::store::with_view_registry;
 pub(crate) struct ToolCallBaseView {
     pub call: Arc<ToolCall>,
     pub registry: Option<Arc<toolcall::ToolRegistrySnapshot>>,
+    _rows: Option<Arc<ChunkRows>>,
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
@@ -1104,10 +1106,15 @@ pub(crate) fn tool_name_matcher<'py>(
     )
 }
 
-pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn call_view<'py>(
+    py: Python<'py>,
+    call: Arc<ToolCall>,
+    rows: Option<Arc<ChunkRows>>,
+) -> PyResult<Bound<'py, PyAny>> {
     let base = ToolCallBaseView {
         call: Arc::clone(&call),
         registry: toolcall::ToolRegistrySnapshot::capture_scoped(),
+        _rows: rows,
     };
     let init = PyClassInitializer::from(base);
     match &*call {
@@ -1174,9 +1181,14 @@ pub(crate) fn call_view<'py>(py: Python<'py>, call: Arc<ToolCall>) -> PyResult<B
     }
 }
 
-pub(crate) fn parse_call_view(py: Python<'_>, name: &str, input: &Value) -> PyResult<Py<PyAny>> {
+pub(crate) fn parse_call_view(
+    py: Python<'_>,
+    name: &str,
+    input: &Value,
+    rows: Option<Arc<ChunkRows>>,
+) -> PyResult<Py<PyAny>> {
     match toolcall::parse_tool_call_strict(name, input) {
-        Ok(call) => Ok(call_view(py, Arc::new(call))?.unbind()),
+        Ok(call) => Ok(call_view(py, Arc::new(call), rows)?.unbind()),
         Err(err) => Err(tool_input_error(py, name, &err)),
     }
 }
@@ -1198,10 +1210,10 @@ pub(crate) fn toolcall_parse_view<'py>(
     normalize_last_wins(&mut input);
     match on_error.unwrap_or("raise") {
         "raise" => match toolcall::parse_tool_call_strict(name, &input) {
-            Ok(call) => call_view(py, Arc::new(call)),
+            Ok(call) => call_view(py, Arc::new(call), None),
             Err(err) => Err(tool_input_error(py, name, &err)),
         },
-        _ => call_view(py, Arc::new(toolcall::parse_tool_call(name, &input))),
+        _ => call_view(py, Arc::new(toolcall::parse_tool_call(name, &input)), None),
     }
 }
 
@@ -1527,8 +1539,9 @@ mod tests {
                     &sonic_rs::json!({"path":"a.py","body":"x".repeat(128_000)}),
                 )
             }));
-            let view =
-                toolcall::with_registry(registry, || call_view(py, Arc::clone(&call)).unwrap());
+            let view = toolcall::with_registry(registry, || {
+                call_view(py, Arc::clone(&call), None).unwrap()
+            });
             let before = Arc::strong_count(&call);
             let matcher = view.getattr("name_matcher").unwrap();
             assert_eq!(Arc::strong_count(&call), before);

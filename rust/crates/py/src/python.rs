@@ -28,6 +28,7 @@ use cc_transcript_core::ids;
 use cc_transcript_core::notifications::Notifications;
 use cc_transcript_core::parse::{parse_bytes, parse_print_envelope};
 use cc_transcript_core::query::{FileRef, Session};
+use cc_transcript_core::snapshot::ChunkRows;
 use cc_transcript_core::types::{epoch_ms, Entry};
 
 static PARSE_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
@@ -83,7 +84,7 @@ fn parsed_file_to_py<'py>(py: Python<'py>, pf: ParsedFile) -> PyResult<Bound<'py
             path: pf.path,
             mtime: pf.mtime,
             provider: pf.provider,
-            entries: Arc::new(pf.lines),
+            entries: Arc::new(ChunkRows::new(pf.lines)),
         },
     )?
     .into_any())

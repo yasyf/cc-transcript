@@ -80,7 +80,7 @@ impl PreparedFacts {
                     })
                     .sum::<usize>()
         });
-        self.accounted = std::mem::size_of::<Self>()
+        self.accounted = crate::snapshot_ledger::arc_bytes::<Self>()
             + input_charge.owned_capacity_bytes
             + input_charge.opaque_dom_accounted_bytes
             + override_charge;

@@ -774,7 +774,19 @@ class CallContext(WireModel):
 
 
 class StoreConfig(WireModel):
-    max_retained_bytes: Positive = MAX_RETAINED_BYTES
+    max_retained_bytes: Annotated[
+        Positive,
+        Field(
+            description=(
+                "Hard cap on retained accounted bytes. It must be at least the store's startup "
+                "footprint (the pre-sized delivery and expired-query tables plus the default tool "
+                "registries); a smaller value is rejected as an invalid configuration. Background "
+                "admissions are capped at max_retained_bytes - reserved_hook_accounted_bytes, so a "
+                "footprint above that difference refuses every background admission while "
+                "foreground hook admissions proceed."
+            )
+        ),
+    ] = MAX_RETAINED_BYTES
     max_prepared_fact_memory_bytes: Positive = 128 * 1024 * 1024
     max_prepared_disk_bytes: Positive = 2 * 1024 * 1024 * 1024
     max_source_bytes: Positive = MAX_SOURCE_BYTES

@@ -1,4 +1,4 @@
-use crate::codex::lower::{blocks_text, echo_sets, lower_entry};
+use crate::codex::lower::{blocks_text, echo_sets, lower_entry, session_arenas};
 use crate::codex::types::{CodexEntry, CodexItem, CodexSession, EventMsg, ResponseItemPayload};
 use crate::codex::{lower, parse_codex_bytes};
 
@@ -183,6 +183,7 @@ impl CodexAppendIndex {
         let previous = self.last_trigger_turn.then(|| CodexEntry {
             line_index: self.lines - 1,
             timestamp: None,
+            source: None,
             item: CodexItem::InterAgentCommunicationMetadata {
                 trigger_turn: Some(true),
             },
@@ -218,7 +219,7 @@ impl CodexAppendIndex {
     }
 
     pub(crate) fn accounted_bytes(&self) -> usize {
-        size_of::<Self>()
+        arc_bytes::<Self>()
             + self.thread_id.as_ref().map_or(0, String::capacity)
             + self.cwd.as_ref().map_or(0, String::capacity)
             + self.model.as_ref().map_or(0, String::capacity)
@@ -275,7 +276,7 @@ impl NativeStore {
             (Some(previous), Some(parsed)) => previous.fallback_reason(parsed),
             _ => Some("cold"),
         };
-        let (entries, index) = if fallback.is_some() {
+        let (entries, arenas, index) = if fallback.is_some() {
             let mut start = 0;
             for end in memchr::memchr_iter(b'\n', &raw) {
                 if end - start > self.config.entry {
@@ -315,7 +316,12 @@ impl NativeStore {
             load.activity = ActivityIndex::default();
             load.indexed = 0;
             load.session_id = None;
-            (entries, CodexAppendIndex::from_session(&session, &raw))
+            let arenas = session_arenas(&session, &entries);
+            (
+                entries,
+                arenas,
+                CodexAppendIndex::from_session(&session, &raw),
+            )
         } else {
             let parsed = parsed_suffix.as_ref().expect("parsed codex suffix");
             if parsed.entries.len() > lowering_events {
@@ -326,10 +332,9 @@ impl NativeStore {
             }
             usage[2] += suffix.len() as u64;
             let previous = load.codex_append.as_ref().expect("codex append index");
-            (
-                previous.lower_suffix(parsed),
-                previous.append(parsed, suffix),
-            )
+            let entries = previous.lower_suffix(parsed);
+            let arenas = session_arenas(parsed, &entries);
+            (entries, arenas, previous.append(parsed, suffix))
         };
         usage[3] += entries.len() as u64;
         if load.session_id.is_none() {
@@ -342,7 +347,8 @@ impl NativeStore {
             .last()
             .map_or(0, |chunk| chunk.start + chunk.entries.len());
         if !entries.is_empty() {
-            load.chunks.push(Arc::new(EntryChunk::new(start, entries)));
+            load.chunks
+                .push(Arc::new(EntryChunk::retaining(start, entries, arenas)));
         }
         load.count = load.chunks.iter().map(|chunk| chunk.entries.len()).sum();
         let committed = raw

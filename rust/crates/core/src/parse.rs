@@ -1,8 +1,14 @@
+use std::mem::size_of;
+
 use chrono::{DateTime, Datelike, FixedOffset, Timelike};
 use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use crate::protocol::{DENIAL_KIND_USER_REJECTED, DENIAL_PREFIX};
+use crate::snapshot_ledger::hashbrown_tier;
+use crate::snapshot_memory::{
+    dom_parse_bound, pins_arena, value_charge, SourceArena, SONIC_SERIALIZER_BYTES,
+};
 use crate::types::{
     ApiError, AssistantEntry, AsyncHookResponse, AttachmentDetail, AttachmentEntry, Attribution,
     CacheCreation, CompactBoundary, ContentBlock, DeferredToolsDelta, Entry, EntryMeta,
@@ -14,7 +20,8 @@ use crate::types::{
     UserEntry,
 };
 use crate::value::{
-    block_type, field, field_bool, field_str, field_truthy, is_py_truthy, normalized_owned,
+    block_type, deduplicated, field, field_bool, field_str, field_truthy, is_py_truthy,
+    normalized_owned, subtree_has_duplicate_keys,
 };
 
 const AVG_LINE_BYTES: usize = 1400;
@@ -25,6 +32,40 @@ const AVG_LINE_BYTES: usize = 1400;
 pub enum ParseError {
     Key(String),
     Value(String),
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Retained {
+    line: bool,
+    private: Vec<SourceArena>,
+}
+
+impl Retained {
+    fn share(&mut self, value: &Value) -> Value {
+        self.line |= pins_arena(value);
+        value.clone()
+    }
+
+    fn normalized(&mut self, value: &Value) -> Value {
+        match deduplicated(value) {
+            Some((normalized, source_len)) => {
+                self.private.push(SourceArena {
+                    root: normalized.clone(),
+                    source_len,
+                });
+                normalized
+            }
+            None => self.share(value),
+        }
+    }
+
+    pub(crate) fn arenas(self, root: Value, source_len: usize) -> Vec<SourceArena> {
+        let Self { line, mut private } = self;
+        if line {
+            private.push(SourceArena { root, source_len });
+        }
+        private
+    }
 }
 
 pub(crate) fn truthy_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
@@ -174,6 +215,7 @@ fn parse_tool_result(
     block: &Value,
     tool_use_result: Option<&Value>,
     tool_denial_kind: Option<&str>,
+    retained: &mut Retained,
 ) -> Result<ContentBlock, ParseError> {
     let content = flatten_result_content(require(block, "content")?)?;
     let is_error = field_truthy(block, "is_error");
@@ -186,7 +228,7 @@ fn parse_tool_result(
         content,
         is_error,
         is_async: tool_use_result.is_some_and(|tur| field_bool(tur, "isAsync")),
-        tool_use_result: tool_use_result.cloned(),
+        tool_use_result: tool_use_result.map(|value| retained.share(value)),
         denial_kind,
     }))
 }
@@ -195,6 +237,7 @@ fn parse_user_content(
     content: &Value,
     tool_use_result: Option<&Value>,
     tool_denial_kind: Option<&str>,
+    retained: &mut Retained,
 ) -> Result<UserContent, ParseError> {
     match content.as_str() {
         Some(s) => Ok(UserContent::Plain(s.to_string())),
@@ -205,9 +248,12 @@ fn parse_user_content(
                     Some("text") => {
                         field_str(b, "text").map(|t| Ok(ContentBlock::Text(t.to_string())))
                     }
-                    Some("tool_result") => {
-                        Some(parse_tool_result(b, tool_use_result, tool_denial_kind))
-                    }
+                    Some("tool_result") => Some(parse_tool_result(
+                        b,
+                        tool_use_result,
+                        tool_denial_kind,
+                        retained,
+                    )),
                     _ => None,
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -239,7 +285,10 @@ pub fn parse_questions(input: &Value) -> Option<Vec<Question>> {
     )
 }
 
-fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
+fn parse_assistant_block(
+    block: &Value,
+    retained: &mut Retained,
+) -> Result<ContentBlock, ParseError> {
     match block_type(block) {
         Some("text") => Ok(ContentBlock::Text(require_str(block, "text")?.to_string())),
         Some("thinking") => Ok(ContentBlock::Thinking(
@@ -248,7 +297,7 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
         Some("tool_use") => {
             let id = require_str(block, "id")?.to_string();
             let name = require_str(block, "name")?.to_string();
-            let input = normalized_owned(require(block, "input")?);
+            let input = retained.normalized(require(block, "input")?);
             Ok(ContentBlock::ToolUse(ToolUseBlock {
                 id,
                 name,
@@ -266,16 +315,19 @@ fn parse_assistant_block(block: &Value) -> Result<ContentBlock, ParseError> {
         })),
         Some(other) => Ok(ContentBlock::Other {
             ty: other.to_string(),
-            raw: normalized_owned(block),
+            raw: retained.normalized(block),
         }),
         None => Err(ParseError::Key("type".to_string())),
     }
 }
 
-fn parse_assistant_blocks(content: &Value) -> Result<Vec<ContentBlock>, ParseError> {
+fn parse_assistant_blocks(
+    content: &Value,
+    retained: &mut Retained,
+) -> Result<Vec<ContentBlock>, ParseError> {
     require_array(content)?
         .iter()
-        .map(parse_assistant_block)
+        .map(|block| parse_assistant_block(block, retained))
         .collect()
 }
 
@@ -365,7 +417,7 @@ fn parse_preserved_messages(messages: Option<&Value>) -> Option<PreservedMessage
     })
 }
 
-fn parse_system_detail(data: &Value) -> SystemDetail {
+fn parse_system_detail(data: &Value, retained: &mut Retained) -> SystemDetail {
     match field_str(data, "subtype") {
         Some("stop_hook_summary") => SystemDetail::StopHookSummary(StopHookSummary {
             hook_count: opt_i64(data, "hookCount"),
@@ -412,11 +464,11 @@ fn parse_system_detail(data: &Value) -> SystemDetail {
                     .map(str::to_string),
             })
         }
-        _ => SystemDetail::Other(data.clone()),
+        _ => SystemDetail::Other(retained.share(data)),
     }
 }
 
-fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
+fn parse_attachment_detail(data: &Value, retained: &mut Retained) -> AttachmentDetail {
     let empty = Value::default();
     let att = field(data, "attachment").unwrap_or(&empty);
     match field_str(att, "type") {
@@ -435,7 +487,7 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             hook_name: opt_str(att, "hookName"),
             hook_event: opt_str(att, "hookEvent"),
             tool_use_id: truthy_str(att, "toolUseID").map(str::to_string),
-            blocking_error: field(att, "blockingError").map(normalized_owned),
+            blocking_error: field(att, "blockingError").map(|value| retained.normalized(value)),
         }),
         Some("hook_non_blocking_error") => {
             AttachmentDetail::HookNonBlockingError(HookNonBlockingError {
@@ -473,7 +525,7 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
             stdout: opt_str(att, "stdout"),
             stderr: opt_str(att, "stderr"),
             exit_code: opt_i64(att, "exitCode"),
-            response: field(att, "response").map(normalized_owned),
+            response: field(att, "response").map(|value| retained.normalized(value)),
         }),
         Some("queued_command") => AttachmentDetail::QueuedCommand(QueuedCommand {
             prompt: opt_str(att, "prompt"),
@@ -483,15 +535,22 @@ fn parse_attachment_detail(data: &Value) -> AttachmentDetail {
         Some("deferred_tools_delta") => AttachmentDetail::DeferredToolsDelta(DeferredToolsDelta {
             added_names: str_array(att, "addedNames"),
             removed_names: str_array(att, "removedNames"),
-            raw: data.clone(),
+            raw: retained.share(data),
         }),
-        _ => AttachmentDetail::Other(data.clone()),
+        _ => AttachmentDetail::Other(retained.share(data)),
     }
 }
 
 /// Parse one JSONL transcript line into the typed model. Consumes the value so
 /// unrecognized entry kinds keep their payload verbatim without a copy.
 pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
+    parse_entry_retained(data, &mut Retained::default())
+}
+
+pub(crate) fn parse_entry_retained(
+    data: Value,
+    retained: &mut Retained,
+) -> Result<Entry, ParseError> {
     // Root-level dup keys read first-wins in Rust (Python/orjson: last-wins) — accepted
     // divergence; details on task e0ab2411 item 9.
     let ty = require_str(&data, "type")?.to_string();
@@ -504,6 +563,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 require(require(&data, "message")?, "content")?,
                 tool_use_result,
                 tool_denial_kind,
+                retained,
             )?;
             return Ok(Entry::User(UserEntry {
                 meta: parse_meta(&data)?,
@@ -515,7 +575,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 source_tool_use_id: truthy_str(&data, "sourceToolUseID").map(str::to_string),
                 source_tool_assistant_uuid: truthy_str(&data, "sourceToolAssistantUUID")
                     .map(str::to_string),
-                mcp_meta: field(&data, "mcpMeta").map(normalized_owned),
+                mcp_meta: field(&data, "mcpMeta").map(|value| retained.normalized(value)),
                 permission_mode: field_str(&data, "permissionMode").map(str::to_string),
                 interrupted_message_id: field_str(&data, "interruptedMessageId")
                     .map(str::to_string),
@@ -523,7 +583,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
         }
         "assistant" => {
             let message = require(&data, "message")?;
-            let blocks = parse_assistant_blocks(require(message, "content")?)?;
+            let blocks = parse_assistant_blocks(require(message, "content")?, retained)?;
             let meta = parse_meta(&data)?;
             return Ok(Entry::Assistant(AssistantEntry {
                 meta,
@@ -543,7 +603,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
                 subtype: require_str(&data, "subtype")?.to_string(),
                 content: field_str(&data, "content").map(str::to_string),
                 level: field_str(&data, "level").map(str::to_string),
-                detail: parse_system_detail(&data),
+                detail: parse_system_detail(&data, retained),
             }));
         }
         "mode" => {
@@ -561,7 +621,7 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
             }));
         }
         "attachment" => {
-            let detail = parse_attachment_detail(&data);
+            let detail = parse_attachment_detail(&data, retained);
             let attachment_type = field(&data, "attachment")
                 .and_then(|att| field_str(att, "type"))
                 .unwrap_or("")
@@ -574,35 +634,565 @@ pub fn parse_entry(data: Value) -> Result<Entry, ParseError> {
         }
         _ => {}
     }
-    let raw = normalized_owned(&data);
+    let raw = retained.normalized(&data);
     Ok(Entry::Other(OtherEntry { ty, raw }))
+}
+
+pub(crate) fn pushed_capacity(len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        len.next_power_of_two().max(4)
+    }
+}
+
+fn checked_sum(parts: impl IntoIterator<Item = usize>) -> Option<usize> {
+    parts.into_iter().try_fold(0usize, usize::checked_add)
+}
+
+fn widest(parts: impl IntoIterator<Item = Option<usize>>) -> Option<usize> {
+    parts
+        .into_iter()
+        .try_fold(0usize, |widest, part| Some(widest.max(part?)))
+}
+
+fn str_len(data: &Value, key: &str) -> usize {
+    field_str(data, key).map_or(0, str::len)
+}
+
+fn truthy_len(data: &Value, key: &str) -> usize {
+    truthy_str(data, key).map_or(0, str::len)
+}
+
+fn values_of<'a>(data: &'a Value, key: &'a str) -> impl Iterator<Item = &'a Value> + 'a {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(data.as_object().map_or(1, |object| object.len()));
+    data.as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .filter(move |(name, _)| *name == key)
+        .map(|(_, value)| value)
+}
+
+fn widest_str(data: &Value, key: &str) -> usize {
+    values_of(data, key)
+        .filter_map(JsonValueTrait::as_str)
+        .map(str::len)
+        .max()
+        .unwrap_or(0)
+}
+
+fn names_str(data: &Value, key: &str) -> bool {
+    values_of(data, key).any(|value| value.as_str().is_some())
+}
+
+fn dom_bytes(value: &Value) -> usize {
+    value_charge(value).opaque_dom_accounted_bytes
+}
+
+fn str_array_bound(data: &Value, key: &str) -> Option<usize> {
+    let (count, bytes) = field(data, key)
+        .and_then(JsonContainerTrait::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValueTrait::as_str)
+        .fold((0, 0), |(count, bytes), item| {
+            (count + 1, bytes + item.len())
+        });
+    pushed_capacity(count)
+        .checked_mul(size_of::<String>())?
+        .checked_add(bytes)
+}
+
+fn joined_text_bound(total: usize) -> Option<usize> {
+    if total == 0 {
+        Some(0)
+    } else {
+        total.checked_mul(2).map(|doubled| doubled.max(8))
+    }
+}
+
+fn leaf_temp(serialized: usize) -> Option<usize> {
+    serialized
+        .checked_mul(2)
+        .map(|doubled| doubled.max(SONIC_SERIALIZER_BYTES))
+}
+
+fn serialized_bound(value: &Value) -> Option<usize> {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(1);
+    match value.get_type() {
+        JsonType::Null => Some(4),
+        JsonType::Boolean => Some(5),
+        JsonType::Number => Some(
+            value
+                .as_raw_number()
+                .map_or(0, |number| number.as_str().len()),
+        ),
+        JsonType::String => value.as_str().unwrap().len().checked_mul(6)?.checked_add(2),
+        JsonType::Array => {
+            let array = value.as_array().unwrap();
+            array
+                .iter()
+                .try_fold(array.len().checked_add(2)?, |total, item| {
+                    total.checked_add(serialized_bound(item)?)
+                })
+        }
+        JsonType::Object => {
+            value
+                .as_object()
+                .unwrap()
+                .iter()
+                .try_fold(2usize, |total, (key, item)| {
+                    total
+                        .checked_add(key.len().checked_mul(6)?.checked_add(4)?)?
+                        .checked_add(serialized_bound(item)?)
+                })
+        }
+    }
+}
+
+fn seen_scratch(value: &Value) -> Option<usize> {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(1);
+    if let Some(object) = value.as_object() {
+        let own = pushed_capacity(object.len()).checked_mul(size_of::<&str>())?;
+        object.iter().try_fold(own, |deepest, (_, item)| {
+            Some(deepest.max(own.checked_add(seen_scratch(item)?)?))
+        })
+    } else if let Some(array) = value.as_array() {
+        widest(array.iter().map(seen_scratch))
+    } else {
+        Some(0)
+    }
+}
+
+fn write_scratch(value: &Value) -> Option<usize> {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(1);
+    if let Some(object) = value.as_object() {
+        let pair = size_of::<(&str, &Value)>();
+        let pairs = object.len().checked_mul(pair)?;
+        let dedupe = pushed_capacity(object.len())
+            .checked_mul(size_of::<&str>())?
+            .checked_add(hashbrown_tier(object.len(), pair).checked_mul(pair)?)?;
+        let deepest = object.iter().try_fold(dedupe, |deepest, (key, item)| {
+            Some(
+                deepest
+                    .max(leaf_temp(key.len().checked_mul(6)?.checked_add(2)?)?)
+                    .max(write_scratch(item)?),
+            )
+        })?;
+        pairs.checked_add(deepest)
+    } else if let Some(array) = value.as_array() {
+        widest(array.iter().map(write_scratch))
+    } else {
+        leaf_temp(serialized_bound(value)?)
+    }
+}
+
+fn normalized_bound(value: Option<&Value>) -> Option<usize> {
+    let Some(value) = value else {
+        return Some(0);
+    };
+    let dedupe = if subtree_has_duplicate_keys(value) {
+        let serialized = serialized_bound(value)?;
+        checked_sum([
+            joined_text_bound(serialized)?,
+            write_scratch(value)?,
+            dom_parse_bound(serialized)?,
+        ])?
+    } else {
+        0
+    };
+    checked_sum([dom_bytes(value), seen_scratch(value)?, dedupe])
+}
+
+fn meta_bound(data: &Value) -> usize {
+    str_len(data, "uuid")
+        + truthy_len(data, "parentUuid")
+        + str_len(data, "sessionId")
+        + str_len(data, "cwd")
+        + str_len(data, "gitBranch")
+        + truthy_len(data, "version")
+        + str_len(data, "entrypoint")
+        + str_len(data, "userType")
+        + str_len(data, "slug")
+}
+
+fn image_paste_ids_bound(data: &Value) -> Option<usize> {
+    let ids = field(data, "imagePasteIds")
+        .and_then(JsonContainerTrait::as_array)
+        .map_or(0, |ids| {
+            ids.iter().filter(|id| id.as_i64().is_some()).count()
+        });
+    pushed_capacity(ids).checked_mul(size_of::<i64>())
+}
+
+fn result_content_bound(content: &Value) -> Option<usize> {
+    if let Some(text) = content.as_str() {
+        return Some(text.len());
+    }
+    let Some(blocks) = content.as_array() else {
+        return Some(0);
+    };
+    joined_text_bound(
+        blocks
+            .iter()
+            .filter(|block| block_type(block) == Some("text"))
+            .filter_map(|block| field_str(block, "text"))
+            .map(str::len)
+            .sum(),
+    )
+}
+
+fn user_content_bound(data: &Value, content: &Value) -> Option<usize> {
+    if let Some(text) = content.as_str() {
+        return Some(text.len());
+    }
+    let Some(blocks) = content.as_array() else {
+        return Some(0);
+    };
+    let empty = Value::default();
+    let result_payload = field(data, "toolUseResult").map_or(0, dom_bytes);
+    let denial =
+        truthy_str(data, "toolDenialKind").map_or(DENIAL_KIND_USER_REJECTED.len(), str::len);
+    let mut kept = 0usize;
+    let mut results = 0usize;
+    let mut bytes = 0usize;
+    for block in blocks.iter() {
+        match block_type(block) {
+            Some("text") => {
+                if let Some(text) = field_str(block, "text") {
+                    kept += 1;
+                    bytes = bytes.checked_add(text.len())?;
+                }
+            }
+            Some("tool_result") => {
+                kept += 1;
+                results += 1;
+                bytes = checked_sum([
+                    bytes,
+                    str_len(block, "tool_use_id"),
+                    result_content_bound(field(block, "content").unwrap_or(&empty))?,
+                    denial,
+                ])?;
+            }
+            _ => {}
+        }
+    }
+    checked_sum([
+        pushed_capacity(kept).checked_mul(size_of::<ContentBlock>())?,
+        bytes,
+        results.checked_mul(result_payload)?,
+    ])
+}
+
+fn labels_bound(options: &Value) -> Option<usize> {
+    let Some(options) = options.as_array() else {
+        return Some(0);
+    };
+    let (count, bytes) = options
+        .iter()
+        .filter(|option| names_str(option, "label"))
+        .fold((0, 0), |(count, bytes), option| {
+            (count + 1, bytes + widest_str(option, "label"))
+        });
+    pushed_capacity(count)
+        .checked_mul(size_of::<String>())?
+        .checked_add(bytes)
+}
+
+fn questions_bound(questions: &Value) -> Option<usize> {
+    let Some(items) = questions.as_array() else {
+        return Some(0);
+    };
+    let mut kept = 0usize;
+    let mut bytes = 0usize;
+    for item in items.iter().filter(|item| names_str(item, "question")) {
+        kept += 1;
+        bytes = checked_sum([
+            bytes,
+            widest_str(item, "question"),
+            widest_str(item, "header"),
+            widest(values_of(item, "options").map(labels_bound))?,
+        ])?;
+    }
+    pushed_capacity(kept)
+        .checked_mul(size_of::<Question>())?
+        .checked_add(bytes)
+}
+
+fn tool_use_input_bound(input: &Value) -> Option<usize> {
+    checked_sum([
+        normalized_bound(Some(input))?,
+        widest_str(input, "subagent_type"),
+        widest_str(input, "file_path"),
+        widest(values_of(input, "questions").map(questions_bound))?,
+    ])
+}
+
+fn assistant_blocks_bound(content: &Value) -> Option<usize> {
+    let Some(blocks) = content.as_array() else {
+        return Some(0);
+    };
+    let empty = Value::default();
+    let mut bytes = pushed_capacity(blocks.len()).checked_mul(size_of::<ContentBlock>())?;
+    for block in blocks.iter() {
+        let block_bytes = match block_type(block) {
+            Some("text") => str_len(block, "text"),
+            Some("thinking") => str_len(block, "thinking"),
+            Some("tool_use") => checked_sum([
+                str_len(block, "id"),
+                str_len(block, "name"),
+                tool_use_input_bound(field(block, "input").unwrap_or(&empty))?,
+            ])?,
+            Some("fallback") => {
+                str_len(field(block, "from").unwrap_or(&empty), "model")
+                    + str_len(field(block, "to").unwrap_or(&empty), "model")
+            }
+            Some(other) => checked_sum([other.len(), normalized_bound(Some(block))?])?,
+            None => 0,
+        };
+        bytes = bytes.checked_add(block_bytes)?;
+    }
+    Some(bytes)
+}
+
+fn usage_bound(message: &Value) -> usize {
+    field(message, "usage")
+        .filter(|usage| is_py_truthy(usage))
+        .map_or(0, |usage| {
+            str_len(usage, "service_tier") + str_len(usage, "inference_geo")
+        })
+}
+
+fn api_error_bound(data: &Value) -> usize {
+    if field_truthy(data, "isApiErrorMessage") {
+        str_len(data, "error") + str_len(data, "errorDetails")
+    } else {
+        0
+    }
+}
+
+fn hook_infos_bound(data: &Value) -> Option<usize> {
+    let (count, bytes) = field(data, "hookInfos")
+        .and_then(JsonContainerTrait::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|info| field_str(info, "command"))
+        .fold((0, 0), |(count, bytes), command| {
+            (count + 1, bytes + command.len())
+        });
+    pushed_capacity(count)
+        .checked_mul(size_of::<HookInfo>())?
+        .checked_add(bytes)
+}
+
+fn system_detail_bound(data: &Value) -> Option<usize> {
+    let empty = Value::default();
+    match field_str(data, "subtype") {
+        Some("stop_hook_summary") => checked_sum([
+            hook_infos_bound(data)?,
+            str_array_bound(data, "hookErrors")?,
+            str_array_bound(data, "hookAdditionalContext")?,
+            str_len(data, "stopReason"),
+            truthy_len(data, "toolUseID"),
+        ]),
+        Some("compact_boundary") => {
+            let metadata = field(data, "compactMetadata").unwrap_or(&empty);
+            let segment = field(metadata, "preservedSegment")
+                .filter(|segment| segment.is_object())
+                .map_or(0, |segment| {
+                    truthy_len(segment, "headUuid")
+                        + truthy_len(segment, "anchorUuid")
+                        + truthy_len(segment, "tailUuid")
+                });
+            let messages = match field(metadata, "preservedMessages")
+                .filter(|messages| messages.is_object())
+            {
+                Some(messages) => checked_sum([
+                    truthy_len(messages, "anchorUuid"),
+                    str_array_bound(messages, "uuids")?,
+                    str_array_bound(messages, "allUuids")?,
+                ])?,
+                None => 0,
+            };
+            checked_sum([
+                str_len(metadata, "trigger"),
+                str_array_bound(metadata, "preCompactDiscoveredTools")?,
+                segment,
+                messages,
+                truthy_len(data, "logicalParentUuid"),
+            ])
+        }
+        Some("turn_duration") => Some(0),
+        Some("model_refusal_fallback") => checked_sum([
+            str_len(data, "apiRefusalCategory"),
+            str_len(data, "apiRefusalExplanation"),
+            str_len(data, "trigger"),
+            str_len(data, "direction"),
+            str_len(data, "originalModel"),
+            str_len(data, "fallbackModel"),
+            str_array_bound(data, "retractedMessageUuids")?,
+            truthy_len(data, "refusedUserMessageUuid"),
+        ]),
+        _ => Some(dom_bytes(data)),
+    }
+}
+
+fn attachment_detail_bound(data: &Value, att: &Value) -> Option<usize> {
+    let hook = str_len(att, "hookName") + str_len(att, "hookEvent") + truthy_len(att, "toolUseID");
+    match field_str(att, "type") {
+        Some("hook_success") => Some(
+            hook + str_len(att, "command")
+                + str_len(att, "content")
+                + str_len(att, "stdout")
+                + str_len(att, "stderr"),
+        ),
+        Some("hook_blocking_error") => {
+            hook.checked_add(normalized_bound(field(att, "blockingError"))?)
+        }
+        Some("hook_non_blocking_error") => {
+            Some(hook + str_len(att, "command") + str_len(att, "stdout") + str_len(att, "stderr"))
+        }
+        Some("hook_cancelled") => Some(hook + str_len(att, "command")),
+        Some("hook_additional_context") => hook.checked_add(str_array_bound(att, "content")?),
+        Some("async_hook_response") => checked_sum([
+            str_len(att, "hookName"),
+            str_len(att, "hookEvent"),
+            str_len(att, "processId"),
+            str_len(att, "stdout"),
+            str_len(att, "stderr"),
+            normalized_bound(field(att, "response"))?,
+        ]),
+        Some("queued_command") => Some(
+            str_len(att, "prompt")
+                + str_len(att, "commandMode")
+                + field(att, "origin").map_or(0, |origin| str_len(origin, "kind")),
+        ),
+        Some("deferred_tools_delta") => checked_sum([
+            str_array_bound(att, "addedNames")?,
+            str_array_bound(att, "removedNames")?,
+            dom_bytes(data),
+        ]),
+        _ => Some(dom_bytes(data)),
+    }
+}
+
+pub(crate) fn retained_entry_bound(data: &Value) -> Option<usize> {
+    let empty = Value::default();
+    let ty = field_str(data, "type").unwrap_or("");
+    match ty {
+        "user" => {
+            let message = field(data, "message").unwrap_or(&empty);
+            checked_sum([
+                ty.len(),
+                meta_bound(data),
+                user_content_bound(data, field(message, "content").unwrap_or(&empty))?,
+                str_len(data, "promptId"),
+                str_len(data, "promptSource"),
+                str_len(data, "queuePriority"),
+                image_paste_ids_bound(data)?,
+                truthy_len(data, "sourceToolUseID"),
+                truthy_len(data, "sourceToolAssistantUUID"),
+                normalized_bound(field(data, "mcpMeta"))?,
+                str_len(data, "permissionMode"),
+                str_len(data, "interruptedMessageId"),
+            ])
+        }
+        "assistant" => {
+            let message = field(data, "message").unwrap_or(&empty);
+            checked_sum([
+                ty.len(),
+                meta_bound(data),
+                str_len(message, "model"),
+                assistant_blocks_bound(field(message, "content").unwrap_or(&empty))?,
+                str_len(message, "stop_reason"),
+                usage_bound(message),
+                str_len(data, "requestId"),
+                str_len(data, "forkedFrom"),
+                str_len(data, "attributionPlugin"),
+                str_len(data, "attributionSkill"),
+                str_len(data, "attributionMcpServer"),
+                str_len(data, "attributionMcpTool"),
+                api_error_bound(data),
+            ])
+        }
+        "system" => checked_sum([
+            ty.len(),
+            meta_bound(data),
+            str_len(data, "subtype"),
+            str_len(data, "content"),
+            str_len(data, "level"),
+            system_detail_bound(data)?,
+        ]),
+        "mode" => Some(ty.len() + str_len(data, "sessionId") + str_len(data, "mode")),
+        "permission-mode" => {
+            Some(ty.len() + str_len(data, "sessionId") + str_len(data, "permissionMode"))
+        }
+        "attachment" => {
+            let att = field(data, "attachment").unwrap_or(&empty);
+            checked_sum([
+                ty.len(),
+                meta_bound(data),
+                str_len(att, "type"),
+                attachment_detail_bound(data, att)?,
+            ])
+        }
+        _ => checked_sum([ty.len(), normalized_bound(Some(data))?]),
+    }
+}
+
+pub(crate) fn retained_arena_bound(data: &Value) -> usize {
+    1 + match field_str(data, "type").unwrap_or("") {
+        "assistant" => field(data, "message")
+            .and_then(|message| field(message, "content"))
+            .and_then(JsonContainerTrait::as_array)
+            .map_or(0, |blocks| blocks.len()),
+        "system" | "mode" | "permission-mode" => 0,
+        _ => 1,
+    }
 }
 
 // Non-JSON lines and valid-JSON lines that are not objects (bare scalars or
 // arrays) are skipped; a JSON object that fails the typed parse (e.g. a missing
 // required field) fails the whole file — whole-file parity with PythonBackend,
 // which decodes every line, skips non-objects, then parses the rest.
+pub(crate) fn parse_line_dom(line: &[u8]) -> Option<Value> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    sonic_rs::from_slice::<Value>(line)
+        .ok()
+        .filter(JsonValueTrait::is_object)
+}
+
+pub(crate) fn entry_from_dom<F: Fn(&Entry) -> bool>(
+    value: Value,
+    retained: &mut Retained,
+    keep: &F,
+) -> Result<Option<Entry>, ParseError> {
+    let entry = parse_entry_retained(value, retained)?;
+    // Parity: a timestamp below Python datetime.MINYEAR can never convert to
+    // a Python datetime — drop the line, keep the file.
+    if entry.meta().is_some_and(|m| m.timestamp.year() < 1) {
+        return Ok(None);
+    }
+    Ok(keep(&entry).then_some(entry))
+}
+
 pub(crate) fn parse_line<F: Fn(&Entry) -> bool>(
     line: &[u8],
     lines: &mut Vec<Entry>,
     keep: &F,
 ) -> Result<(), ParseError> {
-    if line.iter().all(u8::is_ascii_whitespace) {
-        return Ok(());
-    }
-    if let Ok(value) = sonic_rs::from_slice::<Value>(line) {
-        if !value.is_object() {
-            return Ok(());
-        }
-        let entry = parse_entry(value)?;
-        // Parity: a timestamp below Python datetime.MINYEAR can never convert to
-        // a Python datetime — drop the line, keep the file.
-        if entry.meta().is_some_and(|m| m.timestamp.year() < 1) {
-            return Ok(());
-        }
-        if keep(&entry) {
-            lines.push(entry);
-        }
+    if let Some(entry) = parse_line_dom(line)
+        .map(|value| entry_from_dom(value, &mut Retained::default(), keep))
+        .transpose()?
+        .flatten()
+    {
+        lines.push(entry);
     }
     Ok(())
 }
@@ -688,15 +1278,17 @@ fn parse_init(init: &Value) -> Result<InitInfo, ParseError> {
 fn parse_print_message(element: &Value) -> Result<PrintMessage, ParseError> {
     let role = require_str(element, "type")?;
     let message = require(element, "message")?;
+    let mut retained = Retained::default();
     let body = match role {
         "assistant" => PrintBody::Assistant {
-            blocks: parse_assistant_blocks(require(message, "content")?)?,
+            blocks: parse_assistant_blocks(require(message, "content")?, &mut retained)?,
             model: field_str(message, "model").map(str::to_string),
         },
         "user" => PrintBody::User(parse_user_content(
             require(message, "content")?,
             None,
             None,
+            &mut retained,
         )?),
         other => {
             return Err(ParseError::Value(format!(
@@ -1158,5 +1750,116 @@ mod tests {
     fn naive_offset_less_timestamp_fails_representation_blocked() {
         // timestamp: DateTime<FixedOffset> cannot hold Python's offset-less naive datetime.
         assert!(parse_timestamp("2026-01-02T03:04:05").is_err());
+    }
+
+    fn dom_work(op: impl FnOnce()) -> usize {
+        crate::snapshot_memory::DOM_WORK.with(|work| work.set(0));
+        op();
+        crate::snapshot_memory::DOM_WORK.with(std::cell::Cell::get)
+    }
+
+    fn repeated_results_line(blocks: usize, payload: usize) -> String {
+        let block = r#"{"type":"tool_result","tool_use_id":"call","content":"ok"}"#;
+        let keys = (0..payload)
+            .map(|key| format!(r#""k{key}":0"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r#"{{"type":"user",{META},"message":{{"content":[{}]}},"toolDenialKind":"user","toolUseResult":{{"isAsync":false,"items":[{}],{keys}}}}}"#,
+            vec![block; blocks].join(","),
+            vec!["0"; payload].join(","),
+        )
+    }
+
+    fn retained_arenas(raw: &str) -> Vec<usize> {
+        let dom = parse(raw);
+        let mut retained = Retained::default();
+        parse_entry_retained(dom.clone(), &mut retained).unwrap();
+        retained
+            .arenas(dom, raw.len())
+            .iter()
+            .map(|arena| arena.source_len)
+            .collect()
+    }
+
+    #[test]
+    fn predictor_and_arena_walks_are_linear_in_the_line() {
+        let walked = |blocks: usize, payload: usize| {
+            let line = repeated_results_line(blocks, payload);
+            let dom = parse(&line);
+            let predicted = dom_work(|| {
+                retained_entry_bound(&dom).unwrap();
+                crate::snapshot_memory::arena_bytes(&dom, line.len());
+                retained_arena_bound(&dom);
+            });
+            let charged = dom_work(|| {
+                crate::snapshot_memory::entry_charge(&parse_entry(dom.clone()).unwrap());
+            });
+            assert!(
+                predicted <= 2 * line.len(),
+                "predicting a {}-byte line walked {predicted} units",
+                line.len()
+            );
+            (predicted, charged)
+        };
+        let [few_small, many_small, few_large, many_large] =
+            [(64, 64), (512, 64), (64, 1024), (512, 1024)]
+                .map(|(blocks, payload)| walked(blocks, payload));
+        assert_eq!(
+            many_small.0 - few_small.0,
+            many_large.0 - few_large.0,
+            "the per-block predictor work depends on the shared result's size"
+        );
+        assert!(
+            many_large.1 - few_large.1 > many_small.1 - few_small.1,
+            "the counter does not see the per-block charge of the shared result"
+        );
+    }
+
+    #[test]
+    fn retained_parse_records_each_arena_an_entry_keeps() {
+        let user = |extra: &str| {
+            format!(
+                r#"{{"type":"user",{META},"message":{{"content":[{{"type":"tool_result","tool_use_id":"c","content":"ok"}}]}}{extra}}}"#
+            )
+        };
+        let assistant = |inputs: &str| {
+            format!(
+                r#"{{"type":"assistant",{META},"message":{{"model":"m","content":[{inputs}]}}}}"#
+            )
+        };
+        let shared = user(r#","toolUseResult":{"stdout":"x"}"#);
+        assert_eq!(retained_arenas(&shared), vec![shared.len()]);
+        for unpinned in [
+            user(""),
+            user(r#","toolUseResult":true"#),
+            user(r#","toolUseResult":{}"#),
+            format!(r#"{{"type":"user",{META},"message":{{"content":"hi"}}}}"#),
+        ] {
+            assert_eq!(
+                retained_arenas(&unpinned),
+                Vec::<usize>::new(),
+                "{unpinned}"
+            );
+        }
+        let duplicated = assistant(
+            r#"{"type":"tool_use","id":"t","name":"Bash","input":{"command":"a","command":"bb"}}"#,
+        );
+        assert_eq!(
+            retained_arenas(&duplicated),
+            vec![r#"{"command":"bb"}"#.len()]
+        );
+        let mixed = assistant(
+            r#"{"type":"tool_use","id":"t","name":"Bash","input":{"command":"a","command":"bb"}},{"type":"tool_use","id":"u","name":"Bash","input":{"command":"c"}}"#,
+        );
+        assert_eq!(
+            retained_arenas(&mixed),
+            vec![r#"{"command":"bb"}"#.len(), mixed.len()]
+        );
+        let other = r#"{"type":"custom","k":1,"k":2}"#;
+        assert_eq!(
+            retained_arenas(other),
+            vec![r#"{"type":"custom","k":2}"#.len()]
+        );
     }
 }

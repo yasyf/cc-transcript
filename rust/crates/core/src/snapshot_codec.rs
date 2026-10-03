@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::mem::size_of;
 
 use chrono::{DateTime, FixedOffset};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -145,11 +146,46 @@ pub struct PredicateInputsRecord {
 }
 
 pub const PREDICATE_INPUT_CHUNK_BYTES: usize = 256 * 1024;
+const PREDICATE_INPUT_RECORD_PIECES: [&str; 5] = [
+    r#"{"calls":["#,
+    r#"],"commands":["#,
+    r#"],"edited_files":["#,
+    r#"],"skills":["#,
+    "]}",
+];
 
-pub fn predicate_input_records(inputs: &sonic_rs::Value) -> Result<Vec<String>, SnapshotError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PredicateInputRecordsBound {
+    pub records: usize,
+    pub bytes: usize,
+}
+
+pub fn predicate_input_records_bound(
+    inputs: &sonic_rs::Value,
+) -> Result<PredicateInputRecordsBound, SnapshotError> {
+    let encoded = encoded_size_bounded(inputs, Bound::budget("predicate inputs", usize::MAX))?;
+    let escaped_item_costs = 4 * encoded;
+    let records = 2 * escaped_item_costs / PREDICATE_INPUT_CHUNK_BYTES + 2;
+    Ok(PredicateInputRecordsBound {
+        records,
+        bytes: records * (size_of::<String>() + predicate_input_record_framing()) + encoded,
+    })
+}
+
+fn predicate_input_record_framing() -> usize {
+    PREDICATE_INPUT_RECORD_PIECES
+        .iter()
+        .map(|piece| piece.len())
+        .sum()
+}
+
+pub fn predicate_input_records(
+    inputs: &sonic_rs::Value,
+    bound: &PredicateInputRecordsBound,
+) -> Result<Vec<String>, SnapshotError> {
     use sonic_rs::JsonContainerTrait;
 
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(bound.records);
     let mut fields: [Vec<String>; 4] = Default::default();
     let mut bytes = 0usize;
     for (slot, name) in ["calls", "commands", "edited_files", "skills"]
@@ -173,17 +209,33 @@ pub fn predicate_input_records(inputs: &sonic_rs::Value) -> Result<Vec<String>, 
         }
     }
     records.push(predicate_input_record(&fields));
+    assert_eq!(records.capacity(), bound.records);
     Ok(records)
 }
 
 fn predicate_input_record([calls, commands, edited_files, skills]: &[Vec<String>; 4]) -> String {
-    format!(
-        r#"{{"calls":[{}],"commands":[{}],"edited_files":[{}],"skills":[{}]}}"#,
-        calls.join(","),
-        commands.join(","),
-        edited_files.join(","),
-        skills.join(",")
-    )
+    let fields = [calls, commands, edited_files, skills];
+    let mut record = String::with_capacity(
+        predicate_input_record_framing()
+            + fields
+                .iter()
+                .map(|items| {
+                    items.iter().map(String::len).sum::<usize>() + items.len().saturating_sub(1)
+                })
+                .sum::<usize>(),
+    );
+    for (piece, items) in PREDICATE_INPUT_RECORD_PIECES.iter().zip(fields) {
+        record.push_str(piece);
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                record.push(',');
+            }
+            record.push_str(item);
+        }
+    }
+    record.push_str(PREDICATE_INPUT_RECORD_PIECES[4]);
+    assert_eq!(record.capacity(), record.len());
+    record
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -304,9 +356,9 @@ impl Write for LimitedWriter {
     }
 }
 
-struct Counter {
-    bytes: usize,
-    limit: usize,
+pub(crate) struct Counter {
+    pub(crate) bytes: usize,
+    pub(crate) limit: usize,
 }
 
 impl Write for Counter {
@@ -567,6 +619,56 @@ pub fn decode_sidechains(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn predicate_inputs(commands: Vec<String>) -> sonic_rs::Value {
+        sonic_rs::json!({"calls":[["Bash",["a.rs"]]],"commands":commands,"edited_files":[{"path":"a.rs"}],"skills":["s"]})
+    }
+
+    #[test]
+    fn predicate_input_records_render_their_fields_in_order() {
+        let inputs = predicate_inputs(vec!["ls".to_owned(), "pwd".to_owned()]);
+        let bound = predicate_input_records_bound(&inputs).unwrap();
+        let records = predicate_input_records(&inputs, &bound).unwrap();
+        assert_eq!(
+            records,
+            vec![
+                r#"{"calls":[["Bash",["a.rs"]]],"commands":["ls","pwd"],"edited_files":[{"path":"a.rs"}],"skills":["s"]}"#
+            ]
+        );
+        assert_eq!(records.capacity(), bound.records);
+        assert_eq!(records[0].capacity(), records[0].len());
+    }
+
+    #[test]
+    fn predicate_input_records_fit_their_bound() {
+        for (count, item) in [
+            (300_000usize, "\"\\\"".to_owned()),
+            (160, "x".repeat(4096)),
+            (3, "y".repeat(600 * 1024)),
+        ] {
+            let inputs = predicate_inputs(vec![item; count]);
+            let bound = predicate_input_records_bound(&inputs).unwrap();
+            let records = predicate_input_records(&inputs, &bound).unwrap();
+            assert!(records.len() > 1, "{count} items chunked into one record");
+            assert!(
+                records.len() <= bound.records,
+                "{count} items chunked into {} records over the {}-record bound",
+                records.len(),
+                bound.records
+            );
+            assert_eq!(records.capacity(), bound.records);
+            let retained = records.capacity() * size_of::<String>()
+                + records.iter().map(String::capacity).sum::<usize>();
+            assert!(
+                retained <= bound.bytes,
+                "{count} items retained {retained} bytes over the {}-byte bound",
+                bound.bytes
+            );
+            assert!(records
+                .iter()
+                .all(|record| record.capacity() == record.len()));
+        }
+    }
 
     #[test]
     fn writer_does_not_allocate_scratch() {

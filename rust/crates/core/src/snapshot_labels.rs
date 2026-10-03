@@ -13,6 +13,7 @@ use crate::snapshot::{
 };
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_codec::{self, EventWire};
+use crate::snapshot_ledger::{arc_bytes, arc_control_bytes, LedgerHook};
 use crate::types::Entry;
 
 const PAGE_EVENTS: usize = 256;
@@ -124,13 +125,17 @@ impl LabelPreparation {
     }
 
     fn publication_metadata_bytes(&self) -> usize {
-        size_of::<TranscriptSnapshot>()
+        arc_bytes::<TranscriptSnapshot>()
             + self.source.canonical_path.as_os_str().len()
             + self.source.session_id.len()
             + self.source.chunks.len() * size_of::<Arc<crate::snapshot::EntryChunk>>()
             + self.source.fence.len()
             + self.binding.execution_id.len()
             + 7
+            + arc_control_bytes::<ActivityIndex>()
+            + arc_bytes::<CarriedClassification>()
+            + self.source.chunks.len() * size_of::<Arc<crate::snapshot::EntryChunk>>()
+            + arc_control_bytes::<ActivityIndex>()
     }
 
     pub fn new(
@@ -245,16 +250,79 @@ impl LabelPreparation {
             + self.binding.accounted_bytes()
             + self.carried.capacity() * size_of::<usize>()
             + owned_index_bytes(
-                self.activity.accounted_allocations().into_iter().chain(
+                self.activity.heap_allocations().chain(
                     self.committed
                         .iter()
-                        .flat_map(ActivityIndex::accounted_allocations),
+                        .flat_map(ActivityIndex::heap_allocations),
                 ),
                 &self.carried,
             )
             + self.pending.as_ref().map_or(0, |pending| {
                 pending.token.capacity() + pending.user_positions.capacity() * size_of::<usize>()
             })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audited_bytes(&self) -> usize {
+        let Self {
+            source: _,
+            binding,
+            limits: _,
+            max_stage_bytes: _,
+            activity,
+            seed: _,
+            carried,
+            committed,
+            pending,
+            usage: _,
+            failed: _,
+        } = self;
+        let LabelBinding {
+            owner_epoch,
+            claimant,
+            physical_generation,
+            classifier_id,
+            classifier_version,
+            registry_generation,
+            execution_id,
+        } = binding;
+        let mut seen = HashSet::new();
+        size_of::<Self>()
+            + [
+                owner_epoch,
+                claimant,
+                physical_generation,
+                classifier_id,
+                classifier_version,
+                registry_generation,
+                execution_id,
+            ]
+            .iter()
+            .map(|field| field.capacity())
+            .sum::<usize>()
+            + carried.capacity() * size_of::<usize>()
+            + activity
+                .audited_heap_allocations()
+                .into_iter()
+                .chain(
+                    committed
+                        .iter()
+                        .flat_map(ActivityIndex::audited_heap_allocations),
+                )
+                .filter(|(id, _)| !carried.contains(id) && seen.insert(*id))
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>()
+            + pending.as_ref().map_or(
+                0,
+                |PendingLabels {
+                     token,
+                     span: _,
+                     user_positions,
+                     input_bytes: _,
+                 }| {
+                    token.capacity() + user_positions.capacity() * size_of::<usize>()
+                },
+            )
     }
 
     pub fn next_page(
@@ -463,6 +531,7 @@ impl LabelPreparation {
         let metadata_bytes = self.publication_metadata_bytes();
         self.check_memory(self.accounted_bytes().saturating_add(metadata_bytes))?;
         let snapshot = Arc::new(TranscriptSnapshot {
+            ledger: LedgerHook::default(),
             id: format!("labels:{}", self.binding.execution_id),
             canonical_path: self.source.canonical_path.clone(),
             stamp: self.source.stamp,
@@ -564,6 +633,7 @@ mod tests {
     use crate::gateway::Provider;
     use crate::parse::parse_entry;
     use crate::snapshot::{EntryChunk, SourceIdentity, SourceStamp};
+    use crate::snapshot_ledger::arc_mirror;
 
     fn user(index: usize, text: &str) -> Entry {
         parse_entry(
@@ -582,9 +652,23 @@ mod tests {
     }
 
     fn source(entries: Vec<Entry>) -> Arc<TranscriptSnapshot> {
-        let activity = ActivityIndex::new(&entries.iter().collect::<Vec<_>>(), None);
-        let count = entries.len();
+        chunked_source(entries, Vec::new(), false)
+    }
+
+    fn chunked_source(
+        prefix: Vec<Entry>,
+        tail: Vec<Entry>,
+        provisional_tail: bool,
+    ) -> Arc<TranscriptSnapshot> {
+        let activity =
+            ActivityIndex::new(&prefix.iter().chain(tail.iter()).collect::<Vec<_>>(), None);
+        let count = prefix.len() + tail.len();
+        let mut chunks = vec![Arc::new(EntryChunk::new(0, prefix))];
+        if !tail.is_empty() {
+            chunks.push(Arc::new(EntryChunk::new(chunks[0].entries.len(), tail)));
+        }
         Arc::new(TranscriptSnapshot {
+            ledger: LedgerHook::default(),
             id: "physical".into(),
             canonical_path: "/source.jsonl".into(),
             stamp: SourceStamp {
@@ -599,11 +683,11 @@ mod tests {
             },
             provider: Provider::Claude,
             session_id: "s".into(),
-            chunks: vec![Arc::new(EntryChunk::new(0, entries))],
+            chunks,
             activity: Arc::new(activity),
             window_start: 0,
             committed_bytes: 10,
-            provisional_tail: false,
+            provisional_tail,
             fence: Vec::new(),
             event_count: count,
             codex_raw: None,
@@ -1063,5 +1147,65 @@ mod tests {
         let derived = stage.finish(&binding, &cancel).unwrap().0;
         assert_eq!(derived.window_start, 1000);
         assert_eq!(derived.stamp.identity.window_base, 1024);
+    }
+
+    #[test]
+    fn publication_metadata_covers_every_published_header() {
+        let control_bytes = arc_mirror::<ActivityIndex>() - size_of::<ActivityIndex>();
+        for provisional in [false, true] {
+            let snapshot = chunked_source(
+                vec![user(0, "first"), assistant(1)],
+                vec![user(2, "later")],
+                provisional,
+            );
+            let binding = binding(&"e".repeat(64));
+            let cancel = Cancellation::default();
+            let mut stage =
+                LabelPreparation::new(snapshot, binding.clone(), limits(), 8 * PAGE_BYTES, None)
+                    .unwrap();
+            let mut pages = 0;
+            while !stage.complete() {
+                pages += 1;
+                let page = stage
+                    .next_page(format!("page{pages}"), &binding, &cancel)
+                    .unwrap();
+                stage
+                    .submit(
+                        &format!("page{pages}"),
+                        &vec![true; page.records_json.len()],
+                        &binding,
+                        &cancel,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(pages, 1 + usize::from(provisional));
+            let predicted = stage.publication_metadata_bytes();
+            let (derived, carried) = stage.finish(&binding, &cancel).unwrap();
+            assert!(
+                carried.is_some(),
+                "the labelled source carries no classification"
+            );
+            assert_eq!(derived.provisional_tail, provisional);
+            let tail = usize::from(derived.provisional_tail);
+            let published = arc_mirror::<TranscriptSnapshot>()
+                + derived.id.capacity()
+                + derived.canonical_path.capacity()
+                + derived.session_id.capacity()
+                + derived.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+                + derived.fence.capacity()
+                + control_bytes
+                + arc_mirror::<CarriedClassification>()
+                + (derived.chunks.len() - tail) * size_of::<Arc<EntryChunk>>()
+                + tail * control_bytes;
+            assert!(
+                predicted >= published,
+                "publication metadata predicts {predicted} bytes below the {published} published"
+            );
+            assert!(
+                predicted - published <= size_of::<Arc<EntryChunk>>() + control_bytes,
+                "publication metadata over-predicts by {}",
+                predicted - published
+            );
+        }
     }
 }

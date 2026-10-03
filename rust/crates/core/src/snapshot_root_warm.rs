@@ -30,7 +30,7 @@ impl NativeStore {
             ));
         }
         let pinned = {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             let superseded: Vec<_> = state
                 .prepared_loads
                 .keys()
@@ -49,7 +49,7 @@ impl NativeStore {
                     .get(&identity)
                     .is_some_and(|slot| Arc::strong_count(slot) == 1)
                 {
-                    state.loads.remove(&identity);
+                    state.remove_load(&identity);
                 }
             }
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&current.identity) {
@@ -65,7 +65,7 @@ impl NativeStore {
                     Some(Arc::clone(slot))
                 } else {
                     state.prepared_loads.remove(&current.identity);
-                    state.loads.remove(&current.identity);
+                    state.remove_load(&current.identity);
                     None
                 }
             } else {
@@ -92,14 +92,12 @@ impl NativeStore {
                 .map(|token| (token, data["reservation"]["load_id"].as_str().map(str::to_owned)))
         });
         if let Some((token, _)) = &pending {
-            self.state
-                .lock()
-                .expect("snapshot state")
+            self.lock_state()
                 .waiters
                 .remove(token);
         }
         let (slot, stamp) = {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             let slot = match pending.as_ref().and_then(|(_, load_id)| load_id.as_deref()) {
                 Some(load_id) => state.loads.values().find(|slot| slot.id == load_id).cloned(),
                 None => state.loads.get(&stamp.identity).cloned(),
@@ -111,9 +109,10 @@ impl NativeStore {
                 })
             {
                 if let Some(slot) = &slot {
-                    state
-                        .prepared_loads
-                        .insert(stamp.identity, (Arc::clone(slot), now_ms()));
+                    let growth = state.prepared_load_growth(&stamp.identity);
+                    if self.admit_memory(&mut state, context, growth).is_ok() {
+                        state.insert_prepared_load(stamp.identity, Arc::clone(slot), now_ms());
+                    }
                 }
             } else {
                 state.prepared_loads.remove(&stamp.identity);
@@ -143,9 +142,7 @@ impl NativeStore {
         let handle = &data["description"]["handle"];
         let lease_id = str_field(handle, "lease_id")?;
         let snapshot = self.pin_scope_for_work(handle, context, bounds.deadline_unix_ms);
-        self.state
-            .lock()
-            .expect("snapshot state")
+        self.lock_state()
             .leases
             .remove(lease_id);
         let snapshot = match snapshot {
@@ -195,7 +192,7 @@ impl NativeStore {
             busy: false,
         };
         {
-            let mut state = self.state.lock().expect("snapshot state");
+            let mut state = self.lock_state();
             Self::prune(&mut state);
             if state.waiters.len() >= self.lease_cap(context)? {
                 return Err(SnapshotError::new(
@@ -203,7 +200,9 @@ impl NativeStore {
                     "root warming reservation admission exhausted",
                 ));
             }
-            state.waiters.insert(token.clone(), waiter.clone());
+            let additional = charged_bytes(&token, &waiter) + state.waiters.growth_for(&token);
+            self.admit_memory(&mut state, context, additional)?;
+            state.insert_waiter(token.clone(), waiter.clone());
         }
         self.advance(&token, waiter, None, cancel, usage)
     }

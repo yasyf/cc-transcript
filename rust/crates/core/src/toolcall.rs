@@ -197,7 +197,7 @@ impl ToolRegistrySnapshot {
     }
 
     pub fn accounted_allocations(&self) -> Vec<(usize, usize)> {
-        let bytes = size_of::<Self>()
+        let bytes = crate::snapshot_ledger::arc_bytes::<Self>()
             + self.fingerprint.capacity()
             + self.specs.capacity() * size_of::<(String, McpToolSpec)>()
             + self
@@ -214,6 +214,38 @@ impl ToolRegistrySnapshot {
                 })
                 .sum::<usize>();
         vec![(self as *const Self as usize, bytes)]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audited_allocations(&self) -> Vec<(usize, usize)> {
+        let Self { specs, fingerprint } = self;
+        let spec = |(name, tool): (&String, &McpToolSpec)| {
+            let McpToolSpec {
+                behaves_like,
+                span_edit,
+            } = tool;
+            name.capacity()
+                + behaves_like.capacity()
+                + span_edit.as_ref().map_or(
+                    0,
+                    |SpanEditMap {
+                         path,
+                         content,
+                         delete,
+                     }| {
+                        path.capacity()
+                            + content.capacity()
+                            + delete.as_ref().map_or(0, String::capacity)
+                    },
+                )
+        };
+        vec![(
+            self as *const Self as usize,
+            crate::snapshot_ledger::arc_mirror::<Self>()
+                + fingerprint.capacity()
+                + specs.capacity() * size_of::<(String, McpToolSpec)>()
+                + specs.iter().map(spec).sum::<usize>(),
+        )]
     }
 }
 

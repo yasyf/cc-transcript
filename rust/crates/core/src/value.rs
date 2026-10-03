@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use sonic_rs::{Index, JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 pub fn field<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(data.as_object().map_or(1, |object| object.len()));
     key.value_index_into(data)
 }
 
@@ -12,11 +14,20 @@ pub fn field<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
 /// sonic's mutable object API is hash-ordered, but ``from_str`` preserves insertion order
 /// (which render and other consumers observe). Dup-free values are left untouched.
 pub fn normalize_last_wins(value: &mut Value) {
-    if subtree_has_duplicate_keys(value) {
+    if let Some((normalized, _)) = deduplicated(value) {
+        *value = normalized;
+    }
+}
+
+pub(crate) fn deduplicated(value: &Value) -> Option<(Value, usize)> {
+    subtree_has_duplicate_keys(value).then(|| {
         let mut out = String::new();
         write_deduped(value, &mut out);
-        *value = sonic_rs::from_str(&out).expect("re-serialized JSON reparses");
-    }
+        (
+            sonic_rs::from_str(&out).expect("re-serialized JSON reparses"),
+            out.len(),
+        )
+    })
 }
 
 /// Clone `value` with last-wins key normalization applied — for the retained payloads
@@ -27,7 +38,9 @@ pub fn normalized_owned(value: &Value) -> Value {
     owned
 }
 
-fn subtree_has_duplicate_keys(value: &Value) -> bool {
+pub(crate) fn subtree_has_duplicate_keys(value: &Value) -> bool {
+    #[cfg(test)]
+    crate::snapshot_memory::count_dom_work(1);
     if let Some(object) = value.as_object() {
         let mut seen: Vec<&str> = Vec::new();
         for (key, item) in object.iter() {

@@ -379,6 +379,116 @@ impl HeapCharge for ContentBlock {
     }
 }
 
+pub const SONIC_PADDING_BYTES: usize = 64;
+pub const SONIC_SERIALIZER_BYTES: usize = 128;
+pub const SONIC_SHARED_HEADER_BYTES: usize =
+    2 * size_of::<usize>() + size_of::<Vec<u8>>() + 3 * size_of::<usize>();
+pub const BUMP_CHUNK_FOOTER_BYTES: usize = 48;
+pub const BUMP_FIRST_CHUNK_USABLE_BYTES: usize = (1 << 9) - 64;
+pub const BUMP_CHUNK_ROUNDING_BYTES: usize = 4096;
+
+pub fn arena_node_bound(source_len: usize) -> Option<usize> {
+    source_len
+        .checked_mul(size_of::<Value>())?
+        .checked_add(size_of::<Value>())
+}
+
+pub fn arena_bound(source_len: usize) -> Option<usize> {
+    arena_node_bound(source_len)?
+        .max(BUMP_FIRST_CHUNK_USABLE_BYTES)
+        .checked_add(
+            BUMP_CHUNK_FOOTER_BYTES
+                + BUMP_CHUNK_ROUNDING_BYTES
+                + SONIC_SHARED_HEADER_BYTES
+                + SONIC_PADDING_BYTES,
+        )?
+        .checked_add(source_len)
+}
+
+pub fn sonic_node_buffer_bytes(source_len: usize) -> usize {
+    size_of::<Vec<Value>>() + (source_len / 2 + 2) * size_of::<Value>()
+}
+
+pub fn dom_parse_bound(source_len: usize) -> Option<usize> {
+    arena_bound(source_len)?.checked_add(sonic_node_buffer_bytes(source_len))
+}
+
+/// A sonic-rs arena an entry keeps alive: a clone of its root and its source length.
+#[derive(Debug, Clone)]
+pub struct SourceArena {
+    pub root: Value,
+    pub source_len: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DOM_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn count_dom_work(units: usize) {
+    DOM_WORK.with(|work| work.set(work.get() + units));
+}
+
+pub fn pins_arena(value: &Value) -> bool {
+    match value.get_type() {
+        JsonType::Null | JsonType::Boolean => false,
+        JsonType::Array => !value.as_array().unwrap().is_empty(),
+        JsonType::Object => !value.as_object().unwrap().is_empty(),
+        JsonType::Number | JsonType::String => true,
+    }
+}
+
+pub fn container_node_bytes(value: &Value) -> usize {
+    #[cfg(test)]
+    count_dom_work(1);
+    match value.get_type() {
+        JsonType::Array => {
+            let array = value.as_array().unwrap();
+            if array.is_empty() {
+                0
+            } else {
+                (array.len() + 1) * size_of::<Value>()
+                    + array.iter().map(container_node_bytes).sum::<usize>()
+            }
+        }
+        JsonType::Object => {
+            let object = value.as_object().unwrap();
+            if object.is_empty() {
+                0
+            } else {
+                (2 * object.len() + 1) * size_of::<Value>()
+                    + object
+                        .iter()
+                        .map(|(_, item)| container_node_bytes(item))
+                        .sum::<usize>()
+            }
+        }
+        _ => 0,
+    }
+}
+
+pub fn arena_requested_bytes(root: &Value) -> usize {
+    2 * size_of::<Value>() + container_node_bytes(root)
+}
+
+/// A sonic-rs arena's charge: `Arc<Shared>`, padded source, first bump chunk. Later chunks
+/// and rounding are declared residue, at most `6 * requested + 4096` (sonic_arena_model.rs).
+pub fn arena_bytes(root: &Value, source_len: usize) -> usize {
+    SONIC_SHARED_HEADER_BYTES
+        + source_len
+        + SONIC_PADDING_BYTES
+        + arena_requested_bytes(root).max(BUMP_FIRST_CHUNK_USABLE_BYTES)
+        + BUMP_CHUNK_FOOTER_BYTES
+}
+
+pub fn arena_charge(arena: &SourceArena) -> MemoryCharge {
+    MemoryCharge {
+        owned_capacity_bytes: 0,
+        opaque_dom_accounted_bytes: arena_bytes(&arena.root, arena.source_len),
+    }
+}
+
 pub fn block_charge(block: &ContentBlock) -> MemoryCharge {
     block.heap_charge()
         + MemoryCharge {
@@ -392,6 +502,8 @@ pub fn entry_charge(entry: &Entry) -> MemoryCharge {
 }
 
 pub fn value_charge(value: &Value) -> MemoryCharge {
+    #[cfg(test)]
+    count_dom_work(1);
     let opaque_dom_accounted_bytes = match value.get_type() {
         JsonType::Null | JsonType::Boolean => 0,
         JsonType::Number => value

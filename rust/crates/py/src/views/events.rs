@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use sonic_rs::Value;
 
+use cc_transcript_core::snapshot::ChunkRows;
 use cc_transcript_core::types::{joined_text, Entry};
 
 use crate::views::attachment::attachment_detail_view;
@@ -519,7 +520,7 @@ view_dunders!(
 
 pub(crate) fn event_view<'py>(
     py: Python<'py>,
-    entries: &Arc<Vec<Entry>>,
+    entries: &Arc<ChunkRows>,
     idx: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
     let r = EventRef::new(Arc::clone(entries), idx);

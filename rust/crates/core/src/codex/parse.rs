@@ -1,12 +1,14 @@
 use memchr::memchr_iter;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
+use crate::codex::lower::line_dom;
 use crate::codex::types::{
     CodexEntry, CodexItem, CodexOther, CodexSession, Compacted, EventMsg, ResponseItem,
     ResponseItemPayload, SessionMeta, TokenUsage, TokenUsageInfo, WorldState,
 };
 use crate::parse::parse_timestamp;
-use crate::value::{field, field_str, normalize_last_wins};
+use crate::snapshot_memory::{pins_arena, SourceArena};
+use crate::value::{deduplicated, field, field_str};
 
 const AVG_CODEX_LINE_BYTES: usize = 700;
 
@@ -65,14 +67,21 @@ fn parse_codex_line(line: &[u8], line_index: usize, entries: &mut Vec<CodexEntry
         return;
     }
     match sonic_rs::from_slice::<Value>(line) {
-        Ok(mut value) => {
-            normalize_last_wins(&mut value);
+        Ok(parsed) => {
+            let (value, source_len) = deduplicated(&parsed).unwrap_or_else(|| (parsed, line.len()));
             let timestamp = field_str(&value, "timestamp").and_then(|s| parse_timestamp(s).ok());
             let item = parse_codex_item(&value, line);
+            let source = line_dom(&item)
+                .is_some_and(pins_arena)
+                .then(|| SourceArena {
+                    root: value,
+                    source_len,
+                });
             entries.push(CodexEntry {
                 line_index,
                 timestamp,
                 item,
+                source,
             });
         }
         Err(_) => entries.push(CodexEntry {
@@ -82,6 +91,7 @@ fn parse_codex_line(line: &[u8], line_index: usize, entries: &mut Vec<CodexEntry
                 ty: None,
                 raw: String::from_utf8_lossy(line).into_owned(),
             }),
+            source: None,
         }),
     }
 }
