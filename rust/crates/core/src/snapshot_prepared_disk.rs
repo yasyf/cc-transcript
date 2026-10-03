@@ -17,6 +17,7 @@ use crate::snapshot::{SnapshotError, SourceStamp, Status};
 #[cfg(test)]
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{Table, Work};
+use crate::snapshot_memory::sonic_node_buffer_bytes;
 use crate::snapshot_prepared::PreparedFacts;
 
 const VERSION: &[u8; 8] = b"CTPF0001";
@@ -72,9 +73,7 @@ fn disk_error(error: io::Error) -> SnapshotError {
 }
 
 fn decode_transient_bytes(payload: usize) -> usize {
-    size_of::<Vec<Value>>()
-        + (payload / 2 + 2) * size_of::<Value>()
-        + 2 * (payload + SONIC_STRING_BLOCK_LANES)
+    sonic_node_buffer_bytes(payload) + 2 * (payload + SONIC_STRING_BLOCK_LANES)
 }
 
 fn openat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {

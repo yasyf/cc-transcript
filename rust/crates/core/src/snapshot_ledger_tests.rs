@@ -1,5 +1,7 @@
 use super::*;
 use crate::activity::lower_edit;
+use crate::parse::pushed_capacity;
+use crate::protocol::DENIAL_KIND_USER_REJECTED;
 use crate::snapshot_activity::{CachedCall, CachedTurn, ResultPosition};
 use crate::snapshot_ledger::Trace;
 use crate::snapshot_prepared::{OverrideEvent, PreparedFacts};
@@ -974,6 +976,72 @@ fn assert_refused_at(
         ),
         before,
         "{site}: the refused admission leaked state"
+    );
+    assert!(
+        !traced(&fixture.store)
+            .iter()
+            .any(|trace| matches!(trace, Trace::Allocated(_))),
+        "{site}: the refused admission allocated retained bookkeeping"
+    );
+    assert!(
+        audited(&fixture.store)[TOTAL] <= cap,
+        "{site}: the refusal left the audit above the cap"
+    );
+}
+
+fn removed_waiter_gauges(
+    build: &dyn Fn() -> Fixture,
+    headroom: usize,
+) -> ([usize; 8], [usize; 8], usize) {
+    let control = build();
+    let slot = parked_slot(&control);
+    let _filler = fill_to(&control.store, &control.owner, headroom);
+    let token = control.request["cursor"].as_str().unwrap().to_owned();
+    {
+        let mut state = control.store.lock_state();
+        state.waiters.remove(&token);
+        NativeStore::prune(&mut state);
+    }
+    control.store.assert_conserved();
+    let gauges = (
+        ledger(&control.store),
+        audited(&control.store),
+        bookkeeping(&control.store),
+    );
+    drop(slot);
+    gauges
+}
+
+fn assert_step_refused_at(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    fixture: &Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    exact: usize,
+) {
+    let expected = removed_waiter_gauges(build, exact - 1);
+    let cap = cap_for(&fixture.owner);
+    let token = fixture.request["cursor"].as_str().unwrap().to_owned();
+    let _filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
+    fixture.store.assert_conserved();
+    traced(&fixture.store);
+    assert!(
+        !attempt(fixture),
+        "{site}: one byte over the exact fit was admitted"
+    );
+    fixture.store.assert_conserved();
+    assert_eq!(
+        (
+            ledger(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store),
+        ),
+        expected,
+        "{site}: the refused step left more than its removed waiter behind"
+    );
+    assert!(
+        !fixture.store.lock_state().waiters.contains_key(&token),
+        "{site}: the refused step kept its waiter"
     );
     assert!(
         !traced(&fixture.store)
@@ -2252,6 +2320,22 @@ fn prepared_query_page_admits_exactly_before_reinsertion() {
     }
 }
 
+fn slice_inserted(fixture: &Fixture) -> bool {
+    let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+    let slices = || {
+        let state = fixture.store.lock_state();
+        let graph = state.prepared_graphs[graph_id].lock().unwrap();
+        graph.root_slices.len()
+    };
+    let before = slices();
+    let response = submit(fixture);
+    assert!(
+        matches!(response["status"].as_str(), Some("ok" | "retained_limit")),
+        "{response:?}"
+    );
+    slices() > before
+}
+
 #[test]
 fn root_slice_admits_exactly_before_insertion() {
     let scenario = Scenario::new(0, |_| String::new());
@@ -2259,7 +2343,7 @@ fn root_slice_admits_exactly_before_insertion() {
         assert_admission_boundary(
             "root slice",
             &|| slice_fixture(&scenario, background),
-            &|fixture: &Fixture| admitted(&submit(fixture), "ok"),
+            &slice_inserted,
             REPLY_RESERVATION,
         );
     }
@@ -2309,13 +2393,15 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
             .next()
             .expect("created classifier stage");
         assert!(key.capacity() > 16 * 1024);
+        assert_eq!(slot.chunks.capacity(), fixture.pins[0].chunks.len());
         assert_eq!(
             state.ledger.classifier - before,
             arc_mirror::<ClassifierSlot>()
                 + MUTEX_STORAGE_MIRROR
+                + fixture.pins[0].chunks.len() * size_of::<Arc<EntryChunk>>()
                 + key.capacity()
                 + slot.accounted.load(Ordering::Acquire),
-            "the classifier gauge misses the stage slot, its mutex storage, or its key"
+            "the classifier gauge misses the stage slot, its chunk pin, its mutex storage, or its key"
         );
     }
 }
@@ -2604,8 +2690,12 @@ fn seeded_classifier_step_admits_its_append_growth_before_appending() {
             .expect("seeded classifier stage");
         assert_eq!(
             state.ledger.classifier,
-            arc_mirror::<ClassifierSlot>() + MUTEX_STORAGE_MIRROR + key.capacity() + after,
-            "{site}: the classifier gauge is not the slot, its key, and its owned heap"
+            arc_mirror::<ClassifierSlot>()
+                + MUTEX_STORAGE_MIRROR
+                + fitted.pins[0].chunks.len() * size_of::<Arc<EntryChunk>>()
+                + key.capacity()
+                + after,
+            "{site}: the classifier gauge is not the slot, its chunk pin, its key, and its owned heap"
         );
     }
 }
@@ -2842,6 +2932,7 @@ fn parked_cursor_pledges_its_delivery_and_converts_it_without_admission() {
         fixture.store.assert_conserved();
         let token = response["cursor"].as_str().unwrap().to_owned();
         let pledge = Delivery::cursor_pledge(fixture.owner["claimant"].as_str().unwrap(), &token);
+        let reserved = prepared_query_record_bytes(&fixture) + predicate_queue_bound(&fixture).1;
         let state = fixture.store.lock_state();
         assert_eq!(
             state.prepared_queries.pledged(&token),
@@ -2853,15 +2944,15 @@ fn parked_cursor_pledges_its_delivery_and_converts_it_without_admission() {
             pledge,
             "the delivery record differs from its pledge"
         );
+        let charged =
+            NativeStore::audit_prepared_query_bytes(&token, &state.prepared_queries[&token])
+                + state.prepared_queries.capacity_bytes()
+                - capacity
+                + pledge;
         assert_eq!(
             admitted.last().copied(),
-            Some(
-                NativeStore::audit_prepared_query_bytes(&token, &state.prepared_queries[&token])
-                    + state.prepared_queries.capacity_bytes()
-                    - capacity
-                    + pledge
-            ),
-            "the park admission did not cover the cursor, its table growth, and its delivery pledge: {admitted:?}"
+            Some(charged - charged.min(reserved)),
+            "the park admission did not cover the cursor, its table growth, and its delivery pledge beyond the cursor's own reservation: {admitted:?}"
         );
     }
 }
@@ -3606,6 +3697,21 @@ fn pending_page_fixture(scenario: &Scenario, background: bool, padding: usize) -
     }
 }
 
+fn crowd_on_first_read(
+    store: &'static NativeStore,
+    owner: &Value,
+    held: &Arc<Mutex<Option<ProjectionReservation<'static>>>>,
+) {
+    *store.read_hook.lock().unwrap() = Some(Arc::new({
+        let held = Arc::clone(held);
+        let owner = owner.clone();
+        move || {
+            let headroom = cap_of(store, &owner) - ledger(store)[TOTAL];
+            *held.lock().unwrap() = Some(store.reserve_projection(&owner, headroom).unwrap());
+        }
+    }));
+}
+
 #[test]
 fn refused_prepared_query_page_releases_its_pending_source_waiter() {
     let scenario = Scenario::new(1, |_| lines(0..24));
@@ -3624,23 +3730,43 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
         let cap = cap_for(&refused.owner);
         {
             let _filler = fill_to(&refused.store, &refused.owner, large - 1);
-            for _ in 0..3 {
-                let copies = refused.store.warm_copies.load(Ordering::Relaxed);
-                assert!(
-                    !attempt(&refused),
-                    "one byte over the exact fit parked the page"
-                );
-                assert!(
-                    refused.store.warm_copies.load(Ordering::Relaxed) > copies,
-                    "the refused page never parked a source"
-                );
-                refused.store.assert_conserved();
-                assert!(audited(&refused.store)[TOTAL] <= cap);
-                assert!(
-                    refused.store.lock_state().waiters.is_empty(),
-                    "the refused page left its pending source waiter behind"
-                );
-            }
+            assert!(
+                !attempt(&refused),
+                "one byte over the exact fit parked the page"
+            );
+            refused.store.assert_conserved();
+            assert!(audited(&refused.store)[TOTAL] <= cap);
+            assert!(
+                refused.store.lock_state().waiters.is_empty(),
+                "the refused page left a source waiter behind"
+            );
+        }
+        let crowded: &'static Fixture = Box::leak(Box::new(build(padding)));
+        let held: Arc<Mutex<Option<ProjectionReservation<'static>>>> = Arc::new(Mutex::new(None));
+        for _ in 0..3 {
+            crowd_on_first_read(&crowded.store, &crowded.owner, &held);
+            let copies = crowded.store.warm_copies.load(Ordering::Relaxed);
+            let response = submit(crowded);
+            assert_eq!(
+                response["status"].as_str(),
+                Some("retained_limit"),
+                "{response:?}"
+            );
+            assert!(
+                crowded.store.read_hook.lock().unwrap().is_none(),
+                "the page never read a source"
+            );
+            assert!(
+                crowded.store.warm_copies.load(Ordering::Relaxed) > copies,
+                "the refused page never parked a source"
+            );
+            crowded.store.assert_conserved();
+            assert!(audited(&crowded.store)[TOTAL] <= cap);
+            assert!(
+                crowded.store.lock_state().waiters.is_empty(),
+                "the refused page left its pending source waiter behind"
+            );
+            assert!(held.lock().unwrap().take().is_some());
         }
         let page = build(padding);
         let _filler = fill_to(&page.store, &page.owner, large);
@@ -4466,6 +4592,7 @@ fn chunk_entry_bytes(snapshot: &Arc<TranscriptSnapshot>) -> usize {
                 + arc_mirror::<ChunkRows>()
                 + chunk.entries.capacity() * size_of::<Entry>()
                 + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+                + chunk.entries.arenas().capacity() * size_of::<(usize, SourceArena)>()
                 + chunk
                     .entry_charges
                     .iter()
@@ -6108,7 +6235,7 @@ fn uncached_source_facts_hold_their_reservation_until_consumption() {
         let filler = fill_to(
             &fixture.store,
             &fixture.owner,
-            REPLY_RESERVATION + predicted,
+            REPLY_RESERVATION + prepared_query_record_bytes(&fixture) + predicted,
         );
         let response = held_facts_barrier(site, &fixture, filler, occupied);
         assert_eq!(
@@ -7016,6 +7143,7 @@ fn native_chunk_charge_covers_its_rows_header() {
             + arc_mirror::<ChunkRows>()
             + chunk.entries.capacity() * size_of::<Entry>()
             + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+            + chunk.entries.arenas().capacity() * size_of::<(usize, SourceArena)>()
             + entries
     );
 }
@@ -8128,8 +8256,9 @@ fn metered_decode_steps_stop_at_their_decode_bound() {
     let source = LedgerSource::new(&format!("{}{wide}", line("anchor")));
     let store = fast_store();
     let owner = context_for("metered", false);
-    let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+    let response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
     assert!(parked(&response), "{response:?}");
+    let token = response["cursor"].as_str().unwrap().to_owned();
     let slot = store
         .lock_state()
         .loads
@@ -8140,32 +8269,45 @@ fn metered_decode_steps_stop_at_their_decode_bound() {
     let (reservation, _) = step_reservation(64 * 1024, 0);
     let mut stopped = None;
     let mut steps = 0;
-    while response["status"].as_str() == Some("incomplete") {
+    let handle = loop {
         store.assert_conserved();
         let before = slot.accounted.load(Ordering::Acquire);
         traced(&store);
-        response = resume(&store, &response, &owner);
+        let waiter = store
+            .lock_state()
+            .waiters
+            .get(&token)
+            .cloned()
+            .expect("parked load");
+        let (data, cursor, _) = store
+            .advance(
+                &token,
+                waiter,
+                None,
+                &Cancellation::default(),
+                &mut [0u64; 18],
+            )
+            .unwrap_or_else(|error| panic!("step {steps} failed: {error:?}"));
         let admitted = admitted_traces(&store);
-        if response["status"].as_str() == Some("ok") {
-            break;
+        if cursor.is_none() {
+            break data["description"]["handle"].clone();
         }
-        assert!(parked(&response), "{response:?}");
-        let reserved = admitted
-            .iter()
-            .position(|&bytes| bytes == reservation)
-            .unwrap_or_else(|| panic!("step {steps} never reserved {reservation}: {admitted:?}"));
-        let step = &admitted[reserved..];
         assert_eq!(
-            step.last(),
+            admitted.first(),
+            Some(&reservation),
+            "step {steps}: the step did not open with its reservation: {admitted:?}"
+        );
+        assert_eq!(
+            admitted.last(),
             Some(&0),
             "step {steps}: the exact charge exceeded its admitted reservation: {admitted:?}"
         );
         let after = slot.accounted.load(Ordering::Acquire);
         assert!(
-            after.saturating_sub(before) <= step.iter().sum::<usize>(),
+            after.saturating_sub(before) <= admitted.iter().sum::<usize>(),
             "step {steps}: retained {} past the {} admitted",
             after.saturating_sub(before),
-            step.iter().sum::<usize>()
+            admitted.iter().sum::<usize>()
         );
         {
             let load = slot.work.lock().unwrap();
@@ -8174,12 +8316,12 @@ fn metered_decode_steps_stop_at_their_decode_bound() {
             }
         }
         steps += 1;
-    }
+    };
     assert!(
         matches!(stopped, Some(count) if count < 6),
         "the decode never stopped short of its bound: {stopped:?}"
     );
-    let snapshot = store.pin(&ok_handle(&response), &owner).unwrap();
+    let snapshot = store.pin(&handle, &owner).unwrap();
     assert_eq!(snapshot.event_count, 6);
     assert!(snapshot.chunks.len() >= 2, "{}", snapshot.chunks.len());
     let whole = crate::parse::parse_bytes(&std::fs::read(&source.path).unwrap(), |_| true).unwrap();
@@ -8197,9 +8339,9 @@ fn metered_decode_steps_stop_at_their_decode_bound() {
     store.assert_conserved();
 }
 
-fn wide_line_fixture(source: &LedgerSource, background: bool) -> Fixture {
+fn decode_line_fixture(source: &LedgerSource, background: bool) -> Fixture {
     let store = store_with(64 * 1024, 1, &[]);
-    let owner = context_for("wide-line", background);
+    let owner = context_for("decode-line", background);
     let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
     for _ in 0..2 {
         assert!(parked(&response), "{response:?}");
@@ -8217,7 +8359,7 @@ fn wide_line_fixture(source: &LedgerSource, background: bool) -> Fixture {
         let load = slot.work.lock().unwrap();
         assert!(
             !load.decoded && load.count == 1 && load.indexed == 1 && load.pending.contains(&b'\n'),
-            "the load did not park before the wide line"
+            "the load did not park before the line under test"
         );
     }
     Fixture {
@@ -8230,15 +8372,12 @@ fn wide_line_fixture(source: &LedgerSource, background: bool) -> Fixture {
 
 #[test]
 fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
-    let source = LedgerSource::new(&format!(
-        "{}{}{}",
-        line("anchor"),
-        array_tool_line("wide", 20480),
-        line("trailer")
-    ));
+    let wide = array_tool_line("wide", 20480);
+    let wide_len = wide.len() - 1;
+    let source = LedgerSource::new(&format!("{}{wide}{}", line("anchor"), line("trailer")));
     let site = "wide decode line";
     for background in [false, true] {
-        let build = || wide_line_fixture(&source, background);
+        let build = || decode_line_fixture(&source, background);
         let exact = exact_headroom(&build, &advance_parked);
         let probe = build();
         let (reservation, decode_bound, chunks_growth, fence_growth) = {
@@ -8255,7 +8394,7 @@ fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
         let refused = build();
         let slot = parked_slot(&refused);
         let before = slot.accounted.load(Ordering::Acquire);
-        assert_refused_at(site, &refused, &advance_parked, exact);
+        assert_step_refused_at(site, &build, &refused, &advance_parked, exact);
         {
             let load = slot.work.lock().unwrap();
             assert_eq!(load.count, 1, "{site}: the refusal retained the wide line");
@@ -8289,13 +8428,19 @@ fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
             assert!(load.pending.contains(&b'\n'));
             NativeStore::audit_chunk_bytes(&load.chunks[1])
         };
-        let extension = wide + chunks_growth + fence_growth - decode_bound;
+        let dom = decode_stage_mirror(wide_len) - decode_bound;
+        let typed = wide
+            + chunks_growth
+            + fence_growth
+            + "assistant".len()
+            + pushed_capacity(1) * size_of::<&str>()
+            + arena_slack(2, 1);
         assert_eq!(
             admitted,
-            vec![reservation, extension, 0],
-            "{site}: the wide line was not admitted exactly before its retention"
+            vec![reservation, dom, typed, 0],
+            "{site}: the wide line was not admitted in two stages before its construction"
         );
-        assert_eq!(exact, reservation + extension);
+        assert_eq!(exact, reservation + dom + typed);
         let walk = cold_load_walk(&slot);
         assert_eq!(
             slot.accounted.load(Ordering::Acquire),
@@ -8444,7 +8589,7 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
         let refused = build();
         let slot = parked_slot(&refused);
         let before = slot.accounted.load(Ordering::Acquire);
-        assert_refused_at(site, &refused, &advance_parked, exact);
+        assert_step_refused_at(site, &build, &refused, &advance_parked, exact);
         {
             let load = slot.work.lock().unwrap();
             assert_eq!(load.indexed, SEEDED_EVENTS, "{site}: the refusal appended");
@@ -8662,8 +8807,13 @@ fn refused_unpublished_build_keeps_its_pinned_slot_retryable() {
         3,
         "the slot is held by more than the loads table, its pin, and this test"
     );
+    let pending = {
+        let mut state = store.lock_state();
+        NativeStore::prune(&mut state);
+        state.ledger.pending
+    };
     assert_eq!(
-        settled(store)[PENDING],
+        pending,
         NativeStore::audit_load_record_bytes(&slot) + walk,
         "the pinned slot stopped carrying its record"
     );
@@ -9219,10 +9369,17 @@ fn resolution_cursor_charges_and_admits_its_context_and_nested_tables() {
         );
         let small = exact_headroom(&|| build(0), &attempt);
         let large = exact_headroom(&|| build(63), &attempt);
-        assert_eq!(
+        let growth = authority(63) - authority(0);
+        assert!(
+            large - small >= growth,
+            "the resolution park admission omits its context: {} < {growth}",
+            large - small
+        );
+        assert!(
+            large - small <= 2 * growth,
+            "the resolution step holds more than its record's context and one transient copy: {} > {}",
             large - small,
-            authority(63) - authority(0),
-            "the resolution park admission omits its context"
+            2 * growth
         );
         for (padding, exact) in [(0, small), (63, large)] {
             refused_at_site(
@@ -11382,6 +11539,7 @@ fn assert_record_refused(
     attempt: impl Fn(&Fixture, &mut [u64; 18]) -> Result<(), SnapshotError>,
 ) {
     let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+    let built = records(&fixture.store);
     let before = (
         ledger(&fixture.store),
         audited(&fixture.store),
@@ -11393,7 +11551,11 @@ fn assert_record_refused(
     assert_eq!(error.status, Status::RetainedLimit, "{site}");
     assert_eq!(usage[17], 0, "{site}: the refused record examined entries");
     assert!(traced(&fixture.store).is_empty(), "{site}");
-    assert_eq!(records(&fixture.store), 0, "{site}: the record was built");
+    assert_eq!(
+        records(&fixture.store),
+        built,
+        "{site}: the record was built"
+    );
     assert_eq!(
         parked(&fixture.store.lock_state()),
         0,
@@ -11413,7 +11575,7 @@ fn assert_record_refused(
         .unwrap_or_else(|error| panic!("{site}: the retry after the refusal failed: {error:?}"));
     assert_eq!(
         records(&fixture.store),
-        1,
+        built + 1,
         "{site}: the retry did not build the record"
     );
     fixture.store.assert_conserved();
@@ -12345,4 +12507,799 @@ fn published_warm_membership_draws_its_record_from_the_build_reservation() {
         );
         assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + retained);
     }
+}
+
+const DECODE_PAD: usize = 24 * 1024;
+const DECODE_STAMP: &str = "2026-01-02T03:04:06Z";
+
+#[derive(Clone, Copy)]
+enum Retains {
+    Nothing,
+    Line,
+    Private(&'static str),
+}
+
+struct DecodeVariant {
+    site: &'static str,
+    line: String,
+    slack: usize,
+    retains: Retains,
+    arenas: usize,
+}
+
+fn decode_stage_mirror(line: usize) -> usize {
+    (16 * line + 16).max(448)
+        + 48
+        + 4096
+        + 64
+        + line
+        + 64
+        + size_of::<Vec<Value>>()
+        + (line / 2 + 2) * size_of::<Value>()
+}
+
+fn seen_keys(keys: usize) -> usize {
+    pushed_capacity(keys) * size_of::<&str>()
+}
+
+fn arena_slack(bound: usize, kept: usize) -> usize {
+    let slots = |count: usize| if count == 0 { 0 } else { count.max(4) };
+    (slots(bound) - slots(kept)) * size_of::<(usize, SourceArena)>()
+        + pushed_capacity(bound) * size_of::<SourceArena>()
+}
+
+fn padded_line(mut value: Value) -> String {
+    value.insert("pad", json!("x".repeat(DECODE_PAD)));
+    format!("{value}\n")
+}
+
+fn decode_variants() -> Vec<DecodeVariant> {
+    let denial = DENIAL_KIND_USER_REJECTED.len();
+    let repeated_result = json!({"type":"tool_result","tool_use_id":"call","content":[{"type":"text","text":"0123456789"},{"type":"text","text":"0123456789"}]});
+    let dup_serialized = 2 + (6 * 7 + 4) + (6 + 2) + (6 * 7 + 4) + (6 * 2 + 2);
+    let dup_pair = size_of::<(&str, &Value)>();
+    let dup_transient = (2 * dup_serialized).max(8)
+        + 2 * dup_pair
+        + (seen_keys(2) + hashbrown_tier(2, dup_pair) * dup_pair).max(128)
+        + decode_stage_mirror(dup_serialized);
+    let dup_line = format!(
+        r#"{{"type":"assistant","uuid":"dup","sessionId":"s","timestamp":"{DECODE_STAMP}","message":{{"model":"m","content":[{{"type":"tool_use","id":"dup-call","name":"Bash","input":{{"command":"a","command":"bb"}}}}]}},"pad":"{}"}}
+"#,
+        "x".repeat(DECODE_PAD)
+    );
+    vec![
+        DecodeVariant {
+            site: "user plain",
+            line: padded_line(
+                json!({"type":"user","uuid":"u-plain","sessionId":"s","timestamp":DECODE_STAMP,"message":{"content":"hello world"}}),
+            ),
+            slack: "user".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "user tool result",
+            line: padded_line(
+                json!({"type":"user","uuid":"u-result","sessionId":"s","timestamp":DECODE_STAMP,"message":{"content":[{"type":"text","text":"t"},{"type":"tool_result","tool_use_id":"call","content":"ok"}]},"toolUseResult":{"stdout":"x","durationMs":1}}),
+            ),
+            slack: "user".len() + denial,
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "user repeated tool results",
+            line: padded_line(
+                json!({"type":"user","uuid":"u-results","sessionId":"s","timestamp":DECODE_STAMP,"message":{"content":[repeated_result.clone(),repeated_result.clone(),repeated_result]},"toolUseResult":{"stdout":"shared","exitCode":0}}),
+            ),
+            slack: "user".len() + 3 * (denial + 20),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "user denied with meta",
+            line: padded_line(
+                json!({"type":"user","uuid":"u-denied","parentUuid":"anchor","sessionId":"s","timestamp":DECODE_STAMP,"cwd":"/w","gitBranch":"main","version":"2.0","entrypoint":"cli","userType":"external","slug":"sl","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"denied","is_error":true}]},"toolDenialKind":"user","promptId":"p","promptSource":"src","queuePriority":"q","imagePasteIds":[1,2,3],"sourceToolUseID":"stu","sourceToolAssistantUUID":"sta","mcpMeta":{"a":1},"permissionMode":"plan","interruptedMessageId":"im"}),
+            ),
+            slack: "user".len() + seen_keys(1),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "assistant text",
+            line: padded_line(
+                json!({"type":"assistant","uuid":"a-text","sessionId":"s","timestamp":DECODE_STAMP,"message":{"model":"m","content":[{"type":"text","text":"hi"},{"type":"thinking","thinking":"hmm"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"service_tier":"standard"}},"requestId":"req","forkedFrom":"f","attributionPlugin":"plug"}),
+            ),
+            slack: "assistant".len(),
+            retains: Retains::Nothing,
+            arenas: 3,
+        },
+        DecodeVariant {
+            site: "assistant questions",
+            line: padded_line(
+                json!({"type":"assistant","uuid":"a-questions","sessionId":"s","timestamp":DECODE_STAMP,"message":{"model":"m","content":[{"type":"tool_use","id":"q-call","name":"AskUserQuestion","input":{"questions":[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"A"},{"label":"B"}]}],"file_path":"/x","subagent_type":"t"}}]}}),
+            ),
+            slack: "assistant".len() + 3 * seen_keys(4),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "assistant duplicate input keys",
+            line: dup_line,
+            slack: "assistant".len()
+                + ((2 * 32 + 8 + 9) - (32 + 7 + 2))
+                + seen_keys(2)
+                + dup_transient,
+            retains: Retains::Private(r#"{"command":"bb"}"#),
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "assistant fallback and other blocks",
+            line: padded_line(
+                json!({"type":"assistant","uuid":"a-blocks","sessionId":"s","timestamp":DECODE_STAMP,"message":{"model":"m","content":[{"type":"fallback","from":{"model":"a"},"to":{"model":"b"}},{"type":"server_tool_use","id":"x"}]},"isApiErrorMessage":true,"error":"boom","apiErrorStatus":500,"errorDetails":"details"}),
+            ),
+            slack: "assistant".len() + seen_keys(2),
+            retains: Retains::Line,
+            arenas: 3,
+        },
+        DecodeVariant {
+            site: "system stop hook summary",
+            line: padded_line(
+                json!({"type":"system","uuid":"s-hook","sessionId":"s","timestamp":DECODE_STAMP,"subtype":"stop_hook_summary","content":"c","level":"info","hookCount":1,"hookInfos":[{"command":"cmd","durationMs":3}],"hookErrors":["e1"],"hookAdditionalContext":["ctx"],"stopReason":"done","toolUseID":"tu"}),
+            ),
+            slack: "system".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "system compact boundary",
+            line: padded_line(
+                json!({"type":"system","uuid":"s-compact","sessionId":"s","timestamp":DECODE_STAMP,"subtype":"compact_boundary","content":"c","compactMetadata":{"trigger":"auto","preTokens":1,"preCompactDiscoveredTools":["t1","t2"],"preservedSegment":{"headUuid":"h","anchorUuid":"","tailUuid":"t"},"preservedMessages":{"anchorUuid":"a","uuids":["u1"],"allUuids":["u1","u2","u3"]}},"logicalParentUuid":"lp"}),
+            ),
+            slack: "system".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "system turn duration",
+            line: padded_line(
+                json!({"type":"system","uuid":"s-turn","sessionId":"s","timestamp":DECODE_STAMP,"subtype":"turn_duration","durationMs":5,"messageCount":2}),
+            ),
+            slack: "system".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "system model refusal fallback",
+            line: padded_line(
+                json!({"type":"system","uuid":"s-refusal","sessionId":"s","timestamp":DECODE_STAMP,"subtype":"model_refusal_fallback","apiRefusalCategory":"cat","apiRefusalExplanation":"why","trigger":"t","direction":"down","originalModel":"a","fallbackModel":"b","retractedMessageUuids":["r1","r2"],"refusedUserMessageUuid":"ru"}),
+            ),
+            slack: "system".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "system other subtype",
+            line: padded_line(
+                json!({"type":"system","uuid":"s-other","sessionId":"s","timestamp":DECODE_STAMP,"subtype":"weird","content":"c","payload":{"k":[1,2]}}),
+            ),
+            slack: "system".len(),
+            retains: Retains::Line,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "mode",
+            line: padded_line(json!({"type":"mode","sessionId":"s","mode":"plan"})),
+            slack: "mode".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "permission mode",
+            line: padded_line(
+                json!({"type":"permission-mode","sessionId":"s","permissionMode":"acceptEdits"}),
+            ),
+            slack: "permission-mode".len(),
+            retains: Retains::Nothing,
+            arenas: 1,
+        },
+        DecodeVariant {
+            site: "attachment hook success",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-success","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"hook_success","hookName":"n","hookEvent":"PreToolUse","toolUseID":"tu","command":"cmd","content":"out","stdout":"so","stderr":"se","exitCode":0,"durationMs":1}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment hook blocking error",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-blocking","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"hook_blocking_error","hookName":"n","hookEvent":"PreToolUse","toolUseID":"tu","blockingError":{"a":"b"}}}),
+            ),
+            slack: "attachment".len() + seen_keys(1),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment hook non-blocking error",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-nonblocking","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"hook_non_blocking_error","hookName":"n","hookEvent":"PostToolUse","command":"cmd","stdout":"so","stderr":"se","exitCode":2,"durationMs":1}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment hook cancelled",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-cancelled","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"hook_cancelled","hookName":"n","hookEvent":"Stop","command":"cmd","durationMs":1,"timedOut":true,"timeoutMs":5}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment hook additional context",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-context","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"hook_additional_context","hookName":"n","hookEvent":"UserPromptSubmit","toolUseID":"tu","content":["c1","c2"]}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment async hook response",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-async","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"async_hook_response","hookName":"n","hookEvent":"Notification","processId":"p","stdout":"so","stderr":"se","exitCode":0,"response":{"x":1}}}),
+            ),
+            slack: "attachment".len() + seen_keys(1),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment queued command",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-queued","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"queued_command","prompt":"p","commandMode":"m","origin":{"kind":"k"}}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Nothing,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment deferred tools delta",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-deferred","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"deferred_tools_delta","addedNames":["a"],"removedNames":["r"]}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "attachment other type",
+            line: padded_line(
+                json!({"type":"attachment","uuid":"at-other","sessionId":"s","timestamp":DECODE_STAMP,"attachment":{"type":"weird","k":"v"}}),
+            ),
+            slack: "attachment".len(),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+        DecodeVariant {
+            site: "other entry type",
+            line: padded_line(json!({"type":"custom","uuid":"o","sessionId":"s","payload":[1,2]})),
+            slack: seen_keys(5),
+            retains: Retains::Line,
+            arenas: 2,
+        },
+    ]
+}
+
+fn decode_probe(store: &NativeStore) -> Arc<Mutex<Vec<&'static str>>> {
+    let stages = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&stages);
+    *store.decode_hook.lock().unwrap() = Some(Arc::new(move |stage| {
+        recorder.lock().unwrap().push(stage);
+    }));
+    stages
+}
+
+fn stage_counts(stages: &Mutex<Vec<&'static str>>) -> [usize; 2] {
+    let stages = stages.lock().unwrap();
+    [
+        stages.iter().filter(|stage| **stage == "dom").count(),
+        stages.iter().filter(|stage| **stage == "entry").count(),
+    ]
+}
+
+fn decode_step_shape(fixture: &Fixture) -> (usize, usize, usize, usize) {
+    let slot = parked_slot(fixture);
+    let load = slot.work.lock().unwrap();
+    let (reservation, decode_bound) = step_reservation(64 * 1024, load.pending.len());
+    (
+        reservation,
+        decode_bound,
+        grown_by_one(&load.chunks),
+        64usize.saturating_sub(load.fence.capacity()),
+    )
+}
+
+fn assert_decode_refused(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    headroom: usize,
+    stages: [usize; 2],
+) {
+    let expected = removed_waiter_gauges(build, headroom);
+    let fixture = build();
+    let probe = decode_probe(&fixture.store);
+    let slot = parked_slot(&fixture);
+    let cap = cap_for(&fixture.owner);
+    let token = fixture.request["cursor"].as_str().unwrap().to_owned();
+    let before = slot.accounted.load(Ordering::Acquire);
+    let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+    fixture.store.assert_conserved();
+    traced(&fixture.store);
+    assert!(
+        !advance_parked(&fixture),
+        "{site}: headroom {headroom} admitted the line"
+    );
+    assert_eq!(
+        stage_counts(&probe),
+        stages,
+        "{site}: construction stages reached at headroom {headroom}"
+    );
+    fixture.store.assert_conserved();
+    assert_eq!(
+        (
+            ledger(&fixture.store),
+            audited(&fixture.store),
+            bookkeeping(&fixture.store),
+        ),
+        expected,
+        "{site}: the refusal at headroom {headroom} left more than its removed waiter behind"
+    );
+    assert!(
+        !fixture.store.lock_state().waiters.contains_key(&token),
+        "{site}: the refused step kept its waiter"
+    );
+    assert!(
+        !traced(&fixture.store)
+            .iter()
+            .any(|trace| matches!(trace, Trace::Allocated(_))),
+        "{site}: the refusal allocated retained bookkeeping"
+    );
+    assert!(audited(&fixture.store)[TOTAL] <= cap);
+    {
+        let load = slot.work.lock().unwrap();
+        assert_eq!(load.count, 1, "{site}: the refusal retained the line");
+        assert!(load.pending.contains(&b'\n'));
+        assert!(
+            load.failure.is_none(),
+            "{site}: the refusal poisoned the load"
+        );
+    }
+    assert_eq!(
+        slot.accounted.load(Ordering::Acquire),
+        before,
+        "{site}: the refusal moved the load charge"
+    );
+}
+
+fn assert_source_uuids(snapshot: &Arc<TranscriptSnapshot>, source: &LedgerSource) {
+    let whole = crate::parse::parse_bytes(&std::fs::read(&source.path).unwrap(), |_| true).unwrap();
+    assert_eq!(
+        snapshot
+            .entries()
+            .iter()
+            .map(|entry| entry.meta().map(|meta| meta.uuid.clone()))
+            .collect::<Vec<_>>(),
+        whole
+            .iter()
+            .map(|entry| entry.meta().map(|meta| meta.uuid.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(snapshot.event_count, whole.len());
+}
+
+#[test]
+fn decode_lines_are_admitted_in_two_stages_before_any_construction() {
+    for variant in decode_variants() {
+        let source = LedgerSource::new(&format!(
+            "{}{}{}",
+            line("anchor"),
+            variant.line,
+            line("trailer")
+        ));
+        let len = variant.line.len() - 1;
+        let site = variant.site;
+        for background in [false, true] {
+            let build = || decode_line_fixture(&source, background);
+            let exact = exact_headroom(&build, &advance_parked);
+            let (reservation, decode_bound, chunks_growth, fence_growth) =
+                decode_step_shape(&build());
+            assert!(
+                decode_stage_mirror(len) > decode_bound,
+                "{site}: the padded line does not outgrow its step's decode bound"
+            );
+            let dom = decode_stage_mirror(len) - decode_bound;
+            assert_decode_refused(site, &build, reservation + dom - 1, [0, 0]);
+            assert_decode_refused(site, &build, exact - 1, [1, 0]);
+            let fitted = build();
+            let probe = decode_probe(&fitted.store);
+            let slot = parked_slot(&fitted);
+            let cap = cap_for(&fitted.owner);
+            let filler = fill_to(&fitted.store, &fitted.owner, exact);
+            traced(&fitted.store);
+            assert!(advance_parked(&fitted), "{site}: the exact fit was refused");
+            let admitted = admitted_traces(&fitted.store);
+            assert_eq!(stage_counts(&probe), [1, 1], "{site}");
+            fitted.store.assert_conserved();
+            assert!(audited(&fitted.store)[TOTAL] <= cap);
+            let (retained, arenas) = {
+                let load = slot.work.lock().unwrap();
+                assert_eq!(
+                    load.count, 2,
+                    "{site}: the exact fit did not retain the line"
+                );
+                assert!(load.pending.contains(&b'\n'));
+                (
+                    NativeStore::audit_chunk_bytes(&load.chunks[1]),
+                    load.chunks[1]
+                        .entries
+                        .arenas()
+                        .iter()
+                        .map(|(entry, arena)| (*entry, arena.source_len))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let line_arena = NativeStore::audit_arena_bytes(&SourceArena {
+                root: sonic_rs::from_str(&variant.line[..len]).unwrap(),
+                source_len: len,
+            });
+            let arena = match variant.retains {
+                Retains::Nothing => {
+                    assert!(arenas.is_empty(), "{site}: an unpinned line kept its arena");
+                    line_arena + arena_slack(variant.arenas, 0)
+                }
+                Retains::Line => {
+                    assert_eq!(
+                        arenas,
+                        vec![(0, len)],
+                        "{site}: the line arena is not retained exactly once"
+                    );
+                    arena_slack(variant.arenas, 1)
+                }
+                Retains::Private(normalized) => {
+                    assert_eq!(
+                        arenas,
+                        vec![(0, normalized.len())],
+                        "{site}: the private arena is not the only one retained"
+                    );
+                    line_arena + arena_slack(variant.arenas, 1)
+                        - NativeStore::audit_arena_bytes(&SourceArena {
+                            root: sonic_rs::from_str(normalized).unwrap(),
+                            source_len: normalized.len(),
+                        })
+                }
+            };
+            let typed = retained + chunks_growth + fence_growth + variant.slack + arena;
+            assert_eq!(
+                admitted,
+                vec![reservation, dom, typed, 0],
+                "{site}: the line was not admitted in two stages before its construction"
+            );
+            assert_eq!(exact, reservation + dom + typed, "{site}");
+            let walk = cold_load_walk(&slot);
+            assert_eq!(
+                slot.accounted.load(Ordering::Acquire),
+                walk,
+                "{site}: the slot charge is not its heap walked once"
+            );
+            let pending = fitted.store.lock_state().ledger.pending;
+            assert_eq!(
+                pending,
+                NativeStore::audit_load_record_bytes(&slot) + walk,
+                "{site}: the pending gauge is not the slot record plus its heap"
+            );
+            drop(filler);
+            let joined = context_for("decode-joined", background);
+            let (_, snapshot) = acquired(&fitted.store, &source.path, &joined);
+            assert_source_uuids(&snapshot, &source);
+            fitted.store.assert_conserved();
+        }
+    }
+}
+
+#[test]
+fn refused_decode_lines_are_retried_by_their_owner_and_a_joined_waiter() {
+    let variant = decode_variants().swap_remove(2);
+    let source = LedgerSource::new(&format!(
+        "{}{}{}",
+        line("anchor"),
+        variant.line,
+        line("trailer")
+    ));
+    let site = variant.site;
+    for background in [false, true] {
+        let build = || decode_line_fixture(&source, background);
+        let exact = exact_headroom(&build, &advance_parked);
+        let fixture = build();
+        let slot = parked_slot(&fixture);
+        let filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
+        assert!(!advance_parked(&fixture), "{site}");
+        fixture.store.assert_conserved();
+        let joined = context_for("decode-joined", background);
+        let mut refused_join =
+            fixture
+                .store
+                .request(&acquire(&source.path), &joined, &Cancellation::default());
+        if parked(&refused_join) {
+            refused_join = resume(&fixture.store, &refused_join, &joined);
+        }
+        assert_eq!(
+            refused_join["status"].as_str(),
+            Some("retained_limit"),
+            "{site}: {refused_join:?}"
+        );
+        fixture.store.assert_conserved();
+        {
+            let load = slot.work.lock().unwrap();
+            assert_eq!(load.count, 1, "{site}: a refusal retained the line");
+            assert!(
+                load.failure.is_none(),
+                "{site}: a refusal poisoned the load"
+            );
+        }
+        drop(filler);
+        let (_, retried) = acquired(&fixture.store, &source.path, &fixture.owner);
+        assert_source_uuids(&retried, &source);
+        let (_, rejoined) = acquired(&fixture.store, &source.path, &joined);
+        assert_eq!(
+            retried.id, rejoined.id,
+            "{site}: the owners built two snapshots"
+        );
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn line_admissions_settle_when_the_decoding_step_fails() {
+    let bad = padded_line(
+        json!({"type":"user","uuid":"bad","timestamp":DECODE_STAMP,"message":{"content":"x"}}),
+    );
+    let len = bad.len() - 1;
+    let source = LedgerSource::new(&format!("{}{bad}{}", line("anchor"), line("trailer")));
+    for background in [false, true] {
+        let fixture = decode_line_fixture(&source, background);
+        let (reservation, decode_bound, _, _) = decode_step_shape(&fixture);
+        let probe = decode_probe(&fixture.store);
+        let slot = parked_slot(&fixture);
+        traced(&fixture.store);
+        let response = resume(&fixture.store, &fixture.request, &fixture.owner);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("parse_error"),
+            "{response:?}"
+        );
+        let admitted = admitted_traces(&fixture.store);
+        assert_eq!(admitted.len(), 4, "{admitted:?}");
+        assert_eq!(
+            (admitted[0], admitted[1], admitted[3]),
+            (reservation, decode_stage_mirror(len) - decode_bound, 0),
+            "{admitted:?}"
+        );
+        assert!(admitted[2] > 0, "{admitted:?}");
+        assert_eq!(stage_counts(&probe), [1, 1]);
+        fixture.store.assert_conserved();
+        let walk = cold_load_walk(&slot);
+        {
+            let load = slot.work.lock().unwrap();
+            assert_eq!(load.count, 1, "the failed line was retained");
+            assert_eq!(
+                load.failure.as_ref().map(|failure| failure.status),
+                Some(Status::ParseError)
+            );
+        }
+        assert_eq!(
+            slot.accounted.load(Ordering::Acquire),
+            walk,
+            "the failed step left its line admissions on the slot"
+        );
+        let pending = fixture.store.lock_state().ledger.pending;
+        assert_eq!(pending, NativeStore::audit_load_record_bytes(&slot) + walk);
+    }
+}
+
+#[test]
+fn cancelled_decoding_requests_settle_their_line_admissions() {
+    let variant = decode_variants().swap_remove(1);
+    let source = LedgerSource::new(&format!(
+        "{}{}{}",
+        line("anchor"),
+        variant.line,
+        line("trailer")
+    ));
+    for background in [false, true] {
+        let fixture = decode_line_fixture(&source, background);
+        let slot = parked_slot(&fixture);
+        let cancel = Cancellation::default();
+        let armed = cancel.clone();
+        *fixture.store.decode_hook.lock().unwrap() = Some(Arc::new(move |stage| {
+            if stage == "dom" {
+                armed.cancel();
+            }
+        }));
+        let cursor = fixture.request["cursor"].as_str().unwrap().to_string();
+        let mut response = fixture
+            .store
+            .request(&resume_request(&cursor), &fixture.owner, &cancel);
+        fixture.store.assert_conserved();
+        if parked(&response) {
+            traced(&fixture.store);
+            response = fixture.store.request(
+                &resume_request(response["cursor"].as_str().unwrap()),
+                &fixture.owner,
+                &cancel,
+            );
+            assert_eq!(
+                admitted_traces(&fixture.store).last(),
+                Some(&0),
+                "the cancelled step did not settle its reservation"
+            );
+        }
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        fixture.store.assert_conserved();
+        assert!(fixture.store.lock_state().waiters.is_empty());
+        let walk = cold_load_walk(&slot);
+        assert_eq!(slot.accounted.load(Ordering::Acquire), walk);
+        let pending = fixture.store.lock_state().ledger.pending;
+        assert_eq!(pending, NativeStore::audit_load_record_bytes(&slot) + walk);
+        *fixture.store.decode_hook.lock().unwrap() = None;
+        let (_, snapshot) = acquired(&fixture.store, &source.path, &fixture.owner);
+        assert_source_uuids(&snapshot, &source);
+        fixture.store.assert_conserved();
+    }
+}
+
+#[test]
+fn retained_line_arenas_are_charged_whole_until_their_rows_drop() {
+    let text = "t".repeat(48 * 1024);
+    let pinned = format!(
+        "{}\n",
+        json!({"type":"assistant","uuid":"pinned","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"model":"m","content":[{"type":"text","text":text},{"type":"tool_use","id":"call","name":"Bash","input":{"a":"b"}}]}})
+    );
+    let twin = format!(
+        "{}\n",
+        json!({"type":"assistant","uuid":"twin","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"model":"m","content":[{"type":"text","text":text}]}})
+    );
+    let source = LedgerSource::new(&format!("{pinned}{twin}"));
+    let store = fast_store();
+    let owner = context_for("arenas", false);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    store.assert_conserved();
+    let mut arena_total = 0;
+    for chunk in &snapshot.chunks {
+        for (index, entry) in chunk.entries.iter().enumerate() {
+            let kept: Vec<_> = chunk
+                .entries
+                .arenas()
+                .iter()
+                .filter(|(position, _)| *position == index)
+                .map(|(_, arena)| arena)
+                .collect();
+            let charge = chunk.entry_charges[index];
+            match entry.meta().map(|meta| meta.uuid.as_str()) {
+                Some("pinned") => {
+                    let [arena] = kept.as_slice() else {
+                        panic!("the pinned entry kept {} arenas", kept.len());
+                    };
+                    assert_eq!(arena.source_len, pinned.len() - 1);
+                    assert_eq!(arena.root["uuid"].as_str(), Some("pinned"));
+                    let bytes = NativeStore::audit_arena_bytes(arena);
+                    assert!(bytes > pinned.len());
+                    assert_eq!(
+                        charge,
+                        entry_charge(entry)
+                            + MemoryCharge {
+                                owned_capacity_bytes: 0,
+                                opaque_dom_accounted_bytes: bytes,
+                            }
+                    );
+                    arena_total += bytes;
+                }
+                Some("twin") => {
+                    assert!(kept.is_empty(), "the twin pinned its freed line arena");
+                    assert_eq!(charge, entry_charge(entry));
+                }
+                other => panic!("unexpected entry {other:?}"),
+            }
+        }
+    }
+    assert!(arena_total > 0);
+    let charged: usize = snapshot
+        .chunks
+        .iter()
+        .map(|chunk| chunk_charge(chunk))
+        .sum();
+    let rows: Vec<_> = snapshot
+        .chunks
+        .iter()
+        .map(|chunk| Arc::clone(&chunk.entries))
+        .collect();
+    release_lease(&store, &handle, &owner);
+    drop(snapshot);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    let escaped = ledger(&store)[ENTRIES];
+    assert!(escaped >= charged, "{escaped} < {charged}");
+    assert!(
+        rows.iter().all(|rows| Arc::strong_count(rows) == 1),
+        "the escaped rows are held past their last clone"
+    );
+    drop(rows);
+    store.assert_conserved();
+    assert!(
+        ledger(&store)[ENTRIES] + arena_total <= escaped,
+        "the arena charge was released before its rows dropped"
+    );
+}
+
+#[test]
+fn classifier_stages_keep_the_rows_they_index_charged() {
+    let source = LedgerSource::new(&lines(0..4));
+    let store = fast_store();
+    let owner = context_for("classifier-pin", false);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    store
+        .register_classifier(
+            "pin",
+            "1",
+            Arc::new(|_, range| Ok(vec![false; range.len()])),
+        )
+        .unwrap();
+    let fixture = Fixture {
+        store,
+        owner,
+        request: json!({"id":"pin","version":"1"}),
+        pins: vec![snapshot],
+    };
+    assert!(stage_created(&fixture));
+    let slot = seeded_slot(&fixture);
+    assert_eq!(slot.chunks.len(), fixture.pins[0].chunks.len());
+    assert!(slot
+        .chunks
+        .iter()
+        .zip(&fixture.pins[0].chunks)
+        .all(|(pinned, chunk)| Arc::ptr_eq(pinned, chunk)));
+    let rows: Vec<_> = fixture.pins[0]
+        .chunks
+        .iter()
+        .map(|chunk| Arc::downgrade(&chunk.entries))
+        .collect();
+    let charged: usize = fixture.pins[0]
+        .chunks
+        .iter()
+        .map(|chunk| chunk_charge(chunk))
+        .sum();
+    release_lease(&fixture.store, &handle, &fixture.owner);
+    let Fixture {
+        store, owner, pins, ..
+    } = fixture;
+    drop(pins);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    assert!(
+        rows.iter().all(|rows| rows.upgrade().is_some()),
+        "the parked stage let the rows it indexed die"
+    );
+    let escaped = ledger(&store)[ENTRIES];
+    assert!(escaped >= charged, "{escaped} < {charged}");
+    drop(slot);
+    store.lock_state().retain_classifier_stages(|_, _| false);
+    store.assert_conserved();
+    assert!(rows.iter().all(|rows| rows.upgrade().is_none()));
+    assert!(ledger(&store)[ENTRIES] + charged <= escaped);
 }

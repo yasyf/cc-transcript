@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
@@ -251,7 +253,11 @@ impl ToolUseBlockView {
         let cached = self.call_cache.get_or_try_init(py, || {
             self.r.with_registry(|| {
                 let tool_use = self.tool_use();
-                crate::views::toolcall::parse_call_view(py, &tool_use.name, &tool_use.input)
+                let rows = match &self.r.host {
+                    BlockHost::Entry(event) => Some(Arc::clone(&event.entries)),
+                    BlockHost::Owned(_) | BlockHost::Print(..) => None,
+                };
+                crate::views::toolcall::parse_call_view(py, &tool_use.name, &tool_use.input, rows)
             })
         })?;
         Ok(cached.clone_ref(py))
@@ -580,6 +586,37 @@ mod tests {
                 .unwrap()
                 .extract::<bool>()
                 .unwrap());
+        });
+    }
+
+    #[test]
+    fn tool_call_views_keep_the_rows_their_input_pins_alive() {
+        Python::initialize();
+        Python::attach(|py| {
+            let source = sonic_rs::json!({
+                "type":"assistant", "uuid":"a", "sessionId":"s", "timestamp":"2026-01-02T03:04:05Z",
+                "message":{"role":"assistant","model":"claude","content":[{
+                    "type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}
+                }]}
+            })
+            .to_string();
+            let entries = Arc::new(cc_transcript_core::snapshot::ChunkRows::new(
+                parse_transcript_bytes(source.as_bytes()).unwrap().entries,
+            ));
+            let rows = Arc::downgrade(&entries);
+            let call = {
+                let event = crate::views::events::event_view(py, &entries, 0).unwrap();
+                let block = event.getattr("blocks").unwrap().get_item(0).unwrap();
+                block.getattr("call").unwrap()
+            };
+            drop(entries);
+            assert!(rows.upgrade().is_some(), "the call view let its rows die");
+            assert_eq!(
+                call.getattr("name").unwrap().extract::<String>().unwrap(),
+                "Bash"
+            );
+            drop(call);
+            assert!(rows.upgrade().is_none());
         });
     }
 }

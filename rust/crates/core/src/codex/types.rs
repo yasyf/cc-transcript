@@ -1,11 +1,14 @@
 use chrono::{DateTime, FixedOffset};
 use sonic_rs::Value;
 
+use crate::snapshot_memory::SourceArena;
+
 #[derive(Debug)]
 pub struct CodexEntry {
     pub line_index: usize,
     pub timestamp: Option<DateTime<FixedOffset>>,
     pub item: CodexItem,
+    pub source: Option<SourceArena>,
 }
 
 #[derive(Debug)]

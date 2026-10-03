@@ -9,6 +9,7 @@ use crate::codex::types::{
     CodexEntry, CodexItem, CodexSession, EventMsg, ResponseItem, ResponseItemPayload,
 };
 use crate::pystr;
+use crate::snapshot_memory::{pins_arena, SourceArena};
 use crate::types::{
     AssistantEntry, ContentBlock, Entry, EntryMeta, OtherEntry, ToolResultBlock, ToolUseBlock,
     UserContent, UserEntry,
@@ -547,15 +548,17 @@ fn payload_tag(payload: &ResponseItemPayload) -> &str {
 }
 
 fn payload_raw(payload: &ResponseItemPayload) -> Value {
+    payload_dom(payload).cloned().unwrap_or_default()
+}
+
+fn payload_dom(payload: &ResponseItemPayload) -> Option<&Value> {
     use ResponseItemPayload as R;
     match payload {
-        R::ToolSearchCall { arguments, .. } => arguments.clone(),
-        R::LocalShellCall { action, .. } | R::WebSearchCall { action, .. } => {
-            action.clone().unwrap_or_default()
-        }
-        R::GhostSnapshot(v) => v.clone(),
-        R::Other { raw, .. } => raw.clone(),
-        _ => Value::default(),
+        R::ToolSearchCall { arguments, .. } => Some(arguments),
+        R::LocalShellCall { action, .. } | R::WebSearchCall { action, .. } => action.as_ref(),
+        R::GhostSnapshot(v) => Some(v),
+        R::Other { raw, .. } => Some(raw),
+        _ => None,
     }
 }
 
@@ -592,6 +595,10 @@ fn event_tag(em: &EventMsg) -> &str {
 }
 
 fn event_raw(em: &EventMsg) -> Value {
+    event_dom(em).cloned().unwrap_or_default()
+}
+
+fn event_dom(em: &EventMsg) -> Option<&Value> {
     use EventMsg as E;
     match em {
         E::ExecCommandEnd(v)
@@ -607,9 +614,73 @@ fn event_raw(em: &EventMsg) -> Value {
         | E::CollabAgentSpawnEnd(v)
         | E::CollabWaitingEnd(v)
         | E::CollabCloseEnd(v)
-        | E::Other { raw: v, .. } => v.clone(),
-        _ => Value::default(),
+        | E::Other { raw: v, .. } => Some(v),
+        _ => None,
     }
+}
+
+pub(crate) fn line_dom(item: &CodexItem) -> Option<&Value> {
+    use ResponseItemPayload as R;
+    match item {
+        CodexItem::SessionMeta(m) => Some(&m.raw),
+        CodexItem::TurnContext(v) => Some(v),
+        CodexItem::WorldState(w) => Some(&w.state),
+        CodexItem::ResponseItem(ri) => match &ri.payload {
+            R::FunctionCallOutput { output, .. } | R::CustomToolCallOutput { output, .. } => {
+                Some(output)
+            }
+            payload => payload_dom(payload),
+        },
+        CodexItem::EventMsg(em) => event_dom(em),
+        CodexItem::Compacted(_)
+        | CodexItem::InterAgentCommunicationMetadata { .. }
+        | CodexItem::Other(_) => None,
+    }
+}
+
+fn retains_line(entry: &Entry) -> bool {
+    match entry {
+        Entry::Other(other) => pins_arena(&other.raw),
+        _ => entry
+            .tool_results()
+            .any(|result| result.tool_use_result.as_ref().is_some_and(pins_arena)),
+    }
+}
+
+fn lowered_arenas(source: &CodexEntry, entry: &Entry) -> Vec<SourceArena> {
+    match (&source.item, entry) {
+        (CodexItem::Other(other), Entry::Other(lowered)) => pins_arena(&lowered.raw)
+            .then(|| SourceArena {
+                root: lowered.raw.clone(),
+                source_len: other.raw.len(),
+            })
+            .into_iter()
+            .collect(),
+        _ => source
+            .source
+            .iter()
+            .filter(|_| retains_line(entry))
+            .cloned()
+            .collect(),
+    }
+}
+
+pub(crate) fn session_arenas(
+    session: &CodexSession,
+    entries: &[Entry],
+) -> Vec<(usize, SourceArena)> {
+    assert_eq!(session.entries.len(), entries.len());
+    session
+        .entries
+        .iter()
+        .zip(entries)
+        .enumerate()
+        .flat_map(|(index, (source, entry))| {
+            lowered_arenas(source, entry)
+                .into_iter()
+                .map(move |arena| (index, arena))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1337,6 +1408,46 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Entry::User(u) if u.interrupted()))),
             "050b lifted turns must expose the interrupted user entry"
+        );
+    }
+
+    #[test]
+    fn lowered_entries_record_the_arenas_they_keep() {
+        let lines = [
+            r#"{"timestamp":"2026-07-19T00:00:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":{"stdout":"x"}}}"#,
+            r#"{"timestamp":"2026-07-19T00:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"c","name":"exec","arguments":"{}"}}"#,
+            r#"{"timestamp":"2026-07-19T00:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t"}}"#,
+            r#"{"timestamp":"2026-07-19T00:00:03Z","type":"turn_context","payload":{"cwd":"/w","model":"m"}}"#,
+            r#"{"timestamp":"2026-07-19T00:00:04Z","type":"mystery","payload":{"k":1}}"#,
+            r#"{"timestamp":"2026-07-19T00:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"d","output":"plain"}}"#,
+        ];
+        let session = parse_codex_bytes(lines.join("\n").as_bytes());
+        let entries = lower(&session).entries;
+        assert_eq!(
+            session
+                .entries
+                .iter()
+                .map(|entry| entry.source.as_ref().map(|source| source.source_len))
+                .collect::<Vec<_>>(),
+            [
+                Some(lines[0].len()),
+                None,
+                None,
+                Some(lines[3].len()),
+                None,
+                Some(lines[5].len())
+            ]
+        );
+        assert_eq!(
+            session_arenas(&session, &entries)
+                .iter()
+                .map(|(entry, arena)| (*entry, arena.source_len))
+                .collect::<Vec<_>>(),
+            [
+                (0, lines[0].len()),
+                (3, lines[3].len()),
+                (4, lines[4].len())
+            ]
         );
     }
 }

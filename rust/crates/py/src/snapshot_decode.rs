@@ -54,7 +54,7 @@ fn tool_payload<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let payload = PyDict::new(py);
     payload.set_item("ref", reference(py, record.r#ref)?)?;
-    payload.set_item("call", call_view(py, Arc::new(record.call))?)?;
+    payload.set_item("call", call_view(py, Arc::new(record.call), None)?)?;
     payload.set_item("result", result)?;
     payload.set_item("result_ts", record.result_ts)?;
     payload.set_item("edits", edits(py, record.edits)?)?;

@@ -26,7 +26,9 @@ use crate::snapshot_ledger::{
 };
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
-use crate::snapshot_memory::{entry_charge, MemoryCharge};
+use crate::snapshot_memory::{
+    arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
+};
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
 use crate::types::Entry;
 
@@ -117,6 +119,15 @@ impl WorkLimits {
             "max_items":self.max_items,"max_output_bytes":self.max_output_bytes,
             "max_discovery_entries":self.max_discovery_entries,"max_sources":self.max_sources})
     }
+}
+
+enum LineDecode {
+    Deferred,
+    Decoded {
+        entry: Option<Entry>,
+        arenas: Vec<SourceArena>,
+        charge: usize,
+    },
 }
 
 #[derive(Debug, Default, Clone)]
@@ -215,14 +226,24 @@ impl SourceStamp {
 pub struct ChunkRows {
     ledger: LedgerHook,
     rows: Vec<Entry>,
+    arenas: Vec<(usize, SourceArena)>,
 }
 
 impl ChunkRows {
     pub fn new(rows: Vec<Entry>) -> Self {
+        Self::retaining(rows, Vec::new())
+    }
+
+    fn retaining(rows: Vec<Entry>, arenas: Vec<(usize, SourceArena)>) -> Self {
         Self {
             ledger: LedgerHook::default(),
             rows,
+            arenas,
         }
+    }
+
+    pub fn arenas(&self) -> &Vec<(usize, SourceArena)> {
+        &self.arenas
     }
 }
 
@@ -246,13 +267,25 @@ pub struct EntryChunk {
 
 impl EntryChunk {
     pub fn new(start: usize, entries: Vec<Entry>) -> Self {
+        Self::retaining(start, entries, Vec::new())
+    }
+
+    pub(crate) fn retaining(
+        start: usize,
+        entries: Vec<Entry>,
+        arenas: Vec<(usize, SourceArena)>,
+    ) -> Self {
         let mut charge = MemoryCharge {
             owned_capacity_bytes: arc_bytes::<Self>()
                 + arc_bytes::<ChunkRows>()
-                + entries.capacity() * size_of::<Entry>(),
+                + entries.capacity() * size_of::<Entry>()
+                + arenas.capacity() * size_of::<(usize, SourceArena)>(),
             opaque_dom_accounted_bytes: 0,
         };
-        let entry_charges: Vec<_> = entries.iter().map(entry_charge).collect();
+        let mut entry_charges: Vec<_> = entries.iter().map(entry_charge).collect();
+        for (entry, arena) in &arenas {
+            entry_charges[*entry] += arena_charge(arena);
+        }
         for entry_charge in &entry_charges {
             charge += *entry_charge;
         }
@@ -266,7 +299,7 @@ impl EntryChunk {
             .filter(|entry| matches!(entry,Entry::User(user) if user.meta.is_sidechain))
             .count();
         Self {
-            entries: Arc::new(ChunkRows::new(entries)),
+            entries: Arc::new(ChunkRows::retaining(entries, arenas)),
             start,
             charge,
             entry_charges,
@@ -1249,6 +1282,7 @@ pub(crate) fn committed_events(snapshot: &TranscriptSnapshot) -> usize {
 struct ClassifierSlot {
     work: Mutex<ClassifierStage>,
     seed: Option<Arc<CarriedClassification>>,
+    chunks: Vec<Arc<EntryChunk>>,
     accounted: AtomicUsize,
     attached: AtomicBool,
     deadline: u64,
@@ -1258,6 +1292,10 @@ struct ClassifierSlot {
 impl ClassifierSlot {
     fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
         self.seed.iter().flat_map(|seed| seed.anchors())
+    }
+
+    fn record_bytes(&self) -> usize {
+        CLASSIFIER_SLOT_BYTES + self.chunks.capacity() * size_of::<Arc<EntryChunk>>()
     }
 
     fn ledgered_bytes(&self) -> usize {
@@ -2222,7 +2260,7 @@ impl StoreState {
         }
         slot.attached.store(true, Ordering::Release);
         self.ledger.classifier +=
-            CLASSIFIER_SLOT_BYTES + key.capacity() + slot.accounted.load(Ordering::Acquire);
+            slot.record_bytes() + key.capacity() + slot.accounted.load(Ordering::Acquire);
         if let Some(displaced) = self.classifier_stages.insert(key, slot) {
             self.detach_classifier_stage(0, &displaced);
         }
@@ -2233,7 +2271,7 @@ impl StoreState {
         self.ledger.classifier = self
             .ledger
             .classifier
-            .checked_sub(CLASSIFIER_SLOT_BYTES + key_bytes + slot.accounted.load(Ordering::Acquire))
+            .checked_sub(slot.record_bytes() + key_bytes + slot.accounted.load(Ordering::Acquire))
             .expect("balanced retained ledger");
         for anchor in slot.anchors() {
             self.ledger.shared.release(anchor.id);
@@ -2608,6 +2646,8 @@ pub struct NativeStore {
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    decode_hook: Mutex<Option<Arc<dyn Fn(&'static str) + Send + Sync>>>,
     #[cfg(test)]
     pin_hook: Mutex<Option<Arc<dyn Fn(&Value) -> Result<(), SnapshotError> + Send + Sync>>>,
     #[cfg(test)]
@@ -3018,6 +3058,8 @@ impl NativeStore {
             classified: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
+            #[cfg(test)]
+            decode_hook: Mutex::new(None),
             #[cfg(test)]
             pin_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3942,6 +3984,7 @@ impl NativeStore {
                 let accounted = stage.accounted_bytes();
                 let stored = key.clone();
                 let additional = CLASSIFIER_SLOT_BYTES
+                    + snapshot.chunks.len() * size_of::<Arc<EntryChunk>>()
                     + stored.capacity()
                     + accounted
                     + state.classifier_stages.growth_for(&stored)
@@ -3953,6 +3996,7 @@ impl NativeStore {
                 let slot = Arc::new(ClassifierSlot {
                     work: Mutex::new(stage),
                     seed,
+                    chunks: snapshot.chunks.clone(),
                     accounted: AtomicUsize::new(accounted),
                     attached: AtomicBool::new(false),
                     deadline: now_ms() + self.config.preparation,
@@ -4444,6 +4488,7 @@ impl NativeStore {
                 .map(|(key, slot)| {
                     arc_mirror::<ClassifierSlot>()
                         + MUTEX_STORAGE_MIRROR
+                        + slot.chunks.capacity() * size_of::<Arc<EntryChunk>>()
                         + key.capacity()
                         + slot.accounted.load(Ordering::Acquire)
                 })
@@ -4659,6 +4704,7 @@ impl NativeStore {
             + arc_mirror::<ChunkRows>()
             + entries.capacity() * size_of::<Entry>()
             + entry_charges.capacity() * size_of::<MemoryCharge>()
+            + entries.arenas().capacity() * size_of::<(usize, SourceArena)>()
             + entries
                 .iter()
                 .map(|entry| {
@@ -4666,6 +4712,31 @@ impl NativeStore {
                     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
                 })
                 .sum::<usize>()
+            + entries
+                .arenas()
+                .iter()
+                .map(|(_, arena)| Self::audit_arena_bytes(arena))
+                .sum::<usize>()
+    }
+
+    #[cfg(test)]
+    fn audit_arena_bytes(arena: &SourceArena) -> usize {
+        64 + arena.source_len + 64 + (32 + Self::audit_arena_nodes(&arena.root)).max(448) + 48
+    }
+
+    #[cfg(test)]
+    fn audit_arena_nodes(value: &Value) -> usize {
+        if let Some(array) = value.as_array().filter(|array| !array.is_empty()) {
+            16 * (array.len() + 1) + array.iter().map(Self::audit_arena_nodes).sum::<usize>()
+        } else if let Some(object) = value.as_object().filter(|object| !object.is_empty()) {
+            16 * (2 * object.len() + 1)
+                + object
+                    .iter()
+                    .map(|(_, item)| Self::audit_arena_nodes(item))
+                    .sum::<usize>()
+        } else {
+            0
+        }
     }
 
     #[cfg(test)]
@@ -7396,6 +7467,17 @@ impl NativeStore {
         }
     }
 
+    #[cfg(test)]
+    fn before_decode(&self, stage: &'static str) {
+        let hook = self.decode_hook.lock().expect("decode hook").clone();
+        if let Some(hook) = hook {
+            hook(stage);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn before_decode(&self, _stage: &'static str) {}
+
     fn after_location_park(&self) {
         #[cfg(test)]
         {
@@ -7549,6 +7631,8 @@ impl NativeStore {
     fn decoded_line_bytes(
         entries: &Vec<Entry>,
         parsed: &[Entry],
+        arenas: &Vec<(usize, SourceArena)>,
+        fresh: &[SourceArena],
         chunks: &Vec<Arc<EntryChunk>>,
         session_pending: bool,
     ) -> usize {
@@ -7571,6 +7655,7 @@ impl NativeStore {
         chunk
             + session
             + vec_growth(entries, parsed.len())
+            + vec_growth(arenas, fresh.len())
             + parsed
                 .iter()
                 .map(|entry| {
@@ -7580,6 +7665,139 @@ impl NativeStore {
                         + size_of::<MemoryCharge>()
                 })
                 .sum::<usize>()
+            + fresh
+                .iter()
+                .map(|arena| arena_bytes(&arena.root, arena.source_len))
+                .sum::<usize>()
+    }
+
+    fn decoded_line_bound(
+        entries: &Vec<Entry>,
+        arenas: &Vec<(usize, SourceArena)>,
+        chunks: &Vec<Arc<EntryChunk>>,
+        session_pending: bool,
+        dom: &Value,
+        source_len: usize,
+        fence_growth: usize,
+    ) -> Option<usize> {
+        let retained = crate::parse::retained_arena_bound(dom);
+        let chunk = if entries.is_empty() {
+            arc_bytes::<EntryChunk>() + arc_bytes::<ChunkRows>() + vec_growth(chunks, 1)
+        } else {
+            0
+        };
+        let session = if session_pending {
+            crate::value::field_str(dom, "sessionId").map_or(0, str::len)
+        } else {
+            0
+        };
+        [
+            chunk,
+            session,
+            vec_growth(entries, 1),
+            size_of::<MemoryCharge>(),
+            fence_growth,
+            crate::parse::retained_entry_bound(dom)?,
+            arena_bytes(dom, source_len),
+            vec_growth(arenas, retained),
+            crate::parse::pushed_capacity(retained).checked_mul(size_of::<SourceArena>())?,
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+    }
+
+    fn admit_decode(
+        &self,
+        slot: &LoadSlot,
+        context: &Value,
+        needed: usize,
+        admitted: &mut usize,
+        deferrable: bool,
+    ) -> Result<bool, SnapshotError> {
+        if needed <= *admitted {
+            return Ok(true);
+        }
+        match self.extend_load_reservation(slot, context, needed - *admitted) {
+            Ok(()) => {
+                *admitted = needed;
+                Ok(true)
+            }
+            Err(error) if deferrable && error.status == Status::RetainedLimit => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn decode_line(
+        &self,
+        slot: &LoadSlot,
+        context: &Value,
+        line: &[u8],
+        entries: &Vec<Entry>,
+        arenas: &Vec<(usize, SourceArena)>,
+        chunks: &Vec<Arc<EntryChunk>>,
+        session_pending: bool,
+        fence_growth: usize,
+        decoded: usize,
+        admitted: &mut usize,
+        deferrable: bool,
+    ) -> Result<LineDecode, SnapshotError> {
+        let overflow = || SnapshotError::new(Status::RetainedLimit, "line bound overflows");
+        let dom_bound = dom_parse_bound(line.len()).ok_or_else(overflow)?;
+        if !self.admit_decode(slot, context, decoded + dom_bound, admitted, deferrable)? {
+            return Ok(LineDecode::Deferred);
+        }
+        self.before_decode("dom");
+        let Some(dom) = crate::parse::parse_line_dom(line) else {
+            return Ok(LineDecode::Decoded {
+                entry: None,
+                arenas: Vec::new(),
+                charge: fence_growth,
+            });
+        };
+        let typed_bound = Self::decoded_line_bound(
+            entries,
+            arenas,
+            chunks,
+            session_pending,
+            &dom,
+            line.len(),
+            fence_growth,
+        )
+        .ok_or_else(overflow)?;
+        let needed = decoded
+            .checked_add(dom_bound)
+            .and_then(|needed| needed.checked_add(typed_bound))
+            .ok_or_else(overflow)?;
+        if !self.admit_decode(slot, context, needed, admitted, deferrable)? {
+            return Ok(LineDecode::Deferred);
+        }
+        self.before_decode("entry");
+        let root = dom.clone();
+        let mut retained = crate::parse::Retained::default();
+        let entry = crate::parse::entry_from_dom(dom, &mut retained, &|_| true)
+            .map_err(|error| SnapshotError::new(Status::ParseError, format!("{error:?}")))?;
+        let fresh = if entry.is_some() {
+            retained.arenas(root, line.len())
+        } else {
+            Vec::new()
+        };
+        let charge = Self::decoded_line_bytes(
+            entries,
+            entry.as_slice(),
+            arenas,
+            &fresh,
+            chunks,
+            session_pending,
+        ) + fence_growth;
+        assert!(
+            typed_bound >= charge,
+            "a decoded line outgrew its admitted bound"
+        );
+        Ok(LineDecode::Decoded {
+            entry,
+            arenas: fresh,
+            charge,
+        })
     }
 
     fn fence_growth(fence: &Vec<u8>, fresh: &[u8]) -> usize {
@@ -7876,10 +8094,11 @@ impl NativeStore {
                 self.lower_codex_source(slot, load, lowering_events, usage)?;
             } else {
                 let mut entries = Vec::new();
-                let mut parsed = Vec::new();
+                let mut arenas = Vec::new();
                 let mut consumed = 0;
                 let mut lines = 0;
                 let mut decoded = 0usize;
+                let mut admitted = decode_bound;
                 let mut decode_bound = decode_bound;
                 let mut session_pending = load.session_id.is_none();
                 for end in memchr::memchr_iter(b'\n', &load.pending) {
@@ -7892,31 +8111,40 @@ impl NativeStore {
                             "source entry exceeds owner bound",
                         ));
                     }
-                    crate::parse::parse_line(&load.pending[consumed..end], &mut parsed, &|_| true)
-                        .map_err(|error| {
-                            SnapshotError::new(Status::ParseError, format!("{error:?}"))
-                        })?;
                     let fresh = &load.pending[consumed..=end];
-                    let charge =
-                        Self::decoded_line_bytes(&entries, &parsed, &load.chunks, session_pending)
-                            + Self::fence_growth(&load.fence, fresh);
+                    let LineDecode::Decoded {
+                        entry,
+                        arenas: retained,
+                        charge,
+                    } = self.decode_line(
+                        slot,
+                        context,
+                        &load.pending[consumed..end],
+                        &entries,
+                        &arenas,
+                        &load.chunks,
+                        session_pending,
+                        Self::fence_growth(&load.fence, fresh),
+                        decoded,
+                        &mut admitted,
+                        lines > 0,
+                    )?
+                    else {
+                        break;
+                    };
                     if decoded + charge > decode_bound {
                         if lines > 0 {
-                            parsed.clear();
                             break;
                         }
-                        self.extend_load_reservation(
-                            slot,
-                            context,
-                            decoded + charge - decode_bound,
-                        )?;
                         decode_bound = decoded + charge;
                     }
                     decoded += charge;
-                    if session_pending && parsed.iter().any(|entry| entry.meta().is_some()) {
+                    if session_pending && entry.as_ref().is_some_and(|entry| entry.meta().is_some())
+                    {
                         session_pending = false;
                     }
-                    entries.append(&mut parsed);
+                    arenas.extend(retained.into_iter().map(|arena| (entries.len(), arena)));
+                    entries.extend(entry);
                     if fresh.len() >= 64 {
                         load.fence = fresh[fresh.len() - 64..].to_vec();
                     } else {
@@ -7938,7 +8166,7 @@ impl NativeStore {
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
                     load.chunks
-                        .push(Arc::new(EntryChunk::new(load.count, entries)));
+                        .push(Arc::new(EntryChunk::retaining(load.count, entries, arenas)));
                     load.count += count;
                 }
                 if consumed > 0 {
@@ -7959,26 +8187,33 @@ impl NativeStore {
                     return Ok(());
                 }
                 if !load.pending.is_empty() {
-                    let mut tail = Vec::new();
-                    crate::parse::parse_line(&load.pending, &mut tail, &|_| true).map_err(
-                        |error| SnapshotError::new(Status::ParseError, format!("{error:?}")),
-                    )?;
-                    let charge = Self::decoded_line_bytes(
+                    let LineDecode::Decoded {
+                        entry,
+                        arenas: retained,
+                        charge,
+                    } = self.decode_line(
+                        slot,
+                        context,
+                        &load.pending,
                         &Vec::new(),
-                        &tail,
+                        &Vec::new(),
                         &load.chunks,
                         load.session_id.is_none(),
-                    );
-                    if decoded + charge > decode_bound {
-                        if lines > 0 {
-                            return Ok(());
-                        }
-                        self.extend_load_reservation(
-                            slot,
-                            context,
-                            decoded + charge - decode_bound,
-                        )?;
+                        0,
+                        decoded,
+                        &mut admitted,
+                        lines > 0,
+                    )?
+                    else {
+                        return Ok(());
+                    };
+                    if decoded + charge > decode_bound && lines > 0 {
+                        return Ok(());
                     }
+                    let mut tail = Vec::new();
+                    tail.extend(entry);
+                    let mut arenas = Vec::new();
+                    arenas.extend(retained.into_iter().map(|arena| (0, arena)));
                     usage[2] += load.pending.len() as u64;
                     usage[3] += 1;
                     let count = tail.len();
@@ -7988,7 +8223,7 @@ impl NativeStore {
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
                     load.chunks
-                        .push(Arc::new(EntryChunk::new(load.count, tail)));
+                        .push(Arc::new(EntryChunk::retaining(load.count, tail, arenas)));
                     load.count += count;
                     load.provisional = true;
                     load.pending.clear();
@@ -15653,19 +15888,41 @@ mod tests {
                 .root,
             );
             let bound = slice_bytes.max(super::ledger_tests::facts_bound_walk(&root));
-            let room = cap - idle - bound - REPLY_RESERVATION;
-            let crowded = store.reserve_projection(&owner, room + 1).unwrap();
-            let refused = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
+            let query = slice_query(&prepared);
+            let record = size_of::<PreparedQueryCursor>()
+                + owner["claimant"].as_str().unwrap().len()
+                + query["handle"]["graph_id"].as_str().unwrap().len()
+                + NativeStore::audit_value_bytes(&query["query"]);
+            let need = bound.max(slice_bytes + record);
+            let room = cap - idle - need - REPLY_RESERVATION;
+            let crowded = store
+                .reserve_projection(&owner, room + need - bound + 1)
+                .unwrap();
+            let refused = store.request(&query, &owner, &Cancellation::default());
             assert_refused(&store, &refused);
-            assert_eq!(store.retained_accounted_bytes(), idle + room + 1);
+            assert_eq!(
+                store.retained_accounted_bytes(),
+                idle + room + need - bound + 1
+            );
             assert_eq!(slices(&prepared), 0);
             drop(crowded);
+            if need > bound {
+                let crowded = store.reserve_projection(&owner, room + 1).unwrap();
+                let refused = store.request(&query, &owner, &Cancellation::default());
+                assert_refused(&store, &refused);
+                assert_eq!(slices(&prepared), 1);
+                assert_eq!(
+                    settled_bytes(&store),
+                    idle - capacities + room + 1 + slice_bytes
+                );
+                drop(crowded);
+            }
             let fitted = store.reserve_projection(&owner, room).unwrap();
-            let exact = store.request(&slice_query(&prepared), &owner, &Cancellation::default());
+            let exact = store.request(&query, &owner, &Cancellation::default());
             assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
             assert_eq!(
                 settled_bytes(&store),
-                cap - REPLY_RESERVATION - capacities - (bound - slice_bytes)
+                cap - REPLY_RESERVATION - capacities - (need - slice_bytes)
             );
             assert_eq!(slices(&prepared), 1);
             store.assert_conserved();
