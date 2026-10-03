@@ -115,7 +115,7 @@ fn small_documents_allocate_exactly_the_modeled_arena() {
     for doc in [
         r#"{"a":1}"#,
         r#"{"type":"user","message":{"content":"hi"}}"#,
-        "[]",
+        "[0]",
         filled.as_str(),
     ] {
         let (value, live, sizes) = parsed(doc);
@@ -133,6 +133,19 @@ fn small_documents_allocate_exactly_the_modeled_arena() {
         arena_requested_bytes(&sonic_rs::from_str::<Value>(&filled).unwrap()),
         448
     );
+}
+
+#[test]
+fn static_roots_release_every_parse_allocation_before_returning() {
+    for doc in ["[]", "{}", "null", "true", "false"] {
+        let (value, live, _) = parsed(doc);
+        assert_eq!(live, 0, "{doc}: a static root kept its parse arena");
+        assert!(!cc_transcript_core::snapshot_memory::pins_arena(&value));
+        let (cloned, allocated, sizes) = measured(|| value.clone());
+        assert_eq!((allocated, sizes), (0, Vec::new()), "{doc}");
+        let ((), freed, sizes) = measured(|| drop((value, cloned)));
+        assert_eq!((freed, sizes), (0, Vec::new()), "{doc}");
+    }
 }
 
 #[test]
@@ -165,12 +178,26 @@ fn larger_documents_stay_within_the_declared_bump_residue() {
             .collect::<Vec<_>>()
             .join(",")
     );
-    let nested = format!("{}0{}", "[".repeat(200), "]".repeat(200));
+    let nested = format!("{}0{}", "[".repeat(32), "]".repeat(32));
+    let nested_forest = format!("[{}]", vec![nested.as_str(); 8].join(","));
     let fragmenting = format!("[{}]", [1, 26, 33, 90, 161].map(zeros).join(","));
-    for doc in [&zeros(4096), &objects, &keys, &nested, &fragmenting] {
+    for doc in [
+        &zeros(4096),
+        &objects,
+        &keys,
+        &nested,
+        &nested_forest,
+        &fragmenting,
+    ] {
         let (value, live, _) = parsed(doc);
         let modeled = arena_bytes(&value, doc.len());
         let requested = arena_requested_bytes(&value);
+        if doc == &nested {
+            assert_eq!(requested, 1056);
+        }
+        if doc == &nested_forest {
+            assert_eq!(requested, 8368);
+        }
         assert_eq!(modeled, mirror(&value, doc.len()));
         assert_eq!(requested, 32 + nodes(&value));
         let live = usize::try_from(live).unwrap();
