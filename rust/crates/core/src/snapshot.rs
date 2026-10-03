@@ -13859,7 +13859,8 @@ mod tests {
         );
         std::fs::write(&large, format!("{content}\n")).unwrap();
         let source_bytes = std::fs::metadata(&large).unwrap().len();
-        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":512*1024*1024,"max_entry_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let retained_cap = 2 * dom_parse_bound(content.len()).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":retained_cap,"max_entry_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let mut owner = context("a");
         owner.insert("work_class", json!("background"));
         let template = acquire(&source.path);

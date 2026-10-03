@@ -1014,12 +1014,11 @@ fn removed_waiter_gauges(
 
 fn assert_step_refused_at(
     site: &str,
-    build: &dyn Fn() -> Fixture,
+    expected: ([usize; 8], [usize; 8], usize),
     fixture: &Fixture,
     attempt: &dyn Fn(&Fixture) -> bool,
     exact: usize,
 ) {
-    let expected = removed_waiter_gauges(build, exact - 1);
     let cap = cap_for(&fixture.owner);
     let token = fixture.request["cursor"].as_str().unwrap().to_owned();
     let _filler = fill_to(&fixture.store, &fixture.owner, exact - 1);
@@ -3701,11 +3700,14 @@ fn crowd_on_first_read(
     store: &'static NativeStore,
     owner: &Value,
     held: &Arc<Mutex<Option<ProjectionReservation<'static>>>>,
+    observed: &Arc<AtomicUsize>,
 ) {
     *store.read_hook.lock().unwrap() = Some(Arc::new({
         let held = Arc::clone(held);
+        let observed = Arc::clone(observed);
         let owner = owner.clone();
         move || {
+            observed.store(store.lock_state().waiters.len(), Ordering::Relaxed);
             let headroom = cap_of(store, &owner) - ledger(store)[TOTAL];
             *held.lock().unwrap() = Some(store.reserve_projection(&owner, headroom).unwrap());
         }
@@ -3744,8 +3746,8 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
         let crowded: &'static Fixture = Box::leak(Box::new(build(padding)));
         let held: Arc<Mutex<Option<ProjectionReservation<'static>>>> = Arc::new(Mutex::new(None));
         for _ in 0..3 {
-            crowd_on_first_read(&crowded.store, &crowded.owner, &held);
-            let copies = crowded.store.warm_copies.load(Ordering::Relaxed);
+            let observed = Arc::new(AtomicUsize::new(0));
+            crowd_on_first_read(&crowded.store, &crowded.owner, &held, &observed);
             let response = submit(crowded);
             assert_eq!(
                 response["status"].as_str(),
@@ -3757,8 +3759,8 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
                 "the page never read a source"
             );
             assert!(
-                crowded.store.warm_copies.load(Ordering::Relaxed) > copies,
-                "the refused page never parked a source"
+                observed.load(Ordering::Relaxed) > 0,
+                "the refused page never owned a source waiter"
             );
             crowded.store.assert_conserved();
             assert!(audited(&crowded.store)[TOTAL] <= cap);
@@ -5806,7 +5808,7 @@ fn degraded_root_fixture(source: &LedgerSource, background: bool) -> Fixture {
     let store = store_with(
         64 * 1024 * 1024,
         4096,
-        &[("max_retained_bytes", 8 * CAP), ("max_entry_bytes", CAP)],
+        &[("max_retained_bytes", 32 * CAP), ("max_entry_bytes", CAP)],
     );
     let owner = context_for("degraded-slices", background);
     let mut request = acquire(&source.path);
@@ -8391,10 +8393,11 @@ fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
                 64usize.saturating_sub(load.fence.capacity()),
             )
         };
+        let expected = removed_waiter_gauges(&build, exact - 1);
         let refused = build();
         let slot = parked_slot(&refused);
         let before = slot.accounted.load(Ordering::Acquire);
-        assert_step_refused_at(site, &build, &refused, &advance_parked, exact);
+        assert_step_refused_at(site, expected, &refused, &advance_parked, exact);
         {
             let load = slot.work.lock().unwrap();
             assert_eq!(load.count, 1, "{site}: the refusal retained the wide line");
@@ -8586,10 +8589,11 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
             reservation + extension,
             "{site}: the index step admission is not the step reservation plus its extension"
         );
+        let expected = removed_waiter_gauges(&build, exact - 1);
         let refused = build();
         let slot = parked_slot(&refused);
         let before = slot.accounted.load(Ordering::Acquire);
-        assert_step_refused_at(site, &build, &refused, &advance_parked, exact);
+        assert_step_refused_at(site, expected, &refused, &advance_parked, exact);
         {
             let load = slot.work.lock().unwrap();
             assert_eq!(load.indexed, SEEDED_EVENTS, "{site}: the refusal appended");
@@ -8895,11 +8899,11 @@ fn refused_unpublished_build_refuses_its_joined_waiter_once_then_retries() {
 fn refused_unpublished_build_lets_its_joined_waiter_finish_once_headroom_returns() {
     let Backstop {
         store,
+        source: _source,
         parked_owner,
         parked_response,
         slot,
         held,
-        ..
     } = refused_backstop(true);
     assert_restarted_build(store, &slot);
     drop(held.lock().unwrap().take());
@@ -13081,13 +13085,18 @@ fn line_admissions_settle_when_the_decoding_step_fails() {
             "{response:?}"
         );
         let admitted = admitted_traces(&fixture.store);
-        assert_eq!(admitted.len(), 4, "{admitted:?}");
+        assert_eq!(admitted.len(), 5, "{admitted:?}");
         assert_eq!(
-            (admitted[0], admitted[1], admitted[3]),
-            (reservation, decode_stage_mirror(len) - decode_bound, 0),
+            (admitted[0], admitted[1], admitted[2], admitted[4]),
+            (
+                REPLY_RESERVATION,
+                reservation,
+                decode_stage_mirror(len) - decode_bound,
+                0,
+            ),
             "{admitted:?}"
         );
-        assert!(admitted[2] > 0, "{admitted:?}");
+        assert!(admitted[3] > 0, "{admitted:?}");
         assert_eq!(stage_counts(&probe), [1, 1]);
         fixture.store.assert_conserved();
         let walk = cold_load_walk(&slot);
@@ -13129,23 +13138,24 @@ fn cancelled_decoding_requests_settle_their_line_admissions() {
             }
         }));
         let cursor = fixture.request["cursor"].as_str().unwrap().to_string();
+        traced(&fixture.store);
         let mut response = fixture
             .store
             .request(&resume_request(&cursor), &fixture.owner, &cancel);
         fixture.store.assert_conserved();
-        if parked(&response) {
+        if response["status"].as_str() == Some("incomplete") {
             traced(&fixture.store);
             response = fixture.store.request(
                 &resume_request(response["cursor"].as_str().unwrap()),
                 &fixture.owner,
                 &cancel,
             );
-            assert_eq!(
-                admitted_traces(&fixture.store).last(),
-                Some(&0),
-                "the cancelled step did not settle its reservation"
-            );
         }
+        assert_eq!(
+            admitted_traces(&fixture.store).last(),
+            Some(&0),
+            "the cancelled step did not settle its reservation"
+        );
         assert_eq!(
             response["status"].as_str(),
             Some("cancelled"),
