@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -960,6 +961,12 @@ def test_root_option_rejects_a_file(tmp_path: Path) -> None:
         result = run_cli(*args, "--root", str(file_root))
         assert result.returncode == 2, args
         assert "is a file." in result.stderr, args
+
+
+def test_version_reports_the_installed_distribution() -> None:
+    result = run_cli("--version")
+    assert result.returncode == 0
+    assert result.stdout == f"cc-transcript {version('cc-transcript')}\n"
 
 
 def test_bare_invocation_prints_help_to_stderr_and_exits_two() -> None:
