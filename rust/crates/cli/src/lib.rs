@@ -1,11 +1,12 @@
-//! The cc-transcript CLI: the clap twin of the retired click tree (cli.py), sharing one
-//! command surface between the `[[bin]]` and the `_native.cli_main` pyfunction.
+//! The cc-transcript CLI: the clap twin of the retired click tree (cli.py), run by the
+//! `_native.cli_main` pyfunction.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use clap::error::ErrorKind as ClapErrorKind;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 pub mod commands;
 pub mod output;
@@ -18,6 +19,15 @@ use output::CliExit;
 /// (cli.py watch_ catches KeyboardInterrupt); outside watch it means exit 130.
 pub static WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static WATCH_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+static VERSION: OnceLock<String> = OnceLock::new();
+
+fn pkg_version() -> &'static str {
+    VERSION
+        .get()
+        .expect("run records the version before dispatch")
+}
+
 pub(crate) static SCAN_CANCELLATION: std::sync::Mutex<
     Option<cc_transcript_core::snapshot::Cancellation>,
 > = std::sync::Mutex::new(None);
@@ -38,16 +48,6 @@ pub fn install_sigint_handler() {
             std::process::exit(130);
         }
     });
-}
-
-fn pkg_version() -> String {
-    let pyproject = include_str!("../../../../pyproject.toml");
-    pyproject
-        .lines()
-        .find_map(|line| line.strip_prefix("version = \""))
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-        .to_string()
 }
 
 const KIND_CHOICES: [&str; 6] = ["user", "assistant", "system", "mode", "other", "attachment"];
@@ -78,7 +78,6 @@ const CORPUS_INCOMPATIBLE: [&str; 15] = [
 #[derive(Parser)]
 #[command(
     name = "cc-transcript",
-    version = pkg_version(),
     about = "Investigate Claude Code transcripts: list, show, grep, and stats.",
     disable_help_subcommand = true
 )]
@@ -498,10 +497,14 @@ pub enum CorrectionsCmd {
     Sql { statement: String },
 }
 
-/// Full-argv entry shared by the `[[bin]]` and `_native.cli_main`: parses, dispatches,
-/// and returns the exit code verbatim.
-pub fn run(argv: Vec<String>) -> i32 {
-    let cli = match Cli::try_parse_from(&argv) {
+/// Full-argv entry for `_native.cli_main`: parses, dispatches, and returns the exit
+/// code verbatim. `version` is what `--version` prints.
+pub fn run(argv: Vec<String>, version: String) -> i32 {
+    let parsed = Cli::command()
+        .version(VERSION.get_or_init(|| version).as_str())
+        .try_get_matches_from(&argv)
+        .and_then(|matches| Cli::from_arg_matches(&matches));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(err) => {
             let code = match err.kind() {
@@ -514,7 +517,7 @@ pub fn run(argv: Vec<String>) -> i32 {
     };
     let Some(cmd) = cli.cmd else {
         // click: a bare group invocation prints help to stderr and exits 2.
-        let mut help = <Cli as clap::CommandFactory>::command();
+        let mut help = Cli::command();
         eprint!("{}", help.render_long_help());
         return 2;
     };

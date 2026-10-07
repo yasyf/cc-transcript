@@ -1031,8 +1031,12 @@ fn tool_facts<'py>(
 #[pyfunction]
 fn cli_main(py: Python<'_>) -> PyResult<i32> {
     let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
+    let version: String = py
+        .import("importlib.metadata")?
+        .call_method1("version", ("cc-transcript",))?
+        .extract()?;
     cc_transcript_cli::install_sigint_handler();
-    Ok(py.detach(|| cc_transcript_cli::run(argv)))
+    Ok(py.detach(|| cc_transcript_cli::run(argv, version)))
 }
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
