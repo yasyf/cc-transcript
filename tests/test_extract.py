@@ -9,7 +9,9 @@ pytest.importorskip("spawnllm")
 
 from cc_transcript.activity import SessionActivity  # noqa: E402
 from cc_transcript.corrections import CorrectionLog  # noqa: E402
+from cc_transcript.evidence import harvest_pairs  # noqa: E402
 from cc_transcript.extract import CorrectionPick, extract_correction, usable_backend  # noqa: E402
+from cc_transcript.extract.correct import NO_CANDIDATE, pair_for, pick_label  # noqa: E402
 from cc_transcript.ids import EventRef, EventUuid  # noqa: E402
 from tests import testkit  # noqa: E402
 from tests.support import SESSION, assistant, user  # noqa: E402
@@ -18,6 +20,44 @@ if TYPE_CHECKING:
     from cc_transcript.models import TranscriptEvent
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def jev_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import spawnllm
+
+    async def missing(*_: object, **__: object) -> object:
+        raise spawnllm.DecideKeyMissing("no jev key")
+
+    monkeypatch.setattr(spawnllm, "decide", missing)
+
+
+def jev_answers(monkeypatch: pytest.MonkeyPatch, answer: object) -> list[object]:
+    import spawnllm
+
+    asked: list[object] = []
+
+    async def fake(state: object, questions: dict[str, object], **_: object) -> spawnllm.Decision:
+        asked.append(questions["pick"])
+        return spawnllm.Decision({"pick": answer}, "jev-1.13.0", 0, 0.0)
+
+    monkeypatch.setattr(spawnllm, "decide", fake)
+    return asked
+
+
+def label_answer(choice: str) -> object:
+    import spawnllm
+
+    return spawnllm.LabelAnswer(choice, {choice: 1.0}, 1.0)
+
+
+def llm_must_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    import spawnllm
+
+    async def fail(*_: object, **__: object) -> CorrectionPick:
+        raise AssertionError("the LLM ran after Jev answered")
+
+    monkeypatch.setattr(spawnllm, "extract", fail)
 
 
 def edit(id: str, path: str, old: str, new: str) -> dict[str, Any]:
@@ -166,3 +206,63 @@ def test_usable_backend_returns_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = object()
     monkeypatch.setattr(spawnllm, "select_backend", lambda **_: sentinel)
     assert usable_backend() is sentinel
+
+
+def test_pick_label_puts_none_first_then_numbers_candidates() -> None:
+    pairs = harvest_pairs(ladder(), anchor())
+    label = pick_label(pairs)
+    assert list(label.options) == [NO_CANDIDATE, *(str(index) for index in range(1, len(pairs) + 1))]
+    assert label.options["1"] == f"candidate 1: {pairs[0].incorrect.file_path} ({pairs[0].incorrect.tool})"
+
+
+def test_pair_for_maps_choice_to_candidate() -> None:
+    pairs = harvest_pairs(ladder(), anchor())
+    assert pair_for("2", pairs) is pairs[1]
+    assert pair_for(NO_CANDIDATE, pairs) is None
+
+
+async def test_jev_pick_selects_named_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    asked = jev_answers(monkeypatch, label_answer("2"))
+    llm_must_not_run(monkeypatch)
+    log = await open_log(tmp_path)
+
+    row = await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
+    assert row is not None and row.incorrect_file == "/b.py"
+    assert len(asked) == 1
+
+
+async def test_jev_none_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    jev_answers(monkeypatch, label_answer(NO_CANDIDATE))
+    llm_must_not_run(monkeypatch)
+    log = await open_log(tmp_path)
+
+    assert await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=None) is None
+    assert await log.for_session(SESSION) == ()
+
+
+async def test_jev_refusal_falls_back_to_llm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import spawnllm
+
+    jev_answers(monkeypatch, spawnllm.Refused())
+
+    async def fake(prompt: str, response_model: object, **_: object) -> CorrectionPick:
+        return CorrectionPick(candidate=2, note="the /b.py edit")
+
+    monkeypatch.setattr(spawnllm, "extract", fake)
+    log = await open_log(tmp_path)
+
+    row = await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=object())
+    assert row is not None and row.incorrect_file == "/b.py"
+
+
+async def test_jev_error_without_backend_falls_back_to_overlap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import spawnllm
+
+    async def rejected(*_: object, **__: object) -> object:
+        raise spawnllm.DecideError(500, "upstream")
+
+    monkeypatch.setattr(spawnllm, "decide", rejected)
+    log = await open_log(tmp_path)
+
+    row = await extract_correction(log, ladder(), anchor(), source="cc-pushback", feedback="x", backend=None)
+    assert row is not None and (row.incorrect_file, row.incorrect_new) == ("/a.py", "alpha = 1")

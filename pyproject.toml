@@ -41,7 +41,7 @@ dev = [
     "ty>=0.0.44",
     "ruff>=0.8",
 ]
-llm = ["spawnllm>=0.5.4,<0.6"]
+llm = ["spawnllm>=0.17.1,<0.18"]
 judge = [
     "sqlite-vec>=0.1.9",
     "model2vec>=0.8.2",
