@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The correction extractor picks the edit a piece of feedback faults with a
+  Jev label decision through `spawnllm.decide`. It falls back to the LLM pick
+  when Jev errors or refuses, and to the best-overlap candidate when no LLM
+  backend is ready. The `[llm]` extra now requires `spawnllm>=0.17.1`.
 - The `signal_texts` snapshot query takes a required `thinking` flag. With
   `thinking: false` it leaves assistant thinking blocks out of the scored texts,
   so a signal can score only what the agent wrote. `thinking: true` keeps the

@@ -3,11 +3,12 @@
 :func:`extract_correction` harvests the candidate incorrect edits around a
 feedback anchor (deterministically, via :mod:`cc_transcript.evidence`), then picks
 the single edit the feedback faults and appends that one row to the shared
-ledger. The pick is an LLM call by default — lifted from cc-steer's enrich
-prompt — and degrades to the best-overlap candidate when no LLM backend is ready
-(:func:`usable_backend` returns None). The pick keys to the candidate's index, so
-the row carries the real cross-language ``incorrect_digest`` from the harvested
-tool call, never reconstructed content.
+ledger. The pick is a Jev label decision by default; when Jev errors or refuses
+it falls back to an LLM call — lifted from cc-steer's enrich prompt — and to the
+best-overlap candidate when no LLM backend is ready either (:func:`usable_backend`
+returns None). The pick keys to the candidate's index, so the row carries the
+real cross-language ``incorrect_digest`` from the harvested tool call, never
+reconstructed content.
 
 Behind the ``[llm]`` extra: this module imports pydantic at definition time and
 ``spawnllm`` lazily, so only LLM-capable consumers import it. A hook that merely
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from spawnllm import LlmBackend, TModel
+    from spawnllm import Label, LlmBackend, TModel
 
     from cc_transcript.activity import SessionActivity
     from cc_transcript.corrections import Correction, CorrectionLog
@@ -38,6 +39,13 @@ if TYPE_CHECKING:
     from cc_transcript.tools import Hunk
 
 HUNK_BUDGET = Budget(tool_chars=600)
+NO_CANDIDATE = "none"
+
+PICK_QUESTION = """\
+Which single candidate edit does the developer FEEDBACK fault? The candidates are edits an AI coding \
+assistant made shortly before the feedback, newest first, each with the correction that later overwrote \
+it when one was found; the correction ranked most likely by content overlap is tagged [likely fix]. \
+Answer none when the feedback faults the approach, a command, or work outside these edits."""
 
 PICK_PROMPT = """\
 You are grounding one piece of developer FEEDBACK on an AI coding assistant's work
@@ -107,15 +115,35 @@ def candidate_block(index: int, pair: CandidatePair, *, anchor_turn: int, likely
     )
 
 
-def build_pick_prompt(feedback: str, pairs: Sequence[CandidatePair], *, anchor_turn: int) -> str:
+def candidate_blocks(pairs: Sequence[CandidatePair], *, anchor_turn: int) -> str:
     likely = likely_fix(pairs)
-    return PICK_PROMPT.format(
-        candidates="\n\n".join(
-            candidate_block(index, pair, anchor_turn=anchor_turn, likely=pair is likely)
-            for index, pair in enumerate(pairs, 1)
-        ),
-        feedback=feedback,
+    return "\n\n".join(
+        candidate_block(index, pair, anchor_turn=anchor_turn, likely=pair is likely)
+        for index, pair in enumerate(pairs, 1)
     )
+
+
+def build_pick_prompt(feedback: str, pairs: Sequence[CandidatePair], *, anchor_turn: int) -> str:
+    return PICK_PROMPT.format(candidates=candidate_blocks(pairs, anchor_turn=anchor_turn), feedback=feedback)
+
+
+def pick_label(pairs: Sequence[CandidatePair]) -> Label:
+    from spawnllm import Label
+
+    return Label(
+        PICK_QUESTION,
+        {
+            NO_CANDIDATE: "The feedback is not about any of these edits",
+            **{
+                str(index): f"candidate {index}: {pair.incorrect.file_path} ({pair.incorrect.tool})"
+                for index, pair in enumerate(pairs, 1)
+            },
+        },
+    )
+
+
+def pair_for(choice: str, pairs: Sequence[CandidatePair]) -> CandidatePair | None:
+    return None if choice == NO_CANDIDATE else pairs[int(choice) - 1]
 
 
 def usable_backend() -> LlmBackend | None:
@@ -132,11 +160,27 @@ def usable_backend() -> LlmBackend | None:
         return None
 
 
+async def jev_choice(pairs: Sequence[CandidatePair], *, feedback: str, anchor_turn: int) -> str | None:
+    from spawnllm import DecideError, DecideKeyMissing, LabelAnswer, decide
+
+    try:
+        decision = await decide(
+            {"candidate_edits": candidate_blocks(pairs, anchor_turn=anchor_turn), "feedback": feedback},
+            {"pick": pick_label(pairs)},
+        )
+    except (DecideError, DecideKeyMissing, TimeoutError):
+        return None
+    answer = decision.answers["pick"]
+    return answer.choice if isinstance(answer, LabelAnswer) else None
+
+
 async def choose_pair(
     pairs: Sequence[CandidatePair], *, feedback: str, anchor_turn: int, tier: TModel, backend: LlmBackend | None
 ) -> CandidatePair | None:
     from spawnllm import extract
 
+    if (choice := await jev_choice(pairs, feedback=feedback, anchor_turn=anchor_turn)) is not None:
+        return pair_for(choice, pairs)
     if backend is None:
         return max(pairs, key=lambda pair: pair.overlap)
     pick = await extract(
@@ -158,9 +202,10 @@ async def extract_correction(
 ) -> Correction | None:
     """Harvests around ``anchor`` and appends the one correction ``feedback`` faults.
 
-    The faulted candidate is the LLM's pick when ``backend`` is given, else the
-    best-overlap candidate. Idempotent per anchor: a no-op when this anchor
-    already has a row, so re-runs and overlapping producers never duplicate.
+    The faulted candidate is Jev's pick; when Jev errors or refuses, it is the
+    LLM's pick when ``backend`` is given, else the best-overlap candidate.
+    Idempotent per anchor: a no-op when this anchor already has a row, so
+    re-runs and overlapping producers never duplicate.
     Returns the appended correction, or None when nothing is harvested or picked.
     """
     if await log.for_anchor(anchor.session_id, anchor.event_uuid):
