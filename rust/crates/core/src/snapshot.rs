@@ -2948,6 +2948,10 @@ fn active_since_ns(request: &Value) -> Result<Option<i128>, SnapshotError> {
         .transpose()
 }
 
+fn active(source: &PreparedSourceRef, since: Option<i128>) -> bool {
+    since.is_none_or(|since| source.stamp.mtime_ns >= since)
+}
+
 fn io_error(error: std::io::Error) -> SnapshotError {
     let status = match error.kind() {
         std::io::ErrorKind::NotFound => Status::Missing,
@@ -14060,13 +14064,23 @@ mod tests {
     }
 
     #[test]
-    fn registered_membership_keeps_only_members_active_since_the_cutoff() {
+    fn registered_graph_admits_only_members_active_since_the_cutoff() {
+        let tool = |name: &str| {
+            format!(
+                r#"{{"type":"assistant","uuid":"{name}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"{name}","name":"{name}","input":{{}}}}]}}}}"#
+            )
+        };
         let source = Source::new(&format!("{}\n", user("root")));
         let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         let ids: Vec<String> = (0..1030).map(|index| format!("thread-{index}")).collect();
         for id in &ids {
             let path = source.directory.join(format!("{id}.jsonl"));
-            std::fs::write(&path, format!("{}\n", user(id))).unwrap();
+            let body = match id.as_str() {
+                "thread-3" => format!("{}\n{}\n", user(id), tool("Grep")),
+                "thread-7" => format!("{}\n{}\n", user(id), tool("Read")),
+                _ => format!("{}\n", user(id)),
+            };
+            std::fs::write(&path, body).unwrap();
             if id != "thread-7" {
                 File::options()
                     .write(true)
@@ -14077,26 +14091,72 @@ mod tests {
             }
         }
         let store = store();
-        let mut owner = context("a");
-        owner.insert("work_class", json!("background"));
-        let template = acquire(&source.path);
-        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"active_since_unix_ms":now_ms()-60_000,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
-        request["limits"].insert("max_discovery_entries", json!(20_000));
-        let mut reply = Value::new_null();
-        for _ in 0..12 {
-            reply = store.request(&request, &owner, &Cancellation::default());
-            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
-            if reply["data"]["complete"].as_bool() == Some(true) {
-                break;
+        let owner = context("a");
+        let mut background = owner.clone();
+        background.insert("work_class", json!("background"));
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_discovery_entries", json!(20_000));
+        let since = now_ms() - 60_000;
+        let warm = || {
+            let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"active_since_unix_ms":since,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            for _ in 0..12 {
+                let reply = store.request(&request, &background, &Cancellation::default());
+                assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+                if reply["data"]["complete"].as_bool() == Some(true) {
+                    return;
+                }
+                request.insert("start_index", reply["data"]["next_index"].clone());
+                request.insert(
+                    "membership_revision",
+                    reply["data"]["membership_revision"].clone(),
+                );
             }
-            request.insert("start_index", reply["data"]["next_index"].clone());
-            request.insert(
-                "membership_revision",
-                reply["data"]["membership_revision"].clone(),
+            panic!("registered warming did not complete");
+        };
+        let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"active_since_unix_ms":since,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let has = |graph: &Value, name: &str| {
+            let result = finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":name,"subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
             );
-        }
-        assert_eq!(reply["data"]["complete"].as_bool(), Some(true), "{reply:?}");
-        assert_eq!(reply["data"]["next_index"].as_u64(), Some(1));
+            assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
+            result["data"]["value"].as_bool().unwrap()
+        };
+        warm();
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert!(has(&graph, "Read"));
+        assert!(!has(&graph, "Grep"));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(source.directory.join("thread-3.jsonl"))
+            .unwrap()
+            .write_all(format!("{}\n", user("resumed")).as_bytes())
+            .unwrap();
+        let stale_membership = store.request(&prepare, &owner, &Cancellation::default());
+        assert_eq!(
+            stale_membership["status"].as_str(),
+            Some("incomplete"),
+            "{stale_membership:?}"
+        );
+        warm();
+        let resumed = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(resumed["status"].as_str(), Some("ok"), "{resumed:?}");
+        assert!(has(&resumed, "Grep"));
     }
 
     #[test]

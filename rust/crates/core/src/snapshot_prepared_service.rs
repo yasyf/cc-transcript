@@ -775,7 +775,7 @@ impl NativeStore {
         if roots.len() > 64 {
             return Err(invalid("prepared registry input exceeds its bound"));
         }
-        active_since_ns(request)?;
+        let since = active_since_ns(request)?;
         if !ids.is_empty() {
             let key = Self::warm_membership_key(request, context)?;
             let (members, sidechain_dirs, complete) = self
@@ -816,14 +816,20 @@ impl NativeStore {
                 Some(index) => (&members[..index], &members[index + 1..]),
                 None => (&members[..], &members[members.len()..]),
             };
-            let others = || before.iter().chain(after);
+            let others = || {
+                before
+                    .iter()
+                    .chain(after)
+                    .filter(move |source| active(source, since))
+            };
+            let copied = shared.is_some() || since.is_some();
             let graph_id = self.token("prepared-graph");
             let stamps_bytes = (others().count() + 1) * size_of::<(PathBuf, SourceStamp)>()
                 + root.canonical_path.as_os_str().len()
                 + others()
                     .map(|source| source.path.as_os_str().len())
                     .sum::<usize>();
-            let buffers: usize = if shared.is_some() {
+            let buffers: usize = if copied {
                 arc_slice_bytes::<PreparedSourceRef>(others().count())
                     + others()
                         .map(|source| source.path.as_os_str().len())
@@ -847,7 +853,7 @@ impl NativeStore {
                     + stamps_bytes
                     + buffers,
             )?;
-            let sources: Arc<[PreparedSourceRef]> = if shared.is_some() {
+            let sources: Arc<[PreparedSourceRef]> = if copied {
                 #[cfg(test)]
                 self.registered_sources.fetch_add(1, Ordering::Relaxed);
                 others().cloned().collect()
@@ -1153,13 +1159,29 @@ impl NativeStore {
                     let canonical = realpath(&path).map_err(io_error)?;
                     self.authority(context, Some(&canonical))?;
                     let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-                    if build.seen.contains(&stamp.identity.file())
-                        || active_since_ns(&build.request)?
-                            .is_some_and(|since| stamp.mtime_ns < since)
-                    {
+                    if build.seen.contains(&stamp.identity.file()) {
                         continue;
                     }
-                    if build.seen.len() >= build.remaining.max_sources {
+                    if active_since_ns(&build.request)?.is_some_and(|since| stamp.mtime_ns < since) {
+                        self.extend_projection_reservation(
+                            reservation,
+                            context,
+                            set_growth(&build.seen, 1) + canonical.as_os_str().len(),
+                        )?;
+                        let predicted = (set_capacity_for(&build.seen, 1), build.tasks.capacity());
+                        build.seen.insert(stamp.identity.file());
+                        build.tasks.push(GraphTask::List {
+                            parent: canonical,
+                            depth: depth + 1,
+                        });
+                        assert_eq!(
+                            (build.seen.capacity(), build.tasks.capacity()),
+                            predicted,
+                            "prepared build collections landed off their predicted capacities"
+                        );
+                        continue;
+                    }
+                    if build.stamps.len() >= build.remaining.max_sources {
                         return Err(SnapshotError::new(
                             Status::Incomplete,
                             "prepared graph source budget exhausted",
@@ -1371,7 +1393,9 @@ impl NativeStore {
         let since = active_since_ns(request)?;
         let mut located = HashMap::new();
         for chunk in ids.chunks(1024.min(remaining.max_items)) {
-            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":chunk,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
+            let mut bounds = *remaining;
+            bounds.max_sources = chunk.len();
+            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":chunk,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":bounds.to_json()});
             let before = usage[17];
             let mut outcome = self.locate(&location, context, cancel, usage)?;
             loop {
@@ -1422,9 +1446,6 @@ impl NativeStore {
                 return Err(invalid("registered source must be a file"));
             }
             let stamp = SourceStamp::of(&metadata);
-            if since.is_some_and(|since| stamp.mtime_ns < since) {
-                continue;
-            }
             if seen.insert(stamp.identity) {
                 self.extend_projection_reservation(
                     &mut reservation,
@@ -1443,12 +1464,6 @@ impl NativeStore {
         let mut examined = 0usize;
         while examined < members.len() {
             cancel.check(remaining.deadline_unix_ms)?;
-            if members.len() > remaining.max_sources {
-                return Err(SnapshotError::new(
-                    Status::Incomplete,
-                    "registered source bound exhausted",
-                ));
-            }
             let source = &members[examined];
             let directory = sidechain_directory(
                 source
@@ -1515,9 +1530,6 @@ impl NativeStore {
                     return Err(invalid("registered sidechain must be a file"));
                 }
                 let stamp = SourceStamp::of(&metadata);
-                if since.is_some_and(|since| stamp.mtime_ns < since) {
-                    continue;
-                }
                 if seen.insert(stamp.identity) {
                     self.extend_projection_reservation(
                         &mut reservation,
@@ -1533,6 +1545,12 @@ impl NativeStore {
                 }
             }
             examined += 1;
+        }
+        if members.iter().filter(|member| active(member, since)).count() > remaining.max_sources {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "registered source bound exhausted",
+            ));
         }
         let mut digest = Sha256::new();
         for source in &members {
@@ -1673,11 +1691,16 @@ impl NativeStore {
                 "registered warming membership changed",
             ));
         }
+        let since = active_since_ns(request)?;
         let mut next = start;
         let mut steps = 0usize;
         'warming: while next < members.len() && steps < 8 {
             cancel.check(remaining.deadline_unix_ms)?;
             let source = &members[next];
+            if !active(source, since) {
+                next += 1;
+                continue;
+            }
             let before_read = usage[1];
             let before_events = usage[3];
             let (stamp, mut outcome) = match self.prepared_source(
