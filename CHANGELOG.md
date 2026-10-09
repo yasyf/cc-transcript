@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `warm_registered` and `prepare_graph` take an optional `active_since_unix_ms`.
+  With it, a registered thread, direct path or sidechain joins the graph only
+  when its file changed at or after that time. An `acquire` description now
+  carries `window_started_unix_ms`, the timestamp of the first event in a
+  windowed snapshot, or `null` for a whole-file one. A client passes it to scope
+  registered sources to the root's window. `thread_ids` and `direct_paths` no
+  longer cap at 1024, and the registered-membership lookup locates thread ids
+  in pages. `max_sources` now bounds only the members that join the graph, so a
+  session that registered 1,281 codex threads over a week no longer fails every
+  deep query with `source_limit`.
 - A windowed `acquire` or `warm_root` checks `max_source_bytes` against the bytes
   its `tail_bytes` window holds, not the whole file, and `tail` reads at most
   `max_source_bytes` back from the end. Before, a Claude transcript past 512 MiB

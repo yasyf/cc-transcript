@@ -654,6 +654,7 @@ impl NativeStore {
             "thread_ids": request["thread_ids"],
             "roots": request["roots"],
             "direct_paths": request["direct_paths"],
+            "active_since_unix_ms": request["active_since_unix_ms"],
             "registry_generation": context["registry_generation"],
             "admission": context["admission"],
             "authority": context["authority"],
@@ -767,13 +768,14 @@ impl NativeStore {
             .get("roots")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing roots"))?;
-        let direct = request
+        request
             .get("direct_paths")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing direct_paths"))?;
-        if ids.len() > 1024 || roots.len() > 64 || direct.len() > 1024 {
+        if roots.len() > 64 {
             return Err(invalid("prepared registry input exceeds its bound"));
         }
+        active_since_ns(request)?;
         if !ids.is_empty() {
             let key = Self::warm_membership_key(request, context)?;
             let (members, sidechain_dirs, complete) = self
@@ -1151,7 +1153,10 @@ impl NativeStore {
                     let canonical = realpath(&path).map_err(io_error)?;
                     self.authority(context, Some(&canonical))?;
                     let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-                    if build.seen.contains(&stamp.identity.file()) {
+                    if build.seen.contains(&stamp.identity.file())
+                        || active_since_ns(&build.request)?
+                            .is_some_and(|since| stamp.mtime_ns < since)
+                    {
                         continue;
                     }
                     if build.seen.len() >= build.remaining.max_sources {
@@ -1363,9 +1368,10 @@ impl NativeStore {
         )?;
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
+        let since = active_since_ns(request)?;
         let mut located = HashMap::new();
-        if !ids.is_empty() {
-            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":ids,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
+        for chunk in ids.chunks(1024.min(remaining.max_items)) {
+            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":chunk,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
             let before = usage[17];
             let mut outcome = self.locate(&location, context, cancel, usage)?;
             loop {
@@ -1416,6 +1422,9 @@ impl NativeStore {
                 return Err(invalid("registered source must be a file"));
             }
             let stamp = SourceStamp::of(&metadata);
+            if since.is_some_and(|since| stamp.mtime_ns < since) {
+                continue;
+            }
             if seen.insert(stamp.identity) {
                 self.extend_projection_reservation(
                     &mut reservation,
@@ -1506,6 +1515,9 @@ impl NativeStore {
                     return Err(invalid("registered sidechain must be a file"));
                 }
                 let stamp = SourceStamp::of(&metadata);
+                if since.is_some_and(|since| stamp.mtime_ns < since) {
+                    continue;
+                }
                 if seen.insert(stamp.identity) {
                     self.extend_projection_reservation(
                         &mut reservation,
@@ -1597,16 +1609,16 @@ impl NativeStore {
         if request["classifier"] != json!({"id":"native","version":"1"}) {
             return Err(invalid("registered warming requires the native classifier"));
         }
-        let ids = request["thread_ids"]
+        request["thread_ids"]
             .as_array()
             .ok_or_else(|| invalid("missing registered thread ids"))?;
         let roots = request["roots"]
             .as_array()
             .ok_or_else(|| invalid("missing registered roots"))?;
-        let direct = request["direct_paths"]
+        request["direct_paths"]
             .as_array()
             .ok_or_else(|| invalid("missing registered direct paths"))?;
-        if ids.len() > 1024 || roots.len() > 64 || direct.len() > 1024 {
+        if roots.len() > 64 {
             return Err(invalid("registered warming input exceeds its bound"));
         }
         let start = number(request, "start_index")?;

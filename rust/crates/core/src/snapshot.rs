@@ -369,6 +369,17 @@ impl TranscriptSnapshot {
             .collect()
     }
 
+    pub fn window_started_unix_ms(&self) -> Option<i64> {
+        if self.window_start == 0 {
+            return None;
+        }
+        self.chunks
+            .iter()
+            .flat_map(|chunk| chunk.entries.iter())
+            .find_map(Entry::meta)
+            .map(|meta| meta.timestamp.timestamp_millis())
+    }
+
     pub fn entry(&self, position: usize) -> &Entry {
         let at = self.chunks.partition_point(|chunk| chunk.start <= position) - 1;
         &self.chunks[at].entries[position - self.chunks[at].start]
@@ -2919,6 +2930,20 @@ fn tail_bytes(request: &Value) -> Result<Option<u64>, SnapshotError> {
                 .as_u64()
                 .filter(|tail_bytes| *tail_bytes > 0)
                 .ok_or_else(|| invalid("tail_bytes must be a positive integer"))
+        })
+        .transpose()
+}
+
+fn active_since_ns(request: &Value) -> Result<Option<i128>, SnapshotError> {
+    request
+        .get("active_since_unix_ms")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|since| *since > 0)
+                .map(|since| i128::from(since) * 1_000_000)
+                .ok_or_else(|| invalid("active_since_unix_ms must be a positive integer"))
         })
         .transpose()
 }
@@ -5539,7 +5564,7 @@ impl NativeStore {
             "device": snapshot.stamp.identity.device.to_string(), "inode": snapshot.stamp.identity.inode.to_string(),
             "mtime_ns": snapshot.stamp.mtime_ns.to_string(), "ctime_ns": snapshot.stamp.ctime_ns.to_string(),
             "provider": snapshot.provider.as_str(), "parser_version": PARSER_VERSION,
-            "source_bytes": snapshot.stamp.size, "window_start": snapshot.window_start, "committed_bytes": snapshot.committed_bytes,
+            "source_bytes": snapshot.stamp.size, "window_start": snapshot.window_start, "window_started_unix_ms": snapshot.window_started_unix_ms(), "committed_bytes": snapshot.committed_bytes,
             "event_count": snapshot.event_count, "turn_count": snapshot.activity.turn_count(),
             "classifier": classifier, "provisional_tail": snapshot.provisional_tail,"lease_expires_unix_ms":expires})
     }
@@ -11988,6 +12013,10 @@ mod tests {
         let response = windowed(&store, &source.path, 4096, &owner);
         let description = &response["data"]["description"];
         assert_eq!(description["window_start"].as_u64(), Some(start));
+        assert_eq!(
+            description["window_started_unix_ms"].as_u64(),
+            Some(1_767_323_045_000)
+        );
         assert_eq!(description["source_bytes"].as_u64(), Some(size));
         assert_eq!(description["committed_bytes"].as_u64(), Some(size));
         assert_eq!(
@@ -12299,6 +12328,7 @@ mod tests {
             unwindowed["data"]["description"]["window_start"].as_u64(),
             Some(0)
         );
+        assert!(unwindowed["data"]["description"]["window_started_unix_ms"].is_null());
     }
 
     #[test]
@@ -14027,6 +14057,46 @@ mod tests {
         std::fs::write(&first, format!("{}\n", user("changed-longer"))).unwrap();
         let changed = store.request(&request, &owner, &Cancellation::default());
         assert_eq!(changed["status"].as_str(), Some("changed"), "{changed:?}");
+    }
+
+    #[test]
+    fn registered_membership_keeps_only_members_active_since_the_cutoff() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let ids: Vec<String> = (0..1030).map(|index| format!("thread-{index}")).collect();
+        for id in &ids {
+            let path = source.directory.join(format!("{id}.jsonl"));
+            std::fs::write(&path, format!("{}\n", user(id))).unwrap();
+            if id != "thread-7" {
+                File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(stale)
+                    .unwrap();
+            }
+        }
+        let store = store();
+        let mut owner = context("a");
+        owner.insert("work_class", json!("background"));
+        let template = acquire(&source.path);
+        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"active_since_unix_ms":now_ms()-60_000,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        request["limits"].insert("max_discovery_entries", json!(20_000));
+        let mut reply = Value::new_null();
+        for _ in 0..12 {
+            reply = store.request(&request, &owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                break;
+            }
+            request.insert("start_index", reply["data"]["next_index"].clone());
+            request.insert(
+                "membership_revision",
+                reply["data"]["membership_revision"].clone(),
+            );
+        }
+        assert_eq!(reply["data"]["complete"].as_bool(), Some(true), "{reply:?}");
+        assert_eq!(reply["data"]["next_index"].as_u64(), Some(1));
     }
 
     #[test]
