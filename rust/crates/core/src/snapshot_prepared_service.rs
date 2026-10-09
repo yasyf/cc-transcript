@@ -1812,7 +1812,7 @@ impl NativeStore {
                     "registered warming membership changed",
                 ));
             }
-            for source in members.iter() {
+            for source in members.iter().filter(|source| active(source, since)) {
                 cancel.check(remaining.deadline_unix_ms)?;
                 let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
                     source.stamp,
