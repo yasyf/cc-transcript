@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A windowed `acquire` or `warm_root` checks `max_source_bytes` against the bytes
+  its `tail_bytes` window holds, not the whole file, and `tail` reads at most
+  `max_source_bytes` back from the end. Before, a Claude transcript past 512 MiB
+  returned `source_limit` (`source exceeds owner bound`) on every hook request,
+  though each one asked for a 4 MiB window. A whole-file `acquire` or `warm_root`
+  of such a file still returns `source_limit`.
 - `cc-transcript grep` searches Claude transcripts as it reads them, so a scan
   that runs out of budget can print the matches it reached. `--max-matches` stops
   reading once the requested context and completion lookahead are available,

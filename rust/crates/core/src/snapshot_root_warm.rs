@@ -23,7 +23,7 @@ impl NativeStore {
             return Err(invalid("root source must be a regular file"));
         }
         let current = SourceStamp::of(&metadata).windowed(tail_bytes(request)?);
-        if current.size > self.config.source as u64 {
+        if current.window_bytes() > self.config.source as u64 {
             return Err(SnapshotError::new(
                 Status::SourceLimit,
                 "root source exceeds owner bound",
@@ -343,6 +343,41 @@ mod root_warm_tests {
         assert_eq!(whole["status"].as_str(), Some("ok"), "{whole:?}");
         assert_eq!(whole["data"]["complete"].as_bool(), Some(false));
         assert!(whole["data"]["source_offset"].as_u64().unwrap() < start);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_trailing_window_of_a_root_past_the_source_bound_warms_and_acquires() {
+        let (directory, path) = source(4 * 1024 * 1024);
+        let bound = std::fs::metadata(&path).unwrap().len() - 1;
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_source_bytes":bound,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("bounded-window");
+        let mut request = warm_request(&path, 256 * 1024);
+        request.insert("tail_bytes", json!(256 * 1024));
+        let mut finished = false;
+        for _ in 0..24 {
+            let reply = store.request(&request, &context, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished);
+        let mut acquire = request.clone();
+        acquire.insert("operation", json!("acquire"));
+        let acquired = store.request(&acquire, &context, &Cancellation::default());
+        assert_eq!(acquired["status"].as_str(), Some("ok"), "{acquired:?}");
+        acquire.insert("tail_bytes", json!(null));
+        let whole = store.request(&acquire, &context, &Cancellation::default());
+        assert_eq!(whole["status"].as_str(), Some("source_limit"), "{whole:?}");
+        assert_eq!(whole["reason"].as_str(), Some("source exceeds owner bound"));
+        let whole_warm = store.request(
+            &warm_request(&path, 256 * 1024),
+            &context,
+            &Cancellation::default(),
+        );
+        assert_eq!(whole_warm["status"].as_str(), Some("source_limit"), "{whole_warm:?}");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

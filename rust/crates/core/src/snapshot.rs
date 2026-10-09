@@ -204,6 +204,10 @@ impl SourceStamp {
         self
     }
 
+    pub fn window_bytes(&self) -> u64 {
+        self.size - self.identity.window_base
+    }
+
     pub fn viewed_as(mut self, pinned: SourceStamp) -> Self {
         self.identity.window_base = pinned.identity.window_base;
         self
@@ -6765,13 +6769,10 @@ impl NativeStore {
             return Err(invalid("source must be a regular file"));
         }
         let stamp = SourceStamp::of(&metadata);
-        if stamp.size > self.config.source as u64 {
-            return Err(SnapshotError::new(
-                Status::SourceLimit,
-                "source exceeds owner bound",
-            ));
-        }
-        let budget = limits.max_source_read_bytes.min(stamp.size as usize);
+        let budget = limits
+            .max_source_read_bytes
+            .min(self.config.source)
+            .min(stamp.size as usize);
         let mut reservation = self.reserve_projection(context, 0)?;
         let mut pending: Vec<u8> = Vec::new();
         let mut pending_start = stamp.size;
@@ -6962,7 +6963,7 @@ impl NativeStore {
         }
         let window = tail_bytes(request)?;
         let stamp = SourceStamp::of(&metadata).windowed(window);
-        if stamp.size > self.config.source as u64 {
+        if stamp.window_bytes() > self.config.source as u64 {
             return Err(SnapshotError::new(
                 Status::SourceLimit,
                 "source exceeds owner bound",
@@ -11873,6 +11874,22 @@ mod tests {
             response["data"]["window_start_byte"].as_u64(),
             Some(users(0..48).len() as u64)
         );
+    }
+
+    #[test]
+    fn tail_reads_the_newest_events_of_a_source_past_the_owner_bound() {
+        let source = Source::new(&users(0..50));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":64,"max_source_bytes":users(40..50).len(),"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let response = store.request(
+            &tail_request(&source.path, 5, 1024 * 1024),
+            &owner,
+            &Cancellation::default(),
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(tail_uuids(&response), ["45", "46", "47", "48", "49"]);
+        let read = response["usage"]["source_bytes_read"].as_u64().unwrap() as usize;
+        assert!(read <= users(40..50).len(), "{read}");
     }
 
     #[test]
