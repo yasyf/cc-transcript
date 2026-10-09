@@ -46,10 +46,11 @@ def prepare_with_threads(count: int) -> dict[str, object]:
     return payload
 
 
-def test_prepared_registry_accepts_active_session_and_rejects_overflow() -> None:
-    assert len(REQUEST.validate_python(prepare_with_threads(918)).thread_ids) == 918
-    with pytest.raises(ValidationError, match="thread_ids"):
-        REQUEST.validate_python(prepare_with_threads(1025))
+def test_prepared_registry_accepts_a_registry_past_1024_threads_and_a_window_cutoff() -> None:
+    prepared = REQUEST.validate_python(prepare_with_threads(1281) | {"active_since_unix_ms": 1})
+    assert (len(prepared.thread_ids), prepared.active_since_unix_ms) == (1281, 1)
+    with pytest.raises(ValidationError, match="active_since_unix_ms"):
+        REQUEST.validate_python(prepare_with_threads(1) | {"active_since_unix_ms": 0})
 
 
 def test_limits_require_a_source_read_budget() -> None:

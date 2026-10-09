@@ -77,6 +77,7 @@ class Description(WireModel):
     parser_version: Token
     source_bytes: Count
     window_start: Count
+    window_started_unix_ms: Positive | None
     committed_bytes: Count
     event_count: Count
     turn_count: Count
@@ -421,9 +422,10 @@ PreparedQuery = Annotated[
 class PrepareGraph(WorkRequest):
     operation: Literal["prepare_graph"]
     view: PreparedView
-    thread_ids: Annotated[list[Token], Field(max_length=1024)]
+    thread_ids: list[Token]
     roots: Annotated[list[PathText], Field(max_length=64)]
-    direct_paths: Annotated[list[PathText], Field(max_length=1024)]
+    direct_paths: list[PathText]
+    active_since_unix_ms: Positive | None = None
 
 
 class QueryGraph(WorkRequest):
@@ -436,9 +438,10 @@ class QueryGraph(WorkRequest):
 class WarmRegistered(WorkRequest):
     operation: Literal["warm_registered"]
     classifier: Classifier
-    thread_ids: Annotated[list[Token], Field(max_length=1024)]
+    thread_ids: list[Token]
     roots: Annotated[list[PathText], Field(max_length=64)]
-    direct_paths: Annotated[list[PathText], Field(max_length=1024)]
+    direct_paths: list[PathText]
+    active_since_unix_ms: Positive | None = None
     start_index: Count
     membership_revision: Token | None
 
