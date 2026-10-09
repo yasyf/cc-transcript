@@ -349,10 +349,11 @@ mod root_warm_tests {
     #[test]
     fn a_trailing_window_of_a_root_past_the_source_bound_warms_and_acquires() {
         let (directory, path) = source(4 * 1024 * 1024);
-        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_source_bytes":2*1024*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let bound = std::fs::metadata(&path).unwrap().len() - 1;
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_source_bytes":bound,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("bounded-window");
         let mut request = warm_request(&path, 256 * 1024);
-        request.insert("tail_bytes", json!(1024 * 1024));
+        request.insert("tail_bytes", json!(256 * 1024));
         let mut finished = false;
         for _ in 0..24 {
             let reply = store.request(&request, &context, &Cancellation::default());
