@@ -78,6 +78,7 @@ class Description(WireModel):
     source_bytes: Count
     window_start: Count
     window_started_unix_ms: Positive | None
+    model: Token | None
     committed_bytes: Count
     event_count: Count
     turn_count: Count

@@ -400,6 +400,18 @@ def test_assistant_text_caps_count_and_chars_per_message() -> None:
     assert sess.assistant_text() == "first answer\n---\nsecond answer\n---\nthird answer"
 
 
+def test_model_is_the_latest_non_synthetic_assistant_model() -> None:
+    sess = session(
+        user("u0", "go"),
+        assistant("a0", "first", model="claude-opus-4-7", secs=1),
+        assistant("a1", "second", model="claude-opus-5-5", secs=2),
+        assistant("a2", "No response requested.", model="<synthetic>", secs=3),
+        user("u1", "next", secs=4),
+    )
+    assert sess.model == "claude-opus-5-5"
+    assert session(user("u0", "go")).model is None
+
+
 def query_fixture() -> Session:
     return session(
         user("u0", "go"),
