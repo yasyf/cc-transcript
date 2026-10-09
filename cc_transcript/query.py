@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 DEEP_LIFT_BUDGET = 1024 * 1024 * 1024
 DEEP_LIFT_FENCE = 64
 IDLE_SECONDS_BEFORE_RELEASE = 900
+SYNTHETIC_MODEL = "<synthetic>"
 
 type LiftStamp = tuple[int, int, int, int]
 type LiftKey = tuple[Path, int, ToolUseId | None]
@@ -541,6 +542,18 @@ class Session:
     def events(self) -> tuple[TranscriptEvent, ...]:
         """Every event in the window, in order."""
         return tuple(event for turn in self.turns for event in turn.events)
+
+    @cached_property
+    def model(self) -> str | None:
+        """The model behind the window's last non-synthetic assistant event, or ``None`` before the first reply."""
+        return next(
+            (
+                event.model
+                for event in reversed(self.events)
+                if isinstance(event, AssistantEvent) and event.model != SYNTHETIC_MODEL
+            ),
+            None,
+        )
 
     @cached_property
     def tool_calls(self) -> ToolCallQuery:

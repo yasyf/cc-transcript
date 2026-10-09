@@ -432,6 +432,8 @@ pub struct AttachmentEntry {
     pub detail: AttachmentDetail,
 }
 
+pub const SYNTHETIC_MODEL: &str = "<synthetic>";
+
 /// One parsed JSONL transcript line. Each line is parsed exactly once into this
 /// model; Python objects are materialized from it afterwards.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

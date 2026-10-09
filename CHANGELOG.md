@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `acquire` description carries `model`, the model id on the window's
+  latest assistant event that is not `<synthetic>`, or `null` before the first
+  reply. `Session.model` answers the same for a local session, so a hook reads
+  the session's model without scanning events.
+
 ### Changed
 
 - The correction extractor picks the edit a piece of feedback faults with a

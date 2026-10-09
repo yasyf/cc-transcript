@@ -30,7 +30,7 @@ use crate::snapshot_memory::{
     arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
 };
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
-use crate::types::Entry;
+use crate::types::{Entry, SYNTHETIC_MODEL};
 
 pub const SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
@@ -378,6 +378,19 @@ impl TranscriptSnapshot {
             .flat_map(|chunk| chunk.entries.iter())
             .find_map(Entry::meta)
             .map(|meta| meta.timestamp.timestamp_millis())
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        self.chunks
+            .iter()
+            .rev()
+            .flat_map(|chunk| chunk.entries.iter().rev())
+            .find_map(|entry| match entry {
+                Entry::Assistant(assistant) if assistant.model != SYNTHETIC_MODEL => {
+                    Some(assistant.model.as_str())
+                }
+                _ => None,
+            })
     }
 
     pub fn entry(&self, position: usize) -> &Entry {
@@ -5568,7 +5581,7 @@ impl NativeStore {
             "device": snapshot.stamp.identity.device.to_string(), "inode": snapshot.stamp.identity.inode.to_string(),
             "mtime_ns": snapshot.stamp.mtime_ns.to_string(), "ctime_ns": snapshot.stamp.ctime_ns.to_string(),
             "provider": snapshot.provider.as_str(), "parser_version": PARSER_VERSION,
-            "source_bytes": snapshot.stamp.size, "window_start": snapshot.window_start, "window_started_unix_ms": snapshot.window_started_unix_ms(), "committed_bytes": snapshot.committed_bytes,
+            "source_bytes": snapshot.stamp.size, "window_start": snapshot.window_start, "window_started_unix_ms": snapshot.window_started_unix_ms(), "model": snapshot.model(), "committed_bytes": snapshot.committed_bytes,
             "event_count": snapshot.event_count, "turn_count": snapshot.activity.turn_count(),
             "classifier": classifier, "provisional_tail": snapshot.provisional_tail,"lease_expires_unix_ms":expires})
     }
@@ -12305,6 +12318,37 @@ mod tests {
             Some("entry_limit"),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn acquire_describes_the_latest_non_synthetic_model() {
+        let reply = |uuid: &str, model: &str| {
+            format!(
+                r#"{{"type":"assistant","uuid":"{uuid}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"{model}","content":[{{"type":"text","text":"ok"}}]}}}}"#
+            )
+        };
+        let source = Source::new(&format!(
+            "{}{}\n{}\n{}\n{}",
+            users(0..2),
+            reply("older", "claude-opus-4-7"),
+            reply("newer", "claude-opus-5-5"),
+            reply("error", SYNTHETIC_MODEL),
+            users(2..3)
+        ));
+        let silent = Source::new(&users(0..3));
+        let store = windowed_store();
+        let owner = context("a");
+        let model = |path: &Path| {
+            finish(
+                &store,
+                store.request(&acquire(path), &owner, &Cancellation::default()),
+                &owner,
+            )["data"]["description"]["model"]
+                .clone()
+        };
+
+        assert_eq!(model(&source.path), json!("claude-opus-5-5"));
+        assert_eq!(model(&silent.path), json!(null));
     }
 
     #[test]
