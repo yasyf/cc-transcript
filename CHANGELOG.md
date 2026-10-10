@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latest assistant event that is not `<synthetic>`, or `null` before the first
   reply. `Session.model` answers the same for a local session, so a hook reads
   the session's model without scanning events.
+- Every reply's `usage` carries `prepared_cache_reads` and
+  `prepared_cache_bytes_read`. They count the prepared-facts entries a request
+  read from the owner's disk cache and the bytes those reads returned, apart
+  from `source_bytes_read`, which still counts transcript bytes only. Both
+  fields are required, so a client that validates replies against a strict
+  schema must regenerate it.
 
 ### Changed
 
@@ -23,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `thinking: false` it leaves assistant thinking blocks out of the scored texts,
   so a signal can score only what the agent wrote. `thinking: true` keeps the
   previous behavior.
+- `warm_registered` and `warm_root` charge prepared-facts disk reads against the
+  step's `max_source_read_bytes`, so a client that paces on bytes read paces
+  cache reads too. A read is admitted only when the entry plus its one-byte
+  growth probe fits what the step has left. When the step already spent part
+  of its budget, the entry waits for the next step. An entry larger than a whole
+  step returns `source_limit` (`prepared facts entry exceeds the warming read
+  budget`) and is never counted as warmed. Foreground `prepare_graph` and
+  `query_graph` reads are not charged.
+- A prepared graph query resolves each source once per step, with one
+  `canonicalize` and one `stat`. It used to check the stored path and its
+  metadata a second time. The prepared-facts size estimate reads only the
+  in-memory index and leaves the cache-directory check to the lookup that
+  follows it. On a 929-member registry fixture this removed 21% of the `stat`
+  calls on transcripts and 33% of the `lstat` calls on the cache namespace.
 
 ### Fixed
 

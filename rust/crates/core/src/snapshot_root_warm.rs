@@ -4,7 +4,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let bounds = limits(request)?;
         if context["work_class"].as_str() != Some("background")
@@ -153,9 +153,31 @@ impl NativeStore {
         if snapshot.stamp != stamp {
             return Err(SnapshotError::new(Status::Changed, "warmed root changed"));
         }
-        match self.prepared_root_facts(&snapshot, classifier, context, &bounds, cancel) {
+        match self.prepared_root_facts(
+            &snapshot,
+            classifier,
+            context,
+            &bounds,
+            PreparedCacheReads::Within(
+                bounds
+                    .max_source_read_bytes
+                    .saturating_sub(usage[1] as usize),
+            ),
+            cancel,
+            usage,
+        ) {
             Ok(_) => Ok(progress(true)),
             Err(error) if error.status == Status::Deadline => Ok(progress(false)),
+            Err(error)
+                if error.status == Status::Incomplete
+                    && error.reason == "prepared_cache_read_limit" =>
+            {
+                if usage[1] > 0 {
+                    Ok(progress(false))
+                } else {
+                    Err(prepared_cache_entry_limit())
+                }
+            }
             Err(error) => Err(error),
         }
     }
@@ -168,7 +190,7 @@ impl NativeStore {
         bounds: WorkLimits,
         windowed: bool,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let now = now_ms();
         let token = self.token("reservation");
@@ -293,6 +315,242 @@ mod root_warm_tests {
         assert_eq!(repeat["status"].as_str(), Some("ok"), "{repeat:?}");
         assert_eq!(repeat["data"]["complete"].as_bool(), Some(true));
         assert_eq!(repeat["usage"]["source_bytes_read"].as_u64(), Some(0));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn root_warming_meters_its_fact_cache_read_against_its_read_budget() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let (directory, path) = source(64 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("root-budget");
+        let warm = |read_bytes: u64| {
+            store.request(
+                &warm_request(&path, read_bytes as usize),
+                &context,
+                &Cancellation::default(),
+            )
+        };
+        let outcome = |reply: Value| {
+            (
+                reply["status"].as_str().map(str::to_owned),
+                reply["reason"].as_str().map(str::to_owned),
+                reply["data"]["facts_complete"].as_bool(),
+                reply["usage"]["prepared_cache_reads"].as_u64(),
+                reply["usage"]["prepared_cache_bytes_read"].as_u64(),
+                reply["usage"]["source_bytes_read"].as_u64(),
+            )
+        };
+        let complete = |reads: u64, bytes: u64| {
+            (
+                Some("ok".to_owned()),
+                None,
+                Some(true),
+                Some(reads),
+                Some(bytes),
+                Some(0),
+            )
+        };
+        let refused = |status: &str, reason: &str| {
+            (
+                Some(status.to_owned()),
+                Some(reason.to_owned()),
+                None,
+                Some(0),
+                Some(0),
+                Some(0),
+            )
+        };
+        let entry_limit = || {
+            refused(
+                "source_limit",
+                "prepared facts entry exceeds the warming read budget",
+            )
+        };
+        let mut built = warm(1024 * 1024);
+        for _ in 0..16 {
+            if built["data"]["complete"].as_bool() == Some(true) {
+                break;
+            }
+            built = warm(1024 * 1024);
+        }
+        assert_eq!(built["data"]["complete"].as_bool(), Some(true), "{built:?}");
+        let stamp = SourceStamp::of(&std::fs::metadata(std::fs::canonicalize(&path).unwrap()).unwrap());
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+            stamp,
+            context["registry_generation"].as_str().unwrap(),
+            "hook",
+            &context["authority"],
+            &json!({"id":"native","version":"1"}),
+        )
+        .unwrap();
+        let entry = store.prepared_disk.entry_file(&key);
+        let stored = store.prepared_disk.entry_file_len(&key);
+        let resident = || store.lock_state().prepared_facts.contains_key(&stamp.identity);
+        let evict = || {
+            store
+                .lock_state()
+                .remove_prepared_facts(&stamp.identity)
+                .unwrap();
+        };
+        assert_eq!(outcome(warm(1024 * 1024)), complete(0, 0));
+
+        evict();
+        for _ in 0..2 {
+            assert_eq!(outcome(warm(stored)), entry_limit());
+        }
+        assert!(!resident());
+
+        let owner_directory = entry.parent().unwrap();
+        let displaced = owner_directory.with_extension("displaced");
+        std::fs::rename(owner_directory, &displaced).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(owner_directory)
+            .unwrap();
+        let foreign = [outcome(warm(stored)), outcome(warm(stored + 1))];
+        std::fs::remove_dir(owner_directory).unwrap();
+        std::fs::rename(&displaced, owner_directory).unwrap();
+        let changed = refused("incomplete", "prepared facts cache directory changed");
+        assert_eq!(foreign, [changed.clone(), changed]);
+        assert!(!resident());
+
+        assert_eq!(outcome(warm(stored + 1)), complete(1, stored));
+        assert!(resident());
+
+        evict();
+        std::fs::remove_file(&entry).unwrap();
+        for _ in 0..2 {
+            assert_eq!(outcome(warm(stored)), entry_limit());
+        }
+        assert_eq!(
+            outcome(warm(stored + 1)),
+            refused("incomplete", "prepared root facts revision was evicted")
+        );
+        assert!(!store.prepared_disk.has_entry(&key).unwrap());
+        assert_eq!(outcome(warm(stored)), complete(0, 0));
+        assert_eq!(store.prepared_disk.entry_file_len(&key), stored);
+        assert!(resident());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn root_warming_defers_a_fact_read_its_source_read_left_no_budget_for() {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        struct Step {
+            complete: bool,
+            cache_reads: u64,
+            cache_bytes: u64,
+            source_bytes: u64,
+        }
+
+        let (directory, path) = source(64 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let context = context("root-deferral");
+        let drive = |budget: u64| {
+            let mut steps: Vec<Step> = Vec::new();
+            while steps.last().map_or(true, |step| !step.complete) {
+                assert!(steps.len() < 32, "{steps:?}");
+                let reply = store.request(
+                    &warm_request(&path, budget as usize),
+                    &context,
+                    &Cancellation::default(),
+                );
+                assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+                steps.push(Step {
+                    complete: reply["data"]["facts_complete"].as_bool().unwrap(),
+                    cache_reads: reply["usage"]["prepared_cache_reads"].as_u64().unwrap(),
+                    cache_bytes: reply["usage"]["prepared_cache_bytes_read"]
+                        .as_u64()
+                        .unwrap(),
+                    source_bytes: reply["usage"]["source_bytes_read"].as_u64().unwrap(),
+                });
+            }
+            assert!(
+                steps
+                    .iter()
+                    .all(|step| step.source_bytes + step.cache_bytes <= budget),
+                "{steps:?}"
+            );
+            steps
+        };
+        drive(1024 * 1024);
+        let stamp =
+            SourceStamp::of(&std::fs::metadata(std::fs::canonicalize(&path).unwrap()).unwrap());
+        let stored = store.prepared_disk.entry_file_len(
+            &crate::snapshot_prepared_disk::PreparedDiskKey::new(
+                stamp,
+                context["registry_generation"].as_str().unwrap(),
+                "hook",
+                &context["authority"],
+                &json!({"id":"native","version":"1"}),
+            )
+            .unwrap(),
+        );
+        let forget = || {
+            let mut state = store.lock_state();
+            state.remove_prepared_facts(&stamp.identity).unwrap();
+            state.remove_load(&stamp.identity).unwrap();
+            state.remove_latest(&stamp.identity).unwrap();
+        };
+        let totals = |steps: &[Step]| {
+            (
+                steps.iter().map(|step| step.cache_reads).sum::<u64>(),
+                steps.iter().map(|step| step.source_bytes).sum::<u64>() >= stamp.size,
+            )
+        };
+
+        forget();
+        let calibration = drive(1024 * 1024);
+        let fence = calibration.last().unwrap().source_bytes;
+        assert!(fence > 0, "{calibration:?}");
+        assert_eq!(totals(&calibration), (1, true), "{calibration:?}");
+        assert_eq!(
+            calibration.last(),
+            Some(&Step {
+                complete: true,
+                cache_reads: 1,
+                cache_bytes: stored,
+                source_bytes: fence,
+            })
+        );
+
+        forget();
+        let deferred = drive(fence + stored);
+        assert_eq!(totals(&deferred), (1, true), "{deferred:?}");
+        assert_eq!(
+            deferred[deferred.len() - 2..],
+            [
+                Step {
+                    complete: false,
+                    cache_reads: 0,
+                    cache_bytes: 0,
+                    source_bytes: fence,
+                },
+                Step {
+                    complete: true,
+                    cache_reads: 1,
+                    cache_bytes: stored,
+                    source_bytes: 0,
+                },
+            ],
+            "{deferred:?}"
+        );
+
+        forget();
+        let admitted = drive(fence + stored + 1);
+        assert_eq!(totals(&admitted), (1, true), "{admitted:?}");
+        assert_eq!(
+            admitted.last(),
+            Some(&Step {
+                complete: true,
+                cache_reads: 1,
+                cache_bytes: stored,
+                source_bytes: fence,
+            }),
+            "{admitted:?}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 

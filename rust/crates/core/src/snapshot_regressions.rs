@@ -382,7 +382,7 @@ fn classified(
     owner: &Value,
     classifier: &str,
 ) -> Arc<TranscriptSnapshot> {
-    let mut usage = [0; 18];
+    let mut usage = [0; 20];
     for _ in 0..100 {
         let progress = store
             .classify(
