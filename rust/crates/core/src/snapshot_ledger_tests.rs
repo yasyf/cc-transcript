@@ -1246,7 +1246,7 @@ fn interrupted_classification(
         &owner,
         &interrupt,
         &work_bounds(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     );
     assert!(matches!(interrupted, Err(error) if error.status == Status::Cancelled));
     Fixture {
@@ -1264,7 +1264,7 @@ fn classification_published(fixture: &Fixture) -> bool {
         &fixture.owner,
         &Cancellation::default(),
         &work_bounds(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok(progress) => {
             let derived = progress.snapshot.expect("published classification");
@@ -1307,7 +1307,7 @@ fn stage_created(fixture: &Fixture) -> bool {
         &fixture.owner,
         &Cancellation::default(),
         &bounds,
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok(_) => panic!("classifier stage creation progressed past its event budget"),
         Err(error) if error.status == Status::Incomplete => true,
@@ -1364,7 +1364,7 @@ fn advance_published(fixture: &Fixture) -> bool {
         waiter,
         None,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok((data, cursor, reason)) => {
             assert!(cursor.is_none() && reason.is_none(), "{data:?}");
@@ -2425,7 +2425,7 @@ fn seeded_classifier_fixture(source: &LedgerSource, classifier: &str, background
             max_events: 0,
             ..work_bounds()
         },
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     );
     assert!(matches!(created, Err(error) if error.status == Status::Incomplete));
     Fixture {
@@ -2460,7 +2460,7 @@ fn seeded_step_parked(fixture: &Fixture) -> bool {
         &fixture.owner,
         &Cancellation::default(),
         &bounds,
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok(progress) => {
             assert!(
@@ -4017,7 +4017,7 @@ fn refused_resolution_resume_releases_its_pending_source() {
                 &resume_request(&cursor),
                 &refused.owner,
                 &Cancellation::default(),
-                &mut [0u64; 18],
+                &mut [0u64; 20],
             )
         };
         assert!(
@@ -5000,7 +5000,9 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
                 &classifier,
                 &owner,
                 &work_bounds(),
+                PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
+                &mut [0u64; 20],
             )
             .unwrap();
         store
@@ -5058,7 +5060,9 @@ fn root_facts_are_admitted_in_full_before_construction_or_decoding() {
                                 &json!({"id":"native","version":"1"}),
                                 &fixture.owner,
                                 &work_bounds(),
+                                PreparedCacheReads::Unmetered,
                                 &Cancellation::default(),
+                                &mut [0u64; 20],
                             )
                             .map(|_| ())
                     })
@@ -5099,7 +5103,9 @@ fn empty_root_facts_are_admitted_at_their_fixed_overhead_before_construction() {
                             &json!({"id":"native","version":"1"}),
                             &fixture.owner,
                             &work_bounds(),
+                            PreparedCacheReads::Unmetered,
                             &Cancellation::default(),
+                            &mut [0u64; 20],
                         )
                         .map(|_| ())
                 })
@@ -5192,12 +5198,19 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
         let build = || facts_cache_fixture(&scenario, background, 0);
         let predicted = decoded_source_facts_prediction(&build());
         let attempt = |fixture: &Fixture| {
-            let mut usage = [0u64; 18];
+            let mut usage = [0u64; 20];
+            let stored = fixture
+                .store
+                .prepared_disk
+                .entry_file_len(&disk_key(&fixture.owner, fixture.pins[1].stamp));
             let fitted = constructed(site, &fixture.store, [0, 1], false, || {
+                let (canonical, metadata) = fixture.store.resolved_source(path)?;
                 let (_, outcome) = fixture.store.prepared_source(
-                    path,
+                    &canonical,
+                    &metadata,
                     &fixture.owner,
                     &mut work_bounds(),
+                    PreparedCacheReads::Unmetered,
                     &Cancellation::default(),
                     &mut usage,
                 )?;
@@ -5207,8 +5220,10 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
                 ));
                 Ok(())
             });
-            let mut expected = [0u64; 18];
+            let mut expected = [0u64; 20];
             expected[7] = u64::from(fitted);
+            expected[18] = u64::from(fitted);
+            expected[19] = if fitted { stored } else { 0 };
             assert_eq!(usage, expected, "{site}: usage misreported the attempt");
             fitted
         };
@@ -5462,7 +5477,7 @@ fn root_slice_is_admitted_in_full_before_construction() {
             "{site}: the {predicted}-byte reservation does not cover the {slice_bytes}-byte slice"
         );
         let attempt = |fixture: &Fixture| {
-            let mut usage = [0u64; 18];
+            let mut usage = [0u64; 20];
             let fitted = constructed(site, &fixture.store, [1, 0], true, || {
                 fixture
                     .store
@@ -5475,7 +5490,7 @@ fn root_slice_is_admitted_in_full_before_construction() {
                     .map(|_| ())
             });
             if !fitted {
-                assert_eq!(usage, [0u64; 18], "{site}: the refusal reported work");
+                assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
             }
             fitted
         };
@@ -5702,7 +5717,9 @@ fn patch_root_facts_are_admitted_at_their_bound_before_construction() {
                                 &json!({"id":"native","version":"1"}),
                                 &fixture.owner,
                                 &work_bounds(),
+                                PreparedCacheReads::Unmetered,
                                 &Cancellation::default(),
+                                &mut [0u64; 20],
                             )
                             .map(|_| ())
                     })
@@ -5782,7 +5799,7 @@ fn slices_of_a_decoded_patch_root_are_admitted_at_the_root_bound() {
                 "{site}: slice={slice} predicted={predicted}"
             );
             let attempt = |fixture: &Fixture| {
-                let mut usage = [0u64; 18];
+                let mut usage = [0u64; 20];
                 let fitted = constructed(&site, &fixture.store, [1, 0], true, || {
                     fixture
                         .store
@@ -5795,7 +5812,7 @@ fn slices_of_a_decoded_patch_root_are_admitted_at_the_root_bound() {
                         .map(|_| ())
                 });
                 if !fitted {
-                    assert_eq!(usage, [0u64; 18], "{site}: the refusal reported work");
+                    assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
                 }
                 fitted
             };
@@ -5872,7 +5889,7 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
             "{site}: the {predicted}-byte reservation does not cover the {slice_bytes}-byte slice"
         );
         let attempt = |fixture: &Fixture| {
-            let mut usage = [0u64; 18];
+            let mut usage = [0u64; 20];
             constructed(site, &fixture.store, [1, 0], true, || {
                 fixture
                     .store
@@ -6350,7 +6367,9 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
             &json!({"id":"native","version":"1"}),
             &fixture.owner,
             &work_bounds(),
+            PreparedCacheReads::Unmetered,
             &Cancellation::default(),
+            &mut [0u64; 20],
         ) {
             Ok(_) if fixture.store.prepared_disk.stats().entries > before => Landing::Landed,
             Ok(_) => Landing::Returned,
@@ -6785,7 +6804,9 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 &classifier,
                 &owner,
                 &work_bounds(),
+                PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
+                &mut [0u64; 20],
             )
             .unwrap();
         let bytes = NativeStore::audit_facts_bytes(retained.facts());
@@ -6796,7 +6817,9 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 &classifier,
                 &other,
                 &work_bounds(),
+                PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
+                &mut [0u64; 20],
             )
             .unwrap();
         {
@@ -7806,7 +7829,7 @@ fn location_parked(fixture: &Fixture) -> bool {
         &fixture.request,
         &fixture.owner,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok((data, cursor, reason)) => {
             assert!(
@@ -7945,7 +7968,7 @@ fn cached_acquire(fixture: &Fixture) -> bool {
         &fixture.request,
         &fixture.owner,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok((data, cursor, reason)) => {
             assert!(cursor.is_none() && reason.is_none(), "{data:?}");
@@ -8079,7 +8102,7 @@ fn cold_acquire(fixture: &Fixture) -> bool {
         &fixture.request,
         &fixture.owner,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok((data, cursor, reason)) => {
             assert!(cursor.is_some() && reason.is_some(), "{data:?}");
@@ -8223,7 +8246,7 @@ fn advance_parked(fixture: &Fixture) -> bool {
         waiter,
         None,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok((data, cursor, reason)) => {
             assert!(cursor.is_some() && reason.is_some(), "{data:?}");
@@ -8287,7 +8310,7 @@ fn metered_decode_steps_stop_at_their_decode_bound() {
                 waiter,
                 None,
                 &Cancellation::default(),
-                &mut [0u64; 18],
+                &mut [0u64; 20],
             )
             .unwrap_or_else(|error| panic!("step {steps} failed: {error:?}"));
         let admitted = admitted_traces(&store);
@@ -10294,7 +10317,7 @@ fn graph_source_admits_its_node_before_pinning_it() {
                     &acquire(&member),
                     &graph.context,
                     &Cancellation::default(),
-                    &mut [0u64; 18],
+                    &mut [0u64; 20],
                 )
                 .unwrap();
             assert!(pending.is_none(), "the member acquire was not a cache hit");
@@ -10487,7 +10510,7 @@ fn resumed_graph_cursor_admits_its_context_and_releases_its_sources_on_refusal()
 }
 
 fn located(fixture: &Fixture) {
-    let mut usage = [0u64; 18];
+    let mut usage = [0u64; 20];
     match fixture.store.locate(
         &fixture.request,
         &fixture.owner,
@@ -10534,7 +10557,7 @@ fn fresh_location_cursor_admits_its_record_before_constructing_it() {
                 bookkeeping(&fixture.store),
             );
             traced(&fixture.store);
-            let mut usage = [0u64; 18];
+            let mut usage = [0u64; 20];
             let error = fixture
                 .store
                 .locate(
@@ -10943,7 +10966,7 @@ fn resumed(fixture: &Fixture) -> bool {
         &fixture.request,
         &fixture.owner,
         &Cancellation::default(),
-        &mut [0u64; 18],
+        &mut [0u64; 20],
     ) {
         Ok(_) => true,
         Err(error) if error.status == Status::RetainedLimit => false,
@@ -11496,7 +11519,7 @@ fn discovery_directory_reservation(scan: &DiscoveryCursor, root: &Path) -> usize
 
 fn discovered(
     fixture: &Fixture,
-    usage: &mut [u64; 18],
+    usage: &mut [u64; 20],
 ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
     fixture.store.discover(
         &fixture.request,
@@ -11507,7 +11530,7 @@ fn discovered(
 }
 
 fn discovery_parked(fixture: &Fixture) -> bool {
-    match discovered(fixture, &mut [0u64; 18]) {
+    match discovered(fixture, &mut [0u64; 20]) {
         Ok((data, cursor, reason)) => {
             assert!(
                 cursor.is_some() && reason.is_some(),
@@ -11521,7 +11544,7 @@ fn discovery_parked(fixture: &Fixture) -> bool {
 }
 
 fn discovery_completed(fixture: &Fixture) -> bool {
-    match discovered(fixture, &mut [0u64; 18]) {
+    match discovered(fixture, &mut [0u64; 20]) {
         Ok((data, cursor, reason)) => {
             assert!(
                 cursor.is_none() && reason.is_none() && data["checkpoint"].as_str().is_some(),
@@ -11540,7 +11563,7 @@ fn assert_record_refused(
     headroom: usize,
     records: fn(&NativeStore) -> usize,
     parked: fn(&StoreState) -> usize,
-    attempt: impl Fn(&Fixture, &mut [u64; 18]) -> Result<(), SnapshotError>,
+    attempt: impl Fn(&Fixture, &mut [u64; 20]) -> Result<(), SnapshotError>,
 ) {
     let filler = fill_to(&fixture.store, &fixture.owner, headroom);
     let built = records(&fixture.store);
@@ -11550,7 +11573,7 @@ fn assert_record_refused(
         bookkeeping(&fixture.store),
     );
     traced(&fixture.store);
-    let mut usage = [0u64; 18];
+    let mut usage = [0u64; 20];
     let error = attempt(fixture, &mut usage).unwrap_err();
     assert_eq!(error.status, Status::RetainedLimit, "{site}");
     assert_eq!(usage[17], 0, "{site}: the refused record examined entries");
@@ -11575,7 +11598,7 @@ fn assert_record_refused(
         "{site}: the refused record leaked state"
     );
     drop(filler);
-    attempt(fixture, &mut [0u64; 18])
+    attempt(fixture, &mut [0u64; 20])
         .unwrap_or_else(|error| panic!("{site}: the retry after the refusal failed: {error:?}"));
     assert_eq!(
         records(&fixture.store),
@@ -11943,7 +11966,7 @@ fn resolution_record_bytes(fixture: &Fixture) -> usize {
 
 fn resolved(
     fixture: &Fixture,
-    usage: &mut [u64; 18],
+    usage: &mut [u64; 20],
 ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
     fixture.store.resolve(
         &fixture.request,
@@ -11954,7 +11977,7 @@ fn resolved(
 }
 
 fn resolution_completed(fixture: &Fixture) -> bool {
-    match resolved(fixture, &mut [0u64; 18]) {
+    match resolved(fixture, &mut [0u64; 20]) {
         Ok((data, cursor, reason)) => {
             assert!(
                 cursor.is_none() && reason.is_none(),
@@ -11968,7 +11991,7 @@ fn resolution_completed(fixture: &Fixture) -> bool {
 }
 
 fn resolution_parked(fixture: &Fixture) -> bool {
-    match resolved(fixture, &mut [0u64; 18]) {
+    match resolved(fixture, &mut [0u64; 20]) {
         Ok((data, cursor, reason)) => {
             assert!(
                 cursor.is_some() && reason.is_some(),
@@ -12187,7 +12210,7 @@ fn fresh_query_fixture(source: &LedgerSource, background: bool) -> Fixture {
 
 fn queried(
     fixture: &Fixture,
-    usage: &mut [u64; 18],
+    usage: &mut [u64; 20],
 ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
     fixture.store.query_graph(
         &fixture.request,
@@ -12198,7 +12221,7 @@ fn queried(
 }
 
 fn query_parked(fixture: &Fixture) -> bool {
-    match queried(fixture, &mut [0u64; 18]) {
+    match queried(fixture, &mut [0u64; 20]) {
         Ok((data, cursor, reason)) => {
             assert!(
                 cursor.is_some() && reason.is_some(),
@@ -12324,7 +12347,7 @@ fn membership_record_bytes(fixture: &Fixture) -> usize {
 
 fn built_membership<'a>(
     fixture: &'a Fixture,
-    usage: &mut [u64; 18],
+    usage: &mut [u64; 20],
 ) -> Result<(WarmMembership, ProjectionReservation<'a>), SnapshotError> {
     let mut remaining = work_bounds();
     fixture.store.build_warm_membership(
@@ -12338,7 +12361,7 @@ fn built_membership<'a>(
 }
 
 fn membership_built(fixture: &Fixture) -> bool {
-    match built_membership(fixture, &mut [0u64; 18]) {
+    match built_membership(fixture, &mut [0u64; 20]) {
         Ok(_) => true,
         Err(error) if error.status == Status::RetainedLimit => false,
         Err(error) => panic!("membership build failed outside admission: {error:?}"),
@@ -12346,7 +12369,7 @@ fn membership_built(fixture: &Fixture) -> bool {
 }
 
 fn membership_published(fixture: &Fixture) -> bool {
-    let (membership, mut reservation) = match built_membership(fixture, &mut [0u64; 18]) {
+    let (membership, mut reservation) = match built_membership(fixture, &mut [0u64; 20]) {
         Ok(built) => built,
         Err(error) if error.status == Status::RetainedLimit => return false,
         Err(error) => panic!("membership build failed outside admission: {error:?}"),
@@ -12398,7 +12421,7 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         traced(&fitted.store);
         let (membership, reservation) =
-            built_membership(&fitted, &mut [0u64; 18]).expect("the exact fit was refused");
+            built_membership(&fitted, &mut [0u64; 20]).expect("the exact fit was refused");
         let trace = traced(&fitted.store);
         fitted.store.assert_conserved();
         let reservations = reserved_traces(&trace);

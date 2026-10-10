@@ -523,6 +523,8 @@ class Usage(WireModel):
     nonincremental_lowering_calls: Count
     nonincremental_lowering_source_bytes: Count
     discovery_entries_examined: Count
+    prepared_cache_reads: Count
+    prepared_cache_bytes_read: Count
 
 
 class Gauges(WireModel):

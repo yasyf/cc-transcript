@@ -265,7 +265,9 @@ impl NativeStore {
         classifier: &Value,
         context: &Value,
         remaining: &WorkLimits,
+        cache_reads: PreparedCacheReads,
         cancel: &Cancellation,
+        usage: &mut [u64; 20],
     ) -> Result<(RetainedFacts<'_>, ProjectionReservation<'_>), SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         if let Some(retained) = self.touch_retained_facts(
@@ -292,12 +294,24 @@ impl NativeStore {
             classifier,
         )?;
         let bound = crate::snapshot_projection::facts_bound(root);
-        let decoded = self.prepared_disk.decoded_bytes(&key)?;
+        let decoded = self.prepared_disk.decoded_bytes(&key);
+        if self
+            .prepared_disk
+            .read_bound(&key)
+            .is_some_and(|bound| !cache_reads.admits(bound))
+        {
+            self.prepared_disk.check_dir()?;
+            return Err(prepared_cache_read_limit());
+        }
         let mut reservation = self.reserve_projection(context, decoded.unwrap_or(0).max(bound))?;
         if decoded.is_some() {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
-            match self.prepared_disk.lookup(&key)? {
+            let mut read = crate::snapshot_prepared_disk::DiskRead::default();
+            let lookup = self.prepared_disk.lookup(&key, &mut read);
+            usage[18] += read.operations;
+            usage[19] += read.bytes;
+            match lookup? {
                 crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
                     let facts = Arc::new(facts);
                     return match self.cache_prepared_facts(
@@ -361,22 +375,33 @@ impl NativeStore {
         }
     }
 
-    fn prepared_source(
+    fn resolved_source(
         &self,
         path: &Path,
+    ) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
+        #[cfg(test)]
+        self.source_resolutions.fetch_add(1, Ordering::Relaxed);
+        let canonical = std::fs::canonicalize(path).map_err(io_error)?;
+        let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+        Ok((canonical, metadata))
+    }
+
+    fn prepared_source(
+        &self,
+        canonical: &Path,
+        metadata: &std::fs::Metadata,
         context: &Value,
         remaining: &mut WorkLimits,
+        cache_reads: PreparedCacheReads,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(SourceStamp, PreparedSourceOutcome<'_>), SnapshotError> {
         cancel.check(remaining.deadline_unix_ms)?;
-        let canonical = std::fs::canonicalize(path).map_err(io_error)?;
-        self.authority(context, Some(&canonical))?;
-        let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+        self.authority(context, Some(canonical))?;
         if !metadata.is_file() {
             return Err(invalid("prepared graph source must be a file"));
         }
-        let stamp = SourceStamp::of(&metadata);
+        let stamp = SourceStamp::of(metadata);
         {
             let mut state = self.lock_state();
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&stamp.identity) {
@@ -417,11 +442,28 @@ impl NativeStore {
             &context["authority"],
             &json!({"id":"native","version":"1"}),
         )?;
-        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key)? {
+        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key) {
+            if self
+                .prepared_disk
+                .read_bound(&key)
+                .is_some_and(|bound| !cache_reads.admits(bound))
+            {
+                self.prepared_disk.check_dir()?;
+                return Err(prepared_cache_read_limit());
+            }
             let mut reservation = self.reserve_projection(context, decoded)?;
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
-            match self.prepared_disk.lookup(&key)? {
+            let mut read = crate::snapshot_prepared_disk::DiskRead::default();
+            let lookup = self.prepared_disk.lookup(&key, &mut read);
+            usage[18] += read.operations;
+            usage[19] += read.bytes;
+            if let PreparedCacheReads::Within(_) = cache_reads {
+                remaining.max_source_read_bytes = remaining
+                    .max_source_read_bytes
+                    .saturating_sub(read.bytes as usize);
+            }
+            match lookup? {
                 crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
                     usage[7] += 1;
                     let facts = Arc::new(facts);
@@ -490,12 +532,23 @@ impl NativeStore {
         context: &Value,
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         self.authority(
             context,
             Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
         )?;
+        self.advance_prepared_source(pending, context, remaining, cancel, usage)
+    }
+
+    fn advance_prepared_source(
+        &self,
+        pending: &PendingPreparedSource,
+        context: &Value,
+        remaining: &mut WorkLimits,
+        cancel: &Cancellation,
+        usage: &mut [u64; 20],
+    ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         let waiter = self
             .rebind_waiter(&mut self.lock_state(), &pending.token, context)?
             .ok_or_else(|| {
@@ -740,7 +793,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
@@ -808,7 +861,15 @@ impl NativeStore {
                 ));
             }
             let (retained, mut reservation) =
-                self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+                self.prepared_root_facts(
+                    &root,
+                    &view["classifier"],
+                    context,
+                    &remaining,
+                    PreparedCacheReads::Unmetered,
+                    cancel,
+                    usage,
+                )?;
             let shared = members
                 .iter()
                 .position(|source| source.stamp.identity.file() == root.stamp.identity.file());
@@ -895,7 +956,15 @@ impl NativeStore {
             return self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation);
         }
         let (retained, mut reservation) =
-            self.prepared_root_facts(&root, &view["classifier"], context, &remaining, cancel)?;
+            self.prepared_root_facts(
+                    &root,
+                    &view["classifier"],
+                    context,
+                    &remaining,
+                    PreparedCacheReads::Unmetered,
+                    cancel,
+                    usage,
+                )?;
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         self.extend_projection_reservation(
             &mut reservation,
@@ -949,7 +1018,7 @@ impl NativeStore {
         mut build: PreparedBuild,
         reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         cancel.check(build.remaining.deadline_unix_ms)?;
         let context = &build.context;
@@ -1369,7 +1438,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
         remaining: &mut WorkLimits,
     ) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
         use std::fmt::Write as _;
@@ -1618,7 +1687,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut remaining = limits(request)?;
         if context["work_class"].as_str() != Some("background") {
@@ -1692,6 +1761,7 @@ impl NativeStore {
             ));
         }
         let since = active_since_ns(request)?;
+        let read_budget = remaining.max_source_read_bytes;
         let mut next = start;
         let mut steps = 0usize;
         'warming: while next < members.len() && steps < 8 {
@@ -1703,14 +1773,27 @@ impl NativeStore {
             }
             let before_read = usage[1];
             let before_events = usage[3];
+            let (canonical, metadata) = self.resolved_source(&source.path)?;
+            let cache_reads = PreparedCacheReads::Within(remaining.max_source_read_bytes);
             let (stamp, mut outcome) = match self.prepared_source(
-                &source.path,
+                &canonical,
+                &metadata,
                 context,
                 &mut remaining,
+                cache_reads,
                 cancel,
                 usage,
             ) {
                 Ok(outcome) => outcome,
+                Err(error)
+                    if error.status == Status::Incomplete
+                        && error.reason == "prepared_cache_read_limit" =>
+                {
+                    if remaining.max_source_read_bytes < read_budget {
+                        break 'warming;
+                    }
+                    return Err(prepared_cache_entry_limit());
+                }
                 Err(error)
                     if error.status == Status::Incomplete && error.reason == "source_read_limit" =>
                 {
@@ -1854,7 +1937,7 @@ impl NativeStore {
         graph: &Arc<Mutex<PreparedGraph>>,
         context: &Value,
         remaining: &mut WorkLimits,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(), SnapshotError> {
         let (handle, classifier, stamp, deadline) = {
             let graph = graph.lock().expect("prepared graph");
@@ -1889,7 +1972,7 @@ impl NativeStore {
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let page = self.prepared_query_steps(&mut cursor, context, reservation, cancel, usage);
         let pending = cursor.pending.as_ref().map(|pending| pending.token.clone());
@@ -1913,7 +1996,7 @@ impl NativeStore {
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<QueryPage, SnapshotError> {
         if cursor.claimant != str_field(context, "claimant")? {
             return Err(SnapshotError::new(
@@ -1983,8 +2066,7 @@ impl NativeStore {
                 continue;
             }
             let source = &sources[cursor.next];
-            self.authority(context, Some(&source.path))?;
-            let metadata = std::fs::metadata(&source.path).map_err(io_error)?;
+            let (canonical, metadata) = self.resolved_source(&source.path)?;
             if SourceStamp::of(&metadata) != source.stamp {
                 return Err(SnapshotError::new(
                     Status::Changed,
@@ -1995,13 +2077,15 @@ impl NativeStore {
                 if pending.path != source.path || pending.stamp != source.stamp {
                     return Err(invalid("prepared query source cursor differs"));
                 }
-                match self.resume_prepared_source(
-                    &pending,
-                    context,
-                    &mut cursor.remaining,
-                    cancel,
-                    usage,
-                ) {
+                match self.authority(context, Some(&canonical)).and_then(|()| {
+                    self.advance_prepared_source(
+                        &pending,
+                        context,
+                        &mut cursor.remaining,
+                        cancel,
+                        usage,
+                    )
+                }) {
                     Ok(PreparedSourceOutcome::Pending(next)) => {
                         pending.token = next;
                         cursor.pending = Some(pending);
@@ -2019,9 +2103,11 @@ impl NativeStore {
                 }
             } else {
                 match self.prepared_source(
-                    &source.path,
+                    &canonical,
+                    &metadata,
                     context,
                     &mut cursor.remaining,
+                    PreparedCacheReads::Unmetered,
                     cancel,
                     usage,
                 )? {
@@ -2160,7 +2246,7 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let handle = request
             .get("handle")

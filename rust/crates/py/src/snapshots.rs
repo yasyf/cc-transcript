@@ -943,7 +943,8 @@ impl NativeSnapshotScope {
             "requests_cancelled":self.cancellations,"requests_failed":self.failures,
             "output_bytes":self.used.output_bytes,"transport_bytes":0,
             "nonincremental_lowering_calls":0,"nonincremental_lowering_source_bytes":0,
-            "discovery_entries_examined":0
+            "discovery_entries_examined":0,
+            "prepared_cache_reads":0,"prepared_cache_bytes_read":0
         })
         .to_string()
     }

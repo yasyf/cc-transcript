@@ -242,7 +242,7 @@ impl NativeStore {
         slot: &LoadSlot,
         load: &mut Load,
         lowering_events: usize,
-        usage: &mut [u64; 18],
+        usage: &mut [u64; 20],
     ) -> Result<(), SnapshotError> {
         let suffix = &load.pending;
         let append = load.previous.as_ref().is_some_and(|previous| {
