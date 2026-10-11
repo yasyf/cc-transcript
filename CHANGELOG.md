@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Command.unwrapped`, `Command.prefix` and `Command.runs` read a bare
+  `command -v` or `command -V` as the lookup it is. `command -v orca ccx` now
+  unwraps to itself, with the prefix `command`, where it used to unwrap to
+  `orca ccx` as if the lookup ran its operands. The lookup has to be spelled
+  out in full: `command`, clusters of `p`, `v` and `V`, then plain program
+  names, and at the end nothing but `>/dev/null`, `2>/dev/null`, `&>/dev/null`,
+  `2>&1` or `>&2`. Every other spelling still unwraps to the wrapped command,
+  as before. That includes a wrapper ahead of it (`sudo command -v rm`), a
+  quote, an escape, an expansion, a substitution, any other redirect, and any
+  other option.
 - `warm_registered` and `prepare_graph` take an optional `active_since_unix_ms`.
   With it, a registered thread, direct path or sidechain joins the graph only
   when its file changed at or after that time. An `acquire` description now

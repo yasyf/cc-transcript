@@ -124,6 +124,8 @@ pub struct Command {
     // A stage of a `|`/`|&` pipeline: its stdout is consumed by the pipe. Set at parse time.
     #[doc(hidden)]
     pub pipe_stage: bool,
+    #[doc(hidden)]
+    pub inherits_heredoc: bool,
 }
 
 impl PartialEq for Command {
@@ -219,7 +221,7 @@ impl Command {
     // Parity: command.py Command.unwrapped — returns self when nothing is stripped.
     pub fn unwrapped(&self) -> Command {
         let argv = self.argv();
-        let stripped = strip_wrappers(&argv, &self.words);
+        let stripped = self.stripped(&argv);
         if stripped.len() == argv.len() {
             return self.clone();
         }
@@ -239,12 +241,49 @@ impl Command {
             host_delta: self.host_delta,
             contexts: self.contexts.clone(),
             pipe_stage: self.pipe_stage,
+            inherits_heredoc: self.inherits_heredoc,
+        }
+    }
+
+    // zsh runs `-v` as a program once an option it does not know follows it, and a wrapper, a path, a
+    // quote, an escape or an expansion can each make a shell run something else. Only the bare
+    // spelling is provably the builtin's lookup, so the source text itself has to read as one.
+    fn command_lookup(&self, argv: &[&str]) -> bool {
+        let tokens: Vec<&str> = self
+            .raw
+            .split([' ', '\t'])
+            .filter(|token| !token.is_empty())
+            .collect();
+        let silencers = tokens
+            .iter()
+            .rev()
+            .take_while(|token| LOOKUP_SILENCERS.contains(token))
+            .count();
+        let flags = argv
+            .iter()
+            .skip(1)
+            .take_while(|arg| lookup_flag(arg))
+            .count();
+        argv.first() == Some(&"command")
+            && tokens[..tokens.len() - silencers] == *argv
+            && argv[1..=flags].iter().any(|flag| flag.contains(['v', 'V']))
+            && argv[1 + flags..].iter().all(|name| program_name(name))
+            && self.redirects.iter().all(silencer)
+            && !self.inherits_heredoc
+    }
+
+    fn stripped<'a>(&self, argv: &[&'a str]) -> Vec<&'a str> {
+        if self.command_lookup(argv) {
+            argv.to_vec()
+        } else {
+            strip_wrappers(argv, &self.words)
         }
     }
 
     // Parity: command.py Command.prefix — over the unwrapped argv; empty pick falls back to the tool.
     pub fn prefix(&self) -> Option<String> {
-        let argv = strip_wrappers(&self.argv(), &self.words);
+        let argv = self.argv();
+        let argv = self.stripped(&argv);
         match argv.first() {
             None | Some(&"") => None,
             Some(&exe) if MULTI_LEVEL_TOOLS.contains(&exe) => Some(
@@ -263,7 +302,8 @@ impl Command {
         if argv.is_empty() {
             return false;
         }
-        let unwrapped = strip_wrappers(&self.argv(), &self.words);
+        let own = self.argv();
+        let unwrapped = self.stripped(&own);
         unwrapped.len() >= argv.len() && unwrapped[..argv.len()] == *argv
     }
 
@@ -974,6 +1014,9 @@ fn with_redirects(
     if redirects.is_empty() {
         return parts;
     }
+    let heredoc = redirects
+        .iter()
+        .any(|redirect| matches!(redirect.kind, NodeKind::HereDoc { .. }));
     let redirects = build_redirects(redirects, src);
     if parts.is_empty() {
         return vec![(
@@ -988,6 +1031,7 @@ fn with_redirects(
     }
     for (cmd, _) in &mut parts {
         cmd.redirects.extend(redirects.iter().cloned());
+        cmd.inherits_heredoc |= heredoc;
     }
     parts
 }
@@ -1395,6 +1439,34 @@ fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
     i.min(tokens.len())
 }
 
+const LOOKUP_SILENCERS: &[&str] = &[
+    ">/dev/null",
+    "1>/dev/null",
+    "2>/dev/null",
+    "&>/dev/null",
+    "2>&1",
+    ">&2",
+    "1>&2",
+];
+
+fn lookup_flag(arg: &str) -> bool {
+    arg.strip_prefix('-')
+        .is_some_and(|flags| !flags.is_empty() && flags.bytes().all(|b| b"pvV".contains(&b)))
+}
+
+fn silencer(redirect: &Redirect) -> bool {
+    let fd = redirect.fd.map(|fd| fd.to_string()).unwrap_or_default();
+    LOOKUP_SILENCERS.contains(&format!("{fd}{}{}", redirect.op, redirect.target).as_str())
+}
+
+fn program_name(arg: &str) -> bool {
+    !arg.is_empty()
+        && !arg.starts_with('-')
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.+/-".contains(&b))
+}
+
 // Drop each leading wrapper plus its skippable args. The head matches on the dequoted word value
 // (`"sudo"` → `sudo`), basenamed (`/usr/bin/sudo` → `sudo`); argv and words slice in lockstep.
 fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
@@ -1643,6 +1715,94 @@ mod tests {
         ] {
             let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
             assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn bare_command_lookup_wraps_nothing() {
+        for raw in [
+            "command -v orca ccx cc-notes",
+            "command -V rm",
+            "command -pv rm",
+            "command -p -v rm",
+            "command -v sudo rm",
+            "command -v /usr/bin/g++ python3.13",
+            "command -v",
+            "command -v rm >/dev/null 2>&1",
+            "command -v rm &>/dev/null",
+            "command -v rm 2>/dev/null",
+            "command\t-v  rm   >&2",
+        ] {
+            let line = CommandLine::parse(raw);
+            let cmd = line.primary().unwrap();
+            assert_eq!(cmd.unwrapped(), *cmd, "unwrapping {raw}");
+            assert_eq!(cmd.prefix().as_deref(), Some("command"), "prefix of {raw}");
+            assert!(!cmd.runs(&["rm"]), "{raw} runs nothing");
+        }
+        for raw in [
+            "if ! command -v rm >/dev/null 2>&1; then echo y; fi",
+            "x=$(command -v rm 2>/dev/null)",
+            "(command -v rm) >/dev/null 2>&1",
+        ] {
+            let line = CommandLine::parse(raw);
+            let lookups: Vec<String> = line
+                .parts
+                .iter()
+                .map(|(cmd, _)| cmd.unwrapped().executable)
+                .filter(|executable| executable != "echo")
+                .collect();
+            assert_eq!(lookups, ["command"], "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn command_the_shell_may_not_read_as_a_lookup_still_wraps() {
+        for raw in [
+            "command rm /x",
+            "command -p rm /x",
+            "command -- rm /x",
+            "command -v -- rm /x",
+            "command -v -i rm /x",
+            "command -i -v rm /x",
+            "command -v - rm /x",
+            "command -v >/dev/null -i rm /x",
+            "command -$f rm /x",
+            "command -${v} rm /x",
+            "command \"-v\" rm /x",
+            "command -v $X rm /x",
+            "command -v \"$X\" rm /x",
+            "command -v * rm /x",
+            "command -v ~ rm /x",
+            "command -v \"\"~ rm /x",
+            "command -v =rm /x rm",
+            "command $(printf env) -v rm /x",
+            "command -v $(printf -- -i) rm /x",
+            "command `printf env` -v rm /x",
+            "command -v rm ignored<(rm /x)",
+            "command >\"/dev/null$(rm /x)\" -v rm",
+            "command -v rm > /dev/null",
+            "command -v rm >/tmp/out",
+            "command -v rm <<EOF\n$(rm /x)\nEOF",
+            "(command -v rm) >\"$(printf /dev/null)\"",
+            "(command -v rm) <<EOF\n$(printf x)\nEOF",
+            "{ command -v rm; } <<EOF\n$(printf x)\nEOF",
+            "if command -v rm; then :; fi <<EOF\n$(printf x)\nEOF",
+            "(command -v rm) <<<x",
+            "{ command -v rm; } >/tmp/out",
+            "command\\\nx -v rm /x",
+            "\\command -v rm /x",
+            "A=1 command -v rm /x",
+            "./command -v rm /x",
+            "/usr/bin/command -v rm /x",
+            "command command -v rm /x",
+            "sudo command -v rm /x",
+            "/usr/bin/env command -v rm /x",
+            "env -u command -v rm /x",
+        ] {
+            let line = CommandLine::parse(raw);
+            let cmd = line.head().unwrap().unwrapped();
+            assert_ne!(cmd.executable, "command", "unwrapping {raw}");
+            assert!(cmd.argv().contains(&"rm"), "unwrapping {raw}");
         }
     }
 

@@ -210,6 +210,61 @@ class TestUnwrapped:
     def test_env_split_string_keeps_payload_visible(self) -> None:
         assert parse('env -S "rm -rf /"').unwrapped.executable == "rm -rf /"
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("command -v orca ccx cc-notes", id="lookup"),
+            pytest.param("command -V rm", id="verbose_lookup"),
+            pytest.param("command -pv rm", id="clustered_flags"),
+            pytest.param("command -p -v rm", id="separate_flags"),
+            pytest.param("command -v sudo rm", id="wrapper_as_operand"),
+            pytest.param("command -v", id="no_operand"),
+            pytest.param("command -v rm >/dev/null 2>&1", id="silenced"),
+            pytest.param("command -v rm &>/dev/null", id="silenced_both"),
+        ],
+    )
+    def test_bare_command_lookup_wraps_nothing(self, raw: str) -> None:
+        cmd = parse(raw)
+        assert cmd.unwrapped is cmd
+        assert cmd.prefix == "command"
+        assert cmd.runs("rm") is False
+
+    def test_bare_command_lookup_keeps_an_enclosing_silencer(self) -> None:
+        assert CommandLine.parse("(command -v rm) >/dev/null 2>&1").head.unwrapped.executable == "command"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("command rm /x", id="bare_wrapper"),
+            pytest.param("command -p rm /x", id="default_path"),
+            pytest.param("command -- rm /x", id="end_of_options"),
+            pytest.param("command -v -i rm /x", id="zsh_runs_dash_v_on_an_unknown_option"),
+            pytest.param("command -v >/dev/null -i rm /x", id="unknown_option_behind_a_redirect"),
+            pytest.param("command -${v} rm /x", id="flag_named_at_run_time"),
+            pytest.param('command "-v" rm /x', id="quoted_flag"),
+            pytest.param("command -v $X rm /x", id="operand_named_at_run_time"),
+            pytest.param("command -v * rm /x", id="operand_globbed"),
+            pytest.param('command -v ""~ rm /x', id="tilde_behind_empty_quotes"),
+            pytest.param("command $(printf env) -v rm /x", id="substitution_ahead_of_the_flag"),
+            pytest.param("command -v rm ignored<(rm /x)", id="process_substitution"),
+            pytest.param('command >"/dev/null$(rm /x)" -v rm', id="substitution_in_a_redirect"),
+            pytest.param("command -v rm >/tmp/out", id="redirect_to_a_file"),
+            pytest.param('(command -v rm) >"$(printf /dev/null)"', id="substitution_in_an_enclosing_redirect"),
+            pytest.param("(command -v rm) <<EOF\n$(printf x)\nEOF", id="heredoc_on_an_enclosing_group"),
+            pytest.param("command\\\nx -v rm /x", id="line_continuation_in_the_head"),
+            pytest.param("A=1 command -v rm /x", id="assignment_ahead"),
+            pytest.param("./command -v rm /x", id="relative_path_head"),
+            pytest.param("command command -v rm /x", id="behind_command"),
+            pytest.param("sudo command -v rm /x", id="behind_sudo"),
+            pytest.param("/usr/bin/env command -v rm /x", id="behind_env"),
+            pytest.param("env -u command -v rm /x", id="command_as_a_flag_value"),
+        ],
+    )
+    def test_command_the_shell_may_not_read_as_a_lookup_still_wraps(self, raw: str) -> None:
+        unwrapped = CommandLine.parse(raw).head.unwrapped
+        assert unwrapped.executable != "command"
+        assert "rm" in unwrapped.argv
+
 
 class TestPrefix:
     @pytest.mark.parametrize(
