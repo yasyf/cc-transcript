@@ -250,6 +250,7 @@ class TestUnwrapped:
             pytest.param('command >"/dev/null$(rm /x)" -v rm', id="substitution_in_a_redirect"),
             pytest.param("command -v rm >/tmp/out", id="redirect_to_a_file"),
             pytest.param('(command -v rm) >"$(printf /dev/null)"', id="substitution_in_an_enclosing_redirect"),
+            pytest.param("(command -v rm) <<EOF\n$(printf x)\nEOF", id="heredoc_on_an_enclosing_group"),
             pytest.param("command\\\nx -v rm /x", id="line_continuation_in_the_head"),
             pytest.param("A=1 command -v rm /x", id="assignment_ahead"),
             pytest.param("./command -v rm /x", id="relative_path_head"),

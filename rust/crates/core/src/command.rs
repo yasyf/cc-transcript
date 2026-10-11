@@ -124,6 +124,8 @@ pub struct Command {
     // A stage of a `|`/`|&` pipeline: its stdout is consumed by the pipe. Set at parse time.
     #[doc(hidden)]
     pub pipe_stage: bool,
+    #[doc(hidden)]
+    pub inherits_heredoc: bool,
 }
 
 impl PartialEq for Command {
@@ -239,6 +241,7 @@ impl Command {
             host_delta: self.host_delta,
             contexts: self.contexts.clone(),
             pipe_stage: self.pipe_stage,
+            inherits_heredoc: self.inherits_heredoc,
         }
     }
 
@@ -266,6 +269,7 @@ impl Command {
             && argv[1..=flags].iter().any(|flag| flag.contains(['v', 'V']))
             && argv[1 + flags..].iter().all(|name| program_name(name))
             && self.redirects.iter().all(silencer)
+            && !self.inherits_heredoc
     }
 
     fn stripped<'a>(&self, argv: &[&'a str]) -> Vec<&'a str> {
@@ -1010,6 +1014,9 @@ fn with_redirects(
     if redirects.is_empty() {
         return parts;
     }
+    let heredoc = redirects
+        .iter()
+        .any(|redirect| matches!(redirect.kind, NodeKind::HereDoc { .. }));
     let redirects = build_redirects(redirects, src);
     if parts.is_empty() {
         return vec![(
@@ -1024,6 +1031,7 @@ fn with_redirects(
     }
     for (cmd, _) in &mut parts {
         cmd.redirects.extend(redirects.iter().cloned());
+        cmd.inherits_heredoc |= heredoc;
     }
     parts
 }
@@ -1776,6 +1784,10 @@ mod tests {
             "command -v rm >/tmp/out",
             "command -v rm <<EOF\n$(rm /x)\nEOF",
             "(command -v rm) >\"$(printf /dev/null)\"",
+            "(command -v rm) <<EOF\n$(printf x)\nEOF",
+            "{ command -v rm; } <<EOF\n$(printf x)\nEOF",
+            "if command -v rm; then :; fi <<EOF\n$(printf x)\nEOF",
+            "(command -v rm) <<<x",
             "{ command -v rm; } >/tmp/out",
             "command\\\nx -v rm /x",
             "\\command -v rm /x",
