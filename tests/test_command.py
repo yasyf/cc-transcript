@@ -210,6 +210,41 @@ class TestUnwrapped:
     def test_env_split_string_keeps_payload_visible(self) -> None:
         assert parse('env -S "rm -rf /"').unwrapped.executable == "rm -rf /"
 
+    @pytest.mark.parametrize(
+        ("raw", "argv"),
+        [
+            pytest.param("command -v orca ccx cc-notes", ("command", "-v", "orca", "ccx", "cc-notes"), id="lookup"),
+            pytest.param("command -V rm", ("command", "-V", "rm"), id="verbose_lookup"),
+            pytest.param("command -pv rm", ("command", "-pv", "rm"), id="clustered_flags"),
+            pytest.param("command -p -v rm", ("command", "-p", "-v", "rm"), id="separate_flags"),
+            pytest.param("command -v sudo rm", ("command", "-v", "sudo", "rm"), id="wrapper_as_operand"),
+            pytest.param("sudo command -v rm", ("command", "-v", "rm"), id="behind_a_wrapper"),
+            pytest.param("command command -V rm", ("command", "-V", "rm"), id="behind_command"),
+        ],
+    )
+    def test_command_lookup_wraps_nothing(self, raw: str, argv: tuple[str, ...]) -> None:
+        assert parse(raw).unwrapped.argv == argv
+
+    def test_command_lookup_unwraps_to_itself(self) -> None:
+        cmd = parse("command -v git push")
+        assert cmd.unwrapped is cmd
+        assert cmd.prefix == "command"
+        assert cmd.runs("git") is False
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("command rm /x", id="bare"),
+            pytest.param("command -p rm /x", id="default_path"),
+            pytest.param("command -- rm /x", id="end_of_options"),
+            pytest.param("command -$f rm /x", id="flag_named_at_run_time"),
+            pytest.param("command -${v} rm /x", id="expansion_spelling_v"),
+            pytest.param("env -u command -v rm /x", id="command_as_a_flag_value"),
+        ],
+    )
+    def test_command_without_a_literal_lookup_flag_still_wraps(self, raw: str) -> None:
+        assert parse(raw).unwrapped.executable == "rm"
+
 
 class TestPrefix:
     @pytest.mark.parametrize(

@@ -1395,6 +1395,14 @@ fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
     i.min(tokens.len())
 }
 
+fn command_lookup(tokens: &[&str]) -> bool {
+    tokens
+        .iter()
+        .map_while(|token| token.strip_prefix('-'))
+        .take_while(|flags| !flags.is_empty() && flags.bytes().all(|b| b"pvV".contains(&b)))
+        .any(|flags| flags.contains(['v', 'V']))
+}
+
 // Drop each leading wrapper plus its skippable args. The head matches on the dequoted word value
 // (`"sudo"` → `sudo`), basenamed (`/usr/bin/sudo` → `sudo`); argv and words slice in lockstep.
 fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
@@ -1407,7 +1415,7 @@ fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
                 .and_then(|w| w.value.as_deref())
                 .unwrap_or(raw_head),
         );
-        if !WRAPPER_COMMANDS.contains(&head) {
+        if !WRAPPER_COMMANDS.contains(&head) || (head == "command" && command_lookup(&argv[1..])) {
             break;
         }
         let skip = wrapper_skip(head, &argv[1..]);
@@ -1640,6 +1648,46 @@ mod tests {
             "sudo env -u HOME rm /x",
             "sudo -Z rm /x",
             "/usr/bin/sudo rm /x",
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
+        }
+    }
+
+    #[test]
+    fn command_lookup_wraps_nothing() {
+        for (raw, unwrapped) in [
+            (
+                "command -v orca ccx cc-notes",
+                "command -v orca ccx cc-notes",
+            ),
+            ("command -V rm", "command -V rm"),
+            ("command -pv rm", "command -pv rm"),
+            ("command -p -v rm", "command -p -v rm"),
+            ("command -v sudo rm", "command -v sudo rm"),
+            ("command -v", "command -v"),
+            ("sudo command -v rm", "command -v rm"),
+            ("command command -V rm", "command -V rm"),
+        ] {
+            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
+            assert_eq!(cmd.argv().join(" "), unwrapped, "unwrapping {raw}");
+        }
+        let line = CommandLine::parse("command -v git push");
+        let lookup = line.primary().unwrap();
+        assert_eq!(lookup.prefix().as_deref(), Some("command"));
+        assert!(!lookup.runs(&["git"]));
+    }
+
+    #[test]
+    fn command_without_a_literal_lookup_flag_still_wraps() {
+        for raw in [
+            "command rm /x",
+            "command -p rm /x",
+            "command -- rm /x",
+            "command -p -- rm /x",
+            "command -$f rm /x",
+            "command -${v} rm /x",
+            "env -u command -v rm /x",
         ] {
             let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
             assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
