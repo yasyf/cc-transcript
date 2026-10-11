@@ -219,7 +219,7 @@ impl Command {
     // Parity: command.py Command.unwrapped — returns self when nothing is stripped.
     pub fn unwrapped(&self) -> Command {
         let argv = self.argv();
-        let stripped = strip_wrappers(&self.raw, &argv, &self.words);
+        let stripped = self.stripped(&argv);
         if stripped.len() == argv.len() {
             return self.clone();
         }
@@ -242,9 +242,44 @@ impl Command {
         }
     }
 
+    // zsh runs `-v` as a program once an option it does not know follows it, and a wrapper, a path, a
+    // quote, an escape or an expansion can each make a shell run something else. Only the bare
+    // spelling is provably the builtin's lookup, so the source text itself has to read as one.
+    fn command_lookup(&self, argv: &[&str]) -> bool {
+        let tokens: Vec<&str> = self
+            .raw
+            .split([' ', '\t'])
+            .filter(|token| !token.is_empty())
+            .collect();
+        let silencers = tokens
+            .iter()
+            .rev()
+            .take_while(|token| LOOKUP_SILENCERS.contains(token))
+            .count();
+        let flags = argv
+            .iter()
+            .skip(1)
+            .take_while(|arg| lookup_flag(arg))
+            .count();
+        argv.first() == Some(&"command")
+            && tokens[..tokens.len() - silencers] == *argv
+            && argv[1..=flags].iter().any(|flag| flag.contains(['v', 'V']))
+            && argv[1 + flags..].iter().all(|name| program_name(name))
+            && self.redirects.iter().all(silencer)
+    }
+
+    fn stripped<'a>(&self, argv: &[&'a str]) -> Vec<&'a str> {
+        if self.command_lookup(argv) {
+            argv.to_vec()
+        } else {
+            strip_wrappers(argv, &self.words)
+        }
+    }
+
     // Parity: command.py Command.prefix — over the unwrapped argv; empty pick falls back to the tool.
     pub fn prefix(&self) -> Option<String> {
-        let argv = strip_wrappers(&self.raw, &self.argv(), &self.words);
+        let argv = self.argv();
+        let argv = self.stripped(&argv);
         match argv.first() {
             None | Some(&"") => None,
             Some(&exe) if MULTI_LEVEL_TOOLS.contains(&exe) => Some(
@@ -263,7 +298,8 @@ impl Command {
         if argv.is_empty() {
             return false;
         }
-        let unwrapped = strip_wrappers(&self.raw, &self.argv(), &self.words);
+        let own = self.argv();
+        let unwrapped = self.stripped(&own);
         unwrapped.len() >= argv.len() && unwrapped[..argv.len()] == *argv
     }
 
@@ -1410,6 +1446,11 @@ fn lookup_flag(arg: &str) -> bool {
         .is_some_and(|flags| !flags.is_empty() && flags.bytes().all(|b| b"pvV".contains(&b)))
 }
 
+fn silencer(redirect: &Redirect) -> bool {
+    let fd = redirect.fd.map(|fd| fd.to_string()).unwrap_or_default();
+    LOOKUP_SILENCERS.contains(&format!("{fd}{}{}", redirect.op, redirect.target).as_str())
+}
+
 fn program_name(arg: &str) -> bool {
     !arg.is_empty()
         && !arg.starts_with('-')
@@ -1418,36 +1459,9 @@ fn program_name(arg: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.+/-".contains(&b))
 }
 
-// zsh runs `-v` as a program once an option it does not know follows it, and a wrapper, a path, a
-// quote, an escape or an expansion can each make a shell run something else. Only the bare spelling
-// is provably the builtin's lookup, so the source text itself has to read as one.
-fn command_lookup(raw: &str, argv: &[&str]) -> bool {
-    let tokens: Vec<&str> = raw
-        .split([' ', '\t'])
-        .filter(|token| !token.is_empty())
-        .collect();
-    let silencers = tokens
-        .iter()
-        .rev()
-        .take_while(|token| LOOKUP_SILENCERS.contains(token))
-        .count();
-    let flags = argv
-        .iter()
-        .skip(1)
-        .take_while(|arg| lookup_flag(arg))
-        .count();
-    argv.first() == Some(&"command")
-        && tokens[..tokens.len() - silencers] == *argv
-        && argv[1..=flags].iter().any(|flag| flag.contains(['v', 'V']))
-        && argv[1 + flags..].iter().all(|name| program_name(name))
-}
-
 // Drop each leading wrapper plus its skippable args. The head matches on the dequoted word value
 // (`"sudo"` → `sudo`), basenamed (`/usr/bin/sudo` → `sudo`); argv and words slice in lockstep.
-fn strip_wrappers<'a>(raw: &str, argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
-    if command_lookup(raw, argv) {
-        return argv.to_vec();
-    }
+fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
     let mut argv: Vec<&str> = argv.to_vec();
     let mut words: &[Word] = words;
     while let Some(&raw_head) = argv.first() {
@@ -1720,6 +1734,7 @@ mod tests {
         for raw in [
             "if ! command -v rm >/dev/null 2>&1; then echo y; fi",
             "x=$(command -v rm 2>/dev/null)",
+            "(command -v rm) >/dev/null 2>&1",
         ] {
             let line = CommandLine::parse(raw);
             let lookups: Vec<String> = line
@@ -1760,6 +1775,8 @@ mod tests {
             "command -v rm > /dev/null",
             "command -v rm >/tmp/out",
             "command -v rm <<EOF\n$(rm /x)\nEOF",
+            "(command -v rm) >\"$(printf /dev/null)\"",
+            "{ command -v rm; } >/tmp/out",
             "command\\\nx -v rm /x",
             "\\command -v rm /x",
             "A=1 command -v rm /x",

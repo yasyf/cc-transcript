@@ -229,6 +229,9 @@ class TestUnwrapped:
         assert cmd.prefix == "command"
         assert cmd.runs("rm") is False
 
+    def test_bare_command_lookup_keeps_an_enclosing_silencer(self) -> None:
+        assert CommandLine.parse("(command -v rm) >/dev/null 2>&1").head.unwrapped.executable == "command"
+
     @pytest.mark.parametrize(
         "raw",
         [
@@ -246,6 +249,7 @@ class TestUnwrapped:
             pytest.param("command -v rm ignored<(rm /x)", id="process_substitution"),
             pytest.param('command >"/dev/null$(rm /x)" -v rm', id="substitution_in_a_redirect"),
             pytest.param("command -v rm >/tmp/out", id="redirect_to_a_file"),
+            pytest.param('(command -v rm) >"$(printf /dev/null)"', id="substitution_in_an_enclosing_redirect"),
             pytest.param("command\\\nx -v rm /x", id="line_continuation_in_the_head"),
             pytest.param("A=1 command -v rm /x", id="assignment_ahead"),
             pytest.param("./command -v rm /x", id="relative_path_head"),
