@@ -51,7 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself, with the prefix `command`, where it used to unwrap to `orca ccx` as if
   the lookup ran its operands. A wrapper ahead of it still strips, so
   `sudo command -v rm` unwraps to `command -v rm`. `command rm` and
-  `command -p rm` unwrap to `rm` as before.
+  `command -p rm` unwrap to `rm` as before. So does any spelling the shell may
+  not read as a lookup: an option other than `p`, `v` or `V`, a flag or first
+  operand named at run time or globbed, a substitution standing as a word of
+  its own, or a head written as a path.
 - `warm_registered` and `prepare_graph` take an optional `active_since_unix_ms`.
   With it, a registered thread, direct path or sidechain joins the graph only
   when its file changed at or after that time. An `acquire` description now

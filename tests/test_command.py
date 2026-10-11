@@ -217,7 +217,11 @@ class TestUnwrapped:
             pytest.param("command -V rm", ("command", "-V", "rm"), id="verbose_lookup"),
             pytest.param("command -pv rm", ("command", "-pv", "rm"), id="clustered_flags"),
             pytest.param("command -p -v rm", ("command", "-p", "-v", "rm"), id="separate_flags"),
+            pytest.param('command "-v" rm', ("command", "-v", "rm"), id="quoted_flag"),
             pytest.param("command -v sudo rm", ("command", "-v", "sudo", "rm"), id="wrapper_as_operand"),
+            pytest.param("command -v rm $X", ("command", "-v", "rm", "$X"), id="expansion_after_first_operand"),
+            pytest.param("command -v -- $X", ("command", "-v", "--", "$X"), id="expansion_after_end_of_options"),
+            pytest.param("command -v", ("command", "-v"), id="no_operand"),
             pytest.param("sudo command -v rm", ("command", "-v", "rm"), id="behind_a_wrapper"),
             pytest.param("command command -V rm", ("command", "-V", "rm"), id="behind_command"),
         ],
@@ -237,13 +241,26 @@ class TestUnwrapped:
             pytest.param("command rm /x", id="bare"),
             pytest.param("command -p rm /x", id="default_path"),
             pytest.param("command -- rm /x", id="end_of_options"),
+            pytest.param("command -v -i rm /x", id="zsh_runs_dash_v_on_an_unknown_option"),
+            pytest.param("command -i -v rm /x", id="unknown_option_first"),
+            pytest.param("command -v - rm /x", id="lone_dash"),
             pytest.param("command -$f rm /x", id="flag_named_at_run_time"),
             pytest.param("command -${v} rm /x", id="expansion_spelling_v"),
+            pytest.param("command -v $X rm /x", id="first_operand_named_at_run_time"),
+            pytest.param('command -v "$X" rm /x', id="quoted_first_operand_named_at_run_time"),
+            pytest.param("command -v * rm /x", id="first_operand_globbed"),
+            pytest.param("command $(printf env) -v rm /x", id="substitution_ahead_of_the_flag"),
+            pytest.param("command -v $(printf -- -i) rm /x", id="substitution_as_first_operand"),
+            pytest.param("command `printf env` -v rm /x", id="backticks_ahead_of_the_flag"),
+            pytest.param("./command -v rm /x", id="relative_path_head"),
+            pytest.param("/usr/bin/command -v rm /x", id="absolute_path_head"),
             pytest.param("env -u command -v rm /x", id="command_as_a_flag_value"),
         ],
     )
-    def test_command_without_a_literal_lookup_flag_still_wraps(self, raw: str) -> None:
-        assert parse(raw).unwrapped.executable == "rm"
+    def test_command_that_may_leave_lookup_mode_still_wraps(self, raw: str) -> None:
+        unwrapped = CommandLine.parse(raw).head.unwrapped
+        assert "rm" in unwrapped.argv
+        assert unwrapped.executable != "command"
 
 
 class TestPrefix:

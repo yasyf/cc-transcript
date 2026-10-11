@@ -124,6 +124,8 @@ pub struct Command {
     // A stage of a `|`/`|&` pipeline: its stdout is consumed by the pipe. Set at parse time.
     #[doc(hidden)]
     pub pipe_stage: bool,
+    #[doc(hidden)]
+    pub excluded_words: bool,
 }
 
 impl PartialEq for Command {
@@ -219,7 +221,7 @@ impl Command {
     // Parity: command.py Command.unwrapped — returns self when nothing is stripped.
     pub fn unwrapped(&self) -> Command {
         let argv = self.argv();
-        let stripped = strip_wrappers(&argv, &self.words);
+        let stripped = strip_wrappers(&argv, &self.words, self.excluded_words);
         if stripped.len() == argv.len() {
             return self.clone();
         }
@@ -239,12 +241,13 @@ impl Command {
             host_delta: self.host_delta,
             contexts: self.contexts.clone(),
             pipe_stage: self.pipe_stage,
+            excluded_words: self.excluded_words,
         }
     }
 
     // Parity: command.py Command.prefix — over the unwrapped argv; empty pick falls back to the tool.
     pub fn prefix(&self) -> Option<String> {
-        let argv = strip_wrappers(&self.argv(), &self.words);
+        let argv = strip_wrappers(&self.argv(), &self.words, self.excluded_words);
         match argv.first() {
             None | Some(&"") => None,
             Some(&exe) if MULTI_LEVEL_TOOLS.contains(&exe) => Some(
@@ -263,7 +266,7 @@ impl Command {
         if argv.is_empty() {
             return false;
         }
-        let unwrapped = strip_wrappers(&self.argv(), &self.words);
+        let unwrapped = strip_wrappers(&self.argv(), &self.words, self.excluded_words);
         unwrapped.len() >= argv.len() && unwrapped[..argv.len()] == *argv
     }
 
@@ -1318,6 +1321,7 @@ fn walk_command(
         redirects: build_redirects(redirects, src),
         span,
         words: content.iter().map(|w| analyze_word(w, src)).collect(),
+        excluded_words: content.len() != words.len(),
         ..Command::default()
     };
 
@@ -1395,17 +1399,35 @@ fn wrapper_skip(wrapper: &str, tokens: &[&str]) -> usize {
     i.min(tokens.len())
 }
 
-fn command_lookup(tokens: &[&str]) -> bool {
-    tokens
-        .iter()
-        .map_while(|token| token.strip_prefix('-'))
-        .take_while(|flags| !flags.is_empty() && flags.bytes().all(|b| b"pvV".contains(&b)))
-        .any(|flags| flags.contains(['v', 'V']))
+fn spelled(word: &Word) -> Option<&str> {
+    word.value.as_deref().filter(|_| !word.expandable)
+}
+
+// zsh runs `-v` itself once an option it does not know follows, so `command -v` is a lookup only
+// while every word through the first operand is spelled on the line.
+fn command_lookup(words: &[Word]) -> bool {
+    if words.first().and_then(spelled) != Some("command") {
+        return false;
+    }
+    let mut looks_up = false;
+    for word in &words[1..] {
+        match spelled(word).map(|value| value.strip_prefix('-')) {
+            None => return false,
+            Some(None | Some("-")) => return looks_up,
+            Some(Some(flags))
+                if flags.is_empty() || !flags.bytes().all(|b| b"pvV".contains(&b)) =>
+            {
+                return false;
+            }
+            Some(Some(flags)) => looks_up |= flags.contains(['v', 'V']),
+        }
+    }
+    looks_up
 }
 
 // Drop each leading wrapper plus its skippable args. The head matches on the dequoted word value
 // (`"sudo"` → `sudo`), basenamed (`/usr/bin/sudo` → `sudo`); argv and words slice in lockstep.
-fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
+fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word], excluded_words: bool) -> Vec<&'a str> {
     let mut argv: Vec<&str> = argv.to_vec();
     let mut words: &[Word] = words;
     while let Some(&raw_head) = argv.first() {
@@ -1415,7 +1437,7 @@ fn strip_wrappers<'a>(argv: &[&'a str], words: &[Word]) -> Vec<&'a str> {
                 .and_then(|w| w.value.as_deref())
                 .unwrap_or(raw_head),
         );
-        if !WRAPPER_COMMANDS.contains(&head) || (head == "command" && command_lookup(&argv[1..])) {
+        if !WRAPPER_COMMANDS.contains(&head) || (!excluded_words && command_lookup(words)) {
             break;
         }
         let skip = wrapper_skip(head, &argv[1..]);
@@ -1664,7 +1686,11 @@ mod tests {
             ("command -V rm", "command -V rm"),
             ("command -pv rm", "command -pv rm"),
             ("command -p -v rm", "command -p -v rm"),
+            ("command \"-v\" rm", "command -v rm"),
+            ("\\command -v rm", "\\command -v rm"),
             ("command -v sudo rm", "command -v sudo rm"),
+            ("command -v rm $X", "command -v rm $X"),
+            ("command -v -- $X", "command -v -- $X"),
             ("command -v", "command -v"),
             ("sudo command -v rm", "command -v rm"),
             ("command command -V rm", "command -V rm"),
@@ -1679,18 +1705,31 @@ mod tests {
     }
 
     #[test]
-    fn command_without_a_literal_lookup_flag_still_wraps() {
+    fn command_that_may_leave_lookup_mode_still_wraps() {
         for raw in [
             "command rm /x",
             "command -p rm /x",
             "command -- rm /x",
             "command -p -- rm /x",
+            "command -v -i rm /x",
+            "command -i -v rm /x",
+            "command -v - rm /x",
             "command -$f rm /x",
             "command -${v} rm /x",
+            "command -v $X rm /x",
+            "command -v \"$X\" rm /x",
+            "command -v * rm /x",
+            "command $(printf env) -v rm /x",
+            "command -v $(printf -- -i) rm /x",
+            "command `printf env` -v rm /x",
+            "./command -v rm /x",
+            "/usr/bin/command -v rm /x",
             "env -u command -v rm /x",
         ] {
-            let cmd = CommandLine::parse(raw).primary().unwrap().unwrapped();
-            assert_eq!(cmd.executable, "rm", "unwrapping {raw}");
+            let line = CommandLine::parse(raw);
+            let cmd = line.head().unwrap().unwrapped();
+            assert!(cmd.argv().contains(&"rm"), "unwrapping {raw}");
+            assert_ne!(cmd.executable, "command", "unwrapping {raw}");
         }
     }
 
