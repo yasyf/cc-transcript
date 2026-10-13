@@ -826,6 +826,19 @@ class StoreConfig(WireModel):
     ] = MAX_RETAINED_BYTES
     max_prepared_fact_memory_bytes: Positive = 128 * 1024 * 1024
     max_prepared_disk_bytes: Positive = 2 * 1024 * 1024 * 1024
+    prepared_fact_producer: Annotated[
+        Token | None,
+        Field(
+            description=(
+                "Exact identity of the build that produces prepared facts. Null keeps prepared "
+                "facts private to this store and deletes them when it closes. A string lets this "
+                "store adopt validated prepared facts left by earlier stores that named the same "
+                "producer with the same max_source_bytes and max_entry_bytes, and leaves its own "
+                "facts in place for the next one. Change it with every build whose fact "
+                "extraction or in-memory fact layout could differ."
+            )
+        ),
+    ] = None
     max_source_bytes: Positive = MAX_SOURCE_BYTES
     max_entry_bytes: Positive = MAX_ENTRY_BYTES
     max_projection_bytes: Positive = MAX_PROJECTION_BYTES

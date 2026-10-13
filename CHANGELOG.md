@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `has_edit_to` and `has_read_glob`, `has_command_regex`, and
   `deep_predicate_inputs` cannot be observers. A client that validates against
   a strict schema must regenerate it before sending `observers`.
+- The store config and its JSON schema add `prepared_fact_producer`, a string
+  of 1 to 256 characters or `null` (the default). With `null` nothing changes.
+  With a string, a store adopts the prepared facts that earlier stores left
+  behind under the same producer, `max_source_bytes` and `max_entry_bytes`,
+  and leaves its own for the next store. A restarted owner then reads facts
+  for unchanged transcripts from disk and rebuilds only the ones that changed.
+  The string must change with every build whose fact extraction or in-memory
+  fact layout could differ. A host that validates its config against a
+  vendored copy of the schema must re-vendor it before it sets the key.
+  Reusable facts live in `cc-transcript-prepared-reuse` under the temp
+  directory, and a host that stops naming a producer must delete that
+  directory itself. A store with a producer never looks in the old
+  `cc-transcript-prepared` directory, so what an earlier owner left there
+  stays until a store without a producer cleans it or the host deletes it.
 
 ### Changed
 

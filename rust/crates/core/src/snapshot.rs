@@ -3129,18 +3129,30 @@ impl NativeStore {
                 );
             }
         }
-        if number(&Self::gauges(&mut state), "retained_total_accounted_bytes")? > config.retained {
+        let footprint = number(&Self::gauges(&mut state), "retained_total_accounted_bytes")?;
+        if footprint > config.retained {
             return Err(invalid("retained cap below startup footprint"));
         }
         #[cfg(test)]
         let audits = Arc::clone(&state.audits);
+        let prepared_disk = crate::snapshot_prepared_disk::PreparedDiskCache::new(
+            &owner_epoch,
+            get("max_prepared_disk_bytes", 2 * 1024 * 1024 * 1024),
+            &crate::snapshot_prepared_disk::FactOrigin {
+                producer: value.get("prepared_fact_producer").and_then(Value::as_str),
+                max_source_bytes: config.source,
+                max_entry_bytes: config.entry,
+            },
+            config
+                .retained
+                .saturating_sub(config.hook_bytes)
+                .saturating_sub(footprint),
+            work.clone(),
+        )?;
+        state.prepared_disk_index_bytes = prepared_disk.index_bytes();
         Ok(Self {
             config,
-            prepared_disk: crate::snapshot_prepared_disk::PreparedDiskCache::new(
-                &owner_epoch,
-                get("max_prepared_disk_bytes", 2 * 1024 * 1024 * 1024),
-                work.clone(),
-            )?,
+            prepared_disk,
             owner_epoch,
             default_registry,
             seed,
@@ -13169,6 +13181,66 @@ mod tests {
         let after = store.state.lock().unwrap().counters;
         assert_eq!(after[0] - before[0], 1);
         assert!(after[1] > before[1]);
+    }
+
+    #[test]
+    fn restarted_owner_reuses_prepared_facts_for_unchanged_sources() {
+        let namespace = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "cc-transcript-prepared-reuse-{}-{}",
+                std::process::id(),
+                now_ms()
+            ));
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = Some(namespace.clone()));
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/changed"}}]}}"#;
+        let source = Source::new(&format!("{}\n", user("root")));
+        let changed = source.directory.join("changed.jsonl");
+        let stable = source.directory.join("stable.jsonl");
+        std::fs::write(&changed, format!("{}\n", user("before"))).unwrap();
+        std::fs::write(&stable, format!("{}\n", user("stable"))).unwrap();
+        let config = json!({"prepared_fact_producer":"restart-test"});
+        let owner = context("a");
+        let serve = |store: &NativeStore| {
+            let root = finish(
+                store,
+                store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                &owner,
+            );
+            let template = acquire(&source.path);
+            let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[stable.to_string_lossy().as_ref(),changed.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let graph = finish(
+                store,
+                store.request(&prepare, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+            let answer = finish_prepared(
+                store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(answer["status"].as_str(), Some("ok"), "{answer:?}");
+            answer["data"]["value"].as_bool()
+        };
+        let first = NativeStore::new(&config).unwrap();
+        assert_eq!(serve(&first), Some(false));
+        let built = first.prepared_disk.stats().writes;
+        drop(first);
+        std::fs::write(&changed, format!("{}\n{tool}\n", user("after"))).unwrap();
+        let restarted = NativeStore::new(&config).unwrap();
+        assert_eq!(serve(&restarted), Some(true));
+        let rebuilt = restarted.prepared_disk.stats().writes;
+        assert!(
+            rebuilt >= 1 && rebuilt < built,
+            "the restarted owner wrote {rebuilt} facts where the first wrote {built}"
+        );
+        restarted.assert_conserved();
+        drop(restarted);
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = None);
+        std::fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
