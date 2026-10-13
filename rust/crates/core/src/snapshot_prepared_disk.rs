@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
-use std::mem::size_of;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
@@ -246,7 +245,6 @@ fn hex_bytes(bytes: &[u8]) -> bool {
 fn generated_entry(name: &CStr) -> bool {
     let bytes = name.to_bytes();
     (bytes.len() == 70 && bytes.ends_with(b".facts") && hex_bytes(&bytes[..64]))
-        || EntryName::parse(name).is_some()
         || (bytes.len() >= 5
             && bytes.len() <= 20
             && bytes.ends_with(b".tmp")
@@ -262,7 +260,7 @@ fn only_lock_remains(dir_fd: libc::c_int) -> bool {
             return false;
         }
     }
-    true
+    entries.failure().is_none()
 }
 
 fn restore_lock(dir_fd: libc::c_int) {
@@ -1159,9 +1157,15 @@ impl PreparedDiskCache {
         } else {
             self.dir_file.as_raw_fd()
         };
+        let candidates = self.entry_names(&name, entry);
+        let written = if inherited {
+            &candidates[1..]
+        } else {
+            &candidates[..]
+        };
         let mut stranded = false;
-        for candidate in self.entry_names(&name, entry) {
-            match unlinkat_file(dir_fd, &candidate, 0) {
+        for candidate in written {
+            match unlinkat_file(dir_fd, candidate, 0) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(_) if inherited => stranded = true,
@@ -3377,7 +3381,7 @@ mod tests {
              0123456789abcdef00000000000010000000000000000800.facts"
         );
         assert_eq!(text.len(), ENTRY_NAME_BYTES);
-        assert!(generated_entry(&encoded));
+        assert!(!generated_entry(&encoded));
         let parsed = EntryName::parse(&encoded).unwrap();
         assert_eq!(
             (parsed.key, parsed.tag, parsed.bytes, parsed.accounted),

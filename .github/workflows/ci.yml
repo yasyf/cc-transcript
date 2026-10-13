@@ -68,6 +68,9 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test prepared-facts disk cache on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- snapshot_prepared_disk restarted_owner_reuses_prepared_facts
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
