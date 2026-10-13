@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `source_bytes_read`, which still counts transcript bytes only. Both
   fields are required, so a client that validates replies against a strict
   schema must regenerate it.
+- A `query_graph` request takes optional `observers`, up to 32 scalar
+  predicates the owner evaluates on the facts the demanded query already
+  loads. The demanded query runs as before, with the same sources and the same
+  errors, and a query the root already answers still replies the plain
+  `scalar` without evaluating an observer. When the query walks the child
+  sources, the reply is `observed_scalar` with one entry per observer. An entry
+  is `true` when a loaded fact matched, `false` when the walk reached every
+  source and validated, and `null` otherwise. The glob predicates
+  `has_edit_to` and `has_read_glob`, `has_command_regex`, and
+  `deep_predicate_inputs` cannot be observers. A client that validates against
+  a strict schema must regenerate it before sending `observers`.
 
 ### Changed
 

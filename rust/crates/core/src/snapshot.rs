@@ -1018,6 +1018,7 @@ struct PreparedQueryCursor {
     query: Value,
     pending: Option<PendingPreparedSource>,
     input_records: Option<VecDeque<String>>,
+    observers: Observers,
     next: usize,
     page_output_bytes: usize,
     remaining: WorkLimits,
@@ -1684,6 +1685,7 @@ impl Charge<String> for PreparedQueryCursor {
                 records.capacity() * size_of::<String>()
                     + records.iter().map(String::capacity).sum::<usize>()
             })
+            + self.observers.charge()
     }
 }
 
@@ -5062,6 +5064,13 @@ impl NativeStore {
             query,
             pending,
             input_records,
+            observers:
+                Observers {
+                    declared: _,
+                    allowance: _,
+                    witnessed: _,
+                    pending: observing,
+                },
             next: _,
             page_output_bytes: _,
             remaining: _,
@@ -5084,6 +5093,11 @@ impl NativeStore {
                 records.capacity() * size_of::<String>()
                     + records.iter().map(String::capacity).sum::<usize>()
             })
+            + observing.capacity() * size_of::<(usize, Value)>()
+            + observing
+                .iter()
+                .map(|(_, query)| value_bytes(query))
+                .sum::<usize>()
     }
 
     #[cfg(test)]

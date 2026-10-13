@@ -13,6 +13,7 @@ MAX_ENTRY_BYTES = 64 * 1024 * 1024
 MAX_LEASES = 256
 MAX_LEASE_MS = 30_000
 MAX_PREPARATION_MS = 120_000
+MAX_OBSERVERS = 32
 
 Token = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 Text = Annotated[str, StringConstraints(max_length=MAX_FRAME_BYTES)]
@@ -391,13 +392,25 @@ class PreparedInputs(WireModel):
 
 
 class PreparedToolPredicate(WireModel):
-    kind: Literal["has_tool", "has_read", "has_command_regex"]
+    kind: Literal["has_tool", "has_read"]
+    pattern: Text
+    subagents: Literal[True]
+
+
+class PreparedRegexPredicate(WireModel):
+    kind: Literal["has_command_regex"]
     pattern: Text
     subagents: Literal[True]
 
 
 class PreparedListPredicate(WireModel):
-    kind: Literal["has_command", "has_edit_to", "has_skill", "has_skill_suffix", "has_read_glob"]
+    kind: Literal["has_command", "has_skill", "has_skill_suffix"]
+    values: Annotated[list[Text], Field(max_length=256)]
+    subagents: Literal[True]
+
+
+class PreparedGlobPredicate(WireModel):
+    kind: Literal["has_edit_to", "has_read_glob"]
     values: Annotated[list[Text], Field(max_length=256)]
     subagents: Literal[True]
 
@@ -414,8 +427,18 @@ class PreparedErrorPredicate(WireModel):
     subagents: Literal[True]
 
 
+ObserverQuery = Annotated[
+    PreparedToolPredicate | PreparedListPredicate | PreparedOverridePredicate | PreparedErrorPredicate,
+    Field(discriminator="kind"),
+]
 PreparedQuery = Annotated[
-    PreparedInputs | PreparedToolPredicate | PreparedListPredicate | PreparedOverridePredicate | PreparedErrorPredicate,
+    PreparedInputs
+    | PreparedToolPredicate
+    | PreparedRegexPredicate
+    | PreparedListPredicate
+    | PreparedGlobPredicate
+    | PreparedOverridePredicate
+    | PreparedErrorPredicate,
     Field(discriminator="kind"),
 ]
 
@@ -434,6 +457,7 @@ class QueryGraph(WorkRequest):
     handle: GraphHandle
     selectors: Annotated[list[Selector], Field(max_length=64)]
     query: PreparedQuery
+    observers: Annotated[list[ObserverQuery], Field(min_length=1, max_length=MAX_OBSERVERS)] | None = None
 
 
 class WarmRegistered(WorkRequest):
@@ -644,6 +668,12 @@ class ScalarResult(WireModel):
     value: bool | Count | Text | None
 
 
+class ObservedScalarResult(WireModel):
+    kind: Literal["observed_scalar"]
+    value: bool
+    observers: Annotated[list[bool | None], Field(min_length=1, max_length=MAX_OBSERVERS)]
+
+
 class StringsResult(WireModel):
     kind: Literal["strings"]
     values: Annotated[list[Text], Field(max_length=256)]
@@ -698,6 +728,7 @@ Result = Annotated[
     | Captured
     | Hydrated
     | ScalarResult
+    | ObservedScalarResult
     | StringsResult
     | RecordsResult
     | TailResult
