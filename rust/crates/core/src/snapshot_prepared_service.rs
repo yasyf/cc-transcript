@@ -2154,10 +2154,17 @@ impl NativeStore {
                 let predicted = deque_capacity_for(queue, records.len());
                 queue.extend(records);
                 assert_eq!(queue.capacity(), predicted);
-            } else if facts.query(&cursor.query)?["value"].as_bool() == Some(true) {
-                let data = json!({"kind":"scalar","value":true});
-                encoded_size(&data, output_limit)?;
-                return Ok(QueryPage::Complete(data));
+            } else {
+                let found = facts.query(&cursor.query)?["value"].as_bool() == Some(true);
+                cursor.observers.observe(facts);
+                if found {
+                    return Ok(QueryPage::Complete(cursor.observers.reply(
+                        true,
+                        false,
+                        output_limit,
+                        self.config.output,
+                    )?));
+                }
             }
             cursor.next += 1;
             steps += 1;
@@ -2186,7 +2193,7 @@ impl NativeStore {
             let data = if inputs {
                 json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
             } else {
-                json!({"kind":"scalar","value":false})
+                cursor.observers.reply(false, true, output_limit, self.config.output)?
             };
             encoded_size(&data, output_limit)?;
             return Ok(QueryPage::Complete(data));
@@ -2408,12 +2415,24 @@ impl NativeStore {
         } else {
             None
         };
+        let observers = if kind == "deep_predicate_inputs" {
+            Observers::default()
+        } else {
+            self.admit_observers(
+                request,
+                &root_facts,
+                bounds.deadline_unix_ms,
+                context,
+                &mut reservation,
+            )
+        };
         let cursor = PreparedQueryCursor {
             claimant: claimant.to_owned(),
             graph_id: token.to_owned(),
             query: query.clone(),
             pending: None,
             input_records,
+            observers,
             next: 0,
             page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
             remaining: bounds,
@@ -2427,6 +2446,84 @@ impl NativeStore {
             cancel,
             usage,
         )
+    }
+
+    fn admit_observers(
+        &self,
+        request: &Value,
+        root_facts: &crate::snapshot_prepared::PreparedFacts,
+        deadline_unix_ms: u64,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Observers {
+        let Some(queries) = request
+            .get("observers")
+            .and_then(Value::as_array)
+            .filter(|queries| (1..=OBSERVER_LIMIT).contains(&queries.len()))
+        else {
+            return Observers::default();
+        };
+        let started = std::time::Instant::now();
+        let mut observers = Observers {
+            declared: queries.len(),
+            allowance: std::time::Duration::from_millis(
+                deadline_unix_ms.saturating_sub(now_ms()) / 4,
+            ),
+            witnessed: 0,
+            pending: Vec::new(),
+        };
+        let mut pending = 0u64;
+        for (index, query) in queries.iter().enumerate() {
+            if !Observers::observable(query) {
+                continue;
+            }
+            match Observers::timely(root_facts, query, started, observers.allowance) {
+                Some(Some(true)) => observers.witnessed |= 1 << index,
+                Some(Some(false)) => pending |= 1 << index,
+                Some(None) => {}
+                None => break,
+            }
+        }
+        observers.allowance = observers.allowance.saturating_sub(started.elapsed());
+        if observers.allowance.is_zero() {
+            pending = 0;
+        }
+        let selected = || {
+            queries
+                .iter()
+                .enumerate()
+                .filter(move |(index, _)| pending & (1 << *index) != 0)
+        };
+        let count = pending.count_ones() as usize;
+        let bytes = count * size_of::<(usize, Value)>()
+            + selected().map(|(_, query)| value_bytes(query)).sum::<usize>();
+        if count > 0 && self.reserve_observers(reservation, context, bytes) {
+            observers.pending = Vec::with_capacity(count);
+            observers
+                .pending
+                .extend(selected().map(|(index, query)| (index, query.clone())));
+        }
+        observers
+    }
+
+    fn reserve_observers(
+        &self,
+        reservation: &mut ProjectionReservation<'_>,
+        context: &Value,
+        bytes: usize,
+    ) -> bool {
+        let mut state = self.lock_state();
+        let fits = self.memory_cap(context).is_ok_and(|cap| {
+            number(&Self::gauges(&mut state), "retained_total_accounted_bytes")
+                .is_ok_and(|retained| retained.saturating_add(bytes) <= cap)
+        });
+        if fits {
+            state.ledger.shared.work().admitted(bytes);
+            state.transient_bytes += bytes;
+            reservation.bytes += bytes;
+            state.ledger.shared.work().reserved(bytes);
+        }
+        fits
     }
 
     fn publish_root_slice(
@@ -2466,5 +2563,132 @@ impl NativeStore {
         drop(graph);
         drop(state.prepared_graphs.get_mut(token));
         Ok(facts)
+    }
+}
+
+const OBSERVER_LIMIT: usize = 32;
+
+#[cfg(test)]
+thread_local! {
+    static OBSERVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Default)]
+struct Observers {
+    declared: usize,
+    allowance: std::time::Duration,
+    witnessed: u64,
+    pending: Vec<(usize, Value)>,
+}
+
+impl Observers {
+    fn observable(query: &Value) -> bool {
+        matches!(
+            query.get("kind").and_then(Value::as_str),
+            Some(
+                "has_tool"
+                    | "has_read"
+                    | "has_command"
+                    | "has_skill"
+                    | "has_skill_suffix"
+                    | "has_override"
+                    | "has_error"
+                    | "has_edit"
+            )
+        )
+    }
+
+    fn observed(facts: &crate::snapshot_prepared::PreparedFacts, query: &Value) -> Option<bool> {
+        #[cfg(test)]
+        OBSERVATIONS.with(|count| count.set(count.get() + 1));
+        facts
+            .query(query)
+            .ok()
+            .map(|answer| answer["value"].as_bool() == Some(true))
+    }
+
+    fn timely(
+        facts: &crate::snapshot_prepared::PreparedFacts,
+        query: &Value,
+        started: std::time::Instant,
+        allowance: std::time::Duration,
+    ) -> Option<Option<bool>> {
+        (started.elapsed() < allowance)
+            .then(|| Self::observed(facts, query))
+            .filter(|_| started.elapsed() < allowance)
+    }
+
+    fn charge(&self) -> usize {
+        self.pending.capacity() * size_of::<(usize, Value)>()
+            + self
+                .pending
+                .iter()
+                .map(|(_, query)| value_bytes(query))
+                .sum::<usize>()
+    }
+
+    fn observe(&mut self, facts: &crate::snapshot_prepared::PreparedFacts) {
+        let Self {
+            allowance,
+            witnessed,
+            pending,
+            ..
+        } = self;
+        if pending.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let mut expired = false;
+        pending.retain(|(index, query)| {
+            let outcome = (!expired)
+                .then(|| Self::timely(facts, query, started, *allowance))
+                .flatten();
+            expired = outcome.is_none();
+            match outcome {
+                Some(Some(true)) => {
+                    *witnessed |= 1 << *index;
+                    false
+                }
+                Some(Some(false)) => true,
+                Some(None) | None => false,
+            }
+        });
+        *allowance = allowance.saturating_sub(started.elapsed());
+        if allowance.is_zero() {
+            pending.clear();
+        }
+    }
+
+    fn reply(
+        &self,
+        value: bool,
+        exhausted: bool,
+        output_limit: usize,
+        projection_limit: usize,
+    ) -> Result<Value, SnapshotError> {
+        let plain = json!({"kind":"scalar","value":value});
+        encoded_size(&plain, output_limit)?;
+        if self.declared == 0 {
+            return Ok(plain);
+        }
+        let outcomes: Vec<Option<bool>> = (0..self.declared)
+            .map(|index| {
+                if self.witnessed & (1 << index) != 0 {
+                    Some(true)
+                } else if exhausted && self.pending.iter().any(|(pending, _)| *pending == index) {
+                    Some(false)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let observed = json!({"kind":"observed_scalar","value":value,"observers":outcomes});
+        Ok(
+            if encoded_size(&observed, output_limit.min(projection_limit)).is_ok() {
+                observed
+            } else {
+                plain
+            },
+        )
     }
 }
