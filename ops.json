@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"session":"91e3ac91-8939-40b2-80a3-ab20fa9af9ec","ops":[{"kind":"verify_note","witness":null,"verified_commit":"f22a3b27f5c7bfe4fcd4a1ab307964c8f831957d"}]}
+{"v":1,"lamport":3,"session":"91e3ac91-8939-40b2-80a3-ab20fa9af9ec","ops":[{"kind":"add_anchor","anchor":{"kind":"path","value":".github/workflows/ci.yml"}},{"kind":"add_anchor","anchor":{"kind":"path","value":"rust/crates/core/src/snapshot_prepared_disk.rs"}},{"kind":"add_anchor","anchor":{"kind":"path","value":"CHANGELOG.md"}}]}
