@@ -830,12 +830,12 @@ class StoreConfig(WireModel):
         Token | None,
         Field(
             description=(
-                "Exact identity of the build that produces prepared facts. Null keeps prepared "
-                "facts private to this store and deletes them when it closes. A string lets this "
-                "store adopt validated prepared facts left by earlier stores that named the same "
-                "producer with the same max_source_bytes and max_entry_bytes, and leaves its own "
-                "facts in place for the next one. Change it with every build whose fact "
-                "extraction or in-memory fact layout could differ."
+                "Names the host whose stores may share prepared facts. Null keeps prepared facts "
+                "private to this store and deletes them when it closes. A string lets this store "
+                "adopt validated prepared facts left by earlier stores that named the same "
+                "producer with the same max_source_bytes and max_entry_bytes and ran the same "
+                "build of the native core, and leaves its own facts in place for the next one. "
+                "The store binds its own build identity, so the string need not encode it."
             )
         ),
     ] = None

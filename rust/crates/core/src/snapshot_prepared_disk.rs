@@ -363,6 +363,7 @@ impl CleanupBudget {
 
 pub struct FactOrigin<'a> {
     pub producer: Option<&'a str>,
+    pub engine: &'a str,
     pub max_source_bytes: usize,
     pub max_entry_bytes: usize,
 }
@@ -373,6 +374,7 @@ impl FactOrigin<'_> {
             "version": "prepared-facts/2",
             "parser": PARSER_VERSION,
             "producer": self.producer,
+            "engine": self.engine,
             "max_source_bytes": self.max_source_bytes.to_string(),
             "max_entry_bytes": self.max_entry_bytes.to_string(),
             "binding": binding,
@@ -1662,6 +1664,7 @@ mod tests {
     fn origin(producer: Option<&str>) -> FactOrigin<'_> {
         FactOrigin {
             producer,
+            engine: "engine-a",
             max_source_bytes: 1 << 20,
             max_entry_bytes: 1 << 20,
         }
@@ -2694,7 +2697,18 @@ mod tests {
                 json!({"id":"native","version":"1"}),
                 FactOrigin {
                     producer: Some("producer-a"),
+                    engine: "engine-a",
                     max_source_bytes: (1 << 20) + 1,
+                    max_entry_bytes: 1 << 20,
+                },
+            ),
+            (
+                "a different engine build",
+                json!({"id":"native","version":"1"}),
+                FactOrigin {
+                    producer: Some("producer-a"),
+                    engine: "engine-b",
+                    max_source_bytes: 1 << 20,
                     max_entry_bytes: 1 << 20,
                 },
             ),
@@ -3399,5 +3413,11 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn core_carries_a_build_identity() {
+        assert_eq!(crate::BUILD_IDENTITY.len(), 64);
+        assert!(hex_bytes(crate::BUILD_IDENTITY.as_bytes()));
     }
 }
