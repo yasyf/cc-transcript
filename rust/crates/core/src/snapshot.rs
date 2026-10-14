@@ -3140,6 +3140,7 @@ impl NativeStore {
             get("max_prepared_disk_bytes", 2 * 1024 * 1024 * 1024),
             &crate::snapshot_prepared_disk::FactOrigin {
                 producer: value.get("prepared_fact_producer").and_then(Value::as_str),
+                engine: crate::BUILD_IDENTITY,
                 max_source_bytes: config.source,
                 max_entry_bytes: config.entry,
             },

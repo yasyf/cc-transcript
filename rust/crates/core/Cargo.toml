@@ -31,6 +31,9 @@ ryu-js = "1.0"
 # default-features off, so rusqlite never reaches the python-free path — verify with `cargo tree`.
 rusqlite = { version = "0.32", features = ["bundled", "hooks", "load_extension"], optional = true }
 
+[build-dependencies]
+sha2 = "0.10"
+
 [features]
 default = ["command", "sqlite"]
 command = ["dep:rable"]

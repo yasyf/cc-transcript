@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A store that names a `prepared_fact_producer` binds the native core's own
+  build identity into what it reuses. The identity is a digest of the core's
+  sources, manifests, lockfile, compiler, target and build settings, stamped
+  into the extension when it is compiled, so it is read from the loaded code
+  and never from a file. Facts are adopted only between stores that share the
+  producer string, `max_source_bytes`, `max_entry_bytes` and that identity. In
+  14.42.0 the host had to encode the native build in the producer string, and
+  a host that hashed the extension file could label facts with a file replaced
+  after the extension was loaded. The producer string now only names the host.
+  Facts left by 14.42.0 are not adopted and are swept.
 - The correction extractor picks the edit a piece of feedback faults with a
   Jev label decision through `spawnllm.decide`. It falls back to the LLM pick
   when Jev errors or refuses, and to the best-overlap candidate when no LLM

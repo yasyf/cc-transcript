@@ -1,5 +1,7 @@
 pub mod literals;
 
+pub const BUILD_IDENTITY: &str = env!("CC_TRANSCRIPT_CORE_BUILD");
+
 pub mod activity;
 #[cfg(feature = "sqlite")]
 pub mod actor;
