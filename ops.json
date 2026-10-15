@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"session":"91e3ac91-8939-40b2-80a3-ab20fa9af9ec","ops":[{"kind":"verify_note","witness":null,"verified_commit":"1f648bc9af3a1e276ac6ba40dfa1a52a38ffcc15"}]}
+{"v":1,"lamport":3,"session":"91e3ac91-8939-40b2-80a3-ab20fa9af9ec","ops":[{"kind":"add_anchor","anchor":{"kind":"path","value":"rust/crates/py/src/views/transcript.rs"}}]}
