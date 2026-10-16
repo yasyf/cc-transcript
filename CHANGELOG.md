@@ -46,6 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cc-transcript grep` budgets now default large enough to cover a whole local
+  `~/.claude/projects` tree. The store config defaults move from 8 MiB to
+  1 TiB for `max_scan_read_bytes`, from 4096 to 2^32 for `max_scan_events`,
+  and from 4096 and 256 to 2^20 for `max_scan_discovery_entries` and
+  `max_scan_sources`. The 120 s deadline (`--timeout-ms`) is the bound a
+  default scan meets first. Under the old defaults, a scan of the 50 newest
+  transcripts on a machine with tens of thousands of them stopped before
+  reading a single one. Every `--max-*` flag still sets its cap.
+- `--max-sources` counts the transcripts a scan opens, after `--project`,
+  `--contains` and `--limit` have chosen them. It used to count every
+  transcript discovery found, so a tree with more than 256 transcripts failed
+  before `--limit` could pick from it.
+- `--project` charges `--max-discovery-entries` only for the project
+  directories whose names match, not for every directory under the root.
 - A store that names a `prepared_fact_producer` binds the native core's own
   build identity into what it reuses. The identity is a digest of the core's
   sources, manifests, lockfile, compiler, target and build settings, stamped
@@ -81,6 +95,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cc-transcript grep` no longer charges source discovery to
+  `--max-output-bytes`. Discovery's internal replies are never printed, yet a
+  small output budget used to end a scan with `discovery output budget
+  exhausted` before it opened a source.
+- An incomplete `grep` scan names the budget that stopped it and the flag to
+  raise, once, as in `warning: scan incomplete: source budget exhausted; raise
+  --max-sources above 256`. The old warning repeated `incomplete:` up to three
+  times and named no flag. The summary
+  line of a stopped scan reads `0 files, 0 matches so far (incomplete scan)`,
+  so a stopped scan no longer looks like a finished search that found nothing.
+  `--scan-json` adds `outcome.budget`, one of `read_bytes`,
+  `source_read_bytes`, `events`, `output_bytes`, `discovery_entries`,
+  `sources` or `deadline`, or `null`.
+- A `grep` that stops on a transcript larger than the store's
+  `max_source_bytes` names that transcript's path in the warning.
+- Source discovery over a large tree runs in linear time. Each discovery page
+  used to recompute the size of the whole inventory found so far, and every
+  entry was canonicalized even when it was not a symlink. Discovering 86,000
+  entries spent 22 s of CPU before this change and 1 s after it.
 - `Command.unwrapped`, `Command.prefix` and `Command.runs` read a bare
   `command -v` or `command -V` as the lookup it is. `command -v orca ccx` now
   unwraps to itself, with the prefix `command`, where it used to unwrap to

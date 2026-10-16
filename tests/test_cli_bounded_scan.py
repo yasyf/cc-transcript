@@ -87,6 +87,46 @@ def test_all_retains_discovery_budget(tmp_path: Path) -> None:
     assert payload["outcome"]["progress"]["source_opens"] == 0
 
 
+def test_exhausted_budget_names_its_flag_once(tmp_path: Path) -> None:
+    source(tmp_path / "a.jsonl", ["alpha"])
+    source(tmp_path / "b.jsonl", ["beta"])
+    result = run_scan(tmp_path, "absent", "--all", "--max-sources", "1")
+    assert result.returncode == 3, result.stderr
+    assert result.stdout.splitlines()[-1] == "0 files, 0 matches so far (incomplete scan)"
+    assert result.stderr == "warning: scan incomplete: source budget exhausted; raise --max-sources above 1\n"
+    structured = run_scan(tmp_path, "absent", "--all", "--max-sources", "1", "--scan-json")
+    assert json.loads(structured.stdout)["outcome"]["budget"] == "sources"
+
+
+def test_sources_budget_counts_selected_sources_only(tmp_path: Path) -> None:
+    for name in ("a", "b", "c"):
+        source(tmp_path / f"{name}.jsonl", [name])
+    result = run_scan(tmp_path, "absent", "--limit", "1", "--max-sources", "1", "--scan-json")
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)["outcome"]["complete"] is True
+
+
+def test_discovery_is_not_charged_to_output(tmp_path: Path) -> None:
+    for index in range(40):
+        source(tmp_path / f"{index:02d}.jsonl", ["alpha"])
+    result = run_scan(tmp_path, "absent", "--all", "--max-output-bytes", "64")
+    assert result.returncode == 1, result.stderr
+    assert result.stdout == "0 files, 0 matches\n"
+
+
+def test_project_filter_precedes_discovery_budget(tmp_path: Path) -> None:
+    for index in range(5):
+        other = tmp_path / f"project-other-{index}"
+        other.mkdir()
+        source(other / "one.jsonl", ["needle"])
+    wanted = tmp_path / "project-foo"
+    wanted.mkdir()
+    source(wanted / "one.jsonl", ["alpha"])
+    result = run_scan(tmp_path, "needle", "--project", "foo", "--max-discovery-entries", "3", "--scan-json")
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)["outcome"]["complete"] is True
+
+
 def test_corpus_long_line_does_not_become_zero_matches(tmp_path: Path) -> None:
     path = tmp_path / "corpus.txt"
     path.write_text("abcdefghijk\n")

@@ -7,7 +7,7 @@ use regex::{Regex, RegexBuilder};
 use crate::activity::{result_index, tool_result_metadata};
 use crate::filter::event_kind;
 use crate::render::{haystack, haystack_bound, tool_haystack, tool_haystack_bound};
-use crate::scan::{ScanBudget, StagingReservation};
+use crate::scan::{Budget, ScanBudget, StagingReservation};
 use crate::scan_projection::Projected;
 use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot};
 use crate::toolcall::{expand_tool_names, with_registry, ToolRegistrySnapshot};
@@ -304,7 +304,7 @@ impl<'store> GrepReducer<'store> {
     ) -> Result<Vec<usize>, SnapshotError> {
         let count = matched.iter().filter(|matched| **matched).count();
         if self.matched_items.saturating_add(count) > budget.limits.max_items {
-            return Err(incomplete("matched pattern item budget exhausted"));
+            return Err(budget.exhaust(Budget::Events));
         }
         budget.extend_staging(staging, count.saturating_mul(size_of::<usize>()), cancel)?;
         let mut ids = Vec::with_capacity(count);
