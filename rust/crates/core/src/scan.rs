@@ -251,6 +251,10 @@ impl<'store> ScanBudget<'store> {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
+        self.reserve_output(bytes)
+    }
+
+    pub fn reserve_output(&mut self, bytes: usize) -> Result<(), SnapshotError> {
         if bytes > self.remaining().max_output_bytes {
             return Err(self.exhaust(Budget::OutputBytes));
         }

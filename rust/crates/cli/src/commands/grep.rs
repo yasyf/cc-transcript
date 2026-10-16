@@ -224,6 +224,15 @@ impl Emitter {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         budget.charge_output(line.len().saturating_add(2), cancel)?;
+        self.write(line)
+    }
+
+    fn summary(&mut self, line: String, budget: &mut ScanBudget) -> Result<(), SnapshotError> {
+        budget.reserve_output(line.len().saturating_add(2))?;
+        self.write(line)
+    }
+
+    fn write(&mut self, line: String) -> Result<(), SnapshotError> {
         let result = if self.scan_json && !self.first {
             self.out.line(",").and_then(|()| self.out.line(&line))
         } else {
@@ -446,14 +455,13 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             ""
         };
-        if let Err(error) = render.emitter.emit(
+        if let Err(error) = render.emitter.summary(
             format!(
                 "{} files, {} matches{partial}{note}{validated}",
                 render.files,
                 counts.iter().sum::<usize>()
             ),
             &mut session.budget,
-            &cancel,
         ) {
             if !stopped(&outcome) {
                 outcome.complete = false;
@@ -619,14 +627,13 @@ fn run_over_corpus(
         } else {
             ""
         };
-        if let Err(error) = emitter.emit(
+        if let Err(error) = emitter.summary(
             format!(
                 "{} matches in {}{partial}",
                 counts.iter().sum::<usize>(),
                 display_path(&path.to_string_lossy())
             ),
             &mut budget,
-            &cancel,
         ) {
             if !stopped(&outcome) {
                 outcome.complete = false;
