@@ -5210,6 +5210,7 @@ impl NativeStore {
             emitted: _,
             output_bytes: _,
             inventory,
+            inventory_payload: _,
             previous,
             removed,
             walking: _,

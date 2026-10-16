@@ -224,7 +224,12 @@ impl<'store> ScanBudget<'store> {
     }
 
     pub fn read_exhausted(&mut self) -> SnapshotError {
-        if self.progress.source_bytes >= self.limits.max_source_read_bytes {
+        if self
+            .limits
+            .max_source_read_bytes
+            .saturating_sub(self.progress.source_bytes)
+            <= self.remaining().max_read_bytes
+        {
             self.exhaust(Budget::SourceReadBytes)
         } else {
             self.exhaust(Budget::ReadBytes)

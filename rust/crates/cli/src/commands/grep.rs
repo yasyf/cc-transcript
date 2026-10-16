@@ -658,10 +658,11 @@ fn checkpoints() -> GrepCheckpoints {
 }
 
 fn failed_outcome(error: SnapshotError, budget: &ScanBudget) -> ScanOutcome {
+    let (reason, budget_stop) = budget.explain(error);
     ScanOutcome {
         complete: false,
-        reason: Some(format!("{}: {}", error.status.as_str(), error.reason)),
-        budget: None,
+        reason,
+        budget: budget_stop,
         selected_sources: 0,
         available_sources: 0,
         progress: budget.progress.clone(),
