@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use cc_transcript_core::render::{compact_line, display_path, event_json, transcript_header, Json};
 use cc_transcript_core::scan::{
-    scan_corpus, ScanBudget, ScanControl, ScanOutcome, ScanPlan, ScanSession,
+    scan_corpus, Budget, ScanBudget, ScanControl, ScanOutcome, ScanPlan, ScanSession,
 };
 use cc_transcript_core::scan_checkpoint::GrepCheckpoints;
 use cc_transcript_core::scan_grep::{
@@ -38,13 +38,17 @@ pub struct ScanOptions {
     pub max_output_bytes: Option<usize>,
     #[arg(long, help = "Maximum filesystem entries examined during discovery.")]
     pub max_discovery_entries: Option<usize>,
-    #[arg(long, help = "Maximum sources in the discovered inventory.")]
+    #[arg(long, help = "Maximum transcripts the scan opens.")]
     pub max_sources: Option<usize>,
     #[arg(long, help = "Deadline for the complete scan in milliseconds.")]
     pub timeout_ms: Option<u64>,
 }
 
 impl ScanOptions {
+    fn timeout_ms(&self, store: &NativeStore) -> u64 {
+        self.timeout_ms.unwrap_or_else(|| store.scan_timeout_ms())
+    }
+
     fn apply(&self, mut limits: WorkLimits) -> Result<WorkLimits, CliExit> {
         if let Some(n) = self.max_read_bytes {
             limits.max_read_bytes = n;
@@ -150,16 +154,46 @@ fn output_error() -> SnapshotError {
     SnapshotError::new(Status::OutputLimit, "stdout write failed")
 }
 
+fn raise(budget: Budget, limits: &WorkLimits, timeout_ms: u64) -> String {
+    let (flag, value) = match budget {
+        Budget::ReadBytes => ("--max-read-bytes", limits.max_read_bytes as u64),
+        Budget::SourceReadBytes if limits.max_source_read_bytes < limits.max_read_bytes => (
+            "--max-source-read-bytes",
+            limits.max_source_read_bytes as u64,
+        ),
+        Budget::SourceReadBytes => ("--max-read-bytes", limits.max_read_bytes as u64),
+        Budget::Events => ("--max-events", limits.max_events as u64),
+        Budget::OutputBytes => ("--max-output-bytes", limits.max_output_bytes as u64),
+        Budget::DiscoveryEntries => (
+            "--max-discovery-entries",
+            limits.max_discovery_entries as u64,
+        ),
+        Budget::Sources => ("--max-sources", limits.max_sources as u64),
+        Budget::Deadline => ("--timeout-ms", timeout_ms),
+    };
+    format!("raise {flag} above {value}")
+}
+
+fn stopped(outcome: &ScanOutcome) -> bool {
+    outcome
+        .reason
+        .as_deref()
+        .is_some_and(|reason| !reason.starts_with("result_limit"))
+}
+
 struct Emitter {
     out: Out,
     scan_json: bool,
     first: bool,
     exit: Option<i32>,
+    limits: WorkLimits,
+    timeout_ms: u64,
 }
 
 impl Emitter {
     fn new(
         scan_json: bool,
+        timeout_ms: u64,
         budget: &mut ScanBudget,
         _cancel: &Cancellation,
     ) -> Result<Self, CliExit> {
@@ -178,6 +212,8 @@ impl Emitter {
             scan_json,
             first: true,
             exit: None,
+            limits: budget.limits,
+            timeout_ms,
         })
     }
 
@@ -188,6 +224,15 @@ impl Emitter {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         budget.charge_output(line.len().saturating_add(2), cancel)?;
+        self.write(line)
+    }
+
+    fn summary(&mut self, line: String, budget: &mut ScanBudget) -> Result<(), SnapshotError> {
+        budget.reserve_output(line.len().saturating_add(2))?;
+        self.write(line)
+    }
+
+    fn write(&mut self, line: String) -> Result<(), SnapshotError> {
         let result = if self.scan_json && !self.first {
             self.out.line(",").and_then(|()| self.out.line(&line))
         } else {
@@ -223,7 +268,13 @@ impl Emitter {
                     eline(&format!("warning: partial view: {scope}"));
                 }
             } else {
-                eline(&format!("warning: scan incomplete: {reason}"));
+                match outcome.budget {
+                    Some(budget) => eline(&format!(
+                        "warning: scan incomplete: {reason}; {}",
+                        raise(budget, &self.limits, self.timeout_ms)
+                    )),
+                    None => eline(&format!("warning: scan incomplete: {reason}")),
+                }
                 return Err(CliExit(3));
             }
         }
@@ -305,11 +356,12 @@ fn result_suffix(event: &Entry, results: &HashMap<&str, GrepResultMetadata<'_>>)
 pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let store = NativeStore::new(&json!({})).map_err(snapshot_error)?;
     let limits = args.scan_limits.apply(store.scan_limits())?;
+    let timeout_ms = args.scan_limits.timeout_ms(&store);
     let cancel = Cancellation::default();
     *crate::SCAN_CANCELLATION.lock().expect("scan cancellation") = Some(cancel.clone());
     let _interrupt = ScanInterrupt;
     if let Some(path) = &args.corpus {
-        return run_over_corpus(&store, &args, path, limits, cancel);
+        return run_over_corpus(&store, &args, path, limits, timeout_ms, cancel);
     }
     let mut session = ScanSession::new(&store, limits, cancel.clone());
     let mut reducer = match prepare_reducer(&args, &mut session.budget, &cancel) {
@@ -320,6 +372,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         Err(error) => {
             let emitter = Emitter::new(
                 args.scan_json,
+                timeout_ms,
                 &mut session.budget,
                 &Cancellation::default(),
             )?;
@@ -344,7 +397,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let checkpoints = checkpoints();
     let mut render = Render {
         args: &args,
-        emitter: Emitter::new(args.scan_json, &mut session.budget, &cancel)?,
+        emitter: Emitter::new(args.scan_json, timeout_ms, &mut session.budget, &cancel)?,
         files: 0,
     };
     let mut outcome = session.each_source(&plan, |session, path| {
@@ -397,17 +450,23 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             String::new()
         };
-        if let Err(error) = render.emitter.emit(
+        let partial = if stopped(&outcome) {
+            " so far (incomplete scan)"
+        } else {
+            ""
+        };
+        if let Err(error) = render.emitter.summary(
             format!(
-                "{} files, {} matches{note}{validated}",
+                "{} files, {} matches{partial}{note}{validated}",
                 render.files,
                 counts.iter().sum::<usize>()
             ),
             &mut session.budget,
-            &cancel,
         ) {
-            outcome.complete = false;
-            outcome.reason = Some(error.reason);
+            if !stopped(&outcome) {
+                outcome.complete = false;
+                (outcome.reason, outcome.budget) = session.budget.explain(error);
+            }
         }
         outcome.progress = session.budget.progress.clone();
     }
@@ -497,6 +556,7 @@ fn run_over_corpus(
     args: &GrepArgs,
     path: &Path,
     limits: WorkLimits,
+    timeout_ms: u64,
     cancel: Cancellation,
 ) -> Result<(), CliExit> {
     let mut budget = ScanBudget::new(store, limits);
@@ -506,14 +566,19 @@ fn run_over_corpus(
             return Err(usage_error(USAGE, HELP_PATH, &error.reason))
         }
         Err(error) => {
-            let emitter = Emitter::new(args.scan_json, &mut budget, &Cancellation::default())?;
+            let emitter = Emitter::new(
+                args.scan_json,
+                timeout_ms,
+                &mut budget,
+                &Cancellation::default(),
+            )?;
             return emitter.finish(
                 &failed_outcome(error, &budget),
                 &vec![0; args.patterns.len() + 1],
             );
         }
     };
-    let mut emitter = Emitter::new(args.scan_json, &mut budget, &cancel)?;
+    let mut emitter = Emitter::new(args.scan_json, timeout_ms, &mut budget, &cancel)?;
     let mut outcome = scan_corpus(
         path,
         &mut budget,
@@ -557,17 +622,23 @@ fn run_over_corpus(
     }
     let counts = reducer.counts();
     if !args.scan_json {
-        if let Err(error) = emitter.emit(
+        let partial = if stopped(&outcome) {
+            " so far (incomplete scan)"
+        } else {
+            ""
+        };
+        if let Err(error) = emitter.summary(
             format!(
-                "{} matches in {}",
+                "{} matches in {}{partial}",
                 counts.iter().sum::<usize>(),
                 display_path(&path.to_string_lossy())
             ),
             &mut budget,
-            &cancel,
         ) {
-            outcome.complete = false;
-            outcome.reason = Some(error.reason);
+            if !stopped(&outcome) {
+                outcome.complete = false;
+                (outcome.reason, outcome.budget) = budget.explain(error);
+            }
         }
         outcome.progress = budget.progress.clone();
     }
@@ -594,9 +665,11 @@ fn checkpoints() -> GrepCheckpoints {
 }
 
 fn failed_outcome(error: SnapshotError, budget: &ScanBudget) -> ScanOutcome {
+    let (reason, budget_stop) = budget.explain(error);
     ScanOutcome {
         complete: false,
-        reason: Some(format!("{}: {}", error.status.as_str(), error.reason)),
+        reason,
+        budget: budget_stop,
         selected_sources: 0,
         available_sources: 0,
         progress: budget.progress.clone(),

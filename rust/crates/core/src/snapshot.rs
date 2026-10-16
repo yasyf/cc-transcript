@@ -650,6 +650,7 @@ struct DiscoveryCursor {
     emitted: usize,
     output_bytes: usize,
     inventory: HashMap<String, Value>,
+    inventory_payload: usize,
     previous: HashMap<String, Value>,
     removed: Vec<Value>,
     walking: bool,
@@ -768,7 +769,8 @@ impl DiscoveryCursor {
                 .sum::<usize>()
             + self.seen.capacity() * size_of::<SourceIdentity>()
             + self.seen_directories.capacity() * size_of::<SourceIdentity>()
-            + inventory_bytes(&self.inventory)
+            + self.inventory.capacity() * size_of::<(String, Value)>()
+            + self.inventory_payload
             + inventory_bytes(&self.previous)
             + self.removed.capacity() * size_of::<Value>()
             + self.removed.iter().map(value_bytes).sum::<usize>()
@@ -3074,10 +3076,10 @@ impl NativeStore {
             read_step: get("max_read_bytes_per_step", 8 * 1024 * 1024),
             event_step: get("max_events_per_step", 4096),
             page_items: get("max_items_per_page", 256).min(256),
-            scan_read: get("max_scan_read_bytes", 8 * 1024 * 1024),
-            scan_events: get("max_scan_events", 4096),
-            scan_discovery: get("max_scan_discovery_entries", 4096),
-            scan_sources: get("max_scan_sources", 256),
+            scan_read: get("max_scan_read_bytes", 1 << 40),
+            scan_events: get("max_scan_events", 1 << 32),
+            scan_discovery: get("max_scan_discovery_entries", 1 << 20),
+            scan_sources: get("max_scan_sources", 1 << 20),
             scan_validate: get("max_scan_validate_bytes", 1024 * 1024 * 1024),
             hook_loads: get("reserved_hook_loads", 1),
             hook_leases: get("reserved_hook_leases", 32),
@@ -3234,8 +3236,12 @@ impl NativeStore {
             max_output_bytes: self.config.output,
             max_discovery_entries: self.config.scan_discovery,
             max_sources: self.config.scan_sources,
-            deadline_unix_ms: now_ms().saturating_add(self.config.preparation),
+            deadline_unix_ms: now_ms().saturating_add(self.scan_timeout_ms()),
         }
+    }
+
+    pub fn scan_timeout_ms(&self) -> u64 {
+        self.config.preparation
     }
 
     pub fn scan_validate_bytes(&self) -> usize {
@@ -5204,6 +5210,7 @@ impl NativeStore {
             emitted: _,
             output_bytes: _,
             inventory,
+            inventory_payload: _,
             previous,
             removed,
             walking: _,
@@ -9597,6 +9604,7 @@ impl NativeStore {
             emitted: 0,
             output_bytes: 0,
             inventory: HashMap::new(),
+            inventory_payload: 0,
             previous,
             removed: Vec::new(),
             walking: true,
@@ -9702,7 +9710,12 @@ impl NativeStore {
                 scan.examined += 1;
                 usage[17] += 1;
                 let path = entry.path();
-                let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+                let symlink = entry.file_type().map_err(io_error)?.is_symlink();
+                let canonical = if symlink {
+                    std::fs::canonicalize(&path).map_err(io_error)?
+                } else {
+                    path.clone()
+                };
                 self.authority(&scan.context, Some(&canonical))?;
                 let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 if metadata.is_dir() {
@@ -9711,7 +9724,7 @@ impl NativeStore {
                         .get("follow_directory_symlinks")
                         .and_then(Value::as_bool)
                         == Some(false)
-                        && entry.file_type().map_err(io_error)?.is_symlink()
+                        && symlink
                     {
                         continue;
                     }
@@ -9803,7 +9816,17 @@ impl NativeStore {
                 &scan.context,
                 growth + value_bytes(&value),
             )?;
-            scan.inventory.insert(path, value);
+            scan.inventory_payload += value_bytes(&value);
+            match scan.inventory.get_mut(&path) {
+                Some(slot) => {
+                    scan.inventory_payload -= value_bytes(slot);
+                    *slot = value;
+                }
+                None => {
+                    scan.inventory_payload += path.capacity();
+                    scan.inventory.insert(path, value);
+                }
+            }
             assert_eq!(scan.inventory.capacity(), table);
         }
         while !scan.walking

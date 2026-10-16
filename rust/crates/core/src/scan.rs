@@ -27,6 +27,32 @@ pub struct ScanProgress {
     pub validated_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Budget {
+    ReadBytes,
+    SourceReadBytes,
+    Events,
+    OutputBytes,
+    DiscoveryEntries,
+    Sources,
+    Deadline,
+}
+
+impl Budget {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ReadBytes => "read byte budget exhausted",
+            Self::SourceReadBytes => "source read byte budget exhausted",
+            Self::Events => "event budget exhausted",
+            Self::OutputBytes => "output byte budget exhausted",
+            Self::DiscoveryEntries => "discovery entry budget exhausted",
+            Self::Sources => "source budget exhausted",
+            Self::Deadline => "deadline reached",
+        }
+    }
+}
+
 pub struct ScanBudget<'store> {
     pub limits: WorkLimits,
     pub progress: ScanProgress,
@@ -34,6 +60,7 @@ pub struct ScanBudget<'store> {
     context: Value,
     staging: ProjectionArena<'store>,
     validation: usize,
+    exhausted: Option<Budget>,
 }
 
 pub type StagingReservation<'store> = crate::snapshot::ProjectionAllocation<'store>;
@@ -49,6 +76,39 @@ impl<'store> ScanBudget<'store> {
             staging: ProjectionArena::new(store, context.clone()),
             context,
             validation: store.scan_validate_bytes(),
+            exhausted: None,
+        }
+    }
+
+    pub fn exhaust(&mut self, budget: Budget) -> SnapshotError {
+        self.exhausted = Some(budget);
+        match budget {
+            Budget::SourceReadBytes => crate::snapshot::source_read_limit(),
+            Budget::OutputBytes => SnapshotError::new(Status::OutputLimit, budget.reason()),
+            _ => incomplete(budget.reason()),
+        }
+    }
+
+    fn stopped_by(&self, error: &SnapshotError) -> Option<Budget> {
+        match error.status {
+            Status::Deadline => Some(Budget::Deadline),
+            Status::OutputLimit => Some(Budget::OutputBytes),
+            Status::Incomplete if error.reason == "source_read_limit" => {
+                Some(Budget::SourceReadBytes)
+            }
+            Status::Incomplete => self.exhausted,
+            _ => None,
+        }
+    }
+
+    pub fn explain(&self, error: SnapshotError) -> (Option<String>, Option<Budget>) {
+        match self.stopped_by(&error) {
+            Some(budget) => (Some(budget.reason().to_owned()), Some(budget)),
+            None if error.status == Status::Incomplete => (Some(error.reason), None),
+            None => (
+                Some(format!("{}: {}", error.status.as_str(), error.reason)),
+                None,
+            ),
         }
     }
 
@@ -136,16 +196,10 @@ impl<'store> ScanBudget<'store> {
         self.checkpoint(cancel)?;
         let remaining = self.remaining();
         if bytes > remaining.max_read_bytes {
-            return Err(incomplete(format!(
-                "projection byte budget exhausted: requested {bytes}, remaining {}",
-                remaining.max_read_bytes
-            )));
+            return Err(self.exhaust(Budget::ReadBytes));
         }
         if events > remaining.max_events {
-            return Err(incomplete(format!(
-                "projection event budget exhausted: requested {events}, remaining {}",
-                remaining.max_events
-            )));
+            return Err(self.exhaust(Budget::Events));
         }
         self.progress.projection_bytes += bytes;
         self.progress.examined_events += events;
@@ -169,18 +223,23 @@ impl<'store> ScanBudget<'store> {
         Ok(())
     }
 
-    pub fn read_exhausted(&self) -> SnapshotError {
-        if self.progress.source_bytes >= self.limits.max_source_read_bytes {
-            crate::snapshot::source_read_limit()
+    pub fn read_exhausted(&mut self) -> SnapshotError {
+        if self
+            .limits
+            .max_source_read_bytes
+            .saturating_sub(self.progress.source_bytes)
+            <= self.remaining().max_read_bytes
+        {
+            self.exhaust(Budget::SourceReadBytes)
         } else {
-            incomplete("cumulative scan work budget exhausted")
+            self.exhaust(Budget::ReadBytes)
         }
     }
 
     pub fn charge_parse(&mut self, cancel: &Cancellation) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
         if self.remaining().max_events == 0 {
-            return Err(incomplete("cumulative scan work budget exhausted"));
+            return Err(self.exhaust(Budget::Events));
         }
         self.progress.parsed_events += 1;
         Ok(())
@@ -192,11 +251,12 @@ impl<'store> ScanBudget<'store> {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
+        self.reserve_output(bytes)
+    }
+
+    pub fn reserve_output(&mut self, bytes: usize) -> Result<(), SnapshotError> {
         if bytes > self.remaining().max_output_bytes {
-            return Err(SnapshotError::new(
-                Status::OutputLimit,
-                "scan output budget exhausted",
-            ));
+            return Err(self.exhaust(Budget::OutputBytes));
         }
         self.progress.output_bytes += bytes;
         Ok(())
@@ -225,22 +285,27 @@ impl<'store> ScanBudget<'store> {
             .discovery_entries
             .saturating_add(count(usage, "discovery_entries_examined")?);
         if self.progress.source_bytes > self.limits.max_source_read_bytes {
-            return Err(crate::snapshot::source_read_limit());
+            return Err(self.exhaust(Budget::SourceReadBytes));
         }
         if self
             .progress
             .source_bytes
             .saturating_add(self.progress.projection_bytes)
             > self.limits.max_read_bytes
-            || self
-                .progress
-                .parsed_events
-                .saturating_add(self.progress.preparation_reserved_events)
-                .saturating_add(self.progress.examined_events)
-                > self.limits.max_events
-            || self.progress.discovery_entries > self.limits.max_discovery_entries
         {
-            return Err(incomplete("cumulative scan work budget exhausted"));
+            return Err(self.exhaust(Budget::ReadBytes));
+        }
+        if self
+            .progress
+            .parsed_events
+            .saturating_add(self.progress.preparation_reserved_events)
+            .saturating_add(self.progress.examined_events)
+            > self.limits.max_events
+        {
+            return Err(self.exhaust(Budget::Events));
+        }
+        if self.progress.discovery_entries > self.limits.max_discovery_entries {
+            return Err(self.exhaust(Budget::DiscoveryEntries));
         }
         Ok(())
     }
@@ -258,6 +323,7 @@ pub struct ScanPlan {
 pub struct ScanOutcome {
     pub complete: bool,
     pub reason: Option<String>,
+    pub budget: Option<Budget>,
     pub selected_sources: usize,
     pub available_sources: usize,
     pub progress: ScanProgress,
@@ -328,14 +394,17 @@ impl<'a> ScanSession<'a> {
     }
 
     fn bounded_request(&self, operation: &str) -> Value {
-        let limits = self.budget.remaining();
+        let limits = WorkLimits {
+            max_output_bytes: usize::MAX,
+            ..self.budget.remaining()
+        };
         json!({"operation":operation,"deadline_unix_ms":limits.deadline_unix_ms,"limits":limits.to_json()})
     }
 
     fn targets(&mut self, plan: &ScanPlan) -> Result<(Vec<PathBuf>, usize), SnapshotError> {
         if !plan.paths.is_empty() {
             if plan.paths.len() > self.budget.remaining().max_sources {
-                return Err(incomplete("explicit source count exceeds scan budget"));
+                return Err(self.budget.exhaust(Budget::Sources));
             }
             let total = plan.paths.len();
             return Ok((plan.paths.clone(), total));
@@ -348,11 +417,6 @@ impl<'a> ScanSession<'a> {
                 std::fs::read_dir(&plan.root).map_err(|error| incomplete(error.to_string()))?
             {
                 self.budget.checkpoint(&self.cancel)?;
-                self.budget.progress.discovery_entries += 1;
-                if self.budget.progress.discovery_entries > self.budget.limits.max_discovery_entries
-                {
-                    return Err(incomplete("project discovery budget exhausted"));
-                }
                 let entry = entry.map_err(|error| incomplete(error.to_string()))?;
                 if entry
                     .file_type()
@@ -360,6 +424,10 @@ impl<'a> ScanSession<'a> {
                     .is_dir()
                     && entry.file_name().to_string_lossy().contains(project)
                 {
+                    self.budget.progress.discovery_entries += 1;
+                    if self.budget.remaining().max_discovery_entries == 0 {
+                        return Err(self.budget.exhaust(Budget::DiscoveryEntries));
+                    }
                     roots.push(entry.path());
                 }
             }
@@ -378,10 +446,9 @@ impl<'a> ScanSession<'a> {
                 .map(|root| root.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()),
         );
-        request["limits"].insert(
-            "max_items",
-            json!(self.budget.remaining().max_discovery_entries),
-        );
+        let entries = self.budget.remaining().max_discovery_entries;
+        request["limits"].insert("max_items", json!(entries));
+        request["limits"].insert("max_sources", json!(entries));
         request.insert("preserve_aliases", json!(true));
         request.insert("follow_directory_symlinks", json!(false));
         let mut paths = Vec::new();
@@ -413,6 +480,9 @@ impl<'a> ScanSession<'a> {
                 request = json!({"operation":"resume","cursor":cursor});
                 guarded.keep = true;
                 continue;
+            }
+            if guarded.response["status"].as_str() == Some("incomplete") {
+                return Err(self.budget.exhaust(Budget::DiscoveryEntries));
             }
             if guarded.response["complete"].as_bool() != Some(true) {
                 return Err(response_error(&guarded.response));
@@ -460,14 +530,19 @@ impl<'a> ScanSession<'a> {
             available_sources = total;
             for (source_index, path) in paths.into_iter().enumerate() {
                 if self.budget.remaining().max_sources == 0 {
-                    return Err(incomplete("source budget exhausted"));
+                    return Err(self.budget.exhaust(Budget::Sources));
                 }
                 self.budget.progress.sources += 1;
                 if let ScanControl::Stop {
                     source_complete,
                     names_through,
-                } = source(self, &path)?
-                {
+                } = source(self, &path).map_err(|error| match error.status {
+                    Status::SourceLimit => SnapshotError::new(
+                        error.status,
+                        format!("{}: {}", error.reason, path.display()),
+                    ),
+                    _ => error,
+                })? {
                     return Ok((
                         source_complete && source_index + 1 == selected_sources,
                         names_through,
@@ -476,23 +551,22 @@ impl<'a> ScanSession<'a> {
             }
             Ok((true, None))
         })();
-        let (complete, reason) = match result {
-            Ok((true, _)) => (true, None),
-            Ok((false, None)) => (false, Some("result_limit".to_owned())),
+        let complete = matches!(result, Ok((true, _)));
+        let (reason, budget) = match result {
+            Ok((true, _)) => (None, None),
+            Ok((false, None)) => (Some("result_limit".to_owned()), None),
             Ok((false, Some(through))) => (
-                false,
                 Some(format!(
                     "result_limit; tool names resolved through byte {through}"
                 )),
+                None,
             ),
-            Err(error) => (
-                false,
-                Some(format!("{}: {}", error.status.as_str(), error.reason)),
-            ),
+            Err(error) => self.budget.explain(error),
         };
         ScanOutcome {
             complete,
             reason,
+            budget,
             selected_sources,
             available_sources,
             progress: self.budget.progress.clone(),
@@ -543,7 +617,7 @@ impl<'a> ScanSession<'a> {
                 )?
                 .0;
             if snapshot.event_count > self.budget.remaining().max_events {
-                return Err(incomplete("preparation event budget exhausted"));
+                return Err(self.budget.exhaust(Budget::Events));
             }
             self.budget.progress.preparation_reserved_events += snapshot.event_count;
             return visit(path, &snapshot, &mut self.budget, &self.cancel);
@@ -606,13 +680,20 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, SnapshotError> {
 }
 
 fn response_error(response: &Value) -> SnapshotError {
-    incomplete(format!(
-        "{}: {}",
-        response["status"].as_str().unwrap_or("invalid_response"),
-        response["reason"]
-            .as_str()
-            .unwrap_or("missing scan response data")
-    ))
+    let reason = response["reason"]
+        .as_str()
+        .unwrap_or("missing scan response data");
+    match response["status"].as_str() {
+        Some("incomplete") => incomplete(reason),
+        Some("deadline") => SnapshotError::new(Status::Deadline, reason),
+        Some("cancelled") => SnapshotError::new(Status::Cancelled, reason),
+        Some("output_limit") => SnapshotError::new(Status::OutputLimit, reason),
+        Some("source_limit") => SnapshotError::new(Status::SourceLimit, reason),
+        status => incomplete(format!(
+            "{}: {reason}",
+            status.unwrap_or("invalid_response")
+        )),
+    }
 }
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
@@ -635,7 +716,7 @@ where
     let result = (|| {
         budget.checkpoint(cancel)?;
         if budget.remaining().max_sources == 0 {
-            return Err(incomplete("source budget exhausted"));
+            return Err(budget.exhaust(Budget::Sources));
         }
         let file = std::fs::File::open(path).map_err(|e| incomplete(e.to_string()))?;
         let before = file.metadata().map_err(|e| incomplete(e.to_string()))?;
@@ -666,7 +747,7 @@ where
             budget.progress.source_bytes = source_start.saturating_add(read_count.get());
             if part.is_empty() {
                 if read_count.get() < before.len() as usize {
-                    return Err(incomplete("corpus read budget exhausted"));
+                    return Err(budget.read_exhausted());
                 }
                 if !line.is_empty() {
                     line_number += 1;
@@ -692,7 +773,7 @@ where
                 .position(|byte| *byte == b'\n')
                 .map_or(part.len(), |at| at + 1);
             if line.len().saturating_add(take) > read_limit {
-                return Err(incomplete("corpus line budget exhausted"));
+                return Err(budget.exhaust(Budget::SourceReadBytes));
             }
             let complete = part[take - 1] == b'\n';
             let needed = line.len().saturating_add(take);
@@ -735,17 +816,16 @@ where
             }
         }
     })();
-    let (complete, reason) = match result {
-        Ok(true) => (true, None),
-        Ok(false) => (false, Some("result_limit".to_owned())),
-        Err(error) => (
-            false,
-            Some(format!("{}: {}", error.status.as_str(), error.reason)),
-        ),
+    let complete = matches!(result, Ok(true));
+    let (reason, budget_stop) = match result {
+        Ok(true) => (None, None),
+        Ok(false) => (Some("result_limit".to_owned()), None),
+        Err(error) => budget.explain(error),
     };
     ScanOutcome {
         complete,
         reason,
+        budget: budget_stop,
         selected_sources: 1,
         available_sources: 1,
         progress: budget.progress.clone(),

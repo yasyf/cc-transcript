@@ -338,8 +338,13 @@ Use `--max-read-bytes`, `--max-events`, `--max-discovery-entries`, `--max-source
 `--max-output-bytes` and `--timeout-ms` to set them. `--max-read-bytes` caps source
 and projection reads together; `--max-source-read-bytes` caps source reads alone. `--all` removes the ordinary
 file-selection limit, and `--max-matches 0` removes result quotas; work budgets
-still apply. A work limit or failed source makes the scan incomplete and exits
-with status 3. A completed scan without matches retains status 1.
+still apply. The defaults cover a whole local transcript tree, so a default
+scan stops at the `--timeout-ms` deadline before any other budget runs out.
+`--max-sources` counts the transcripts a scan opens after `--project`,
+`--contains` and `--limit` select them. A work limit or failed source makes the
+scan incomplete and exits with status 3. The warning names the budget that ran
+out and the flag to raise, and `--scan-json` reports it as `outcome.budget`. A
+completed scan without matches retains status 1.
 
 `grep --corpus` uses the same work limits while reading the existing extract.
 Its path and line provenance identify that extract. They cannot recover the

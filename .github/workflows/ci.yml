@@ -57,10 +57,7 @@ jobs:
               print(json.dumps({"profile": name, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}), flush=True)
               payload = json.loads(result.stdout)
               assert payload["counts"] == [0]
-              if name == "interactive":
-                  assert result.returncode == 3 and not payload["outcome"]["complete"]
-              else:
-                  assert result.returncode == 1 and payload["outcome"]["complete"]
+              assert result.returncode == 1 and payload["outcome"]["complete"]
           PYPROBE
 
       - name: Test native Python bridge

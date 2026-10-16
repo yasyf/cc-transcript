@@ -503,13 +503,13 @@ fn whole_scan_caps_ignore_per_step_knobs() {
         )
     };
     let defaults = (
-        8 * 1024 * 1024,
-        8 * 1024 * 1024,
-        4096,
-        4096,
+        1 << 40,
+        1 << 40,
+        1 << 32,
+        1 << 32,
         16 * 1024 * 1024,
-        4096,
-        256,
+        1 << 20,
+        1 << 20,
     );
     assert_eq!(caps(json!({})), defaults);
     assert_eq!(
