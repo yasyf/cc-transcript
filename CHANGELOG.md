@@ -78,6 +78,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-memory index and leaves the cache-directory check to the lookup that
   follows it. On a 929-member registry fixture this removed 21% of the `stat`
   calls on transcripts and 33% of the `lstat` calls on the cache namespace.
+- A `warm_registered` step pages the way a prepared graph query does. It walks
+  up to 256 active members, and at most 8 of them may be uncached: built from
+  the transcript, or read back from the prepared-facts disk cache. A member
+  whose facts are already in memory counts only toward the 256. A step used to
+  stop after eight active members of either kind, so confirming a fully cached
+  registry of 600 members took 75 requests and now takes 3. Every member is
+  still resolved and checked against its stamp and the request's authority.
+  The step from index 0 and the completing step still validate the whole
+  membership, and the read budget still ends a step early.
+- When the deadline passes while a `warm_registered` step walks its members,
+  after it advanced past `start_index`, the step returns the members it
+  finished, with `complete: false`, instead of failing with `deadline`. A
+  deadline that passes before the step advances, or during the completing
+  step's membership validation, still fails with `deadline`.
 
 ### Fixed
 

@@ -1764,8 +1764,14 @@ impl NativeStore {
         let read_budget = remaining.max_source_read_bytes;
         let mut next = start;
         let mut steps = 0usize;
-        'warming: while next < members.len() && steps < 8 {
-            cancel.check(remaining.deadline_unix_ms)?;
+        let mut uncached_steps = 0usize;
+        'warming: while next < members.len() && steps < 256 && uncached_steps < 8 {
+            if let Err(error) = cancel.check(remaining.deadline_unix_ms) {
+                if error.status == Status::Deadline && next > start {
+                    break 'warming;
+                }
+                return Err(error);
+            }
             let source = &members[next];
             if !active(source, since) {
                 next += 1;
@@ -1801,7 +1807,7 @@ impl NativeStore {
                 }
                 Err(error)
                     if error.status == Status::Deadline
-                        && (usage[1] > before_read || usage[3] > before_events) =>
+                        && (next > start || usage[1] > before_read || usage[3] > before_events) =>
                 {
                     break 'warming;
                 }
@@ -1819,9 +1825,9 @@ impl NativeStore {
                 ));
             }
             let mut rounds = 0;
-            loop {
+            let cached = loop {
                 match outcome {
-                    PreparedSourceOutcome::Ready { stamp, .. } => {
+                    PreparedSourceOutcome::Ready { stamp, cached, .. } => {
                         if stamp != source.stamp {
                             return Err(SnapshotError::new(
                                 Status::Changed,
@@ -1829,7 +1835,7 @@ impl NativeStore {
                             ));
                         }
                         next += 1;
-                        break;
+                        break cached;
                     }
                     PreparedSourceOutcome::Pending(token) => {
                         if rounds == 16 {
@@ -1859,7 +1865,8 @@ impl NativeStore {
                                     || error.status == Status::SourceLimit
                                         && error.reason == "cumulative preparation work budget exhausted"
                                     || error.status == Status::Deadline
-                                        && (usage[1] > before_read
+                                        && (next > start
+                                            || usage[1] > before_read
                                             || usage[3] > before_events) =>
                             {
                                 self.lock_state()
@@ -1877,8 +1884,9 @@ impl NativeStore {
                         rounds += 1;
                     }
                 }
-            }
+            };
             steps += 1;
+            uncached_steps += usize::from(!cached);
         }
         let complete = next == members.len();
         if complete {

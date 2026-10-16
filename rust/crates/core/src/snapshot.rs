@@ -14991,6 +14991,144 @@ mod tests {
         );
     }
 
+    fn registered_warming(count: usize) -> (Source, NativeStore, Value, Value) {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids: Vec<_> = (0..count)
+            .map(|index| format!("thread-{index:04}"))
+            .collect();
+        for id in &ids {
+            std::fs::write(
+                source.directory.join(format!("{id}.jsonl")),
+                format!("{}\n", user(id)),
+            )
+            .unwrap();
+        }
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":4096,"max_events_per_step":2048,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let mut owner = context("a");
+        owner.insert("work_class", json!("background"));
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_discovery_entries", json!(20_000));
+        template["limits"].insert("max_sources", json!(1024));
+        let request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        (source, store, owner, request)
+    }
+
+    fn registered_pages(store: &NativeStore, owner: &Value, request: &Value) -> Vec<Value> {
+        let mut request = request.clone();
+        let mut pages = Vec::new();
+        for _ in 0..128 {
+            request.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+            let reply = store.request(&request, owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            request.insert("start_index", reply["data"]["next_index"].clone());
+            request.insert(
+                "membership_revision",
+                reply["data"]["membership_revision"].clone(),
+            );
+            let complete = reply["data"]["complete"].as_bool() == Some(true);
+            pages.push(reply);
+            if complete {
+                return pages;
+            }
+        }
+        panic!("registered warming did not complete");
+    }
+
+    fn page_ends(pages: &[Value]) -> Vec<(u64, bool)> {
+        pages
+            .iter()
+            .map(|page| {
+                (
+                    page["data"]["next_index"].as_u64().unwrap(),
+                    page["data"]["complete"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn registered_warmer_pages_cached_members_256_at_a_time() {
+        let (_source, store, owner, request) = registered_warming(600);
+        let cold = registered_pages(&store, &owner, &request);
+        assert_eq!(
+            page_ends(&cold),
+            (1..=75u64)
+                .map(|page| (page * 8, page == 75))
+                .collect::<Vec<_>>()
+        );
+        let revision = cold[0]["data"]["membership_revision"].as_str().unwrap();
+        let resolutions = store.source_resolutions.load(Ordering::Relaxed);
+        let writes = store.prepared_disk.stats().writes;
+        let cached = registered_pages(&store, &owner, &request);
+        assert_eq!(
+            page_ends(&cached),
+            [(256, false), (512, false), (600, true)]
+        );
+        for page in cold.iter().chain(&cached) {
+            assert_eq!(page["data"]["membership_revision"].as_str(), Some(revision));
+        }
+        for page in &cached {
+            assert_eq!(cache_reads(page), (Some(0), Some(0), Some(0)), "{page:?}");
+            assert_eq!(page["usage"]["events_parsed"].as_u64(), Some(0), "{page:?}");
+        }
+        assert_eq!(
+            store.source_resolutions.load(Ordering::Relaxed) - resolutions,
+            600
+        );
+        assert_eq!(store.prepared_disk.stats().writes, writes);
+    }
+
+    #[test]
+    fn registered_warmer_stops_a_cached_page_at_eight_uncached_members() {
+        let (source, store, owner, request) = registered_warming(300);
+        let warmed = registered_pages(&store, &owner, &request);
+        let warmed_revision = warmed[0]["data"]["membership_revision"].as_str();
+        for index in 100..112 {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(source.directory.join(format!("thread-{index:04}.jsonl")))
+                .unwrap()
+                .write_all(format!("{}\n", user("appended")).as_bytes())
+                .unwrap();
+        }
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        let pages = registered_pages(&store, &owner, &request);
+        assert_eq!(page_ends(&pages), [(108, false), (300, true)]);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed) - builds, 12);
+        let revision = pages[0]["data"]["membership_revision"].as_str();
+        assert_ne!(revision, warmed_revision);
+        assert_eq!(pages[1]["data"]["membership_revision"].as_str(), revision);
+    }
+
+    #[test]
+    fn registered_warmer_returns_its_partial_page_when_the_deadline_passes() {
+        let (_source, store, owner, mut request) = registered_warming(3);
+        let deadline = now_ms() + 1_000;
+        *store.built_facts_hook.lock().unwrap() = Some(Arc::new(
+            move |_: &Arc<crate::snapshot_prepared::PreparedFacts>| {
+                while now_ms() <= deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            },
+        ));
+        request.insert("deadline_unix_ms", json!(deadline));
+        let partial = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(partial["status"].as_str(), Some("ok"), "{partial:?}");
+        assert_eq!(page_ends(std::slice::from_ref(&partial)), [(1, false)]);
+        request.insert("start_index", json!(1));
+        request.insert(
+            "membership_revision",
+            partial["data"]["membership_revision"].clone(),
+        );
+        request.insert("deadline_unix_ms", json!(now_ms()));
+        let stalled = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(stalled["status"].as_str(), Some("deadline"), "{stalled:?}");
+        assert_eq!(
+            page_ends(&registered_pages(&store, &owner, &request)),
+            [(3, true)]
+        );
+    }
+
     #[test]
     fn disk_facts_complete_queries_when_memory_fact_budget_is_smaller() {
         let source = Source::new(&format!("{}\n", user("root")));
