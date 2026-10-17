@@ -815,6 +815,27 @@ struct CachedPreparedFacts {
     last_used: u64,
 }
 
+impl CachedPreparedFacts {
+    fn serves(
+        &self,
+        stamp: SourceStamp,
+        registry_generation: &str,
+        admission: &str,
+        authority: &Value,
+        classifier: &Value,
+    ) -> bool {
+        self.stamp == stamp
+            && self.registry_generation == registry_generation
+            && self.admission == admission
+            && self.authority == *authority
+            && self.classifier == *classifier
+    }
+
+    fn evictable(&self) -> bool {
+        Arc::strong_count(&self.facts) == 1
+    }
+}
+
 enum PreparedSourceOutcome<'a> {
     Ready {
         stamp: SourceStamp,
@@ -822,6 +843,7 @@ enum PreparedSourceOutcome<'a> {
         cached: bool,
     },
     Pending(String),
+    Stored,
 }
 
 enum HeldFacts<'a> {
@@ -842,16 +864,17 @@ impl HeldFacts<'_> {
 }
 
 #[derive(Clone, Copy)]
-enum PreparedCacheReads {
+enum PreparedCacheReads<'a> {
     Unmetered,
     Within(usize),
+    Warming(usize, &'a WarmMembership, Option<i128>),
 }
 
-impl PreparedCacheReads {
+impl PreparedCacheReads<'_> {
     fn admits(self, bytes: usize) -> bool {
         match self {
             Self::Unmetered => true,
-            Self::Within(allowance) => bytes <= allowance,
+            Self::Within(allowance) | Self::Warming(allowance, ..) => bytes <= allowance,
         }
     }
 }
@@ -876,6 +899,7 @@ struct PreparedSourceRef {
 #[derive(Clone)]
 struct WarmMembership {
     members: Arc<[PreparedSourceRef]>,
+    positions: Arc<[(SourceIdentity, usize)]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
     revision: String,
     complete: bool,
@@ -890,10 +914,35 @@ impl WarmMembership {
     fn anchors(&self) -> impl Iterator<Item = Anchor> {
         [
             sources_anchor(&self.members),
+            positions_anchor(&self.positions),
             sidechain_dirs_anchor(&self.sidechain_dirs),
         ]
         .into_iter()
     }
+
+    fn active_member(
+        &self,
+        identity: SourceIdentity,
+        since: Option<i128>,
+    ) -> Option<&PreparedSourceRef> {
+        self.positions
+            .binary_search_by_key(&identity, |(member, _)| *member)
+            .ok()
+            .map(|found| &self.members[self.positions[found].1])
+            .filter(|member| active(member, since))
+    }
+}
+
+fn member_positions(members: &[PreparedSourceRef]) -> Arc<[(SourceIdentity, usize)]> {
+    let mut positions: Arc<[(SourceIdentity, usize)]> = members
+        .iter()
+        .enumerate()
+        .map(|(position, member)| (member.stamp.identity, position))
+        .collect();
+    Arc::get_mut(&mut positions)
+        .expect("unshared member positions")
+        .sort_unstable();
+    positions
 }
 
 fn slice_key<T>(buffer: &Arc<[T]>) -> usize {
@@ -902,6 +951,13 @@ fn slice_key<T>(buffer: &Arc<[T]>) -> usize {
 
 fn sources_anchor(sources: &Arc<[PreparedSourceRef]>) -> Anchor {
     Anchor::warm(slice_key(sources), source_ref_bytes(sources))
+}
+
+fn positions_anchor(positions: &Arc<[(SourceIdentity, usize)]>) -> Anchor {
+    Anchor::warm(
+        slice_key(positions),
+        arc_slice_bytes::<(SourceIdentity, usize)>(positions.len()),
+    )
 }
 
 fn sidechain_dirs_anchor(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>) -> Anchor {
@@ -2447,7 +2503,44 @@ impl StoreState {
             .iter()
             .map(|(_, identity)| *identity)
             .inspect(|_| work.tick(1))
-            .find(|identity| Arc::strong_count(&self.prepared_facts[identity].facts) == 1)
+            .find(|identity| self.prepared_facts[identity].evictable())
+    }
+
+    fn prepared_facts_fit_sparing(
+        &self,
+        identity: SourceIdentity,
+        accounted: usize,
+        budget: usize,
+        spared: impl Fn(&CachedPreparedFacts) -> bool,
+    ) -> bool {
+        if accounted > budget {
+            return false;
+        }
+        let work = self.ledger.shared.work();
+        let mut used = self.ledger.shared.facts()
+            - self
+                .prepared_facts
+                .get(&identity)
+                .filter(|cached| cached.evictable())
+                .map_or(0, |cached| cached.facts.accounted_bytes());
+        for (_, victim) in &self.prepared_facts_lru {
+            if accounted <= budget.saturating_sub(used) {
+                return true;
+            }
+            if *victim == identity {
+                continue;
+            }
+            work.tick(1);
+            let cached = &self.prepared_facts[victim];
+            if !cached.evictable() {
+                continue;
+            }
+            if spared(cached) {
+                return false;
+            }
+            used -= cached.facts.accounted_bytes();
+        }
+        accounted <= budget.saturating_sub(used)
     }
 
     fn touch_prepared_facts(
@@ -2459,12 +2552,7 @@ impl StoreState {
         classifier: &Value,
     ) -> Option<Arc<crate::snapshot_prepared::PreparedFacts>> {
         let mut cached = self.prepared_facts.get_mut(&stamp.identity)?;
-        if cached.stamp != stamp
-            || cached.registry_generation != registry_generation
-            || cached.admission != admission
-            || cached.authority != *authority
-            || cached.classifier != *classifier
-        {
+        if !cached.serves(stamp, registry_generation, admission, authority, classifier) {
             return None;
         }
         let previous = cached.last_used;
@@ -5145,6 +5233,7 @@ impl NativeStore {
     fn audit_warm_membership_bytes(key: &String, membership: &WarmMembership) -> usize {
         let WarmMembership {
             members: _,
+            positions: _,
             sidechain_dirs: _,
             revision,
             complete: _,
@@ -14333,6 +14422,301 @@ mod tests {
         }
         assert_eq!(resident(), 0);
         assert_eq!(store.prepared_disk.stats().writes, 2);
+    }
+
+    fn fact_budget_store(fact_budget: usize) -> NativeStore {
+        NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"max_prepared_fact_memory_bytes":fact_budget,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap()
+    }
+
+    fn background_owner() -> Value {
+        let mut owner = context("a");
+        owner.insert("work_class", json!("background"));
+        owner
+    }
+
+    fn registered_members(source: &Source, ids: &[&str]) -> Vec<PathBuf> {
+        ids.iter()
+            .map(|id| {
+                let member = source.directory.join(format!("{id}.jsonl"));
+                std::fs::write(&member, format!("{}\n", user(id))).unwrap();
+                member
+            })
+            .collect()
+    }
+
+    fn member_identity(member: &Path) -> SourceIdentity {
+        SourceStamp::of(&std::fs::metadata(member).unwrap()).identity
+    }
+
+    fn resident_member_facts(store: &NativeStore, members: &[PathBuf]) -> Vec<Option<usize>> {
+        let state = store.lock_state();
+        members
+            .iter()
+            .map(|member| {
+                state
+                    .prepared_facts
+                    .get(&member_identity(member))
+                    .map(|cached| cached.facts.accounted_bytes())
+            })
+            .collect()
+    }
+
+    fn forget_member_facts(store: &NativeStore, members: &[PathBuf]) {
+        let mut state = store.lock_state();
+        for member in members {
+            state.remove_prepared_facts(&member_identity(member));
+        }
+    }
+
+    fn age_member_facts(store: &NativeStore, member: &Path) {
+        let mut state = store.lock_state();
+        let identity = member_identity(member);
+        let previous = state.prepared_facts[&identity].last_used;
+        state.prepared_facts_lru.remove(&(previous, identity));
+        state.prepared_facts_lru.insert((0, identity));
+        state.prepared_facts.get_mut(&identity).unwrap().last_used = 0;
+    }
+
+    fn warm_registered_pass(
+        store: &NativeStore,
+        source: &Source,
+        ids: &[&str],
+        owner: &Value,
+    ) -> (u64, u64, u64) {
+        let template = acquire(&source.path);
+        let (mut start, mut revision, mut reads) = (json!(0), json!(null), (0, 0, 0));
+        for _ in 0..16 {
+            let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":start,"membership_revision":revision,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            request["limits"].insert("max_source_read_bytes", json!(1024 * 1024));
+            let reply = store.request(&request, owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            let (count, bytes, source_bytes) = cache_reads(&reply);
+            reads = (
+                reads.0 + count.unwrap(),
+                reads.1 + bytes.unwrap(),
+                reads.2 + source_bytes.unwrap(),
+            );
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                return reads;
+            }
+            (start, revision) = (
+                reply["data"]["next_index"].clone(),
+                reply["data"]["membership_revision"].clone(),
+            );
+        }
+        panic!("registered warming never completed");
+    }
+
+    fn registered_fact_sizes(
+        source: &Source,
+        members: &[PathBuf],
+        ids: &[&str],
+        owner: &Value,
+    ) -> (usize, usize) {
+        let probe = fact_budget_store(16 * 1024 * 1024);
+        warm_registered_pass(&probe, source, ids, owner);
+        let built = resident_member_facts(&probe, members);
+        forget_member_facts(&probe, members);
+        assert_eq!(
+            warm_registered_pass(&probe, source, ids, owner).0,
+            members.len() as u64
+        );
+        let decoded = resident_member_facts(&probe, members);
+        assert!(built.iter().all(|bytes| *bytes == built[0]), "{built:?}");
+        assert!(
+            decoded.iter().all(|bytes| *bytes == decoded[0]),
+            "{decoded:?}"
+        );
+        (built[0].unwrap(), decoded[0].unwrap())
+    }
+
+    #[test]
+    fn registered_warming_leaves_disk_facts_unread_when_keeping_them_would_evict_its_own_members() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids = ["thread-a", "thread-b", "thread-c"];
+        let members = registered_members(&source, &ids);
+        let owner = background_owner();
+        let (built, _) = registered_fact_sizes(&source, &members, &ids, &owner);
+        let store = fact_budget_store(2 * built + built / 2);
+        let resident = || {
+            resident_member_facts(&store, &members)
+                .iter()
+                .flatten()
+                .count()
+        };
+        assert!(warm_registered_pass(&store, &source, &ids, &owner).2 > 0);
+        assert_eq!(resident(), 2);
+        for _ in 0..3 {
+            assert_eq!(
+                warm_registered_pass(&store, &source, &ids, &owner),
+                (0, 0, 0)
+            );
+            assert_eq!(resident(), 2);
+        }
+        assert!(members.iter().all(|member| store
+            .prepared_disk
+            .has_entry(&fact_entry_key(member, &owner))
+            .unwrap()));
+        assert_eq!(store.prepared_disk.stats().writes, 3);
+    }
+
+    #[test]
+    fn registered_warming_rereads_disk_facts_when_its_membership_fits_the_fact_budget() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids = ["thread-a", "thread-b", "thread-c"];
+        let members = registered_members(&source, &ids);
+        let owner = background_owner();
+        let (built, decoded) = registered_fact_sizes(&source, &members, &ids, &owner);
+        let store = fact_budget_store(3 * built + built / 2);
+        assert!(warm_registered_pass(&store, &source, &ids, &owner).2 > 0);
+        for member in &members {
+            evict_memory_facts(&store, member);
+        }
+        let stored = store
+            .prepared_disk
+            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        assert!(members.iter().all(|member| store
+            .prepared_disk
+            .entry_file_len(&fact_entry_key(member, &owner))
+            == stored));
+        assert_eq!(
+            warm_registered_pass(&store, &source, &ids, &owner),
+            (3, 3 * stored, 0)
+        );
+        assert_eq!(resident_member_facts(&store, &members), [Some(decoded); 3]);
+    }
+
+    #[test]
+    fn registered_warming_still_evicts_older_facts_outside_its_membership() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids = ["thread-a", "thread-b", "thread-x"];
+        let paths = registered_members(&source, &ids);
+        let (members, outsider) = paths.split_at(2);
+        let owner = background_owner();
+        let (built, decoded) = registered_fact_sizes(&source, &paths, &ids, &owner);
+        let store = fact_budget_store(built + decoded + decoded / 2);
+        assert!(warm_registered_pass(&store, &source, &ids[..2], &owner).2 > 0);
+        forget_member_facts(&store, members);
+        assert!(warm_registered_pass(&store, &source, &ids[2..], &owner).2 > 0);
+        assert_eq!(resident_member_facts(&store, outsider), [Some(built)]);
+        age_member_facts(&store, &outsider[0]);
+        let stored = store
+            .prepared_disk
+            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        assert_eq!(
+            warm_registered_pass(&store, &source, &ids[..2], &owner),
+            (2, 2 * stored, 0)
+        );
+        assert_eq!(resident_member_facts(&store, members), [Some(decoded); 2]);
+        assert_eq!(resident_member_facts(&store, outsider), [None]);
+    }
+
+    #[test]
+    fn registered_warming_charges_its_member_positions_once_and_reuses_them_on_every_page() {
+        let (source, store, owner, fresh) = registered_warming(20);
+        let key = NativeStore::warm_membership_key(&fresh, &owner).unwrap();
+        let positions = || {
+            let state = store.lock_state();
+            assert_eq!(state.warm_memberships.len(), 1);
+            let membership = &state.warm_memberships[&key];
+            assert!(membership.members.iter().all(|member| membership
+                .active_member(member.stamp.identity, None)
+                .is_some_and(|found| std::ptr::eq(found, member))));
+            assert_eq!(
+                state.ledger.shared.warm(),
+                source_ref_bytes(&membership.members)
+                    + arc_slice_mirror::<(SourceIdentity, usize)>(membership.members.len())
+                    + sidechain_dir_bytes(&membership.sidechain_dirs)
+            );
+            slice_key(&membership.positions)
+        };
+        let mut request = fresh.clone();
+        let mut pages = Vec::new();
+        for _ in 0..8 {
+            request.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+            let reply = store.request(&request, &owner, &Cancellation::default());
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            pages.push((reply["data"]["next_index"].as_u64().unwrap(), positions()));
+            store.assert_conserved();
+            if reply["data"]["complete"].as_bool() == Some(true) {
+                break;
+            }
+            request.insert("start_index", reply["data"]["next_index"].clone());
+            request.insert(
+                "membership_revision",
+                reply["data"]["membership_revision"].clone(),
+            );
+        }
+        let built = pages[0].1;
+        assert_eq!(pages, [(8, built), (16, built), (20, built)]);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        let rejected = store.request(&request, &owner, &cancelled);
+        assert_eq!(
+            rejected["status"].as_str(),
+            Some("cancelled"),
+            "{rejected:?}"
+        );
+        assert_eq!(positions(), built);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(source.directory.join("thread-0007.jsonl"))
+            .unwrap()
+            .write_all(format!("{}\n", user("appended")).as_bytes())
+            .unwrap();
+        registered_pages(&store, &owner, &fresh);
+        positions();
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        store.assert_conserved();
+
+        store.lock_state().remove_warm_membership(&key);
+        assert_eq!(store.lock_state().ledger.shared.warm(), 0);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn registered_warming_reads_inherited_disk_facts_its_fact_budget_cannot_keep() {
+        let namespace = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "cc-transcript-warm-inherited-{}-{}",
+                std::process::id(),
+                now_ms()
+            ));
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = Some(namespace.clone()));
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids = ["thread-a", "thread-b", "thread-c"];
+        let members = registered_members(&source, &ids);
+        let owner = background_owner();
+        let (built, decoded) = registered_fact_sizes(&source, &members, &ids, &owner);
+        let producing = |fact_budget: usize| {
+            NativeStore::new(&json!({"prepared_fact_producer":"warm-inherited-test","max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"max_prepared_fact_memory_bytes":fact_budget,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap()
+        };
+        let first = producing(16 * 1024 * 1024);
+        assert!(warm_registered_pass(&first, &source, &ids, &owner).2 > 0);
+        let stored = first
+            .prepared_disk
+            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        drop(first);
+        let restarted = producing(built + decoded + decoded / 2);
+        assert_eq!(
+            warm_registered_pass(&restarted, &source, &ids, &owner),
+            (3, 3 * stored, 0)
+        );
+        assert_eq!(
+            warm_registered_pass(&restarted, &source, &ids, &owner),
+            (0, 0, 0)
+        );
+        restarted.assert_conserved();
+        drop(restarted);
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = None);
+        std::fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]

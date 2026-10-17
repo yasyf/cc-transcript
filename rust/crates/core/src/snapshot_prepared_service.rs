@@ -179,6 +179,10 @@ impl NativeStore {
         for membership in state.warm_memberships.values() {
             add(slice_key(&membership.members), sources(&membership.members));
             add(
+                slice_key(&membership.positions),
+                arc_slice_mirror::<(SourceIdentity, usize)>(membership.positions.len()),
+            );
+            add(
                 slice_key(&membership.sidechain_dirs),
                 dirs(&membership.sidechain_dirs),
             );
@@ -192,6 +196,10 @@ impl NativeStore {
             );
         }
         bytes
+    }
+
+    fn prepared_fact_budget(&self) -> usize {
+        self.config.retained.min(self.config.prepared_fact_memory)
     }
 
     fn cache_prepared_facts(
@@ -213,7 +221,7 @@ impl NativeStore {
         }
         state.remove_prepared_facts(&stamp.identity);
         let accounted = facts.accounted_bytes();
-        let budget = self.config.retained.min(self.config.prepared_fact_memory);
+        let budget = self.prepared_fact_budget();
         if accounted > budget {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -265,7 +273,7 @@ impl NativeStore {
         classifier: &Value,
         context: &Value,
         remaining: &WorkLimits,
-        cache_reads: PreparedCacheReads,
+        cache_reads: PreparedCacheReads<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
     ) -> Result<(RetainedFacts<'_>, ProjectionReservation<'_>), SnapshotError> {
@@ -392,7 +400,7 @@ impl NativeStore {
         metadata: &std::fs::Metadata,
         context: &Value,
         remaining: &mut WorkLimits,
-        cache_reads: PreparedCacheReads,
+        cache_reads: PreparedCacheReads<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
     ) -> Result<(SourceStamp, PreparedSourceOutcome<'_>), SnapshotError> {
@@ -418,12 +426,13 @@ impl NativeStore {
             }
         }
         let registry_generation = str_field(context, "registry_generation")?;
+        let classifier = json!({"id":"native","version":"1"});
         if let Some(retained) = self.touch_retained_facts(
             stamp,
             registry_generation,
             context["admission"].as_str().unwrap_or(""),
             &context["authority"],
-            &json!({"id":"native","version":"1"}),
+            &classifier,
         ) {
             usage[7] += 1;
             return Ok((
@@ -435,12 +444,13 @@ impl NativeStore {
                 },
             ));
         }
+        let admission = str_field(context, "admission")?;
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             stamp,
             registry_generation,
-            str_field(context, "admission")?,
+            admission,
             &context["authority"],
-            &json!({"id":"native","version":"1"}),
+            &classifier,
         )?;
         if let Some(decoded) = self.prepared_disk.decoded_bytes(&key) {
             if self
@@ -451,6 +461,30 @@ impl NativeStore {
                 self.prepared_disk.check_dir()?;
                 return Err(prepared_cache_read_limit());
             }
+            if let PreparedCacheReads::Warming(_, membership, since) = cache_reads {
+                if self.prepared_disk.touch(&key, |accounted| {
+                    !self.lock_state().prepared_facts_fit_sparing(
+                        stamp.identity,
+                        accounted,
+                        self.prepared_fact_budget(),
+                        |cached| {
+                            membership
+                                .active_member(cached.stamp.identity, since)
+                                .is_some_and(|member| {
+                                    cached.serves(
+                                        member.stamp,
+                                        registry_generation,
+                                        admission,
+                                        &context["authority"],
+                                        &classifier,
+                                    )
+                                })
+                        },
+                    )
+                })? {
+                    return Ok((stamp, PreparedSourceOutcome::Stored));
+                }
+            }
             let mut reservation = self.reserve_projection(context, decoded)?;
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
@@ -458,7 +492,7 @@ impl NativeStore {
             let lookup = self.prepared_disk.lookup(&key, &mut read);
             usage[18] += read.operations;
             usage[19] += read.bytes;
-            if let PreparedCacheReads::Within(_) = cache_reads {
+            if let PreparedCacheReads::Warming(..) = cache_reads {
                 remaining.max_source_read_bytes = remaining
                     .max_source_read_bytes
                     .saturating_sub(read.bytes as usize);
@@ -470,7 +504,7 @@ impl NativeStore {
                     let held = match self.cache_prepared_facts(
                         stamp,
                         Arc::clone(&facts),
-                        &json!({"id":"native","version":"1"}),
+                        &classifier,
                         context,
                         &mut reservation,
                     ) {
@@ -1630,6 +1664,7 @@ impl NativeStore {
             &mut reservation,
             context,
             arc_slice_bytes::<PreparedSourceRef>(members.len())
+                + arc_slice_bytes::<(SourceIdentity, usize)>(members.len())
                 + arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len()),
         )?;
         let mut revision = String::with_capacity(revision_len);
@@ -1637,6 +1672,7 @@ impl NativeStore {
         assert_eq!(revision.capacity(), revision_len);
         Ok((
             WarmMembership {
+                positions: member_positions(&members),
                 members: members.into(),
                 sidechain_dirs: sidechain_dirs.into(),
                 revision,
@@ -1780,7 +1816,8 @@ impl NativeStore {
             let before_read = usage[1];
             let before_events = usage[3];
             let (canonical, metadata) = self.resolved_source(&source.path)?;
-            let cache_reads = PreparedCacheReads::Within(remaining.max_source_read_bytes);
+            let cache_reads =
+                PreparedCacheReads::Warming(remaining.max_source_read_bytes, &membership, since);
             let (stamp, mut outcome) = match self.prepared_source(
                 &canonical,
                 &metadata,
@@ -1836,6 +1873,10 @@ impl NativeStore {
                         }
                         next += 1;
                         break cached;
+                    }
+                    PreparedSourceOutcome::Stored => {
+                        next += 1;
+                        break true;
                     }
                     PreparedSourceOutcome::Pending(token) => {
                         if rounds == 16 {

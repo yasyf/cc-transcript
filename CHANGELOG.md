@@ -109,6 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `warm_registered` step no longer reads a member's prepared facts back from
+  the disk cache when keeping them in memory means evicting facts the same
+  membership already holds there, or when they cannot stay in memory at all. The
+  member keeps its disk entry, which counts as used, and a query that needs the
+  facts reads them then. Such a member counts only toward the step's 256 members
+  and is not charged to its read budget. A membership whose facts outgrew
+  `max_prepared_fact_memory_bytes` used to re-read, re-verify and re-decode its
+  members on every pass, because each read evicted a member the same pass needed
+  later. One owner read 226 to 485 MB of prepared facts per pass for a single
+  membership. Facts of other memberships and other contexts are still evicted to
+  make room, as before. Each registered membership now keeps an index of its
+  members for this check, built once with the membership, charged to retained
+  memory at 32 bytes per member, and reused by every later step.
 - `cc-transcript grep` no longer charges source discovery to
   `--max-output-bytes`. Discovery's internal replies are never printed, yet a
   small output budget used to end a scan with `discovery output budget

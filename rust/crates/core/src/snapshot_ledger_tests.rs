@@ -7464,7 +7464,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     let (store, owner) = (&warmed.store, &warmed.owner);
     store.assert_conserved();
     let first_id = warmed.graph["graph_id"].as_str().unwrap().to_owned();
-    let (membership_key, membership_charge, shared, first_charge) = {
+    let (membership_key, membership_charge, positions, shared, first_charge) = {
         let state = store.lock_state();
         let (key, membership) = state
             .warm_memberships
@@ -7480,6 +7480,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         (
             key.clone(),
             charged_bytes(key, membership),
+            arc_slice_mirror::<(SourceIdentity, usize)>(membership.members.len()),
             arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
                 + membership
                     .members
@@ -7498,7 +7499,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         )
     };
     assert!(shared > 0);
-    assert_eq!(warm_buffer_charge(store), shared);
+    assert_eq!(warm_buffer_charge(store), shared + positions);
     let one_graph = settled_charges(store);
     let second = settle(
         store,
@@ -7524,23 +7525,23 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         "shared warm buffers: shared={shared} graph={second_charge} one_graph={one_graph} two_graphs={two_graphs}"
     );
     assert_eq!(two_graphs - one_graph, second_charge);
-    assert_eq!(warm_buffer_charge(store), shared);
+    assert_eq!(warm_buffer_charge(store), shared + positions);
     store.lock_state().remove_prepared_graph(&first_id);
     store.assert_conserved();
     assert_eq!(settled_charges(store), two_graphs - first_charge);
-    assert_eq!(warm_buffer_charge(store), shared);
+    assert_eq!(warm_buffer_charge(store), shared + positions);
     store.lock_state().remove_warm_membership(&membership_key);
     store.assert_conserved();
     assert_eq!(
         settled_charges(store),
-        two_graphs - first_charge - membership_charge
+        two_graphs - first_charge - membership_charge - positions
     );
     assert_eq!(warm_buffer_charge(store), shared);
     store.lock_state().remove_prepared_graph(&second_id);
     store.assert_conserved();
     assert_eq!(
         settled_charges(store),
-        two_graphs - first_charge - membership_charge - second_charge - shared
+        two_graphs - first_charge - membership_charge - positions - second_charge - shared
     );
     assert_eq!(warm_buffer_charge(store), 0);
 }
@@ -12462,6 +12463,7 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
                 + dir.0.capacity();
         }
         growth += arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
+            + arc_slice_mirror::<(SourceIdentity, usize)>(membership.positions.len())
             + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(membership.sidechain_dirs.len());
         assert_eq!(
             exact, growth,
