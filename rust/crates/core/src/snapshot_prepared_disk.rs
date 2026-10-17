@@ -1426,6 +1426,32 @@ impl PreparedDiskCache {
             .is_some_and(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64))
     }
 
+    pub fn touch(
+        &self,
+        key: &PreparedDiskKey,
+        unread: impl FnOnce(usize) -> bool,
+    ) -> Result<bool, SnapshotError> {
+        self.check_dir()?;
+        let mut state = self.state.lock().expect("prepared facts disk state");
+        let owned = state
+            .entries
+            .get(&key.name)
+            .filter(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64)
+            .map(|entry| entry.accounted);
+        if !owned.is_some_and(unread) {
+            return Ok(false);
+        }
+        state.clock += 1;
+        let clock = state.clock;
+        state
+            .entries
+            .get_mut(&key.name)
+            .expect("cached entry")
+            .last_used = clock;
+        self.sweep(&mut state, INSERT_SWEEP_NAMES);
+        Ok(true)
+    }
+
     pub fn decoded_bytes(&self, key: &PreparedDiskKey) -> Option<usize> {
         self.state
             .lock()
