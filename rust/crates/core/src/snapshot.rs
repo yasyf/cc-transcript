@@ -26,6 +26,7 @@ use crate::snapshot_ledger::{
 };
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
+use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::snapshot_memory::{
     arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
 };
@@ -1757,7 +1758,7 @@ impl Charge<String> for (String, u64) {
     }
 }
 
-impl Charge<SourceIdentity> for CachedPreparedFacts {
+impl Charge<PreparedDiskKey> for CachedPreparedFacts {
     fn charge(&self) -> usize {
         self.registry_generation.capacity()
             + self.admission.capacity()
@@ -1824,7 +1825,7 @@ pub(crate) struct StoreState {
     prepared_builds: Ledgered<String, PreparedBuild>,
     prepared_queries: Ledgered<String, PreparedQueryCursor>,
     expired_prepared_queries: Ledgered<String, (String, u64)>,
-    prepared_facts: Ledgered<SourceIdentity, CachedPreparedFacts>,
+    prepared_facts: Ledgered<PreparedDiskKey, CachedPreparedFacts>,
     warm_memberships: Ledgered<String, WarmMembership>,
     deliveries: Ledgered<Arc<str>, Delivery>,
     deliveries_expiry: DeadlineIndex<Arc<str>>,
@@ -1841,7 +1842,7 @@ pub(crate) struct StoreState {
     carried_expiry: ExpiryIndex<(SourceIdentity, String)>,
     recent_codex_expiry: ExpiryIndex<SourceIdentity>,
     prepared_loads_expiry: ExpiryIndex<SourceIdentity>,
-    prepared_facts_lru: BTreeSet<(u64, SourceIdentity)>,
+    prepared_facts_lru: BTreeSet<(u64, PreparedDiskKey)>,
     counters: [u64; 20],
     transient_bytes: usize,
     prepared_disk_index_bytes: usize,
@@ -2473,45 +2474,99 @@ impl StoreState {
         }
     }
 
-    fn prepared_facts_growth(&self, identity: &SourceIdentity) -> usize {
-        self.prepared_facts.growth_for(identity)
-            + usize::from(!self.prepared_facts.contains_key(identity))
-                * size_of::<(u64, SourceIdentity)>()
+    fn prepared_facts_growth(&self, key: &PreparedDiskKey) -> usize {
+        self.prepared_facts.growth_for(key)
+            + usize::from(!self.prepared_facts.contains_key(key))
+                * size_of::<(u64, PreparedDiskKey)>()
     }
 
-    fn insert_prepared_facts(&mut self, identity: SourceIdentity, cached: CachedPreparedFacts) {
-        self.prepared_facts.reserve_for(&identity);
+    fn insert_prepared_facts(&mut self, key: PreparedDiskKey, cached: CachedPreparedFacts) {
+        self.prepared_facts.reserve_for(&key);
         self.ledger.shared.reserve([facts_anchor(&cached.facts)]);
         self.ledger.shared.acquire(facts_anchor(&cached.facts));
         let last_used = cached.last_used;
-        if let Some(displaced) = self.prepared_facts.insert(identity, cached) {
+        if let Some(displaced) = self.prepared_facts.insert(key, cached) {
             self.ledger.shared.release(facts_key(&displaced.facts));
             self.prepared_facts_lru
-                .remove(&(displaced.last_used, identity));
+                .remove(&(displaced.last_used, key));
         }
-        self.prepared_facts_lru.insert((last_used, identity));
+        self.prepared_facts_lru.insert((last_used, key));
     }
 
-    fn remove_prepared_facts(&mut self, identity: &SourceIdentity) -> Option<CachedPreparedFacts> {
-        let cached = self.prepared_facts.remove(identity)?;
+    fn remove_prepared_facts(&mut self, key: &PreparedDiskKey) -> Option<CachedPreparedFacts> {
+        let cached = self.prepared_facts.remove(key)?;
         self.ledger.shared.release(facts_key(&cached.facts));
-        self.prepared_facts_lru
-            .remove(&(cached.last_used, *identity));
+        self.prepared_facts_lru.remove(&(cached.last_used, *key));
         Some(cached)
     }
 
-    fn evictable_prepared_facts(&self) -> Option<SourceIdentity> {
+    fn identity_facts(
+        &self,
+        identity: SourceIdentity,
+    ) -> impl Iterator<Item = (&PreparedDiskKey, &CachedPreparedFacts)> {
+        let work = self.ledger.shared.work();
+        self.prepared_facts
+            .iter()
+            .inspect(move |_| work.tick(1))
+            .filter(move |(key, _)| key.identity() == identity)
+    }
+
+    fn retire_identity_facts(
+        &mut self,
+        identity: SourceIdentity,
+        keep: impl Fn(&CachedPreparedFacts) -> bool,
+    ) -> usize {
+        let Self {
+            prepared_facts,
+            prepared_facts_lru,
+            ledger,
+            ..
+        } = self;
+        let mut retired = 0usize;
+        prepared_facts.retain(|key, cached| {
+            if key.identity() != identity || keep(cached) {
+                return true;
+            }
+            ledger.shared.release(facts_key(&cached.facts));
+            prepared_facts_lru.remove(&(cached.last_used, *key));
+            retired += 1;
+            false
+        });
+        retired
+    }
+
+    fn remove_identity_facts(&mut self, identity: SourceIdentity) -> usize {
+        self.retire_identity_facts(identity, |_| false)
+    }
+
+    #[cfg(test)]
+    fn has_prepared_facts(&self, identity: &SourceIdentity) -> bool {
+        self.identity_facts(*identity).next().is_some()
+    }
+
+    #[cfg(test)]
+    fn cached_prepared_facts(&self, identity: &SourceIdentity) -> &CachedPreparedFacts {
+        let mut bindings = self.identity_facts(*identity).map(|(_, cached)| cached);
+        let cached = bindings.next().expect("cached facts");
+        assert!(
+            bindings.next().is_none(),
+            "several bindings are cached for one identity"
+        );
+        cached
+    }
+
+    fn evictable_prepared_facts(&self) -> Option<PreparedDiskKey> {
         let work = self.ledger.shared.work();
         self.prepared_facts_lru
             .iter()
-            .map(|(_, identity)| *identity)
+            .map(|(_, key)| *key)
             .inspect(|_| work.tick(1))
-            .find(|identity| self.prepared_facts[identity].evictable())
+            .find(|key| self.prepared_facts[key].evictable())
     }
 
     fn prepared_facts_fit_sparing(
         &self,
-        identity: SourceIdentity,
+        key: PreparedDiskKey,
         accounted: usize,
         budget: usize,
         spared: impl Fn(&CachedPreparedFacts) -> bool,
@@ -2523,14 +2578,14 @@ impl StoreState {
         let mut used = self.ledger.shared.facts()
             - self
                 .prepared_facts
-                .get(&identity)
+                .get(&key)
                 .filter(|cached| cached.evictable())
                 .map_or(0, |cached| cached.facts.accounted_bytes());
         for (_, victim) in &self.prepared_facts_lru {
             if accounted <= budget.saturating_sub(used) {
                 return true;
             }
-            if *victim == identity {
+            if *victim == key {
                 continue;
             }
             work.tick(1);
@@ -2548,21 +2603,21 @@ impl StoreState {
 
     fn touch_prepared_facts(
         &mut self,
+        key: &PreparedDiskKey,
         stamp: SourceStamp,
         registry_generation: &str,
         admission: &str,
         authority: &Value,
         classifier: &Value,
     ) -> Option<Arc<crate::snapshot_prepared::PreparedFacts>> {
-        let mut cached = self.prepared_facts.get_mut(&stamp.identity)?;
+        let mut cached = self.prepared_facts.get_mut(key)?;
         if !cached.serves(stamp, registry_generation, admission, authority, classifier) {
             return None;
         }
         let previous = cached.last_used;
         cached.last_used = now_ms();
-        self.prepared_facts_lru.remove(&(previous, stamp.identity));
-        self.prepared_facts_lru
-            .insert((cached.last_used, stamp.identity));
+        self.prepared_facts_lru.remove(&(previous, *key));
+        self.prepared_facts_lru.insert((cached.last_used, *key));
         Some(Arc::clone(&cached.facts))
     }
 
@@ -3555,6 +3610,7 @@ impl NativeStore {
 
     fn touch_retained_facts(
         &self,
+        key: &PreparedDiskKey,
         stamp: SourceStamp,
         registry_generation: &str,
         admission: &str,
@@ -3563,6 +3619,7 @@ impl NativeStore {
     ) -> Option<RetainedFacts<'_>> {
         let mut state = self.lock_state();
         let facts = state.touch_prepared_facts(
+            key,
             stamp,
             registry_generation,
             admission,
@@ -5261,7 +5318,7 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn audit_cached_facts_bytes(_: &SourceIdentity, cached: &CachedPreparedFacts) -> usize {
+    fn audit_cached_facts_bytes(_: &PreparedDiskKey, cached: &CachedPreparedFacts) -> usize {
         let CachedPreparedFacts {
             stamp: _,
             registry_generation,
@@ -5517,7 +5574,7 @@ impl NativeStore {
             + state.recent_codex_expiry.heap_bytes()
             + state.prepared_loads_expiry.heap_bytes()
             + state.deliveries_expiry.index_bytes()
-            + state.prepared_facts_lru.len() * size_of::<(u64, SourceIdentity)>()
+            + state.prepared_facts_lru.len() * size_of::<(u64, PreparedDiskKey)>()
             + state.prepared_disk_index_bytes
     }
 
@@ -5597,11 +5654,11 @@ impl NativeStore {
             state.prepared_facts.len(),
             "prepared facts lru index diverges from the cache"
         );
-        for (identity, cached) in state.prepared_facts.iter() {
+        for (key, cached) in state.prepared_facts.iter() {
             assert!(
                 state
                     .prepared_facts_lru
-                    .contains(&(cached.last_used, *identity)),
+                    .contains(&(cached.last_used, *key)),
                 "prepared facts lru index misses a cached entry"
             );
         }
@@ -14168,7 +14225,7 @@ mod tests {
         );
         assert_eq!(first["data"]["value"].as_bool(), Some(false), "{first:?}");
         let identity = SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity;
-        store.lock_state().remove_prepared_facts(&identity).unwrap();
+        assert_eq!(store.lock_state().remove_identity_facts(identity), 1);
         let writes = store.prepared_disk.stats().writes;
         let before = store.state.lock().unwrap().counters;
         let from_disk = finish_prepared(
@@ -14187,8 +14244,7 @@ mod tests {
             .state
             .lock()
             .unwrap()
-            .prepared_facts
-            .contains_key(&identity));
+            .has_prepared_facts(&identity));
     }
 
     fn fact_entry_key(
@@ -14206,10 +14262,12 @@ mod tests {
     }
 
     fn evict_memory_facts(store: &NativeStore, path: &Path) {
-        store
-            .lock_state()
-            .remove_prepared_facts(&SourceStamp::of(&std::fs::metadata(path).unwrap()).identity)
-            .unwrap();
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(SourceStamp::of(&std::fs::metadata(path).unwrap()).identity),
+            1
+        );
     }
 
     fn cache_reads(reply: &Value) -> (Option<u64>, Option<u64>, Option<u64>) {
@@ -14311,8 +14369,7 @@ mod tests {
         assert_eq!(cache_reads(&corrupt), (Some(1), Some(stored), Some(0)));
         assert!(!store
             .lock_state()
-            .prepared_facts
-            .contains_key(&SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity));
+            .has_prepared_facts(&SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity));
         let stats = store.request(
             &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
             &owner,
@@ -14555,7 +14612,7 @@ mod tests {
             members
                 .iter()
                 .filter(|member| {
-                    state.prepared_facts.contains_key(
+                    state.has_prepared_facts(
                         &SourceStamp::of(&std::fs::metadata(member).unwrap()).identity,
                     )
                 })
@@ -14652,9 +14709,9 @@ mod tests {
             .iter()
             .map(|member| {
                 state
-                    .prepared_facts
-                    .get(&member_identity(member))
-                    .map(|cached| cached.facts.accounted_bytes())
+                    .identity_facts(member_identity(member))
+                    .next()
+                    .map(|(_, cached)| cached.facts.accounted_bytes())
             })
             .collect()
     }
@@ -14662,17 +14719,22 @@ mod tests {
     fn forget_member_facts(store: &NativeStore, members: &[PathBuf]) {
         let mut state = store.lock_state();
         for member in members {
-            state.remove_prepared_facts(&member_identity(member));
+            state.remove_identity_facts(member_identity(member));
         }
     }
 
     fn age_member_facts(store: &NativeStore, member: &Path) {
         let mut state = store.lock_state();
-        let identity = member_identity(member);
-        let previous = state.prepared_facts[&identity].last_used;
-        state.prepared_facts_lru.remove(&(previous, identity));
-        state.prepared_facts_lru.insert((0, identity));
-        state.prepared_facts.get_mut(&identity).unwrap().last_used = 0;
+        let (key, previous) = {
+            let (key, cached) = state
+                .identity_facts(member_identity(member))
+                .next()
+                .unwrap();
+            (*key, cached.last_used)
+        };
+        state.prepared_facts_lru.remove(&(previous, key));
+        state.prepared_facts_lru.insert((0, key));
+        state.prepared_facts.get_mut(&key).unwrap().last_used = 0;
     }
 
     fn warm_registered_pass(
@@ -14963,13 +15025,13 @@ mod tests {
         assert_eq!(refusal(&admitted), ENTRY_EVICTED, "{admitted:?}");
         assert_eq!(cache_reads(&admitted), (Some(1), Some(stored + 1), Some(0)));
         assert_eq!(grown.load(Ordering::Relaxed), 1);
-        assert!(!store.lock_state().prepared_facts.contains_key(&identity));
+        assert!(!store.lock_state().has_prepared_facts(&identity));
         assert!(!store.prepared_disk.has_entry(&key).unwrap());
         let rebuilt = warm(1024 * 1024);
         assert_eq!(rebuilt["status"].as_str(), Some("ok"), "{rebuilt:?}");
         assert_eq!(rebuilt["data"]["complete"].as_bool(), Some(true));
         assert_eq!(rebuilt["data"]["fact_cache_writes"].as_u64(), Some(2));
-        assert!(store.lock_state().prepared_facts.contains_key(&identity));
+        assert!(store.lock_state().has_prepared_facts(&identity));
     }
 
     struct FactReadGate {
@@ -15364,10 +15426,7 @@ mod tests {
         let bounds = limits(&acquire(&source.path)).unwrap();
         let root = pinned_root(&store, &source, &owner);
         assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 0);
-        store
-            .lock_state()
-            .remove_prepared_facts(&root.stamp.identity)
-            .unwrap();
+        assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 1);
         assert!(store
             .prepared_disk
             .has_entry(&fact_entry_key(&source.path, &owner))
@@ -15388,7 +15447,7 @@ mod tests {
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
         assert!(Arc::ptr_eq(
-            &store.lock_state().prepared_facts[&root.stamp.identity].facts,
+            &store.lock_state().cached_prepared_facts(&root.stamp.identity).facts,
             &first.0
         ));
         drop((first, second));
@@ -15405,10 +15464,7 @@ mod tests {
         let root = pinned_root(&store, &source, &owner);
         for binding in [&owner, &other] {
             assert_eq!(root_facts_read(&store, &root, binding, &bounds).1, 0);
-            store
-                .lock_state()
-                .remove_prepared_facts(&root.stamp.identity)
-                .unwrap();
+            assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 1);
             assert!(store
                 .prepared_disk
                 .has_entry(&fact_entry_key(&source.path, binding))
@@ -15429,13 +15485,136 @@ mod tests {
         assert!(!Arc::ptr_eq(&first.0, &second.0));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
-        {
-            let state = store.lock_state();
-            let cached = &state.prepared_facts[&root.stamp.identity];
-            assert_eq!(cached.registry_generation, "other-registry");
-            assert!(Arc::ptr_eq(&cached.facts, &second.0));
-        }
+        assert!(Arc::ptr_eq(&resident_binding(&store, &root, &owner), &first.0));
+        assert!(Arc::ptr_eq(&resident_binding(&store, &root, &other), &second.0));
+        assert_eq!(resident_bindings(&store, &root), 2);
         drop((first, second));
+        store.assert_conserved();
+    }
+
+    fn binding(registry_generation: &str) -> Value {
+        let authority = context("a")["authority"].clone();
+        json!({"claimant":"a","admission":"hook","authority":authority,"registry_generation":registry_generation})
+    }
+
+    fn resident_bindings(store: &NativeStore, root: &Arc<TranscriptSnapshot>) -> usize {
+        store
+            .lock_state()
+            .identity_facts(root.stamp.identity)
+            .count()
+    }
+
+    fn resident_binding(
+        store: &NativeStore,
+        root: &Arc<TranscriptSnapshot>,
+        owner: &Value,
+    ) -> Arc<crate::snapshot_prepared::PreparedFacts> {
+        let key = fact_entry_key(&root.canonical_path, owner);
+        let state = store.lock_state();
+        let cached = state.prepared_facts.get(&key).expect("resident binding");
+        assert_eq!(cached.stamp, root.stamp);
+        Arc::clone(&cached.facts)
+    }
+
+    #[test]
+    fn alternating_bindings_on_one_source_read_disk_once_each() {
+        let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let (a, b) = (binding("registry-a"), binding("registry-b"));
+        let root = pinned_root(&store, &source, &a);
+        for owner in [&a, &b] {
+            assert_eq!(root_facts_read(&store, &root, owner, &bounds).1, 0);
+        }
+        assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 2);
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        let reads: Vec<u64> = [&a, &b, &a, &b, &a, &b]
+            .into_iter()
+            .map(|owner| root_facts_read(&store, &root, owner, &bounds).1)
+            .collect();
+        assert_eq!(reads, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
+        assert_eq!(resident_bindings(&store, &root), 2);
+        let (first_a, first_b) = (resident_binding(&store, &root, &a), resident_binding(&store, &root, &b));
+        assert!(!Arc::ptr_eq(&first_a, &first_b));
+        assert!(Arc::ptr_eq(&root_facts_read(&store, &root, &a, &bounds).0, &first_a));
+        assert!(Arc::ptr_eq(&root_facts_read(&store, &root, &b, &bounds).0, &first_b));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
+        drop((first_a, first_b));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn every_binding_of_one_source_stays_resident_while_its_bytes_fit() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let bindings: Vec<Value> = (0..17)
+            .map(|index| binding(&format!("registry-{index}")))
+            .collect();
+        let root = pinned_root(&store, &source, &bindings[0]);
+        let published: Vec<_> = bindings
+            .iter()
+            .map(|owner| root_facts_read(&store, &root, owner, &bounds).0)
+            .collect();
+        assert_eq!(resident_bindings(&store, &root), bindings.len());
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), bindings.len());
+        for (owner, facts) in bindings.iter().zip(&published) {
+            let again = root_facts_read(&store, &root, owner, &bounds);
+            assert_eq!(again.1, 0);
+            assert!(Arc::ptr_eq(&again.0, facts));
+            assert!(Arc::ptr_eq(&resident_binding(&store, &root, owner), facts));
+        }
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        assert!(published
+            .iter()
+            .enumerate()
+            .all(|(index, facts)| published[..index].iter().all(|earlier| !Arc::ptr_eq(earlier, facts))));
+        drop(published);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn stale_source_revision_rejects_every_cached_binding() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let (a, b) = (binding("registry-a"), binding("registry-b"));
+        let root = pinned_root(&store, &source, &a);
+        let stale: Vec<_> = [&a, &b]
+            .into_iter()
+            .map(|owner| root_facts_read(&store, &root, owner, &bounds).0)
+            .collect();
+        assert_eq!(resident_bindings(&store, &root), 2);
+        let stale_key = fact_entry_key(&source.path, &a);
+        source.append(&format!("{}\n", user("child")));
+        let revised = pinned_root(&store, &source, &a);
+        assert_eq!(revised.stamp.identity, root.stamp.identity);
+        assert_ne!(revised.stamp, root.stamp);
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        let fresh_a = root_facts_read(&store, &revised, &a, &bounds);
+        assert_eq!(fresh_a.1, 0);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 1);
+        assert_eq!(resident_bindings(&store, &revised), 1);
+        assert!(Arc::ptr_eq(&resident_binding(&store, &revised, &a), &fresh_a.0));
+        assert!(stale.iter().all(|facts| !Arc::ptr_eq(facts, &fresh_a.0)));
+        let fresh_b = root_facts_read(&store, &revised, &b, &bounds);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);
+        assert_eq!(resident_bindings(&store, &revised), 2);
+        assert!(stale.iter().all(|facts| !Arc::ptr_eq(facts, &fresh_b.0)));
+        assert!(store
+            .lock_state()
+            .touch_prepared_facts(
+                &stale_key,
+                root.stamp,
+                "registry-a",
+                "hook",
+                &a["authority"],
+                &json!({"id":"native","version":"1"}),
+            )
+            .is_none());
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        drop((stale, fresh_a, fresh_b));
         store.assert_conserved();
     }
 
@@ -15515,7 +15694,7 @@ mod tests {
                 Some(round as u64 + 2)
             );
             assert_eq!(store.prepared_disk.entry_file_len(&key), stored);
-            assert!(store.lock_state().prepared_facts.contains_key(&identity));
+            assert!(store.lock_state().has_prepared_facts(&identity));
         }
 
         evict_memory_facts(&store, &member);
@@ -15583,14 +15762,12 @@ mod tests {
             .state
             .lock()
             .unwrap()
-            .prepared_facts
-            .contains_key(&identity(&large)));
+            .has_prepared_facts(&identity(&large)));
         assert!(store
             .state
             .lock()
             .unwrap()
-            .prepared_facts
-            .contains_key(&identity(&small)));
+            .has_prepared_facts(&identity(&small)));
         let writes = store.prepared_disk.stats().writes;
         let before = store.state.lock().unwrap().counters;
         ask(&large_query);
@@ -15600,8 +15777,7 @@ mod tests {
             .state
             .lock()
             .unwrap()
-            .prepared_facts
-            .contains_key(&identity(&small)));
+            .has_prepared_facts(&identity(&small)));
     }
 
     #[test]
@@ -15699,9 +15875,9 @@ mod tests {
                 .iter()
                 .map(|child| {
                     state
-                        .prepared_facts
-                        .get(&SourceStamp::of(&std::fs::metadata(child).unwrap()).identity)
-                        .unwrap()
+                        .cached_prepared_facts(
+                            &SourceStamp::of(&std::fs::metadata(child).unwrap()).identity,
+                        )
                         .facts
                         .accounted_bytes()
                 })
@@ -17808,9 +17984,7 @@ mod tests {
             .map(|(key, _)| key.capacity())
             .unwrap();
         let graph = state.prepared_graphs[graph_id].lock().unwrap();
-        assert!(state
-            .prepared_facts
-            .contains_key(&graph.root.stamp.identity));
+        assert!(state.has_prepared_facts(&graph.root.stamp.identity));
         let mut tasks = Vec::<GraphTask>::new();
         tasks.reserve(1);
         let mut dirs = Vec::<(PathBuf, Option<SourceStamp>)>::new();

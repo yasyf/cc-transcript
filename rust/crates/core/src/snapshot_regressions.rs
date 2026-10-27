@@ -820,11 +820,10 @@ fn corrupted(family: &Family) {
     let mut bytes = std::fs::read(&entry).unwrap();
     *bytes.last_mut().unwrap() ^= 1;
     std::fs::write(&entry, bytes).unwrap();
-    family
-        .store
-        .lock_state()
-        .remove_prepared_facts(&stamp.identity)
-        .unwrap();
+    assert_eq!(
+        family.store.lock_state().remove_identity_facts(stamp.identity),
+        1
+    );
 }
 
 fn failing_child(damage: impl Fn(&Family), status: &str, reason: &str) {

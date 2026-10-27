@@ -109,6 +109,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The in-memory prepared-facts cache keeps one entry per binding of a
+  transcript, where a binding is the transcript's stamp plus the registry
+  generation, admission, authority and classifier a request runs under. It used
+  to keep one entry per transcript, so facts published for one binding evicted
+  the facts of every other binding of the same unchanged transcript, though the
+  disk cache keeps each binding's entry apart. Two contexts taking turns on one
+  transcript then read their prepared facts back from the disk cache on every
+  request. Each binding is now charged and evicted on its own under
+  `max_prepared_fact_memory_bytes`, and facts published for a changed
+  transcript drop every cached binding of its older revision.
+- Two lanes that miss the same prepared-facts entry in memory at the same time
+  no longer both read it from the disk cache. One prepared-facts disk read runs
+  at a time. A lane that finds one in flight waits for it, still honoring its
+  cancellation and deadline, then checks memory again before it reads. A fresh
+  owner re-read 111 of its 736 `.facts` opens this way, 75.68 MiB in 5 seconds.
 - `warm_registered` steps, `query_graph` pages, and their final validation no
   longer walk every member's full path. Each pass resolves a member's parent
   directory once, checks the member itself with one `lstat`, and resolves every
