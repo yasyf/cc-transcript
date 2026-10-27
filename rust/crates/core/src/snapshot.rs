@@ -9,8 +9,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use sonic_rs::JsonType;
@@ -1845,6 +1845,7 @@ pub(crate) struct StoreState {
     counters: [u64; 20],
     transient_bytes: usize,
     prepared_disk_index_bytes: usize,
+    fact_read_in_flight: bool,
     owned: crate::snapshot_owned::OwnedProjections,
     ledger: RetainedLedger,
     #[cfg(test)]
@@ -1855,6 +1856,7 @@ pub(crate) struct StoreState {
 
 const TOUCH_TTL_MS: u64 = 30 * 60_000;
 const EXPIRED_QUERY_TOMBSTONES: usize = 1024;
+const FACT_READ_WAIT_SLICE: Duration = Duration::from_millis(25);
 
 fn codex_raw_len(snapshot: &Arc<TranscriptSnapshot>) -> usize {
     snapshot.codex_raw.as_ref().map_or(0, |raw| raw.len())
@@ -1906,6 +1908,7 @@ impl StoreState {
             counters: [0; 20],
             transient_bytes: 0,
             prepared_disk_index_bytes: 0,
+            fact_read_in_flight: false,
             owned: crate::snapshot_owned::OwnedProjections::default(),
             ledger: RetainedLedger::new(work),
             #[cfg(test)]
@@ -2783,6 +2786,7 @@ pub struct NativeStore {
     seed: [u8; 32],
     sequence: AtomicUsize,
     state: Mutex<StoreState>,
+    fact_read_released: Condvar,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
     policies: Mutex<HashMap<String, Arc<PolicyCallback>>>,
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
@@ -2812,6 +2816,8 @@ pub struct NativeStore {
     pub(crate) fact_builds: AtomicUsize,
     #[cfg(test)]
     pub(crate) fact_lookups: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) fact_read_waits: AtomicUsize,
     #[cfg(test)]
     pub(crate) built_facts_hook:
         Mutex<Option<Arc<dyn Fn(&Arc<crate::snapshot_prepared::PreparedFacts>) + Send + Sync>>>,
@@ -2865,6 +2871,17 @@ impl Drop for ProjectionReservation<'_> {
             }
         }
         self.store.lock_state().transient_bytes -= self.bytes;
+    }
+}
+
+pub(crate) struct FactReadClaim<'a> {
+    store: &'a NativeStore,
+}
+
+impl Drop for FactReadClaim<'_> {
+    fn drop(&mut self) {
+        self.store.lock_state().fact_read_in_flight = false;
+        self.store.fact_read_released.notify_all();
     }
 }
 
@@ -3251,6 +3268,7 @@ impl NativeStore {
             seed,
             sequence: AtomicUsize::new(1),
             state: Mutex::new(state),
+            fact_read_released: Condvar::new(),
             classifiers: Mutex::new(HashMap::new()),
             policies: Mutex::new(HashMap::new()),
             classified: Mutex::new(HashMap::new()),
@@ -3280,6 +3298,8 @@ impl NativeStore {
             fact_builds: AtomicUsize::new(0),
             #[cfg(test)]
             fact_lookups: AtomicUsize::new(0),
+            #[cfg(test)]
+            fact_read_waits: AtomicUsize::new(0),
             #[cfg(test)]
             built_facts_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3433,6 +3453,30 @@ impl NativeStore {
             expires = expires.min(self.lease(&state, handle, context)?.expires);
         }
         Ok(expires)
+    }
+
+    pub(crate) fn claim_fact_read(
+        &self,
+        cancel: &Cancellation,
+        deadline_unix_ms: u64,
+    ) -> Result<FactReadClaim<'_>, SnapshotError> {
+        let mut state = self.lock_state();
+        #[cfg(test)]
+        {
+            if state.fact_read_in_flight {
+                self.fact_read_waits.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        while state.fact_read_in_flight {
+            state = self
+                .fact_read_released
+                .wait_timeout(state, FACT_READ_WAIT_SLICE)
+                .expect("snapshot state")
+                .0;
+            cancel.check(deadline_unix_ms)?;
+        }
+        state.fact_read_in_flight = true;
+        Ok(FactReadClaim { store: self })
     }
 
     pub(crate) fn reserve_projection(
@@ -14926,6 +14970,473 @@ mod tests {
         assert_eq!(rebuilt["data"]["complete"].as_bool(), Some(true));
         assert_eq!(rebuilt["data"]["fact_cache_writes"].as_u64(), Some(2));
         assert!(store.lock_state().prepared_facts.contains_key(&identity));
+    }
+
+    struct FactReadGate {
+        entered: std::sync::mpsc::Receiver<()>,
+        released: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl FactReadGate {
+        fn wait_until_read(&self) {
+            self.entered
+                .recv_timeout(Duration::from_secs(10))
+                .expect("prepared facts read hook was not reached within ten seconds");
+        }
+
+        fn release(&self) {
+            let (released, notification) = &*self.released;
+            *released.lock().unwrap() = true;
+            notification.notify_all();
+        }
+    }
+
+    fn install_fact_read_gate(
+        store: &NativeStore,
+        mut before_release: impl FnMut() + Send + 'static,
+    ) -> FactReadGate {
+        let (sender, entered) = std::sync::mpsc::channel();
+        let released = Arc::new((Mutex::new(false), Condvar::new()));
+        let gated = Arc::clone(&released);
+        let mut entries = 0usize;
+        store.prepared_disk.set_read_hook(Some(Box::new(move || {
+            entries += 1;
+            if entries > 1 {
+                return;
+            }
+            sender.send(()).expect("fact read gate owner disappeared");
+            let (released, notification) = &*gated;
+            let (released, _) = notification
+                .wait_timeout_while(
+                    released.lock().unwrap(),
+                    Duration::from_secs(10),
+                    |released| !*released,
+                )
+                .unwrap();
+            assert!(
+                *released,
+                "fact read gate was not released within ten seconds"
+            );
+            drop(released);
+            before_release();
+        })));
+        FactReadGate { entered, released }
+    }
+
+    fn wait_for_fact_read_waiter(store: &NativeStore) {
+        let started = std::time::Instant::now();
+        while store.fact_read_waits.load(Ordering::Relaxed) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the second reader never waited on the fact read permit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn warm_request(source: &Source, ids: &[&str], deadline_unix_ms: u64) -> Value {
+        let template = acquire(&source.path);
+        let mut request = json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":deadline_unix_ms,"limits":template["limits"]});
+        request["limits"].insert("max_source_read_bytes", json!(1024 * 1024));
+        request
+    }
+
+    fn spawn_warm(
+        store: &Arc<NativeStore>,
+        request: Value,
+        owner: &Value,
+        cancel: Cancellation,
+    ) -> std::sync::mpsc::Receiver<Value> {
+        let (sender, reply) = std::sync::mpsc::channel();
+        let store = Arc::clone(store);
+        let owner = owner.clone();
+        std::thread::spawn(move || {
+            sender
+                .send(store.request(&request, &owner, &cancel))
+                .expect("warm reply receiver disappeared");
+        });
+        reply
+    }
+
+    fn warm_reply(reply: &std::sync::mpsc::Receiver<Value>) -> Value {
+        reply
+            .recv_timeout(Duration::from_secs(10))
+            .expect("warm request did not finish within ten seconds")
+    }
+
+    struct EvictedMembers {
+        source: Source,
+        members: Vec<PathBuf>,
+        store: Arc<NativeStore>,
+        owner: Value,
+        stored: u64,
+        built: Vec<Option<usize>>,
+    }
+
+    fn evicted_members(ids: &[&str]) -> EvictedMembers {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let members = registered_members(&source, ids);
+        let store = Arc::new(fact_budget_store(16 * 1024 * 1024));
+        let owner = background_owner();
+        warm_registered_pass(&store, &source, ids, &owner);
+        let stored = store
+            .prepared_disk
+            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        let built = resident_member_facts(&store, &members);
+        assert!(built.iter().all(Option::is_some), "{built:?}");
+        forget_member_facts(&store, &members);
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            built,
+        }
+    }
+
+    #[test]
+    fn concurrent_identical_fact_misses_share_one_disk_read_and_one_publication() {
+        let EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            ..
+        } = evicted_members(&["thread-a"]);
+        let gate = install_fact_read_gate(&store, || {});
+        let deadline = now_ms() + 30_000;
+        let first = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let second = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        wait_for_fact_read_waiter(&store);
+        gate.release();
+        let (first, second) = (warm_reply(&first), warm_reply(&second));
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        assert_eq!(first["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(second["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&second), (Some(0), Some(0), Some(0)));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn waiting_fact_reader_honors_cancellation_while_the_holder_is_blocked() {
+        let EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            ..
+        } = evicted_members(&["thread-a"]);
+        let gate = install_fact_read_gate(&store, || {});
+        let deadline = now_ms() + 30_000;
+        let first = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let cancellation = Cancellation::default();
+        let second = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            cancellation.clone(),
+        );
+        wait_for_fact_read_waiter(&store);
+        cancellation.cancel();
+        let cancelled = warm_reply(&second);
+        assert_eq!(
+            cancelled["status"].as_str(),
+            Some("cancelled"),
+            "{cancelled:?}"
+        );
+        assert!(store.lock_state().fact_read_in_flight);
+        gate.release();
+        let first = warm_reply(&first);
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&cancelled), (Some(0), Some(0), Some(0)));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn waiting_fact_reader_honors_its_deadline_while_the_holder_is_blocked() {
+        let EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            ..
+        } = evicted_members(&["thread-a"]);
+        let gate = install_fact_read_gate(&store, || {});
+        let first = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], now_ms() + 30_000),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let second = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], now_ms() + 1_500),
+            &owner,
+            Cancellation::default(),
+        );
+        wait_for_fact_read_waiter(&store);
+        let expired = warm_reply(&second);
+        assert_eq!(expired["status"].as_str(), Some("deadline"), "{expired:?}");
+        assert!(store.lock_state().fact_read_in_flight);
+        gate.release();
+        let first = warm_reply(&first);
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&expired), (Some(0), Some(0), Some(0)));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn failed_fact_read_releases_the_permit_for_the_next_caller() {
+        let EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            built,
+        } = evicted_members(&["thread-a"]);
+        let key = fact_entry_key(&members[0], &owner);
+        let entry = store.prepared_disk.entry_file(&key);
+        let gate = install_fact_read_gate(&store, move || {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&entry)
+                .unwrap()
+                .write_all(b"grown")
+                .unwrap();
+        });
+        let deadline = now_ms() + 30_000;
+        let first = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let second = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        wait_for_fact_read_waiter(&store);
+        gate.release();
+        let (evicted, rebuilt) = (warm_reply(&first), warm_reply(&second));
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(refusal(&evicted), ENTRY_EVICTED, "{evicted:?}");
+        assert_eq!(cache_reads(&evicted), (Some(1), Some(stored + 1), Some(0)));
+        assert_eq!(rebuilt["status"].as_str(), Some("ok"), "{rebuilt:?}");
+        assert_eq!(rebuilt["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(rebuilt["data"]["fact_cache_writes"].as_u64(), Some(2));
+        assert_eq!(cache_reads(&rebuilt).0, Some(0));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert!(store.prepared_disk.has_entry(&key).unwrap());
+        assert_eq!(resident_member_facts(&store, &members), built);
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn different_fact_keys_do_not_share_facts_under_the_permit() {
+        let EvictedMembers {
+            source,
+            members,
+            store,
+            owner,
+            stored,
+            ..
+        } = evicted_members(&["thread-a", "thread-b"]);
+        let gate = install_fact_read_gate(&store, || {});
+        let deadline = now_ms() + 30_000;
+        let first = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let second = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-b"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        wait_for_fact_read_waiter(&store);
+        gate.release();
+        let (first, second) = (warm_reply(&first), warm_reply(&second));
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&second).0, Some(1));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    fn pinned_root(store: &NativeStore, source: &Source, owner: &Value) -> Arc<TranscriptSnapshot> {
+        let completed = finish(
+            store,
+            store.request(&acquire(&source.path), owner, &Cancellation::default()),
+            owner,
+        );
+        store.pin(handle(&completed), owner).unwrap()
+    }
+
+    fn root_facts_read(
+        store: &NativeStore,
+        root: &Arc<TranscriptSnapshot>,
+        owner: &Value,
+        bounds: &WorkLimits,
+    ) -> (Arc<crate::snapshot_prepared::PreparedFacts>, u64) {
+        let mut usage = [0u64; 20];
+        let (retained, reservation) = store
+            .prepared_root_facts(
+                root,
+                &json!({"id":"native","version":"1"}),
+                owner,
+                bounds,
+                PreparedCacheReads::Unmetered,
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        let facts = Arc::clone(retained.facts());
+        drop(retained);
+        drop(reservation);
+        (facts, usage[18])
+    }
+
+    #[test]
+    fn concurrent_identical_root_fact_cold_reads_share_one_disk_read() {
+        let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let root = pinned_root(&store, &source, &owner);
+        assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 0);
+        store
+            .lock_state()
+            .remove_prepared_facts(&root.stamp.identity)
+            .unwrap();
+        assert!(store
+            .prepared_disk
+            .has_entry(&fact_entry_key(&source.path, &owner))
+            .unwrap());
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        let gate = install_fact_read_gate(&store, || {});
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| root_facts_read(&store, &root, &owner, &bounds));
+            gate.wait_until_read();
+            let second = scope.spawn(|| root_facts_read(&store, &root, &owner, &bounds));
+            wait_for_fact_read_waiter(&store);
+            gate.release();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!((first.1, second.1), (1, 0));
+        assert!(Arc::ptr_eq(&first.0, &second.0));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
+        assert!(Arc::ptr_eq(
+            &store.lock_state().prepared_facts[&root.stamp.identity].facts,
+            &first.0
+        ));
+        drop((first, second));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn waiting_reader_with_a_different_binding_never_reuses_the_published_facts() {
+        let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let other = json!({"claimant":"a","admission":"hook","authority":owner["authority"],"registry_generation":"other-registry"});
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let root = pinned_root(&store, &source, &owner);
+        for binding in [&owner, &other] {
+            assert_eq!(root_facts_read(&store, &root, binding, &bounds).1, 0);
+            store
+                .lock_state()
+                .remove_prepared_facts(&root.stamp.identity)
+                .unwrap();
+            assert!(store
+                .prepared_disk
+                .has_entry(&fact_entry_key(&source.path, binding))
+                .unwrap());
+        }
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
+        let gate = install_fact_read_gate(&store, || {});
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| root_facts_read(&store, &root, &owner, &bounds));
+            gate.wait_until_read();
+            let second = scope.spawn(|| root_facts_read(&store, &root, &other, &bounds));
+            wait_for_fact_read_waiter(&store);
+            gate.release();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!((first.1, second.1), (1, 1));
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
+        assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
+        {
+            let state = store.lock_state();
+            let cached = &state.prepared_facts[&root.stamp.identity];
+            assert_eq!(cached.registry_generation, "other-registry");
+            assert!(Arc::ptr_eq(&cached.facts, &second.0));
+        }
+        drop((first, second));
+        store.assert_conserved();
     }
 
     #[test]

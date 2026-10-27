@@ -301,6 +301,23 @@ impl NativeStore {
             &context["authority"],
             classifier,
         )?;
+        let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
+        if let Some(retained) = self.touch_retained_facts(
+            root.stamp,
+            registry_generation,
+            context["admission"].as_str().unwrap_or(""),
+            &context["authority"],
+            classifier,
+        ) {
+            self.after_facts_returned();
+            return Ok((
+                retained,
+                ProjectionReservation {
+                    store: self,
+                    bytes: 0,
+                },
+            ));
+        }
         let bound = crate::snapshot_projection::facts_bound(root);
         let decoded = self.prepared_disk.decoded_bytes(&key);
         if self
@@ -346,6 +363,7 @@ impl NativeStore {
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
         }
+        drop(claim);
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = root.event_count;
@@ -447,6 +465,24 @@ impl NativeStore {
             &context["authority"],
             &classifier,
         )?;
+        let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
+        if let Some(retained) = self.touch_retained_facts(
+            stamp,
+            registry_generation,
+            admission,
+            &context["authority"],
+            &classifier,
+        ) {
+            usage[7] += 1;
+            return Ok((
+                stamp,
+                PreparedSourceOutcome::Ready {
+                    stamp,
+                    held: HeldFacts::Retained(retained),
+                    cached: true,
+                },
+            ));
+        }
         if let Some(decoded) = self.prepared_disk.decoded_bytes(&key) {
             if self
                 .prepared_disk
@@ -527,6 +563,7 @@ impl NativeStore {
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
         }
+        drop(claim);
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
