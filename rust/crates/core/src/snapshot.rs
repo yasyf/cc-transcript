@@ -13326,19 +13326,18 @@ mod tests {
         background.insert("work_class", json!("background"));
         let prepare = json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
         let cold = store.request(&prepare, &owner, &Cancellation::default());
-        assert_eq!(cold["status"].as_str(), Some("incomplete"), "{cold:?}");
+        assert_eq!(cold["status"].as_str(), Some("ok"), "{cold:?}");
         assert_eq!(
             cold["usage"]["discovery_entries_examined"].as_u64(),
-            Some(0)
+            Some(930)
         );
+        assert_eq!(cold["usage"]["source_opens"].as_u64(), Some(0));
         let warm = store.request(&json!({"schema":SCHEMA,"id":"warm","operation":"warm_registered","classifier":{"id":"native","version":"1"},"thread_ids":prepare["thread_ids"],"roots":prepare["roots"],"direct_paths":[],"start_index":0,"membership_revision":null,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &background, &Cancellation::default());
         assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
         assert_eq!(warm["data"]["complete"].as_bool(), Some(false));
-        assert!(
-            warm["usage"]["discovery_entries_examined"]
-                .as_u64()
-                .unwrap()
-                > 0
+        assert_eq!(
+            warm["usage"]["discovery_entries_examined"].as_u64(),
+            Some(0)
         );
         let after_warm = store.state.lock().unwrap().counters;
         let graph = finish_prepared(
@@ -16200,13 +16199,7 @@ mod tests {
             .unwrap()
             .write_all(format!("{}\n", user("resumed")).as_bytes())
             .unwrap();
-        let stale_membership = store.request(&prepare, &owner, &Cancellation::default());
-        assert_eq!(
-            stale_membership["status"].as_str(),
-            Some("incomplete"),
-            "{stale_membership:?}"
-        );
-        warm();
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
         let resumed = finish_prepared(
             &store,
             store.request(&prepare, &owner, &Cancellation::default()),
@@ -16214,6 +16207,151 @@ mod tests {
         );
         assert_eq!(resumed["status"].as_str(), Some("ok"), "{resumed:?}");
         assert!(has(&resumed, "Grep"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+    }
+
+    fn tool_use_line(name: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"{name}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"{name}","name":"{name}","input":{{}}}}]}}}}"#
+        )
+    }
+
+    fn registered_prepare(source: &Source, root: &Value, ids: &[&str]) -> Value {
+        let template = acquire(&source.path);
+        json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":ids,"roots":[source.directory.to_string_lossy().as_ref()],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+    }
+
+    fn graph_has_tool(
+        store: &NativeStore,
+        source: &Source,
+        owner: &Value,
+        graph: &Value,
+        name: &str,
+    ) -> bool {
+        let template = acquire(&source.path);
+        let result = finish_prepared(
+            store,
+            store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":name,"subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), owner, &Cancellation::default()),
+            owner,
+        );
+        assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
+        result["data"]["value"].as_bool().unwrap()
+    }
+
+    #[test]
+    fn cold_registered_graph_prepares_only_its_requested_members_on_demand() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let members = registered_members(&source, &["thread-a", "thread-b"]);
+        std::fs::write(
+            &members[0],
+            format!("{}\n{}\n", user("a"), tool_use_line("Read")),
+        )
+        .unwrap();
+        let unrelated = source.directory.join("thread-z.jsonl");
+        std::fs::write(
+            &unrelated,
+            format!("{}\n{}\n", user("z"), tool_use_line("Grep")),
+        )
+        .unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let prepare = registered_prepare(&source, &root, &["thread-a", "thread-b"]);
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert!(!graph_has_tool(&store, &source, &owner, &graph, "Grep"));
+        assert!(graph_has_tool(&store, &source, &owner, &graph, "Read"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), 3);
+        {
+            let state = store.lock_state();
+            assert!(state.has_prepared_facts(&member_identity(&members[0])));
+            assert!(state.has_prepared_facts(&member_identity(&members[1])));
+            assert!(!state.has_prepared_facts(&member_identity(&unrelated)));
+        }
+        let lookups = store.fact_lookups.load(Ordering::Relaxed);
+        let again = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(again["status"].as_str(), Some("ok"), "{again:?}");
+        assert!(graph_has_tool(&store, &source, &owner, &again, "Read"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), 3);
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), lookups);
+        assert!(!store
+            .lock_state()
+            .has_prepared_facts(&member_identity(&unrelated)));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn registered_graph_sees_appends_and_new_children_without_warming() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let members = registered_members(&source, &["thread-a", "thread-b"]);
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let prepare = registered_prepare(&source, &root, &["thread-a", "thread-b"]);
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert!(!graph_has_tool(&store, &source, &owner, &graph, "Grep"));
+        assert!(!graph_has_tool(&store, &source, &owner, &graph, "Bash"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&members[1])
+            .unwrap()
+            .write_all(format!("{}\n", tool_use_line("Grep")).as_bytes())
+            .unwrap();
+        let appended = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(appended["status"].as_str(), Some("ok"), "{appended:?}");
+        assert!(graph_has_tool(&store, &source, &owner, &appended, "Grep"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        let subagents = source.directory.join("thread-a").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(
+            subagents.join("child.jsonl"),
+            format!("{}\n{}\n", user("child"), tool_use_line("Bash")),
+        )
+        .unwrap();
+        let discovered = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(discovered["status"].as_str(), Some("ok"), "{discovered:?}");
+        assert!(graph_has_tool(&store, &source, &owner, &discovered, "Bash"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 3);
+        let hot = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(hot["status"].as_str(), Some("ok"), "{hot:?}");
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 3);
+        store.assert_conserved();
     }
 
     #[test]
