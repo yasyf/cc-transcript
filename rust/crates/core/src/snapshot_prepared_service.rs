@@ -1811,16 +1811,9 @@ impl NativeStore {
             let before_read = usage[1];
             let before_events = usage[3];
             let (canonical, metadata) = dirs.resolve(&source.path)?;
-            self.authority(context, Some(&canonical))?;
-            if SourceStamp::of(&metadata) != source.stamp {
-                return Err(SnapshotError::new(
-                    Status::Changed,
-                    "registered source changed",
-                ));
-            }
             let cache_reads =
                 PreparedCacheReads::Warming(remaining.max_source_read_bytes, &membership, since);
-            let (_, mut outcome) = match self.prepared_source(
+            let (stamp, mut outcome) = match self.prepared_source(
                 &canonical,
                 &metadata,
                 context,
@@ -1852,6 +1845,17 @@ impl NativeStore {
                 }
                 Err(error) => return Err(error),
             };
+            if stamp != source.stamp {
+                if let PreparedSourceOutcome::Pending(token) = &outcome {
+                    self.lock_state()
+                        .waiters
+                        .remove(token);
+                }
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered source changed",
+                ));
+            }
             let mut rounds = 0;
             let cached = loop {
                 match outcome {
@@ -2575,6 +2579,14 @@ impl NativeStore {
         context: &Value,
         bytes: usize,
     ) -> bool {
+        let fits = self.admit_spare(context, bytes);
+        if fits {
+            reservation.bytes += bytes;
+        }
+        fits
+    }
+
+    fn admit_spare(&self, context: &Value, bytes: usize) -> bool {
         let mut state = self.lock_state();
         let fits = self.memory_cap(context).is_ok_and(|cap| {
             number(&Self::gauges(&mut state), "retained_total_accounted_bytes")
@@ -2583,7 +2595,6 @@ impl NativeStore {
         if fits {
             state.ledger.shared.work().admitted(bytes);
             state.transient_bytes += bytes;
-            reservation.bytes += bytes;
             state.ledger.shared.work().reserved(bytes);
         }
         fits
@@ -2803,15 +2814,17 @@ impl<'a> ResolvedDirs<'a> {
         let canonical = directory.join(name);
         let key = parent.to_path_buf();
         let growth = map_growth(&self.dirs, 1) + key.capacity() + directory.capacity();
-        if let Some(reservation) = self.reservation.as_mut() {
-            self.store
-                .extend_projection_reservation(reservation, self.context, growth)?;
-        } else {
-            self.reservation = Some(self.store.reserve_projection(self.context, growth)?);
+        if self.store.admit_spare(self.context, growth) {
+            self.reservation
+                .get_or_insert_with(|| ProjectionReservation {
+                    store: self.store,
+                    bytes: 0,
+                })
+                .bytes += growth;
+            let predicted = map_capacity_for(&self.dirs, 1);
+            self.dirs.insert(key, directory);
+            assert_eq!(self.dirs.capacity(), predicted);
         }
-        let predicted = map_capacity_for(&self.dirs, 1);
-        self.dirs.insert(key, directory);
-        assert_eq!(self.dirs.capacity(), predicted);
         Ok(canonical)
     }
 

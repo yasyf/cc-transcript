@@ -765,7 +765,7 @@ fn several_negatives_reuse_the_once_loaded_child_facts() {
             reusing.cache_reads,
             reusing.cache_bytes,
         ),
-        (3, 0, 0, 1, 0, 0, 0)
+        (4, 0, 0, 1, 0, 0, 0)
     );
 }
 

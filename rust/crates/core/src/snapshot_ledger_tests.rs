@@ -5450,7 +5450,11 @@ fn prepared_query_refuses_source_completion_before_construction() {
             &attempt,
             offset,
             large_bytes,
-            &[Trace::Reserved(REPLY_RESERVATION), Trace::Reserved(record)],
+            &[
+                Trace::Reserved(REPLY_RESERVATION),
+                Trace::Reserved(record),
+                Trace::Reserved(resolved_dir_bytes(&build(1).pins[1].canonical_path)),
+            ],
             PINNED_LOAD,
         );
         assert_refused_reply(site, &build(1), large - 1, 1);
