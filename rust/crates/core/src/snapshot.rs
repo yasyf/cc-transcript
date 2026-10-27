@@ -15504,9 +15504,15 @@ mod tests {
         store.assert_conserved();
     }
 
-    fn binding(registry_generation: &str) -> Value {
-        let authority = context("a")["authority"].clone();
-        json!({"claimant":"a","admission":"hook","authority":authority,"registry_generation":registry_generation})
+    fn binding(store: &NativeStore, tool: &str) -> Value {
+        let owner = context("a");
+        let registry_generation = store
+            .register_tool_registry(
+                &json!([{"name":tool,"behaves_like":"Read","span_edit":null}]),
+                &owner,
+            )
+            .unwrap();
+        json!({"claimant":"a","admission":"hook","authority":owner["authority"],"registry_generation":registry_generation})
     }
 
     fn resident_bindings(store: &NativeStore, root: &Arc<TranscriptSnapshot>) -> usize {
@@ -15533,7 +15539,7 @@ mod tests {
         let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
         let store = fact_budget_store(16 * 1024 * 1024);
         let bounds = limits(&acquire(&source.path)).unwrap();
-        let (a, b) = (binding("registry-a"), binding("registry-b"));
+        let (a, b) = (binding(&store, "fetch_a"), binding(&store, "fetch_b"));
         let root = pinned_root(&store, &source, &a);
         for owner in [&a, &b] {
             assert_eq!(root_facts_read(&store, &root, owner, &bounds).1, 0);
@@ -15576,7 +15582,7 @@ mod tests {
         let store = fact_budget_store(16 * 1024 * 1024);
         let bounds = limits(&acquire(&source.path)).unwrap();
         let bindings: Vec<Value> = (0..17)
-            .map(|index| binding(&format!("registry-{index}")))
+            .map(|index| binding(&store, &format!("fetch_{index}")))
             .collect();
         let root = pinned_root(&store, &source, &bindings[0]);
         let published: Vec<_> = bindings
@@ -15607,7 +15613,7 @@ mod tests {
         let source = Source::new(&format!("{}\n", user("root")));
         let store = fact_budget_store(16 * 1024 * 1024);
         let bounds = limits(&acquire(&source.path)).unwrap();
-        let (a, b) = (binding("registry-a"), binding("registry-b"));
+        let (a, b) = (binding(&store, "fetch_a"), binding(&store, "fetch_b"));
         let root = pinned_root(&store, &source, &a);
         let stale: Vec<_> = [&a, &b]
             .into_iter()
@@ -15638,7 +15644,7 @@ mod tests {
             .touch_prepared_facts(
                 &stale_key,
                 root.stamp,
-                "registry-a",
+                a["registry_generation"].as_str().unwrap(),
                 "hook",
                 &a["authority"],
                 &json!({"id":"native","version":"1"}),
