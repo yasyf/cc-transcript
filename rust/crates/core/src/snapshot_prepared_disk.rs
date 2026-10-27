@@ -7,6 +7,8 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use sha2::{Digest, Sha256};
@@ -604,6 +606,10 @@ pub struct PreparedDiskCache {
     owner_compatibility: [u8; 32],
     engine_compatibility: Option<[u8; 32]>,
     state: Mutex<DiskState>,
+    #[cfg(test)]
+    pub(crate) dir_checks: AtomicUsize,
+    #[cfg(test)]
+    pub(crate) list_hook: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl PreparedDiskCache {
@@ -706,6 +712,10 @@ impl PreparedDiskCache {
             owner_compatibility,
             engine_compatibility,
             state: Mutex::new(DiskState::new(work)),
+            #[cfg(test)]
+            dir_checks: AtomicUsize::new(0),
+            #[cfg(test)]
+            list_hook: Mutex::new(None),
         };
         match cache.engine_compatibility {
             None => cache.cleanup_stale_owners(),
@@ -788,6 +798,8 @@ impl PreparedDiskCache {
     }
 
     pub fn check_dir(&self) -> Result<(), SnapshotError> {
+        #[cfg(test)]
+        self.dir_checks.fetch_add(1, Ordering::Relaxed);
         let namespace = fs::symlink_metadata(&self.namespace).map_err(disk_error)?;
         let pinned_namespace = self.namespace_file.metadata().map_err(disk_error)?;
         if !namespace.is_dir()
@@ -1417,13 +1429,25 @@ impl PreparedDiskCache {
 
     pub fn has_entry(&self, key: &PreparedDiskKey) -> Result<bool, SnapshotError> {
         self.check_dir()?;
-        Ok(self
+        Ok(self.lists(key))
+    }
+
+    pub fn lists(&self, key: &PreparedDiskKey) -> bool {
+        let listed = self
             .state
             .lock()
             .expect("prepared facts disk state")
             .entries
             .get(&key.name)
-            .is_some_and(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64))
+            .is_some_and(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64);
+        #[cfg(test)]
+        {
+            let hook = self.list_hook.lock().expect("list hook").clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        listed
     }
 
     pub fn touch(

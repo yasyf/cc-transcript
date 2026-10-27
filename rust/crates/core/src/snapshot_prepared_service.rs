@@ -383,15 +383,10 @@ impl NativeStore {
         }
     }
 
-    fn resolved_source(
-        &self,
-        path: &Path,
-    ) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
+    fn canonical_path(&self, path: &Path) -> std::io::Result<PathBuf> {
         #[cfg(test)]
         self.source_resolutions.fetch_add(1, Ordering::Relaxed);
-        let canonical = std::fs::canonicalize(path).map_err(io_error)?;
-        let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-        Ok((canonical, metadata))
+        std::fs::canonicalize(path)
     }
 
     fn prepared_source(
@@ -563,6 +558,7 @@ impl NativeStore {
     fn resume_prepared_source(
         &self,
         pending: &PendingPreparedSource,
+        dirs: &mut ResolvedDirs<'_>,
         context: &Value,
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
@@ -570,7 +566,7 @@ impl NativeStore {
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         self.authority(
             context,
-            Some(&std::fs::canonicalize(&pending.path).map_err(io_error)?),
+            Some(&dirs.resolve(&pending.path)?.0),
         )?;
         self.advance_prepared_source(pending, context, remaining, cancel, usage)
     }
@@ -770,25 +766,23 @@ impl NativeStore {
         cancel: &Cancellation,
         deadline: u64,
     ) -> Result<bool, SnapshotError> {
+        let mut dirs = ResolvedDirs::new(self, context);
         for source in sources {
             #[cfg(test)]
             self.membership_metadata_checks
                 .fetch_add(1, Ordering::Relaxed);
             cancel.check(deadline)?;
-            let canonical = match std::fs::canonicalize(&source.path) {
-                Ok(canonical) => canonical,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-                Err(error) => return Err(io_error(error)),
+            let (canonical, metadata) = match dirs.resolve(&source.path) {
+                Ok(resolved) => resolved,
+                Err(error) if error.status == Status::Missing => return Ok(false),
+                Err(error) => return Err(error),
             };
             self.authority(context, Some(&canonical))?;
-            if canonical != source.path
-                || SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?)
-                    != source.stamp
-            {
+            if canonical != source.path || SourceStamp::of(&metadata) != source.stamp {
                 return Ok(false);
             }
         }
-        Ok(true)
+        dirs.hold()
     }
 
     fn validate_sidechain_dirs(
@@ -798,28 +792,28 @@ impl NativeStore {
         cancel: &Cancellation,
         deadline: u64,
     ) -> Result<bool, SnapshotError> {
+        let mut dirs = ResolvedDirs::new(self, context);
         for (path, stamp) in sidechain_dirs {
             #[cfg(test)]
             self.membership_metadata_checks
                 .fetch_add(1, Ordering::Relaxed);
             cancel.check(deadline)?;
-            let canonical = match std::fs::canonicalize(path) {
-                Ok(canonical) => canonical,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (canonical, metadata) = match dirs.resolve(path) {
+                Ok(resolved) => resolved,
+                Err(error) if error.status == Status::Missing => {
                     if stamp.is_some() {
                         return Ok(false);
                     }
                     continue;
                 }
-                Err(error) => return Err(io_error(error)),
+                Err(error) => return Err(error),
             };
             self.authority(context, Some(&canonical))?;
-            let current = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-            if stamp.is_none_or(|stamp| current != stamp) {
+            if stamp.is_none_or(|stamp| SourceStamp::of(&metadata) != stamp) {
                 return Ok(false);
             }
         }
-        Ok(true)
+        dirs.hold()
     }
 
     fn prepare_graph(
@@ -1801,6 +1795,7 @@ impl NativeStore {
         let mut next = start;
         let mut steps = 0usize;
         let mut uncached_steps = 0usize;
+        let mut dirs = ResolvedDirs::new(self, context);
         'warming: while next < members.len() && steps < 256 && uncached_steps < 8 {
             if let Err(error) = cancel.check(remaining.deadline_unix_ms) {
                 if error.status == Status::Deadline && next > start {
@@ -1815,10 +1810,16 @@ impl NativeStore {
             }
             let before_read = usage[1];
             let before_events = usage[3];
-            let (canonical, metadata) = self.resolved_source(&source.path)?;
+            let (canonical, metadata) = dirs.resolve(&source.path)?;
+            if SourceStamp::of(&metadata) != source.stamp {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered source changed",
+                ));
+            }
             let cache_reads =
                 PreparedCacheReads::Warming(remaining.max_source_read_bytes, &membership, since);
-            let (stamp, mut outcome) = match self.prepared_source(
+            let (_, mut outcome) = match self.prepared_source(
                 &canonical,
                 &metadata,
                 context,
@@ -1850,17 +1851,6 @@ impl NativeStore {
                 }
                 Err(error) => return Err(error),
             };
-            if stamp != source.stamp {
-                if let PreparedSourceOutcome::Pending(token) = &outcome {
-                    self.lock_state()
-                        .waiters
-                        .remove(token);
-                }
-                return Err(SnapshotError::new(
-                    Status::Changed,
-                    "registered source changed",
-                ));
-            }
             let mut rounds = 0;
             let cached = loop {
                 match outcome {
@@ -1894,6 +1884,7 @@ impl NativeStore {
                         };
                         outcome = match self.resume_prepared_source(
                             &pending,
+                            &mut dirs,
                             context,
                             &mut remaining,
                             cancel,
@@ -1929,6 +1920,13 @@ impl NativeStore {
             steps += 1;
             uncached_steps += usize::from(!cached);
         }
+        if !dirs.hold()? {
+            return Err(SnapshotError::new(
+                Status::Changed,
+                "registered source changed",
+            ));
+        }
+        drop(dirs);
         let complete = next == members.len();
         if complete {
             if !self.validate_warm_membership(
@@ -1944,6 +1942,7 @@ impl NativeStore {
                     "registered warming membership changed",
                 ));
             }
+            self.prepared_disk.check_dir()?;
             for source in members.iter().filter(|source| active(source, since)) {
                 cancel.check(remaining.deadline_unix_ms)?;
                 let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
@@ -1953,13 +1952,14 @@ impl NativeStore {
                     &context["authority"],
                     &request["classifier"],
                 )?;
-                if !self.prepared_disk.has_entry(&key)? {
+                if !self.prepared_disk.lists(&key) {
                     return Err(SnapshotError::new(
                         Status::RetainedLimit,
                         "prepared facts cache cannot retain complete membership",
                     ));
                 }
             }
+            self.prepared_disk.check_dir()?;
         }
         let disk = self.prepared_disk.stats();
         let (source_offset, source_size) = if let Some(source) = members.get(next) {
@@ -2023,7 +2023,19 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let page = self.prepared_query_steps(&mut cursor, context, reservation, cancel, usage);
+        let mut dirs = ResolvedDirs::new(self, context);
+        let page = self
+            .prepared_query_steps(&mut cursor, &mut dirs, context, reservation, cancel, usage)
+            .and_then(|page| {
+                if dirs.hold()? {
+                    Ok(page)
+                } else {
+                    Err(SnapshotError::new(
+                        Status::Changed,
+                        "prepared graph source changed",
+                    ))
+                }
+            });
         let pending = cursor.pending.as_ref().map(|pending| pending.token.clone());
         let reply = page.and_then(|page| match page {
             QueryPage::Complete(data) => Ok((data, None, None)),
@@ -2042,6 +2054,7 @@ impl NativeStore {
     fn prepared_query_steps(
         &self,
         cursor: &mut PreparedQueryCursor,
+        dirs: &mut ResolvedDirs<'_>,
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
         cancel: &Cancellation,
@@ -2115,7 +2128,7 @@ impl NativeStore {
                 continue;
             }
             let source = &sources[cursor.next];
-            let (canonical, metadata) = self.resolved_source(&source.path)?;
+            let (canonical, metadata) = dirs.resolve(&source.path)?;
             if SourceStamp::of(&metadata) != source.stamp {
                 return Err(SnapshotError::new(
                     Status::Changed,
@@ -2739,5 +2752,77 @@ impl Observers {
                 plain
             },
         )
+    }
+}
+
+struct ResolvedDirs<'a> {
+    store: &'a NativeStore,
+    context: &'a Value,
+    dirs: HashMap<PathBuf, PathBuf>,
+    reservation: Option<ProjectionReservation<'a>>,
+}
+
+impl<'a> ResolvedDirs<'a> {
+    fn new(store: &'a NativeStore, context: &'a Value) -> Self {
+        Self {
+            store,
+            context,
+            dirs: HashMap::new(),
+            reservation: None,
+        }
+    }
+
+    fn resolve(&mut self, path: &Path) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
+        let resolved = match self.context["authority"]["kind"].as_str() {
+            Some("user") => match std::fs::symlink_metadata(path).map_err(io_error)? {
+                metadata if metadata.is_symlink() => self.exact(path)?,
+                metadata => (self.memoized(path)?, metadata),
+            },
+            _ => self.exact(path)?,
+        };
+        self.store.after_source_resolved(path);
+        Ok(resolved)
+    }
+
+    fn exact(&self, path: &Path) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
+        let canonical = self.store.canonical_path(path).map_err(io_error)?;
+        let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+        Ok((canonical, metadata))
+    }
+
+    fn memoized(&mut self, path: &Path) -> Result<PathBuf, SnapshotError> {
+        let (parent, name) = path
+            .parent()
+            .zip(path.file_name())
+            .expect("resolved sources are file paths");
+        if let Some(directory) = self.dirs.get(parent) {
+            return Ok(directory.join(name));
+        }
+        let directory = self.store.canonical_path(parent).map_err(io_error)?;
+        let canonical = directory.join(name);
+        let key = parent.to_path_buf();
+        let growth = map_growth(&self.dirs, 1) + key.capacity() + directory.capacity();
+        if let Some(reservation) = self.reservation.as_mut() {
+            self.store
+                .extend_projection_reservation(reservation, self.context, growth)?;
+        } else {
+            self.reservation = Some(self.store.reserve_projection(self.context, growth)?);
+        }
+        let predicted = map_capacity_for(&self.dirs, 1);
+        self.dirs.insert(key, directory);
+        assert_eq!(self.dirs.capacity(), predicted);
+        Ok(canonical)
+    }
+
+    fn hold(&self) -> Result<bool, SnapshotError> {
+        for (directory, canonical) in &self.dirs {
+            match self.store.canonical_path(directory) {
+                Ok(current) if current == *canonical => {}
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        Ok(true)
     }
 }

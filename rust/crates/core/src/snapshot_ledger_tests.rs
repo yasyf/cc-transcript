@@ -5204,7 +5204,8 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
                 .prepared_disk
                 .entry_file_len(&disk_key(&fixture.owner, fixture.pins[1].stamp));
             let fitted = constructed(site, &fixture.store, [0, 1], false, || {
-                let (canonical, metadata) = fixture.store.resolved_source(path)?;
+                let canonical = std::fs::canonicalize(path).map_err(io_error)?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 let (_, outcome) = fixture.store.prepared_source(
                     &canonical,
                     &metadata,

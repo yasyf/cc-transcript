@@ -2797,6 +2797,8 @@ pub struct NativeStore {
     #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
+    resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
+    #[cfg(test)]
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
     pub(crate) source_resolutions: AtomicUsize,
@@ -3262,6 +3264,8 @@ impl NativeStore {
             locate_hook: Mutex::new(None),
             #[cfg(test)]
             release_hook: Mutex::new(None),
+            #[cfg(test)]
+            resolve_hook: Mutex::new(None),
             #[cfg(test)]
             membership_metadata_checks: AtomicUsize::new(0),
             #[cfg(test)]
@@ -7704,6 +7708,17 @@ impl NativeStore {
             }
         }
     }
+
+    #[cfg(test)]
+    fn after_source_resolved(&self, path: &Path) {
+        let hook = self.resolve_hook.lock().expect("resolve hook").clone();
+        if let Some(hook) = hook {
+            hook(path);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn after_source_resolved(&self, _path: &Path) {}
 
     fn after_facts_returned(&self) {
         #[cfg(test)]
@@ -14269,7 +14284,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_query_resolves_each_source_once_per_traversal() {
+    fn prepared_query_resolves_each_directory_once_per_pass() {
         let source = Source::new(&format!("{}\n", user("root")));
         let children: Vec<_> = ["one", "two", "three"]
             .into_iter()
@@ -14316,11 +14331,150 @@ mod tests {
             )
         };
         traversal();
-        assert_eq!(traversal(), (3, 0, Some(0)));
+        assert_eq!(traversal(), (4, 0, Some(0)));
         for child in &children {
             evict_memory_facts(&store, child);
         }
-        assert_eq!(traversal(), (3, 3, Some(3)));
+        assert_eq!(traversal(), (4, 3, Some(3)));
+    }
+
+    fn retarget_on_resolve(store: &NativeStore, trigger: &Path, directory: &Path, moved: &Path) {
+        let armed = Arc::new(AtomicBool::new(true));
+        let (trigger, directory, moved) = (
+            trigger.to_path_buf(),
+            directory.to_path_buf(),
+            moved.to_path_buf(),
+        );
+        *store.resolve_hook.lock().unwrap() = Some(Arc::new(move |path: &Path| {
+            if path == trigger && armed.swap(false, Ordering::SeqCst) {
+                std::fs::rename(&directory, &moved).unwrap();
+                std::os::unix::fs::symlink(&moved, &directory).unwrap();
+            }
+        }));
+    }
+
+    fn canonical_members(directory: &Path, names: &[&str], extra: &str) -> Vec<PreparedSourceRef> {
+        std::fs::create_dir_all(directory).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let path = directory.join(format!("{name}.jsonl"));
+                std::fs::write(&path, format!("{}\n{extra}", user(name))).unwrap();
+                let path = std::fs::canonicalize(&path).unwrap();
+                PreparedSourceRef {
+                    stamp: SourceStamp::of(&std::fs::metadata(&path).unwrap()),
+                    path,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn source_validation_rejects_a_parent_retargeted_between_two_members() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let members = source.directory.join("members");
+        let sources = canonical_members(&members, &["a", "b"], "");
+        let store = store();
+        let owner = context("a");
+        let validate = || {
+            store
+                .validate_source_stamps(
+                    &sources,
+                    &owner,
+                    &Cancellation::default(),
+                    now_ms() + 30_000,
+                )
+                .unwrap()
+        };
+        assert!(validate());
+        retarget_on_resolve(
+            &store,
+            &sources[0].path,
+            &members,
+            &source.directory.join("moved"),
+        );
+        assert!(!validate());
+        assert!(sources.iter().all(|member| SourceStamp::of(
+            &std::fs::metadata(&member.path).unwrap()
+        ) == member.stamp));
+    }
+
+    #[test]
+    fn restricted_roots_resolve_every_member_exactly() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let inside = source.directory.join("inside");
+        let members = inside.join("d");
+        let sources = canonical_members(&members, &["a", "b"], "");
+        std::fs::create_dir(source.directory.join("outside")).unwrap();
+        let store = store();
+        let mut owner = context("a");
+        owner.insert(
+            "authority",
+            json!({"kind":"restricted_roots","roots":[inside.to_string_lossy().as_ref()],"effective_uid":unsafe { libc::geteuid() }.to_string()}),
+        );
+        let validate = || {
+            store.validate_source_stamps(
+                &sources,
+                &owner,
+                &Cancellation::default(),
+                now_ms() + 30_000,
+            )
+        };
+        let before = store.source_resolutions.load(Ordering::Relaxed);
+        assert!(validate().unwrap());
+        assert_eq!(store.source_resolutions.load(Ordering::Relaxed) - before, 2);
+        retarget_on_resolve(
+            &store,
+            &sources[0].path,
+            &members,
+            &source.directory.join("outside").join("d"),
+        );
+        assert!(validate().unwrap_err().status == Status::PermissionDenied);
+    }
+
+    #[test]
+    fn early_positive_query_rejects_a_parent_retargeted_during_its_page() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/only-a"}}]}}"#;
+        let members = source.directory.join("members");
+        let sources = canonical_members(&members, &["a"], &format!("{tool}\n"));
+        std::fs::write(members.join("b.jsonl"), format!("{}\n", user("b"))).unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let template = acquire(&source.path);
+        let direct = [members.join("a.jsonl"), members.join("b.jsonl")]
+            .map(|path| path.to_string_lossy().into_owned());
+        let graph = finish_prepared(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":direct,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let query = || {
+            finish_prepared(
+                &store,
+                store.request(&json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Read","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+                &owner,
+            )
+        };
+        assert_eq!(query()["data"]["value"].as_bool(), Some(true));
+        retarget_on_resolve(
+            &store,
+            &sources[0].path,
+            &members,
+            &source.directory.join("moved"),
+        );
+        let retargeted = query();
+        assert_eq!(
+            retargeted["status"].as_str(),
+            Some("changed"),
+            "{retargeted:?}"
+        );
     }
 
     #[test]
@@ -15465,6 +15619,8 @@ mod tests {
         );
         let revision = cold[0]["data"]["membership_revision"].as_str().unwrap();
         let resolutions = store.source_resolutions.load(Ordering::Relaxed);
+        let dir_checks = store.prepared_disk.dir_checks.load(Ordering::Relaxed);
+        let metadata_checks = store.membership_metadata_checks.load(Ordering::Relaxed);
         let writes = store.prepared_disk.stats().writes;
         let cached = registered_pages(&store, &owner, &request);
         assert_eq!(
@@ -15480,9 +15636,96 @@ mod tests {
         }
         assert_eq!(
             store.source_resolutions.load(Ordering::Relaxed) - resolutions,
-            600
+            10
+        );
+        assert_eq!(
+            store.prepared_disk.dir_checks.load(Ordering::Relaxed) - dir_checks,
+            2
+        );
+        assert_eq!(
+            store.membership_metadata_checks.load(Ordering::Relaxed) - metadata_checks,
+            4 * 600
         );
         assert_eq!(store.prepared_disk.stats().writes, writes);
+    }
+
+    #[test]
+    fn registered_completion_rejects_an_owner_directory_replaced_between_members() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let (source, store, owner, request) = registered_warming(2);
+        registered_pages(&store, &owner, &request);
+        let member = std::fs::canonicalize(source.directory.join("thread-0000.jsonl")).unwrap();
+        let dir = store
+            .prepared_disk
+            .entry_file(&fact_entry_key(&member, &owner))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let displaced = dir.with_extension("displaced");
+        let listed = Arc::new(AtomicUsize::new(0));
+        *store.prepared_disk.list_hook.lock().unwrap() = Some(Arc::new({
+            let (dir, displaced, listed) = (dir.clone(), displaced.clone(), Arc::clone(&listed));
+            move || {
+                if listed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    std::fs::rename(&dir, &displaced).unwrap();
+                    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+                }
+            }
+        }));
+        let checks = store.prepared_disk.dir_checks.load(Ordering::Relaxed);
+        let mut repeat = request.clone();
+        repeat.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let reply = store.request(&repeat, &owner, &Cancellation::default());
+        *store.prepared_disk.list_hook.lock().unwrap() = None;
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::rename(&displaced, &dir).unwrap();
+        assert_eq!(listed.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            store.prepared_disk.dir_checks.load(Ordering::Relaxed) - checks,
+            2
+        );
+        assert_eq!(
+            (reply["status"].as_str(), reply["reason"].as_str()),
+            (
+                Some("incomplete"),
+                Some("prepared facts cache directory changed")
+            ),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn registered_warming_page_rejects_a_parent_retargeted_between_members() {
+        let (source, store, owner, request) = registered_warming(300);
+        let cold = registered_pages(&store, &owner, &request);
+        let mut page = request.clone();
+        page.insert("start_index", json!(1));
+        page.insert(
+            "membership_revision",
+            cold[0]["data"]["membership_revision"].clone(),
+        );
+        page.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let unchanged = store.request(&page, &owner, &Cancellation::default());
+        assert_eq!(unchanged["status"].as_str(), Some("ok"), "{unchanged:?}");
+        assert_eq!(unchanged["data"]["complete"].as_bool(), Some(false));
+        let directory = std::fs::canonicalize(&source.directory).unwrap();
+        let moved = directory.with_extension("moved");
+        retarget_on_resolve(
+            &store,
+            &directory.join("thread-0001.jsonl"),
+            &directory,
+            &moved,
+        );
+        page.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let retargeted = store.request(&page, &owner, &Cancellation::default());
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&moved, &directory).unwrap();
+        assert_eq!(
+            retargeted["status"].as_str(),
+            Some("changed"),
+            "{retargeted:?}"
+        );
     }
 
     #[test]
