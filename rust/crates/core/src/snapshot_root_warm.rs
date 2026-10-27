@@ -387,12 +387,9 @@ mod root_warm_tests {
         .unwrap();
         let entry = store.prepared_disk.entry_file(&key);
         let stored = store.prepared_disk.entry_file_len(&key);
-        let resident = || store.lock_state().prepared_facts.contains_key(&stamp.identity);
+        let resident = || store.lock_state().has_prepared_facts(&stamp.identity);
         let evict = || {
-            store
-                .lock_state()
-                .remove_prepared_facts(&stamp.identity)
-                .unwrap();
+            assert_eq!(store.lock_state().remove_identity_facts(stamp.identity), 1);
         };
         assert_eq!(outcome(warm(1024 * 1024)), complete(0, 0));
 
@@ -490,7 +487,7 @@ mod root_warm_tests {
         );
         let forget = || {
             let mut state = store.lock_state();
-            state.remove_prepared_facts(&stamp.identity).unwrap();
+            assert_eq!(state.remove_identity_facts(stamp.identity), 1);
             state.remove_load(&stamp.identity).unwrap();
             state.remove_latest(&stamp.identity).unwrap();
         };
@@ -818,8 +815,16 @@ mod root_warm_tests {
             state.latest.values().next().unwrap(),
             &physical
         ));
+        let custom_key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+            physical.stamp,
+            context["registry_generation"].as_str().unwrap(),
+            "hook",
+            &context["authority"],
+            &json!({"id":"custom","version":"1"}),
+        )
+        .unwrap();
         assert_eq!(
-            state.prepared_facts.values().next().unwrap().classifier,
+            state.prepared_facts.get(&custom_key).unwrap().classifier,
             json!({"id":"custom","version":"1"})
         );
         drop(state);

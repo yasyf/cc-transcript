@@ -14,7 +14,7 @@ use std::sync::{LazyLock, Mutex};
 use sha2::{Digest, Sha256};
 use sonic_rs::{json, JsonValueTrait, Value};
 
-use crate::snapshot::{SnapshotError, SourceStamp, Status, PARSER_VERSION};
+use crate::snapshot::{SnapshotError, SourceIdentity, SourceStamp, Status, PARSER_VERSION};
 #[cfg(test)]
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{Table, Work};
@@ -462,7 +462,9 @@ impl EntryName {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PreparedDiskKey {
+    identity: SourceIdentity,
     digest: [u8; 32],
     name: [u8; 32],
     native: bool,
@@ -495,11 +497,16 @@ impl PreparedDiskKey {
             .map_err(|error| incomplete(format!("prepared facts key: {error}")))?;
         let digest: [u8; 32] = Sha256::digest(canonical.as_bytes()).into();
         Ok(Self {
+            identity: stamp.identity,
             digest,
             name: Sha256::digest(digest).into(),
             native: classifier["id"].as_str() == Some("native")
                 && classifier["version"].as_str() == Some("1"),
         })
+    }
+
+    pub fn identity(&self) -> SourceIdentity {
+        self.identity
     }
 }
 

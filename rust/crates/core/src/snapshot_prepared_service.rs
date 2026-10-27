@@ -213,13 +213,25 @@ impl NativeStore {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
         let authority = &context["authority"];
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
+            stamp,
+            registry_generation,
+            admission,
+            authority,
+            classifier,
+        )?;
         let mut state = self.lock_state();
-        if let Some(cached) =
-            state.touch_prepared_facts(stamp, registry_generation, admission, authority, classifier)
-        {
+        if let Some(cached) = state.touch_prepared_facts(
+            &key,
+            stamp,
+            registry_generation,
+            admission,
+            authority,
+            classifier,
+        ) {
             return Ok(self.retain_cached_facts(&mut state, cached));
         }
-        state.remove_prepared_facts(&stamp.identity);
+        state.retire_identity_facts(stamp.identity, |cached| cached.stamp == stamp);
         let accounted = facts.accounted_bytes();
         let budget = self.prepared_fact_budget();
         if accounted > budget {
@@ -248,13 +260,13 @@ impl NativeStore {
             facts: Arc::clone(&facts),
             last_used: now_ms(),
         };
-        let additional = state.admission(&stamp.identity, &cached, [facts_anchor(&cached.facts)])
-            + state.prepared_facts_growth(&stamp.identity);
+        let additional = state.admission(&key, &cached, [facts_anchor(&cached.facts)])
+            + state.prepared_facts_growth(&key);
         let covered = additional.min(reservation.bytes);
         self.admit_memory(&mut state, context, additional - covered)?;
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
-        state.insert_prepared_facts(stamp.identity, cached);
+        state.insert_prepared_facts(key, cached);
         Ok(self.retain_cached_facts(&mut state, facts))
     }
 
@@ -278,10 +290,19 @@ impl NativeStore {
         usage: &mut [u64; 20],
     ) -> Result<(RetainedFacts<'_>, ProjectionReservation<'_>), SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
-        if let Some(retained) = self.touch_retained_facts(
+        let admission = str_field(context, "admission")?;
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             root.stamp,
             registry_generation,
-            context["admission"].as_str().unwrap_or(""),
+            admission,
+            &context["authority"],
+            classifier,
+        )?;
+        if let Some(retained) = self.touch_retained_facts(
+            &key,
+            root.stamp,
+            registry_generation,
+            admission,
             &context["authority"],
             classifier,
         ) {
@@ -294,18 +315,12 @@ impl NativeStore {
                 },
             ));
         }
-        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
-            root.stamp,
-            registry_generation,
-            str_field(context, "admission")?,
-            &context["authority"],
-            classifier,
-        )?;
         let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
         if let Some(retained) = self.touch_retained_facts(
+            &key,
             root.stamp,
             registry_generation,
-            context["admission"].as_str().unwrap_or(""),
+            admission,
             &context["authority"],
             classifier,
         ) {
@@ -439,11 +454,20 @@ impl NativeStore {
             }
         }
         let registry_generation = str_field(context, "registry_generation")?;
+        let admission = str_field(context, "admission")?;
         let classifier = json!({"id":"native","version":"1"});
-        if let Some(retained) = self.touch_retained_facts(
+        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             stamp,
             registry_generation,
-            context["admission"].as_str().unwrap_or(""),
+            admission,
+            &context["authority"],
+            &classifier,
+        )?;
+        if let Some(retained) = self.touch_retained_facts(
+            &key,
+            stamp,
+            registry_generation,
+            admission,
             &context["authority"],
             &classifier,
         ) {
@@ -457,16 +481,9 @@ impl NativeStore {
                 },
             ));
         }
-        let admission = str_field(context, "admission")?;
-        let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
-            stamp,
-            registry_generation,
-            admission,
-            &context["authority"],
-            &classifier,
-        )?;
         let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
         if let Some(retained) = self.touch_retained_facts(
+            &key,
             stamp,
             registry_generation,
             admission,
@@ -495,7 +512,7 @@ impl NativeStore {
             if let PreparedCacheReads::Warming(_, membership, since) = cache_reads {
                 if self.prepared_disk.touch(&key, |accounted| {
                     !self.lock_state().prepared_facts_fit_sparing(
-                        stamp.identity,
+                        key,
                         accounted,
                         self.prepared_fact_budget(),
                         |cached| {

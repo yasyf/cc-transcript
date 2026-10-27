@@ -2266,7 +2266,10 @@ fn root_facts_are_reserved_at_their_bound_before_parsing() {
         assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
         reserved_before_the_last_admission("root facts", &traced(&store), bound);
         let cached = NativeStore::audit_facts_bytes(
-            &store.lock_state().prepared_facts[&snapshot.stamp.identity].facts,
+            &store
+                .lock_state()
+                .cached_prepared_facts(&snapshot.stamp.identity)
+                .facts,
         );
         assert_eq!(
             cached, bound,
@@ -3600,7 +3603,7 @@ fn recent_codex_cache_write_is_skipped_when_only_its_growth_does_not_fit() {
                 leases - 1,
                 "{site}: the refusal leaked its source lease"
             );
-            assert!(!state.prepared_facts.contains_key(&identity));
+            assert!(!state.has_prepared_facts(&identity));
             assert_eq!(
                 state.latest.contains_key(&identity),
                 state.recent_codex.contains_key(&identity),
@@ -4510,10 +4513,11 @@ fn facts_cache_fixture(scenario: &Scenario, background: bool, padding: usize) ->
     );
     assert_eq!(primed["status"].as_str(), Some("ok"), "{primed:?}");
     let identity = SourceStamp::of(&std::fs::metadata(&scenario.sidechains[0]).unwrap()).identity;
-    store
-        .lock_state()
-        .remove_prepared_facts(&identity)
-        .expect("primed sidechain facts");
+    assert_eq!(
+        store.lock_state().remove_identity_facts(identity),
+        1,
+        "primed sidechain facts"
+    );
     Fixture {
         store,
         owner,
@@ -4526,13 +4530,7 @@ fn facts_cache_fixture(scenario: &Scenario, background: bool, padding: usize) ->
 fn prepared_facts_cache_admits_its_authority_metadata_exactly() {
     let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
     let identity = SourceStamp::of(&std::fs::metadata(&scenario.sidechains[0]).unwrap()).identity;
-    let facts_cached = |fixture: &Fixture| {
-        fixture
-            .store
-            .lock_state()
-            .prepared_facts
-            .contains_key(&identity)
-    };
+    let facts_cached = |fixture: &Fixture| fixture.store.lock_state().has_prepared_facts(&identity);
     let cached = |fixture: &Fixture| {
         admitted(
             &drive(&fixture.store, submit(fixture), &fixture.owner),
@@ -5005,10 +5003,13 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
                 &mut [0u64; 20],
             )
             .unwrap();
-        store
-            .lock_state()
-            .remove_prepared_facts(&snapshot.stamp.identity)
-            .expect("primed root facts");
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(snapshot.stamp.identity),
+            1,
+            "primed root facts"
+        );
     }
     assert_eq!(
         store
@@ -5019,8 +5020,7 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
     );
     assert!(!store
         .lock_state()
-        .prepared_facts
-        .contains_key(&snapshot.stamp.identity));
+        .has_prepared_facts(&snapshot.stamp.identity));
     Fixture {
         store,
         owner,
@@ -5374,7 +5374,7 @@ fn assert_completion_admitted_in_full(site: &str, build: &dyn Fn() -> Fixture, p
             state.latest.contains_key(&identity),
             "{site}: a Claude source keeps its parsed snapshot cached"
         );
-        assert!(!state.prepared_facts.contains_key(&identity));
+        assert!(!state.has_prepared_facts(&identity));
         assert!(state.waiters.is_empty());
         assert!(state.prepared_loads.is_empty());
     }
@@ -5397,8 +5397,7 @@ fn completion_query_fixture(scenario: &Scenario, index: usize, background: bool)
     );
     assert!(!store
         .lock_state()
-        .prepared_facts
-        .contains_key(&sidechain.stamp.identity));
+        .has_prepared_facts(&sidechain.stamp.identity));
     {
         let mut state = store.lock_state();
         state.prepared_loads.reserve(1);
@@ -5607,10 +5606,13 @@ fn decoded_slice_fixture(source: &LedgerSource, background: bool) -> Fixture {
     let owner = context_for("decoded-slices", background);
     let (root, snapshot) = acquired(&store, &source.path, &owner);
     prepared_graph(&store, &root, &[], &owner);
-    store
-        .lock_state()
-        .remove_prepared_facts(&snapshot.stamp.identity)
-        .expect("built root facts");
+    assert_eq!(
+        store
+            .lock_state()
+            .remove_identity_facts(snapshot.stamp.identity),
+        1,
+        "built root facts"
+    );
     let probes = fact_probes(&store);
     let graph = prepared_graph(&store, &root, &[], &owner);
     assert_eq!(
@@ -6615,7 +6617,7 @@ fn parked_build_record_bytes(fixture: &Fixture) -> usize {
         panic!("expected one parked build, found {}", builds.len());
     };
     assert!(
-        state.prepared_facts.contains_key(&root.stamp.identity),
+        state.has_prepared_facts(&root.stamp.identity),
         "root facts are not cached"
     );
     size_of::<PreparedBuild>()
@@ -6759,10 +6761,17 @@ fn stale_prepared_build_frees_its_buffers_before_releasing_their_reservation() {
         let fixture = parked_build_fixture(&scenario, background);
         let facts = {
             let mut state = fixture.store.lock_state();
-            let cached = state
-                .remove_prepared_facts(&fixture.pins[0].stamp.identity)
-                .expect("cached root facts");
-            Arc::downgrade(&cached.facts)
+            let facts = Arc::downgrade(
+                &state
+                    .cached_prepared_facts(&fixture.pins[0].stamp.identity)
+                    .facts,
+            );
+            assert_eq!(
+                state.remove_identity_facts(fixture.pins[0].stamp.identity),
+                1,
+                "cached root facts"
+            );
+            facts
         };
         assert!(
             facts.upgrade().is_some(),
@@ -6819,6 +6828,13 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
             .unwrap();
         let bytes = NativeStore::audit_facts_bytes(retained.facts());
         assert_eq!(store.lock_state().ledger.shared.facts(), bytes);
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(root.stamp.identity),
+            1
+        );
+        assert_eq!(store.lock_state().ledger.shared.facts(), bytes);
         let (replacement, replacement_reservation) = store
             .prepared_root_facts(
                 &root,
@@ -6833,7 +6849,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
         {
             let state = store.lock_state();
             assert!(Arc::ptr_eq(
-                &state.prepared_facts[&root.stamp.identity].facts,
+                &state.cached_prepared_facts(&root.stamp.identity).facts,
                 replacement.facts()
             ));
             assert!(!Arc::ptr_eq(retained.facts(), replacement.facts()));
@@ -6862,6 +6878,13 @@ fn resumed_prepared_build_keeps_its_root_facts_counted_after_a_cache_replacement
         let fixture = parked_build_fixture(&scenario, background);
         let other = restricted_context("other", background, &scenario.root.directory, 0);
         let (root, _pin) = acquired(&fixture.store, &scenario.root.path, &other);
+        assert_eq!(
+            fixture
+                .store
+                .lock_state()
+                .remove_identity_facts(fixture.pins[0].stamp.identity),
+            1
+        );
         let replaced = drive(
             &fixture.store,
             fixture.store.request(
@@ -6877,7 +6900,11 @@ fn resumed_prepared_build_keeps_its_root_facts_counted_after_a_cache_replacement
             let build = state.prepared_builds.values().next().expect("parked build");
             (
                 Arc::clone(&build.root_facts),
-                Arc::clone(&state.prepared_facts[&fixture.pins[0].stamp.identity].facts),
+                Arc::clone(
+                    &state
+                        .cached_prepared_facts(&fixture.pins[0].stamp.identity)
+                        .facts,
+                ),
             )
         };
         assert!(
@@ -6929,8 +6956,7 @@ fn cached_root_facts_fixture(source: &LedgerSource, background: bool) -> Fixture
     assert!(
         store
             .lock_state()
-            .prepared_facts
-            .contains_key(&snapshot.stamp.identity),
+            .has_prepared_facts(&snapshot.stamp.identity),
         "the root facts were not cached"
     );
     Fixture {
@@ -6957,8 +6983,7 @@ fn cached_source_facts_fixture(scenario: &Scenario, background: bool) -> Fixture
     assert!(
         store
             .lock_state()
-            .prepared_facts
-            .contains_key(&sidechain.stamp.identity),
+            .has_prepared_facts(&sidechain.stamp.identity),
         "the sidechain facts were not cached"
     );
     Fixture {
@@ -6975,11 +7000,24 @@ fn cache_replacement_barrier(
     identity: SourceIdentity,
     replace: impl FnOnce() -> Value,
 ) -> Replacement {
-    let cached = || Arc::clone(&fixture.store.lock_state().prepared_facts[&identity].facts);
+    let cached = || {
+        Arc::clone(
+            &fixture
+                .store
+                .lock_state()
+                .cached_prepared_facts(&identity)
+                .facts,
+        )
+    };
     let (response, (held, before, replaced, fresh, counted, ledgered, audit)) =
         returned_facts_barrier(fixture, || {
             let held = cached();
             let before = fixture.store.lock_state().ledger.shared.facts();
+            assert_eq!(
+                fixture.store.lock_state().remove_identity_facts(identity),
+                1
+            );
+            assert_eq!(fixture.store.lock_state().ledger.shared.facts(), before);
             let replaced = replace();
             let fresh = cached();
             let counted = fixture.store.lock_state().ledger.shared.facts();
