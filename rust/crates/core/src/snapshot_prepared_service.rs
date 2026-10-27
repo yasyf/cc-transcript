@@ -913,35 +913,25 @@ impl NativeStore {
         let since = active_since_ns(request)?;
         if !ids.is_empty() {
             let key = Self::warm_membership_key(request, context)?;
-            let (members, sidechain_dirs, complete) = self
-                .lock_state()
-                .warm_memberships
-                .get(&key)
-                .map(|membership| {
-                    (
-                        Arc::clone(&membership.members),
-                        Arc::clone(&membership.sidechain_dirs),
-                        membership.complete,
-                    )
-                })
-                .ok_or_else(|| {
-                    SnapshotError::new(Status::Incomplete, "registered membership is not warmed")
-                })?;
-            if !complete
-                || !self.validate_warm_membership(
-                    &members,
-                    &sidechain_dirs,
-                    context,
-                    cancel,
-                    remaining.deadline_unix_ms,
-                )?
-            {
-                self.lock_state().remove_warm_membership(&key);
-                return Err(SnapshotError::new(
-                    Status::Incomplete,
-                    "registered membership changed or is incomplete",
-                ));
-            }
+            let mut membership_limits = remaining;
+            let (membership, mut membership_reservation) = self.registered_membership(
+                &key,
+                request,
+                context,
+                cancel,
+                usage,
+                &mut membership_limits,
+                true,
+            )?;
+            self.publish_warm_membership(
+                &key,
+                &membership,
+                context,
+                membership_reservation.as_mut(),
+            )?;
+            drop(membership_reservation);
+            let members = Arc::clone(&membership.members);
+            let sidechain_dirs = Arc::clone(&membership.sidechain_dirs);
             let (retained, mut reservation) =
                 self.prepared_root_facts(
                     &root,
@@ -1514,6 +1504,42 @@ impl NativeStore {
         Ok(())
     }
 
+    fn registered_membership(
+        &self,
+        key: &str,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        usage: &mut [u64; 20],
+        remaining: &mut WorkLimits,
+        revalidate: bool,
+    ) -> Result<(WarmMembership, Option<ProjectionReservation<'_>>), SnapshotError> {
+        let cached = self.lock_state().warm_memberships.get(key).cloned();
+        if let Some(cached) = cached {
+            if !revalidate
+                || self.validate_warm_membership(
+                    &cached.members,
+                    &cached.sidechain_dirs,
+                    context,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                )?
+            {
+                return Ok((cached, None));
+            }
+            self.lock_state().remove_warm_membership(key);
+        }
+        let (membership, reservation) =
+            self.build_warm_membership(key, request, context, cancel, usage, remaining)?;
+        if !membership.complete {
+            return Err(SnapshotError::new(
+                Status::Incomplete,
+                "registered membership is incomplete",
+            ));
+        }
+        Ok((membership, Some(reservation)))
+    }
+
     fn build_warm_membership(
         &self,
         key: &str,
@@ -1794,41 +1820,15 @@ impl NativeStore {
         }
         let start = number(request, "start_index")?;
         let key = Self::warm_membership_key(request, context)?;
-        let cached = self.lock_state()
-            .warm_memberships
-            .get(&key)
-            .cloned();
-        let (membership, mut reservation) = match cached {
-            Some(cached)
-                if start > 0
-                    || self.validate_warm_membership(
-                        &cached.members,
-                        &cached.sidechain_dirs,
-                        context,
-                        cancel,
-                        remaining.deadline_unix_ms,
-                    )? =>
-            {
-                (cached, None)
-            }
-            Some(_) => {
-                self.lock_state().remove_warm_membership(&key);
-                let (membership, reservation) =
-                    self.build_warm_membership(&key, request, context, cancel, usage, &mut remaining)?;
-                (membership, Some(reservation))
-            }
-            None => {
-                let (membership, reservation) =
-                    self.build_warm_membership(&key, request, context, cancel, usage, &mut remaining)?;
-                (membership, Some(reservation))
-            }
-        };
-        if !membership.complete {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "registered membership is incomplete",
-            ));
-        }
+        let (membership, mut reservation) = self.registered_membership(
+            &key,
+            request,
+            context,
+            cancel,
+            usage,
+            &mut remaining,
+            start == 0,
+        )?;
         self.publish_warm_membership(&key, &membership, context, reservation.as_mut())?;
         drop(reservation);
         let members = &membership.members;
