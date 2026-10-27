@@ -15696,6 +15696,33 @@ mod tests {
     }
 
     #[test]
+    fn restricted_warming_step_refuses_a_member_swapped_for_an_outside_symlink() {
+        let (source, store, mut owner, request) = registered_warming(2);
+        owner.insert(
+            "authority",
+            json!({"kind":"restricted_roots","roots":[source.directory.to_string_lossy().as_ref()],"effective_uid":unsafe { libc::geteuid() }.to_string()}),
+        );
+        let cold = registered_pages(&store, &owner, &request);
+        let outside = Source::new(&format!("{}\n", user("outside")));
+        let member = source.directory.join("thread-0001.jsonl");
+        std::fs::remove_file(&member).unwrap();
+        std::os::unix::fs::symlink(&outside.path, &member).unwrap();
+        let mut page = request.clone();
+        page.insert("start_index", json!(1));
+        page.insert(
+            "membership_revision",
+            cold[0]["data"]["membership_revision"].clone(),
+        );
+        page.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let refused = store.request(&page, &owner, &Cancellation::default());
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("permission_denied"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
     fn registered_warming_page_rejects_a_parent_retargeted_between_members() {
         let (source, store, owner, request) = registered_warming(300);
         let cold = registered_pages(&store, &owner, &request);

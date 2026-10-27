@@ -1811,6 +1811,7 @@ impl NativeStore {
             let before_read = usage[1];
             let before_events = usage[3];
             let (canonical, metadata) = dirs.resolve(&source.path)?;
+            self.authority(context, Some(&canonical))?;
             if SourceStamp::of(&metadata) != source.stamp {
                 return Err(SnapshotError::new(
                     Status::Changed,

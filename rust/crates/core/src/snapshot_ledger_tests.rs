@@ -6255,7 +6255,10 @@ fn uncached_source_facts_hold_their_reservation_until_consumption() {
         let filler = fill_to(
             &fixture.store,
             &fixture.owner,
-            REPLY_RESERVATION + prepared_query_record_bytes(&fixture) + predicted,
+            REPLY_RESERVATION
+                + prepared_query_record_bytes(&fixture)
+                + resolved_dir_bytes(&fixture.pins[1].canonical_path)
+                + predicted,
         );
         let response = held_facts_barrier(site, &fixture, filler, occupied);
         assert_eq!(
@@ -12169,6 +12172,13 @@ fn fresh_resolution_reserves_each_found_session_before_retaining_it() {
         );
         assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
     }
+}
+
+fn resolved_dir_bytes(path: &Path) -> usize {
+    let parent = path.parent().unwrap();
+    crate::snapshot_ledger::map_growth(&HashMap::<PathBuf, PathBuf>::new(), 1)
+        + parent.as_os_str().len()
+        + std::fs::canonicalize(parent).unwrap().as_os_str().len()
 }
 
 fn prepared_query_record_bytes(fixture: &Fixture) -> usize {
