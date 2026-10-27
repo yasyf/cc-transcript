@@ -26,10 +26,10 @@ use crate::snapshot_ledger::{
 };
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
-use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::snapshot_memory::{
     arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
 };
+use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
 use crate::types::{Entry, SYNTHETIC_MODEL};
 
@@ -2487,8 +2487,7 @@ impl StoreState {
         let last_used = cached.last_used;
         if let Some(displaced) = self.prepared_facts.insert(key, cached) {
             self.ledger.shared.release(facts_key(&displaced.facts));
-            self.prepared_facts_lru
-                .remove(&(displaced.last_used, key));
+            self.prepared_facts_lru.remove(&(displaced.last_used, key));
         }
         self.prepared_facts_lru.insert((last_used, key));
     }
@@ -5656,9 +5655,7 @@ impl NativeStore {
         );
         for (key, cached) in state.prepared_facts.iter() {
             assert!(
-                state
-                    .prepared_facts_lru
-                    .contains(&(cached.last_used, *key)),
+                state.prepared_facts_lru.contains(&(cached.last_used, *key)),
                 "prepared facts lru index misses a cached entry"
             );
         }
@@ -14240,11 +14237,7 @@ mod tests {
         );
         assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
         assert_eq!(store.prepared_disk.stats().writes, writes);
-        assert!(store
-            .state
-            .lock()
-            .unwrap()
-            .has_prepared_facts(&identity));
+        assert!(store.state.lock().unwrap().has_prepared_facts(&identity));
     }
 
     fn fact_entry_key(
@@ -14367,9 +14360,9 @@ mod tests {
             Some("prepared facts revision was evicted")
         );
         assert_eq!(cache_reads(&corrupt), (Some(1), Some(stored), Some(0)));
-        assert!(!store
-            .lock_state()
-            .has_prepared_facts(&SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity));
+        assert!(!store.lock_state().has_prepared_facts(
+            &SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity
+        ));
         let stats = store.request(
             &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
             &owner,
@@ -15426,7 +15419,12 @@ mod tests {
         let bounds = limits(&acquire(&source.path)).unwrap();
         let root = pinned_root(&store, &source, &owner);
         assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 0);
-        assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 1);
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(root.stamp.identity),
+            1
+        );
         assert!(store
             .prepared_disk
             .has_entry(&fact_entry_key(&source.path, &owner))
@@ -15447,7 +15445,10 @@ mod tests {
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
         assert!(Arc::ptr_eq(
-            &store.lock_state().cached_prepared_facts(&root.stamp.identity).facts,
+            &store
+                .lock_state()
+                .cached_prepared_facts(&root.stamp.identity)
+                .facts,
             &first.0
         ));
         drop((first, second));
@@ -15464,7 +15465,12 @@ mod tests {
         let root = pinned_root(&store, &source, &owner);
         for binding in [&owner, &other] {
             assert_eq!(root_facts_read(&store, &root, binding, &bounds).1, 0);
-            assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 1);
+            assert_eq!(
+                store
+                    .lock_state()
+                    .remove_identity_facts(root.stamp.identity),
+                1
+            );
             assert!(store
                 .prepared_disk
                 .has_entry(&fact_entry_key(&source.path, binding))
@@ -15485,8 +15491,14 @@ mod tests {
         assert!(!Arc::ptr_eq(&first.0, &second.0));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
-        assert!(Arc::ptr_eq(&resident_binding(&store, &root, &owner), &first.0));
-        assert!(Arc::ptr_eq(&resident_binding(&store, &root, &other), &second.0));
+        assert!(Arc::ptr_eq(
+            &resident_binding(&store, &root, &owner),
+            &first.0
+        ));
+        assert!(Arc::ptr_eq(
+            &resident_binding(&store, &root, &other),
+            &second.0
+        ));
         assert_eq!(resident_bindings(&store, &root), 2);
         drop((first, second));
         store.assert_conserved();
@@ -15526,7 +15538,12 @@ mod tests {
         for owner in [&a, &b] {
             assert_eq!(root_facts_read(&store, &root, owner, &bounds).1, 0);
         }
-        assert_eq!(store.lock_state().remove_identity_facts(root.stamp.identity), 2);
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(root.stamp.identity),
+            2
+        );
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
         let reads: Vec<u64> = [&a, &b, &a, &b, &a, &b]
             .into_iter()
@@ -15535,10 +15552,19 @@ mod tests {
         assert_eq!(reads, [1, 1, 0, 0, 0, 0]);
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
         assert_eq!(resident_bindings(&store, &root), 2);
-        let (first_a, first_b) = (resident_binding(&store, &root, &a), resident_binding(&store, &root, &b));
+        let (first_a, first_b) = (
+            resident_binding(&store, &root, &a),
+            resident_binding(&store, &root, &b),
+        );
         assert!(!Arc::ptr_eq(&first_a, &first_b));
-        assert!(Arc::ptr_eq(&root_facts_read(&store, &root, &a, &bounds).0, &first_a));
-        assert!(Arc::ptr_eq(&root_facts_read(&store, &root, &b, &bounds).0, &first_b));
+        assert!(Arc::ptr_eq(
+            &root_facts_read(&store, &root, &a, &bounds).0,
+            &first_a
+        ));
+        assert!(Arc::ptr_eq(
+            &root_facts_read(&store, &root, &b, &bounds).0,
+            &first_b
+        ));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
         drop((first_a, first_b));
         store.assert_conserved();
@@ -15569,7 +15595,9 @@ mod tests {
         assert!(published
             .iter()
             .enumerate()
-            .all(|(index, facts)| published[..index].iter().all(|earlier| !Arc::ptr_eq(earlier, facts))));
+            .all(|(index, facts)| published[..index]
+                .iter()
+                .all(|earlier| !Arc::ptr_eq(earlier, facts))));
         drop(published);
         store.assert_conserved();
     }
@@ -15596,7 +15624,10 @@ mod tests {
         assert_eq!(fresh_a.1, 0);
         assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 1);
         assert_eq!(resident_bindings(&store, &revised), 1);
-        assert!(Arc::ptr_eq(&resident_binding(&store, &revised, &a), &fresh_a.0));
+        assert!(Arc::ptr_eq(
+            &resident_binding(&store, &revised, &a),
+            &fresh_a.0
+        ));
         assert!(stale.iter().all(|facts| !Arc::ptr_eq(facts, &fresh_a.0)));
         let fresh_b = root_facts_read(&store, &revised, &b, &bounds);
         assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);

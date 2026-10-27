@@ -821,7 +821,10 @@ fn corrupted(family: &Family) {
     *bytes.last_mut().unwrap() ^= 1;
     std::fs::write(&entry, bytes).unwrap();
     assert_eq!(
-        family.store.lock_state().remove_identity_facts(stamp.identity),
+        family
+            .store
+            .lock_state()
+            .remove_identity_facts(stamp.identity),
         1
     );
 }
