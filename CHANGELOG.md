@@ -109,6 +109,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `warm_registered` steps, `query_graph` pages, and their final validation no
+  longer walk every member's full path. Each pass resolves a member's parent
+  directory once, checks the member itself with one `lstat`, and resolves every
+  parent it used again before it replies. A member whose parent was renamed or
+  replaced by a symlink during the pass still fails the reply with `changed`.
+  Under `restricted_roots` authority every member still resolves in full. A
+  fresh owner made about 37,000 full-path resolutions in 5 seconds, which is
+  about 300,000 `getattrlist` calls. A pass now makes one resolution per
+  directory. The completion check of a `warm_registered` membership now checks
+  the prepared-facts cache directory once before and once after it reads the
+  cache index, instead of twice per active member.
 - A `warm_registered` step no longer reads a member's prepared facts back from
   the disk cache when keeping them in memory means evicting facts the same
   membership already holds there, or when they cannot stay in memory at all. The

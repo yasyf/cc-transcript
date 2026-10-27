@@ -5204,7 +5204,8 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
                 .prepared_disk
                 .entry_file_len(&disk_key(&fixture.owner, fixture.pins[1].stamp));
             let fitted = constructed(site, &fixture.store, [0, 1], false, || {
-                let (canonical, metadata) = fixture.store.resolved_source(path)?;
+                let canonical = std::fs::canonicalize(path).map_err(io_error)?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 let (_, outcome) = fixture.store.prepared_source(
                     &canonical,
                     &metadata,
@@ -5449,7 +5450,11 @@ fn prepared_query_refuses_source_completion_before_construction() {
             &attempt,
             offset,
             large_bytes,
-            &[Trace::Reserved(REPLY_RESERVATION), Trace::Reserved(record)],
+            &[
+                Trace::Reserved(REPLY_RESERVATION),
+                Trace::Reserved(record),
+                Trace::Reserved(resolved_dir_bytes(&build(1).pins[1].canonical_path)),
+            ],
             PINNED_LOAD,
         );
         assert_refused_reply(site, &build(1), large - 1, 1);
@@ -6254,7 +6259,10 @@ fn uncached_source_facts_hold_their_reservation_until_consumption() {
         let filler = fill_to(
             &fixture.store,
             &fixture.owner,
-            REPLY_RESERVATION + prepared_query_record_bytes(&fixture) + predicted,
+            REPLY_RESERVATION
+                + prepared_query_record_bytes(&fixture)
+                + resolved_dir_bytes(&fixture.pins[1].canonical_path)
+                + predicted,
         );
         let response = held_facts_barrier(site, &fixture, filler, occupied);
         assert_eq!(
@@ -12168,6 +12176,13 @@ fn fresh_resolution_reserves_each_found_session_before_retaining_it() {
         );
         assert!(audited(&fitted.store)[TOTAL] <= cap_for(&fitted.owner));
     }
+}
+
+fn resolved_dir_bytes(path: &Path) -> usize {
+    let parent = path.parent().unwrap();
+    crate::snapshot_ledger::map_growth(&HashMap::<PathBuf, PathBuf>::new(), 1)
+        + parent.as_os_str().len()
+        + std::fs::canonicalize(parent).unwrap().as_os_str().len()
 }
 
 fn prepared_query_record_bytes(fixture: &Fixture) -> usize {
