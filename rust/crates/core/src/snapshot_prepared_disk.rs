@@ -501,6 +501,12 @@ impl EntryName {
         .expect("entry file name")
     }
 
+    fn legacy(key: &[u8; 32]) -> CString {
+        let high = u128::from_be_bytes(key[..16].try_into().expect("entry name key"));
+        let low = u128::from_be_bytes(key[16..].try_into().expect("entry name key"));
+        CString::new(format!("{high:032x}{low:032x}.facts")).expect("entry file name")
+    }
+
     fn parse(name: &CStr) -> Option<Self> {
         let bytes = name.to_bytes();
         if bytes.len() != ENTRY_NAME_BYTES
@@ -578,8 +584,23 @@ impl PreparedDiskKey {
 pub enum DiskLookup {
     Hit(PreparedFacts),
     IndexOnly(PreparedFacts),
+    Changed,
     Miss,
     Retired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inserted {
+    Written,
+    Listed,
+    AlreadyFull,
+    Refused,
+}
+
+impl Inserted {
+    pub fn serves(self) -> bool {
+        !matches!(self, Self::Refused)
+    }
 }
 
 #[derive(Default)]
@@ -1042,10 +1063,7 @@ impl PreparedDiskCache {
             if entry_name.as_c_str() == OWNER_LOCK {
                 continue;
             }
-            if !generated_entry(&entry_name)
-                && legacy_entry_bytes(&entry_name).is_none()
-                && EntryName::parse(&entry_name).is_none()
-            {
+            if !generated_entry(&entry_name) && legacy_entry_bytes(&entry_name).is_none() {
                 complete = false;
                 continue;
             }
@@ -1143,6 +1161,7 @@ impl PreparedDiskCache {
         let mut examined = 0;
         let mut growth = 0usize;
         let mut largest = 0usize;
+        let mut refused: HashMap<[u8; 32], (TextState, usize)> = HashMap::new();
         'listing: for rank in (0..claimed.len()).rev() {
             let Ok(mut names) = DirEntries::new(claimed[rank].dir.as_raw_fd()) else {
                 continue;
@@ -1178,19 +1197,21 @@ impl PreparedDiskCache {
                     )
                 });
                 let displaced_bytes = standing.map_or(0, |(_, bytes, _)| bytes);
-                let decoded = well_formed
+                let wins = well_formed
+                    && parsed.tag == engine_tag
+                    && newest - claimed[rank].generation < MAX_INHERITED_GENERATIONS
+                    && text_state.is_some_and(|text_state| {
+                        let candidate = (text_state, parsed.bytes);
+                        standing.is_none_or(|(_, _, standing)| candidate > standing)
+                            && refused
+                                .get(&parsed.key)
+                                .is_none_or(|refused| candidate > *refused)
+                    });
+                let decoded = wins
                     .then(|| decode_transient_bytes(parsed.bytes - HEADER_BYTES))
                     .and_then(|transient| parsed.accounted.checked_add(parsed.bytes + transient))
                     .filter(|decoded| {
-                        parsed.tag == engine_tag
-                            && newest - claimed[rank].generation < MAX_INHERITED_GENERATIONS
-                            && text_state.is_some_and(|text_state| {
-                                standing.is_none_or(|(_, _, standing)| {
-                                    (text_state, parsed.bytes) > standing
-                                })
-                            })
-                            && parsed.bytes
-                                <= self.max_bytes - (state.inherited_bytes - displaced_bytes)
+                        parsed.bytes <= self.max_bytes - (state.inherited_bytes - displaced_bytes)
                             && (standing.is_some() || state.entries.len() < MAX_INHERITED_ENTRIES)
                             && growth
                                 .saturating_add(index_growth)
@@ -1222,6 +1243,19 @@ impl PreparedDiskCache {
                         state.inherited_bytes += parsed.bytes;
                     }
                     None => {
+                        if wins {
+                            if let Some((loser_rank, loser_bytes, _)) = standing {
+                                claimed[loser_rank].garbage = claimed[loser_rank]
+                                    .garbage
+                                    .saturating_add(loser_bytes.min(self.max_bytes));
+                                state.inherited_bytes -= loser_bytes;
+                                state.entries.remove(&parsed.key);
+                            }
+                            refused.insert(
+                                parsed.key,
+                                (text_state.expect("well-formed entry"), parsed.bytes),
+                            );
+                        }
                         claimed[rank].garbage = claimed[rank]
                             .garbage
                             .saturating_add(parsed.bytes.min(self.max_bytes));
@@ -1249,35 +1283,40 @@ impl PreparedDiskCache {
     }
 
     fn entry_name(&self, key: &PreparedDiskKey, entry: &DiskEntry) -> CString {
-        EntryName {
-            key: key.name,
-            tag: tag(&self.compatibility(key)),
-            bytes: entry.bytes,
-            accounted: entry.accounted,
-            index_bytes: entry.index_bytes,
-            index_accounted: entry.index_accounted,
-            text_state: entry.text_state as u64,
+        match self.engine_compatibility {
+            None => EntryName::legacy(&key.name),
+            Some(_) => EntryName {
+                key: key.name,
+                tag: tag(&self.compatibility(key)),
+                bytes: entry.bytes,
+                accounted: entry.accounted,
+                index_bytes: entry.index_bytes,
+                index_accounted: entry.index_accounted,
+                text_state: entry.text_state as u64,
+            }
+            .encode(),
         }
-        .encode()
     }
 
     fn entry_names(&self, name: &[u8; 32], entry: &DiskEntry) -> Vec<CString> {
-        [Some(self.owner_compatibility), self.engine_compatibility]
-            .iter()
-            .flatten()
-            .map(|compatibility| {
-                EntryName {
-                    key: *name,
-                    tag: tag(compatibility),
-                    bytes: entry.bytes,
-                    accounted: entry.accounted,
-                    index_bytes: entry.index_bytes,
-                    index_accounted: entry.index_accounted,
-                    text_state: entry.text_state as u64,
-                }
-                .encode()
-            })
-            .collect()
+        match self.engine_compatibility {
+            None => vec![EntryName::legacy(name)],
+            Some(engine) => [self.owner_compatibility, engine]
+                .iter()
+                .map(|compatibility| {
+                    EntryName {
+                        key: *name,
+                        tag: tag(compatibility),
+                        bytes: entry.bytes,
+                        accounted: entry.accounted,
+                        index_bytes: entry.index_bytes,
+                        index_accounted: entry.index_accounted,
+                        text_state: entry.text_state as u64,
+                    }
+                    .encode()
+                })
+                .collect(),
+        }
     }
 
     fn open_entry(&self, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {
@@ -1402,8 +1441,10 @@ impl PreparedDiskCache {
         size: usize,
         pinned: Option<&[u8; 32]>,
     ) -> Result<bool, SnapshotError> {
+        let mut names = ROOM_SWEEP_NAMES;
+        self.retry_stranded(state, &mut names);
         if state.unread() || (state.garbage_bytes() > 0 && self.over_budget(state, size)) {
-            self.sweep(state, ROOM_SWEEP_NAMES);
+            self.sweep(state, names);
         }
         let unread = state.unread();
         let size = if unread { 0 } else { size };
@@ -1547,22 +1588,20 @@ impl PreparedDiskCache {
         key: &PreparedDiskKey,
         read: &mut DiskRead,
         need: FactsNeed,
-        reserved: usize,
+        admitted: usize,
     ) -> Result<DiskLookup, SnapshotError> {
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
         let Some(entry) = state.entries.get(&key.name) else {
             return Ok(DiskLookup::Miss);
         };
-        let covered = if entry.decoded_bytes(need) <= reserved {
-            need
-        } else {
-            FactsNeed::Index
-        };
+        if entry.decoded_bytes(need) != admitted {
+            return Ok(DiskLookup::Changed);
+        }
         let (expected, index_bytes, last_used) = (entry.bytes, entry.index_bytes, entry.last_used);
         let (accounted, index_accounted) = (entry.accounted, entry.index_accounted);
-        let (wanted, admitted) = (entry.read_bytes(covered), entry.accounted_for(covered));
-        let (text_state, served) = (entry.text_state, entry.served(covered));
+        let (wanted, accounted_bound) = (entry.read_bytes(need), entry.accounted_for(need));
+        let (text_state, served) = (entry.text_state, entry.served(need));
         let name = self.entry_name(key, entry);
         let inherited = last_used < MAX_CLAIMED_OWNERS as u64;
         let dir_fd = if inherited {
@@ -1589,7 +1628,7 @@ impl PreparedDiskCache {
             let finished = (&file).take(wanted as u64).read_to_end(&mut bytes);
             read.bytes += bytes.len() as u64;
             finished.map_err(disk_error)?;
-            if covered == FactsNeed::Index
+            if need == FactsNeed::Index
                 && file.metadata().map_err(disk_error)?.len() != expected as u64
             {
                 return Err(incomplete("prepared facts cache entry changed"));
@@ -1640,7 +1679,7 @@ impl PreparedDiskCache {
             };
             let facts = PreparedFacts::from_sections(index, overrides);
             if inherited {
-                if facts.accounted_bytes() > admitted {
+                if facts.accounted_bytes() > accounted_bound {
                     return Err(incomplete("prepared facts cache accounting exceeded"));
                 }
                 renameat_file(dir_fd, &name, self.dir_file.as_raw_fd(), &name)
@@ -1834,7 +1873,7 @@ impl PreparedDiskCache {
         facts: &PreparedFacts,
         reserve: impl FnOnce(usize) -> bool,
         admit: impl FnOnce(usize) -> bool,
-    ) -> Result<bool, SnapshotError> {
+    ) -> Result<Inserted, SnapshotError> {
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
         let text_state = facts.text_state();
@@ -1854,13 +1893,15 @@ impl PreparedDiskCache {
                         .then_some(entry.last_used as usize),
                 })
             }
-            Some((true, _)) => return Ok(true),
-            Some((false, TextState::Present | TextState::Exceeded))
-                if text_state == TextState::Unbuilt =>
-            {
-                return Ok(true)
+            Some((_, TextState::Present | TextState::Exceeded)) => {
+                return Ok(if text_state == TextState::Unbuilt {
+                    Inserted::Listed
+                } else {
+                    Inserted::AlreadyFull
+                });
             }
-            Some((false, _)) => {
+            Some((true, TextState::Unbuilt)) => return Ok(Inserted::Listed),
+            Some((false, TextState::Unbuilt)) => {
                 self.retire(&mut state, key.name)?;
                 None
             }
@@ -1881,7 +1922,7 @@ impl PreparedDiskCache {
                 .map_err(|_| incomplete("prepared facts disk cache capacity exhausted"))?;
         }
         if !reserve(counted.bytes) {
-            return Ok(false);
+            return Ok(Inserted::Refused);
         }
         let mut payload = Vec::with_capacity(counted.bytes);
         crate::snapshot_codec::write_json(&mut payload, &index_section, index_len)
@@ -1907,7 +1948,11 @@ impl PreparedDiskCache {
         let size = HEADER_BYTES + payload.len();
         let pinned = replaced.as_ref().map(|_| &key.name);
         if !self.make_room(&mut state, size, pinned)? {
-            return Ok(false);
+            return Ok(Inserted::Refused);
+        }
+        let strands = 1 + usize::from(replaced.as_ref().is_some_and(|old| old.rank.is_none()));
+        if state.stranded_owned.len() + strands > MAX_STRANDED_OWNED {
+            return Ok(Inserted::Refused);
         }
         state.clock += 1;
         let temp = CString::new(format!("{:x}.tmp", state.clock)).expect("temp file name");
@@ -1956,13 +2001,13 @@ impl PreparedDiskCache {
             self.rename_entry(&temp, &name).map_err(disk_error)
         })();
         if let Err(error) = result {
-            let _ = self.unlink_entry(&temp);
+            self.strand_unless_unlinked(&mut state, temp, size);
             return Err(error);
         }
         let Some(old) = replaced else {
             if !admit(state.entries.growth_for(&key.name)) {
-                let _ = self.unlink_entry(&name);
-                return Ok(false);
+                self.strand_unless_unlinked(&mut state, name, size);
+                return Ok(Inserted::Refused);
             }
             state.bytes += size;
             state.writes += 1;
@@ -1970,7 +2015,7 @@ impl PreparedDiskCache {
             state.entries.reserve_for(&key.name);
             state.entries.insert(key.name, entry);
             self.sweep(&mut state, INSERT_SWEEP_NAMES);
-            return Ok(true);
+            return Ok(Inserted::Written);
         };
         #[cfg(test)]
         run_upgrade_hook(&self.owner_name, UpgradeStep::Published, &name, &old.name);
@@ -1978,6 +2023,11 @@ impl PreparedDiskCache {
         state.bytes += size;
         state.writes += 1;
         state.write_bytes += size as u64;
+        if old.rank.is_none() && old.name == name {
+            state.bytes -= old.bytes;
+            self.sweep(&mut state, INSERT_SWEEP_NAMES);
+            return Ok(Inserted::Written);
+        }
         let dir_fd = match old.rank {
             Some(rank) => state.claimed[rank].dir.as_raw_fd(),
             None => self.dir_file.as_raw_fd(),
@@ -1989,12 +2039,7 @@ impl PreparedDiskCache {
         };
         match (old.rank, unlinked) {
             (None, Ok(())) => state.bytes -= old.bytes,
-            (None, Err(error)) => {
-                if state.stranded_owned.len() == MAX_STRANDED_OWNED {
-                    return Err(disk_error(error));
-                }
-                state.stranded_owned.push((old.name, old.bytes));
-            }
+            (None, Err(_)) => state.stranded_owned.push((old.name, old.bytes)),
             (Some(rank), Ok(())) => {
                 state.inherited_bytes -= old.bytes;
                 let owner = &mut state.claimed[rank];
@@ -2013,7 +2058,18 @@ impl PreparedDiskCache {
             }
         }
         self.sweep(&mut state, INSERT_SWEEP_NAMES);
-        Ok(true)
+        Ok(Inserted::Written)
+    }
+
+    fn strand_unless_unlinked(&self, state: &mut DiskState, name: CString, bytes: usize) {
+        match self.unlink_entry(&name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {
+                state.stranded_owned.push((name, bytes));
+                state.bytes += bytes;
+            }
+        }
     }
 
     pub fn stats(&self) -> DiskStats {
@@ -2927,7 +2983,10 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         assert_eq!(cache.decoded_bytes(&entry, FactsNeed::Full), None);
         let built = pushed_facts(5, 5);
-        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
         let (index, text) = sections(&cache, &entry);
         assert_eq!(
@@ -2988,7 +3047,10 @@ mod tests {
             accounted: 0,
         };
         built.refresh_accounted();
-        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
         let (index, text) = sections(&cache, &entry);
         assert!(text >= 400 * 1024, "text section {text}");
@@ -3121,7 +3183,10 @@ mod tests {
         assert_eq!(cache.audit_index_bytes(), 0);
         let stats = cache.stats();
         assert_eq!((stats.entries, stats.bytes, stats.writes), (0, 0, 0));
-        assert!(cache.insert(&first, &sample, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&first, &sample, |_| true, |_| true)
+            .unwrap()
+            .serves());
         assert_eq!(cache.index_capacity_bytes(), offered.get());
         assert_eq!(cache.audit_index_bytes(), offered.get());
         assert!(matches!(
@@ -3151,7 +3216,10 @@ mod tests {
         let built = pushed_facts(5, 5);
         let entry = revision(1);
         let first = reuse_cache(&namespace, 64 * 1024);
-        assert!(first.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(first
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let estimates = (
             first.decoded_bytes(&entry, FactsNeed::Full),
             first.read_bound(&entry, FactsNeed::Full),
@@ -3368,29 +3436,61 @@ mod tests {
     }
 
     #[test]
-    fn fresh_facts_replace_an_unverified_inherited_copy() {
+    fn an_inherited_full_copy_is_kept_over_fresh_facts() {
+        for fresh in [pushed_facts(5, 5), index_facts(5, 5)] {
+            let namespace = isolated_namespace();
+            let built = pushed_facts(5, 5);
+            let entry = revision(1);
+            let left = left_behind(&namespace, &entry, &built);
+            let stored = fs::metadata(&left).unwrap().len() as usize;
+            let second = reuse_cache(&namespace, 64 * 1024);
+            assert_eq!(budget(&second), (1, 0, stored, 0));
+            assert!(!second.has_entry(&entry).unwrap());
+            let expected = if fresh.is_full() {
+                Inserted::AlreadyFull
+            } else {
+                Inserted::Listed
+            };
+            assert_eq!(
+                second.insert(&entry, &fresh, |_| true, |_| true).unwrap(),
+                expected
+            );
+            let stats = second.stats();
+            assert_eq!((stats.entries, stats.retired, stats.writes), (1, 0, 0));
+            assert_eq!(budget(&second), (1, 0, stored, 0));
+            assert!(!second.has_entry(&entry).unwrap());
+            assert!(left.exists());
+            assert!(matches!(
+                lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
+                DiskLookup::Hit(_)
+            ));
+            assert!(second.has_entry(&entry).unwrap());
+            assert!(!left.exists());
+            assert_eq!(budget(&second), (1, stored, 0, 0));
+            drop(second);
+            fs::remove_dir_all(namespace).unwrap();
+        }
+    }
+
+    #[test]
+    fn fresh_facts_replace_an_unverified_inherited_unbuilt_copy() {
         let namespace = isolated_namespace();
-        let built = pushed_facts(5, 5);
+        let compact = index_facts(5, 5);
         let entry = revision(1);
-        let left = left_behind(&namespace, &entry, &built);
+        let left = left_behind(&namespace, &entry, &compact);
         let stored = fs::metadata(&left).unwrap().len() as usize;
         let second = reuse_cache(&namespace, 64 * 1024);
         assert_eq!(budget(&second), (1, 0, stored, 0));
-        assert!(!second.has_entry(&entry).unwrap());
-        assert!(second.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert_eq!(
+            second.insert(&entry, &compact, |_| true, |_| true).unwrap(),
+            Inserted::Written
+        );
         let stats = second.stats();
         assert_eq!((stats.entries, stats.retired, stats.writes), (1, 1, 1));
         assert_eq!(budget(&second), (1, stored, 0, 0));
         assert!(second.has_entry(&entry).unwrap());
         assert!(!left.exists());
-        assert_eq!(
-            second.entry_file(&entry).parent(),
-            Some(second.dir.as_path())
-        );
-        assert!(matches!(
-            lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
-            DiskLookup::Hit(_)
-        ));
+        assert_eq!(text_state_of(&second, &entry), Some(TextState::Unbuilt));
         drop(second);
         fs::remove_dir_all(namespace).unwrap();
     }
@@ -3401,7 +3501,10 @@ mod tests {
         let built = pushed_facts(5, 5);
         let entry = revision(1);
         let live = reuse_cache(&namespace, 64 * 1024);
-        assert!(live.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(live
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let second = reuse_cache(&namespace, 64 * 1024);
         assert!(second.state.lock().unwrap().claimed.is_empty());
         assert_eq!(budget(&second), (0, 0, 0, 0));
@@ -3425,7 +3528,8 @@ mod tests {
         for generation in 1..=2 {
             assert!(first
                 .insert(&revision(generation), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
         assert_eq!(budget(&first), (2, cap, 0, 0));
         drop(first);
@@ -3448,7 +3552,8 @@ mod tests {
         assert_eq!(budget(&second), (2, 0, cap, size));
         assert!(second
             .insert(&revision(3), &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert_eq!(budget(&second), (2, size, size, 0));
         let stats = second.stats();
         assert_eq!((stats.retired, stats.writes), (1, 1));
@@ -3476,7 +3581,8 @@ mod tests {
             let owner = reuse_cache(&namespace, 64 * 1024);
             assert!(owner
                 .insert(&revision(generation), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
             assert_eq!(owner.stats().bytes, size);
         }
         let fifth = reuse_cache(&namespace, 64 * 1024);
@@ -3509,7 +3615,10 @@ mod tests {
         let built = pushed_facts(5, 5);
         let listed = revision(1);
         let first = reuse_cache(&namespace, 64 * 1024);
-        assert!(first.insert(&listed, &built, |_| true, |_| true).unwrap());
+        assert!(first
+            .insert(&listed, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let dead = first.dir.clone();
         let left = first.entry_file(&listed);
         let stored = first.stats().bytes;
@@ -3548,7 +3657,8 @@ mod tests {
         assert_eq!(budget(&second), (1, 0, stored, 100 + stored));
         assert!(second
             .insert(&revision(2), &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert!(left.exists());
         assert!(!foreign.exists());
         assert!(!twin.exists());
@@ -3653,7 +3763,8 @@ mod tests {
         assert!(!successor.has_entry(&entry).unwrap());
         assert!(successor
             .insert(&entry, &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert!(successor.has_entry(&entry).unwrap());
         assert_eq!(
             successor.entry_file(&entry).parent(),
@@ -3674,7 +3785,8 @@ mod tests {
         for generation in 1..=2 {
             assert!(first
                 .insert(&revision(generation), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
         let dead = first.dir.clone();
         let files = [
@@ -3740,15 +3852,19 @@ mod tests {
         assert_eq!(budget(&successor), (1, 0, stored, 300 * 100));
         successor.state.lock().unwrap().claimed[0].listed = false;
         let entry = revision(2);
-        assert!(!successor
-            .insert(&entry, &built, |_| true, |_| true)
-            .unwrap());
+        assert_eq!(
+            successor
+                .insert(&entry, &built, |_| true, |_| true)
+                .unwrap(),
+            Inserted::Refused
+        );
         assert_eq!(successor.stats().writes, 0);
         assert!(!successor.has_entry(&entry).unwrap());
         assert!(!successor.state.lock().unwrap().claimed[0].listed);
         assert!(successor
             .insert(&entry, &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert_eq!(successor.stats().writes, 1);
         assert!(successor.has_entry(&entry).unwrap());
         assert!(successor.state.lock().unwrap().claimed[0].listed);
@@ -3820,11 +3936,17 @@ mod tests {
         ));
         assert_eq!(budget(&successor), (0, 0, 0, stored));
         let kept = revision(2);
-        assert!(successor.insert(&kept, &small, |_| true, |_| true).unwrap());
+        assert!(successor
+            .insert(&kept, &small, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let before = successor.stats();
-        assert!(!successor
-            .insert(&revision(3), &large, |_| true, |_| true)
-            .unwrap());
+        assert_eq!(
+            successor
+                .insert(&revision(3), &large, |_| true, |_| true)
+                .unwrap(),
+            Inserted::Refused
+        );
         let after = successor.stats();
         assert_eq!(
             (after.retired, after.writes),
@@ -3848,9 +3970,12 @@ mod tests {
         fs::remove_file(&left).unwrap();
         fs::create_dir(&left).unwrap();
         let entry = revision(2);
-        assert!(!successor
-            .insert(&entry, &built, |_| true, |_| true)
-            .unwrap());
+        assert_eq!(
+            successor
+                .insert(&entry, &built, |_| true, |_| true)
+                .unwrap(),
+            Inserted::Refused
+        );
         assert_eq!(budget(&successor), (0, 0, 0, stored));
         let stats = successor.stats();
         assert_eq!((stats.retired, stats.writes), (1, 0));
@@ -3868,7 +3993,8 @@ mod tests {
         for generation in 1..=48 {
             assert!(first
                 .insert(&revision(generation), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
         let waiting = first.entry_file(&revision(2));
         let stored = fs::metadata(&waiting).unwrap().len() as usize;
@@ -3877,7 +4003,8 @@ mod tests {
         assert_eq!(budget(&successor), (48, 0, 48 * stored, 0));
         assert!(successor
             .insert(&revision(49), &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert!(successor.state.lock().unwrap().claimed[0].cursor.is_some());
         assert!(!successor.state.lock().unwrap().claimed[0].dirty);
         assert!(matches!(
@@ -3896,7 +4023,8 @@ mod tests {
             assert!(inserts < 64, "the restarted pass never settled");
             assert!(successor
                 .insert(&revision(50 + inserts), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
             inserts += 1;
         }
         assert_eq!(budget(&successor).3, 0);
@@ -3920,7 +4048,8 @@ mod tests {
         fs::remove_dir_all(left.parent().unwrap()).unwrap();
         assert!(successor
             .insert(&revision(2), &built, |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         let settled = {
             let state = successor.state.lock().unwrap();
             let owner = &state.claimed[0];
@@ -3941,7 +4070,10 @@ mod tests {
         let built = facts();
         let entry = revision(1);
         let plain = cache(64 * 1024);
-        assert!(plain.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(plain
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let legacy = format!("{:x}.facts", Sha256::digest(entry.digest));
         let written = plain.entry_file(&entry);
         assert_eq!(written.file_name().unwrap().to_str().unwrap(), legacy);
@@ -3957,7 +4089,10 @@ mod tests {
         ));
         let namespace = isolated_namespace();
         let reusing = reuse_cache(&namespace, 64 * 1024);
-        assert!(reusing.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(reusing
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let named = reusing.entry_file(&entry);
         let name = CString::new(named.file_name().unwrap().to_str().unwrap()).unwrap();
         assert_eq!(name.to_bytes().len(), ENTRY_NAME_BYTES);
@@ -4056,7 +4191,10 @@ mod tests {
             accounted: 0,
         };
         built.refresh_accounted();
-        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let stored = cache.entry_file_len(&entry);
         let (index, text) = sections(&cache, &entry);
         assert!(
@@ -4115,7 +4253,10 @@ mod tests {
         let mut built = pushed_facts(1, 1);
         built.overrides = OverrideFacts::Exceeded;
         built.refresh_accounted();
-        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let DiskLookup::Hit(full) =
             lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
@@ -4148,7 +4289,10 @@ mod tests {
         let cache = cache(64 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let built = pushed_facts(3, 2);
-        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let (index, _) = sections(&cache, &entry);
         let path = cache.entry_path(entry.digest);
         let mut bytes = fs::read(&path).unwrap();
@@ -4176,7 +4320,10 @@ mod tests {
         let built = pushed_facts(3, 2);
         for need in [FactsNeed::Index, FactsNeed::Full] {
             let entry = key(stamp(1), &json!({"root":"/repo"}));
-            assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+            assert!(cache
+                .insert(&entry, &built, |_| true, |_| true)
+                .unwrap()
+                .serves());
             let path = cache.entry_path(entry.digest);
             let mut bytes = fs::read(&path).unwrap();
             bytes[HEADER_BYTES + 4] ^= 1;
@@ -4195,7 +4342,8 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         assert!(cache
             .insert(&entry, &pushed_facts(2, 2), |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         let path = cache.entry_path(entry.digest);
         let mut bytes = fs::read(&path).unwrap();
         bytes[40] ^= 1;
@@ -4213,7 +4361,10 @@ mod tests {
         let built = pushed_facts(5, 5);
         let entry = revision(1);
         let first = reuse_cache(&namespace, 64 * 1024);
-        assert!(first.insert(&entry, &built, |_| true, |_| true).unwrap());
+        assert!(first
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let (index, _) = sections(&first, &entry);
         let stored = first.entry_file_len(&entry);
         drop(first);
@@ -4290,7 +4441,8 @@ mod tests {
         for _ in 0..4 {
             assert!(successor
                 .insert(&revision(2), &built, |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
         for planted_path in &planted_paths {
             assert!(
@@ -4374,11 +4526,27 @@ mod tests {
 
     #[test]
     fn index_only_facts_write_only_the_index_and_upgrade_once() {
-        let cache = cache(64 * 1024);
+        for producer in [false, true] {
+            let namespace = isolated_namespace();
+            let cache = if producer {
+                reuse_cache(&namespace, 64 * 1024)
+            } else {
+                cache(64 * 1024)
+            };
+            index_only_facts_upgrade_once(&cache);
+            drop(cache);
+            fs::remove_dir_all(namespace).unwrap();
+        }
+    }
+
+    fn index_only_facts_upgrade_once(cache: &PreparedDiskCache) {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let compact = index_facts(3, 2);
         let full = pushed_facts(3, 2);
-        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let stored = cache.entry_file_len(&entry) as usize;
         assert_eq!(stored, HEADER_BYTES + encoded_index_len(&compact));
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Unbuilt));
@@ -4415,9 +4583,15 @@ mod tests {
             .touch(&entry, FactsNeed::Full, |accounted| accounted
                 == compact.index_accounted_bytes())
             .unwrap());
-        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         assert_eq!((cache.stats().writes, cache.stats().entries), (1, 1));
-        assert!(cache.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let upgraded = cache.entry_file_len(&entry) as usize;
         assert_eq!(upgraded, HEADER_BYTES + encoded_sections_len(&full));
         assert!(upgraded > stored);
@@ -4441,10 +4615,16 @@ mod tests {
         };
         assert!(loaded.is_full());
         assert_eq!(loaded.text_section().unwrap().len(), 3);
-        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
-        assert!(cache.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert_eq!(
+            cache.insert(&entry, &compact, |_| true, |_| true).unwrap(),
+            Inserted::Listed
+        );
+        assert_eq!(
+            cache.insert(&entry, &full, |_| true, |_| true).unwrap(),
+            Inserted::AlreadyFull
+        );
         assert_eq!(cache.stats().writes, 2);
-        assert_eq!(text_state_of(&cache, &entry), Some(TextState::Present));
+        assert_eq!(text_state_of(cache, &entry), Some(TextState::Present));
     }
 
     #[test]
@@ -4453,11 +4633,15 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         assert!(cache
             .insert(&entry, &index_facts(2, 2), |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         let mut exceeded = pushed_facts(2, 2);
         exceeded.overrides = OverrideFacts::Exceeded;
         exceeded.refresh_accounted();
-        assert!(cache.insert(&entry, &exceeded, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &exceeded, |_| true, |_| true)
+            .unwrap()
+            .serves());
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Exceeded));
         assert_eq!(cache.stats().writes, 2);
         let DiskLookup::Hit(full) =
@@ -4474,32 +4658,35 @@ mod tests {
         assert!(index_only(&index));
         assert!(cache
             .insert(&entry, &pushed_facts(2, 2), |_| true, |_| true)
-            .unwrap());
+            .unwrap()
+            .serves());
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Exceeded));
         assert_eq!(cache.stats().writes, 2);
     }
 
     #[test]
-    fn a_full_lookup_under_a_stale_index_reservation_serves_only_the_index() {
+    fn a_full_lookup_whose_admitted_bound_is_stale_is_refused_before_reading() {
         let cache = cache(64 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let compact = index_facts(3, 2);
-        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
-        let reserved = cache.decoded_bytes(&entry, FactsNeed::Full).unwrap();
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let admitted = cache.decoded_bytes(&entry, FactsNeed::Full).unwrap();
         assert!(cache
             .insert(&entry, &pushed_facts(3, 2), |_| true, |_| true)
-            .unwrap());
-        assert!(cache.decoded_bytes(&entry, FactsNeed::Full).unwrap() > reserved);
-        let indexed = HEADER_BYTES + cache.entry_index_bytes(&entry);
-        let mut read = DiskRead::default();
-        let DiskLookup::IndexOnly(partial) = cache
-            .lookup(&entry, &mut read, FactsNeed::Full, reserved)
             .unwrap()
-        else {
-            panic!("expected an index-only answer under the stale reservation");
-        };
-        assert!(index_only(&partial) && partial.inputs == compact.inputs);
-        assert_eq!((read.operations, read.bytes as usize), (1, indexed));
+            .serves());
+        assert!(cache.decoded_bytes(&entry, FactsNeed::Full).unwrap() > admitted);
+        let mut read = DiskRead::default();
+        assert!(matches!(
+            cache
+                .lookup(&entry, &mut read, FactsNeed::Full, admitted)
+                .unwrap(),
+            DiskLookup::Changed
+        ));
+        assert_eq!((read.operations, read.bytes), (0, 0));
         let DiskLookup::Hit(full) =
             lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
@@ -4516,7 +4703,8 @@ mod tests {
             let entry = key(stamp(1), &json!({"root":"/repo"}));
             assert!(cache
                 .insert(&entry, &index_facts(3, 2), |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
             let path = cache.entry_path(entry.digest);
             let mut bytes = fs::read(&path).unwrap();
             bytes[HEADER_BYTES + 4] ^= 1;
@@ -4547,7 +4735,10 @@ mod tests {
             ),
         ] {
             let entry = key(stamp(1), &json!({"root":"/repo"}));
-            assert!(cache.insert(&entry, &facts, |_| true, |_| true).unwrap());
+            assert!(cache
+                .insert(&entry, &facts, |_| true, |_| true)
+                .unwrap()
+                .serves());
             let path = cache.entry_path(entry.digest);
             let mut bytes = fs::read(&path).unwrap();
             bytes[136] = byte;
@@ -4584,23 +4775,36 @@ mod tests {
             )
         };
         let tight = cache(old_size + new_size - 1);
-        assert!(tight.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        assert!(tight
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let before = snapshot(&tight);
         assert_eq!(before.0, (1, old_size, 0, 0));
-        assert!(!tight.insert(&entry, &full, |_| false, |_| true).unwrap());
+        assert_eq!(
+            tight.insert(&entry, &full, |_| false, |_| true).unwrap(),
+            Inserted::Refused
+        );
         assert_eq!(
             snapshot(&tight),
             before,
             "a refused reservation moved the entry"
         );
-        assert!(!tight.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert_eq!(
+            tight.insert(&entry, &full, |_| true, |_| true).unwrap(),
+            Inserted::Refused
+        );
         assert_eq!(
             snapshot(&tight),
             before,
             "refused physical room moved the entry"
         );
-        let roomy = cache(old_size + new_size);
-        assert!(roomy.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        let namespace = isolated_namespace();
+        let roomy = reuse_cache(&namespace, old_size + new_size);
+        assert!(roomy
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let before = snapshot(&roomy);
         let dir = roomy.dir.clone();
         roomy.set_upgrade_hook(Some(Box::new(
@@ -4626,23 +4830,107 @@ mod tests {
             .expect("the blocking directory");
         fs::remove_dir(&blocking).unwrap();
         assert_eq!(snapshot(&roomy), before, "a failed rename moved the entry");
-        assert!(roomy.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert!(roomy
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
         assert_eq!(budget(&roomy), (1, new_size, 0, 0));
         assert_eq!(text_state_of(&roomy, &entry), Some(TextState::Present));
         assert_eq!(entry_files(&roomy), [roomy.entry_file(&entry)]);
+        drop(roomy);
+        fs::remove_dir_all(namespace).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_whose_temp_cannot_be_unlinked_strands_the_temp_until_a_sweep_clears_it() {
+        let compact = index_facts(3, 2);
+        let full = pushed_facts(3, 2);
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let old_size = cache.entry_file_len(&entry) as usize;
+        let new_size = HEADER_BYTES + encoded_sections_len(&full);
+        let dir = cache.dir.clone();
+        cache.set_upgrade_hook(Some(Box::new(
+            move |step: UpgradeStep, _: &CStr, _: &CStr| {
+                if step == UpgradeStep::Staged {
+                    let temp = fs::read_dir(&dir)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|listed| listed.path())
+                        .find(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+                        .expect("the staged temp file");
+                    replace_with_directory(&temp);
+                }
+            },
+        )));
+        let error = cache
+            .insert(&entry, &full, |_| true, |_| true)
+            .err()
+            .expect("the rename over a directory landed");
+        cache.set_upgrade_hook(None);
+        assert_eq!(error.status, crate::snapshot::Status::Incomplete);
+        assert_eq!(text_state_of(&cache, &entry), Some(TextState::Unbuilt));
+        assert_eq!(budget(&cache), (1, old_size + new_size, 0, new_size));
+        let temp = stranded(&cache);
+        assert_eq!(temp.len(), 1);
+        assert_eq!(temp[0].1, new_size);
+        let temp_dir = cache.dir.join(temp[0].0.to_str().unwrap());
+        assert!(temp_dir.is_dir());
+        assert!(cache
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        assert_eq!(text_state_of(&cache, &entry), Some(TextState::Present));
+        let upgraded = cache.entry_file_len(&entry) as usize;
+        assert_eq!(budget(&cache), (1, upgraded + new_size, 0, new_size));
+        fs::remove_dir(&temp_dir).unwrap();
+        assert!(cache
+            .insert(
+                &key(stamp(2), &json!({"root":"/repo"})),
+                &compact,
+                |_| true,
+                |_| true
+            )
+            .unwrap()
+            .serves());
+        assert!(stranded(&cache).is_empty());
+        assert_eq!(budget(&cache), (2, upgraded + old_size, 0, 0));
+        assert_eq!(physical_bytes(&cache.dir), upgraded + old_size);
+    }
+
+    fn physical_bytes(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|listed| listed.file_name() != "owner.lock")
+            .filter_map(|listed| listed.metadata().ok())
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len() as usize)
+            .sum()
     }
 
     #[test]
     fn an_owned_unlink_failure_strands_the_old_name_until_a_sweep_clears_it() {
         let compact = index_facts(3, 2);
         let full = pushed_facts(3, 2);
-        let cache = cache(64 * 1024);
+        let namespace = isolated_namespace();
+        let cache = reuse_cache(&namespace, 64 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let old_path = cache.entry_file(&entry);
         let old_size = fs::metadata(&old_path).unwrap().len() as usize;
         strand_old_name(&cache, cache.dir.clone());
-        assert!(cache.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert!(cache
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
         cache.set_upgrade_hook(None);
         let new_size = cache.entry_file_len(&entry) as usize;
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Present));
@@ -4671,11 +4959,15 @@ mod tests {
         assert!(stranded(&cache).is_empty());
         assert_eq!(budget(&cache), (3, 2 * old_size + new_size, 0, 0));
         assert_eq!(entry_files(&cache).len(), 3);
+        assert_eq!(physical_bytes(&cache.dir), 2 * old_size + new_size);
+        drop(cache);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
-    fn a_full_stranded_list_surfaces_the_unlink_failure_with_the_new_entry_listed() {
-        let cache = cache(8 * 1024 * 1024);
+    fn a_full_stranded_list_refuses_the_next_owned_upgrade_until_a_sweep_clears_it() {
+        let namespace = isolated_namespace();
+        let cache = reuse_cache(&namespace, 8 * 1024 * 1024);
         strand_old_name(&cache, cache.dir.clone());
         let entries: Vec<PreparedDiskKey> = (1..=MAX_STRANDED_OWNED as u64 + 1)
             .map(|size| key(stamp(size), &json!({"root":"/repo"})))
@@ -4683,55 +4975,105 @@ mod tests {
         for entry in &entries {
             assert!(cache
                 .insert(entry, &index_facts(1, 1), |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
         let compact_size = cache.entry_file_len(&entries[0]) as usize;
         for entry in &entries[..MAX_STRANDED_OWNED] {
             assert!(cache
                 .insert(entry, &pushed_facts(1, 1), |_| true, |_| true)
-                .unwrap());
+                .unwrap()
+                .serves());
         }
+        cache.set_upgrade_hook(None);
         assert_eq!(stranded(&cache).len(), MAX_STRANDED_OWNED);
+        let full_size = cache.entry_file_len(&entries[0]) as usize;
         let last = &entries[MAX_STRANDED_OWNED];
         let before = budget(&cache);
-        let error = cache
-            .insert(last, &pushed_facts(1, 1), |_| true, |_| true)
-            .err()
-            .expect("the overflowing strand was absorbed");
-        cache.set_upgrade_hook(None);
-        assert_eq!(error.status, crate::snapshot::Status::Incomplete);
-        assert!(
-            error.reason.starts_with("prepared facts disk cache: "),
-            "{error:?}"
-        );
-        let full_size = cache.entry_file_len(last) as usize;
-        assert_eq!(text_state_of(&cache, last), Some(TextState::Present));
-        assert!(cache.entry_file(last).is_file());
-        assert_eq!(stranded(&cache).len(), MAX_STRANDED_OWNED);
         assert_eq!(
-            budget(&cache),
+            before,
             (
-                before.0,
-                before.1 + full_size,
+                entries.len(),
+                MAX_STRANDED_OWNED * (compact_size + full_size) + compact_size,
                 0,
                 MAX_STRANDED_OWNED * compact_size
             )
         );
+        let writes = cache.stats().writes;
+        assert_eq!(
+            cache
+                .insert(last, &pushed_facts(1, 1), |_| true, |_| true)
+                .unwrap(),
+            Inserted::Refused
+        );
+        assert_eq!(text_state_of(&cache, last), Some(TextState::Unbuilt));
+        assert_eq!(cache.entry_file_len(last) as usize, compact_size);
+        assert_eq!((budget(&cache), cache.stats().writes), (before, writes));
+        assert_eq!(stranded(&cache).len(), MAX_STRANDED_OWNED);
         for path in entry_files(&cache).into_iter().filter(|path| path.is_dir()) {
             fs::remove_dir(path).unwrap();
         }
-        for size in 100..100 + 2 * MAX_STRANDED_OWNED as u64 / INSERT_SWEEP_NAMES as u64 {
-            assert!(cache
-                .insert(
-                    &key(stamp(size), &json!({"root":"/repo"})),
-                    &index_facts(1, 1),
-                    |_| true,
-                    |_| true
-                )
-                .unwrap());
-        }
+        assert!(cache
+            .insert(last, &pushed_facts(1, 1), |_| true, |_| true)
+            .unwrap()
+            .serves());
+        assert_eq!(text_state_of(&cache, last), Some(TextState::Present));
         assert!(stranded(&cache).is_empty());
-        assert_eq!(budget(&cache).3, 0);
+        assert_eq!(
+            budget(&cache),
+            (entries.len(), entries.len() * full_size, 0, 0)
+        );
+        assert_eq!(physical_bytes(&cache.dir), entries.len() * full_size);
+        drop(cache);
+        fs::remove_dir_all(namespace).unwrap();
+    }
+
+    #[test]
+    fn restart_never_substitutes_an_unbuilt_name_for_a_refused_full_winner() {
+        let namespace = isolated_namespace();
+        let compact = index_facts(3, 2);
+        let full = pushed_facts(3, 2);
+        let entry = revision(1);
+        let first = reuse_cache(&namespace, 64 * 1024);
+        assert!(first
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let unbuilt_path = first.entry_file(&entry);
+        let unbuilt_bytes = fs::read(&unbuilt_path).unwrap();
+        let unbuilt_decoded = first.decoded_bytes(&entry, FactsNeed::Index).unwrap();
+        assert!(first
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let full_bytes = fs::read(first.entry_file(&entry)).unwrap();
+        assert!(first.decoded_bytes(&entry, FactsNeed::Full).unwrap() > unbuilt_decoded);
+        planted_bytes(&first.dir, &file_name(&unbuilt_path), &unbuilt_bytes);
+        let dead = first.dir.clone();
+        drop(first);
+        let index_growth = cache(64 * 1024)
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .growth_for(&entry.name);
+        let successor = PreparedDiskCache::open(
+            namespace.clone(),
+            &epoch(),
+            64 * 1024,
+            &origin(Some("producer-a")),
+            index_growth + unbuilt_decoded,
+            Work::default(),
+        )
+        .unwrap();
+        assert_eq!(successor.decoded_bytes(&entry, FactsNeed::Index), None);
+        assert_eq!(
+            budget(&successor),
+            (0, 0, 0, unbuilt_bytes.len() + full_bytes.len())
+        );
+        assert!(dead.exists());
+        drop(successor);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
@@ -4743,10 +5085,16 @@ mod tests {
             let entry = revision(1);
             let other = revision(9);
             let live = reuse_cache(&namespace, 64 * 1024);
-            assert!(live.insert(&other, &full, |_| true, |_| true).unwrap());
+            assert!(live
+                .insert(&other, &full, |_| true, |_| true)
+                .unwrap()
+                .serves());
             let live_file = live.entry_file(&other);
             let first = reuse_cache(&namespace, 64 * 1024);
-            assert!(first.insert(&entry, &compact, |_| true, |_| true).unwrap());
+            assert!(first
+                .insert(&entry, &compact, |_| true, |_| true)
+                .unwrap()
+                .serves());
             let old_path = first.entry_file(&entry);
             let old_size = fs::metadata(&old_path).unwrap().len() as usize;
             let dead = first.dir.clone();
@@ -4757,7 +5105,10 @@ mod tests {
             if unlink_fails {
                 strand_old_name(&second, dead.clone());
             }
-            assert!(second.insert(&entry, &full, |_| true, |_| true).unwrap());
+            assert!(second
+                .insert(&entry, &full, |_| true, |_| true)
+                .unwrap()
+                .serves());
             second.set_upgrade_hook(None);
             let new_size = second.entry_file_len(&entry) as usize;
             assert!(second.lists(&entry), "the upgraded entry is not owned");
@@ -4807,10 +5158,16 @@ mod tests {
         let full = pushed_facts(3, 2);
         let entry = revision(1);
         let first = reuse_cache(&namespace, 64 * 1024);
-        assert!(first.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        assert!(first
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let unbuilt_path = first.entry_file(&entry);
         let unbuilt_bytes = fs::read(&unbuilt_path).unwrap();
-        assert!(first.insert(&entry, &full, |_| true, |_| true).unwrap());
+        assert!(first
+            .insert(&entry, &full, |_| true, |_| true)
+            .unwrap()
+            .serves());
         let full_path = first.entry_file(&entry);
         let full_bytes = fs::read(&full_path).unwrap();
         assert!(!unbuilt_path.exists());
@@ -4908,7 +5265,10 @@ mod tests {
                 )
             };
             let first = reuse_cache(&namespace, 64 * 1024);
-            assert!(first.insert(&entry, &facts, |_| true, |_| true).unwrap());
+            assert!(first
+                .insert(&entry, &facts, |_| true, |_| true)
+                .unwrap()
+                .serves());
             let expected = bounds(&first);
             assert_eq!(expected.4, Some(state));
             drop(first);

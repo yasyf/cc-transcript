@@ -848,6 +848,7 @@ enum PreparedSourceOutcome<'a> {
     },
     Pending(String),
     Stored,
+    Superseded,
 }
 
 enum HeldFacts<'a> {
@@ -14286,11 +14287,6 @@ mod tests {
         );
     }
 
-    fn disk_reads(reply: &Value) -> (Option<u64>, Option<u64>) {
-        let (reads, bytes, _) = cache_reads(reply);
-        (reads, bytes)
-    }
-
     fn cache_reads(reply: &Value) -> (Option<u64>, Option<u64>, Option<u64>) {
         (
             reply["usage"]["prepared_cache_reads"].as_u64(),
@@ -15503,6 +15499,10 @@ mod tests {
     }
 
     fn bulk_member_graph() -> CompactGraph {
+        bulk_member_graph_with(compact_facts_store())
+    }
+
+    fn bulk_member_graph_with(store: NativeStore) -> CompactGraph {
         let source = Source::new(&format!("{}\n", user_text("root", "root-prompt")));
         let member = source.directory.join("member.jsonl");
         let bulk = format!(
@@ -15522,7 +15522,6 @@ mod tests {
             ),
         )
         .unwrap();
-        let store = compact_facts_store();
         let owner = context("a");
         let template = wide_template(&source);
         let root = finish(
@@ -15608,7 +15607,12 @@ mod tests {
         assert_eq!(store.prepared_disk.entry_file_len(&root_key), root_indexed);
         let text = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
         assert_eq!(value_of(&text), Some(true));
-        assert_eq!(disk_reads(&text), (Some(2), Some(root_indexed + indexed)));
+        assert_eq!(
+            cache_reads(&text),
+            (Some(2), Some(root_indexed + indexed), Some(0))
+        );
+        assert_eq!(text["usage"]["cold_parses"].as_u64(), Some(0));
+        assert_eq!(text["usage"]["source_opens"].as_u64(), Some(1));
         assert_eq!(
             (store.fact_builds.load(Ordering::Relaxed), disk().writes),
             (builds + 3, writes + 3)
@@ -15719,9 +15723,12 @@ mod tests {
             (value_of(&first), value_of(&index), value_of(&second)),
             (Some(true), Some(true), Some(true))
         );
-        assert_eq!(cache_reads(&index), (Some(1), Some(indexed), Some(0)));
-        for reply in [&first, &second] {
-            assert_eq!(disk_reads(reply), (Some(1), Some(indexed)), "{reply:?}");
+        for reply in [&first, &index, &second] {
+            assert_eq!(
+                cache_reads(reply),
+                (Some(1), Some(indexed), Some(0)),
+                "{reply:?}"
+            );
         }
         assert_eq!(
             (
@@ -15742,6 +15749,97 @@ mod tests {
             .map(|(_, expected)| Some(*expected))
             .collect();
         assert_eq!(override_answers(&fixture), expected);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn oversized_duplicate_full_builds_commit_one_upgrade_and_keep_the_compact_resident() {
+        let fixture = bulk_member_graph_with(NativeStore::new(&json!({"max_read_bytes_per_step":2*1024*1024,"max_entry_bytes":4*1024*1024,"max_retained_bytes":64*1024*1024,"max_prepared_fact_memory_bytes":256*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap());
+        let (store, member) = (&fixture.store, &fixture.member);
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_tool("Read"), None)),
+            Some(true)
+        );
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_override("root-prompt", &[]), None)),
+            Some(true)
+        );
+        let key = fixture.member_key();
+        let indexed = index_read_bytes(store, &key);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
+        );
+        assert_eq!(resident_member_is_full(store, member), Some(false));
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
+        let resume_rx = Mutex::new(resume_rx);
+        *store.built_facts_hook.lock().unwrap() = Some(Arc::new(
+            move |_: &Arc<crate::snapshot_prepared::PreparedFacts>| {
+                paused_tx.send(()).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the duplicate build barrier was never released");
+            },
+        ));
+        let (builds, writes, lookups) = (
+            store.fact_builds.load(Ordering::Relaxed),
+            store.prepared_disk.stats().writes,
+            store.fact_lookups.load(Ordering::Relaxed),
+        );
+        let request = prepared_graph_request(
+            &fixture.graph,
+            &fixture.template,
+            json!([]),
+            has_override("OVERRIDE", &["Read"]),
+            None,
+        );
+        let (first, second) = std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| store.request(&request, &fixture.owner, &Cancellation::default()));
+            paused_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the first builder never projected");
+            let second = store.request(&request, &fixture.owner, &Cancellation::default());
+            resume_tx.send(()).unwrap();
+            (single_step(first.join().unwrap()), single_step(second))
+        });
+        assert_eq!(
+            (value_of(&first), value_of(&second)),
+            (Some(true), Some(true))
+        );
+        let upgraded = store.prepared_disk.entry_file_len(&key);
+        let mut reads = [cache_reads(&first), cache_reads(&second)];
+        reads.sort();
+        assert_eq!(
+            reads,
+            [
+                (Some(1), Some(indexed), Some(0)),
+                (Some(2), Some(indexed + upgraded), Some(0))
+            ]
+        );
+        assert_eq!(
+            (
+                store.fact_builds.load(Ordering::Relaxed),
+                store.prepared_disk.stats().writes,
+                store.fact_lookups.load(Ordering::Relaxed)
+            ),
+            (builds + 2, writes + 1, lookups + 3)
+        );
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Present)
+        );
+        assert_eq!(resident_member_is_full(store, member), Some(false));
+        assert_eq!(store.lock_state().transient_bytes, 0);
+        let expected: Vec<Option<bool>> = OVERRIDE_MATRIX
+            .iter()
+            .map(|(_, expected)| Some(*expected))
+            .collect();
+        assert_eq!(override_answers(&fixture), expected);
+        assert_eq!(resident_member_is_full(store, member), Some(false));
         store.assert_conserved();
     }
 
@@ -15825,7 +15923,10 @@ mod tests {
         );
         let primed = answer(has_override("hello", &["Read"]), None);
         assert_eq!(value_of(&primed), Some(true));
-        assert_eq!(disk_reads(&primed), (Some(2), Some(root_indexed + indexed)));
+        assert_eq!(
+            cache_reads(&primed),
+            (Some(2), Some(root_indexed + indexed), Some(0))
+        );
         assert_eq!(
             (
                 store.fact_builds.load(Ordering::Relaxed),
@@ -16120,20 +16221,28 @@ mod tests {
             Some(TextState::Unbuilt)
         );
         evict_memory_facts(&store, &source.path);
+        source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
+        let appended = ask(has_tool("Missing"));
+        assert_eq!(value_of(&appended), Some(false));
+        assert_eq!(cache_reads(&appended).0, Some(1));
+        assert_eq!(appended["usage"]["cold_parses"].as_u64(), Some(0));
+        let validation = (
+            appended["usage"]["source_opens"].as_u64(),
+            appended["usage"]["source_bytes_read"].as_u64(),
+        );
         let (builds, writes) = (
             store.fact_builds.load(Ordering::Relaxed),
             store.prepared_disk.stats().writes,
         );
-        source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
         let full = ask(has_override("TOKEN-ROOT", &[]));
         assert_eq!(value_of(&full), Some(true));
-        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), validation.1));
         assert_eq!(
             (
                 full["usage"]["cold_parses"].as_u64(),
                 full["usage"]["source_opens"].as_u64()
             ),
-            (Some(0), Some(0))
+            (Some(0), validation.0)
         );
         assert_eq!(
             (
@@ -16224,7 +16333,7 @@ mod tests {
             &Cancellation::default(),
         ));
         assert_eq!(value_of(&upgraded), Some(true));
-        assert_eq!(disk_reads(&upgraded), (Some(1), Some(indexed)));
+        assert_eq!(cache_reads(&upgraded), (Some(1), Some(indexed), Some(0)));
         assert_eq!(store.prepared_disk.stats().writes, writes + 1);
         assert_eq!(
             store.prepared_disk.entry_text_state(&key),

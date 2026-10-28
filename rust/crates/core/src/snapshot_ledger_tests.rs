@@ -4773,13 +4773,12 @@ fn decoded_index_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnap
 }
 
 fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
-    facts_bound_walk(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
+    decoded_facts_prediction(fixture, &fixture.pins[0])
 }
 
 fn index_root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
     if primed {
-        facts_bound_walk(&fixture.pins[0])
-            .max(decoded_index_facts_prediction(fixture, &fixture.pins[0]))
+        decoded_index_facts_prediction(fixture, &fixture.pins[0])
     } else {
         facts_bound_walk(&fixture.pins[0])
     }
@@ -5051,12 +5050,16 @@ fn assert_facts_admitted_in_full(
     assert_fitted_at(site, &build(), attempt, offset + predicted);
 }
 
-fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> Fixture {
+fn root_facts_fixture(
+    source: &LedgerSource,
+    background: bool,
+    primed: Option<FactsNeed>,
+) -> Fixture {
     let store = prepared_store();
     let owner = context_for("root-facts", background);
     let (root, snapshot) = acquired(&store, &source.path, &owner);
     let classifier = json!({"id":"native","version":"1"});
-    if primed {
+    if let Some(need) = primed {
         store
             .prepared_root_facts(
                 &snapshot,
@@ -5066,7 +5069,7 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
                 PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
                 &mut [0u64; 20],
-                FactsNeed::Full,
+                need,
             )
             .unwrap();
         assert_eq!(
@@ -5082,7 +5085,7 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
             .prepared_disk
             .has_entry(&disk_key(&owner, snapshot.stamp))
             .unwrap(),
-        primed
+        primed.is_some()
     );
     assert!(!store
         .lock_state()
@@ -5108,7 +5111,8 @@ fn root_facts_are_admitted_in_full_before_construction_or_decoding() {
     let source = LedgerSource::new(&lines(0..4));
     for background in [false, true] {
         for (primed, built) in [(false, [1, 0]), (true, [0, 1])] {
-            let build = || root_facts_fixture(&source, background, primed);
+            let build =
+                || root_facts_fixture(&source, background, primed.then_some(FactsNeed::Full));
             let probe = build();
             assert_eq!(
                 settled(&probe.store)[ENTRIES],
@@ -5148,7 +5152,7 @@ fn empty_root_facts_are_admitted_at_their_fixed_overhead_before_construction() {
     let source = LedgerSource::new("");
     let site = "prepared_root_facts empty root";
     for background in [false, true] {
-        let build = || root_facts_fixture(&source, background, false);
+        let build = || root_facts_fixture(&source, background, None);
         let probe = build();
         assert_eq!(probe.pins[0].event_count, 0);
         assert_eq!(chunk_entry_bytes(&probe.pins[0]), 0);
@@ -5192,7 +5196,8 @@ fn prepare_graph_refuses_root_facts_before_construction_or_decoding() {
     let site = "prepare_graph root facts";
     for background in [false, true] {
         for (primed, built) in [(false, [1, 0]), (true, [0, 1])] {
-            let build = || root_facts_fixture(&source, background, primed);
+            let build =
+                || root_facts_fixture(&source, background, primed.then_some(FactsNeed::Full));
             let predicted = index_root_facts_prediction(&build(), primed);
             assert_facts_admitted_in_full(
                 site,
@@ -5768,7 +5773,7 @@ fn patch_root_facts_are_admitted_at_their_bound_before_construction() {
         let direct = format!("{shape} prepared_root_facts");
         let graph = format!("{shape} prepare_graph root facts");
         for background in [false, true] {
-            let build = || root_facts_fixture(&source, background, false);
+            let build = || root_facts_fixture(&source, background, None);
             let probe = build();
             let facts = built_facts(&probe.pins[0], &json!([]));
             assert_paths_twice(&direct, &facts, &paths);
@@ -13499,82 +13504,106 @@ fn upgrade_attempt(fixture: &Fixture, path: &Path) -> Result<(), SnapshotError> 
     Ok(())
 }
 
-#[test]
-fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_bound() {
-    let scenario = Scenario::new(1, |index| prompt_line(&format!("thread-{index:04}"), 4096));
-    let path = &scenario.sidechains[0];
-    let site = "prepared_source index-only upgrade";
-    for background in [false, true] {
-        let build = || facts_cache_fixture(&scenario, background, 0, FactsNeed::Index);
-        let probe = build();
-        let key = disk_key(&probe.owner, probe.pins[1].stamp);
-        let decode = decoded_index_source_facts_prediction(&probe);
-        let construction = facts_bound_walk(&probe.pins[1]);
-        assert!(
-            decode < construction,
-            "{site}: decode={decode} construction={construction}"
+fn root_upgrade_attempt(fixture: &Fixture) -> Result<(), SnapshotError> {
+    fixture
+        .store
+        .prepared_root_facts(
+            &fixture.pins[0],
+            &json!({"id":"native","version":"1"}),
+            &fixture.owner,
+            &work_bounds(),
+            PreparedCacheReads::Unmetered,
+            &Cancellation::default(),
+            &mut [0u64; 20],
+            FactsNeed::Full,
+        )
+        .map(|_| ())
+}
+
+struct UpgradeSite<'a> {
+    site: &'a str,
+    key: PreparedDiskKey,
+    pin: usize,
+    decode: usize,
+    construction: usize,
+    attempt: &'a dyn Fn(&Fixture) -> Result<(), SnapshotError>,
+}
+
+fn assert_primed_index_upgrade_reserves_in_phases(
+    build: &dyn Fn() -> Fixture,
+    upgrade: &UpgradeSite<'_>,
+) {
+    let UpgradeSite {
+        site,
+        key,
+        pin,
+        decode,
+        construction,
+        attempt,
+    } = upgrade;
+    let (decode, construction, pin) = (*decode, *construction, *pin);
+    let probe = build();
+    let (index, text) = entry_sections(&probe, &probe.pins[pin]);
+    assert_eq!(text, 0, "{site}: the primed entry carries text");
+    assert_eq!(
+        probe.store.prepared_disk.entry_text_state(key),
+        Some(crate::snapshot_prepared::TextState::Unbuilt)
+    );
+    let published = |fixture: &Fixture| match attempt(fixture) {
+        Ok(()) => {
+            fixture.store.prepared_disk.entry_text_state(key)
+                == Some(crate::snapshot_prepared::TextState::Present)
+        }
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("{site}: failed outside admission: {error:?}"),
+    };
+    let refused_untouched = |fixture: &Fixture, headroom: usize, lookups: usize| {
+        let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+        let (before, probes, disk) = (
+            ledger(&fixture.store),
+            fact_probes(&fixture.store),
+            fixture.store.prepared_disk.stats(),
         );
-        let (index, text) = entry_sections(&probe, &probe.pins[1]);
-        assert_eq!(text, 0, "{site}: the primed entry carries text");
+        traced(&fixture.store);
+        assert!(
+            !published(fixture),
+            "{site}: headroom {headroom} was admitted"
+        );
+        let reserved = reserved_traces(&traced(&fixture.store));
         assert_eq!(
-            probe.store.prepared_disk.entry_text_state(&key),
+            fact_probes(&fixture.store),
+            [probes[BUILDS], probes[LOOKUPS] + lookups],
+            "{site}: the refusal at headroom {headroom} probed unexpectedly"
+        );
+        let after = fixture.store.prepared_disk.stats();
+        assert_eq!(
+            (after.entries, after.bytes, after.writes),
+            (disk.entries, disk.bytes, disk.writes),
+            "{site}: the refusal at headroom {headroom} touched the disk cache"
+        );
+        assert_eq!(
+            fixture.store.prepared_disk.entry_text_state(key),
             Some(crate::snapshot_prepared::TextState::Unbuilt)
         );
-        let fits = |fixture: &Fixture| match upgrade_attempt(fixture, path) {
-            Ok(()) => true,
-            Err(error) if error.status == Status::RetainedLimit => false,
-            Err(error) => panic!("{site}: failed outside admission: {error:?}"),
-        };
-        for headroom in [0, decode - 1] {
-            let fixture = build();
-            let filler = fill_to(&fixture.store, &fixture.owner, headroom);
-            let (before, probes, disk) = (
-                ledger(&fixture.store),
-                fact_probes(&fixture.store),
-                fixture.store.prepared_disk.stats(),
-            );
-            traced(&fixture.store);
-            assert!(
-                !fits(&fixture),
-                "{site}: headroom {headroom} below the decode bound was admitted"
-            );
-            assert!(
-                traced(&fixture.store).is_empty(),
-                "{site}: the refusal at headroom {headroom} reserved or allocated"
-            );
-            assert_eq!(
-                fact_probes(&fixture.store),
-                probes,
-                "{site}: the index was decoded before its admission at headroom {headroom}"
-            );
-            let after = fixture.store.prepared_disk.stats();
-            assert_eq!(
-                (after.entries, after.bytes, after.writes),
-                (disk.entries, disk.bytes, disk.writes)
-            );
-            assert_eq!(ledger(&fixture.store), before);
-            fixture.store.assert_conserved();
-            drop(filler);
-            assert_eq!(fixture.store.lock_state().transient_bytes, 0);
-        }
-        let boundary = exact_headroom(&build, &fits);
+        assert_eq!(ledger(&fixture.store), before);
+        fixture.store.assert_conserved();
+        drop(filler);
+        assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+        reserved
+    };
+    let first = decode.min(construction);
+    for headroom in [0, first - 1] {
+        let fixture = build();
+        let reserved = refused_untouched(&fixture, headroom, 0);
         assert!(
-            boundary >= construction,
-            "{site}: the upgrade landed at {boundary} bytes below its {construction}-byte construction bound"
+            reserved.is_empty(),
+            "{site}: the refusal at headroom {headroom} reserved or allocated: {reserved:?}"
         );
-        for headroom in [decode, boundary - 1] {
+    }
+    if decode < construction {
+        for headroom in [decode, construction - 1] {
             let fixture = build();
-            let filler = fill_to(&fixture.store, &fixture.owner, headroom);
-            let (probes, disk) = (
-                fact_probes(&fixture.store),
-                fixture.store.prepared_disk.stats(),
-            );
-            traced(&fixture.store);
-            assert!(
-                !fits(&fixture),
-                "{site}: headroom {headroom} below the construction bound was admitted"
-            );
-            let reserved = reserved_traces(&traced(&fixture.store));
+            let reserved = refused_untouched(&fixture, headroom, 1);
             assert_eq!(
                 reserved.first(),
                 Some(&decode),
@@ -13584,51 +13613,130 @@ fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_b
                 !reserved.contains(&construction),
                 "{site}: the construction bound was reserved at headroom {headroom}: {reserved:?}"
             );
-            assert_eq!(
-                fact_probes(&fixture.store),
-                [probes[BUILDS], probes[LOOKUPS] + 1],
-                "{site}: the refusal at headroom {headroom} did not decode the index exactly once"
-            );
-            let after = fixture.store.prepared_disk.stats();
-            assert_eq!(
-                (after.entries, after.bytes, after.writes),
-                (disk.entries, disk.bytes, disk.writes),
-                "{site}: the refusal at headroom {headroom} touched the disk cache"
-            );
-            assert_eq!(
-                fixture.store.prepared_disk.entry_text_state(&key),
-                Some(crate::snapshot_prepared::TextState::Unbuilt)
-            );
-            fixture.store.assert_conserved();
-            drop(filler);
-            assert_eq!(fixture.store.lock_state().transient_bytes, 0);
         }
-        let fitted = build();
-        let filler = fill_to(&fitted.store, &fitted.owner, boundary);
-        let (probes, disk) = (
-            fact_probes(&fitted.store),
-            fitted.store.prepared_disk.stats(),
+    } else {
+        for headroom in [construction, decode - 1] {
+            let fixture = build();
+            let reserved = refused_untouched(&fixture, headroom, 0);
+            assert!(
+                reserved.is_empty(),
+                "{site}: headroom {headroom} below the decode bound reserved: {reserved:?}"
+            );
+        }
+    }
+    let boundary = exact_headroom(build, &published);
+    assert!(
+        boundary >= decode.max(construction),
+        "{site}: the upgrade landed at {boundary} bytes below its bounds (decode {decode}, construction {construction})"
+    );
+    {
+        let fixture = build();
+        let filler = fill_to(&fixture.store, &fixture.owner, boundary - 1);
+        let disk = fixture.store.prepared_disk.stats();
+        assert!(
+            !published(&fixture),
+            "{site}: headroom {} published",
+            boundary - 1
         );
-        assert!(fits(&fitted), "{site}: the exact fit was refused");
+        let after = fixture.store.prepared_disk.stats();
         assert_eq!(
-            fact_probes(&fitted.store),
-            [probes[BUILDS] + 1, probes[LOOKUPS] + 1]
-        );
-        let after = fitted.store.prepared_disk.stats();
-        let (index_after, text_after) = entry_sections(&fitted, &fitted.pins[1]);
-        assert_eq!(index_after, index);
-        assert!(text_after > 0, "{site}: the upgrade wrote no text");
-        assert_eq!(
-            (after.entries, after.writes, after.bytes),
-            (disk.entries, disk.writes + 1, disk.bytes + text_after,)
+            (after.entries, after.bytes, after.writes),
+            (disk.entries, disk.bytes, disk.writes),
+            "{site}: the refused publication touched the disk cache"
         );
         assert_eq!(
-            fitted.store.prepared_disk.entry_text_state(&key),
-            Some(crate::snapshot_prepared::TextState::Present)
+            fixture.store.prepared_disk.entry_text_state(key),
+            Some(crate::snapshot_prepared::TextState::Unbuilt)
         );
-        fitted.store.assert_conserved();
+        fixture.store.assert_conserved();
         drop(filler);
-        assert_eq!(fitted.store.lock_state().transient_bytes, 0);
+        assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+    }
+    let fitted = build();
+    let filler = fill_to(&fitted.store, &fitted.owner, boundary);
+    let (probes, disk) = (
+        fact_probes(&fitted.store),
+        fitted.store.prepared_disk.stats(),
+    );
+    assert!(published(&fitted), "{site}: the exact fit was refused");
+    assert_eq!(
+        fact_probes(&fitted.store),
+        [probes[BUILDS] + 1, probes[LOOKUPS] + 1]
+    );
+    let after = fitted.store.prepared_disk.stats();
+    let (index_after, text_after) = entry_sections(&fitted, &fitted.pins[pin]);
+    assert_eq!(index_after, index);
+    assert!(text_after > 0, "{site}: the upgrade wrote no text");
+    assert_eq!(
+        (after.entries, after.writes, after.bytes),
+        (disk.entries, disk.writes + 1, disk.bytes + text_after)
+    );
+    fitted.store.assert_conserved();
+    drop(filler);
+    assert_eq!(fitted.store.lock_state().transient_bytes, 0);
+}
+
+#[test]
+fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_bound() {
+    for (prompt_bytes, order) in [
+        (4096, "decode below construction"),
+        (18, "construction below decode"),
+    ] {
+        let scenario = Scenario::new(1, |index| {
+            prompt_line(&format!("thread-{index:04}"), prompt_bytes)
+        });
+        let path = scenario.sidechains[0].clone();
+        let site = format!("prepared_source index-only upgrade ({order})");
+        for background in [false, true] {
+            let build = || facts_cache_fixture(&scenario, background, 0, FactsNeed::Index);
+            let probe = build();
+            let decode = decoded_index_source_facts_prediction(&probe);
+            let construction = facts_bound_walk(&probe.pins[1]);
+            assert_eq!(
+                decode < construction,
+                prompt_bytes > 18,
+                "{site}: decode={decode} construction={construction}"
+            );
+            let attempt = |fixture: &Fixture| upgrade_attempt(fixture, &path);
+            assert_primed_index_upgrade_reserves_in_phases(
+                &build,
+                &UpgradeSite {
+                    site: &site,
+                    key: disk_key(&probe.owner, probe.pins[1].stamp),
+                    pin: 1,
+                    decode,
+                    construction,
+                    attempt: &attempt,
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn primed_index_root_upgrade_reserves_the_decode_bound_then_the_construction_bound() {
+    let source = LedgerSource::new(&prompt_line("root", 4096));
+    let site = "prepared_root_facts index-only upgrade";
+    for background in [false, true] {
+        let build = || root_facts_fixture(&source, background, Some(FactsNeed::Index));
+        let probe = build();
+        let decode = decoded_index_facts_prediction(&probe, &probe.pins[0]);
+        let construction = facts_bound_walk(&probe.pins[0]);
+        assert!(
+            decode < construction,
+            "{site}: decode={decode} construction={construction}"
+        );
+        assert_primed_index_upgrade_reserves_in_phases(
+            &build,
+            &UpgradeSite {
+                site,
+                key: disk_key(&probe.owner, probe.pins[0].stamp),
+                pin: 0,
+                decode,
+                construction,
+                attempt: &root_upgrade_attempt,
+            },
+        );
     }
 }
 
