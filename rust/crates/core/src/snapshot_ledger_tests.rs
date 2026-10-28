@@ -13526,6 +13526,7 @@ struct UpgradeSite<'a> {
     pin: usize,
     decode: usize,
     construction: usize,
+    acquired: LoadResidue,
     attempt: &'a (dyn Fn(&Fixture) -> Result<(), SnapshotError> + Sync),
 }
 
@@ -13539,9 +13540,10 @@ fn assert_primed_index_upgrade_reserves_in_phases(
         pin,
         decode,
         construction,
+        acquired,
         attempt,
     } = upgrade;
-    let (decode, construction, pin) = (*decode, *construction, *pin);
+    let (decode, construction, pin, acquired) = (*decode, *construction, *pin, *acquired);
     let probe = build();
     let (index, text) = entry_sections(&probe, &probe.pins[pin]);
     assert_eq!(text, 0, "{site}: the primed entry carries text");
@@ -13563,7 +13565,10 @@ fn assert_primed_index_upgrade_reserves_in_phases(
         gauges[TOTAL] += bytes;
         gauges
     };
-    let refused_untouched = |fixture: &Fixture, headroom: usize, lookups: usize| {
+    let refused_untouched = |fixture: &Fixture,
+                             headroom: usize,
+                             lookups: usize,
+                             residue: LoadResidue| {
         let filler = fill_to(&fixture.store, &fixture.owner, headroom);
         let (before, probes, disk) = (
             ledger(&fixture.store),
@@ -13595,12 +13600,12 @@ fn assert_primed_index_upgrade_reserves_in_phases(
         );
         let (slots, slot_bytes) = residue_walk(&fixture.store, &slot_ids);
         assert!(
-            slots <= 1,
+            slots <= residue.slots,
             "{site}: the refusal at headroom {headroom} left {slots} load slots behind"
         );
         let pinned = fixture.store.lock_state().prepared_loads.len() - pinned_before;
         assert!(
-            pinned <= slots,
+            pinned <= residue.pinned.min(slots),
             "{site}: the refusal at headroom {headroom} pinned {pinned} prepared loads"
         );
         assert_eq!(
@@ -13623,7 +13628,7 @@ fn assert_primed_index_upgrade_reserves_in_phases(
     let first = decode.min(construction);
     for headroom in [0, first - 1] {
         let fixture = build();
-        let reserved = refused_untouched(&fixture, headroom, 0);
+        let reserved = refused_untouched(&fixture, headroom, 0, NO_LOADS);
         assert!(
             reserved.is_empty(),
             "{site}: the refusal at headroom {headroom} reserved or allocated: {reserved:?}"
@@ -13632,7 +13637,7 @@ fn assert_primed_index_upgrade_reserves_in_phases(
     if decode < construction {
         for headroom in [decode, construction - 1] {
             let fixture = build();
-            let reserved = refused_untouched(&fixture, headroom, 1);
+            let reserved = refused_untouched(&fixture, headroom, 1, acquired);
             assert_eq!(
                 reserved.first(),
                 Some(&decode),
@@ -13646,7 +13651,7 @@ fn assert_primed_index_upgrade_reserves_in_phases(
     } else {
         for headroom in [construction, decode - 1] {
             let fixture = build();
-            let reserved = refused_untouched(&fixture, headroom, 0);
+            let reserved = refused_untouched(&fixture, headroom, 0, NO_LOADS);
             assert!(
                 reserved.is_empty(),
                 "{site}: headroom {headroom} below the decode bound reserved: {reserved:?}"
@@ -13762,6 +13767,7 @@ fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_b
                     pin: 1,
                     decode,
                     construction,
+                    acquired: PINNED_LOAD,
                     attempt: &attempt,
                 },
             );
@@ -13790,6 +13796,7 @@ fn primed_index_root_upgrade_reserves_the_decode_bound_then_the_construction_bou
                 pin: 0,
                 decode,
                 construction,
+                acquired: NO_LOADS,
                 attempt: &root_upgrade_attempt,
             },
         );
