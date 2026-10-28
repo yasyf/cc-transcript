@@ -19612,11 +19612,10 @@ mod tests {
                 finished.send(()).unwrap();
             })
         };
-        completion
-            .recv_timeout(Duration::from_secs(10))
-            .expect("record_transport blocked behind the held store state");
+        let outcome = completion.recv_timeout(Duration::from_secs(10));
         drop(held);
         recorder.join().unwrap();
+        outcome.expect("record_transport blocked behind the held store state");
         let stats = store.request(
             &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
             &context("owner"),
