@@ -165,6 +165,7 @@ impl NativeStore {
             ),
             cancel,
             usage,
+            FactsNeed::Index,
         ) {
             Ok(_) => Ok(progress(true)),
             Err(error) if error.status == Status::Deadline => Ok(progress(false)),

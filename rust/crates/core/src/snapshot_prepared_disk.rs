@@ -1460,7 +1460,7 @@ impl PreparedDiskCache {
             run_read_hook(&self.owner_name);
             let mut bytes = Vec::with_capacity(wanted.min(expected));
             read.operations += 1;
-            let finished = file.take(wanted as u64).read_to_end(&mut bytes);
+            let finished = (&file).take(wanted as u64).read_to_end(&mut bytes);
             read.bytes += bytes.len() as u64;
             finished.map_err(disk_error)?;
             if need == FactsNeed::Index
