@@ -5935,8 +5935,8 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
             "{site}: the graph root facts carry override text"
         );
         let mut wide = work_bounds();
-        wide.max_read_bytes = CAP;
-        wide.max_source_read_bytes = CAP;
+        wide.max_read_bytes = probe.store.config.source;
+        wide.max_source_read_bytes = probe.store.config.source;
         let full_root = crate::snapshot_projection::prepare_facts(
             &probe.pins[0],
             &json!([]),
