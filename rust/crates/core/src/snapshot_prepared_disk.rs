@@ -2188,7 +2188,10 @@ mod tests {
 
     fn left_behind(namespace: &Path, entry: &PreparedDiskKey, built: &PreparedFacts) -> PathBuf {
         let writer = reuse_cache(namespace, 64 * 1024);
-        assert!(writer.insert(entry, built, |_| true, |_| true).unwrap());
+        assert!(writer
+            .insert(entry, built, |_| true, |_| true)
+            .unwrap()
+            .serves());
         writer.entry_file(entry)
     }
 
@@ -3080,20 +3083,23 @@ mod tests {
         let payload = encoded_sections_len(&sample);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let admissions = std::cell::RefCell::new(Vec::new());
-        assert!(!cache
-            .insert(
-                &entry,
-                &sample,
-                |bytes| {
-                    admissions.borrow_mut().push(("reserve", bytes));
-                    false
-                },
-                |growth| {
-                    admissions.borrow_mut().push(("admit", growth));
-                    true
-                },
-            )
-            .unwrap());
+        assert_eq!(
+            cache
+                .insert(
+                    &entry,
+                    &sample,
+                    |bytes| {
+                        admissions.borrow_mut().push(("reserve", bytes));
+                        false
+                    },
+                    |growth| {
+                        admissions.borrow_mut().push(("admit", growth));
+                        true
+                    },
+                )
+                .unwrap(),
+            Inserted::Refused
+        );
         assert_eq!(admissions.replace(Vec::new()), [("reserve", payload)]);
         assert!(!cache.has_entry(&entry).unwrap());
         assert!(!cache.entry_path(entry.digest).exists());
@@ -3118,7 +3124,8 @@ mod tests {
                     true
                 },
             )
-            .unwrap());
+            .unwrap()
+            .serves());
         let recorded = admissions.replace(Vec::new());
         assert_eq!(recorded[0], ("reserve", payload));
         assert_eq!((recorded.len(), recorded[1].0), (2, "admit"));
@@ -3151,17 +3158,20 @@ mod tests {
         let sample = pushed_facts(1, 1);
         let first = key(stamp(1), &json!({"root":"/repo"}));
         let offered = std::cell::Cell::new(0);
-        assert!(!cache
-            .insert(
-                &first,
-                &sample,
-                |_| true,
-                |growth| {
-                    offered.set(growth);
-                    false
-                }
-            )
-            .unwrap());
+        assert_eq!(
+            cache
+                .insert(
+                    &first,
+                    &sample,
+                    |_| true,
+                    |growth| {
+                        offered.set(growth);
+                        false
+                    }
+                )
+                .unwrap(),
+            Inserted::Refused
+        );
         assert!(offered.get() > 0);
         assert!(!cache.has_entry(&first).unwrap());
         assert!(!cache.entry_path(first.digest).exists());
@@ -3190,7 +3200,8 @@ mod tests {
                     true
                 }
             )
-            .unwrap());
+            .unwrap()
+            .serves());
         assert_eq!(offered.get(), 0);
         assert_eq!(cache.index_capacity_bytes(), cache.audit_index_bytes());
         assert_eq!(cache.stats().entries, 2);
@@ -4980,7 +4991,8 @@ mod tests {
                 |_| true,
                 |_| true
             )
-            .unwrap());
+            .unwrap()
+            .serves());
         assert_eq!(budget(&cache), (2, 2 * old_size + new_size, 0, old_size));
         assert_eq!(stranded(&cache).len(), 1);
         fs::remove_dir(&old_path).unwrap();
@@ -4991,7 +5003,8 @@ mod tests {
                 |_| true,
                 |_| true
             )
-            .unwrap());
+            .unwrap()
+            .serves());
         assert!(stranded(&cache).is_empty());
         assert_eq!(budget(&cache), (3, 2 * old_size + new_size, 0, 0));
         assert_eq!(entry_files(&cache).len(), 3);
