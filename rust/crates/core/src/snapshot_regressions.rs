@@ -88,8 +88,12 @@ fn bounds() -> WorkLimits {
 }
 
 fn acquire(path: &Path) -> Value {
+    acquire_as(path, "native")
+}
+
+fn acquire_as(path: &Path, classifier: &str) -> Value {
     json!({"schema":SCHEMA,"id":"race-acquire","operation":"acquire",
-        "path":path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
+        "path":path.to_string_lossy().as_ref(),"classifier":{"id":classifier,"version":"1"},
         "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":1024*1024,"max_source_read_bytes":1024*1024,"max_events":1000,
         "max_items":256,"max_output_bytes":1024*1024,"max_discovery_entries":1000,"max_sources":100}})
 }
@@ -154,16 +158,16 @@ fn staged_body(store: &NativeStore, mut response: Value, owner: &Value, after: u
     panic!("source never reached a staged body read");
 }
 
-struct ReadGate {
+struct Gate {
     entered: mpsc::Receiver<()>,
     released: Arc<(Mutex<bool>, Condvar)>,
 }
 
-impl ReadGate {
-    fn wait_until_read(&self) {
+impl Gate {
+    fn wait_until_entered(&self) {
         self.entered
             .recv_timeout(Duration::from_secs(10))
-            .expect("source read hook was not reached within ten seconds");
+            .expect("gated hook was not reached within ten seconds");
     }
 
     fn release(&self) {
@@ -173,18 +177,18 @@ impl ReadGate {
     }
 }
 
-impl Drop for ReadGate {
+impl Drop for Gate {
     fn drop(&mut self) {
         self.release();
     }
 }
 
-fn install_read_gate(store: &NativeStore) -> ReadGate {
+fn gate() -> (Gate, impl Fn() + Send + Sync + 'static) {
     let (sender, entered) = mpsc::channel();
     let released = Arc::new((Mutex::new(false), Condvar::new()));
     let worker_released = Arc::clone(&released);
-    *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
-        sender.send(()).expect("read gate owner disappeared");
+    let hold = move || {
+        sender.send(()).expect("gate owner disappeared");
         let (released, notification) = &*worker_released;
         let (released, _) = notification
             .wait_timeout_while(
@@ -195,9 +199,15 @@ fn install_read_gate(store: &NativeStore) -> ReadGate {
             .unwrap();
         let did_release = *released;
         drop(released);
-        assert!(did_release, "read gate was not released within ten seconds");
-    }));
-    ReadGate { entered, released }
+        assert!(did_release, "gate was not released within ten seconds");
+    };
+    (Gate { entered, released }, hold)
+}
+
+fn install_read_gate(store: &NativeStore) -> Gate {
+    let (gate, hold) = gate();
+    *store.read_hook.lock().unwrap() = Some(Arc::new(hold));
+    gate
 }
 
 #[test]
@@ -210,7 +220,7 @@ fn dropping_read_gate_releases_the_blocked_worker() {
         hook();
         finished.send(()).unwrap();
     });
-    gate.wait_until_read();
+    gate.wait_until_entered();
     drop(gate);
     received
         .recv_timeout(Duration::from_secs(10))
@@ -260,7 +270,7 @@ fn rewrite_during_read(tail: bool, truncate: bool) {
             &Cancellation::default(),
         )
     });
-    gate.wait_until_read();
+    gate.wait_until_entered();
     let replacement = if truncate {
         String::new()
     } else {
@@ -320,7 +330,7 @@ fn concurrent_waiter_cancellation_does_not_cancel_the_blocked_reader() {
     let worker = std::thread::spawn(move || {
         worker_store.request(&request, &worker_owner, &Cancellation::default())
     });
-    gate.wait_until_read();
+    gate.wait_until_entered();
     let second = store.request(&acquire(&source.path), &b, &Cancellation::default());
     let load_id = second["data"]["reservation"]["load_id"]
         .as_str()
@@ -360,7 +370,7 @@ fn cancelled_blocked_reader_does_not_poison_the_concurrent_waiter() {
     let request = acquire(&source.path);
     let worker =
         std::thread::spawn(move || worker_store.request(&request, &worker_owner, &worker_cancel));
-    gate.wait_until_read();
+    gate.wait_until_entered();
     let second = store.request(&acquire(&source.path), &b, &Cancellation::default());
     assert_eq!(store.state.lock().unwrap().waiters.len(), 2);
     cancellation.cancel();
@@ -374,6 +384,90 @@ fn cancelled_blocked_reader_does_not_poison_the_concurrent_waiter() {
     assert_eq!(state.counters[4], 1);
     assert_eq!(state.counters[8], 1);
     assert_eq!(state.counters[9], 1);
+}
+
+#[test]
+fn joined_waiters_publish_a_cold_generation_once_while_its_parser_still_classifies() {
+    let source = RaceSource::new(&[user("a"), user("b")].concat());
+    let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+    let store = Arc::new(race_store());
+    let (gate, hold) = gate();
+    store
+        .register_classifier(
+            "gated",
+            "1",
+            Arc::new(move |_, range| {
+                hold();
+                Ok(vec![false; range.len()])
+            }),
+        )
+        .unwrap();
+    let a = context(&store, &source, "first");
+    let b = context(&store, &source, "second");
+    let c = context(&store, &source, "third");
+    let parsing = store.request(
+        &acquire_as(&source.path, "gated"),
+        &a,
+        &Cancellation::default(),
+    );
+    let second = store.request(&acquire(&source.path), &b, &Cancellation::default());
+    let third = store.request(&acquire(&source.path), &c, &Cancellation::default());
+    for joined in [&parsing, &second, &third] {
+        assert_eq!(joined["status"].as_str(), Some("incomplete"), "{joined:?}");
+    }
+    let worker_store = Arc::clone(&store);
+    let worker_owner = a.clone();
+    let worker = std::thread::spawn(move || finish(&worker_store, parsing, &worker_owner));
+    gate.wait_until_entered();
+    assert!(!store.state.lock().unwrap().latest.contains_key(&identity));
+    let second = finish(&store, second, &b);
+    assert!(store.state.lock().unwrap().latest.contains_key(&identity));
+    let third = finish(&store, third, &c);
+    gate.release();
+    let first = worker.join().unwrap();
+    let latest = {
+        let state = store.state.lock().unwrap();
+        assert_eq!(
+            [4, 8, 9, 10].map(|counter| (COUNTERS[counter], state.counters[counter])),
+            [
+                ("cold_parses", 1),
+                ("inflight_joins", 2),
+                ("generations_published", 1),
+                ("generations_invalidated", 0),
+            ]
+        );
+        Arc::clone(state.latest.get(&identity).expect("published latest"))
+    };
+    for (response, published) in [(&first, 0), (&second, 1), (&third, 0)] {
+        assert_eq!(
+            response["usage"]["generations_published"].as_u64(),
+            Some(published),
+            "{response:?}"
+        );
+        assert_eq!(
+            response["usage"]["generations_invalidated"].as_u64(),
+            Some(0),
+            "{response:?}"
+        );
+    }
+    let classified = pin(&store, &first, &a);
+    assert!(!Arc::ptr_eq(&classified, &latest));
+    for snapshot in [
+        &classified,
+        &pin(&store, &second, &b),
+        &pin(&store, &third, &c),
+    ] {
+        assert_eq!(snapshot.event_count, 2);
+        assert_eq!(snapshot.entry(1).meta().unwrap().uuid, "b");
+        assert!(Arc::ptr_eq(&snapshot.chunks[0], &latest.chunks[0]));
+    }
+    assert!(Arc::ptr_eq(&pin(&store, &second, &b), &latest));
+    assert!(Arc::ptr_eq(&pin(&store, &third, &c), &latest));
+    assert_eq!(
+        store.state.lock().unwrap().escaped_chunks.len(),
+        latest.chunks.len()
+    );
+    store.assert_conserved();
 }
 
 fn classified(
