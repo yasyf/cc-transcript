@@ -500,12 +500,6 @@ impl EntryName {
         .expect("entry file name")
     }
 
-    fn legacy(key: &[u8; 32]) -> CString {
-        let high = u128::from_be_bytes(key[..16].try_into().expect("entry name key"));
-        let low = u128::from_be_bytes(key[16..].try_into().expect("entry name key"));
-        CString::new(format!("{high:032x}{low:032x}.facts")).expect("entry file name")
-    }
-
     fn parse(name: &CStr) -> Option<Self> {
         let bytes = name.to_bytes();
         if bytes.len() != ENTRY_NAME_BYTES
@@ -1062,7 +1056,10 @@ impl PreparedDiskCache {
             if entry_name.as_c_str() == OWNER_LOCK {
                 continue;
             }
-            if !generated_entry(&entry_name) && legacy_entry_bytes(&entry_name).is_none() {
+            if !generated_entry(&entry_name)
+                && legacy_entry_bytes(&entry_name).is_none()
+                && EntryName::parse(&entry_name).is_none()
+            {
                 complete = false;
                 continue;
             }
@@ -1282,40 +1279,35 @@ impl PreparedDiskCache {
     }
 
     fn entry_name(&self, key: &PreparedDiskKey, entry: &DiskEntry) -> CString {
-        match self.engine_compatibility {
-            None => EntryName::legacy(&key.name),
-            Some(_) => EntryName {
-                key: key.name,
-                tag: tag(&self.compatibility(key)),
-                bytes: entry.bytes,
-                accounted: entry.accounted,
-                index_bytes: entry.index_bytes,
-                index_accounted: entry.index_accounted,
-                text_state: entry.text_state as u64,
-            }
-            .encode(),
+        EntryName {
+            key: key.name,
+            tag: tag(&self.compatibility(key)),
+            bytes: entry.bytes,
+            accounted: entry.accounted,
+            index_bytes: entry.index_bytes,
+            index_accounted: entry.index_accounted,
+            text_state: entry.text_state as u64,
         }
+        .encode()
     }
 
     fn entry_names(&self, name: &[u8; 32], entry: &DiskEntry) -> Vec<CString> {
-        match self.engine_compatibility {
-            None => vec![EntryName::legacy(name)],
-            Some(engine) => [self.owner_compatibility, engine]
-                .iter()
-                .map(|compatibility| {
-                    EntryName {
-                        key: *name,
-                        tag: tag(compatibility),
-                        bytes: entry.bytes,
-                        accounted: entry.accounted,
-                        index_bytes: entry.index_bytes,
-                        index_accounted: entry.index_accounted,
-                        text_state: entry.text_state as u64,
-                    }
-                    .encode()
-                })
-                .collect(),
-        }
+        [Some(self.owner_compatibility), self.engine_compatibility]
+            .iter()
+            .flatten()
+            .map(|compatibility| {
+                EntryName {
+                    key: *name,
+                    tag: tag(compatibility),
+                    bytes: entry.bytes,
+                    accounted: entry.accounted,
+                    index_bytes: entry.index_bytes,
+                    index_accounted: entry.index_accounted,
+                    text_state: entry.text_state as u64,
+                }
+                .encode()
+            })
+            .collect()
     }
 
     fn open_entry(&self, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {
@@ -2022,11 +2014,6 @@ impl PreparedDiskCache {
         state.bytes += size;
         state.writes += 1;
         state.write_bytes += size as u64;
-        if old.rank.is_none() && old.name == name {
-            state.bytes -= old.bytes;
-            self.sweep(&mut state, INSERT_SWEEP_NAMES);
-            return Ok(Inserted::Written);
-        }
         let dir_fd = match old.rank {
             Some(rank) => state.claimed[rank].dir.as_raw_fd(),
             None => self.dir_file.as_raw_fd(),
@@ -4065,38 +4052,92 @@ mod tests {
     }
 
     #[test]
-    fn store_without_a_producer_keeps_the_legacy_file_name() {
-        let built = facts();
+    fn a_cache_without_a_producer_names_entries_by_state_and_shares_nothing_across_restarts() {
+        let compact = index_facts(3, 2);
+        let full = pushed_facts(3, 2);
         let entry = revision(1);
         let plain = cache(64 * 1024);
         assert!(plain
-            .insert(&entry, &built, |_| true, |_| true)
+            .insert(&entry, &compact, |_| true, |_| true)
             .unwrap()
             .serves());
-        let legacy = format!("{:x}.facts", Sha256::digest(entry.digest));
-        let written = plain.entry_file(&entry);
-        assert_eq!(written.file_name().unwrap().to_str().unwrap(), legacy);
-        let mut held: Vec<String> = fs::read_dir(&plain.dir)
+        let unbuilt = plain.entry_file(&entry);
+        let unbuilt_name = file_name(&unbuilt);
+        let unbuilt_size = fs::metadata(&unbuilt).unwrap().len() as usize;
+        assert_eq!(unbuilt_name.to_bytes().len(), ENTRY_NAME_BYTES);
+        let parsed = EntryName::parse(&unbuilt_name).expect("a state-bearing name");
+        assert_eq!(
+            (parsed.key, parsed.tag, parsed.bytes, parsed.text_state),
+            (entry.name, tag(&plain.owner_compatibility), unbuilt_size, 0)
+        );
+        assert!(plain
+            .insert(&entry, &full, |_| true, |_| true)
             .unwrap()
-            .map(|listed| listed.unwrap().file_name().into_string().unwrap())
-            .collect();
-        held.sort();
-        assert_eq!(held, [legacy, "owner.lock".to_owned()]);
+            .serves());
+        let present = plain.entry_file(&entry);
+        let present_size = fs::metadata(&present).unwrap().len() as usize;
+        assert_ne!(present, unbuilt);
+        assert_eq!(
+            EntryName::parse(&file_name(&present)).unwrap().text_state,
+            1
+        );
+        assert!(!unbuilt.exists());
+        assert_eq!(budget(&plain), (1, present_size, 0, 0));
+        assert_eq!(entry_files(&plain), [present.clone()]);
+        assert_eq!(physical_bytes(&plain.dir), present_size);
         assert!(matches!(
             lookup(&plain, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
+        let namespace = plain.namespace.clone();
+        let dir = plain.dir.clone();
+        drop(plain);
+        assert!(!dir.exists(), "the dropped cache left its directory behind");
+        let next = cache(64 * 1024);
+        assert_eq!(next.namespace, namespace);
+        assert_ne!(next.dir, dir);
+        assert_eq!(next.decoded_bytes(&entry, FactsNeed::Index), None);
+        assert_eq!(budget(&next), (0, 0, 0, 0));
+        assert!(next.state.lock().unwrap().claimed.is_empty());
+    }
+
+    #[test]
+    fn a_crashed_cache_without_a_producer_is_cleaned_by_its_successor_under_the_new_names() {
         let namespace = isolated_namespace();
-        let reusing = reuse_cache(&namespace, 64 * 1024);
-        assert!(reusing
-            .insert(&entry, &built, |_| true, |_| true)
-            .unwrap()
-            .serves());
-        let named = reusing.entry_file(&entry);
-        let name = CString::new(named.file_name().unwrap().to_str().unwrap()).unwrap();
-        assert_eq!(name.to_bytes().len(), ENTRY_NAME_BYTES);
-        assert!(EntryName::parse(&name).is_some());
-        drop(reusing);
+        let cleaner = PreparedDiskCache::open(
+            namespace.clone(),
+            &epoch(),
+            4096,
+            &origin(None),
+            0,
+            Work::default(),
+        )
+        .unwrap();
+        let (dir, file_path) = stale_owner(&cleaner, 50);
+        let stale = file_path.with_file_name(
+            EntryName {
+                key: revision(7).name,
+                tag: 1,
+                bytes: 50,
+                accounted: 0,
+                index_bytes: 0,
+                index_accounted: 0,
+                text_state: 1,
+            }
+            .encode()
+            .to_str()
+            .unwrap(),
+        );
+        fs::rename(&file_path, &stale).unwrap();
+        assert_eq!(file_name(&stale).to_bytes().len(), ENTRY_NAME_BYTES);
+        for remaining in [34, 18, 2] {
+            cleaner.cleanup_stale_owners_with_limits(128, 16);
+            assert_eq!(fs::metadata(&stale).unwrap().len(), remaining);
+            assert!(dir.exists());
+        }
+        cleaner.cleanup_stale_owners_with_limits(128, 16);
+        assert!(!dir.exists());
+        drop(cleaner);
         fs::remove_dir_all(namespace).unwrap();
     }
 
@@ -4798,8 +4839,7 @@ mod tests {
             before,
             "refused physical room moved the entry"
         );
-        let namespace = isolated_namespace();
-        let roomy = reuse_cache(&namespace, old_size + new_size);
+        let roomy = cache(old_size + new_size);
         assert!(roomy
             .insert(&entry, &compact, |_| true, |_| true)
             .unwrap()
@@ -4836,8 +4876,6 @@ mod tests {
         assert_eq!(budget(&roomy), (1, new_size, 0, 0));
         assert_eq!(text_state_of(&roomy, &entry), Some(TextState::Present));
         assert_eq!(entry_files(&roomy), [roomy.entry_file(&entry)]);
-        drop(roomy);
-        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
@@ -4916,8 +4954,7 @@ mod tests {
     fn an_owned_unlink_failure_strands_the_old_name_until_a_sweep_clears_it() {
         let compact = index_facts(3, 2);
         let full = pushed_facts(3, 2);
-        let namespace = isolated_namespace();
-        let cache = reuse_cache(&namespace, 64 * 1024);
+        let cache = cache(64 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         assert!(cache
             .insert(&entry, &compact, |_| true, |_| true)
@@ -4959,14 +4996,11 @@ mod tests {
         assert_eq!(budget(&cache), (3, 2 * old_size + new_size, 0, 0));
         assert_eq!(entry_files(&cache).len(), 3);
         assert_eq!(physical_bytes(&cache.dir), 2 * old_size + new_size);
-        drop(cache);
-        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
     fn a_full_stranded_list_refuses_the_next_owned_upgrade_until_a_sweep_clears_it() {
-        let namespace = isolated_namespace();
-        let cache = reuse_cache(&namespace, 8 * 1024 * 1024);
+        let cache = cache(8 * 1024 * 1024);
         strand_old_name(&cache, cache.dir.clone());
         let entries: Vec<PreparedDiskKey> = (1..=MAX_STRANDED_OWNED as u64 + 1)
             .map(|size| key(stamp(size), &json!({"root":"/repo"})))
@@ -5023,8 +5057,6 @@ mod tests {
             (entries.len(), entries.len() * full_size, 0, 0)
         );
         assert_eq!(physical_bytes(&cache.dir), entries.len() * full_size);
-        drop(cache);
-        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
