@@ -6348,7 +6348,9 @@ fn user_text_with_tool_results_is_built_at_exact_capacity() {
     let owner = context_for("exact-text", false);
     let (_, snapshot) = acquired(&store, &source.path, &owner);
     let facts = built_facts(&snapshot, &json!([]));
-    let events = facts.text_section().expect("bounded override facts");
+    let OverrideFacts::Loaded(events) = &facts.overrides else {
+        panic!("bounded override facts");
+    };
     assert_eq!(events.len(), 1);
     let joined = &events[0].text;
     assert_eq!(*joined, format!("{text}{result}"));

@@ -5296,6 +5296,7 @@ impl NativeStore {
                     witnessed: _,
                     pending: observing,
                 },
+            need: _,
             next: _,
             page_output_bytes: _,
             remaining: _,
