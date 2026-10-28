@@ -2170,6 +2170,12 @@ impl StoreState {
         })
     }
 
+    fn holds_latest(&self, identity: &SourceIdentity, snapshot: &TranscriptSnapshot) -> bool {
+        self.latest
+            .get(identity)
+            .is_some_and(|old| old.id == snapshot.id)
+    }
+
     fn insert_latest(
         &mut self,
         identity: SourceIdentity,
@@ -7699,10 +7705,7 @@ impl NativeStore {
             }
             let source = Arc::clone(&snapshot);
             let mut state = self.lock_state();
-            let fresh = !state
-                .latest
-                .get(&slot.stamp.identity)
-                .is_some_and(|old| old.id == snapshot.id);
+            let fresh = !state.holds_latest(&slot.stamp.identity, &snapshot);
             if fresh {
                 let escaping = state.escape_growth(&snapshot.chunks);
                 if let Err(error) = self.admit_memory(&mut state, &waiter.context, escaping) {
@@ -7710,7 +7713,6 @@ impl NativeStore {
                     return Err(error);
                 }
                 state.escape_chunks(&snapshot.chunks);
-                usage[9] += 1;
             }
             drop(state);
             let mut classifier_bounds = waiter.limits;
@@ -7770,14 +7772,16 @@ impl NativeStore {
             if let Some(pledge) = &mut pledge {
                 pledge.bytes = 0;
             }
-            if fresh {
+            if fresh && !state.holds_latest(&slot.stamp.identity, &source) {
                 let latest = state.latest.growth_for(&slot.stamp.identity);
                 if self
                     .admit_memory(&mut state, &waiter.context, latest)
                     .is_ok()
-                    && state.insert_latest(slot.stamp.identity, source).is_some()
                 {
-                    usage[10] += 1;
+                    usage[9] += 1;
+                    if state.insert_latest(slot.stamp.identity, source).is_some() {
+                        usage[10] += 1;
+                    }
                 }
             }
             state.waiters.remove(token);

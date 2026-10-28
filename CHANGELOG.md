@@ -109,6 +109,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Waiters joined on one cold load publish its generation once. Each waiter
+  decided whether the snapshot was new before it classified and inserted it into
+  `latest` on that decision afterwards, so two waiters could both count
+  `generations_published` and the second insert replaced the same snapshot,
+  counting a spurious `generations_invalidated`. The insert now rechecks `latest`
+  under its own lock, and only the waiter that inserts counts the publication.
+  `generations_published` therefore counts when `latest` is written: a waiter
+  that fails classification, is cancelled, is refused at issue, retries an
+  incomplete classify stage, or has its `latest` growth refused no longer counts
+  one.
 - The in-memory prepared-facts cache keeps one entry per binding of a
   transcript, where a binding is the transcript's stamp plus the registry
   generation, admission, authority and classifier a request runs under. It used
