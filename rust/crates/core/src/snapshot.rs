@@ -2851,6 +2851,7 @@ pub struct NativeStore {
     default_registry: String,
     seed: [u8; 32],
     sequence: AtomicUsize,
+    transport_bytes: AtomicU64,
     state: Mutex<StoreState>,
     fact_read_released: Condvar,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
@@ -3333,6 +3334,7 @@ impl NativeStore {
             default_registry,
             seed,
             sequence: AtomicUsize::new(1),
+            transport_bytes: AtomicU64::new(0),
             state: Mutex::new(state),
             fact_read_released: Condvar::new(),
             classifiers: Mutex::new(HashMap::new()),
@@ -4168,7 +4170,14 @@ impl NativeStore {
     }
 
     pub fn record_transport(&self, bytes: usize) {
-        self.lock_state().counters[14] += bytes as u64;
+        self.transport_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn reported_counters(&self, state: &StoreState) -> [u64; 20] {
+        let mut counters = state.counters;
+        counters[14] += self.transport_bytes.load(Ordering::Relaxed);
+        counters
     }
 
     pub fn register_policy(
@@ -7021,7 +7030,7 @@ impl NativeStore {
                 let mut state = self.lock_state();
                 Self::prune(&mut state);
                 Ok((
-                    json!({"kind": "stats", "counters": usage_value(&state.counters), "gauges": Self::gauges(&mut state)}),
+                    json!({"kind": "stats", "counters": usage_value(&self.reported_counters(&state)), "gauges": Self::gauges(&mut state)}),
                     None,
                     None,
                 ))
@@ -19122,5 +19131,67 @@ mod tests {
             &state.registries[&fingerprint].snapshot
         ));
         assert_eq!(state.transient_bytes, 0);
+    }
+
+    #[test]
+    fn record_transport_completes_while_the_store_state_is_held() {
+        let store = Arc::new(store());
+        let held = store.state.lock().unwrap();
+        let (finished, completion) = std::sync::mpsc::channel();
+        let recorder = {
+            let store = Arc::clone(&store);
+            std::thread::spawn(move || {
+                store.record_transport(4096);
+                store.record_transport(64);
+                finished.send(()).unwrap();
+            })
+        };
+        completion
+            .recv_timeout(Duration::from_secs(10))
+            .expect("record_transport blocked behind the held store state");
+        drop(held);
+        recorder.join().unwrap();
+        let stats = store.request(
+            &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
+            &context("owner"),
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            stats["data"]["counters"]["transport_bytes"].as_u64(),
+            Some(4160)
+        );
+    }
+
+    #[test]
+    fn transport_bytes_are_conserved_across_usage_merges() {
+        let store = store();
+        let owner = context("owner");
+        let stats = || {
+            let reply = store.request(
+                &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
+                &owner,
+                &Cancellation::default(),
+            );
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            let mut counters = [0u64; 20];
+            for (slot, name) in counters.iter_mut().zip(COUNTERS.iter()) {
+                *slot = reply["data"]["counters"][*name].as_u64().unwrap();
+            }
+            counters
+        };
+        let before = stats();
+        store.record_transport(100);
+        let locked = store.state.lock().unwrap().counters;
+        store.record_transport(28);
+        assert_eq!(store.state.lock().unwrap().counters, locked);
+        let after = stats();
+        assert_eq!(after[14] - before[14], 128);
+        assert_eq!(store.state.lock().unwrap().counters[14], 0);
+        for slot in (0..20).filter(|slot| *slot != 13 && *slot != 14) {
+            assert_eq!(after[slot], before[slot], "{}", COUNTERS[slot]);
+        }
+        let merged = stats();
+        assert_eq!(merged[14] - before[14], 128);
+        assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
 }
