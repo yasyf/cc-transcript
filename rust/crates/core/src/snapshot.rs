@@ -19190,5 +19190,8 @@ mod tests {
         for slot in (0..20).filter(|slot| *slot != 13 && *slot != 14) {
             assert_eq!(after[slot], before[slot], "{}", COUNTERS[slot]);
         }
+        let merged = stats();
+        assert_eq!(merged[14] - before[14], 128);
+        assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
 }
