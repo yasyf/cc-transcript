@@ -903,6 +903,15 @@ fn text_corruption_of_a_child_entry_fails_only_the_full_query() {
         json!({"kind":"scalar","value":false}),
         "{validated:?}"
     );
+    let built = family.ask(
+        json!({"kind":"has_override","token":"absent","invalidated_by":[],"subagents":true}),
+        None,
+    );
+    assert_eq!(
+        built["data"],
+        json!({"kind":"scalar","value":false}),
+        "{built:?}"
+    );
     text_corrupted(&family);
     let compact = family.ask(reads("absent.rs"), None);
     assert_eq!(

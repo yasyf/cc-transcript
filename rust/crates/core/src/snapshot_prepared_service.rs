@@ -386,6 +386,7 @@ impl NativeStore {
                         "prepared root facts revision was evicted",
                     ));
                 }
+                crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => drop(compact),
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
         }
@@ -395,8 +396,13 @@ impl NativeStore {
         fact_limits.max_events = root.event_count;
         #[cfg(test)]
         self.fact_builds.fetch_add(1, Ordering::Relaxed);
-        let (facts, _, _) =
-            crate::snapshot_projection::prepare_facts(root, &json!([]), &fact_limits, cancel)?;
+        let (facts, _, _) = crate::snapshot_projection::prepare_facts(
+            root,
+            &json!([]),
+            &fact_limits,
+            cancel,
+            need,
+        )?;
         assert!(
             facts.accounted_bytes() <= bound,
             "prepared root facts outgrew their bound"
@@ -410,10 +416,7 @@ impl NativeStore {
             },
             |growth| self.admit_prepared_disk_growth(context, growth),
         )?;
-        let facts = Arc::new(match need {
-            FactsNeed::Index => facts.without_text(),
-            FactsNeed::Full => facts,
-        });
+        let facts = Arc::new(facts);
         match self.cache_prepared_facts(
             root.stamp,
             Arc::clone(&facts),
@@ -597,6 +600,10 @@ impl NativeStore {
                         "prepared facts revision was evicted",
                     ));
                 }
+                crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
+                    drop(compact);
+                    drop(reservation);
+                }
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
         }
@@ -718,6 +725,7 @@ impl NativeStore {
                     &json!([]),
                     &fact_limits,
                     cancel,
+                    need,
                 )
                 .map(|(facts, _, _)| {
                     assert!(
@@ -783,14 +791,6 @@ impl NativeStore {
             },
             |growth| self.admit_prepared_disk_growth(context, growth),
         )?;
-        let facts = match need {
-            FactsNeed::Index => Arc::new(
-                Arc::into_inner(facts)
-                    .expect("built facts are unshared before publication")
-                    .without_text(),
-            ),
-            FactsNeed::Full => facts,
-        };
         let held = match self.cache_prepared_facts(
             stamp,
             Arc::clone(&facts),
@@ -2536,6 +2536,7 @@ impl NativeStore {
                     selectors,
                     &fact_limits,
                     cancel,
+                    FactsNeed::Full,
                 )?;
                 assert!(
                     facts.accounted_bytes() <= bound,

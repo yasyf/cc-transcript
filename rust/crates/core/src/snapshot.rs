@@ -11006,6 +11006,7 @@ mod ledger_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snapshot_prepared::TextState;
     use std::io::Write;
 
     struct Source {
@@ -14341,7 +14342,7 @@ mod tests {
         let key = fact_entry_key(&sidechain, &owner);
         let stored = store.prepared_disk.entry_file_len(&key);
         let indexed = index_read_bytes(&store, &key);
-        assert!(indexed < stored);
+        assert_eq!(indexed, stored);
         let from_memory = ask();
         assert_eq!(
             from_memory["data"]["value"].as_bool(),
@@ -14658,7 +14659,7 @@ mod tests {
             stored
         );
         let indexed = index_read_bytes(&store, &fact_entry_key(&members[0], &owner));
-        assert!(indexed < stored);
+        assert_eq!(indexed, stored);
 
         evict();
         let both = warm(2 * indexed, &json!(0), &json!(null));
@@ -15559,9 +15560,15 @@ mod tests {
     }
 
     #[test]
-    fn cold_simple_predicate_reads_only_the_compact_index() {
+    fn index_first_build_writes_only_the_index_and_upgrades_on_the_first_full_query() {
         let fixture = bulk_member_graph();
         let (store, member) = (&fixture.store, &fixture.member);
+        let disk = || store.prepared_disk.stats();
+        let (builds, writes, written) = (
+            store.fact_builds.load(Ordering::Relaxed),
+            disk().writes,
+            disk().write_bytes,
+        );
         assert_eq!(
             value_of(&fixture.ask(json!([]), has_tool("Read"), None)),
             Some(true)
@@ -15569,8 +15576,21 @@ mod tests {
         let key = fixture.member_key();
         let stored = store.prepared_disk.entry_file_len(&key);
         let indexed = index_read_bytes(store, &key);
-        assert!(stored > 1024 * 1024, "the entry holds {stored} bytes");
-        assert!(indexed < 8 * 1024, "the index read spans {indexed} bytes");
+        assert_eq!(
+            (store.fact_builds.load(Ordering::Relaxed), disk().writes),
+            (builds + 1, writes + 1)
+        );
+        assert_eq!(stored, indexed);
+        assert!(
+            stored < 8 * 1024,
+            "the index-only entry holds {stored} bytes"
+        );
+        assert!(disk().write_bytes - written < 8 * 1024);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
+        );
+        assert_eq!(resident_member_is_full(store, member), Some(false));
         evict_memory_facts(store, member);
         let cold = fixture.ask(json!([]), has_tool("Read"), None);
         assert_eq!(value_of(&cold), Some(true));
@@ -15578,12 +15598,36 @@ mod tests {
         assert_eq!(cold["usage"]["cold_parses"].as_u64(), Some(0));
         assert_eq!(cold["usage"]["source_opens"].as_u64(), Some(0));
         assert_eq!(resident_member_is_full(store, member), Some(false));
-        let root_stored = store.prepared_disk.entry_file_len(&fixture.root_key());
+        let root_key = fixture.root_key();
+        let root_indexed = index_read_bytes(store, &root_key);
+        assert_eq!(store.prepared_disk.entry_file_len(&root_key), root_indexed);
         let text = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
         assert_eq!(value_of(&text), Some(true));
         assert_eq!(
             cache_reads(&text),
-            (Some(2), Some(root_stored + stored), Some(0))
+            (Some(2), Some(root_indexed + indexed), Some(0))
+        );
+        assert_eq!(text["usage"]["cold_parses"].as_u64(), Some(0));
+        assert_eq!(text["usage"]["source_opens"].as_u64(), Some(0));
+        assert_eq!(
+            (store.fact_builds.load(Ordering::Relaxed), disk().writes),
+            (builds + 3, writes + 3)
+        );
+        let upgraded = store.prepared_disk.entry_file_len(&key);
+        assert!(
+            upgraded > 1024 * 1024,
+            "the upgraded entry holds {upgraded} bytes"
+        );
+        assert_eq!(
+            (
+                store.prepared_disk.entry_text_state(&key),
+                store.prepared_disk.entry_text_state(&root_key)
+            ),
+            (Some(TextState::Present), Some(TextState::Present))
+        );
+        assert_eq!(
+            disk().bytes as u64,
+            upgraded + store.prepared_disk.entry_file_len(&root_key)
         );
         assert_eq!(resident_member_is_full(store, member), Some(true));
         let again = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
@@ -15592,14 +15636,115 @@ mod tests {
         let hot = fixture.ask(json!([]), has_tool("Read"), None);
         assert_eq!(value_of(&hot), Some(true));
         assert_eq!(cache_reads(&hot), (Some(0), Some(0), Some(0)));
+        let expected: Vec<Option<bool>> = OVERRIDE_MATRIX
+            .iter()
+            .map(|(_, expected)| Some(*expected))
+            .collect();
+        assert_eq!(override_answers(&fixture), expected);
+        evict_memory_facts(store, member);
+        let reread = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
+        assert_eq!(value_of(&reread), Some(true));
+        assert_eq!(cache_reads(&reread), (Some(1), Some(upgraded), Some(0)));
+        assert_eq!(override_answers(&fixture), expected);
         assert_eq!(
-            value_of(&fixture.ask(json!([]), has_override("TOKEN-A", &["Read"]), None)),
-            Some(false)
+            (store.fact_builds.load(Ordering::Relaxed), disk().writes),
+            (builds + 3, writes + 3)
+        );
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn duplicate_full_builds_commit_one_upgrade_and_share_the_answer() {
+        let fixture = bulk_member_graph();
+        let (store, member) = (&fixture.store, &fixture.member);
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_tool("Read"), None)),
+            Some(true)
         );
         assert_eq!(
-            value_of(&fixture.ask(json!([]), has_override("MISSING", &[]), None)),
-            Some(false)
+            value_of(&fixture.ask(json!([]), has_override("root-prompt", &[]), None)),
+            Some(true)
         );
+        let key = fixture.member_key();
+        let indexed = index_read_bytes(store, &key);
+        assert_eq!(
+            (
+                store.prepared_disk.entry_text_state(&key),
+                store.prepared_disk.entry_text_state(&fixture.root_key())
+            ),
+            (Some(TextState::Unbuilt), Some(TextState::Present))
+        );
+        evict_memory_facts(store, member);
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
+        let resume_rx = Mutex::new(resume_rx);
+        *store.built_facts_hook.lock().unwrap() = Some(Arc::new(
+            move |_: &Arc<crate::snapshot_prepared::PreparedFacts>| {
+                paused_tx.send(()).unwrap();
+                resume_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the duplicate build barrier was never released");
+            },
+        ));
+        let (builds, writes, lookups) = (
+            store.fact_builds.load(Ordering::Relaxed),
+            store.prepared_disk.stats().writes,
+            store.fact_lookups.load(Ordering::Relaxed),
+        );
+        let request = prepared_graph_request(
+            &fixture.graph,
+            &fixture.template,
+            json!([]),
+            has_override("OVERRIDE", &["Read"]),
+            None,
+        );
+        let (first, index, second) = std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| store.request(&request, &fixture.owner, &Cancellation::default()));
+            paused_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the first builder never projected");
+            let index = fixture.ask(json!([]), has_tool("Edit"), None);
+            let second = store.request(&request, &fixture.owner, &Cancellation::default());
+            resume_tx.send(()).unwrap();
+            (
+                single_step(first.join().unwrap()),
+                index,
+                single_step(second),
+            )
+        });
+        assert_eq!(
+            (value_of(&first), value_of(&index), value_of(&second)),
+            (Some(true), Some(true), Some(true))
+        );
+        for reply in [&first, &index, &second] {
+            assert_eq!(
+                cache_reads(reply),
+                (Some(1), Some(indexed), Some(0)),
+                "{reply:?}"
+            );
+        }
+        assert_eq!(
+            (
+                store.fact_builds.load(Ordering::Relaxed),
+                store.prepared_disk.stats().writes,
+                store.fact_lookups.load(Ordering::Relaxed)
+            ),
+            (builds + 2, writes + 1, lookups + 3)
+        );
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Present)
+        );
+        assert_eq!(resident_member_is_full(store, member), Some(true));
+        assert_eq!(store.lock_state().transient_bytes, 0);
+        let expected: Vec<Option<bool>> = OVERRIDE_MATRIX
+            .iter()
+            .map(|(_, expected)| Some(*expected))
+            .collect();
+        assert_eq!(override_answers(&fixture), expected);
         store.assert_conserved();
     }
 
@@ -15651,11 +15796,12 @@ mod tests {
         let owner = background_owner();
         warm_registered_pass(&store, &source, &["thread-a"], &owner);
         let key = fact_entry_key(&members[0], &owner);
-        let (stored, indexed) = (
-            store.prepared_disk.entry_file_len(&key),
-            index_read_bytes(&store, &key),
+        let indexed = index_read_bytes(&store, &key);
+        assert_eq!(store.prepared_disk.entry_file_len(&key), indexed);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
         );
-        assert!(indexed < stored);
         let template = acquire(&source.path);
         let root = finish(
             &store,
@@ -15675,9 +15821,31 @@ mod tests {
                 &Cancellation::default(),
             ))
         };
+        let root_indexed = index_read_bytes(&store, &fact_entry_key(&source.path, &owner));
+        let (builds, writes) = (
+            store.fact_builds.load(Ordering::Relaxed),
+            store.prepared_disk.stats().writes,
+        );
         let primed = answer(has_override("hello", &["Read"]), None);
         assert_eq!(value_of(&primed), Some(true));
+        assert_eq!(
+            cache_reads(&primed),
+            (Some(2), Some(root_indexed + indexed), Some(0))
+        );
+        assert_eq!(
+            (
+                store.fact_builds.load(Ordering::Relaxed),
+                store.prepared_disk.stats().writes
+            ),
+            (builds + 2, writes + 2)
+        );
         assert_eq!(resident_member_is_full(&store, &members[0]), Some(true));
+        let stored = store.prepared_disk.entry_file_len(&key);
+        assert!(indexed < stored);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Present)
+        );
         forget_member_facts(&store, &members);
         let lookups = store.fact_lookups.load(Ordering::Relaxed);
         let gate = install_fact_read_gate(&store, || {});
@@ -15769,19 +15937,18 @@ mod tests {
             &owner,
         );
         assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
-        let ask = |selectors: Value, query: Value| {
+        let ask = |selectors: Value, query: Value, observers: Option<Value>| {
             single_step(store.request(
-                &prepared_graph_request(&graph, &template, selectors, query, None),
+                &prepared_graph_request(&graph, &template, selectors, query, observers),
                 &owner,
                 &Cancellation::default(),
             ))
         };
+        let current_turn = || json!([{"kind":"current_turn"}]);
+        let root_key = fact_entry_key(&source.path, &owner);
         let lookups = store.fact_lookups.load(Ordering::Relaxed);
         let builds = store.fact_builds.load(Ordering::Relaxed);
-        let scoped = ask(
-            json!([{"kind":"current_turn"}]),
-            has_override("TOKEN-ROOT", &[]),
-        );
+        let scoped = ask(current_turn(), has_override("TOKEN-ROOT", &[]), None);
         assert_eq!(value_of(&scoped), Some(false));
         assert_eq!(
             (
@@ -15790,12 +15957,59 @@ mod tests {
             ),
             (lookups, builds + 1)
         );
-        let whole = ask(json!([]), has_override("TOKEN-ROOT", &[]));
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&root_key),
+            Some(TextState::Unbuilt)
+        );
+        let whole = ask(json!([]), has_override("TOKEN-ROOT", &[]), None);
         assert_eq!(value_of(&whole), Some(true));
-        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), lookups + 1);
-        let again = ask(json!([]), has_override("TOKEN-ROOT", &[]));
+        assert_eq!(
+            (
+                store.fact_lookups.load(Ordering::Relaxed),
+                store.fact_builds.load(Ordering::Relaxed)
+            ),
+            (lookups + 1, builds + 2)
+        );
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&root_key),
+            Some(TextState::Present)
+        );
+        let again = ask(json!([]), has_override("TOKEN-ROOT", &[]), None);
         assert_eq!(value_of(&again), Some(true));
         assert_eq!(cache_reads(&again), (Some(0), Some(0), Some(0)));
+        let observer = || Some(json!([has_override("TOKEN-ROOT", &[])]));
+        let scoped = ask(current_turn(), has_tool("Missing"), observer());
+        assert_eq!(
+            scoped["data"],
+            json!({"kind":"observed_scalar","value":false,"observers":[false]}),
+            "{scoped:?}"
+        );
+        let whole = ask(json!([]), has_tool("Missing"), observer());
+        assert_eq!(
+            whole["data"],
+            json!({"kind":"observed_scalar","value":false,"observers":[true]}),
+            "{whole:?}"
+        );
+        assert_eq!(
+            store.fact_builds.load(Ordering::Relaxed),
+            builds + 2,
+            "a selected view rebuilt its facts"
+        );
+        evict_memory_facts(&store, &source.path);
+        let stored = store.prepared_disk.entry_file_len(&root_key);
+        let scoped = ask(current_turn(), has_override("TOKEN-ROOT", &[]), None);
+        assert_eq!(value_of(&scoped), Some(false));
+        assert_eq!(cache_reads(&scoped), (Some(0), Some(0), Some(0)));
+        let whole = ask(json!([]), has_override("TOKEN-ROOT", &[]), None);
+        assert_eq!(value_of(&whole), Some(true));
+        assert_eq!(cache_reads(&whole), (Some(1), Some(stored), Some(0)));
+        let observed = ask(current_turn(), has_tool("Missing"), observer());
+        assert_eq!(
+            observed["data"],
+            json!({"kind":"observed_scalar","value":false,"observers":[false]}),
+            "{observed:?}"
+        );
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);
         store.assert_conserved();
     }
 
@@ -15824,7 +16038,7 @@ mod tests {
             first.prepared_disk.entry_file_len(&key),
             index_read_bytes(&first, &key),
         );
-        assert!(indexed < stored);
+        assert_eq!(indexed, stored);
         drop(first);
         let restarted = producing();
         assert_eq!(
@@ -15877,6 +16091,152 @@ mod tests {
         let compact = root_facts_read_with(&store, &root, &a, &bounds, FactsNeed::Index).0;
         assert!(Arc::ptr_eq(&compact, &full));
         drop((full, other, compact));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn unbuilt_root_upgrades_from_the_pinned_snapshot_without_reparsing() {
+        let source = Source::new(&format!("{}\n", user_text("root", "TOKEN-ROOT")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let ask = |query: Value| {
+            single_step(store.request(
+                &prepared_graph_request(&graph, &template, json!([]), query, None),
+                &owner,
+                &Cancellation::default(),
+            ))
+        };
+        let key = fact_entry_key(&source.path, &owner);
+        let indexed = index_read_bytes(&store, &key);
+        assert_eq!(store.prepared_disk.entry_file_len(&key), indexed);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
+        );
+        evict_memory_facts(&store, &source.path);
+        let (builds, writes) = (
+            store.fact_builds.load(Ordering::Relaxed),
+            store.prepared_disk.stats().writes,
+        );
+        let full = ask(has_override("TOKEN-ROOT", &[]));
+        assert_eq!(value_of(&full), Some(true));
+        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(
+            (
+                full["usage"]["cold_parses"].as_u64(),
+                full["usage"]["source_opens"].as_u64()
+            ),
+            (Some(0), Some(0))
+        );
+        assert_eq!(
+            (
+                store.fact_builds.load(Ordering::Relaxed),
+                store.prepared_disk.stats().writes
+            ),
+            (builds + 1, writes + 1)
+        );
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Present)
+        );
+        assert_eq!(
+            store.prepared_disk.stats().bytes as u64,
+            store.prepared_disk.entry_file_len(&key)
+        );
+        source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
+        let late = ask(has_override("TOKEN-LATE", &[]));
+        assert_eq!(value_of(&late), Some(false));
+        assert_eq!(value_of(&ask(has_override("TOKEN-ROOT", &[]))), Some(true));
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 1);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn a_cancelled_full_upgrader_publishes_nothing_and_the_next_caller_upgrades() {
+        let source = Source::new(&format!("{}\n", user_text("root", "root-prompt")));
+        let members = registered_members(&source, &["thread-a"]);
+        let store = Arc::new(fact_budget_store(16 * 1024 * 1024));
+        let owner = background_owner();
+        warm_registered_pass(&store, &source, &["thread-a"], &owner);
+        let key = fact_entry_key(&members[0], &owner);
+        let indexed = index_read_bytes(&store, &key);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
+        );
+        let template = acquire(&source.path);
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[members[0].to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let request =
+            |query: Value| prepared_graph_request(&graph, &template, json!([]), query, None);
+        let primed = single_step(store.request(
+            &request(has_override("root-prompt", &[])),
+            &owner,
+            &Cancellation::default(),
+        ));
+        assert_eq!(value_of(&primed), Some(true));
+        forget_member_facts(&store, &members);
+        let writes = store.prepared_disk.stats().writes;
+        let gate = install_fact_read_gate(&store, || {});
+        let cancellation = Cancellation::default();
+        let winner = spawn_warm(
+            &store,
+            request(has_override("hello", &["Read"])),
+            &owner,
+            cancellation.clone(),
+        );
+        gate.wait_until_read();
+        cancellation.cancel();
+        gate.release();
+        let cancelled = warm_reply(&winner);
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(
+            cancelled["status"].as_str(),
+            Some("cancelled"),
+            "{cancelled:?}"
+        );
+        assert_eq!(store.prepared_disk.stats().writes, writes);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Unbuilt)
+        );
+        assert_eq!(store.prepared_disk.entry_file_len(&key), indexed);
+        assert!(!store.lock_state().fact_read_in_flight);
+        assert_eq!(store.lock_state().transient_bytes, 0);
+        let upgraded = single_step(store.request(
+            &request(has_override("hello", &["Read"])),
+            &owner,
+            &Cancellation::default(),
+        ));
+        assert_eq!(value_of(&upgraded), Some(true));
+        assert_eq!(cache_reads(&upgraded), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(store.prepared_disk.stats().writes, writes + 1);
+        assert_eq!(
+            store.prepared_disk.entry_text_state(&key),
+            Some(TextState::Present)
+        );
+        assert_eq!(resident_member_is_full(&store, &members[0]), Some(true));
         store.assert_conserved();
     }
 

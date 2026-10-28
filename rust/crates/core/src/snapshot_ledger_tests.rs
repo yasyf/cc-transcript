@@ -312,6 +312,10 @@ fn graph_query(graph: &Value, query: Value, selectors: Value) -> Value {
     json!({"schema":SCHEMA,"id":"ledger-query","operation":"query_graph","handle":graph,"selectors":selectors,"query":query,"deadline_unix_ms":now_ms()+120_000,"limits":limits_json()})
 }
 
+fn missing_override() -> Value {
+    json!({"kind":"has_override","token":"missing-token","invalidated_by":[],"subagents":true})
+}
+
 fn missing_tool() -> Value {
     json!({"kind":"has_tool","pattern":"Missing","subagents":true})
 }
@@ -4501,13 +4505,25 @@ fn restricted_context(claimant: &str, background: bool, root: &Path, padding: us
     context
 }
 
-fn facts_cache_fixture(scenario: &Scenario, background: bool, padding: usize) -> Fixture {
+fn facts_cache_fixture(
+    scenario: &Scenario,
+    background: bool,
+    padding: usize,
+    need: FactsNeed,
+) -> Fixture {
     let store = prepared_store();
     let owner = restricted_context("facts", background, &scenario.root.directory, padding);
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let (_, sidechain_snapshot) = acquired(&store, &scenario.sidechains[0], &owner);
     let graph = prepared_graph(&store, &root, &scenario.direct(), &owner);
-    let request = graph_query(&graph, missing_tool(), json!([]));
+    let request = graph_query(
+        &graph,
+        match need {
+            FactsNeed::Index => missing_tool(),
+            FactsNeed::Full => missing_override(),
+        },
+        json!([]),
+    );
     let primed = drive(
         &store,
         store.request(&request, &owner, &Cancellation::default()),
@@ -4545,7 +4561,8 @@ fn prepared_facts_cache_admits_its_authority_metadata_exactly() {
         )
     };
     for background in [false, true] {
-        let build = |padding: usize| facts_cache_fixture(&scenario, background, padding);
+        let build =
+            |padding: usize| facts_cache_fixture(&scenario, background, padding, FactsNeed::Index);
         let small = exact_headroom(&|| build(16), &cached);
         let large = exact_headroom(&|| build(63), &cached);
         assert_eq!(
@@ -4681,6 +4698,7 @@ fn built_facts(source: &Arc<TranscriptSnapshot>, selectors: &Value) -> PreparedF
         selectors,
         &work_bounds(),
         &Cancellation::default(),
+        FactsNeed::Full,
     )
     .unwrap()
     .0
@@ -5245,7 +5263,7 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
     let path = &scenario.sidechains[0];
     let site = "prepared_source disk hit";
     for background in [false, true] {
-        let build = || facts_cache_fixture(&scenario, background, 0);
+        let build = || facts_cache_fixture(&scenario, background, 0, FactsNeed::Full);
         let predicted = decoded_source_facts_prediction(&build());
         let attempt = |fixture: &Fixture| {
             let mut usage = [0u64; 20];
@@ -5288,7 +5306,7 @@ fn query_graph_refuses_a_source_disk_hit_before_decoding() {
     let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
     let site = "query_graph source disk hit";
     for background in [false, true] {
-        let build = || facts_cache_fixture(&scenario, background, 0);
+        let build = || facts_cache_fixture(&scenario, background, 0, FactsNeed::Index);
         let predicted = decoded_index_source_facts_prediction(&build());
         let record = prepared_query_record_bytes(&build());
         assert_facts_admitted_in_full(
@@ -5942,6 +5960,7 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
             &json!([]),
             &wide,
             &Cancellation::default(),
+            FactsNeed::Full,
         )
         .unwrap()
         .0;
@@ -13458,4 +13477,221 @@ fn classifier_stages_keep_the_rows_they_index_charged() {
     store.assert_conserved();
     assert!(rows.iter().all(|rows| rows.upgrade().is_none()));
     assert!(ledger(&store)[ENTRIES] + charged <= escaped);
+}
+
+fn upgrade_attempt(fixture: &Fixture, path: &Path) -> Result<(), SnapshotError> {
+    let canonical = std::fs::canonicalize(path).map_err(io_error)?;
+    let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+    let (_, outcome) = fixture.store.prepared_source(
+        &canonical,
+        &metadata,
+        &fixture.owner,
+        &mut work_bounds(),
+        PreparedCacheReads::Unmetered,
+        &Cancellation::default(),
+        &mut [0u64; 20],
+        FactsNeed::Full,
+    )?;
+    assert!(matches!(
+        outcome,
+        PreparedSourceOutcome::Ready { cached: false, .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_bound() {
+    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let path = &scenario.sidechains[0];
+    let site = "prepared_source index-only upgrade";
+    for background in [false, true] {
+        let build = || facts_cache_fixture(&scenario, background, 0, FactsNeed::Index);
+        let probe = build();
+        let key = disk_key(&probe.owner, probe.pins[1].stamp);
+        let decode = decoded_index_source_facts_prediction(&probe);
+        let construction = facts_bound_walk(&probe.pins[1]);
+        assert!(
+            decode < construction,
+            "{site}: decode={decode} construction={construction}"
+        );
+        let (index, text) = entry_sections(&probe, &probe.pins[1]);
+        assert_eq!(text, 0, "{site}: the primed entry carries text");
+        assert_eq!(
+            probe.store.prepared_disk.entry_text_state(&key),
+            Some(crate::snapshot_prepared::TextState::Unbuilt)
+        );
+        let fits = |fixture: &Fixture| match upgrade_attempt(fixture, path) {
+            Ok(()) => true,
+            Err(error) if error.status == Status::RetainedLimit => false,
+            Err(error) => panic!("{site}: failed outside admission: {error:?}"),
+        };
+        for headroom in [0, decode - 1] {
+            let fixture = build();
+            let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+            let (before, probes, disk) = (
+                ledger(&fixture.store),
+                fact_probes(&fixture.store),
+                fixture.store.prepared_disk.stats(),
+            );
+            traced(&fixture.store);
+            assert!(
+                !fits(&fixture),
+                "{site}: headroom {headroom} below the decode bound was admitted"
+            );
+            assert!(
+                traced(&fixture.store).is_empty(),
+                "{site}: the refusal at headroom {headroom} reserved or allocated"
+            );
+            assert_eq!(
+                fact_probes(&fixture.store),
+                probes,
+                "{site}: the index was decoded before its admission at headroom {headroom}"
+            );
+            let after = fixture.store.prepared_disk.stats();
+            assert_eq!(
+                (after.entries, after.bytes, after.writes),
+                (disk.entries, disk.bytes, disk.writes)
+            );
+            assert_eq!(ledger(&fixture.store), before);
+            fixture.store.assert_conserved();
+            drop(filler);
+            assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+        }
+        let boundary = exact_headroom(&build, &fits);
+        assert!(
+            boundary >= construction,
+            "{site}: the upgrade landed at {boundary} bytes below its {construction}-byte construction bound"
+        );
+        for headroom in [decode, boundary - 1] {
+            let fixture = build();
+            let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+            let (probes, disk) = (
+                fact_probes(&fixture.store),
+                fixture.store.prepared_disk.stats(),
+            );
+            traced(&fixture.store);
+            assert!(
+                !fits(&fixture),
+                "{site}: headroom {headroom} below the construction bound was admitted"
+            );
+            let reserved = reserved_traces(&traced(&fixture.store));
+            assert_eq!(
+                reserved.first(),
+                Some(&decode),
+                "{site}: the decode bound was not reserved first at headroom {headroom}: {reserved:?}"
+            );
+            assert!(
+                !reserved.contains(&construction),
+                "{site}: the construction bound was reserved at headroom {headroom}: {reserved:?}"
+            );
+            assert_eq!(
+                fact_probes(&fixture.store),
+                [probes[BUILDS], probes[LOOKUPS] + 1],
+                "{site}: the refusal at headroom {headroom} did not decode the index exactly once"
+            );
+            let after = fixture.store.prepared_disk.stats();
+            assert_eq!(
+                (after.entries, after.bytes, after.writes),
+                (disk.entries, disk.bytes, disk.writes),
+                "{site}: the refusal at headroom {headroom} touched the disk cache"
+            );
+            assert_eq!(
+                fixture.store.prepared_disk.entry_text_state(&key),
+                Some(crate::snapshot_prepared::TextState::Unbuilt)
+            );
+            fixture.store.assert_conserved();
+            drop(filler);
+            assert_eq!(fixture.store.lock_state().transient_bytes, 0);
+        }
+        let fitted = build();
+        let filler = fill_to(&fitted.store, &fitted.owner, boundary);
+        let (probes, disk) = (
+            fact_probes(&fitted.store),
+            fitted.store.prepared_disk.stats(),
+        );
+        assert!(fits(&fitted), "{site}: the exact fit was refused");
+        assert_eq!(
+            fact_probes(&fitted.store),
+            [probes[BUILDS] + 1, probes[LOOKUPS] + 1]
+        );
+        let after = fitted.store.prepared_disk.stats();
+        let (index_after, text_after) = entry_sections(&fitted, &fitted.pins[1]);
+        assert_eq!(index_after, index);
+        assert!(text_after > 0, "{site}: the upgrade wrote no text");
+        assert_eq!(
+            (after.entries, after.writes, after.bytes),
+            (disk.entries, disk.writes + 1, disk.bytes + text_after,)
+        );
+        assert_eq!(
+            fitted.store.prepared_disk.entry_text_state(&key),
+            Some(crate::snapshot_prepared::TextState::Present)
+        );
+        fitted.store.assert_conserved();
+        drop(filler);
+        assert_eq!(fitted.store.lock_state().transient_bytes, 0);
+    }
+}
+
+#[test]
+fn an_oversized_text_source_upgrades_to_exceeded_on_demand() {
+    let source = LedgerSource::new(&format!(
+        "{}{}{}",
+        prompt_line("early", 17 * 1024 * 1024),
+        tool_line("reply", "Bash"),
+        prompt_line("now", 256 * 1024)
+    ));
+    let fixture = degraded_root_fixture(&source, false);
+    let graph = fixture.request["handle"].clone();
+    let key = disk_key(&fixture.owner, fixture.pins[0].stamp);
+    let ask = |query: Value| {
+        drive(
+            &fixture.store,
+            fixture.store.request(
+                &graph_query(&graph, query, json!([])),
+                &fixture.owner,
+                &Cancellation::default(),
+            ),
+            &fixture.owner,
+        )
+    };
+    let overridden =
+        || json!({"kind":"has_override","token":"now","invalidated_by":[],"subagents":true});
+    assert_eq!(
+        fixture.store.prepared_disk.entry_text_state(&key),
+        Some(crate::snapshot_prepared::TextState::Unbuilt)
+    );
+    let compact = ask(marker_tool());
+    assert_eq!(
+        compact["data"]["value"].as_bool(),
+        Some(true),
+        "{compact:?}"
+    );
+    let writes = fixture.store.prepared_disk.stats().writes;
+    let full = ask(overridden());
+    assert_eq!(
+        (full["status"].as_str(), full["reason"].as_str()),
+        (
+            Some("incomplete"),
+            Some("prepared override text exceeded its bound")
+        ),
+        "{full:?}"
+    );
+    assert_eq!(fixture.store.prepared_disk.stats().writes, writes + 1);
+    assert_eq!(
+        fixture.store.prepared_disk.entry_text_state(&key),
+        Some(crate::snapshot_prepared::TextState::Exceeded)
+    );
+    let again = ask(marker_tool());
+    assert_eq!(again["data"]["value"].as_bool(), Some(true), "{again:?}");
+    let repeated = ask(overridden());
+    assert_eq!(
+        (repeated["status"].as_str(), repeated["reason"].as_str()),
+        (
+            Some("incomplete"),
+            Some("prepared override text exceeded its bound")
+        ),
+        "{repeated:?}"
+    );
+    assert_eq!(fixture.store.prepared_disk.stats().writes, writes + 1);
+    fixture.store.assert_conserved();
 }
