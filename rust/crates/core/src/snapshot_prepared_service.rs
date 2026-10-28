@@ -1598,6 +1598,11 @@ impl NativeStore {
                 return Ok((cached, None));
             }
             self.lock_state().remove_warm_membership(key);
+            if let Some((membership, reservation)) =
+                self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
+            {
+                return Ok((membership, Some(reservation)));
+            }
         }
         let (membership, reservation) =
             self.build_warm_membership(key, request, context, cancel, usage, remaining)?;
@@ -1610,6 +1615,103 @@ impl NativeStore {
         Ok((membership, Some(reservation)))
     }
 
+    fn refreshed_warm_membership(
+        &self,
+        key: &str,
+        cached: &WarmMembership,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        remaining: &WorkLimits,
+    ) -> Result<Option<(WarmMembership, ProjectionReservation<'_>)>, SnapshotError> {
+        if cached.expires <= now_ms()
+            || !self.validate_sidechain_dirs(
+                &cached.sidechain_dirs,
+                context,
+                cancel,
+                remaining.deadline_unix_ms,
+            )?
+        {
+            return Ok(None);
+        }
+        let mut reservation = self.reserve_projection(
+            context,
+            key.len()
+                + cached.accounted_bytes()
+                + cached.members.len() * size_of::<PreparedSourceRef>()
+                + source_ref_bytes(&cached.members)
+                + arc_slice_bytes::<(SourceIdentity, usize)>(cached.positions.len())
+                + sidechain_dir_bytes(&cached.sidechain_dirs),
+        )?;
+        let mut dirs = ResolvedDirs::new(self, context);
+        let mut members = Vec::with_capacity(cached.members.len());
+        for member in cached.members.iter() {
+            #[cfg(test)]
+            self.membership_metadata_checks
+                .fetch_add(1, Ordering::Relaxed);
+            cancel.check(remaining.deadline_unix_ms)?;
+            let (canonical, metadata) = match dirs.resolve(&member.path) {
+                Ok(resolved) => resolved,
+                Err(error) if error.status == Status::Missing => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            self.authority(context, Some(&canonical))?;
+            let stamp = SourceStamp::of(&metadata);
+            if canonical != member.path
+                || stamp.identity != member.stamp.identity
+                || (stamp != member.stamp && stamp.size <= member.stamp.size)
+            {
+                return Ok(None);
+            }
+            self.extend_projection_reservation(&mut reservation, context, canonical.capacity())?;
+            members.push(PreparedSourceRef {
+                path: canonical,
+                stamp,
+            });
+        }
+        let since = active_since_ns(request)?;
+        if !dirs.hold()?
+            || members
+                .iter()
+                .filter(|member| active(member, since))
+                .count()
+                > remaining.max_sources
+        {
+            return Ok(None);
+        }
+        self.extend_projection_reservation(
+            &mut reservation,
+            context,
+            arc_slice_bytes::<PreparedSourceRef>(members.len()),
+        )?;
+        Ok(Some((
+            WarmMembership {
+                revision: Self::warm_membership_revision(&members),
+                members: members.into(),
+                positions: Arc::clone(&cached.positions),
+                sidechain_dirs: Arc::clone(&cached.sidechain_dirs),
+                complete: cached.complete,
+                expires: cached.expires,
+            },
+            reservation,
+        )))
+    }
+
+    fn warm_membership_revision(members: &[PreparedSourceRef]) -> String {
+        use std::fmt::Write as _;
+
+        let revision_len = 2 * <Sha256 as Digest>::output_size();
+        let mut digest = Sha256::new();
+        for source in members {
+            digest.update(source.path.as_os_str().as_encoded_bytes());
+            digest.update(source.stamp.revision().as_bytes());
+        }
+        let mut revision = String::with_capacity(revision_len);
+        write!(revision, "{:x}", digest.finalize()).expect("hex digest");
+        assert_eq!(revision.capacity(), revision_len);
+        revision
+    }
+
     fn build_warm_membership(
         &self,
         key: &str,
@@ -1619,8 +1721,6 @@ impl NativeStore {
         usage: &mut [u64; 20],
         remaining: &mut WorkLimits,
     ) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
-        use std::fmt::Write as _;
-
         let ids = request["thread_ids"]
             .as_array()
             .ok_or_else(|| invalid("missing registered thread ids"))?;
@@ -1799,11 +1899,6 @@ impl NativeStore {
                 "registered source bound exhausted",
             ));
         }
-        let mut digest = Sha256::new();
-        for source in &members {
-            digest.update(source.path.as_os_str().as_encoded_bytes());
-            digest.update(source.stamp.revision().as_bytes());
-        }
         self.extend_projection_reservation(
             &mut reservation,
             context,
@@ -1811,15 +1906,12 @@ impl NativeStore {
                 + arc_slice_bytes::<(SourceIdentity, usize)>(members.len())
                 + arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len()),
         )?;
-        let mut revision = String::with_capacity(revision_len);
-        write!(revision, "{:x}", digest.finalize()).expect("hex digest");
-        assert_eq!(revision.capacity(), revision_len);
         Ok((
             WarmMembership {
+                revision: Self::warm_membership_revision(&members),
                 positions: member_positions(&members),
                 members: members.into(),
                 sidechain_dirs: sidechain_dirs.into(),
-                revision,
                 complete: located.len() == ids.len(),
                 expires: now_ms().saturating_add(30 * 60_000),
             },

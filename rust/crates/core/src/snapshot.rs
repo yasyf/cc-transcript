@@ -14972,7 +14972,7 @@ mod tests {
             .unwrap();
         registered_pages(&store, &owner, &fresh);
         positions();
-        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
         store.assert_conserved();
 
         store.lock_state().remove_warm_membership(&key);
@@ -17221,7 +17221,7 @@ mod tests {
         );
         assert_eq!(resumed["status"].as_str(), Some("ok"), "{resumed:?}");
         assert!(has(&resumed, "Grep"));
-        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
     }
 
     fn tool_use_line(name: &str) -> String {
@@ -17342,7 +17342,7 @@ mod tests {
         );
         assert_eq!(appended["status"].as_str(), Some("ok"), "{appended:?}");
         assert!(graph_has_tool(&store, &source, &owner, &appended, "Grep"));
-        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
         let subagents = source.directory.join("thread-a").join("subagents");
         std::fs::create_dir_all(&subagents).unwrap();
         std::fs::write(
@@ -17357,14 +17357,103 @@ mod tests {
         );
         assert_eq!(discovered["status"].as_str(), Some("ok"), "{discovered:?}");
         assert!(graph_has_tool(&store, &source, &owner, &discovered, "Bash"));
-        assert_eq!(store.warm_records.load(Ordering::Relaxed), 3);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
         let hot = finish_prepared(
             &store,
             store.request(&prepare, &owner, &Cancellation::default()),
             &owner,
         );
         assert_eq!(hot["status"].as_str(), Some("ok"), "{hot:?}");
-        assert_eq!(store.warm_records.load(Ordering::Relaxed), 3);
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn registered_graph_append_does_not_relist_an_unchanged_sidechain_directory() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let members = registered_members(&source, &["thread-a", "thread-b"]);
+        let subagents = source.directory.join("thread-a").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(
+            subagents.join("preexisting.jsonl"),
+            format!("{}\n{}\n", user("preexisting"), tool_use_line("Read")),
+        )
+        .unwrap();
+        let store = store();
+        let owner = context("a");
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let prepare = registered_prepare(&source, &root, &["thread-a", "thread-b"]);
+        let discovery = || store.lock_state().counters[17];
+        let directory_stamp = || SourceStamp::of(&std::fs::metadata(&subagents).unwrap());
+        let graph = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        assert!(graph_has_tool(&store, &source, &owner, &graph, "Read"));
+        assert!(!graph_has_tool(&store, &source, &owner, &graph, "Grep"));
+        assert!(!graph_has_tool(&store, &source, &owner, &graph, "Bash"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+        let listed = directory_stamp();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&members[1])
+            .unwrap()
+            .write_all(format!("{}\n", tool_use_line("Grep")).as_bytes())
+            .unwrap();
+        assert_eq!(directory_stamp(), listed);
+        let before = discovery();
+        let appended = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            discovery() - before,
+            0,
+            "a member append listed an unchanged sidechain directory again"
+        );
+        assert_eq!(appended["status"].as_str(), Some("ok"), "{appended:?}");
+        assert!(graph_has_tool(&store, &source, &owner, &appended, "Read"));
+        assert!(graph_has_tool(&store, &source, &owner, &appended, "Grep"));
+        assert!(!graph_has_tool(&store, &source, &owner, &appended, "Bash"));
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
+        store.assert_conserved();
+        std::fs::write(
+            subagents.join("child.jsonl"),
+            format!("{}\n{}\n", user("child"), tool_use_line("Bash")),
+        )
+        .unwrap();
+        assert_ne!(directory_stamp(), listed);
+        let before = discovery();
+        let discovered = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert!(discovery() > before);
+        assert_eq!(discovered["status"].as_str(), Some("ok"), "{discovered:?}");
+        for tool in ["Read", "Grep", "Bash"] {
+            assert!(graph_has_tool(&store, &source, &owner, &discovered, tool));
+        }
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
+        let before = discovery();
+        let hot = finish_prepared(
+            &store,
+            store.request(&prepare, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(discovery(), before);
+        assert_eq!(hot["status"].as_str(), Some("ok"), "{hot:?}");
+        for tool in ["Read", "Grep", "Bash"] {
+            assert!(graph_has_tool(&store, &source, &owner, &hot, tool));
+        }
+        assert_eq!(store.warm_records.load(Ordering::Relaxed), 2);
         store.assert_conserved();
     }
 
@@ -17523,6 +17612,81 @@ mod tests {
             4 * 600
         );
         assert_eq!(store.prepared_disk.stats().writes, writes);
+    }
+
+    #[test]
+    fn registered_append_refresh_reserves_the_member_paths_it_copies() {
+        let (source, store, owner, request) = registered_warming(20);
+        let store = Arc::new(store);
+        registered_pages(&store, &owner, &request);
+        let warmed = store
+            .lock_state()
+            .warm_memberships
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let live = source_ref_bytes(&warmed.members)
+            + arc_slice_bytes::<(SourceIdentity, usize)>(warmed.positions.len())
+            + sidechain_dir_bytes(&warmed.sidechain_dirs)
+            + warmed.members.len() * size_of::<PreparedSourceRef>();
+        let copied: usize = warmed.members[..warmed.members.len() - 1]
+            .iter()
+            .map(|member| member.path.as_os_str().len())
+            .sum();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(source.directory.join("thread-0000.jsonl"))
+            .unwrap()
+            .write_all(format!("{}\n", user("appended")).as_bytes())
+            .unwrap();
+        let resolved = Arc::new(Mutex::new(Vec::new()));
+        *store.resolve_hook.lock().unwrap() = Some(Arc::new({
+            let (store, resolved) = (Arc::downgrade(&store), Arc::clone(&resolved));
+            move |path: &Path| {
+                let store = store.upgrade().unwrap();
+                let state = store.lock_state();
+                resolved.lock().unwrap().push((
+                    path.to_path_buf(),
+                    state.transient_bytes,
+                    state.warm_memberships.is_empty(),
+                ));
+            }
+        }));
+        let mut refresh = request.clone();
+        refresh.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let reply = store.request(&refresh, &owner, &Cancellation::default());
+        *store.resolve_hook.lock().unwrap() = None;
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        let resolutions = resolved.lock().unwrap();
+        let uncached: Vec<_> = resolutions
+            .iter()
+            .filter(|(.., uncached)| *uncached)
+            .collect();
+        assert_eq!(
+            uncached.iter().map(|(path, ..)| path).collect::<Vec<_>>(),
+            warmed
+                .members
+                .iter()
+                .map(|member| &member.path)
+                .collect::<Vec<_>>()
+        );
+        assert!(!resolutions[0].2);
+        assert!(
+            uncached.last().unwrap().1 - resolutions[0].1 >= live + copied,
+            "the refresh holds copied member paths its reservation never charged"
+        );
+        assert!(Arc::ptr_eq(
+            &store
+                .lock_state()
+                .warm_memberships
+                .values()
+                .next()
+                .unwrap()
+                .positions,
+            &warmed.positions
+        ));
+        store.assert_conserved();
     }
 
     #[test]
