@@ -4008,6 +4008,7 @@ mod tests {
     #[test]
     fn legacy_entries_are_swept_as_garbage_and_never_adopted() {
         let namespace = isolated_namespace();
+        drop(reuse_cache(&namespace, 64 * 1024));
         let dir = dead_owner(&namespace);
         let legacy = CString::new(format!(
             "{}{:016x}{:016x}{:016x}.facts",
