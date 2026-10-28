@@ -74,6 +74,25 @@ impl FactsNeed {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum TextState {
+    Unbuilt = 0,
+    Present = 1,
+    Exceeded = 2,
+}
+
+impl TextState {
+    pub fn from_raw(raw: u64) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Unbuilt),
+            1 => Some(Self::Present),
+            2 => Some(Self::Exceeded),
+            _ => None,
+        }
+    }
+}
+
 pub enum OverrideFacts {
     Unloaded,
     Exceeded,
@@ -81,6 +100,14 @@ pub enum OverrideFacts {
 }
 
 impl OverrideFacts {
+    pub fn text_state(&self) -> TextState {
+        match self {
+            Self::Unloaded => TextState::Unbuilt,
+            Self::Exceeded => TextState::Exceeded,
+            Self::Loaded(_) => TextState::Present,
+        }
+    }
+
     pub fn from_section(section: Option<Vec<OverrideEvent>>) -> Self {
         match section {
             None => Self::Exceeded,
@@ -155,6 +182,10 @@ impl PreparedFacts {
 
     pub fn is_full(&self) -> bool {
         self.overrides.is_loaded()
+    }
+
+    pub fn text_state(&self) -> TextState {
+        self.overrides.text_state()
     }
 
     pub fn serves(&self, need: FactsNeed) -> bool {

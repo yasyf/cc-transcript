@@ -15,6 +15,7 @@ use crate::snapshot::{
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
 use crate::snapshot_ledger::{hashbrown_tier, vec_capacity_after};
+use crate::snapshot_prepared::FactsNeed;
 use crate::toolcall::{
     expand_tool_names, tool_name_matches, with_registry, ToolCall, ToolRegistrySnapshot,
 };
@@ -1513,8 +1514,9 @@ pub fn prepare_facts(
     selectors: &Value,
     limits: &WorkLimits,
     cancel: &Cancellation,
+    need: FactsNeed,
 ) -> Result<(crate::snapshot_prepared::PreparedFacts, usize, usize), SnapshotError> {
-    prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024)
+    prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024, need)
 }
 
 fn pushed_capacity(count: usize, element: usize) -> usize {
@@ -1585,6 +1587,7 @@ fn prepare_facts_limited(
     limits: &WorkLimits,
     cancel: &Cancellation,
     max_fact_bytes: usize,
+    need: FactsNeed,
 ) -> Result<(crate::snapshot_prepared::PreparedFacts, usize, usize), SnapshotError> {
     let request = json!({"view":{"attachments":[],"selectors":selectors}});
     let mut work = Work::new(snapshot, limits, cancel);
@@ -1616,6 +1619,29 @@ fn prepare_facts_limited(
             "prepared predicate facts exceed source bound",
         ));
     }
+    let overrides = match need {
+        FactsNeed::Index => crate::snapshot_prepared::OverrideFacts::Unloaded,
+        FactsNeed::Full => override_facts(&session, max_fact_bytes),
+    };
+    let mut facts = crate::snapshot_prepared::PreparedFacts {
+        inputs,
+        has_error: session
+            .tool_calls()
+            .with_errors()
+            .items()
+            .iter()
+            .any(|use_| use_.result.is_some_and(|result| result.is_error)),
+        overrides,
+        accounted: 0,
+    };
+    facts.refresh_accounted();
+    Ok((facts, work.bytes, work.events))
+}
+
+fn override_facts(
+    session: &Session<'_>,
+    max_fact_bytes: usize,
+) -> crate::snapshot_prepared::OverrideFacts {
     let mut override_events = Some(Vec::new());
     let mut override_bytes = 0usize;
     for entry in session.events() {
@@ -1656,19 +1682,7 @@ fn prepare_facts_limited(
             .expect("bounded override facts")
             .push(crate::snapshot_prepared::OverrideEvent { text, tools });
     }
-    let mut facts = crate::snapshot_prepared::PreparedFacts {
-        inputs,
-        has_error: session
-            .tool_calls()
-            .with_errors()
-            .items()
-            .iter()
-            .any(|use_| use_.result.is_some_and(|result| result.is_error)),
-        overrides: crate::snapshot_prepared::OverrideFacts::from_section(override_events),
-        accounted: 0,
-    };
-    facts.refresh_accounted();
-    Ok((facts, work.bytes, work.events))
+    crate::snapshot_prepared::OverrideFacts::from_section(override_events)
 }
 
 fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, SnapshotError> {
@@ -2564,8 +2578,14 @@ mod tests {
             tool("skill", "skill-id", "Skill", json!({"skill":"repo:review"})),
             user("u1", "OVERRIDE restored"),
         ]);
-        let (facts, _, _) =
-            prepare_facts(&snap, &json!([]), &limits(), &Cancellation::default()).unwrap();
+        let (facts, _, _) = prepare_facts(
+            &snap,
+            &json!([]),
+            &limits(),
+            &Cancellation::default(),
+            FactsNeed::Full,
+        )
+        .unwrap();
         let queries = vec![
             json!({"kind":"has_tool","pattern":"Read","subagents":true}),
             json!({"kind":"has_tool","pattern":"Missing","subagents":true}),
@@ -2606,8 +2626,14 @@ mod tests {
         ]);
         let mut bounds = limits();
         bounds.max_read_bytes = 16 * 1024 * 1024;
-        let (facts, _, _) =
-            prepare_facts(&snap, &json!([]), &bounds, &Cancellation::default()).unwrap();
+        let (facts, _, _) = prepare_facts(
+            &snap,
+            &json!([]),
+            &bounds,
+            &Cancellation::default(),
+            FactsNeed::Full,
+        )
+        .unwrap();
         assert!(facts.accounted_bytes() > 1024 * 1024);
         assert_eq!(
             facts
@@ -2623,9 +2649,15 @@ mod tests {
         let snap = snapshot(&[user("u", &"x".repeat(2048))]);
         let mut bounded = limits();
         bounded.max_output_bytes = 1024;
-        let (facts, _, _) =
-            prepare_facts_limited(&snap, &json!([]), &bounded, &Cancellation::default(), 1024)
-                .unwrap();
+        let (facts, _, _) = prepare_facts_limited(
+            &snap,
+            &json!([]),
+            &bounded,
+            &Cancellation::default(),
+            1024,
+            FactsNeed::Full,
+        )
+        .unwrap();
         let result = facts.query(
             &json!({"kind":"has_override","token":"missing","invalidated_by":[],"subagents":true}),
         );
