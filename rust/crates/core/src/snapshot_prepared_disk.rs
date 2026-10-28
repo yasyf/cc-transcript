@@ -19,10 +19,12 @@ use crate::snapshot::{SnapshotError, SourceIdentity, SourceStamp, Status, PARSER
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{Table, Work};
 use crate::snapshot_memory::sonic_node_buffer_bytes;
-use crate::snapshot_prepared::PreparedFacts;
+use crate::snapshot_prepared::{
+    DecodedIndexSection, FactsNeed, OverrideEvent, OverrideFacts, PreparedFacts,
+};
 
-const VERSION: &[u8; 8] = b"CTPF0002";
-pub(crate) const HEADER_BYTES: usize = 88;
+const VERSION: &[u8; 8] = b"CTPF0003";
+pub(crate) const HEADER_BYTES: usize = 136;
 const SONIC_STRING_BLOCK_LANES: usize = 32;
 const NAMESPACE: &str = "cc-transcript-prepared";
 const REUSE_NAMESPACE: &str = "cc-transcript-prepared-reuse";
@@ -41,7 +43,8 @@ const MAX_LISTED_NAMES: usize = 16384;
 const MAX_INHERITED_ENTRIES: usize = 8192;
 const INSERT_SWEEP_NAMES: usize = 16;
 const ROOM_SWEEP_NAMES: usize = 256;
-const ENTRY_NAME_BYTES: usize = 118;
+const ENTRY_NAME_BYTES: usize = 150;
+const LEGACY_ENTRY_NAME_BYTES: usize = 118;
 
 static ACTIVE_OWNERS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -253,6 +256,17 @@ fn generated_entry(name: &CStr) -> bool {
             && hex_bytes(&bytes[..bytes.len() - 4]))
 }
 
+fn legacy_entry_bytes(name: &CStr) -> Option<usize> {
+    let bytes = name.to_bytes();
+    if bytes.len() != LEGACY_ENTRY_NAME_BYTES
+        || !bytes.ends_with(b".facts")
+        || !hex_bytes(&bytes[..112])
+    {
+        return None;
+    }
+    usize::from_str_radix(std::str::from_utf8(&bytes[80..96]).ok()?, 16).ok()
+}
+
 fn only_lock_remains(dir_fd: libc::c_int) -> bool {
     let Ok(mut entries) = DirEntries::new(dir_fd) else {
         return false;
@@ -389,9 +403,12 @@ impl FactOrigin<'_> {
 
 struct EntryHeader {
     binding: [u8; 32],
-    payload: u64,
+    index_len: u64,
+    text_len: u64,
+    index_accounted: u64,
     accounted: u64,
-    seal: [u8; 32],
+    index_seal: [u8; 32],
+    text_seal: [u8; 32],
 }
 
 impl EntryHeader {
@@ -399,18 +416,26 @@ impl EntryHeader {
         let mut bytes = [0; HEADER_BYTES];
         bytes[..8].copy_from_slice(VERSION);
         bytes[8..40].copy_from_slice(&self.binding);
-        bytes[40..48].copy_from_slice(&self.payload.to_le_bytes());
-        bytes[48..56].copy_from_slice(&self.accounted.to_le_bytes());
-        bytes[56..].copy_from_slice(&self.seal);
+        bytes[40..48].copy_from_slice(&self.index_len.to_le_bytes());
+        bytes[48..56].copy_from_slice(&self.text_len.to_le_bytes());
+        bytes[56..64].copy_from_slice(&self.index_accounted.to_le_bytes());
+        bytes[64..72].copy_from_slice(&self.accounted.to_le_bytes());
+        bytes[72..104].copy_from_slice(&self.index_seal);
+        bytes[104..].copy_from_slice(&self.text_seal);
         bytes
     }
 
     fn decode(bytes: &[u8; HEADER_BYTES]) -> Option<Self> {
         (bytes[..8] == *VERSION).then(|| Self {
             binding: bytes[8..40].try_into().expect("binding header"),
-            payload: u64::from_le_bytes(bytes[40..48].try_into().expect("length header")),
-            accounted: u64::from_le_bytes(bytes[48..56].try_into().expect("accounted header")),
-            seal: bytes[56..].try_into().expect("seal header"),
+            index_len: u64::from_le_bytes(bytes[40..48].try_into().expect("index length header")),
+            text_len: u64::from_le_bytes(bytes[48..56].try_into().expect("text length header")),
+            index_accounted: u64::from_le_bytes(
+                bytes[56..64].try_into().expect("index accounted header"),
+            ),
+            accounted: u64::from_le_bytes(bytes[64..72].try_into().expect("accounted header")),
+            index_seal: bytes[72..104].try_into().expect("index seal header"),
+            text_seal: bytes[104..].try_into().expect("text seal header"),
         })
     }
 }
@@ -420,6 +445,8 @@ struct EntryName {
     tag: u64,
     bytes: usize,
     accounted: usize,
+    index_bytes: usize,
+    index_accounted: usize,
 }
 
 impl EntryName {
@@ -427,8 +454,8 @@ impl EntryName {
         let high = u128::from_be_bytes(self.key[..16].try_into().expect("entry name key"));
         let low = u128::from_be_bytes(self.key[16..].try_into().expect("entry name key"));
         CString::new(format!(
-            "{:032x}{:032x}{:016x}{:016x}{:016x}.facts",
-            high, low, self.tag, self.bytes, self.accounted
+            "{:032x}{:032x}{:016x}{:016x}{:016x}{:016x}{:016x}.facts",
+            high, low, self.tag, self.bytes, self.accounted, self.index_bytes, self.index_accounted
         ))
         .expect("entry file name")
     }
@@ -443,11 +470,11 @@ impl EntryName {
         let bytes = name.to_bytes();
         if bytes.len() != ENTRY_NAME_BYTES
             || !bytes.ends_with(b".facts")
-            || !hex_bytes(&bytes[..112])
+            || !hex_bytes(&bytes[..144])
         {
             return None;
         }
-        let text = std::str::from_utf8(&bytes[..112]).ok()?;
+        let text = std::str::from_utf8(&bytes[..144]).ok()?;
         let high = u128::from_str_radix(&text[..32], 16).ok()?;
         let low = u128::from_str_radix(&text[32..64], 16).ok()?;
         let mut key = [0u8; 32];
@@ -458,6 +485,8 @@ impl EntryName {
             tag: u64::from_str_radix(&text[64..80], 16).ok()?,
             bytes: usize::from_str_radix(&text[80..96], 16).ok()?,
             accounted: usize::from_str_radix(&text[96..112], 16).ok()?,
+            index_bytes: usize::from_str_radix(&text[112..128], 16).ok()?,
+            index_accounted: usize::from_str_radix(&text[128..144], 16).ok()?,
         })
     }
 }
@@ -533,7 +562,46 @@ pub struct DiskStats {
 struct DiskEntry {
     bytes: usize,
     accounted: usize,
+    index_bytes: usize,
+    index_accounted: usize,
     last_used: u64,
+}
+
+impl DiskEntry {
+    fn text_bytes(&self) -> usize {
+        self.bytes - HEADER_BYTES - self.index_bytes
+    }
+
+    fn read_bytes(&self, need: FactsNeed) -> usize {
+        match need {
+            FactsNeed::Index => HEADER_BYTES + self.index_bytes,
+            FactsNeed::Full => probed_read_bytes(self.bytes),
+        }
+    }
+
+    fn accounted_for(&self, need: FactsNeed) -> usize {
+        match need {
+            FactsNeed::Index => self.index_accounted,
+            FactsNeed::Full => self.accounted,
+        }
+    }
+
+    fn decoded_bytes(&self, need: FactsNeed) -> usize {
+        match need {
+            FactsNeed::Index => {
+                HEADER_BYTES
+                    + self.index_bytes
+                    + self.index_accounted
+                    + decode_transient_bytes(self.index_bytes)
+            }
+            FactsNeed::Full => {
+                self.bytes
+                    + self.accounted
+                    + decode_transient_bytes(self.index_bytes)
+                    + decode_transient_bytes(self.text_bytes())
+            }
+        }
+    }
 }
 
 struct ClaimedOwner {
@@ -910,7 +978,7 @@ impl PreparedDiskCache {
             if entry_name.as_c_str() == OWNER_LOCK {
                 continue;
             }
-            if !generated_entry(&entry_name) {
+            if !generated_entry(&entry_name) && legacy_entry_bytes(&entry_name).is_none() {
                 complete = false;
                 continue;
             }
@@ -1018,11 +1086,18 @@ impl PreparedDiskCache {
                 }
                 examined += 1;
                 let Some(parsed) = EntryName::parse(&name) else {
+                    if let Some(bytes) = legacy_entry_bytes(&name) {
+                        claimed[rank].garbage = claimed[rank]
+                            .garbage
+                            .saturating_add(bytes.min(self.max_bytes));
+                    }
                     continue;
                 };
                 let index_growth = state.entries.growth_for(&parsed.key);
-                let decoded = (HEADER_BYTES..=self.max_bytes)
-                    .contains(&parsed.bytes)
+                let well_formed = (HEADER_BYTES..=self.max_bytes).contains(&parsed.bytes)
+                    && parsed.index_bytes <= parsed.bytes - HEADER_BYTES
+                    && parsed.index_accounted <= parsed.accounted;
+                let decoded = well_formed
                     .then(|| decode_transient_bytes(parsed.bytes - HEADER_BYTES))
                     .and_then(|transient| parsed.accounted.checked_add(parsed.bytes + transient))
                     .filter(|decoded| {
@@ -1046,6 +1121,8 @@ impl PreparedDiskCache {
                             DiskEntry {
                                 bytes: parsed.bytes,
                                 accounted: parsed.accounted,
+                                index_bytes: parsed.index_bytes,
+                                index_accounted: parsed.index_accounted,
                                 last_used: rank as u64,
                             },
                         );
@@ -1086,6 +1163,8 @@ impl PreparedDiskCache {
                 tag: tag(&self.compatibility(key)),
                 bytes: entry.bytes,
                 accounted: entry.accounted,
+                index_bytes: entry.index_bytes,
+                index_accounted: entry.index_accounted,
             }
             .encode(),
         }
@@ -1102,6 +1181,8 @@ impl PreparedDiskCache {
                         tag: tag(compatibility),
                         bytes: entry.bytes,
                         accounted: entry.accounted,
+                        index_bytes: entry.index_bytes,
+                        index_accounted: entry.index_accounted,
                     }
                     .encode()
                 })
@@ -1289,14 +1370,19 @@ impl PreparedDiskCache {
                             entry.last_used == rank as u64
                                 && entry.bytes == parsed.bytes
                                 && entry.accounted == parsed.accounted
+                                && entry.index_bytes == parsed.index_bytes
+                                && entry.index_accounted == parsed.index_accounted
                         });
                     if kept {
                         continue;
                     }
                     parsed.bytes.min(self.max_bytes)
                 }
-                None if generated_entry(&name) => 0,
-                None => continue,
+                None => match legacy_entry_bytes(&name) {
+                    Some(bytes) => bytes.min(self.max_bytes),
+                    None if generated_entry(&name) => 0,
+                    None => continue,
+                },
             };
             let owner = &mut state.claimed[rank];
             match unlinkat_file(dir_fd, &name, 0) {
@@ -1341,13 +1427,16 @@ impl PreparedDiskCache {
         &self,
         key: &PreparedDiskKey,
         read: &mut DiskRead,
+        need: FactsNeed,
     ) -> Result<DiskLookup, SnapshotError> {
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
         let Some(entry) = state.entries.get(&key.name) else {
             return Ok(DiskLookup::Miss);
         };
-        let (expected, accounted, last_used) = (entry.bytes, entry.accounted, entry.last_used);
+        let (expected, index_bytes, last_used) = (entry.bytes, entry.index_bytes, entry.last_used);
+        let (accounted, index_accounted) = (entry.accounted, entry.index_accounted);
+        let (wanted, admitted) = (entry.read_bytes(need), entry.accounted_for(need));
         let name = self.entry_name(key, entry);
         let inherited = last_used < MAX_CLAIMED_OWNERS as u64;
         let dir_fd = if inherited {
@@ -1369,32 +1458,62 @@ impl PreparedDiskCache {
             }
             #[cfg(test)]
             run_read_hook(&self.owner_name);
-            let mut bytes = Vec::with_capacity(expected);
+            let mut bytes = Vec::with_capacity(wanted.min(expected));
             read.operations += 1;
-            let finished = file
-                .take(probed_read_bytes(expected) as u64)
-                .read_to_end(&mut bytes);
+            let finished = file.take(wanted as u64).read_to_end(&mut bytes);
             read.bytes += bytes.len() as u64;
             finished.map_err(disk_error)?;
+            if need == FactsNeed::Index
+                && file.metadata().map_err(disk_error)?.len() != expected as u64
+            {
+                return Err(incomplete("prepared facts cache entry changed"));
+            }
+            let index_end = HEADER_BYTES + index_bytes;
             let verified = bytes
                 .get(..HEADER_BYTES)
                 .and_then(|header| <&[u8; HEADER_BYTES]>::try_from(header).ok())
                 .and_then(EntryHeader::decode)
                 .is_some_and(|header| {
-                    bytes.len() == expected
-                        && header.binding == self.binding(key)
-                        && header.payload == (expected - HEADER_BYTES) as u64
+                    header.binding == self.binding(key)
+                        && header.index_len == index_bytes as u64
+                        && header.text_len == (expected - index_end) as u64
+                        && header.index_accounted == index_accounted as u64
                         && header.accounted == accounted as u64
-                        && header.seal == seal(header.accounted, &bytes[HEADER_BYTES..])
+                        && match need {
+                            FactsNeed::Index => {
+                                bytes.len() == index_end
+                                    && header.index_seal
+                                        == seal(header.index_accounted, &bytes[HEADER_BYTES..])
+                            }
+                            FactsNeed::Full => {
+                                bytes.len() == expected
+                                    && header.index_seal
+                                        == seal(
+                                            header.index_accounted,
+                                            &bytes[HEADER_BYTES..index_end],
+                                        )
+                                    && header.text_seal
+                                        == seal(header.accounted, &bytes[index_end..])
+                            }
+                        }
                 });
             if !verified {
                 return Err(incomplete("prepared facts cache integrity check failed"));
             }
-            let mut facts: PreparedFacts = sonic_rs::from_slice(&bytes[HEADER_BYTES..])
+            let index: DecodedIndexSection = sonic_rs::from_slice(&bytes[HEADER_BYTES..index_end])
                 .map_err(|_| incomplete("prepared facts cache payload invalid"))?;
-            facts.refresh_accounted();
+            let overrides = match need {
+                FactsNeed::Index => OverrideFacts::Unloaded,
+                FactsNeed::Full => {
+                    let section: Option<Vec<OverrideEvent>> =
+                        sonic_rs::from_slice(&bytes[index_end..])
+                            .map_err(|_| incomplete("prepared facts cache payload invalid"))?;
+                    OverrideFacts::from_section(section)
+                }
+            };
+            let facts = PreparedFacts::from_sections(index, overrides);
             if inherited {
-                if facts.accounted_bytes() > accounted {
+                if facts.accounted_bytes() > admitted {
                     return Err(incomplete("prepared facts cache accounting exceeded"));
                 }
                 renameat_file(dir_fd, &name, self.dir_file.as_raw_fd(), &name)
@@ -1460,6 +1579,7 @@ impl PreparedDiskCache {
     pub fn touch(
         &self,
         key: &PreparedDiskKey,
+        need: FactsNeed,
         unread: impl FnOnce(usize) -> bool,
     ) -> Result<bool, SnapshotError> {
         self.check_dir()?;
@@ -1468,7 +1588,7 @@ impl PreparedDiskCache {
             .entries
             .get(&key.name)
             .filter(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64)
-            .map(|entry| entry.accounted);
+            .map(|entry| entry.accounted_for(need));
         if !owned.is_some_and(unread) {
             return Ok(false);
         }
@@ -1483,24 +1603,33 @@ impl PreparedDiskCache {
         Ok(true)
     }
 
-    pub fn decoded_bytes(&self, key: &PreparedDiskKey) -> Option<usize> {
+    pub fn decoded_bytes(&self, key: &PreparedDiskKey, need: FactsNeed) -> Option<usize> {
         self.state
             .lock()
             .expect("prepared facts disk state")
             .entries
             .get(&key.name)
-            .map(|entry| {
-                entry.bytes + entry.accounted + decode_transient_bytes(entry.bytes - HEADER_BYTES)
-            })
+            .map(|entry| entry.decoded_bytes(need))
     }
 
-    pub fn read_bound(&self, key: &PreparedDiskKey) -> Option<usize> {
+    pub fn read_bound(&self, key: &PreparedDiskKey, need: FactsNeed) -> Option<usize> {
         self.state
             .lock()
             .expect("prepared facts disk state")
             .entries
             .get(&key.name)
-            .map(|entry| probed_read_bytes(entry.bytes))
+            .map(|entry| entry.read_bytes(need))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry_index_bytes(&self, key: &PreparedDiskKey) -> usize {
+        self.state
+            .lock()
+            .expect("prepared facts disk state")
+            .entries
+            .get(&key.name)
+            .expect("cached entry")
+            .index_bytes
     }
 
     pub(crate) fn index_bytes(&self) -> usize {
@@ -1565,15 +1694,26 @@ impl PreparedDiskCache {
             None => {}
         }
         let limit = self.max_bytes - HEADER_BYTES;
+        let (index_section, text_section) = (facts.index_section(), facts.text_section());
         let mut counted = crate::snapshot_codec::Counter { bytes: 0, limit };
-        crate::snapshot_codec::write_json(&mut counted, facts, limit)
+        crate::snapshot_codec::write_json(&mut counted, &index_section, limit)
+            .map_err(|_| incomplete("prepared facts disk cache capacity exhausted"))?;
+        let index_len = counted.bytes;
+        crate::snapshot_codec::write_json(&mut counted, &text_section, limit - index_len)
             .map_err(|_| incomplete("prepared facts disk cache capacity exhausted"))?;
         if !reserve(counted.bytes) {
             return Ok(false);
         }
         let mut payload = Vec::with_capacity(counted.bytes);
-        crate::snapshot_codec::write_json(&mut payload, facts, counted.bytes)
-            .expect("counted prepared facts payload");
+        crate::snapshot_codec::write_json(&mut payload, &index_section, index_len)
+            .expect("counted prepared index payload");
+        assert_eq!(
+            payload.len(),
+            index_len,
+            "prepared index payload outgrew its count"
+        );
+        crate::snapshot_codec::write_json(&mut payload, &text_section, counted.bytes - index_len)
+            .expect("counted prepared text payload");
         assert_eq!(
             (payload.len(), payload.capacity()),
             (counted.bytes, counted.bytes),
@@ -1586,17 +1726,23 @@ impl PreparedDiskCache {
         state.clock += 1;
         let temp = CString::new(format!("{:x}.tmp", state.clock)).expect("temp file name");
         let accounted = facts.accounted_bytes();
+        let index_accounted = facts.index_accounted_bytes();
         let entry = DiskEntry {
             bytes: size,
             accounted,
+            index_bytes: index_len,
+            index_accounted,
             last_used: state.clock,
         };
         let name = self.entry_name(key, &entry);
         let header = EntryHeader {
             binding: self.binding(key),
-            payload: payload.len() as u64,
+            index_len: index_len as u64,
+            text_len: (payload.len() - index_len) as u64,
+            index_accounted: index_accounted as u64,
             accounted: accounted as u64,
-            seal: seal(accounted as u64, &payload),
+            index_seal: seal(index_accounted as u64, &payload[..index_len]),
+            text_seal: seal(accounted as u64, &payload[index_len..]),
         }
         .encode();
         let result = (|| -> Result<(), SnapshotError> {
@@ -1903,7 +2049,7 @@ mod tests {
                 "skills": [],
             }),
             has_error: false,
-            override_events: Some(vec![OverrideEvent {
+            overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "override only in source".to_owned(),
                 tools: vec!["Read".to_owned()],
             }]),
@@ -1951,12 +2097,15 @@ mod tests {
         let file = fs::metadata(cache.entry_path(first.digest)).unwrap();
         assert_eq!(dir.mode() & 0o777, 0o700);
         assert_eq!(file.mode() & 0o777, 0o600);
-        match cache.lookup(&first, &mut DiskRead::default()).unwrap() {
+        match cache
+            .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
+            .unwrap()
+        {
             DiskLookup::Hit(loaded) => {
                 assert!(loaded.accounted_bytes() >= std::mem::size_of::<PreparedFacts>());
                 assert_eq!(loaded.inputs, facts().inputs);
                 assert_eq!(
-                    loaded.override_events.unwrap()[0].text,
+                    loaded.text_section().unwrap()[0].text,
                     "override only in source"
                 );
             }
@@ -1968,7 +2117,8 @@ mod tests {
             cache
                 .lookup(
                     &key(stamp(2), &json!({"root":"/repo"})),
-                    &mut DiskRead::default()
+                    &mut DiskRead::default(),
+                    FactsNeed::Full
                 )
                 .unwrap(),
             DiskLookup::Miss
@@ -1977,7 +2127,8 @@ mod tests {
             cache
                 .lookup(
                     &key(stamp(1), &json!({"root":"/elsewhere"})),
-                    &mut DiskRead::default()
+                    &mut DiskRead::default(),
+                    FactsNeed::Full
                 )
                 .unwrap(),
             DiskLookup::Miss
@@ -2009,7 +2160,9 @@ mod tests {
             .unwrap(),
         ] {
             assert!(matches!(
-                cache.lookup(&changed, &mut DiskRead::default()).unwrap(),
+                cache
+                    .lookup(&changed, &mut DiskRead::default(), FactsNeed::Full)
+                    .unwrap(),
                 DiskLookup::Miss
             ));
         }
@@ -2018,7 +2171,7 @@ mod tests {
     #[test]
     fn evicted_revision_can_rebuild_in_a_later_event() {
         let sample = facts();
-        let cap = HEADER_BYTES + sonic_rs::to_vec(&sample).unwrap().len();
+        let cap = HEADER_BYTES + encoded_sections_len(&sample);
         let cache = cache(cap);
         let first = key(stamp(1), &json!({"root":"/repo"}));
         let second = key(stamp(2), &json!({"root":"/repo"}));
@@ -2029,22 +2182,30 @@ mod tests {
         assert_eq!(cache.stats().writes, 2);
         assert_eq!(cache.stats().write_bytes, (2 * cap) as u64);
         assert!(matches!(
-            cache.lookup(&first, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
         assert!(matches!(
-            cache.lookup(&second, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&second, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         cache.insert(&first, &sample, |_| true, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 3);
         assert_eq!(cache.stats().retired, 2);
         assert!(matches!(
-            cache.lookup(&first, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(matches!(
-            cache.lookup(&second, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&second, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2059,18 +2220,24 @@ mod tests {
         *bytes.last_mut().unwrap() ^= 1;
         fs::write(&path, bytes).unwrap();
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 2);
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2088,7 +2255,9 @@ mod tests {
         );
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2096,7 +2265,7 @@ mod tests {
     #[test]
     fn repeated_evictions_stay_bounded_and_rebuildable() {
         let sample = facts();
-        let cap = HEADER_BYTES + sonic_rs::to_vec(&sample).unwrap().len();
+        let cap = HEADER_BYTES + encoded_sections_len(&sample);
         let cache = cache(cap);
         for revision in 0..256 {
             cache
@@ -2116,7 +2285,8 @@ mod tests {
             cache
                 .lookup(
                     &key(stamp(0), &json!({"root":"/repo"})),
-                    &mut DiskRead::default()
+                    &mut DiskRead::default(),
+                    FactsNeed::Full
                 )
                 .unwrap(),
             DiskLookup::Miss
@@ -2133,7 +2303,9 @@ mod tests {
         assert!(!old_dir.exists());
         let restarted = cache(4096);
         assert!(matches!(
-            restarted.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            restarted
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2196,7 +2368,9 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2302,7 +2476,9 @@ mod tests {
         cleaner.cleanup_stale_owners_with_limits(128, 128 * 1024 * 1024);
         assert!(active.dir.exists());
         assert!(matches!(
-            active.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            active
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2340,12 +2516,16 @@ mod tests {
         fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", &path).unwrap();
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2356,7 +2536,7 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let mut missed = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut missed).unwrap(),
+            cache.lookup(&entry, &mut missed, FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!((missed.operations, missed.bytes), (0, 0));
@@ -2364,7 +2544,7 @@ mod tests {
         let stored = cache.entry_file_len(&entry);
         let mut hit = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut hit).unwrap(),
+            cache.lookup(&entry, &mut hit, FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         assert_eq!((hit.operations, hit.bytes), (1, stored));
@@ -2374,7 +2554,7 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         let mut corrupt = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut corrupt).unwrap(),
+            cache.lookup(&entry, &mut corrupt, FactsNeed::Full).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!((corrupt.operations, corrupt.bytes), (1, stored));
@@ -2388,7 +2568,7 @@ mod tests {
                 .unwrap();
             let mut short = DiskRead::default();
             assert!(matches!(
-                cache.lookup(&entry, &mut short).unwrap(),
+                cache.lookup(&entry, &mut short, FactsNeed::Full).unwrap(),
                 DiskLookup::Retired
             ));
             assert_eq!(
@@ -2404,18 +2584,24 @@ mod tests {
         let cache = cache(4096);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
-        let estimates = (cache.decoded_bytes(&entry), cache.read_bound(&entry));
+        let estimates = (
+            cache.decoded_bytes(&entry, FactsNeed::Full),
+            cache.read_bound(&entry, FactsNeed::Full),
+        );
         assert_eq!(estimates.1, Some(cache.entry_file_len(&entry) as usize + 1));
         let displaced = cache.dir.with_extension("displaced");
         fs::rename(&cache.dir, &displaced).unwrap();
         DirBuilder::new().mode(0o700).create(&cache.dir).unwrap();
         assert_eq!(
-            (cache.decoded_bytes(&entry), cache.read_bound(&entry)),
+            (
+                cache.decoded_bytes(&entry, FactsNeed::Full),
+                cache.read_bound(&entry, FactsNeed::Full)
+            ),
             estimates
         );
         let mut read = DiskRead::default();
         let refused = cache
-            .lookup(&entry, &mut read)
+            .lookup(&entry, &mut read, FactsNeed::Full)
             .err()
             .map(|error| error.reason);
         let inserted = cache
@@ -2443,7 +2629,7 @@ mod tests {
         let cache = cache(4096);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
-        let bound = cache.read_bound(&entry).unwrap();
+        let bound = cache.read_bound(&entry, FactsNeed::Full).unwrap();
         let path = cache.entry_path(entry.digest);
         cache.set_read_hook(Some(Box::new(move || {
             OpenOptions::new()
@@ -2454,7 +2640,7 @@ mod tests {
                 .unwrap()
         })));
         let mut read = DiskRead::default();
-        let outcome = cache.lookup(&entry, &mut read);
+        let outcome = cache.lookup(&entry, &mut read, FactsNeed::Full);
         cache.set_read_hook(None);
         assert!(matches!(outcome.unwrap(), DiskLookup::Retired));
         assert_eq!((read.operations, read.bytes as usize), (1, bound));
@@ -2481,7 +2667,7 @@ mod tests {
                 "skills": [],
             }),
             has_error: false,
-            override_events: Some(override_events),
+            overrides: OverrideFacts::Loaded(override_events),
             accounted: 0,
         };
         facts.refresh_accounted();
@@ -2495,19 +2681,50 @@ mod tests {
         node_buffer + unescape_scratch
     }
 
+    fn encoded_sections_len(facts: &PreparedFacts) -> usize {
+        sonic_rs::to_vec(&facts.index_section()).unwrap().len()
+            + sonic_rs::to_vec(&facts.text_section()).unwrap().len()
+    }
+
+    fn sections(cache: &PreparedDiskCache, entry: &PreparedDiskKey) -> (usize, usize) {
+        let file = cache.entry_file_len(entry) as usize;
+        let index = cache.entry_index_bytes(entry);
+        (index, file - HEADER_BYTES - index)
+    }
+
+    fn index_only(decoded: &PreparedFacts) -> bool {
+        matches!(decoded.overrides, OverrideFacts::Unloaded)
+    }
+
     #[test]
     fn decoded_bytes_cover_the_file_and_the_decoded_facts() {
         let cache = cache(64 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
-        assert_eq!(cache.decoded_bytes(&entry), None);
+        assert_eq!(cache.decoded_bytes(&entry, FactsNeed::Full), None);
         let built = pushed_facts(5, 5);
         assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
         let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
+        let (index, text) = sections(&cache, &entry);
         assert_eq!(
-            cache.decoded_bytes(&entry),
-            Some(file + built.accounted_bytes() + decode_transients_walk(file - HEADER_BYTES))
+            cache.decoded_bytes(&entry, FactsNeed::Full),
+            Some(
+                file + built.accounted_bytes()
+                    + decode_transients_walk(index)
+                    + decode_transients_walk(text)
+            )
         );
-        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut DiskRead::default()).unwrap()
+        assert_eq!(
+            cache.decoded_bytes(&entry, FactsNeed::Index),
+            Some(
+                HEADER_BYTES
+                    + index
+                    + built.index_accounted_bytes()
+                    + decode_transients_walk(index)
+            )
+        );
+        let DiskLookup::Hit(decoded) = cache
+            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+            .unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -2518,10 +2735,10 @@ mod tests {
             built.accounted_bytes()
         );
         let (decoded_events, built_events) = (
-            decoded.override_events.as_ref().unwrap(),
-            built.override_events.as_ref().unwrap(),
+            decoded.text_section().unwrap(),
+            built.text_section().unwrap(),
         );
-        assert_eq!(decoded_events.capacity(), built_events.capacity());
+        assert_eq!(decoded_events.len(), built_events.len());
         for (decoded_event, built_event) in decoded_events.iter().zip(built_events) {
             assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
             assert_eq!(decoded_event.tools.capacity(), built_event.tools.capacity());
@@ -2540,7 +2757,7 @@ mod tests {
                 "skills": [],
             }),
             has_error: false,
-            override_events: Some(vec![OverrideEvent {
+            overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "override line\n".repeat(32 * 1024),
                 tools: vec!["Read".to_owned()],
             }]),
@@ -2549,17 +2766,23 @@ mod tests {
         built.refresh_accounted();
         assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
         let file = fs::metadata(cache.entry_path(entry.digest)).unwrap().len() as usize;
-        let payload = file - HEADER_BYTES;
-        assert!(payload >= 400 * 1024, "payload {payload}");
+        let (index, text) = sections(&cache, &entry);
+        assert!(text >= 400 * 1024, "text section {text}");
         assert!(
-            (payload - r#"{"inputs":"#.len()) / 2 + 2 >= (3 << 20) / size_of::<Value>(),
-            "payload {payload} decodes through the thread-local node buffer"
+            (text - 1) / 2 + 2 >= (3 << 20) / size_of::<Value>(),
+            "text section {text} decodes through the thread-local node buffer"
         );
         assert_eq!(
-            cache.decoded_bytes(&entry),
-            Some(file + built.accounted_bytes() + decode_transients_walk(payload))
+            cache.decoded_bytes(&entry, FactsNeed::Full),
+            Some(
+                file + built.accounted_bytes()
+                    + decode_transients_walk(index)
+                    + decode_transients_walk(text)
+            )
         );
-        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut DiskRead::default()).unwrap()
+        let DiskLookup::Hit(decoded) = cache
+            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+            .unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -2570,8 +2793,8 @@ mod tests {
             built.accounted_bytes()
         );
         let (decoded_event, built_event) = (
-            &decoded.override_events.as_ref().unwrap()[0],
-            &built.override_events.as_ref().unwrap()[0],
+            &decoded.text_section().unwrap()[0],
+            &built.text_section().unwrap()[0],
         );
         assert_eq!(decoded_event.text, built_event.text);
         assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
@@ -2583,7 +2806,7 @@ mod tests {
     fn insert_admits_its_payload_before_allocating_it() {
         let cache = cache(64 * 1024);
         let sample = pushed_facts(3, 2);
-        let payload = sonic_rs::to_vec(&sample).unwrap().len();
+        let payload = encoded_sections_len(&sample);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let admissions = std::cell::RefCell::new(Vec::new());
         assert!(!cache
@@ -2643,7 +2866,9 @@ mod tests {
                 (HEADER_BYTES + payload) as u64
             )
         );
-        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut DiskRead::default()).unwrap()
+        let DiskLookup::Hit(decoded) = cache
+            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+            .unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -2678,7 +2903,9 @@ mod tests {
         assert_eq!(cache.index_capacity_bytes(), offered.get());
         assert_eq!(cache.audit_index_bytes(), offered.get());
         assert!(matches!(
-            cache.lookup(&first, &mut DiskRead::default()).unwrap(),
+            cache
+                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         let second = key(stamp(2), &json!({"root":"/repo"}));
@@ -2705,7 +2932,10 @@ mod tests {
         let entry = revision(1);
         let first = reuse_cache(&namespace, 64 * 1024);
         assert!(first.insert(&entry, &built, |_| true, |_| true).unwrap());
-        let estimates = (first.decoded_bytes(&entry), first.read_bound(&entry));
+        let estimates = (
+            first.decoded_bytes(&entry, FactsNeed::Full),
+            first.read_bound(&entry, FactsNeed::Full),
+        );
         let stored = first.entry_file_len(&entry);
         let left = first.entry_file(&entry);
         drop(first);
@@ -2717,12 +2947,16 @@ mod tests {
         assert_eq!(budget(&second), (1, 0, stored as usize, 0));
         assert!(!second.has_entry(&entry).unwrap());
         assert_eq!(
-            (second.decoded_bytes(&entry), second.read_bound(&entry)),
+            (
+                second.decoded_bytes(&entry, FactsNeed::Full),
+                second.read_bound(&entry, FactsNeed::Full)
+            ),
             estimates
         );
         assert!(left.exists());
         let mut read = DiskRead::default();
-        let DiskLookup::Hit(loaded) = second.lookup(&entry, &mut read).unwrap() else {
+        let DiskLookup::Hit(loaded) = second.lookup(&entry, &mut read, FactsNeed::Full).unwrap()
+        else {
             panic!("expected inherited facts");
         };
         assert_eq!(loaded.inputs, built.inputs);
@@ -2790,7 +3024,11 @@ mod tests {
                 Work::default(),
             )
             .unwrap();
-            assert_eq!(successor.decoded_bytes(&entry), None, "{case}");
+            assert_eq!(
+                successor.decoded_bytes(&entry, FactsNeed::Full),
+                None,
+                "{case}"
+            );
             assert_eq!(budget(&successor), (0, 0, 0, stored), "{case}");
             assert!(left.exists(), "{case}");
             drop(successor);
@@ -2844,16 +3082,25 @@ mod tests {
             let entry = revision(1);
             let left = left_behind(&namespace, &entry, &built);
             let successor = reuse_cache(&namespace, 64 * 1024);
-            assert!(successor.decoded_bytes(&entry).is_some(), "{case}");
+            assert!(
+                successor.decoded_bytes(&entry, FactsNeed::Full).is_some(),
+                "{case}"
+            );
             damage(&left);
             assert!(
                 matches!(
-                    successor.lookup(&entry, &mut DiskRead::default()).unwrap(),
+                    successor
+                        .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                        .unwrap(),
                     DiskLookup::Miss
                 ),
                 "{case}"
             );
-            assert_eq!(successor.decoded_bytes(&entry), None, "{case}");
+            assert_eq!(
+                successor.decoded_bytes(&entry, FactsNeed::Full),
+                None,
+                "{case}"
+            );
             assert!(!successor.has_entry(&entry).unwrap(), "{case}");
             assert_eq!(budget(&successor), (0, 0, 0, 0), "{case}");
             assert!(!successor.entry_file(&entry).exists(), "{case}");
@@ -2864,7 +3111,7 @@ mod tests {
         let entry = revision(1);
         let left = left_behind(&namespace, &entry, &built);
         let successor = reuse_cache(&namespace, 64 * 1024);
-        assert!(successor.decoded_bytes(&entry).is_some());
+        assert!(successor.decoded_bytes(&entry, FactsNeed::Full).is_some());
         for (case, other) in [
             ("a different source stamp", key(stamp(2), &authority)),
             (
@@ -2872,10 +3119,16 @@ mod tests {
                 key(stamp(1), &json!({"root":"/elsewhere"})),
             ),
         ] {
-            assert_eq!(successor.decoded_bytes(&other), None, "{case}");
+            assert_eq!(
+                successor.decoded_bytes(&other, FactsNeed::Full),
+                None,
+                "{case}"
+            );
             assert!(
                 matches!(
-                    successor.lookup(&other, &mut DiskRead::default()).unwrap(),
+                    successor
+                        .lookup(&other, &mut DiskRead::default(), FactsNeed::Full)
+                        .unwrap(),
                     DiskLookup::Miss
                 ),
                 "{case}"
@@ -2907,7 +3160,9 @@ mod tests {
             Some(second.dir.as_path())
         );
         assert!(matches!(
-            second.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            second
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         drop(second);
@@ -2924,9 +3179,10 @@ mod tests {
         let second = reuse_cache(&namespace, 64 * 1024);
         assert!(second.state.lock().unwrap().claimed.is_empty());
         assert_eq!(budget(&second), (0, 0, 0, 0));
-        assert_eq!(second.decoded_bytes(&entry), None);
+        assert_eq!(second.decoded_bytes(&entry, FactsNeed::Full), None);
         assert!(matches!(
-            live.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            live.lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         drop(second);
@@ -2972,7 +3228,11 @@ mod tests {
         assert!(!dead.exists());
         assert!(second.has_entry(&revision(3)).unwrap());
         let kept = (1..=2)
-            .filter(|generation| second.decoded_bytes(&revision(*generation)).is_some())
+            .filter(|generation| {
+                second
+                    .decoded_bytes(&revision(*generation), FactsNeed::Full)
+                    .is_some()
+            })
             .count();
         assert_eq!(kept, 1);
         drop(second);
@@ -3002,10 +3262,12 @@ mod tests {
             .collect();
         assert_eq!(generations, [1, 2, 3, 4]);
         assert_eq!(budget(&fifth), (3, 0, 3 * size, size));
-        assert_eq!(fifth.decoded_bytes(&revision(1)), None);
+        assert_eq!(fifth.decoded_bytes(&revision(1), FactsNeed::Full), None);
         for generation in 2..=4 {
             assert!(
-                fifth.decoded_bytes(&revision(generation)).is_some(),
+                fifth
+                    .decoded_bytes(&revision(generation), FactsNeed::Full)
+                    .is_some(),
                 "generation {generation}"
             );
         }
@@ -3058,7 +3320,9 @@ mod tests {
         assert!(!temp.exists());
         assert_eq!(budget(&second), (2, stored, stored, 0));
         assert!(matches!(
-            second.lookup(&listed, &mut DiskRead::default()).unwrap(),
+            second
+                .lookup(&listed, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(!left.exists());
@@ -3088,7 +3352,9 @@ mod tests {
         let third = reuse_cache(&namespace, 64 * 1024);
         assert_eq!(budget(&third), (1, 0, stored, 0));
         assert!(matches!(
-            third.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            third
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(!left.exists());
@@ -3116,7 +3382,7 @@ mod tests {
             );
             let successor = reuse_cache(&namespace, 64 * 1024);
             assert_eq!(
-                successor.decoded_bytes(&entry),
+                successor.decoded_bytes(&entry, FactsNeed::Full),
                 None,
                 "accounted {accounted}"
             );
@@ -3139,7 +3405,9 @@ mod tests {
         fs::remove_file(&left).unwrap();
         fs::create_dir(&left).unwrap();
         assert!(matches!(
-            successor.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            successor
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!(budget(&successor), (0, 0, 0, stored));
@@ -3178,16 +3446,20 @@ mod tests {
         drop(first);
         let successor = reuse_cache(&namespace, size);
         assert_eq!(budget(&successor), (1, 0, size, size));
-        let (adopted, dropped): (usize, usize) = if successor.decoded_bytes(&revision(1)).is_some()
+        let (adopted, dropped): (usize, usize) = if successor
+            .decoded_bytes(&revision(1), FactsNeed::Full)
+            .is_some()
         {
             (0, 1)
         } else {
             (1, 0)
         };
         let entry = revision(adopted as u64 + 1);
-        assert!(successor.decoded_bytes(&entry).is_some());
+        assert!(successor.decoded_bytes(&entry, FactsNeed::Full).is_some());
         assert!(matches!(
-            successor.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            successor
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert_eq!(budget(&successor), (1, size, 0, 0));
@@ -3265,7 +3537,7 @@ mod tests {
             );
             let successor = reuse_cache(&namespace, 64 * 1024);
             assert_eq!(
-                successor.decoded_bytes(&entry).is_some(),
+                successor.decoded_bytes(&entry, FactsNeed::Full).is_some(),
                 expected.0 == 1,
                 "{case}"
             );
@@ -3290,7 +3562,7 @@ mod tests {
         fs::create_dir(&left).unwrap();
         assert!(matches!(
             successor
-                .lookup(&revision(1), &mut DiskRead::default())
+                .lookup(&revision(1), &mut DiskRead::default(), FactsNeed::Full)
                 .unwrap(),
             DiskLookup::Miss
         ));
@@ -3358,7 +3630,7 @@ mod tests {
         assert!(!successor.state.lock().unwrap().claimed[0].dirty);
         assert!(matches!(
             successor
-                .lookup(&revision(1), &mut DiskRead::default())
+                .lookup(&revision(1), &mut DiskRead::default(), FactsNeed::Full)
                 .unwrap(),
             DiskLookup::Hit(_)
         ));
@@ -3372,7 +3644,9 @@ mod tests {
             inserts += 1;
         }
         assert_eq!(budget(&successor).3, 0);
-        assert!(successor.decoded_bytes(&revision(2)).is_some());
+        assert!(successor
+            .decoded_bytes(&revision(2), FactsNeed::Full)
+            .is_some());
         assert!(waiting.exists());
         drop(successor);
         fs::remove_dir_all(namespace).unwrap();
@@ -3398,7 +3672,9 @@ mod tests {
         };
         assert_eq!(settled, (true, true, 0));
         assert!(matches!(
-            successor.lookup(&lost, &mut DiskRead::default()).unwrap(),
+            successor
+                .lookup(&lost, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!(budget(&successor), (1, stored, 0, 0));
@@ -3422,7 +3698,9 @@ mod tests {
         held.sort();
         assert_eq!(held, [legacy, "owner.lock".to_owned()]);
         assert!(matches!(
-            plain.lookup(&entry, &mut DiskRead::default()).unwrap(),
+            plain
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+                .unwrap(),
             DiskLookup::Hit(_)
         ));
         let namespace = isolated_namespace();
@@ -3430,7 +3708,7 @@ mod tests {
         assert!(reusing.insert(&entry, &built, |_| true, |_| true).unwrap());
         let named = reusing.entry_file(&entry);
         let name = CString::new(named.file_name().unwrap().to_str().unwrap()).unwrap();
-        assert_eq!(name.to_bytes().len(), 118);
+        assert_eq!(name.to_bytes().len(), ENTRY_NAME_BYTES);
         assert!(EntryName::parse(&name).is_some());
         drop(reusing);
         fs::remove_dir_all(namespace).unwrap();
@@ -3443,25 +3721,48 @@ mod tests {
             tag: 0x0123_4567_89ab_cdef,
             bytes: 4096,
             accounted: 2048,
+            index_bytes: 512,
+            index_accounted: 256,
         };
         let encoded = name.encode();
         let text = encoded.to_str().unwrap();
         assert_eq!(
             text,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\
-             0123456789abcdef00000000000010000000000000000800.facts"
+             0123456789abcdef000000000000100000000000000008000000000000000200\
+             0000000000000100.facts"
         );
         assert_eq!(text.len(), ENTRY_NAME_BYTES);
         assert!(!generated_entry(&encoded));
+        assert_eq!(legacy_entry_bytes(&encoded), None);
         let parsed = EntryName::parse(&encoded).unwrap();
         assert_eq!(
-            (parsed.key, parsed.tag, parsed.bytes, parsed.accounted),
-            (name.key, name.tag, name.bytes, name.accounted)
+            (
+                parsed.key,
+                parsed.tag,
+                parsed.bytes,
+                parsed.accounted,
+                parsed.index_bytes,
+                parsed.index_accounted
+            ),
+            (
+                name.key,
+                name.tag,
+                name.bytes,
+                name.accounted,
+                name.index_bytes,
+                name.index_accounted
+            )
         );
+        let legacy = CString::new(format!("{}.facts", &text[..112])).unwrap();
+        assert_eq!(legacy.to_bytes().len(), LEGACY_ENTRY_NAME_BYTES);
+        assert!(EntryName::parse(&legacy).is_none());
+        assert!(!generated_entry(&legacy));
+        assert_eq!(legacy_entry_bytes(&legacy), Some(4096));
         for (case, rejected) in [
             ("one byte longer", format!("0{text}")),
             ("one byte shorter", text[1..].to_owned()),
-            ("the wrong suffix", format!("{}.fact0", &text[..112])),
+            ("the wrong suffix", format!("{}.fact0", &text[..144])),
             ("an uppercase body", text.replacen('a', "A", 1)),
             ("a non-hex body", format!("g{}", &text[1..])),
         ] {
@@ -3470,6 +3771,253 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn index_lookup_reads_only_the_index_section() {
+        let cache = cache(4 * 1024 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let mut built = PreparedFacts {
+            inputs: json!({
+                "calls": [["Read", ["/repo/file.rs"]]],
+                "commands": [],
+                "edited_files": [],
+                "skills": [],
+            }),
+            has_error: true,
+            overrides: OverrideFacts::Loaded(vec![OverrideEvent {
+                text: "x".repeat(1024 * 1024),
+                tools: vec!["Read".to_owned()],
+            }]),
+            accounted: 0,
+        };
+        built.refresh_accounted();
+        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        let stored = cache.entry_file_len(&entry);
+        let (index, text) = sections(&cache, &entry);
+        assert!(
+            text >= 1024 * 1024 && index < 1024,
+            "{index} index bytes, {text} text bytes"
+        );
+        assert_eq!(
+            cache.read_bound(&entry, FactsNeed::Index),
+            Some(HEADER_BYTES + index)
+        );
+        assert_eq!(
+            cache.read_bound(&entry, FactsNeed::Full),
+            Some(stored as usize + 1)
+        );
+        let mut read = DiskRead::default();
+        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut read, FactsNeed::Index).unwrap()
+        else {
+            panic!("expected index facts");
+        };
+        assert_eq!(
+            (read.operations, read.bytes as usize),
+            (1, HEADER_BYTES + index)
+        );
+        assert!(index_only(&decoded));
+        assert_eq!(decoded.inputs, built.inputs);
+        assert!(decoded.has_error);
+        assert_eq!(decoded.accounted_bytes(), built.index_accounted_bytes());
+        assert!(decoded.serves(FactsNeed::Index) && !decoded.serves(FactsNeed::Full));
+        let mut full = DiskRead::default();
+        let DiskLookup::Hit(loaded) = cache.lookup(&entry, &mut full, FactsNeed::Full).unwrap()
+        else {
+            panic!("expected full facts");
+        };
+        assert_eq!((full.operations, full.bytes), (1, stored));
+        assert!(loaded.is_full());
+        assert_eq!(
+            loaded.text_section().unwrap()[0].text,
+            "x".repeat(1024 * 1024)
+        );
+        assert_eq!(loaded.text_section().unwrap()[0].tools, ["Read"]);
+        assert_eq!(loaded.accounted_bytes(), built.accounted_bytes());
+        assert!(cache
+            .touch(&entry, FactsNeed::Index, |accounted| accounted
+                == built.index_accounted_bytes())
+            .unwrap());
+        assert!(cache
+            .touch(&entry, FactsNeed::Full, |accounted| accounted
+                == built.accounted_bytes())
+            .unwrap());
+    }
+
+    #[test]
+    fn exceeded_override_text_round_trips_through_both_needs() {
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let mut built = pushed_facts(1, 1);
+        built.overrides = OverrideFacts::Exceeded;
+        built.refresh_accounted();
+        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        let DiskLookup::Hit(full) = cache
+            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
+            .unwrap()
+        else {
+            panic!("expected full facts");
+        };
+        assert!(matches!(full.overrides, OverrideFacts::Exceeded));
+        assert!(full.is_full());
+        let refused = full
+            .query(&json!({"kind":"has_override","token":"t","invalidated_by":[]}))
+            .err()
+            .unwrap();
+        assert_eq!(
+            (refused.status, refused.reason.as_str()),
+            (
+                crate::snapshot::Status::Incomplete,
+                "prepared override text exceeded its bound"
+            )
+        );
+        let DiskLookup::Hit(index) = cache
+            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Index)
+            .unwrap()
+        else {
+            panic!("expected index facts");
+        };
+        assert!(index_only(&index));
+        assert_eq!(index.accounted_bytes(), full.accounted_bytes());
+    }
+
+    #[test]
+    fn a_corrupt_text_section_retires_only_the_full_lookup() {
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let built = pushed_facts(3, 2);
+        assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+        let (index, _) = sections(&cache, &entry);
+        let path = cache.entry_path(entry.digest);
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        let mut read = DiskRead::default();
+        assert!(matches!(
+            cache.lookup(&entry, &mut read, FactsNeed::Index).unwrap(),
+            DiskLookup::Hit(decoded) if index_only(&decoded) && decoded.inputs == built.inputs
+        ));
+        assert_eq!(read.bytes as usize, HEADER_BYTES + index);
+        assert_eq!(cache.stats().entries, 1);
+        let mut full = DiskRead::default();
+        assert!(matches!(
+            cache.lookup(&entry, &mut full, FactsNeed::Full).unwrap(),
+            DiskLookup::Retired
+        ));
+        assert_eq!(full.bytes, bytes.len() as u64);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn a_corrupt_index_section_retires_both_lookups() {
+        let cache = cache(64 * 1024);
+        let built = pushed_facts(3, 2);
+        for need in [FactsNeed::Index, FactsNeed::Full] {
+            let entry = key(stamp(1), &json!({"root":"/repo"}));
+            assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
+            let path = cache.entry_path(entry.digest);
+            let mut bytes = fs::read(&path).unwrap();
+            bytes[HEADER_BYTES + 4] ^= 1;
+            fs::write(&path, &bytes).unwrap();
+            assert!(matches!(
+                cache
+                    .lookup(&entry, &mut DiskRead::default(), need)
+                    .unwrap(),
+                DiskLookup::Retired
+            ));
+            assert_eq!(cache.stats().entries, 0);
+        }
+    }
+
+    #[test]
+    fn a_header_whose_lengths_disagree_with_the_name_is_retired_before_decoding() {
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        assert!(cache
+            .insert(&entry, &pushed_facts(2, 2), |_| true, |_| true)
+            .unwrap());
+        let path = cache.entry_path(entry.digest);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[40] ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            cache
+                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Index)
+                .unwrap(),
+            DiskLookup::Retired
+        ));
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn successor_reads_only_the_index_of_an_inherited_entry() {
+        let namespace = isolated_namespace();
+        let built = pushed_facts(5, 5);
+        let entry = revision(1);
+        let first = reuse_cache(&namespace, 64 * 1024);
+        assert!(first.insert(&entry, &built, |_| true, |_| true).unwrap());
+        let (index, _) = sections(&first, &entry);
+        let stored = first.entry_file_len(&entry);
+        drop(first);
+        let second = reuse_cache(&namespace, 64 * 1024);
+        assert_eq!(
+            second.read_bound(&entry, FactsNeed::Index),
+            Some(HEADER_BYTES + index)
+        );
+        assert_eq!(
+            second.decoded_bytes(&entry, FactsNeed::Index),
+            Some(
+                HEADER_BYTES
+                    + index
+                    + built.index_accounted_bytes()
+                    + decode_transients_walk(index)
+            )
+        );
+        let mut read = DiskRead::default();
+        let DiskLookup::Hit(loaded) = second.lookup(&entry, &mut read, FactsNeed::Index).unwrap()
+        else {
+            panic!("expected inherited index facts");
+        };
+        assert!(index_only(&loaded));
+        assert_eq!(loaded.inputs, built.inputs);
+        assert_eq!(
+            (read.operations, read.bytes as usize),
+            (1, HEADER_BYTES + index)
+        );
+        assert!(second.has_entry(&entry).unwrap());
+        assert_eq!(second.stats().bytes, stored as usize);
+        drop(second);
+        fs::remove_dir_all(namespace).unwrap();
+    }
+
+    #[test]
+    fn legacy_entries_are_swept_as_garbage_and_never_adopted() {
+        let namespace = isolated_namespace();
+        let dir = dead_owner(&namespace);
+        let legacy = CString::new(format!(
+            "{}{:016x}{:016x}{:016x}.facts",
+            "ab".repeat(32),
+            0u64,
+            4096usize,
+            2048usize
+        ))
+        .unwrap();
+        assert_eq!(legacy.to_bytes().len(), LEGACY_ENTRY_NAME_BYTES);
+        let planted_path = planted(&dir, &legacy, 4096);
+        let successor = reuse_cache(&namespace, 64 * 1024);
+        assert_eq!(successor.stats().entries, 0);
+        assert_eq!(budget(&successor).2, 0, "a legacy entry was adopted");
+        for _ in 0..4 {
+            assert!(successor
+                .insert(&revision(1), &pushed_facts(1, 1), |_| true, |_| true)
+                .unwrap());
+        }
+        assert!(
+            !planted_path.exists(),
+            "the legacy entry survived the owner sweep"
+        );
+        drop(successor);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]

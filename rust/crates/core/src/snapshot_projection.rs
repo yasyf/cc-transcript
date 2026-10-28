@@ -1664,7 +1664,7 @@ fn prepare_facts_limited(
             .items()
             .iter()
             .any(|use_| use_.result.is_some_and(|result| result.is_error)),
-        override_events,
+        overrides: crate::snapshot_prepared::OverrideFacts::from_section(override_events),
         accounted: 0,
     };
     facts.refresh_accounted();

@@ -54,11 +54,86 @@ pub struct OverrideEvent {
     pub tools: Vec<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactsNeed {
+    Index,
+    Full,
+}
+
+impl FactsNeed {
+    pub fn of_query(query: &Value, observers: Option<&sonic_rs::Array>) -> Self {
+        let wants_overrides =
+            |query: &Value| query.get("kind").and_then(Value::as_str) == Some("has_override");
+        if wants_overrides(query)
+            || observers.is_some_and(|queries| queries.iter().any(wants_overrides))
+        {
+            Self::Full
+        } else {
+            Self::Index
+        }
+    }
+}
+
+pub enum OverrideFacts {
+    Unloaded,
+    Exceeded,
+    Loaded(Vec<OverrideEvent>),
+}
+
+impl OverrideFacts {
+    pub fn from_section(section: Option<Vec<OverrideEvent>>) -> Self {
+        match section {
+            None => Self::Exceeded,
+            Some(events) => Self::Loaded(events),
+        }
+    }
+
+    pub fn section(&self) -> Option<&[OverrideEvent]> {
+        match self {
+            Self::Unloaded => unreachable!("override text is written only from loaded facts"),
+            Self::Exceeded => None,
+            Self::Loaded(events) => Some(events),
+        }
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        !matches!(self, Self::Unloaded)
+    }
+
+    fn charge(&self) -> usize {
+        match self {
+            Self::Unloaded | Self::Exceeded => 0,
+            Self::Loaded(events) => {
+                events.capacity() * std::mem::size_of::<OverrideEvent>()
+                    + events
+                        .iter()
+                        .map(|event| {
+                            event.text.capacity()
+                                + event.tools.capacity() * std::mem::size_of::<String>()
+                                + event.tools.iter().map(String::capacity).sum::<usize>()
+                        })
+                        .sum::<usize>()
+            }
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct IndexSection<'a> {
+    pub inputs: &'a Value,
+    pub has_error: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct DecodedIndexSection {
+    pub inputs: Value,
+    pub has_error: bool,
+}
+
 pub struct PreparedFacts {
     pub inputs: Value,
     pub has_error: bool,
-    pub override_events: Option<Vec<OverrideEvent>>,
+    pub overrides: OverrideFacts,
     pub accounted: usize,
 }
 
@@ -67,23 +142,51 @@ impl PreparedFacts {
         self.accounted
     }
 
-    pub fn refresh_accounted(&mut self) {
+    pub fn index_accounted_bytes(&self) -> usize {
         let input_charge = crate::snapshot_memory::value_charge(&self.inputs);
-        let override_charge = self.override_events.as_ref().map_or(0, |events| {
-            events.capacity() * std::mem::size_of::<OverrideEvent>()
-                + events
-                    .iter()
-                    .map(|event| {
-                        event.text.capacity()
-                            + event.tools.capacity() * std::mem::size_of::<String>()
-                            + event.tools.iter().map(String::capacity).sum::<usize>()
-                    })
-                    .sum::<usize>()
-        });
-        self.accounted = crate::snapshot_ledger::arc_bytes::<Self>()
+        crate::snapshot_ledger::arc_bytes::<Self>()
             + input_charge.owned_capacity_bytes
             + input_charge.opaque_dom_accounted_bytes
-            + override_charge;
+    }
+
+    pub fn refresh_accounted(&mut self) {
+        self.accounted = self.index_accounted_bytes() + self.overrides.charge();
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.overrides.is_loaded()
+    }
+
+    pub fn serves(&self, need: FactsNeed) -> bool {
+        need == FactsNeed::Index || self.is_full()
+    }
+
+    pub fn without_text(mut self) -> Self {
+        self.overrides = OverrideFacts::Unloaded;
+        self.refresh_accounted();
+        self
+    }
+
+    pub fn index_section(&self) -> IndexSection<'_> {
+        IndexSection {
+            inputs: &self.inputs,
+            has_error: self.has_error,
+        }
+    }
+
+    pub fn text_section(&self) -> Option<&[OverrideEvent]> {
+        self.overrides.section()
+    }
+
+    pub fn from_sections(index: DecodedIndexSection, overrides: OverrideFacts) -> Self {
+        let mut facts = Self {
+            inputs: index.inputs,
+            has_error: index.has_error,
+            overrides,
+            accounted: 0,
+        };
+        facts.refresh_accounted();
+        facts
     }
 
     pub fn query(&self, query: &Value) -> Result<Value, SnapshotError> {
@@ -197,10 +300,15 @@ impl PreparedFacts {
                 .ok_or_else(|| invalid("prepared edits missing"))?
                 .is_empty(),
             "has_override" => {
-                let events = self
-                    .override_events
-                    .as_ref()
-                    .ok_or_else(|| incomplete("prepared override text exceeded its bound"))?;
+                let events = match &self.overrides {
+                    OverrideFacts::Unloaded => {
+                        unreachable!("has_override is answered only from fully loaded facts")
+                    }
+                    OverrideFacts::Exceeded => {
+                        return Err(incomplete("prepared override text exceeded its bound"))
+                    }
+                    OverrideFacts::Loaded(events) => events,
+                };
                 let token = string(query, "token")?;
                 let invalidators = strings(query, "invalidated_by")?;
                 let Some(last) = events.iter().rposition(|event| event.text.contains(token)) else {
