@@ -16226,9 +16226,12 @@ mod tests {
         assert_eq!(value_of(&appended), Some(false));
         assert_eq!(cache_reads(&appended).0, Some(0));
         assert_eq!(appended["usage"]["cold_parses"].as_u64(), Some(0));
-        let validation = (
-            appended["usage"]["source_opens"].as_u64(),
-            appended["usage"]["source_bytes_read"].as_u64(),
+        assert_eq!(
+            (
+                appended["usage"]["source_opens"].as_u64(),
+                appended["usage"]["source_bytes_read"].as_u64()
+            ),
+            (Some(2), Some(128))
         );
         let (builds, writes) = (
             store.fact_builds.load(Ordering::Relaxed),
@@ -16236,13 +16239,13 @@ mod tests {
         );
         let full = ask(has_override("TOKEN-ROOT", &[]));
         assert_eq!(value_of(&full), Some(true));
-        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), validation.1));
+        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(64)));
         assert_eq!(
             (
                 full["usage"]["cold_parses"].as_u64(),
                 full["usage"]["source_opens"].as_u64()
             ),
-            (Some(0), validation.0)
+            (Some(0), Some(1))
         );
         assert_eq!(
             (

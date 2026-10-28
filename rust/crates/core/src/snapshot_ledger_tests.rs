@@ -13557,6 +13557,12 @@ fn assert_primed_index_upgrade_reserves_in_phases(
         Err(error) if error.status == Status::RetainedLimit => false,
         Err(error) => panic!("{site}: failed outside admission: {error:?}"),
     };
+    let charged = |mut gauges: [usize; 8], slots: usize, bytes: usize| {
+        gauges[LOADS] += slots;
+        gauges[PENDING] += bytes;
+        gauges[TOTAL] += bytes;
+        gauges
+    };
     let refused_untouched = |fixture: &Fixture, headroom: usize, lookups: usize| {
         let filler = fill_to(&fixture.store, &fixture.owner, headroom);
         let (before, probes, disk) = (
@@ -13564,6 +13570,8 @@ fn assert_primed_index_upgrade_reserves_in_phases(
             fact_probes(&fixture.store),
             fixture.store.prepared_disk.stats(),
         );
+        let slot_ids = load_slot_ids(&fixture.store);
+        let pinned_before = fixture.store.lock_state().prepared_loads.len();
         traced(&fixture.store);
         assert!(
             !published(fixture),
@@ -13585,8 +13593,29 @@ fn assert_primed_index_upgrade_reserves_in_phases(
             fixture.store.prepared_disk.entry_text_state(key),
             Some(crate::snapshot_prepared::TextState::Unbuilt)
         );
-        assert_eq!(settled(&fixture.store), before);
+        let (slots, slot_bytes) = residue_walk(&fixture.store, &slot_ids);
+        assert!(
+            slots <= 1,
+            "{site}: the refusal at headroom {headroom} left {slots} load slots behind"
+        );
+        let pinned = fixture.store.lock_state().prepared_loads.len() - pinned_before;
+        assert!(
+            pinned <= slots,
+            "{site}: the refusal at headroom {headroom} pinned {pinned} prepared loads"
+        );
+        assert_eq!(
+            ledger(&fixture.store),
+            charged(before, slots, slot_bytes),
+            "{site}: the refusal at headroom {headroom} leaked state"
+        );
         fixture.store.assert_conserved();
+        let pruned = settled(&fixture.store);
+        let (kept, kept_bytes) = residue_walk(&fixture.store, &slot_ids);
+        assert_eq!(
+            kept, pinned,
+            "{site}: the refusal at headroom {headroom} left a load slot that is neither pinned nor pruned"
+        );
+        assert_eq!(pruned, charged(before, kept, kept_bytes));
         drop(filler);
         assert_eq!(fixture.store.lock_state().transient_bytes, 0);
         reserved
