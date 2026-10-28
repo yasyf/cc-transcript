@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- When a cached registered membership changed only because some members grew,
+  `prepare_graph` and the first `warm_registered` step refresh those members'
+  stamps without locating thread ids or listing sidechain directories again. A
+  member that was replaced, renamed, truncated or rewritten at the same size, a
+  changed sidechain directory, or an expired membership still rebuilds it.
 - `cc-transcript grep` budgets now default large enough to cover a whole local
   `~/.claude/projects` tree. The store config defaults move from 8 MiB to
   1 TiB for `max_scan_read_bytes`, from 4096 to 2^32 for `max_scan_events`,
