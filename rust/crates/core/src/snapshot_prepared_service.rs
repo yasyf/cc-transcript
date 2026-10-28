@@ -110,12 +110,11 @@ impl NativeStore {
         let crate::snapshot_prepared::PreparedFacts {
             inputs,
             has_error: _,
-            override_events,
+            overrides,
             accounted: _,
         } = facts;
-        arc_mirror::<crate::snapshot_prepared::PreparedFacts>()
-            + Self::audit_value_bytes(inputs)
-            + override_events.as_ref().map_or(0, |events| {
+        let override_bytes = match overrides {
+            crate::snapshot_prepared::OverrideFacts::Loaded(events) => {
                 events.capacity() * size_of::<crate::snapshot_prepared::OverrideEvent>()
                     + events
                         .iter()
@@ -125,7 +124,13 @@ impl NativeStore {
                                 + tools.iter().map(String::capacity).sum::<usize>()
                         })
                         .sum::<usize>()
-            })
+            }
+            crate::snapshot_prepared::OverrideFacts::Unloaded
+            | crate::snapshot_prepared::OverrideFacts::Exceeded => 0,
+        };
+        arc_mirror::<crate::snapshot_prepared::PreparedFacts>()
+            + Self::audit_value_bytes(inputs)
+            + override_bytes
     }
 
     #[cfg(test)]
@@ -209,6 +214,7 @@ impl NativeStore {
         classifier: &Value,
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
+        need: FactsNeed,
     ) -> Result<RetainedFacts<'_>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
@@ -228,6 +234,7 @@ impl NativeStore {
             admission,
             authority,
             classifier,
+            need,
         ) {
             return Ok(self.retain_cached_facts(&mut state, cached));
         }
@@ -288,6 +295,7 @@ impl NativeStore {
         cache_reads: PreparedCacheReads<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        need: FactsNeed,
     ) -> Result<(RetainedFacts<'_>, ProjectionReservation<'_>), SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
@@ -305,6 +313,7 @@ impl NativeStore {
             admission,
             &context["authority"],
             classifier,
+            need,
         ) {
             self.after_facts_returned();
             return Ok((
@@ -323,6 +332,7 @@ impl NativeStore {
             admission,
             &context["authority"],
             classifier,
+            need,
         ) {
             self.after_facts_returned();
             return Ok((
@@ -334,10 +344,10 @@ impl NativeStore {
             ));
         }
         let bound = crate::snapshot_projection::facts_bound(root);
-        let decoded = self.prepared_disk.decoded_bytes(&key);
+        let decoded = self.prepared_disk.decoded_bytes(&key, need);
         if self
             .prepared_disk
-            .read_bound(&key)
+            .read_bound(&key, need)
             .is_some_and(|bound| !cache_reads.admits(bound))
         {
             self.prepared_disk.check_dir()?;
@@ -348,7 +358,7 @@ impl NativeStore {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
             let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(&key, &mut read);
+            let lookup = self.prepared_disk.lookup(&key, &mut read, need);
             usage[18] += read.operations;
             usage[19] += read.bytes;
             match lookup? {
@@ -360,6 +370,7 @@ impl NativeStore {
                         classifier,
                         context,
                         &mut reservation,
+                        need,
                     ) {
                         Ok(retained) => Ok((retained, reservation)),
                         Err(error) if error.status == Status::RetainedLimit => Ok((
@@ -399,13 +410,17 @@ impl NativeStore {
             },
             |growth| self.admit_prepared_disk_growth(context, growth),
         )?;
-        let facts = Arc::new(facts);
+        let facts = Arc::new(match need {
+            FactsNeed::Index => facts.without_text(),
+            FactsNeed::Full => facts,
+        });
         match self.cache_prepared_facts(
             root.stamp,
             Arc::clone(&facts),
             classifier,
             context,
             &mut reservation,
+            need,
         ) {
             Ok(retained) => Ok((retained, reservation)),
             Err(error) if error.status == Status::RetainedLimit => Ok((
@@ -431,6 +446,7 @@ impl NativeStore {
         cache_reads: PreparedCacheReads<'_>,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        need: FactsNeed,
     ) -> Result<(SourceStamp, PreparedSourceOutcome<'_>), SnapshotError> {
         cancel.check(remaining.deadline_unix_ms)?;
         self.authority(context, Some(canonical))?;
@@ -470,6 +486,7 @@ impl NativeStore {
             admission,
             &context["authority"],
             &classifier,
+            need,
         ) {
             usage[7] += 1;
             return Ok((
@@ -489,6 +506,7 @@ impl NativeStore {
             admission,
             &context["authority"],
             &classifier,
+            need,
         ) {
             usage[7] += 1;
             return Ok((
@@ -500,17 +518,17 @@ impl NativeStore {
                 },
             ));
         }
-        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key) {
+        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key, need) {
             if self
                 .prepared_disk
-                .read_bound(&key)
+                .read_bound(&key, need)
                 .is_some_and(|bound| !cache_reads.admits(bound))
             {
                 self.prepared_disk.check_dir()?;
                 return Err(prepared_cache_read_limit());
             }
             if let PreparedCacheReads::Warming(_, membership, since) = cache_reads {
-                if self.prepared_disk.touch(&key, |accounted| {
+                if self.prepared_disk.touch(&key, need, |accounted| {
                     !self.lock_state().prepared_facts_fit_sparing(
                         key,
                         accounted,
@@ -525,6 +543,7 @@ impl NativeStore {
                                         admission,
                                         &context["authority"],
                                         &classifier,
+                                        need,
                                     )
                                 })
                         },
@@ -537,7 +556,7 @@ impl NativeStore {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
             let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(&key, &mut read);
+            let lookup = self.prepared_disk.lookup(&key, &mut read, need);
             usage[18] += read.operations;
             usage[19] += read.bytes;
             if let PreparedCacheReads::Warming(..) = cache_reads {
@@ -555,6 +574,7 @@ impl NativeStore {
                         &classifier,
                         context,
                         &mut reservation,
+                        need,
                     ) {
                         Ok(retained) => HeldFacts::Retained(retained),
                         Err(error) if error.status == Status::RetainedLimit => {
@@ -604,7 +624,7 @@ impl NativeStore {
         let result = if let Some(cursor) = outcome.1 {
             PreparedSourceOutcome::Pending(cursor)
         } else {
-            self.finish_prepared_source(stamp, &outcome.0, context, remaining, cancel)?
+            self.finish_prepared_source(stamp, &outcome.0, context, remaining, cancel, need)?
         };
         Ok((stamp, result))
     }
@@ -617,12 +637,13 @@ impl NativeStore {
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        need: FactsNeed,
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         self.authority(
             context,
             Some(&dirs.resolve(&pending.path)?.0),
         )?;
-        self.advance_prepared_source(pending, context, remaining, cancel, usage)
+        self.advance_prepared_source(pending, context, remaining, cancel, usage, need)
     }
 
     fn advance_prepared_source(
@@ -632,6 +653,7 @@ impl NativeStore {
         remaining: &mut WorkLimits,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        need: FactsNeed,
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         let waiter = self
             .rebind_waiter(&mut self.lock_state(), &pending.token, context)?
@@ -650,7 +672,7 @@ impl NativeStore {
         if let Some(cursor) = outcome.1 {
             Ok(PreparedSourceOutcome::Pending(cursor))
         } else {
-            self.finish_prepared_source(pending.stamp, &outcome.0, context, remaining, cancel)
+            self.finish_prepared_source(pending.stamp, &outcome.0, context, remaining, cancel, need)
         }
     }
 
@@ -661,6 +683,7 @@ impl NativeStore {
         context: &Value,
         remaining: &WorkLimits,
         cancel: &Cancellation,
+        need: FactsNeed,
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         let handle = &outcome["description"]["handle"];
         let pinned = self
@@ -760,12 +783,21 @@ impl NativeStore {
             },
             |growth| self.admit_prepared_disk_growth(context, growth),
         )?;
+        let facts = match need {
+            FactsNeed::Index => Arc::new(
+                Arc::into_inner(facts)
+                    .expect("built facts are unshared before publication")
+                    .without_text(),
+            ),
+            FactsNeed::Full => facts,
+        };
         let held = match self.cache_prepared_facts(
             stamp,
             Arc::clone(&facts),
             &classifier,
             context,
             &mut reservation,
+            need,
         ) {
             Ok(retained) => HeldFacts::Retained(retained),
             Err(error) if error.status == Status::RetainedLimit => {
@@ -941,6 +973,7 @@ impl NativeStore {
                     PreparedCacheReads::Unmetered,
                     cancel,
                     usage,
+                    FactsNeed::Index,
                 )?;
             let shared = members
                 .iter()
@@ -1036,6 +1069,7 @@ impl NativeStore {
                     PreparedCacheReads::Unmetered,
                     cancel,
                     usage,
+                    FactsNeed::Index,
                 )?;
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         self.extend_projection_reservation(
@@ -1875,6 +1909,7 @@ impl NativeStore {
                 cache_reads,
                 cancel,
                 usage,
+                FactsNeed::Index,
             ) {
                 Ok(outcome) => outcome,
                 Err(error)
@@ -1948,6 +1983,7 @@ impl NativeStore {
                             &mut remaining,
                             cancel,
                             usage,
+                            FactsNeed::Index,
                         ) {
                             Ok(outcome) => outcome,
                             Err(error)
@@ -2205,6 +2241,7 @@ impl NativeStore {
                         &mut cursor.remaining,
                         cancel,
                         usage,
+                        cursor.need,
                     )
                 }) {
                     Ok(PreparedSourceOutcome::Pending(next)) => {
@@ -2231,6 +2268,7 @@ impl NativeStore {
                     PreparedCacheReads::Unmetered,
                     cancel,
                     usage,
+                    cursor.need,
                 )? {
                     (_, PreparedSourceOutcome::Pending(source_cursor)) => {
                         #[cfg(test)]
@@ -2460,11 +2498,13 @@ impl NativeStore {
             return Err(invalid("unsupported prepared graph query"));
         }
         cancel.check(bounds.deadline_unix_ms)?;
+        let need = FactsNeed::of_query(query, request.get("observers").and_then(Value::as_array));
         let selectors = request
             .get("selectors")
             .ok_or_else(|| invalid("missing graph selectors"))?;
         let expires = graph.expires;
         let root = Arc::clone(&graph.root);
+        let classifier = graph.classifier.clone();
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
@@ -2512,6 +2552,25 @@ impl NativeStore {
             }
             (None, None) => unreachable!("the root facts are always cached"),
         };
+        let full_root = if root_facts.serves(need) {
+            None
+        } else {
+            let (retained, reservation) = self.prepared_root_facts(
+                &root,
+                &classifier,
+                context,
+                &bounds,
+                PreparedCacheReads::Unmetered,
+                cancel,
+                usage,
+                need,
+            )?;
+            drop(reservation);
+            Some(retained)
+        };
+        let root_facts = full_root
+            .as_ref()
+            .map_or(root_facts, |retained| Arc::clone(retained.facts()));
         if kind != "deep_predicate_inputs" && root_facts.query(query)?["value"].as_bool() == Some(true) {
             let data = json!({"kind":"scalar","value":true});
             encoded_size(&data, bounds.max_output_bytes)?;
@@ -2554,6 +2613,7 @@ impl NativeStore {
             pending: None,
             input_records,
             observers,
+            need,
             next: 0,
             page_output_bytes: bounds.max_output_bytes.min(MAX_DATA_BYTES),
             remaining: bounds,

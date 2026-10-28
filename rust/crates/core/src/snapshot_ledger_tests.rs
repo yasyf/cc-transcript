@@ -4,7 +4,7 @@ use crate::parse::pushed_capacity;
 use crate::protocol::DENIAL_KIND_USER_REJECTED;
 use crate::snapshot_activity::{CachedCall, CachedTurn, ResultPosition};
 use crate::snapshot_ledger::Trace;
-use crate::snapshot_prepared::{OverrideEvent, PreparedFacts};
+use crate::snapshot_prepared::{FactsNeed, OverrideEvent, OverrideFacts, PreparedFacts};
 use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::toolcall::{parse_tool_call, ToolCall};
 use crate::types::{joined_text, ContentBlock};
@@ -2271,9 +2271,11 @@ fn root_facts_are_reserved_at_their_bound_before_parsing() {
                 .cached_prepared_facts(&snapshot.stamp.identity)
                 .facts,
         );
+        let compact =
+            NativeStore::audit_facts_bytes(&built_facts(&snapshot, &json!([])).without_text());
         assert_eq!(
-            cached, bound,
-            "root facts: the cached {cached}-byte facts are not the {bound} bytes reserved"
+            cached, compact,
+            "root facts: the cached {cached}-byte facts are not the {compact}-byte compact index"
         );
     }
 }
@@ -4668,7 +4670,7 @@ pub(super) fn facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
     NativeStore::audit_facts_bytes(&PreparedFacts {
         inputs,
         has_error: false,
-        override_events: Some(events),
+        overrides: OverrideFacts::Loaded(events),
         accounted: 0,
     })
 }
@@ -4695,16 +4697,37 @@ fn disk_key(owner: &Value, stamp: SourceStamp) -> PreparedDiskKey {
     .unwrap()
 }
 
-fn decode_transients_walk(file: usize) -> usize {
-    let payload = file - crate::snapshot_prepared_disk::HEADER_BYTES;
+fn decode_transients_walk(payload: usize) -> usize {
     let node_buffer = size_of::<Vec<Value>>() + (payload / 2 + 2) * size_of::<Value>();
     let unescape_scratch = 2 * (payload + 32);
     node_buffer + unescape_scratch
 }
 
+fn encoded_facts_len(facts: &PreparedFacts) -> usize {
+    sonic_rs::to_vec(&facts.index_section()).unwrap().len()
+        + sonic_rs::to_vec(&facts.text_section()).unwrap().len()
+}
+
+fn round_tripped(built: &PreparedFacts) -> PreparedFacts {
+    let index = sonic_rs::from_slice(&sonic_rs::to_vec(&built.index_section()).unwrap()).unwrap();
+    let text: Option<Vec<OverrideEvent>> =
+        sonic_rs::from_slice(&sonic_rs::to_vec(&built.text_section()).unwrap()).unwrap();
+    PreparedFacts::from_sections(index, OverrideFacts::from_section(text))
+}
+
+fn entry_sections(fixture: &Fixture, source: &Arc<TranscriptSnapshot>) -> (usize, usize) {
+    let key = disk_key(&fixture.owner, source.stamp);
+    let file = fixture.store.prepared_disk.entry_file_len(&key) as usize;
+    let index = fixture.store.prepared_disk.entry_index_bytes(&key);
+    (
+        index,
+        file - crate::snapshot_prepared_disk::HEADER_BYTES - index,
+    )
+}
+
 fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>) -> usize {
     let built = built_facts(source, &json!([]));
-    let decoded: PreparedFacts = sonic_rs::from_slice(&sonic_rs::to_vec(&built).unwrap()).unwrap();
+    let decoded = round_tripped(&built);
     let (decoded_walk, built_walk) = (
         NativeStore::audit_facts_bytes(&decoded),
         NativeStore::audit_facts_bytes(&built),
@@ -4713,19 +4736,43 @@ fn decoded_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>)
         decoded_walk <= built_walk,
         "the decoded facts walk {decoded_walk} outgrew the {built_walk}-byte built facts"
     );
-    let file = fixture
-        .store
-        .prepared_disk
-        .entry_file_len(&disk_key(&fixture.owner, source.stamp)) as usize;
-    file + built_walk + decode_transients_walk(file)
+    let (index, text) = entry_sections(fixture, source);
+    crate::snapshot_prepared_disk::HEADER_BYTES
+        + index
+        + text
+        + built_walk
+        + decode_transients_walk(index)
+        + decode_transients_walk(text)
+}
+
+fn decoded_index_facts_prediction(fixture: &Fixture, source: &Arc<TranscriptSnapshot>) -> usize {
+    let built = built_facts(source, &json!([])).without_text();
+    let (index, _) = entry_sections(fixture, source);
+    crate::snapshot_prepared_disk::HEADER_BYTES
+        + index
+        + NativeStore::audit_facts_bytes(&built)
+        + decode_transients_walk(index)
 }
 
 fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
 }
 
+fn index_root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
+    if primed {
+        facts_bound_walk(&fixture.pins[0])
+            .max(decoded_index_facts_prediction(fixture, &fixture.pins[0]))
+    } else {
+        facts_bound_walk(&fixture.pins[0])
+    }
+}
+
 fn decoded_source_facts_prediction(fixture: &Fixture) -> usize {
     decoded_facts_prediction(fixture, &fixture.pins[1])
+}
+
+fn decoded_index_source_facts_prediction(fixture: &Fixture) -> usize {
+    decoded_index_facts_prediction(fixture, &fixture.pins[1])
 }
 
 fn constructed(
@@ -5001,6 +5048,7 @@ fn root_facts_fixture(source: &LedgerSource, background: bool, primed: bool) -> 
                 PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
                 &mut [0u64; 20],
+                FactsNeed::Full,
             )
             .unwrap();
         assert_eq!(
@@ -5063,6 +5111,7 @@ fn root_facts_are_admitted_in_full_before_construction_or_decoding() {
                                 PreparedCacheReads::Unmetered,
                                 &Cancellation::default(),
                                 &mut [0u64; 20],
+                                FactsNeed::Full,
                             )
                             .map(|_| ())
                     })
@@ -5106,6 +5155,7 @@ fn empty_root_facts_are_admitted_at_their_fixed_overhead_before_construction() {
                             PreparedCacheReads::Unmetered,
                             &Cancellation::default(),
                             &mut [0u64; 20],
+                            FactsNeed::Full,
                         )
                         .map(|_| ())
                 })
@@ -5125,7 +5175,7 @@ fn prepare_graph_refuses_root_facts_before_construction_or_decoding() {
     for background in [false, true] {
         for (primed, built) in [(false, [1, 0]), (true, [0, 1])] {
             let build = || root_facts_fixture(&source, background, primed);
-            let predicted = root_facts_prediction(&build(), primed);
+            let predicted = index_root_facts_prediction(&build(), primed);
             assert_facts_admitted_in_full(
                 site,
                 &build,
@@ -5214,6 +5264,7 @@ fn source_facts_disk_hit_is_admitted_in_full_before_decoding() {
                     PreparedCacheReads::Unmetered,
                     &Cancellation::default(),
                     &mut usage,
+                    FactsNeed::Full,
                 )?;
                 assert!(matches!(
                     outcome,
@@ -5238,7 +5289,7 @@ fn query_graph_refuses_a_source_disk_hit_before_decoding() {
     let site = "query_graph source disk hit";
     for background in [false, true] {
         let build = || facts_cache_fixture(&scenario, background, 0);
-        let predicted = decoded_source_facts_prediction(&build());
+        let predicted = decoded_index_source_facts_prediction(&build());
         let record = prepared_query_record_bytes(&build());
         assert_facts_admitted_in_full(
             site,
@@ -5280,6 +5331,7 @@ fn finish_source(fixture: &Fixture) -> Result<PreparedSourceOutcome<'_>, Snapsho
         &fixture.owner,
         &work_bounds(),
         &Cancellation::default(),
+        FactsNeed::Full,
     )
 }
 
@@ -5727,6 +5779,7 @@ fn patch_root_facts_are_admitted_at_their_bound_before_construction() {
                                 PreparedCacheReads::Unmetered,
                                 &Cancellation::default(),
                                 &mut [0u64; 20],
+                                FactsNeed::Full,
                             )
                             .map(|_| ())
                     })
@@ -5874,18 +5927,31 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
         let cap = cap_of(&probe.store, &probe.owner);
         let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
         assert!(
-            probe.store.lock_state().prepared_graphs[graph_id]
+            !probe.store.lock_state().prepared_graphs[graph_id]
                 .lock()
                 .unwrap()
                 .root_facts
-                .override_events
-                .is_none(),
+                .is_full(),
+            "{site}: the graph root facts carry override text"
+        );
+        let mut wide = work_bounds();
+        wide.max_read_bytes = probe.store.config.source;
+        wide.max_source_read_bytes = probe.store.config.source;
+        let full_root = crate::snapshot_projection::prepare_facts(
+            &probe.pins[0],
+            &json!([]),
+            &wide,
+            &Cancellation::default(),
+        )
+        .unwrap()
+        .0;
+        assert!(
+            matches!(full_root.overrides, OverrideFacts::Exceeded),
             "{site}: the full root facts kept their overrides"
         );
         let slice = built_facts(&probe.pins[0], &json!([{"kind":"current_turn"}]));
         let overrides = slice
-            .override_events
-            .as_ref()
+            .text_section()
             .expect("the current turn keeps its overrides");
         assert_eq!(overrides.len(), 1, "{site}: the current turn is one event");
         assert_eq!(overrides[0].text.len(), 256 * 1024);
@@ -6255,8 +6321,10 @@ fn uncached_source_facts_hold_their_reservation_until_consumption() {
     for background in [false, true] {
         let fixture = uncached_source_facts_fixture(&scenario, background);
         let cap = cap_for(&fixture.owner);
-        let predicted = decoded_source_facts_prediction(&fixture);
-        let occupied = NativeStore::audit_facts_bytes(&built_facts(&fixture.pins[1], &json!([])));
+        let predicted = decoded_index_source_facts_prediction(&fixture);
+        let occupied = NativeStore::audit_facts_bytes(
+            &built_facts(&fixture.pins[1], &json!([])).without_text(),
+        );
         let probes = fact_probes(&fixture.store);
         let filler = fill_to(
             &fixture.store,
@@ -6299,10 +6367,9 @@ fn user_text_with_tool_results_is_built_at_exact_capacity() {
     let owner = context_for("exact-text", false);
     let (_, snapshot) = acquired(&store, &source.path, &owner);
     let facts = built_facts(&snapshot, &json!([]));
-    let events = facts
-        .override_events
-        .as_ref()
-        .expect("bounded override facts");
+    let OverrideFacts::Loaded(events) = &facts.overrides else {
+        panic!("bounded override facts");
+    };
     assert_eq!(events.len(), 1);
     let joined = &events[0].text;
     assert_eq!(*joined, format!("{text}{result}"));
@@ -6380,6 +6447,7 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
             PreparedCacheReads::Unmetered,
             &Cancellation::default(),
             &mut [0u64; 20],
+            FactsNeed::Full,
         ) {
             Ok(_) if fixture.store.prepared_disk.stats().entries > before => Landing::Landed,
             Ok(_) => Landing::Returned,
@@ -6393,9 +6461,7 @@ fn prepared_disk_index_growth_is_admitted_before_the_index_grows() {
         let control = build();
         let cap = cap_for(&control.owner);
         let bound = facts_bound_walk(&control.pins[1]);
-        let payload = sonic_rs::to_vec(&built_facts(&control.pins[1], &json!([])))
-            .unwrap()
-            .len();
+        let payload = encoded_facts_len(&built_facts(&control.pins[1], &json!([])));
         let (tier, charged) = (
             control.store.prepared_disk.index_capacity_bytes(),
             control.store.lock_state().prepared_disk_index_bytes,
@@ -6824,6 +6890,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
                 &mut [0u64; 20],
+                FactsNeed::Full,
             )
             .unwrap();
         let bytes = NativeStore::audit_facts_bytes(retained.facts());
@@ -6844,6 +6911,7 @@ fn retained_root_facts_stay_counted_across_a_cache_replacement() {
                 PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
                 &mut [0u64; 20],
+                FactsNeed::Full,
             )
             .unwrap();
         {

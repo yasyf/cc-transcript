@@ -165,6 +165,7 @@ impl NativeStore {
             ),
             cancel,
             usage,
+            FactsNeed::Index,
         ) {
             Ok(_) => Ok(progress(true)),
             Err(error) if error.status == Status::Deadline => Ok(progress(false)),
@@ -387,6 +388,8 @@ mod root_warm_tests {
         .unwrap();
         let entry = store.prepared_disk.entry_file(&key);
         let stored = store.prepared_disk.entry_file_len(&key);
+        let indexed = crate::snapshot_prepared_disk::HEADER_BYTES as u64
+            + store.prepared_disk.entry_index_bytes(&key) as u64;
         let resident = || store.lock_state().has_prepared_facts(&stamp.identity);
         let evict = || {
             assert_eq!(store.lock_state().remove_identity_facts(stamp.identity), 1);
@@ -395,7 +398,7 @@ mod root_warm_tests {
 
         evict();
         for _ in 0..2 {
-            assert_eq!(outcome(warm(stored)), entry_limit());
+            assert_eq!(outcome(warm(indexed - 1)), entry_limit());
         }
         assert!(!resident());
 
@@ -406,23 +409,23 @@ mod root_warm_tests {
             .mode(0o700)
             .create(owner_directory)
             .unwrap();
-        let foreign = [outcome(warm(stored)), outcome(warm(stored + 1))];
+        let foreign = [outcome(warm(indexed - 1)), outcome(warm(indexed))];
         std::fs::remove_dir(owner_directory).unwrap();
         std::fs::rename(&displaced, owner_directory).unwrap();
         let changed = refused("incomplete", "prepared facts cache directory changed");
         assert_eq!(foreign, [changed.clone(), changed]);
         assert!(!resident());
 
-        assert_eq!(outcome(warm(stored + 1)), complete(1, stored));
+        assert_eq!(outcome(warm(indexed)), complete(1, indexed));
         assert!(resident());
 
         evict();
         std::fs::remove_file(&entry).unwrap();
         for _ in 0..2 {
-            assert_eq!(outcome(warm(stored)), entry_limit());
+            assert_eq!(outcome(warm(indexed - 1)), entry_limit());
         }
         assert_eq!(
-            outcome(warm(stored + 1)),
+            outcome(warm(indexed)),
             refused("incomplete", "prepared root facts revision was evicted")
         );
         assert!(!store.prepared_disk.has_entry(&key).unwrap());
@@ -445,10 +448,14 @@ mod root_warm_tests {
         let (directory, path) = source(64 * 1024);
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("root-deferral");
+        let source_size = std::fs::metadata(&path).unwrap().len();
         let drive = |budget: u64| {
             let mut steps: Vec<Step> = Vec::new();
             while steps.last().map_or(true, |step| !step.complete) {
-                assert!(steps.len() < 32, "{steps:?}");
+                assert!(
+                    (steps.len() as u64) < source_size.div_ceil(budget) + 32,
+                    "{steps:?}"
+                );
                 let reply = store.request(
                     &warm_request(&path, budget as usize),
                     &context,
@@ -475,16 +482,17 @@ mod root_warm_tests {
         drive(1024 * 1024);
         let stamp =
             SourceStamp::of(&std::fs::metadata(std::fs::canonicalize(&path).unwrap()).unwrap());
-        let stored = store.prepared_disk.entry_file_len(
-            &crate::snapshot_prepared_disk::PreparedDiskKey::new(
-                stamp,
-                context["registry_generation"].as_str().unwrap(),
-                "hook",
-                &context["authority"],
-                &json!({"id":"native","version":"1"}),
-            )
-            .unwrap(),
-        );
+        let indexed = crate::snapshot_prepared_disk::HEADER_BYTES as u64
+            + store.prepared_disk.entry_index_bytes(
+                &crate::snapshot_prepared_disk::PreparedDiskKey::new(
+                    stamp,
+                    context["registry_generation"].as_str().unwrap(),
+                    "hook",
+                    &context["authority"],
+                    &json!({"id":"native","version":"1"}),
+                )
+                .unwrap(),
+            ) as u64;
         let forget = || {
             let mut state = store.lock_state();
             assert_eq!(state.remove_identity_facts(stamp.identity), 1);
@@ -508,13 +516,13 @@ mod root_warm_tests {
             Some(&Step {
                 complete: true,
                 cache_reads: 1,
-                cache_bytes: stored,
+                cache_bytes: indexed,
                 source_bytes: fence,
             })
         );
 
         forget();
-        let deferred = drive(fence + stored);
+        let deferred = drive(fence + indexed - 1);
         assert_eq!(totals(&deferred), (1, true), "{deferred:?}");
         assert_eq!(
             deferred[deferred.len() - 2..],
@@ -528,7 +536,7 @@ mod root_warm_tests {
                 Step {
                     complete: true,
                     cache_reads: 1,
-                    cache_bytes: stored,
+                    cache_bytes: indexed,
                     source_bytes: 0,
                 },
             ],
@@ -536,14 +544,14 @@ mod root_warm_tests {
         );
 
         forget();
-        let admitted = drive(fence + stored + 1);
+        let admitted = drive(fence + indexed);
         assert_eq!(totals(&admitted), (1, true), "{admitted:?}");
         assert_eq!(
             admitted.last(),
             Some(&Step {
                 complete: true,
                 cache_reads: 1,
-                cache_bytes: stored,
+                cache_bytes: indexed,
                 source_bytes: fence,
             }),
             "{admitted:?}"

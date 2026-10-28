@@ -29,6 +29,7 @@ use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORA
 use crate::snapshot_memory::{
     arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
 };
+use crate::snapshot_prepared::FactsNeed;
 use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
 use crate::types::{Entry, SYNTHETIC_MODEL};
@@ -824,12 +825,14 @@ impl CachedPreparedFacts {
         admission: &str,
         authority: &Value,
         classifier: &Value,
+        need: FactsNeed,
     ) -> bool {
         self.stamp == stamp
             && self.registry_generation == registry_generation
             && self.admission == admission
             && self.authority == *authority
             && self.classifier == *classifier
+            && self.facts.serves(need)
     }
 
     fn evictable(&self) -> bool {
@@ -1078,6 +1081,7 @@ struct PreparedQueryCursor {
     pending: Option<PendingPreparedSource>,
     input_records: Option<VecDeque<String>>,
     observers: Observers,
+    need: FactsNeed,
     next: usize,
     page_output_bytes: usize,
     remaining: WorkLimits,
@@ -2608,9 +2612,17 @@ impl StoreState {
         admission: &str,
         authority: &Value,
         classifier: &Value,
+        need: FactsNeed,
     ) -> Option<Arc<crate::snapshot_prepared::PreparedFacts>> {
         let mut cached = self.prepared_facts.get_mut(key)?;
-        if !cached.serves(stamp, registry_generation, admission, authority, classifier) {
+        if !cached.serves(
+            stamp,
+            registry_generation,
+            admission,
+            authority,
+            classifier,
+            need,
+        ) {
             return None;
         }
         let previous = cached.last_used;
@@ -3615,6 +3627,7 @@ impl NativeStore {
         admission: &str,
         authority: &Value,
         classifier: &Value,
+        need: FactsNeed,
     ) -> Option<RetainedFacts<'_>> {
         let mut state = self.lock_state();
         let facts = state.touch_prepared_facts(
@@ -3624,6 +3637,7 @@ impl NativeStore {
             admission,
             authority,
             classifier,
+            need,
         )?;
         Some(self.retain_cached_facts(&mut state, facts))
     }
@@ -5282,6 +5296,7 @@ impl NativeStore {
                     witnessed: _,
                     pending: observing,
                 },
+            need: _,
             next: _,
             page_output_bytes: _,
             remaining: _,
@@ -14253,6 +14268,14 @@ mod tests {
         .unwrap()
     }
 
+    fn index_read_bytes(
+        store: &NativeStore,
+        key: &crate::snapshot_prepared_disk::PreparedDiskKey,
+    ) -> u64 {
+        (crate::snapshot_prepared_disk::HEADER_BYTES + store.prepared_disk.entry_index_bytes(key))
+            as u64
+    }
+
     fn evict_memory_facts(store: &NativeStore, path: &Path) {
         assert_eq!(
             store
@@ -14317,6 +14340,8 @@ mod tests {
         assert_eq!(ask()["data"]["value"].as_bool(), Some(false));
         let key = fact_entry_key(&sidechain, &owner);
         let stored = store.prepared_disk.entry_file_len(&key);
+        let indexed = index_read_bytes(&store, &key);
+        assert!(indexed < stored);
         let from_memory = ask();
         assert_eq!(
             from_memory["data"]["value"].as_bool(),
@@ -14332,7 +14357,7 @@ mod tests {
             Some(false),
             "{from_disk:?}"
         );
-        assert_eq!(cache_reads(&from_disk), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&from_disk), (Some(1), Some(indexed), Some(0)));
         assert_eq!(from_disk["usage"]["cold_parses"].as_u64(), Some(0));
         let after = store.state.lock().unwrap().counters;
         assert_eq!(
@@ -14341,12 +14366,12 @@ mod tests {
                 after[19] - before[19],
                 after[1] - before[1]
             ),
-            (1, stored, 0)
+            (1, indexed, 0)
         );
         evict_memory_facts(&store, &sidechain);
         let entry = store.prepared_disk.entry_file(&key);
         let mut bytes = std::fs::read(&entry).unwrap();
-        *bytes.last_mut().unwrap() ^= 1;
+        bytes[crate::snapshot_prepared_disk::HEADER_BYTES + 8] ^= 1;
         std::fs::write(&entry, bytes).unwrap();
         let corrupt = ask();
         assert_eq!(
@@ -14358,7 +14383,7 @@ mod tests {
             corrupt["reason"].as_str(),
             Some("prepared facts revision was evicted")
         );
-        assert_eq!(cache_reads(&corrupt), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&corrupt), (Some(1), Some(indexed), Some(0)));
         assert!(!store.lock_state().has_prepared_facts(
             &SourceStamp::of(&std::fs::metadata(&sidechain).unwrap()).identity
         ));
@@ -14372,7 +14397,7 @@ mod tests {
                 stats["data"]["counters"]["prepared_cache_reads"].as_u64(),
                 stats["data"]["counters"]["prepared_cache_bytes_read"].as_u64(),
             ),
-            (Some(after[18] + 1), Some(after[19] + stored))
+            (Some(after[18] + 1), Some(after[19] + indexed))
         );
     }
 
@@ -14632,24 +14657,26 @@ mod tests {
                 .entry_file_len(&fact_entry_key(&members[1], &owner)),
             stored
         );
+        let indexed = index_read_bytes(&store, &fact_entry_key(&members[0], &owner));
+        assert!(indexed < stored);
 
         evict();
-        let both = warm(2 * stored + 1, &json!(0), &json!(null));
+        let both = warm(2 * indexed, &json!(0), &json!(null));
         assert_eq!(both["data"]["complete"].as_bool(), Some(true), "{both:?}");
-        assert_eq!(cache_reads(&both), (Some(2), Some(2 * stored), Some(0)));
+        assert_eq!(cache_reads(&both), (Some(2), Some(2 * indexed), Some(0)));
         assert_eq!(resident(), 2);
 
         evict();
-        let first = warm(2 * stored, &json!(0), &json!(null));
+        let first = warm(2 * indexed - 1, &json!(0), &json!(null));
         assert_eq!(
             first["data"]["complete"].as_bool(),
             Some(false),
             "{first:?}"
         );
         assert_eq!(first["data"]["next_index"].as_u64(), Some(1));
-        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         let second = warm(
-            2 * stored,
+            2 * indexed - 1,
             &first["data"]["next_index"],
             &first["data"]["membership_revision"],
         );
@@ -14658,12 +14685,12 @@ mod tests {
             Some(true),
             "{second:?}"
         );
-        assert_eq!(cache_reads(&second), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&second), (Some(1), Some(indexed), Some(0)));
         assert_eq!(resident(), 2);
 
         evict();
         for _ in 0..2 {
-            let oversize = send(stored, &json!(0), &json!(null));
+            let oversize = send(indexed - 1, &json!(0), &json!(null));
             assert_eq!(refusal(&oversize), ENTRY_LIMIT, "{oversize:?}");
             assert_eq!(cache_reads(&oversize), (Some(0), Some(0), Some(0)));
         }
@@ -14706,6 +14733,15 @@ mod tests {
                     .map(|(_, cached)| cached.facts.accounted_bytes())
             })
             .collect()
+    }
+
+    fn resident_member_is_full(store: &NativeStore, member: &Path) -> Option<bool> {
+        let state = store.lock_state();
+        let full = state
+            .identity_facts(member_identity(member))
+            .next()
+            .map(|(_, cached)| cached.facts.is_full());
+        full
     }
 
     fn forget_member_facts(store: &NativeStore, members: &[PathBuf]) {
@@ -14831,9 +14867,10 @@ mod tests {
             .prepared_disk
             .entry_file_len(&fact_entry_key(member, &owner))
             == stored));
+        let indexed = index_read_bytes(&store, &fact_entry_key(&members[0], &owner));
         assert_eq!(
             warm_registered_pass(&store, &source, &ids, &owner),
-            (3, 3 * stored, 0)
+            (3, 3 * indexed, 0)
         );
         assert_eq!(resident_member_facts(&store, &members), [Some(decoded); 3]);
     }
@@ -14852,12 +14889,10 @@ mod tests {
         assert!(warm_registered_pass(&store, &source, &ids[2..], &owner).2 > 0);
         assert_eq!(resident_member_facts(&store, outsider), [Some(built)]);
         age_member_facts(&store, &outsider[0]);
-        let stored = store
-            .prepared_disk
-            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        let indexed = index_read_bytes(&store, &fact_entry_key(&members[0], &owner));
         assert_eq!(
             warm_registered_pass(&store, &source, &ids[..2], &owner),
-            (2, 2 * stored, 0)
+            (2, 2 * indexed, 0)
         );
         assert_eq!(resident_member_facts(&store, members), [Some(decoded); 2]);
         assert_eq!(resident_member_facts(&store, outsider), [None]);
@@ -14951,14 +14986,12 @@ mod tests {
         };
         let first = producing(16 * 1024 * 1024);
         assert!(warm_registered_pass(&first, &source, &ids, &owner).2 > 0);
-        let stored = first
-            .prepared_disk
-            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        let indexed = index_read_bytes(&first, &fact_entry_key(&members[0], &owner));
         drop(first);
         let restarted = producing(built + decoded + decoded / 2);
         assert_eq!(
             warm_registered_pass(&restarted, &source, &ids, &owner),
-            (3, 3 * stored, 0)
+            (3, 3 * indexed, 0)
         );
         assert_eq!(
             warm_registered_pass(&restarted, &source, &ids, &owner),
@@ -14994,7 +15027,7 @@ mod tests {
         }
         assert_eq!(built["data"]["complete"].as_bool(), Some(true), "{built:?}");
         let key = fact_entry_key(&member, &owner);
-        let stored = store.prepared_disk.entry_file_len(&key);
+        let indexed = index_read_bytes(&store, &key);
         let entry = store.prepared_disk.entry_file(&key);
         let identity = SourceStamp::of(&std::fs::metadata(&member).unwrap()).identity;
         let grown = Arc::new(AtomicUsize::new(0));
@@ -15009,13 +15042,13 @@ mod tests {
                 .unwrap();
         })));
         evict_memory_facts(&store, &member);
-        let refused = warm(stored);
-        let admitted = warm(stored + 1);
+        let refused = warm(indexed - 1);
+        let admitted = warm(indexed);
         store.prepared_disk.set_read_hook(None);
         assert_eq!(refusal(&refused), ENTRY_LIMIT, "{refused:?}");
         assert_eq!(cache_reads(&refused), (Some(0), Some(0), Some(0)));
         assert_eq!(refusal(&admitted), ENTRY_EVICTED, "{admitted:?}");
-        assert_eq!(cache_reads(&admitted), (Some(1), Some(stored + 1), Some(0)));
+        assert_eq!(cache_reads(&admitted), (Some(1), Some(indexed), Some(0)));
         assert_eq!(grown.load(Ordering::Relaxed), 1);
         assert!(!store.lock_state().has_prepared_facts(&identity));
         assert!(!store.prepared_disk.has_entry(&key).unwrap());
@@ -15123,7 +15156,7 @@ mod tests {
         members: Vec<PathBuf>,
         store: Arc<NativeStore>,
         owner: Value,
-        stored: u64,
+        indexed: u64,
         built: Vec<Option<usize>>,
     }
 
@@ -15133,9 +15166,7 @@ mod tests {
         let store = Arc::new(fact_budget_store(16 * 1024 * 1024));
         let owner = background_owner();
         warm_registered_pass(&store, &source, ids, &owner);
-        let stored = store
-            .prepared_disk
-            .entry_file_len(&fact_entry_key(&members[0], &owner));
+        let indexed = index_read_bytes(&store, &fact_entry_key(&members[0], &owner));
         let built = resident_member_facts(&store, &members);
         assert!(built.iter().all(Option::is_some), "{built:?}");
         forget_member_facts(&store, &members);
@@ -15145,7 +15176,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             built,
         }
     }
@@ -15157,7 +15188,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             ..
         } = evicted_members(&["thread-a"]);
         let gate = install_fact_read_gate(&store, || {});
@@ -15183,7 +15214,7 @@ mod tests {
         assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
         assert_eq!(first["data"]["complete"].as_bool(), Some(true));
         assert_eq!(second["data"]["complete"].as_bool(), Some(true));
-        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&second), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
@@ -15201,7 +15232,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             ..
         } = evicted_members(&["thread-a"]);
         let gate = install_fact_read_gate(&store, || {});
@@ -15233,7 +15264,7 @@ mod tests {
         let first = warm_reply(&first);
         store.prepared_disk.set_read_hook(None);
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
-        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&cancelled), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert!(resident_member_facts(&store, &members)
@@ -15250,7 +15281,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             ..
         } = evicted_members(&["thread-a"]);
         let gate = install_fact_read_gate(&store, || {});
@@ -15275,7 +15306,7 @@ mod tests {
         let first = warm_reply(&first);
         store.prepared_disk.set_read_hook(None);
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
-        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&expired), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert!(resident_member_facts(&store, &members)
@@ -15292,7 +15323,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             built,
         } = evicted_members(&["thread-a"]);
         let key = fact_entry_key(&members[0], &owner);
@@ -15324,7 +15355,7 @@ mod tests {
         let (evicted, rebuilt) = (warm_reply(&first), warm_reply(&second));
         store.prepared_disk.set_read_hook(None);
         assert_eq!(refusal(&evicted), ENTRY_EVICTED, "{evicted:?}");
-        assert_eq!(cache_reads(&evicted), (Some(1), Some(stored + 1), Some(0)));
+        assert_eq!(cache_reads(&evicted), (Some(1), Some(indexed), Some(0)));
         assert_eq!(rebuilt["status"].as_str(), Some("ok"), "{rebuilt:?}");
         assert_eq!(rebuilt["data"]["complete"].as_bool(), Some(true));
         assert_eq!(rebuilt["data"]["fact_cache_writes"].as_u64(), Some(2));
@@ -15343,7 +15374,7 @@ mod tests {
             members,
             store,
             owner,
-            stored,
+            indexed,
             ..
         } = evicted_members(&["thread-a", "thread-b"]);
         let gate = install_fact_read_gate(&store, || {});
@@ -15367,13 +15398,485 @@ mod tests {
         store.prepared_disk.set_read_hook(None);
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
         assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
-        assert_eq!(cache_reads(&first), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&second).0, Some(1));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
         assert!(resident_member_facts(&store, &members)
             .iter()
             .all(Option::is_some));
         assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+    }
+
+    fn user_text(id: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"{id}","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{text}"}}}}"#
+        )
+    }
+
+    fn tool_use_event(id: &str, name: &str, path: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"{id}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{{"file_path":"{path}"}}}}]}}}}"#
+        )
+    }
+
+    fn tool_result_event(id: &str, content: &str) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"{id}-result","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"{content}"}}]}}}}"#
+        )
+    }
+
+    fn compact_facts_store() -> NativeStore {
+        NativeStore::new(&json!({"max_read_bytes_per_step":2*1024*1024,"max_entry_bytes":4*1024*1024,"max_retained_bytes":64*1024*1024,"max_prepared_fact_memory_bytes":16*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap()
+    }
+
+    fn wide_template(source: &Source) -> Value {
+        let mut template = acquire(&source.path);
+        template["limits"].insert("max_read_bytes", json!(8 * 1024 * 1024));
+        template["limits"].insert("max_source_read_bytes", json!(8 * 1024 * 1024));
+        template
+    }
+
+    fn has_tool(pattern: &str) -> Value {
+        json!({"kind":"has_tool","pattern":pattern,"subagents":true})
+    }
+
+    fn has_override(token: &str, invalidated_by: &[&str]) -> Value {
+        json!({"kind":"has_override","token":token,"invalidated_by":invalidated_by,"subagents":true})
+    }
+
+    fn value_of(reply: &Value) -> Option<bool> {
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        reply["data"]["value"].as_bool()
+    }
+
+    fn single_step(reply: Value) -> Value {
+        assert!(reply["cursor"].is_null(), "{reply:?}");
+        reply
+    }
+
+    fn prepared_graph_request(
+        graph: &Value,
+        template: &Value,
+        selectors: Value,
+        query: Value,
+        observers: Option<Value>,
+    ) -> Value {
+        let mut request = json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":selectors,"query":query,"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        if let Some(observers) = observers {
+            request.insert("observers", observers);
+        }
+        request
+    }
+
+    struct CompactGraph {
+        source: Source,
+        member: PathBuf,
+        store: NativeStore,
+        owner: Value,
+        template: Value,
+        graph: Value,
+    }
+
+    impl CompactGraph {
+        fn ask(&self, selectors: Value, query: Value, observers: Option<Value>) -> Value {
+            single_step(self.store.request(
+                &prepared_graph_request(&self.graph, &self.template, selectors, query, observers),
+                &self.owner,
+                &Cancellation::default(),
+            ))
+        }
+
+        fn member_key(&self) -> crate::snapshot_prepared_disk::PreparedDiskKey {
+            fact_entry_key(&self.member, &self.owner)
+        }
+
+        fn root_key(&self) -> crate::snapshot_prepared_disk::PreparedDiskKey {
+            fact_entry_key(&self.source.path, &self.owner)
+        }
+    }
+
+    fn bulk_member_graph() -> CompactGraph {
+        let source = Source::new(&format!("{}\n", user_text("root", "root-prompt")));
+        let member = source.directory.join("member.jsonl");
+        let bulk = format!(
+            "{}OVERRIDE{}",
+            "x".repeat(512 * 1024),
+            "y".repeat(512 * 1024)
+        );
+        std::fs::write(
+            &member,
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n",
+                user_text("prompt", "TOKEN-A"),
+                tool_use_event("read", "Read", "/tmp/root"),
+                tool_result_event("read", &bulk),
+                user_text("second", "TOKEN-B"),
+                tool_use_event("edit", "Edit", "/tmp/edited")
+            ),
+        )
+        .unwrap();
+        let store = compact_facts_store();
+        let owner = context("a");
+        let template = wide_template(&source);
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[member.to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        CompactGraph {
+            source,
+            member,
+            store,
+            owner,
+            template,
+            graph,
+        }
+    }
+
+    const OVERRIDE_MATRIX: [((&str, &[&str]), bool); 6] = [
+        (("OVERRIDE", &["Read"]), true),
+        (("OVERRIDE", &["Edit"]), false),
+        (("TOKEN-A", &["Read"]), false),
+        (("TOKEN-B", &["Read"]), true),
+        (("TOKEN-B", &["Edit"]), false),
+        (("MISSING", &[]), false),
+    ];
+
+    fn override_answers(fixture: &CompactGraph) -> Vec<Option<bool>> {
+        OVERRIDE_MATRIX
+            .iter()
+            .map(|((token, invalidated_by), _)| {
+                value_of(&fixture.ask(json!([]), has_override(token, invalidated_by), None))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cold_simple_predicate_reads_only_the_compact_index() {
+        let fixture = bulk_member_graph();
+        let (store, member) = (&fixture.store, &fixture.member);
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_tool("Read"), None)),
+            Some(true)
+        );
+        let key = fixture.member_key();
+        let stored = store.prepared_disk.entry_file_len(&key);
+        let indexed = index_read_bytes(store, &key);
+        assert!(stored > 1024 * 1024, "the entry holds {stored} bytes");
+        assert!(indexed < 8 * 1024, "the index read spans {indexed} bytes");
+        evict_memory_facts(store, member);
+        let cold = fixture.ask(json!([]), has_tool("Read"), None);
+        assert_eq!(value_of(&cold), Some(true));
+        assert_eq!(cache_reads(&cold), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(cold["usage"]["cold_parses"].as_u64(), Some(0));
+        assert_eq!(cold["usage"]["source_opens"].as_u64(), Some(0));
+        assert_eq!(resident_member_is_full(store, member), Some(false));
+        let root_stored = store.prepared_disk.entry_file_len(&fixture.root_key());
+        let text = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
+        assert_eq!(value_of(&text), Some(true));
+        assert_eq!(
+            cache_reads(&text),
+            (Some(2), Some(root_stored + stored), Some(0))
+        );
+        assert_eq!(resident_member_is_full(store, member), Some(true));
+        let again = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
+        assert_eq!(value_of(&again), Some(true));
+        assert_eq!(cache_reads(&again), (Some(0), Some(0), Some(0)));
+        let hot = fixture.ask(json!([]), has_tool("Read"), None);
+        assert_eq!(value_of(&hot), Some(true));
+        assert_eq!(cache_reads(&hot), (Some(0), Some(0), Some(0)));
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_override("TOKEN-A", &["Read"]), None)),
+            Some(false)
+        );
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_override("MISSING", &[]), None)),
+            Some(false)
+        );
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn override_answers_are_identical_across_index_and_full_loads() {
+        let fixture = bulk_member_graph();
+        let expected: Vec<Option<bool>> = OVERRIDE_MATRIX
+            .iter()
+            .map(|(_, expected)| Some(*expected))
+            .collect();
+        assert_eq!(override_answers(&fixture), expected);
+        assert_eq!(
+            resident_member_is_full(&fixture.store, &fixture.member),
+            Some(true)
+        );
+        evict_memory_facts(&fixture.store, &fixture.member);
+        let lookups = fixture.store.fact_lookups.load(Ordering::Relaxed);
+        assert_eq!(override_answers(&fixture), expected);
+        assert_eq!(
+            fixture.store.fact_lookups.load(Ordering::Relaxed),
+            lookups + 1
+        );
+        evict_memory_facts(&fixture.store, &fixture.member);
+        assert_eq!(
+            value_of(&fixture.ask(json!([]), has_tool("Read"), None)),
+            Some(true)
+        );
+        assert_eq!(
+            resident_member_is_full(&fixture.store, &fixture.member),
+            Some(false)
+        );
+        assert_eq!(override_answers(&fixture), expected);
+        assert_eq!(
+            resident_member_is_full(&fixture.store, &fixture.member),
+            Some(true)
+        );
+        assert_eq!(
+            fixture.store.fact_lookups.load(Ordering::Relaxed),
+            lookups + 3
+        );
+        fixture.store.assert_conserved();
+    }
+
+    #[test]
+    fn full_waiter_joining_an_index_read_upgrades_to_the_text_section() {
+        let source = Source::new(&format!("{}\n", user_text("root", "root-prompt")));
+        let members = registered_members(&source, &["thread-a"]);
+        let store = Arc::new(fact_budget_store(16 * 1024 * 1024));
+        let owner = background_owner();
+        warm_registered_pass(&store, &source, &["thread-a"], &owner);
+        let key = fact_entry_key(&members[0], &owner);
+        let (stored, indexed) = (
+            store.prepared_disk.entry_file_len(&key),
+            index_read_bytes(&store, &key),
+        );
+        assert!(indexed < stored);
+        let template = acquire(&source.path);
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[members[0].to_string_lossy().as_ref()],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let answer = |query: Value, observers: Option<Value>| {
+            single_step(store.request(
+                &prepared_graph_request(&graph, &template, json!([]), query, observers),
+                &owner,
+                &Cancellation::default(),
+            ))
+        };
+        let primed = answer(has_override("hello", &["Read"]), None);
+        assert_eq!(value_of(&primed), Some(true));
+        assert_eq!(resident_member_is_full(&store, &members[0]), Some(true));
+        forget_member_facts(&store, &members);
+        let lookups = store.fact_lookups.load(Ordering::Relaxed);
+        let gate = install_fact_read_gate(&store, || {});
+        let deadline = now_ms() + 30_000;
+        let index_reader = spawn_warm(
+            &store,
+            warm_request(&source, &["thread-a"], deadline),
+            &owner,
+            Cancellation::default(),
+        );
+        gate.wait_until_read();
+        let full_reader = spawn_warm(
+            &store,
+            prepared_graph_request(
+                &graph,
+                &template,
+                json!([]),
+                has_override("hello", &["Read"]),
+                None,
+            ),
+            &owner,
+            Cancellation::default(),
+        );
+        wait_for_fact_read_waiter(&store);
+        gate.release();
+        let (index_reply, full_reply) = (
+            warm_reply(&index_reader),
+            single_step(warm_reply(&full_reader)),
+        );
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(
+            index_reply["status"].as_str(),
+            Some("ok"),
+            "{index_reply:?}"
+        );
+        assert_eq!(index_reply["data"]["complete"].as_bool(), Some(true));
+        assert_eq!(cache_reads(&index_reply), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(value_of(&full_reply), Some(true));
+        assert_eq!(cache_reads(&full_reply), (Some(1), Some(stored), Some(0)));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), lookups + 2);
+        assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
+        assert_eq!(resident_member_is_full(&store, &members[0]), Some(true));
+        assert!(!store.lock_state().fact_read_in_flight);
+        let repeat = answer(has_override("hello", &["Read"]), None);
+        assert_eq!(value_of(&repeat), Some(true));
+        assert_eq!(cache_reads(&repeat), (Some(0), Some(0), Some(0)));
+        forget_member_facts(&store, &members);
+        let observed = answer(
+            has_tool("Read"),
+            Some(json!([has_override("hello", &["Read"])])),
+        );
+        assert_eq!(observed["status"].as_str(), Some("ok"), "{observed:?}");
+        assert_eq!(
+            observed["data"],
+            json!({"kind":"observed_scalar","value":false,"observers":[true]})
+        );
+        assert_eq!(cache_reads(&observed), (Some(1), Some(stored), Some(0)));
+        assert_eq!(resident_member_is_full(&store, &members[0]), Some(true));
+        forget_member_facts(&store, &members);
+        let plain = answer(has_tool("Read"), Some(json!([has_tool("Edit")])));
+        assert_eq!(plain["status"].as_str(), Some("ok"), "{plain:?}");
+        assert_eq!(
+            plain["data"],
+            json!({"kind":"observed_scalar","value":false,"observers":[false]})
+        );
+        assert_eq!(cache_reads(&plain), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(resident_member_is_full(&store, &members[0]), Some(false));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn selected_root_slices_answer_has_override_within_their_view() {
+        let source = Source::new(&format!(
+            "{}\n{}\n",
+            user_text("first", "TOKEN-ROOT"),
+            user_text("second", "SECOND")
+        ));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let root = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let ask = |selectors: Value, query: Value| {
+            single_step(store.request(
+                &prepared_graph_request(&graph, &template, selectors, query, None),
+                &owner,
+                &Cancellation::default(),
+            ))
+        };
+        let lookups = store.fact_lookups.load(Ordering::Relaxed);
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        let scoped = ask(
+            json!([{"kind":"current_turn"}]),
+            has_override("TOKEN-ROOT", &[]),
+        );
+        assert_eq!(value_of(&scoped), Some(false));
+        assert_eq!(
+            (
+                store.fact_lookups.load(Ordering::Relaxed),
+                store.fact_builds.load(Ordering::Relaxed)
+            ),
+            (lookups, builds + 1)
+        );
+        let whole = ask(json!([]), has_override("TOKEN-ROOT", &[]));
+        assert_eq!(value_of(&whole), Some(true));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), lookups + 1);
+        let again = ask(json!([]), has_override("TOKEN-ROOT", &[]));
+        assert_eq!(value_of(&again), Some(true));
+        assert_eq!(cache_reads(&again), (Some(0), Some(0), Some(0)));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn restarted_owner_serves_index_reads_from_inherited_entries() {
+        let namespace = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "cc-transcript-compact-inherited-{}-{}",
+                std::process::id(),
+                now_ms()
+            ));
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = Some(namespace.clone()));
+        let source = Source::new(&format!("{}\n", user("root")));
+        let ids = ["thread-a", "thread-b"];
+        let members = registered_members(&source, &ids);
+        let owner = background_owner();
+        let producing = || {
+            NativeStore::new(&json!({"prepared_fact_producer":"compact-inherited-test","max_read_bytes_per_step":8192,"max_entry_bytes":128*1024,"max_retained_bytes":32*1024*1024,"max_prepared_fact_memory_bytes":16*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap()
+        };
+        let first = producing();
+        assert!(warm_registered_pass(&first, &source, &ids, &owner).2 > 0);
+        let key = fact_entry_key(&members[0], &owner);
+        let (stored, indexed) = (
+            first.prepared_disk.entry_file_len(&key),
+            index_read_bytes(&first, &key),
+        );
+        assert!(indexed < stored);
+        drop(first);
+        let restarted = producing();
+        assert_eq!(
+            warm_registered_pass(&restarted, &source, &ids, &owner),
+            (2, 2 * indexed, 0)
+        );
+        assert_eq!(
+            resident_member_is_full(&restarted, &members[0]),
+            Some(false)
+        );
+        assert_eq!(restarted.prepared_disk.entry_file_len(&key), stored);
+        restarted.assert_conserved();
+        drop(restarted);
+        crate::snapshot_prepared_disk::REUSE_NAMESPACE_OVERRIDE
+            .with(|path| *path.borrow_mut() = None);
+        std::fs::remove_dir_all(namespace).unwrap();
+    }
+
+    #[test]
+    fn a_full_entry_under_another_binding_never_serves() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let (a, b) = (binding(&store, "fetch_a"), binding(&store, "fetch_b"));
+        let root = pinned_root(&store, &source, &a);
+        let full = root_facts_read_with(&store, &root, &a, &bounds, FactsNeed::Full).0;
+        assert!(full.is_full());
+        let classifier = json!({"id":"native","version":"1"});
+        let touch = |owner: &Value, need: FactsNeed| {
+            store
+                .lock_state()
+                .touch_prepared_facts(
+                    &fact_entry_key(&source.path, owner),
+                    root.stamp,
+                    owner["registry_generation"].as_str().unwrap(),
+                    "hook",
+                    &owner["authority"],
+                    &classifier,
+                    need,
+                )
+                .is_some()
+        };
+        assert!(touch(&a, FactsNeed::Full) && touch(&a, FactsNeed::Index));
+        assert!(!touch(&b, FactsNeed::Full) && !touch(&b, FactsNeed::Index));
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        let other = root_facts_read_with(&store, &root, &b, &bounds, FactsNeed::Full).0;
+        assert!(other.is_full() && !Arc::ptr_eq(&full, &other));
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 1);
+        assert_eq!(resident_bindings(&store, &root), 2);
+        let compact = root_facts_read_with(&store, &root, &a, &bounds, FactsNeed::Index).0;
+        assert!(Arc::ptr_eq(&compact, &full));
+        drop((full, other, compact));
         store.assert_conserved();
     }
 
@@ -15392,6 +15895,16 @@ mod tests {
         owner: &Value,
         bounds: &WorkLimits,
     ) -> (Arc<crate::snapshot_prepared::PreparedFacts>, u64) {
+        root_facts_read_with(store, root, owner, bounds, FactsNeed::Index)
+    }
+
+    fn root_facts_read_with(
+        store: &NativeStore,
+        root: &Arc<TranscriptSnapshot>,
+        owner: &Value,
+        bounds: &WorkLimits,
+        need: FactsNeed,
+    ) -> (Arc<crate::snapshot_prepared::PreparedFacts>, u64) {
         let mut usage = [0u64; 20];
         let (retained, reservation) = store
             .prepared_root_facts(
@@ -15402,6 +15915,7 @@ mod tests {
                 PreparedCacheReads::Unmetered,
                 &Cancellation::default(),
                 &mut usage,
+                need,
             )
             .unwrap();
         let facts = Arc::clone(retained.facts());
@@ -15647,6 +16161,7 @@ mod tests {
                 "hook",
                 &a["authority"],
                 &json!({"id":"native","version":"1"}),
+                FactsNeed::Index,
             )
             .is_none());
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
@@ -15681,11 +16196,12 @@ mod tests {
         let key = fact_entry_key(&member, &owner);
         let entry = store.prepared_disk.entry_file(&key);
         let stored = store.prepared_disk.entry_file_len(&key);
+        let indexed = index_read_bytes(&store, &key);
         let identity = SourceStamp::of(&std::fs::metadata(&member).unwrap()).identity;
         let unlink = |entry: &Path| std::fs::remove_file(entry).unwrap();
         let corrupt = |entry: &Path| {
             let mut bytes = std::fs::read(entry).unwrap();
-            *bytes.last_mut().unwrap() ^= 1;
+            bytes[crate::snapshot_prepared_disk::HEADER_BYTES + 8] ^= 1;
             std::fs::OpenOptions::new()
                 .write(true)
                 .open(entry)
@@ -15710,15 +16226,15 @@ mod tests {
             evict_memory_facts(&store, &member);
             damage(&entry);
             for _ in 0..2 {
-                let oversize = warm(stored);
+                let oversize = warm(indexed - 1);
                 assert_eq!(refusal(&oversize), ENTRY_LIMIT, "{oversize:?}");
                 assert_eq!(cache_reads(&oversize), (Some(0), Some(0), Some(0)));
             }
-            let fitting = warm(stored + 1);
+            let fitting = warm(indexed);
             assert_eq!(refusal(&fitting), ENTRY_EVICTED, "{fitting:?}");
             assert_eq!(
                 cache_reads(&fitting),
-                (Some(reads), Some(reads * stored), Some(0))
+                (Some(reads), Some(reads * indexed), Some(0))
             );
             assert!(!store.prepared_disk.has_entry(&key).unwrap());
             assert!(!entry.exists());
@@ -15741,20 +16257,20 @@ mod tests {
             .mode(0o700)
             .create(directory)
             .unwrap();
-        let foreign = [warm(stored), warm(stored + 1)];
+        let foreign = [warm(indexed - 1), warm(indexed)];
         std::fs::remove_dir(directory).unwrap();
         std::fs::rename(&displaced, directory).unwrap();
         for reply in &foreign {
             assert_eq!(refusal(reply), DIRECTORY_CHANGED, "{reply:?}");
             assert_eq!(cache_reads(reply), (Some(0), Some(0), Some(0)));
         }
-        let restored = warm(stored + 1);
+        let restored = warm(indexed);
         assert_eq!(
             restored["data"]["complete"].as_bool(),
             Some(true),
             "{restored:?}"
         );
-        assert_eq!(cache_reads(&restored), (Some(1), Some(stored), Some(0)));
+        assert_eq!(cache_reads(&restored), (Some(1), Some(indexed), Some(0)));
     }
 
     #[test]
@@ -15779,7 +16295,7 @@ mod tests {
                 &owner,
             );
             assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
-            json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+            json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":has_override("missing-token", &[]),"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
         };
         let ask = |query: &Value| {
             let result = finish_prepared(
@@ -15792,13 +16308,18 @@ mod tests {
         let identity =
             |path: &std::path::Path| SourceStamp::of(&std::fs::metadata(path).unwrap()).identity;
         let large_query = graph(&large);
+        let mut large_index_query = large_query.clone();
+        large_index_query.insert("query", has_tool("Missing"));
+        ask(&large_index_query);
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         ask(&large_query);
         ask(&graph(&small));
-        assert!(!store
+        assert!(store
             .state
             .lock()
             .unwrap()
             .has_prepared_facts(&identity(&large)));
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         assert!(store
             .state
             .lock()
@@ -15809,6 +16330,7 @@ mod tests {
         ask(&large_query);
         assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
         assert_eq!(store.prepared_disk.stats().writes, writes);
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         assert!(store
             .state
             .lock()
@@ -15884,17 +16406,27 @@ mod tests {
         let (store, query) = open(16 * 1024 * 1024);
         assert_eq!(pass(&store, &query).value, Some(true));
         let built = store.lock_state().ledger.shared.facts();
+        let built_children: usize = {
+            let state = store.lock_state();
+            children
+                .iter()
+                .map(|child| {
+                    state
+                        .cached_prepared_facts(
+                            &SourceStamp::of(&std::fs::metadata(child).unwrap()).identity,
+                        )
+                        .facts
+                        .accounted_bytes()
+                })
+                .sum()
+        };
         evict_memory_facts(&store, &source.path);
         for child in &children {
             evict_memory_facts(&store, child);
         }
         let stored: Vec<u64> = children
             .iter()
-            .map(|child| {
-                store
-                    .prepared_disk
-                    .entry_file_len(&fact_entry_key(child, &owner))
-            })
+            .map(|child| index_read_bytes(&store, &fact_entry_key(child, &owner)))
             .collect();
         assert_eq!(
             pass(&store, &query),
@@ -15921,7 +16453,10 @@ mod tests {
         };
         decoded.sort_unstable();
         let working_set = store.lock_state().ledger.shared.facts();
-        assert!(working_set < built && built <= working_set * 8 / 5);
+        assert_eq!(
+            working_set,
+            built - built_children + decoded.iter().sum::<usize>()
+        );
         let held_by_the_graph = working_set - decoded.iter().sum::<usize>();
         let fitting = |budget: usize| {
             decoded
