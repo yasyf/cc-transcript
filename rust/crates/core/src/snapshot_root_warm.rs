@@ -448,10 +448,14 @@ mod root_warm_tests {
         let (directory, path) = source(64 * 1024);
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("root-deferral");
+        let source_size = std::fs::metadata(&path).unwrap().len();
         let drive = |budget: u64| {
             let mut steps: Vec<Step> = Vec::new();
             while steps.last().map_or(true, |step| !step.complete) {
-                assert!(steps.len() < 32, "{steps:?}");
+                assert!(
+                    (steps.len() as u64) < source_size.div_ceil(budget) + 32,
+                    "{steps:?}"
+                );
                 let reply = store.request(
                     &warm_request(&path, budget as usize),
                     &context,
