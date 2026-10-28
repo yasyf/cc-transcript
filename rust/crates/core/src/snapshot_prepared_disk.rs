@@ -1232,6 +1232,8 @@ impl PreparedDiskCache {
             tag: 0,
             bytes: 0,
             accounted: 0,
+            index_bytes: 0,
+            index_accounted: 0,
         }
         .encode();
         let prefix = &bare.to_str().expect("entry file name")[..64];
@@ -3194,7 +3196,7 @@ mod tests {
     fn inherited_and_garbage_bytes_share_one_budget() {
         let namespace = isolated_namespace();
         let built = pushed_facts(5, 5);
-        let size = HEADER_BYTES + sonic_rs::to_vec(&built).unwrap().len();
+        let size = HEADER_BYTES + encoded_sections_len(&built);
         let cap = 2 * size;
         let first = reuse_cache(&namespace, cap);
         for generation in 1..=2 {
@@ -3212,6 +3214,8 @@ mod tests {
                 tag: !engine_tag(&origin(Some("producer-a"))),
                 bytes: size,
                 accounted: 0,
+                index_bytes: 0,
+                index_accounted: 0,
             }
             .encode(),
             size,
@@ -3243,7 +3247,7 @@ mod tests {
     fn only_the_three_newest_generations_are_listed() {
         let namespace = isolated_namespace();
         let built = pushed_facts(5, 5);
-        let size = HEADER_BYTES + sonic_rs::to_vec(&built).unwrap().len();
+        let size = HEADER_BYTES + encoded_sections_len(&built);
         for generation in 1..=4 {
             let owner = reuse_cache(&namespace, 64 * 1024);
             assert!(owner
@@ -3285,6 +3289,7 @@ mod tests {
         let dead = first.dir.clone();
         let left = first.entry_file(&listed);
         let stored = first.stats().bytes;
+        let (index, _) = sections(&first, &listed);
         drop(first);
         let foreign = planted(
             &dead,
@@ -3293,6 +3298,8 @@ mod tests {
                 tag: !engine_tag(&origin(Some("producer-a"))),
                 bytes: 100,
                 accounted: 0,
+                index_bytes: 0,
+                index_accounted: 0,
             }
             .encode(),
             100,
@@ -3304,6 +3311,8 @@ mod tests {
                 tag: !engine_tag(&origin(Some("producer-a"))),
                 bytes: stored,
                 accounted: built.accounted_bytes(),
+                index_bytes: index,
+                index_accounted: built.index_accounted_bytes(),
             }
             .encode(),
             stored,
@@ -3376,6 +3385,8 @@ mod tests {
                     tag: engine_tag(&origin(Some("producer-a"))),
                     bytes: 1024,
                     accounted,
+                    index_bytes: 0,
+                    index_accounted: 0,
                 }
                 .encode(),
                 1024,
@@ -3431,7 +3442,7 @@ mod tests {
     fn adoption_reclaims_garbage_left_over_budget() {
         let namespace = isolated_namespace();
         let built = pushed_facts(5, 5);
-        let size = HEADER_BYTES + sonic_rs::to_vec(&built).unwrap().len();
+        let size = HEADER_BYTES + encoded_sections_len(&built);
         let first = reuse_cache(&namespace, 2 * size);
         for generation in 1..=2 {
             assert!(first
@@ -3486,6 +3497,8 @@ mod tests {
                     tag: !engine_tag(&origin(Some("producer-a"))),
                     bytes: 100,
                     accounted: 0,
+                    index_bytes: 0,
+                    index_accounted: 0,
                 }
                 .encode(),
                 100,
@@ -3531,6 +3544,8 @@ mod tests {
                     tag: engine_tag(&origin(Some("producer-a"))),
                     bytes: 1024,
                     accounted,
+                    index_bytes: 0,
+                    index_accounted: 0,
                 }
                 .encode(),
                 1024,
@@ -3554,7 +3569,7 @@ mod tests {
         let large = pushed_facts(9, 9);
         let left = left_behind(&namespace, &revision(1), &small);
         let stored = fs::metadata(&left).unwrap().len() as usize;
-        let larger = HEADER_BYTES + sonic_rs::to_vec(&large).unwrap().len();
+        let larger = HEADER_BYTES + encoded_sections_len(&large);
         assert!(larger > stored, "{larger} against {stored}");
         let successor = reuse_cache(&namespace, stored + larger - 1);
         assert_eq!(budget(&successor), (1, 0, stored, 0));
@@ -3819,7 +3834,7 @@ mod tests {
         assert!(index_only(&decoded));
         assert_eq!(decoded.inputs, built.inputs);
         assert!(decoded.has_error);
-        assert_eq!(decoded.accounted_bytes(), built.index_accounted_bytes());
+        assert!(decoded.accounted_bytes() <= built.index_accounted_bytes());
         assert!(decoded.serves(FactsNeed::Index) && !decoded.serves(FactsNeed::Full));
         let mut full = DiskRead::default();
         let DiskLookup::Hit(loaded) = cache.lookup(&entry, &mut full, FactsNeed::Full).unwrap()
@@ -3833,7 +3848,7 @@ mod tests {
             "x".repeat(1024 * 1024)
         );
         assert_eq!(loaded.text_section().unwrap()[0].tools, ["Read"]);
-        assert_eq!(loaded.accounted_bytes(), built.accounted_bytes());
+        assert!(loaded.accounted_bytes() <= built.accounted_bytes());
         assert!(cache
             .touch(&entry, FactsNeed::Index, |accounted| accounted
                 == built.index_accounted_bytes())

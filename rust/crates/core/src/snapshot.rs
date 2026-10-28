@@ -14736,10 +14736,11 @@ mod tests {
 
     fn resident_member_is_full(store: &NativeStore, member: &Path) -> Option<bool> {
         let state = store.lock_state();
-        state
+        let full = state
             .identity_facts(member_identity(member))
             .next()
-            .map(|(_, cached)| cached.facts.is_full())
+            .map(|(_, cached)| cached.facts.is_full());
+        full
     }
 
     fn forget_member_facts(store: &NativeStore, members: &[PathBuf]) {
@@ -15453,7 +15454,7 @@ mod tests {
         reply
     }
 
-    fn graph_request(
+    fn prepared_graph_request(
         graph: &Value,
         template: &Value,
         selectors: Value,
@@ -15479,7 +15480,7 @@ mod tests {
     impl CompactGraph {
         fn ask(&self, selectors: Value, query: Value, observers: Option<Value>) -> Value {
             single_step(self.store.request(
-                &graph_request(&self.graph, &self.template, selectors, query, observers),
+                &prepared_graph_request(&self.graph, &self.template, selectors, query, observers),
                 &self.owner,
                 &Cancellation::default(),
             ))
@@ -15668,7 +15669,7 @@ mod tests {
         assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
         let answer = |query: Value, observers: Option<Value>| {
             single_step(store.request(
-                &graph_request(&graph, &template, json!([]), query, observers),
+                &prepared_graph_request(&graph, &template, json!([]), query, observers),
                 &owner,
                 &Cancellation::default(),
             ))
@@ -15689,7 +15690,7 @@ mod tests {
         gate.wait_until_read();
         let full_reader = spawn_warm(
             &store,
-            graph_request(
+            prepared_graph_request(
                 &graph,
                 &template,
                 json!([]),
@@ -15769,7 +15770,7 @@ mod tests {
         assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
         let ask = |selectors: Value, query: Value| {
             single_step(store.request(
-                &graph_request(&graph, &template, selectors, query, None),
+                &prepared_graph_request(&graph, &template, selectors, query, None),
                 &owner,
                 &Cancellation::default(),
             ))
@@ -16293,7 +16294,7 @@ mod tests {
                 &owner,
             );
             assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
-            json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":{"kind":"has_tool","pattern":"Missing","subagents":true},"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
+            json!({"schema":SCHEMA,"id":"query","operation":"query_graph","handle":graph["data"]["handle"],"selectors":[],"query":has_override("missing-token", &[]),"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]})
         };
         let ask = |query: &Value| {
             let result = finish_prepared(
@@ -16308,11 +16309,12 @@ mod tests {
         let large_query = graph(&large);
         ask(&large_query);
         ask(&graph(&small));
-        assert!(!store
+        assert!(store
             .state
             .lock()
             .unwrap()
             .has_prepared_facts(&identity(&large)));
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         assert!(store
             .state
             .lock()
@@ -16323,6 +16325,7 @@ mod tests {
         ask(&large_query);
         assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
         assert_eq!(store.prepared_disk.stats().writes, writes);
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         assert!(store
             .state
             .lock()
