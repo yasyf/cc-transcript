@@ -13585,7 +13585,7 @@ fn assert_primed_index_upgrade_reserves_in_phases(
             fixture.store.prepared_disk.entry_text_state(key),
             Some(crate::snapshot_prepared::TextState::Unbuilt)
         );
-        assert_eq!(ledger(&fixture.store), before);
+        assert_eq!(settled(&fixture.store), before);
         fixture.store.assert_conserved();
         drop(filler);
         assert_eq!(fixture.store.lock_state().transient_bytes, 0);

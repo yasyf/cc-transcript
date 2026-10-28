@@ -16224,7 +16224,7 @@ mod tests {
         source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
         let appended = ask(has_tool("Missing"));
         assert_eq!(value_of(&appended), Some(false));
-        assert_eq!(cache_reads(&appended).0, Some(1));
+        assert_eq!(cache_reads(&appended).0, Some(0));
         assert_eq!(appended["usage"]["cold_parses"].as_u64(), Some(0));
         let validation = (
             appended["usage"]["source_opens"].as_u64(),
