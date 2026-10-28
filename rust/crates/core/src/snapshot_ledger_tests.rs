@@ -13526,7 +13526,7 @@ struct UpgradeSite<'a> {
     pin: usize,
     decode: usize,
     construction: usize,
-    attempt: &'a dyn Fn(&Fixture) -> Result<(), SnapshotError>,
+    attempt: &'a (dyn Fn(&Fixture) -> Result<(), SnapshotError> + Sync),
 }
 
 fn assert_primed_index_upgrade_reserves_in_phases(
@@ -13658,7 +13658,34 @@ fn assert_primed_index_upgrade_reserves_in_phases(
         fact_probes(&fitted.store),
         fitted.store.prepared_disk.stats(),
     );
-    assert!(published(&fitted), "{site}: the exact fit was refused");
+    let baseline = fitted.store.lock_state().transient_bytes;
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel::<()>();
+    let resume_rx = Mutex::new(resume_rx);
+    *fitted.store.built_facts_hook.lock().unwrap() =
+        Some(Arc::new(move |_: &Arc<PreparedFacts>| {
+            paused_tx.send(()).unwrap();
+            resume_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the construction barrier was never released");
+        }));
+    let (landed, constructing) = std::thread::scope(|scope| {
+        let attempt = scope.spawn(|| published(&fitted));
+        paused_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the exact fit never constructed");
+        let constructing = fitted.store.lock_state().transient_bytes;
+        resume_tx.send(()).unwrap();
+        (attempt.join().unwrap(), constructing)
+    });
+    assert!(landed, "{site}: the exact fit was refused");
+    assert!(
+        constructing >= baseline + construction && constructing < baseline + construction + decode,
+        "{site}: {} transient bytes were held during construction (construction {construction}, decode {decode})",
+        constructing - baseline
+    );
     assert_eq!(
         fact_probes(&fitted.store),
         [probes[BUILDS] + 1, probes[LOOKUPS] + 1]

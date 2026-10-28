@@ -412,6 +412,20 @@ impl NativeStore {
                 facts.accounted_bytes() <= bound,
                 "prepared root facts outgrew their bound"
             );
+            let facts = Arc::new(facts);
+            #[cfg(test)]
+            {
+                if need == FactsNeed::Full {
+                    let hook = self
+                        .built_facts_hook
+                        .lock()
+                        .expect("built facts hook")
+                        .take();
+                    if let Some(hook) = hook {
+                        hook(&facts);
+                    }
+                }
+            }
             if self.prepared_disk.insert(
                 &key,
                 &facts,
@@ -426,7 +440,6 @@ impl NativeStore {
                 drop(reservation);
                 continue;
             }
-            let facts = Arc::new(facts);
             return match self.cache_prepared_facts(
                 root.stamp,
                 Arc::clone(&facts),

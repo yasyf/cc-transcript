@@ -1260,6 +1260,21 @@ impl PreparedDiskCache {
             }
             claimed[rank].listed = names.failure().is_none();
         }
+        for rank in (0..claimed.len()).filter(|rank| !claimed[*rank].listed) {
+            let provisional: Vec<[u8; 32]> = state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.last_used == rank as u64)
+                .map(|(name, _)| *name)
+                .collect();
+            for name in provisional {
+                let entry = state.entries.remove(&name).expect("provisional entry");
+                state.inherited_bytes -= entry.bytes;
+                claimed[rank].garbage = claimed[rank]
+                    .garbage
+                    .saturating_add(entry.bytes.min(self.max_bytes));
+            }
+        }
         state.claimed = claimed;
     }
 
@@ -1962,6 +1977,13 @@ impl PreparedDiskCache {
             last_used: state.clock,
         };
         let name = self.entry_name(key, &entry);
+        if state
+            .stranded_owned
+            .iter()
+            .any(|(stranded, _)| *stranded == name)
+        {
+            return Ok(Inserted::Refused);
+        }
         let header = EntryHeader {
             binding: self.binding(key),
             index_len: index_len as u64,
@@ -1973,15 +1995,20 @@ impl PreparedDiskCache {
             text_state,
         }
         .encode();
+        let mut staged = None;
         let result = (|| -> Result<(), SnapshotError> {
             let mut file = self
                 .open_entry(&temp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)
                 .map_err(disk_error)?;
-            if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
-                return Err(disk_error(io::Error::last_os_error()));
-            }
-            file.write_all(&header).map_err(disk_error)?;
-            file.write_all(&payload).map_err(disk_error)?;
+            let written = (|| -> io::Result<()> {
+                if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                file.write_all(&header)?;
+                file.write_all(&payload)
+            })();
+            staged = Some(file.metadata().expect("staged temp length").len() as usize);
+            written.map_err(disk_error)?;
             drop(file);
             #[cfg(test)]
             {
@@ -1992,7 +2019,9 @@ impl PreparedDiskCache {
             self.rename_entry(&temp, &name).map_err(disk_error)
         })();
         if let Err(error) = result {
-            self.strand_unless_unlinked(&mut state, temp, size);
+            if let Some(staged) = staged {
+                self.strand_unless_unlinked(&mut state, temp, staged);
+            }
             return Err(error);
         }
         let Some(old) = replaced else {
@@ -4577,17 +4606,12 @@ mod tests {
 
     #[test]
     fn index_only_facts_write_only_the_index_and_upgrade_once() {
-        for producer in [false, true] {
-            let namespace = isolated_namespace();
-            let cache = if producer {
-                reuse_cache(&namespace, 64 * 1024)
-            } else {
-                cache(64 * 1024)
-            };
-            index_only_facts_upgrade_once(&cache);
-            drop(cache);
-            fs::remove_dir_all(namespace).unwrap();
-        }
+        index_only_facts_upgrade_once(&cache(64 * 1024));
+        let namespace = isolated_namespace();
+        let reusing = reuse_cache(&namespace, 64 * 1024);
+        index_only_facts_upgrade_once(&reusing);
+        drop(reusing);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     fn index_only_facts_upgrade_once(cache: &PreparedDiskCache) {
@@ -4903,7 +4927,7 @@ mod tests {
         let new_size = HEADER_BYTES + encoded_sections_len(&full);
         let dir = cache.dir.clone();
         cache.set_upgrade_hook(Some(Box::new(
-            move |step: UpgradeStep, _: &CStr, _: &CStr| {
+            move |step: UpgradeStep, fresh: &CStr, _: &CStr| {
                 if step == UpgradeStep::Staged {
                     let temp = fs::read_dir(&dir)
                         .unwrap()
@@ -4912,13 +4936,14 @@ mod tests {
                         .find(|path| path.extension().is_some_and(|ext| ext == "tmp"))
                         .expect("the staged temp file");
                     replace_with_directory(&temp);
+                    fs::write(dir.join(fresh.to_str().unwrap()), b"blocker").unwrap();
                 }
             },
         )));
         let error = cache
             .insert(&entry, &full, |_| true, |_| true)
             .err()
-            .expect("the rename over a directory landed");
+            .expect("the rename of a directory over a file landed");
         cache.set_upgrade_hook(None);
         assert_eq!(error.status, crate::snapshot::Status::Incomplete);
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Unbuilt));
@@ -4928,6 +4953,11 @@ mod tests {
         assert_eq!(temp[0].1, new_size);
         let temp_dir = cache.dir.join(temp[0].0.to_str().unwrap());
         assert!(temp_dir.is_dir());
+        let blocker = entry_files(&cache)
+            .into_iter()
+            .find(|path| path.is_file() && fs::metadata(path).unwrap().len() == 7)
+            .expect("the blocking destination");
+        fs::remove_file(blocker).unwrap();
         assert!(cache
             .insert(&entry, &full, |_| true, |_| true)
             .unwrap()
@@ -5015,7 +5045,7 @@ mod tests {
     fn a_full_stranded_list_refuses_the_next_owned_upgrade_until_a_sweep_clears_it() {
         let cache = cache(8 * 1024 * 1024);
         strand_old_name(&cache, cache.dir.clone());
-        let entries: Vec<PreparedDiskKey> = (1..=MAX_STRANDED_OWNED as u64 + 1)
+        let entries: Vec<PreparedDiskKey> = (1..=MAX_STRANDED_OWNED as u64)
             .map(|size| key(stamp(size), &json!({"root":"/repo"})))
             .collect();
         for entry in &entries {
@@ -5025,24 +5055,25 @@ mod tests {
                 .serves());
         }
         let compact_size = cache.entry_file_len(&entries[0]) as usize;
-        for entry in &entries[..MAX_STRANDED_OWNED] {
+        let strands = MAX_STRANDED_OWNED - 1;
+        for entry in &entries[..strands] {
             assert!(cache
                 .insert(entry, &pushed_facts(1, 1), |_| true, |_| true)
                 .unwrap()
                 .serves());
         }
         cache.set_upgrade_hook(None);
-        assert_eq!(stranded(&cache).len(), MAX_STRANDED_OWNED);
+        assert_eq!(stranded(&cache).len(), strands);
         let full_size = cache.entry_file_len(&entries[0]) as usize;
-        let last = &entries[MAX_STRANDED_OWNED];
+        let last = &entries[strands];
         let before = budget(&cache);
         assert_eq!(
             before,
             (
                 entries.len(),
-                MAX_STRANDED_OWNED * (compact_size + full_size) + compact_size,
+                strands * (compact_size + full_size) + compact_size,
                 0,
-                MAX_STRANDED_OWNED * compact_size
+                strands * compact_size
             )
         );
         let writes = cache.stats().writes;
@@ -5055,7 +5086,7 @@ mod tests {
         assert_eq!(text_state_of(&cache, last), Some(TextState::Unbuilt));
         assert_eq!(cache.entry_file_len(last) as usize, compact_size);
         assert_eq!((budget(&cache), cache.stats().writes), (before, writes));
-        assert_eq!(stranded(&cache).len(), MAX_STRANDED_OWNED);
+        assert_eq!(stranded(&cache).len(), strands);
         for path in entry_files(&cache).into_iter().filter(|path| path.is_dir()) {
             fs::remove_dir(path).unwrap();
         }
@@ -5070,6 +5101,94 @@ mod tests {
             (entries.len(), entries.len() * full_size, 0, 0)
         );
         assert_eq!(physical_bytes(&cache.dir), entries.len() * full_size);
+    }
+
+    #[test]
+    fn a_stranded_destination_is_never_published_over() {
+        let compact = index_facts(3, 2);
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let destination = cache.entry_file(&entry);
+        let size = fs::metadata(&destination).unwrap().len() as usize;
+        {
+            let mut state = cache.state.lock().unwrap();
+            state.entries.remove(&entry.name).unwrap();
+            state.stranded_owned.push((file_name(&destination), size));
+        }
+        replace_with_directory(&destination);
+        assert_eq!(budget(&cache), (0, size, 0, size));
+        let writes = cache.stats().writes;
+        assert_eq!(
+            cache.insert(&entry, &compact, |_| true, |_| true).unwrap(),
+            Inserted::Refused
+        );
+        assert_eq!(
+            (budget(&cache), cache.stats().writes),
+            ((0, size, 0, size), writes)
+        );
+        assert_eq!(entry_files(&cache), [destination.clone()]);
+        assert!(destination.is_dir());
+        fs::remove_dir(&destination).unwrap();
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        assert!(stranded(&cache).is_empty());
+        assert_eq!(budget(&cache), (1, size, 0, 0));
+        assert_eq!(entry_files(&cache), [destination.clone()]);
+        assert!(destination.is_file());
+        assert_eq!(physical_bytes(&cache.dir), size);
+    }
+
+    #[test]
+    fn a_temp_that_was_never_created_is_never_charged() {
+        let compact = index_facts(3, 2);
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let next_temp = format!("{:x}.tmp", cache.state.lock().unwrap().clock + 1);
+        let planted = cache.dir.join(&next_temp);
+        fs::write(&planted, b"").unwrap();
+        let error = cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .err()
+            .expect("the staging open over an existing temp landed");
+        assert_eq!(error.status, crate::snapshot::Status::Incomplete);
+        assert_eq!(budget(&cache), (0, 0, 0, 0));
+        assert!(stranded(&cache).is_empty());
+        assert_eq!(cache.stats().writes, 0);
+        fs::remove_file(&planted).unwrap();
+        assert!(cache
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let size = cache.entry_file_len(&entry) as usize;
+        assert_eq!(budget(&cache), (1, size, 0, 0));
+        assert_eq!(physical_bytes(&cache.dir), size);
+    }
+
+    #[test]
+    fn an_incomplete_listing_adopts_nothing() {
+        let namespace = isolated_namespace();
+        let full = pushed_facts(3, 2);
+        let entry = revision(1);
+        let left = left_behind(&namespace, &entry, &full);
+        let dead = left.parent().unwrap().to_path_buf();
+        for index in 0..MAX_LISTED_NAMES {
+            fs::write(dead.join(format!("g{index:05}")), b"").unwrap();
+        }
+        let successor = reuse_cache(&namespace, 64 * 1024);
+        assert!(successor.state.lock().unwrap().unread());
+        assert_eq!(successor.decoded_bytes(&entry, FactsNeed::Index), None);
+        assert_eq!(successor.decoded_bytes(&entry, FactsNeed::Full), None);
+        let (entries, _, inherited, _) = budget(&successor);
+        assert_eq!((entries, inherited), (0, 0));
+        assert!(left.exists());
+        drop(successor);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     #[test]
