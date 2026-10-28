@@ -1260,15 +1260,11 @@ impl PreparedDiskCache {
             }
             claimed[rank].listed = names.failure().is_none();
         }
-        for rank in (0..claimed.len()).filter(|rank| !claimed[*rank].listed) {
-            let provisional: Vec<[u8; 32]> = state
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.last_used == rank as u64)
-                .map(|(name, _)| *name)
-                .collect();
+        if claimed.iter().any(|owner| !owner.listed) {
+            let provisional: Vec<[u8; 32]> = state.entries.iter().map(|(name, _)| *name).collect();
             for name in provisional {
                 let entry = state.entries.remove(&name).expect("provisional entry");
+                let rank = entry.last_used as usize;
                 state.inherited_bytes -= entry.bytes;
                 claimed[rank].garbage = claimed[rank]
                     .garbage
@@ -2000,15 +1996,29 @@ impl PreparedDiskCache {
             let mut file = self
                 .open_entry(&temp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)
                 .map_err(disk_error)?;
-            let written = (|| -> io::Result<()> {
+            let mut written = 0;
+            let outcome = (|| -> io::Result<()> {
                 if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
                     return Err(io::Error::last_os_error());
                 }
-                file.write_all(&header)?;
-                file.write_all(&payload)
+                for section in [&header[..], &payload[..]] {
+                    let mut offset = 0;
+                    while offset < section.len() {
+                        match file.write(&section[offset..]) {
+                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                            Ok(count) => {
+                                offset += count;
+                                written += count;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+                Ok(())
             })();
-            staged = Some(file.metadata().expect("staged temp length").len() as usize);
-            written.map_err(disk_error)?;
+            staged = Some(written);
+            outcome.map_err(disk_error)?;
             drop(file);
             #[cfg(test)]
             {
@@ -5187,6 +5197,78 @@ mod tests {
         let (entries, _, inherited, _) = budget(&successor);
         assert_eq!((entries, inherited), (0, 0));
         assert!(left.exists());
+        drop(successor);
+        fs::remove_dir_all(namespace).unwrap();
+    }
+
+    #[test]
+    fn an_incomplete_listing_withdraws_every_provisional_entry_across_directories() {
+        let compact = index_facts(3, 2);
+        let full = pushed_facts(3, 2);
+        let entry = revision(1);
+        let unbuilt_source = isolated_namespace();
+        let writer = reuse_cache(&unbuilt_source, 64 * 1024);
+        assert!(writer
+            .insert(&entry, &compact, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let unbuilt_path = writer.entry_file(&entry);
+        let (unbuilt_name, unbuilt_bytes) =
+            (file_name(&unbuilt_path), fs::read(&unbuilt_path).unwrap());
+        drop(writer);
+        fs::remove_dir_all(unbuilt_source).unwrap();
+        let namespace = isolated_namespace();
+        let full_path = left_behind(&namespace, &entry, &full);
+        let older = full_path.parent().unwrap().to_path_buf();
+        for index in 0..MAX_LISTED_NAMES {
+            fs::write(older.join(format!("g{index:05}")), b"").unwrap();
+        }
+        let newer_owner = PreparedDiskCache::open(
+            namespace.clone(),
+            &epoch(),
+            64 * 1024,
+            &origin(Some("producer-a")),
+            0,
+            Work::default(),
+        )
+        .unwrap();
+        let newer = newer_owner.dir.clone();
+        let planted = planted_bytes(&newer, &unbuilt_name, &unbuilt_bytes);
+        drop(newer_owner);
+        let successor = reuse_cache(&namespace, 64 * 1024);
+        {
+            let state = successor.state.lock().unwrap();
+            assert!(state.unread());
+            assert_eq!(state.claimed.len(), 2);
+            assert!(state.claimed[1].listed, "the newer listing was complete");
+            assert!(!state.claimed[0].listed, "the older listing was incomplete");
+        }
+        let (entries, bytes, inherited, garbage) = budget(&successor);
+        assert_eq!((entries, bytes, inherited), (0, 0, 0));
+        assert!(garbage >= unbuilt_bytes.len());
+        assert_eq!(successor.decoded_bytes(&entry, FactsNeed::Index), None);
+        assert!(matches!(
+            lookup(
+                &successor,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Index
+            )
+            .unwrap(),
+            DiskLookup::Miss
+        ));
+        assert!(matches!(
+            lookup(
+                &successor,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
+            DiskLookup::Miss
+        ));
+        assert!(planted.exists());
+        assert!(full_path.exists(), "the unseen full name was deleted");
         drop(successor);
         fs::remove_dir_all(namespace).unwrap();
     }
