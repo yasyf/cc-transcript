@@ -129,6 +129,17 @@ class AsyncLedger[R: LedgerRecord](ABC):
         rows = await self._actor.run(lambda: conn.execute(sql, (session_id,)).fetchall())
         return tuple(self.row_to_record(row) for row in rows)
 
+    async def for_session_between(
+        self, session_id: SessionId, start_ts_ms: int, end_ts_ms: int
+    ) -> tuple[R, ...]:
+        """Records within an inclusive timestamp range, ordered by timestamp and insertion."""
+        conn = self._actor.conn
+        sql = f"SELECT * FROM {self.TABLE} WHERE session_id = ? AND ts_ms BETWEEN ? AND ? ORDER BY ts_ms, id"
+        rows = await self._actor.run(
+            lambda: conn.execute(sql, (session_id, start_ts_ms, end_ts_ms)).fetchall()
+        )
+        return tuple(self.row_to_record(row) for row in rows)
+
     async def close(self) -> None:
         """Closes the underlying connection; a second call is a no-op."""
         await self._actor.close()

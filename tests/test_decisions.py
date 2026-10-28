@@ -100,3 +100,42 @@ async def test_actor_runs_concurrent_tasks_in_submission_order(tmp_path: Path) -
     await asyncio.gather(*(log._actor.run(lambda i=i: order.append(i)) for i in range(25)))
     assert order == list(range(25))
     await log.close()
+
+@pytest.mark.parametrize(
+    ("start_ts_ms", "end_ts_ms", "expected_kinds"),
+    [
+        (1_000, 3_000, ("lower", "z-first", "a-second", "upper")),
+        (2_000, 2_000, ("z-first", "a-second")),
+        (3_002, 4_000, ()),
+        (3_000, 1_000, ()),
+    ],
+)
+async def test_session_between_filters_before_hydration_and_preserves_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start_ts_ms: int,
+    end_ts_ms: int,
+    expected_kinds: tuple[str, ...],
+) -> None:
+    async with await open_log(tmp_path) as log:
+        for record in (
+            decision(3_000, kind="upper"),
+            decision(999, kind="before"),
+            decision(2_000, kind="z-first"),
+            decision(2_000, kind="a-second"),
+            decision(1_000, kind="lower"),
+            decision(3_001, kind="after"),
+            decision(2_000, kind="other-session", session_id=OTHER_SESSION),
+        ):
+            await log.append(record)
+        hydrated: list[str] = []
+        row_to_record = log.row_to_record
+
+        def record_hydration(row: sqlite3.Row) -> Decision:
+            hydrated.append(row["kind"])
+            return row_to_record(row)
+
+        monkeypatch.setattr(log, "row_to_record", record_hydration)
+        rows = await log.for_session_between(SESSION, start_ts_ms, end_ts_ms)
+        assert tuple(row.kind for row in rows) == expected_kinds
+        assert tuple(hydrated) == expected_kinds
