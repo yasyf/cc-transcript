@@ -4758,18 +4758,12 @@ fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
 }
 
-fn compact_bound_walk(source: &Arc<TranscriptSnapshot>) -> usize {
-    let built = built_facts(source, &json!([]));
-    let full = NativeStore::audit_facts_bytes(&built);
-    facts_bound_walk(source) - (full - NativeStore::audit_facts_bytes(&built.without_text()))
-}
-
 fn index_root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
     if primed {
         facts_bound_walk(&fixture.pins[0])
             .max(decoded_index_facts_prediction(fixture, &fixture.pins[0]))
     } else {
-        compact_bound_walk(&fixture.pins[0])
+        facts_bound_walk(&fixture.pins[0])
     }
 }
 
