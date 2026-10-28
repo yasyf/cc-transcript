@@ -501,12 +501,6 @@ impl EntryName {
         .expect("entry file name")
     }
 
-    fn legacy(key: &[u8; 32]) -> CString {
-        let high = u128::from_be_bytes(key[..16].try_into().expect("entry name key"));
-        let low = u128::from_be_bytes(key[16..].try_into().expect("entry name key"));
-        CString::new(format!("{high:032x}{low:032x}.facts")).expect("entry file name")
-    }
-
     fn parse(name: &CStr) -> Option<Self> {
         let bytes = name.to_bytes();
         if bytes.len() != ENTRY_NAME_BYTES
@@ -1048,7 +1042,10 @@ impl PreparedDiskCache {
             if entry_name.as_c_str() == OWNER_LOCK {
                 continue;
             }
-            if !generated_entry(&entry_name) && legacy_entry_bytes(&entry_name).is_none() {
+            if !generated_entry(&entry_name)
+                && legacy_entry_bytes(&entry_name).is_none()
+                && EntryName::parse(&entry_name).is_none()
+            {
                 complete = false;
                 continue;
             }
@@ -1252,40 +1249,35 @@ impl PreparedDiskCache {
     }
 
     fn entry_name(&self, key: &PreparedDiskKey, entry: &DiskEntry) -> CString {
-        match self.engine_compatibility {
-            None => EntryName::legacy(&key.name),
-            Some(_) => EntryName {
-                key: key.name,
-                tag: tag(&self.compatibility(key)),
-                bytes: entry.bytes,
-                accounted: entry.accounted,
-                index_bytes: entry.index_bytes,
-                index_accounted: entry.index_accounted,
-                text_state: entry.text_state as u64,
-            }
-            .encode(),
+        EntryName {
+            key: key.name,
+            tag: tag(&self.compatibility(key)),
+            bytes: entry.bytes,
+            accounted: entry.accounted,
+            index_bytes: entry.index_bytes,
+            index_accounted: entry.index_accounted,
+            text_state: entry.text_state as u64,
         }
+        .encode()
     }
 
     fn entry_names(&self, name: &[u8; 32], entry: &DiskEntry) -> Vec<CString> {
-        match self.engine_compatibility {
-            None => vec![EntryName::legacy(name)],
-            Some(engine) => [self.owner_compatibility, engine]
-                .iter()
-                .map(|compatibility| {
-                    EntryName {
-                        key: *name,
-                        tag: tag(compatibility),
-                        bytes: entry.bytes,
-                        accounted: entry.accounted,
-                        index_bytes: entry.index_bytes,
-                        index_accounted: entry.index_accounted,
-                        text_state: entry.text_state as u64,
-                    }
-                    .encode()
-                })
-                .collect(),
-        }
+        [Some(self.owner_compatibility), self.engine_compatibility]
+            .iter()
+            .flatten()
+            .map(|compatibility| {
+                EntryName {
+                    key: *name,
+                    tag: tag(compatibility),
+                    bytes: entry.bytes,
+                    accounted: entry.accounted,
+                    index_bytes: entry.index_bytes,
+                    index_accounted: entry.index_accounted,
+                    text_state: entry.text_state as u64,
+                }
+                .encode()
+            })
+            .collect()
     }
 
     fn open_entry(&self, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {
@@ -1555,16 +1547,22 @@ impl PreparedDiskCache {
         key: &PreparedDiskKey,
         read: &mut DiskRead,
         need: FactsNeed,
+        reserved: usize,
     ) -> Result<DiskLookup, SnapshotError> {
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
         let Some(entry) = state.entries.get(&key.name) else {
             return Ok(DiskLookup::Miss);
         };
+        let covered = if entry.decoded_bytes(need) <= reserved {
+            need
+        } else {
+            FactsNeed::Index
+        };
         let (expected, index_bytes, last_used) = (entry.bytes, entry.index_bytes, entry.last_used);
         let (accounted, index_accounted) = (entry.accounted, entry.index_accounted);
-        let (wanted, admitted) = (entry.read_bytes(need), entry.accounted_for(need));
-        let (text_state, served) = (entry.text_state, entry.served(need));
+        let (wanted, admitted) = (entry.read_bytes(covered), entry.accounted_for(covered));
+        let (text_state, served) = (entry.text_state, entry.served(covered));
         let name = self.entry_name(key, entry);
         let inherited = last_used < MAX_CLAIMED_OWNERS as u64;
         let dir_fd = if inherited {
@@ -1591,7 +1589,7 @@ impl PreparedDiskCache {
             let finished = (&file).take(wanted as u64).read_to_end(&mut bytes);
             read.bytes += bytes.len() as u64;
             finished.map_err(disk_error)?;
-            if need == FactsNeed::Index
+            if covered == FactsNeed::Index
                 && file.metadata().map_err(disk_error)?.len() != expected as u64
             {
                 return Err(incomplete("prepared facts cache entry changed"));
@@ -1857,6 +1855,11 @@ impl PreparedDiskCache {
                 })
             }
             Some((true, _)) => return Ok(true),
+            Some((false, TextState::Present | TextState::Exceeded))
+                if text_state == TextState::Unbuilt =>
+            {
+                return Ok(true)
+            }
             Some((false, _)) => {
                 self.retire(&mut state, key.name)?;
                 None
@@ -2112,6 +2115,15 @@ mod tests {
         }
     }
 
+    fn lookup(
+        cache: &PreparedDiskCache,
+        key: &PreparedDiskKey,
+        read: &mut DiskRead,
+        need: FactsNeed,
+    ) -> Result<DiskLookup, SnapshotError> {
+        cache.lookup(key, read, need, cache.decoded_bytes(key, need).unwrap_or(0))
+    }
+
     fn cache(cap: usize) -> PreparedDiskCache {
         PreparedDiskCache::new(&epoch(), cap, &origin(None), 0, Work::default()).unwrap()
     }
@@ -2336,10 +2348,7 @@ mod tests {
         let file = fs::metadata(cache.entry_path(first.digest)).unwrap();
         assert_eq!(dir.mode() & 0o777, 0o700);
         assert_eq!(file.mode() & 0o777, 0o600);
-        match cache
-            .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
-        {
+        match lookup(&cache, &first, &mut DiskRead::default(), FactsNeed::Full).unwrap() {
             DiskLookup::Hit(loaded) => {
                 assert!(loaded.accounted_bytes() >= std::mem::size_of::<PreparedFacts>());
                 assert_eq!(loaded.inputs, facts().inputs);
@@ -2353,23 +2362,23 @@ mod tests {
         cache.insert(&first, &facts(), |_| true, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 1);
         assert!(matches!(
-            cache
-                .lookup(
-                    &key(stamp(2), &json!({"root":"/repo"})),
-                    &mut DiskRead::default(),
-                    FactsNeed::Full
-                )
-                .unwrap(),
+            lookup(
+                &cache,
+                &key(stamp(2), &json!({"root":"/repo"})),
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
         assert!(matches!(
-            cache
-                .lookup(
-                    &key(stamp(1), &json!({"root":"/elsewhere"})),
-                    &mut DiskRead::default(),
-                    FactsNeed::Full
-                )
-                .unwrap(),
+            lookup(
+                &cache,
+                &key(stamp(1), &json!({"root":"/elsewhere"})),
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
         for changed in [
@@ -2399,9 +2408,7 @@ mod tests {
             .unwrap(),
         ] {
             assert!(matches!(
-                cache
-                    .lookup(&changed, &mut DiskRead::default(), FactsNeed::Full)
-                    .unwrap(),
+                lookup(&cache, &changed, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
                 DiskLookup::Miss
             ));
         }
@@ -2421,30 +2428,22 @@ mod tests {
         assert_eq!(cache.stats().writes, 2);
         assert_eq!(cache.stats().write_bytes, (2 * cap) as u64);
         assert!(matches!(
-            cache
-                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &first, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
         assert!(matches!(
-            cache
-                .lookup(&second, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &second, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         cache.insert(&first, &sample, |_| true, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 3);
         assert_eq!(cache.stats().retired, 2);
         assert!(matches!(
-            cache
-                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &first, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(matches!(
-            cache
-                .lookup(&second, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &second, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2459,24 +2458,18 @@ mod tests {
         *bytes.last_mut().unwrap() ^= 1;
         fs::write(&path, bytes).unwrap();
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
         assert_eq!(cache.stats().writes, 2);
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2494,9 +2487,7 @@ mod tests {
         );
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2521,13 +2512,13 @@ mod tests {
         assert_eq!(cache.stats().retired, 255);
         assert_eq!(cache.stats().writes, 256);
         assert!(matches!(
-            cache
-                .lookup(
-                    &key(stamp(0), &json!({"root":"/repo"})),
-                    &mut DiskRead::default(),
-                    FactsNeed::Full
-                )
-                .unwrap(),
+            lookup(
+                &cache,
+                &key(stamp(0), &json!({"root":"/repo"})),
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2542,9 +2533,13 @@ mod tests {
         assert!(!old_dir.exists());
         let restarted = cache(4096);
         assert!(matches!(
-            restarted
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(
+                &restarted,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2607,9 +2602,7 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2715,9 +2708,7 @@ mod tests {
         cleaner.cleanup_stale_owners_with_limits(128, 128 * 1024 * 1024);
         assert!(active.dir.exists());
         assert!(matches!(
-            active
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&active, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
     }
@@ -2755,16 +2746,12 @@ mod tests {
         fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", &path).unwrap();
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(cache.stats().entries, 0);
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
     }
@@ -2775,7 +2762,7 @@ mod tests {
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let mut missed = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut missed, FactsNeed::Full).unwrap(),
+            lookup(&cache, &entry, &mut missed, FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!((missed.operations, missed.bytes), (0, 0));
@@ -2783,7 +2770,7 @@ mod tests {
         let stored = cache.entry_file_len(&entry);
         let mut hit = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut hit, FactsNeed::Full).unwrap(),
+            lookup(&cache, &entry, &mut hit, FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         assert_eq!((hit.operations, hit.bytes), (1, stored));
@@ -2793,7 +2780,7 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         let mut corrupt = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut corrupt, FactsNeed::Full).unwrap(),
+            lookup(&cache, &entry, &mut corrupt, FactsNeed::Full).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!((corrupt.operations, corrupt.bytes), (1, stored));
@@ -2807,7 +2794,7 @@ mod tests {
                 .unwrap();
             let mut short = DiskRead::default();
             assert!(matches!(
-                cache.lookup(&entry, &mut short, FactsNeed::Full).unwrap(),
+                lookup(&cache, &entry, &mut short, FactsNeed::Full).unwrap(),
                 DiskLookup::Retired
             ));
             assert_eq!(
@@ -2839,8 +2826,7 @@ mod tests {
             estimates
         );
         let mut read = DiskRead::default();
-        let refused = cache
-            .lookup(&entry, &mut read, FactsNeed::Full)
+        let refused = lookup(&cache, &entry, &mut read, FactsNeed::Full)
             .err()
             .map(|error| error.reason);
         let inserted = cache
@@ -2879,7 +2865,7 @@ mod tests {
                 .unwrap()
         })));
         let mut read = DiskRead::default();
-        let outcome = cache.lookup(&entry, &mut read, FactsNeed::Full);
+        let outcome = lookup(&cache, &entry, &mut read, FactsNeed::Full);
         cache.set_read_hook(None);
         assert!(matches!(outcome.unwrap(), DiskLookup::Retired));
         assert_eq!((read.operations, read.bytes as usize), (1, bound));
@@ -2961,9 +2947,8 @@ mod tests {
                     + decode_transients_walk(index)
             )
         );
-        let DiskLookup::Hit(decoded) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(decoded) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -3019,9 +3004,8 @@ mod tests {
                     + decode_transients_walk(text)
             )
         );
-        let DiskLookup::Hit(decoded) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(decoded) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -3105,9 +3089,8 @@ mod tests {
                 (HEADER_BYTES + payload) as u64
             )
         );
-        let DiskLookup::Hit(decoded) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(decoded) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected completed facts");
         };
@@ -3142,9 +3125,7 @@ mod tests {
         assert_eq!(cache.index_capacity_bytes(), offered.get());
         assert_eq!(cache.audit_index_bytes(), offered.get());
         assert!(matches!(
-            cache
-                .lookup(&first, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&cache, &first, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         let second = key(stamp(2), &json!({"root":"/repo"}));
@@ -3194,7 +3175,7 @@ mod tests {
         );
         assert!(left.exists());
         let mut read = DiskRead::default();
-        let DiskLookup::Hit(loaded) = second.lookup(&entry, &mut read, FactsNeed::Full).unwrap()
+        let DiskLookup::Hit(loaded) = lookup(&second, &entry, &mut read, FactsNeed::Full).unwrap()
         else {
             panic!("expected inherited facts");
         };
@@ -3328,9 +3309,13 @@ mod tests {
             damage(&left);
             assert!(
                 matches!(
-                    successor
-                        .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                        .unwrap(),
+                    lookup(
+                        &successor,
+                        &entry,
+                        &mut DiskRead::default(),
+                        FactsNeed::Full
+                    )
+                    .unwrap(),
                     DiskLookup::Miss
                 ),
                 "{case}"
@@ -3365,9 +3350,13 @@ mod tests {
             );
             assert!(
                 matches!(
-                    successor
-                        .lookup(&other, &mut DiskRead::default(), FactsNeed::Full)
-                        .unwrap(),
+                    lookup(
+                        &successor,
+                        &other,
+                        &mut DiskRead::default(),
+                        FactsNeed::Full
+                    )
+                    .unwrap(),
                     DiskLookup::Miss
                 ),
                 "{case}"
@@ -3399,9 +3388,7 @@ mod tests {
             Some(second.dir.as_path())
         );
         assert!(matches!(
-            second
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         drop(second);
@@ -3420,8 +3407,7 @@ mod tests {
         assert_eq!(budget(&second), (0, 0, 0, 0));
         assert_eq!(second.decoded_bytes(&entry, FactsNeed::Full), None);
         assert!(matches!(
-            live.lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&live, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         drop(second);
@@ -3569,9 +3555,7 @@ mod tests {
         assert!(!temp.exists());
         assert_eq!(budget(&second), (2, stored, stored, 0));
         assert!(matches!(
-            second
-                .lookup(&listed, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&second, &listed, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(!left.exists());
@@ -3601,9 +3585,7 @@ mod tests {
         let third = reuse_cache(&namespace, 64 * 1024);
         assert_eq!(budget(&third), (1, 0, stored, 0));
         assert!(matches!(
-            third
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&third, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(!left.exists());
@@ -3657,9 +3639,13 @@ mod tests {
         fs::remove_file(&left).unwrap();
         fs::create_dir(&left).unwrap();
         assert!(matches!(
-            successor
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(
+                &successor,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!(budget(&successor), (0, 0, 0, stored));
@@ -3709,9 +3695,13 @@ mod tests {
         let entry = revision(adopted as u64 + 1);
         assert!(successor.decoded_bytes(&entry, FactsNeed::Full).is_some());
         assert!(matches!(
-            successor
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(
+                &successor,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert_eq!(budget(&successor), (1, size, 0, 0));
@@ -3819,9 +3809,13 @@ mod tests {
         fs::remove_file(&left).unwrap();
         fs::create_dir(&left).unwrap();
         assert!(matches!(
-            successor
-                .lookup(&revision(1), &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(
+                &successor,
+                &revision(1),
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!(budget(&successor), (0, 0, 0, stored));
@@ -3887,9 +3881,13 @@ mod tests {
         assert!(successor.state.lock().unwrap().claimed[0].cursor.is_some());
         assert!(!successor.state.lock().unwrap().claimed[0].dirty);
         assert!(matches!(
-            successor
-                .lookup(&revision(1), &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(
+                &successor,
+                &revision(1),
+                &mut DiskRead::default(),
+                FactsNeed::Full
+            )
+            .unwrap(),
             DiskLookup::Hit(_)
         ));
         assert!(successor.state.lock().unwrap().claimed[0].dirty);
@@ -3930,9 +3928,7 @@ mod tests {
         };
         assert_eq!(settled, (true, true, 0));
         assert!(matches!(
-            successor
-                .lookup(&lost, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&successor, &lost, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Miss
         ));
         assert_eq!(budget(&successor), (1, stored, 0, 0));
@@ -3956,9 +3952,7 @@ mod tests {
         held.sort();
         assert_eq!(held, [legacy, "owner.lock".to_owned()]);
         assert!(matches!(
-            plain
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap(),
+            lookup(&plain, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
             DiskLookup::Hit(_)
         ));
         let namespace = isolated_namespace();
@@ -4078,7 +4072,7 @@ mod tests {
             Some(stored as usize + 1)
         );
         let mut read = DiskRead::default();
-        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut read, FactsNeed::Index).unwrap()
+        let DiskLookup::Hit(decoded) = lookup(&cache, &entry, &mut read, FactsNeed::Index).unwrap()
         else {
             panic!("expected index facts");
         };
@@ -4092,7 +4086,7 @@ mod tests {
         assert!(decoded.accounted_bytes() <= built.index_accounted_bytes());
         assert!(decoded.serves(FactsNeed::Index) && !decoded.serves(FactsNeed::Full));
         let mut full = DiskRead::default();
-        let DiskLookup::Hit(loaded) = cache.lookup(&entry, &mut full, FactsNeed::Full).unwrap()
+        let DiskLookup::Hit(loaded) = lookup(&cache, &entry, &mut full, FactsNeed::Full).unwrap()
         else {
             panic!("expected full facts");
         };
@@ -4122,9 +4116,8 @@ mod tests {
         built.overrides = OverrideFacts::Exceeded;
         built.refresh_accounted();
         assert!(cache.insert(&entry, &built, |_| true, |_| true).unwrap());
-        let DiskLookup::Hit(full) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(full) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected full facts");
         };
@@ -4141,9 +4134,8 @@ mod tests {
                 "prepared override text exceeded its bound"
             )
         );
-        let DiskLookup::Hit(index) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Index)
-            .unwrap()
+        let DiskLookup::Hit(index) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Index).unwrap()
         else {
             panic!("expected index facts");
         };
@@ -4164,14 +4156,14 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
         let mut read = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut read, FactsNeed::Index).unwrap(),
+            lookup(&cache, &entry, &mut read, FactsNeed::Index).unwrap(),
             DiskLookup::Hit(decoded) if index_only(&decoded) && decoded.inputs == built.inputs
         ));
         assert_eq!(read.bytes as usize, HEADER_BYTES + index);
         assert_eq!(cache.stats().entries, 1);
         let mut full = DiskRead::default();
         assert!(matches!(
-            cache.lookup(&entry, &mut full, FactsNeed::Full).unwrap(),
+            lookup(&cache, &entry, &mut full, FactsNeed::Full).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(full.bytes, bytes.len() as u64);
@@ -4190,9 +4182,7 @@ mod tests {
             bytes[HEADER_BYTES + 4] ^= 1;
             fs::write(&path, &bytes).unwrap();
             assert!(matches!(
-                cache
-                    .lookup(&entry, &mut DiskRead::default(), need)
-                    .unwrap(),
+                lookup(&cache, &entry, &mut DiskRead::default(), need).unwrap(),
                 DiskLookup::Retired
             ));
             assert_eq!(cache.stats().entries, 0);
@@ -4211,9 +4201,7 @@ mod tests {
         bytes[40] ^= 1;
         fs::write(&path, &bytes).unwrap();
         assert!(matches!(
-            cache
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Index)
-                .unwrap(),
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Index).unwrap(),
             DiskLookup::Retired
         ));
         assert_eq!(cache.stats().entries, 0);
@@ -4244,7 +4232,7 @@ mod tests {
             )
         );
         let mut read = DiskRead::default();
-        let DiskLookup::Hit(loaded) = second.lookup(&entry, &mut read, FactsNeed::Index).unwrap()
+        let DiskLookup::Hit(loaded) = lookup(&second, &entry, &mut read, FactsNeed::Index).unwrap()
         else {
             panic!("expected inherited index facts");
         };
@@ -4409,7 +4397,7 @@ mod tests {
             cache.decoded_bytes(&entry, FactsNeed::Index)
         );
         let mut read = DiskRead::default();
-        let DiskLookup::Hit(decoded) = cache.lookup(&entry, &mut read, FactsNeed::Index).unwrap()
+        let DiskLookup::Hit(decoded) = lookup(&cache, &entry, &mut read, FactsNeed::Index).unwrap()
         else {
             panic!("expected index facts");
         };
@@ -4417,7 +4405,7 @@ mod tests {
         assert_eq!((read.operations, read.bytes as usize), (1, stored));
         let mut probed = DiskRead::default();
         let DiskLookup::IndexOnly(partial) =
-            cache.lookup(&entry, &mut probed, FactsNeed::Full).unwrap()
+            lookup(&cache, &entry, &mut probed, FactsNeed::Full).unwrap()
         else {
             panic!("expected an index-only answer to the full lookup");
         };
@@ -4446,9 +4434,8 @@ mod tests {
         );
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Present));
         assert_eq!(entry_files(&cache), [cache.entry_file(&entry)]);
-        let DiskLookup::Hit(loaded) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(loaded) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected full facts");
         };
@@ -4473,16 +4460,14 @@ mod tests {
         assert!(cache.insert(&entry, &exceeded, |_| true, |_| true).unwrap());
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Exceeded));
         assert_eq!(cache.stats().writes, 2);
-        let DiskLookup::Hit(full) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(full) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected full facts");
         };
         assert!(matches!(full.overrides, OverrideFacts::Exceeded));
-        let DiskLookup::Hit(index) = cache
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Index)
-            .unwrap()
+        let DiskLookup::Hit(index) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Index).unwrap()
         else {
             panic!("expected index facts");
         };
@@ -4492,6 +4477,36 @@ mod tests {
             .unwrap());
         assert_eq!(text_state_of(&cache, &entry), Some(TextState::Exceeded));
         assert_eq!(cache.stats().writes, 2);
+    }
+
+    #[test]
+    fn a_full_lookup_under_a_stale_index_reservation_serves_only_the_index() {
+        let cache = cache(64 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let compact = index_facts(3, 2);
+        assert!(cache.insert(&entry, &compact, |_| true, |_| true).unwrap());
+        let reserved = cache.decoded_bytes(&entry, FactsNeed::Full).unwrap();
+        assert!(cache
+            .insert(&entry, &pushed_facts(3, 2), |_| true, |_| true)
+            .unwrap());
+        assert!(cache.decoded_bytes(&entry, FactsNeed::Full).unwrap() > reserved);
+        let indexed = HEADER_BYTES + cache.entry_index_bytes(&entry);
+        let mut read = DiskRead::default();
+        let DiskLookup::IndexOnly(partial) = cache
+            .lookup(&entry, &mut read, FactsNeed::Full, reserved)
+            .unwrap()
+        else {
+            panic!("expected an index-only answer under the stale reservation");
+        };
+        assert!(index_only(&partial) && partial.inputs == compact.inputs);
+        assert_eq!((read.operations, read.bytes as usize), (1, indexed));
+        let DiskLookup::Hit(full) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
+        else {
+            panic!("expected full facts");
+        };
+        assert!(full.is_full());
+        assert_eq!(text_state_of(&cache, &entry), Some(TextState::Present));
     }
 
     #[test]
@@ -4507,9 +4522,7 @@ mod tests {
             bytes[HEADER_BYTES + 4] ^= 1;
             fs::write(&path, &bytes).unwrap();
             assert!(matches!(
-                cache
-                    .lookup(&entry, &mut DiskRead::default(), need)
-                    .unwrap(),
+                lookup(&cache, &entry, &mut DiskRead::default(), need).unwrap(),
                 DiskLookup::Retired
             ));
             assert_eq!(cache.stats().entries, 0);
@@ -4542,9 +4555,7 @@ mod tests {
             for need in [FactsNeed::Index, FactsNeed::Full] {
                 assert!(
                     matches!(
-                        cache
-                            .lookup(&entry, &mut DiskRead::default(), need)
-                            .unwrap(),
+                        lookup(&cache, &entry, &mut DiskRead::default(), need).unwrap(),
                         DiskLookup::Retired | DiskLookup::Miss
                     ),
                     "{case}"
@@ -4777,9 +4788,8 @@ mod tests {
             assert!(stranded(&second).is_empty());
             assert!(live_file.is_file());
             assert!(live.has_entry(&other).unwrap());
-            let DiskLookup::Hit(loaded) = second
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap()
+            let DiskLookup::Hit(loaded) =
+                lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
             else {
                 panic!("expected full facts");
             };
@@ -4815,9 +4825,8 @@ mod tests {
             (1, 0, full_bytes.len(), unbuilt_bytes.len())
         );
         assert_eq!(text_state_of(&second, &entry), Some(TextState::Present));
-        let DiskLookup::Hit(loaded) = second
-            .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-            .unwrap()
+        let DiskLookup::Hit(loaded) =
+            lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
         else {
             panic!("expected full facts");
         };
@@ -4859,10 +4868,13 @@ mod tests {
                 .map(|owner| (owner.name.clone(), owner.garbage))
                 .collect();
             assert_eq!(garbage, [(loser_dir, unbuilt_bytes.len())]);
-            let DiskLookup::Hit(loaded) = successor
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap()
-            else {
+            let DiskLookup::Hit(loaded) = lookup(
+                &successor,
+                &entry,
+                &mut DiskRead::default(),
+                FactsNeed::Full,
+            )
+            .unwrap() else {
                 panic!("expected full facts");
             };
             assert!(loaded.is_full());
@@ -4902,9 +4914,8 @@ mod tests {
             drop(first);
             let second = reuse_cache(&namespace, 64 * 1024);
             assert_eq!(bounds(&second), expected, "{state:?}");
-            let lookup = second
-                .lookup(&entry, &mut DiskRead::default(), FactsNeed::Full)
-                .unwrap();
+            let lookup =
+                lookup(&second, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap();
             match (state, lookup) {
                 (TextState::Unbuilt, DiskLookup::IndexOnly(loaded)) => assert!(index_only(&loaded)),
                 (TextState::Present, DiskLookup::Hit(loaded)) => {

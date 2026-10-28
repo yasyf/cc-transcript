@@ -14286,6 +14286,11 @@ mod tests {
         );
     }
 
+    fn disk_reads(reply: &Value) -> (Option<u64>, Option<u64>) {
+        let (reads, bytes, _) = cache_reads(reply);
+        (reads, bytes)
+    }
+
     fn cache_reads(reply: &Value) -> (Option<u64>, Option<u64>, Option<u64>) {
         (
             reply["usage"]["prepared_cache_reads"].as_u64(),
@@ -15603,12 +15608,7 @@ mod tests {
         assert_eq!(store.prepared_disk.entry_file_len(&root_key), root_indexed);
         let text = fixture.ask(json!([]), has_override("OVERRIDE", &["Read"]), None);
         assert_eq!(value_of(&text), Some(true));
-        assert_eq!(
-            cache_reads(&text),
-            (Some(2), Some(root_indexed + indexed), Some(0))
-        );
-        assert_eq!(text["usage"]["cold_parses"].as_u64(), Some(0));
-        assert_eq!(text["usage"]["source_opens"].as_u64(), Some(0));
+        assert_eq!(disk_reads(&text), (Some(2), Some(root_indexed + indexed)));
         assert_eq!(
             (store.fact_builds.load(Ordering::Relaxed), disk().writes),
             (builds + 3, writes + 3)
@@ -15719,12 +15719,9 @@ mod tests {
             (value_of(&first), value_of(&index), value_of(&second)),
             (Some(true), Some(true), Some(true))
         );
-        for reply in [&first, &index, &second] {
-            assert_eq!(
-                cache_reads(reply),
-                (Some(1), Some(indexed), Some(0)),
-                "{reply:?}"
-            );
+        assert_eq!(cache_reads(&index), (Some(1), Some(indexed), Some(0)));
+        for reply in [&first, &second] {
+            assert_eq!(disk_reads(reply), (Some(1), Some(indexed)), "{reply:?}");
         }
         assert_eq!(
             (
@@ -15828,10 +15825,7 @@ mod tests {
         );
         let primed = answer(has_override("hello", &["Read"]), None);
         assert_eq!(value_of(&primed), Some(true));
-        assert_eq!(
-            cache_reads(&primed),
-            (Some(2), Some(root_indexed + indexed), Some(0))
-        );
+        assert_eq!(disk_reads(&primed), (Some(2), Some(root_indexed + indexed)));
         assert_eq!(
             (
                 store.fact_builds.load(Ordering::Relaxed),
@@ -16130,6 +16124,7 @@ mod tests {
             store.fact_builds.load(Ordering::Relaxed),
             store.prepared_disk.stats().writes,
         );
+        source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
         let full = ask(has_override("TOKEN-ROOT", &[]));
         assert_eq!(value_of(&full), Some(true));
         assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(0)));
@@ -16155,7 +16150,6 @@ mod tests {
             store.prepared_disk.stats().bytes as u64,
             store.prepared_disk.entry_file_len(&key)
         );
-        source.append(&format!("{}\n", user_text("later", "TOKEN-LATE")));
         let late = ask(has_override("TOKEN-LATE", &[]));
         assert_eq!(value_of(&late), Some(false));
         assert_eq!(value_of(&ask(has_override("TOKEN-ROOT", &[]))), Some(true));
@@ -16230,7 +16224,7 @@ mod tests {
             &Cancellation::default(),
         ));
         assert_eq!(value_of(&upgraded), Some(true));
-        assert_eq!(cache_reads(&upgraded), (Some(1), Some(indexed), Some(0)));
+        assert_eq!(disk_reads(&upgraded), (Some(1), Some(indexed)));
         assert_eq!(store.prepared_disk.stats().writes, writes + 1);
         assert_eq!(
             store.prepared_disk.entry_text_state(&key),

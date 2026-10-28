@@ -13501,7 +13501,7 @@ fn upgrade_attempt(fixture: &Fixture, path: &Path) -> Result<(), SnapshotError> 
 
 #[test]
 fn primed_index_source_upgrade_reserves_the_decode_bound_then_the_construction_bound() {
-    let scenario = Scenario::new(1, |index| line(&format!("thread-{index:04}")));
+    let scenario = Scenario::new(1, |index| prompt_line(&format!("thread-{index:04}"), 4096));
     let path = &scenario.sidechains[0];
     let site = "prepared_source index-only upgrade";
     for background in [false, true] {

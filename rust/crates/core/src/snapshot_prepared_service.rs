@@ -354,43 +354,54 @@ impl NativeStore {
             return Err(prepared_cache_read_limit());
         }
         let mut reservation = self.reserve_projection(context, decoded.unwrap_or(0).max(bound))?;
-        if decoded.is_some() {
-            #[cfg(test)]
-            self.fact_lookups.fetch_add(1, Ordering::Relaxed);
-            let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(&key, &mut read, need);
-            usage[18] += read.operations;
-            usage[19] += read.bytes;
-            match lookup? {
-                crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
-                    let facts = Arc::new(facts);
-                    return match self.cache_prepared_facts(
-                        root.stamp,
-                        Arc::clone(&facts),
-                        classifier,
-                        context,
-                        &mut reservation,
-                        need,
-                    ) {
-                        Ok(retained) => Ok((retained, reservation)),
-                        Err(error) if error.status == Status::RetainedLimit => Ok((
-                            self.retain_facts(&mut reservation, context, facts)?,
-                            reservation,
-                        )),
-                        Err(error) => Err(error),
-                    };
+        let upgrade = match decoded {
+            Some(decoded) => {
+                #[cfg(test)]
+                self.fact_lookups.fetch_add(1, Ordering::Relaxed);
+                let mut read = crate::snapshot_prepared_disk::DiskRead::default();
+                let lookup = self.prepared_disk.lookup(&key, &mut read, need, decoded);
+                usage[18] += read.operations;
+                usage[19] += read.bytes;
+                match lookup? {
+                    crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                        let facts = Arc::new(facts);
+                        return match self.cache_prepared_facts(
+                            root.stamp,
+                            Arc::clone(&facts),
+                            classifier,
+                            context,
+                            &mut reservation,
+                            need,
+                        ) {
+                            Ok(retained) => Ok((retained, reservation)),
+                            Err(error) if error.status == Status::RetainedLimit => Ok((
+                                self.retain_facts(&mut reservation, context, facts)?,
+                                reservation,
+                            )),
+                            Err(error) => Err(error),
+                        };
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "prepared root facts revision was evicted",
+                        ));
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
+                        drop(compact);
+                        true
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::Miss => false,
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Retired => {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "prepared root facts revision was evicted",
-                    ));
-                }
-                crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => drop(compact),
-                crate::snapshot_prepared_disk::DiskLookup::Miss => {}
             }
-        }
+            None => false,
+        };
+        let decode_reservation = (!upgrade).then_some(reservation);
         drop(claim);
+        let mut reservation = match decode_reservation {
+            Some(reservation) => reservation,
+            None => self.reserve_projection(context, bound)?,
+        };
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = root.event_count;
@@ -559,7 +570,7 @@ impl NativeStore {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
             let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(&key, &mut read, need);
+            let lookup = self.prepared_disk.lookup(&key, &mut read, need, decoded);
             usage[18] += read.operations;
             usage[19] += read.bytes;
             if let PreparedCacheReads::Warming(..) = cache_reads {
