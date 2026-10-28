@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
