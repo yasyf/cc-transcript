@@ -806,6 +806,16 @@ fn truncated(path: &Path) {
 }
 
 fn corrupted(family: &Family) {
+    corrupt_child_entry(family, |bytes| {
+        bytes[crate::snapshot_prepared_disk::HEADER_BYTES + 8] ^= 1
+    });
+}
+
+fn text_corrupted(family: &Family) {
+    corrupt_child_entry(family, |bytes| *bytes.last_mut().unwrap() ^= 1);
+}
+
+fn corrupt_child_entry(family: &Family, flip: impl FnOnce(&mut Vec<u8>)) {
     let stamp = SourceStamp::of(&std::fs::metadata(&family.members[1]).unwrap());
     let entry = family.store.prepared_disk.entry_file(
         &crate::snapshot_prepared_disk::PreparedDiskKey::new(
@@ -818,7 +828,7 @@ fn corrupted(family: &Family) {
         .unwrap(),
     );
     let mut bytes = std::fs::read(&entry).unwrap();
-    *bytes.last_mut().unwrap() ^= 1;
+    flip(&mut bytes);
     std::fs::write(&entry, bytes).unwrap();
     assert_eq!(
         family
@@ -881,6 +891,42 @@ fn truncated_child_fails_a_negative_primary_despite_a_root_positive_observer() {
         |family| truncated(&family.members[1]),
         "changed",
         "prepared graph source changed",
+    );
+}
+
+#[test]
+fn text_corruption_of_a_child_entry_fails_only_the_full_query() {
+    let family = Family::new(swift_store());
+    let validated = family.ask(reads("absent.rs"), None);
+    assert_eq!(
+        validated["data"],
+        json!({"kind":"scalar","value":false}),
+        "{validated:?}"
+    );
+    text_corrupted(&family);
+    let compact = family.ask(reads("absent.rs"), None);
+    assert_eq!(
+        compact["data"],
+        json!({"kind":"scalar","value":false}),
+        "{compact:?}"
+    );
+    let full = family.ask(
+        json!({"kind":"has_override","token":"absent","invalidated_by":[],"subagents":true}),
+        None,
+    );
+    assert_eq!(
+        (full["status"].as_str(), full["reason"].as_str()),
+        (
+            Some("incomplete"),
+            Some("prepared facts revision was evicted")
+        ),
+        "{full:?}"
+    );
+    let lazy = family.ask(reads("root.rs"), None);
+    assert_eq!(
+        lazy["data"],
+        json!({"kind":"scalar","value":true}),
+        "{lazy:?}"
     );
 }
 

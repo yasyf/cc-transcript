@@ -14397,7 +14397,7 @@ mod tests {
                 stats["data"]["counters"]["prepared_cache_reads"].as_u64(),
                 stats["data"]["counters"]["prepared_cache_bytes_read"].as_u64(),
             ),
-            (Some(after[18] + 1), Some(after[19] + stored))
+            (Some(after[18] + 1), Some(after[19] + indexed))
         );
     }
 
@@ -16308,6 +16308,10 @@ mod tests {
         let identity =
             |path: &std::path::Path| SourceStamp::of(&std::fs::metadata(path).unwrap()).identity;
         let large_query = graph(&large);
+        let mut large_index_query = large_query.clone();
+        large_index_query.insert("query", has_tool("Missing"));
+        ask(&large_index_query);
+        assert_eq!(resident_member_is_full(&store, &large), Some(false));
         ask(&large_query);
         ask(&graph(&small));
         assert!(store
@@ -16402,6 +16406,20 @@ mod tests {
         let (store, query) = open(16 * 1024 * 1024);
         assert_eq!(pass(&store, &query).value, Some(true));
         let built = store.lock_state().ledger.shared.facts();
+        let built_children: usize = {
+            let state = store.lock_state();
+            children
+                .iter()
+                .map(|child| {
+                    state
+                        .cached_prepared_facts(
+                            &SourceStamp::of(&std::fs::metadata(child).unwrap()).identity,
+                        )
+                        .facts
+                        .accounted_bytes()
+                })
+                .sum()
+        };
         evict_memory_facts(&store, &source.path);
         for child in &children {
             evict_memory_facts(&store, child);
@@ -16435,7 +16453,10 @@ mod tests {
         };
         decoded.sort_unstable();
         let working_set = store.lock_state().ledger.shared.facts();
-        assert!(working_set <= built && built <= working_set * 8 / 5);
+        assert_eq!(
+            working_set,
+            built - built_children + decoded.iter().sum::<usize>()
+        );
         let held_by_the_graph = working_set - decoded.iter().sum::<usize>();
         let fitting = |budget: usize| {
             decoded

@@ -2271,9 +2271,11 @@ fn root_facts_are_reserved_at_their_bound_before_parsing() {
                 .cached_prepared_facts(&snapshot.stamp.identity)
                 .facts,
         );
+        let compact =
+            NativeStore::audit_facts_bytes(&built_facts(&snapshot, &json!([])).without_text());
         assert_eq!(
-            cached, bound,
-            "root facts: the cached {cached}-byte facts are not the {bound} bytes reserved"
+            cached, compact,
+            "root facts: the cached {cached}-byte facts are not the {compact}-byte compact index"
         );
     }
 }
@@ -4756,6 +4758,21 @@ fn decoded_root_facts_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk(&fixture.pins[0]).max(decoded_facts_prediction(fixture, &fixture.pins[0]))
 }
 
+fn compact_bound_walk(source: &Arc<TranscriptSnapshot>) -> usize {
+    let built = built_facts(source, &json!([]));
+    let full = NativeStore::audit_facts_bytes(&built);
+    facts_bound_walk(source) - (full - NativeStore::audit_facts_bytes(&built.without_text()))
+}
+
+fn index_root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
+    if primed {
+        facts_bound_walk(&fixture.pins[0])
+            .max(decoded_index_facts_prediction(fixture, &fixture.pins[0]))
+    } else {
+        compact_bound_walk(&fixture.pins[0])
+    }
+}
+
 fn decoded_source_facts_prediction(fixture: &Fixture) -> usize {
     decoded_facts_prediction(fixture, &fixture.pins[1])
 }
@@ -5164,7 +5181,7 @@ fn prepare_graph_refuses_root_facts_before_construction_or_decoding() {
     for background in [false, true] {
         for (primed, built) in [(false, [1, 0]), (true, [0, 1])] {
             let build = || root_facts_fixture(&source, background, primed);
-            let predicted = root_facts_prediction(&build(), primed);
+            let predicted = index_root_facts_prediction(&build(), primed);
             assert_facts_admitted_in_full(
                 site,
                 &build,
@@ -5923,11 +5940,19 @@ fn degraded_root_slices_are_admitted_at_the_root_bound_before_construction() {
                 .is_full(),
             "{site}: the graph root facts carry override text"
         );
+        let mut wide = work_bounds();
+        wide.max_read_bytes = CAP;
+        wide.max_source_read_bytes = CAP;
+        let full_root = crate::snapshot_projection::prepare_facts(
+            &probe.pins[0],
+            &json!([]),
+            &wide,
+            &Cancellation::default(),
+        )
+        .unwrap()
+        .0;
         assert!(
-            matches!(
-                built_facts(&probe.pins[0], &json!([])).overrides,
-                OverrideFacts::Exceeded
-            ),
+            matches!(full_root.overrides, OverrideFacts::Exceeded),
             "{site}: the full root facts kept their overrides"
         );
         let slice = built_facts(&probe.pins[0], &json!([{"kind":"current_turn"}]));
