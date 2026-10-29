@@ -1015,17 +1015,16 @@ impl NativeStore {
             drop(membership_reservation);
             let members = Arc::clone(&membership.members);
             let sidechain_dirs = Arc::clone(&membership.sidechain_dirs);
-            let (retained, mut reservation) =
-                self.prepared_root_facts(
-                    &root,
-                    &view["classifier"],
-                    context,
-                    &remaining,
-                    PreparedCacheReads::Unmetered,
-                    cancel,
-                    usage,
-                    FactsNeed::Index,
-                )?;
+            let (retained, mut reservation) = self.prepared_root_facts(
+                &root,
+                &view["classifier"],
+                context,
+                &remaining,
+                PreparedCacheReads::Unmetered,
+                cancel,
+                usage,
+                FactsNeed::Index,
+            )?;
             let shared = members
                 .iter()
                 .position(|source| source.stamp.identity.file() == root.stamp.identity.file());
@@ -1109,19 +1108,24 @@ impl NativeStore {
                 remaining,
                 expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
             };
-            return self.publish_prepared_graph(graph_id, graph, revision, context, &mut reservation);
+            return self.publish_prepared_graph(
+                graph_id,
+                graph,
+                revision,
+                context,
+                &mut reservation,
+            );
         }
-        let (retained, mut reservation) =
-            self.prepared_root_facts(
-                    &root,
-                    &view["classifier"],
-                    context,
-                    &remaining,
-                    PreparedCacheReads::Unmetered,
-                    cancel,
-                    usage,
-                    FactsNeed::Index,
-                )?;
+        let (retained, mut reservation) = self.prepared_root_facts(
+            &root,
+            &view["classifier"],
+            context,
+            &remaining,
+            PreparedCacheReads::Unmetered,
+            cancel,
+            usage,
+            FactsNeed::Index,
+        )?;
         let seen_capacity = set_capacity_for(&HashSet::<SourceIdentity>::new(), 1);
         self.extend_projection_reservation(
             &mut reservation,
@@ -1138,8 +1142,10 @@ impl NativeStore {
         )?;
         #[cfg(test)]
         self.build_records.fetch_add(1, Ordering::Relaxed);
-        let build = PreparedBuild {
+        let mut build = PreparedBuild {
             charge_work: Work::default(),
+            owned_payload_bytes: 0,
+            context_bytes: 0,
             claimant: str_field(context, "claimant")?.to_owned(),
             context: context.clone(),
             request: request.clone(),
@@ -1156,6 +1162,14 @@ impl NativeStore {
             sidechain_dirs: Vec::new(),
             expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
         };
+        build.context_bytes = value_bytes(&build.context);
+        build.owned_payload_bytes = build.claimant.capacity()
+            + build.context_bytes
+            + value_bytes(&build.request)
+            + value_bytes(&build.root_handle)
+            + value_bytes(&build.classifier)
+            + build.stamps[0].0.capacity();
+        build.charge_work.tick(1);
         assert_eq!(
             (build.seen.capacity(), build.stamps.capacity()),
             (seen_capacity, 1),
@@ -1242,16 +1256,18 @@ impl NativeStore {
                 }
             }
             for path in distinct.into_iter().rev() {
+                build.owned_payload_bytes += path.capacity();
+                build.charge_work.tick(1);
                 build.tasks.push(GraphTask::Visit {
                     path,
                     depth: 1,
                     spawned_by: None,
                 });
             }
-            build.tasks.push(GraphTask::List {
-                parent: build.root.canonical_path.clone(),
-                depth: 1,
-            });
+            let parent = build.root.canonical_path.clone();
+            build.owned_payload_bytes += parent.capacity();
+            build.charge_work.tick(1);
+            build.tasks.push(GraphTask::List { parent, depth: 1 });
         }
         self.extend_projection_reservation(reservation, context, FILESYSTEM_PATH_BYTES)?;
         let work_stop = self.config.event_step.min(self.config.page_items);
@@ -1295,6 +1311,8 @@ impl NativeStore {
                                 path.capacity() + vec_growth(&listing.children, 1),
                             )?;
                             let predicted = vec_capacity_for(&listing.children, 1);
+                            build.owned_payload_bytes += path.capacity();
+                            build.charge_work.tick(1);
                             listing.children.push(path);
                             assert_eq!(
                                 listing.children.capacity(),
@@ -1327,6 +1345,8 @@ impl NativeStore {
                     );
                     for path in listing.children.into_iter().rev() {
                         let spawned_by = spawner(&path).to_owned();
+                        build.owned_payload_bytes += spawned_by.capacity();
+                        build.charge_work.tick(1);
                         build.tasks.push(GraphTask::Visit {
                             path,
                             depth: listing.depth,
@@ -1338,6 +1358,8 @@ impl NativeStore {
                 let Some(task) = build.tasks.pop() else {
                     break;
                 };
+                build.owned_payload_bytes -= task_bytes(&task);
+                build.charge_work.tick(1);
                 match task {
                     GraphTask::List { parent, depth } => {
                         let base = parent
@@ -1362,6 +1384,8 @@ impl NativeStore {
                         let canonical = match realpath(&directory) {
                             Ok(canonical) => canonical,
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                build.owned_payload_bytes += directory.capacity();
+                                build.charge_work.tick(1);
                                 build.sidechain_dirs.push((directory, None));
                                 assert_eq!(
                                     build.sidechain_dirs.capacity(),
@@ -1382,6 +1406,8 @@ impl NativeStore {
                                 + READ_DIR_HANDLE_BYTES
                                 + directory.as_os_str().len(),
                         )?;
+                        build.owned_payload_bytes += canonical.capacity();
+                        build.charge_work.tick(1);
                         build.sidechain_dirs.push((canonical, Some(stamp)));
                         assert_eq!(
                             build.sidechain_dirs.capacity(),
@@ -1420,6 +1446,8 @@ impl NativeStore {
                             let predicted =
                                 (set_capacity_for(&build.seen, 1), build.tasks.capacity());
                             build.seen.insert(stamp.identity.file());
+                            build.owned_payload_bytes += canonical.capacity();
+                            build.charge_work.tick(1);
                             build.tasks.push(GraphTask::List {
                                 parent: canonical,
                                 depth: depth + 1,
@@ -1459,6 +1487,10 @@ impl NativeStore {
                             path: canonical.clone(),
                             stamp,
                         });
+                        build.owned_payload_bytes += build.stamps.last().unwrap().0.capacity()
+                            + build.sources.last().unwrap().path.capacity()
+                            + canonical.capacity();
+                        build.charge_work.tick(3);
                         build.tasks.push(GraphTask::List {
                             parent: canonical,
                             depth: depth + 1,

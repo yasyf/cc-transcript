@@ -2164,6 +2164,121 @@ fn prepared_build_charge_work_is_independent_of_retained_paths() {
 }
 
 #[test]
+fn incremental_prepared_build_charge_matches_every_parked_allocation() {
+    for background in [false, true] {
+        for inactive in [false, true] {
+            let scenario = Scenario::new(17, |index| line(&format!("thread-{index:04}")));
+            let directory = scenario.root.directory.join("s").join("subagents");
+            std::fs::create_dir_all(&directory).unwrap();
+            for index in 0..33 {
+                std::fs::write(
+                    directory.join(format!("agent-{index:04}.jsonl")),
+                    line(&format!("discovered-{index:04}")),
+                )
+                .unwrap();
+            }
+            std::fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+            let alias = scenario.root.directory.join("alias.jsonl");
+            std::os::unix::fs::symlink(&scenario.sidechains[0], &alias).unwrap();
+            let mut direct = scenario.direct();
+            direct.push(direct[0].clone());
+            direct.push(alias.to_string_lossy().into_owned());
+            let store = store_with(4096, 1, &[]);
+            let mut owner = context_for("incremental-allocation-audit", background);
+            let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+            let mut request = prepare_request(&root, &[], &[], &direct);
+            if inactive {
+                request.insert("active_since_unix_ms", json!(now_ms() + 60_000));
+            }
+            let mut response = store.request(&request, &owner, &Cancellation::default());
+            let work = {
+                let state = store.lock_state();
+                state
+                    .prepared_builds
+                    .values()
+                    .next()
+                    .unwrap()
+                    .charge_work
+                    .counter()
+            };
+            let mut calls = 1;
+            let mut partial_listing = false;
+            while response["cursor"].as_str().is_some() {
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("incomplete"),
+                    "{response:?}"
+                );
+                store.assert_conserved();
+                {
+                    let state = store.lock_state();
+                    let (token, build) = state.prepared_builds.iter().next().unwrap();
+                    partial_listing |= build.listing.is_some();
+                    assert_eq!(
+                        token.capacity() + build.charge(),
+                        NativeStore::audit_prepared_build_bytes(token, build)
+                    );
+                }
+                owner.insert(
+                    "padding",
+                    json!("p".repeat(if calls % 2 == 0 { 257 } else { 3 })),
+                );
+                response = resume(&store, &response, &owner);
+                calls += 1;
+                assert!(calls < 256, "{response:?}");
+            }
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert!(partial_listing);
+            assert!(work.load(Ordering::Relaxed) <= 32 * (direct.len() + 33 + calls));
+            store.assert_conserved();
+            let state = store.lock_state();
+            assert!(state.prepared_builds.is_empty());
+            assert_eq!(state.transient_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn incremental_prepared_build_discovery_refusal_drops_its_taken_listing() {
+    let scenario = Scenario::new(0, |_| unreachable!());
+    let directory = scenario.root.directory.join("s").join("subagents");
+    std::fs::create_dir_all(&directory).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            directory.join(format!("agent-{index}.jsonl")),
+            line(&format!("discovered-{index}")),
+        )
+        .unwrap();
+    }
+    for background in [false, true] {
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-discovery-refusal", background);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let mut request = prepare_request(&root, &[], &[], &[]);
+        request["limits"].insert("max_discovery_entries", json!(1));
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let refused = resume(&store, &response, &owner);
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("incomplete"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("prepared graph discovery budget exhausted"),
+            "{refused:?}"
+        );
+        assert!(refused["cursor"].is_null());
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+    }
+}
+
+#[test]
 fn coalesced_prepared_build_admits_its_peak_before_publication() {
     let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
