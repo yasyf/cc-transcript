@@ -1061,25 +1061,40 @@ fn prompt_query(
         return string_page(&[vec![prompt]], next, work);
     }
     let count = count(query, "count")?;
-    let mut plans = Vec::new();
-    let indices: Box<dyn Iterator<Item = usize>> = match selection {
-        "first" => Box::new(first..=last),
-        "last" => Box::new((first..=last).rev()),
+    let eligible_first = first
+        + usize::from(
+            work.snapshot
+                .activity
+                .turn_bounds(first)
+                .expect("view turn")
+                .start
+                < range.start,
+        );
+    let start = work.snapshot.activity.prompt_count_before(eligible_first);
+    let end = work.snapshot.activity.prompt_count_before(last + 1);
+    let len = count.min(end - start);
+    let start = match selection {
+        "first" => start,
+        "last" => end - len,
         _ => return Err(invalid("invalid prompt selection")),
     };
-    for index in indices {
-        if plans.len() == count {
-            break;
-        }
-        let prompt = prompt_at(work, index, &range)?;
-        if !prompt.is_empty() {
-            plans.push(vec![prompt]);
-        }
+    if next > len {
+        return Err(invalid("string cursor out of range"));
     }
-    if selection == "last" {
-        plans.reverse();
+    let stop = len.min(next.saturating_add(work.limits.max_items.min(256)));
+    let mut plans = Vec::with_capacity(stop - next);
+    for ordinal in start + next..start + stop {
+        let turn = work.snapshot.activity.prompt_turn(ordinal);
+        plans.push(vec![prompt_at(work, turn, &range)?]);
     }
-    string_page(&plans, next, work)
+    let page = string_page(&plans, 0, work)?;
+    let next = (stop < len).then_some(stop);
+    Ok(Projection {
+        complete: next.is_none(),
+        reason: next.map(|_| "item_limit".to_owned()),
+        next,
+        ..page
+    })
 }
 
 fn assistant_query(
@@ -1662,6 +1677,96 @@ fn override_facts(
     crate::snapshot_prepared::OverrideFacts::from_section(override_events)
 }
 
+fn turn_records_page(
+    lift: &LiftedSession<'_>,
+    range: &Range<usize>,
+    reverse: bool,
+    work: &Work<'_, '_>,
+) -> Result<Projection, SnapshotError> {
+    let session = view(lift, range, work.snapshot);
+    record_page(
+        session.turn_views().map(|(index, prompt, events, uses)| {
+            let original = &lift.turns[index - lift.turns[0].index];
+            let start = work
+                .snapshot
+                .activity
+                .turn_bounds(index)
+                .unwrap()
+                .start
+                .max(range.start);
+            let record = TurnWire {
+                codec: TURN_CODEC,
+                index,
+                prompt,
+                started_at: original.started_at,
+                ended_at: original.ended_at,
+                events: events
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, event)| EventWire::new(start + offset, event))
+                    .collect(),
+                tool_uses: uses
+                    .iter()
+                    .map(|use_| ToolUseWire::new(use_, &work.snapshot.session_id))
+                    .collect(),
+            };
+            snapshot_codec::encode(&record, work.limits.max_output_bytes)
+        }),
+        "cc-transcript.turn/1",
+        0,
+        reverse,
+        work,
+    )
+}
+
+fn turn_page(
+    work: &mut Work<'_, '_>,
+    range: Range<usize>,
+    next: usize,
+    reverse: bool,
+) -> Result<Projection, SnapshotError> {
+    let turns = if range.is_empty() {
+        0..0
+    } else {
+        work.snapshot.activity.turn_of_event(range.start).unwrap()
+            ..work.snapshot.activity.turn_of_event(range.end - 1).unwrap() + 1
+    };
+    let count = turns.len();
+    if next > count {
+        return Err(invalid("record cursor out of range"));
+    }
+    let stop = count.min(next.saturating_add(work.limits.max_items.min(256)));
+    let page_turns = if reverse {
+        turns.end - stop..turns.end - next
+    } else {
+        turns.start + next..turns.start + stop
+    };
+    let page_range = if page_turns.is_empty() {
+        range.start..range.start
+    } else {
+        range.start.max(
+            work.snapshot
+                .activity
+                .turn_bounds(page_turns.start)
+                .unwrap()
+                .start,
+        )
+            ..range.end.min(
+                work.snapshot
+                    .activity
+                    .turn_bounds(page_turns.end - 1)
+                    .unwrap()
+                    .end,
+            )
+    };
+    let lift = lift_range(work, &page_range, None)?;
+    let mut projection = turn_records_page(&lift, &page_range, reverse, work)?;
+    projection.next = (stop < count).then_some(stop);
+    projection.complete = projection.next.is_none();
+    projection.reason = projection.next.map(|_| "item_limit".to_owned());
+    Ok(projection)
+}
+
 fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, SnapshotError> {
     let query = field(request, "query")?;
     if query.get("subagents").and_then(|v| v.as_bool()) == Some(true) {
@@ -1732,6 +1837,10 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             work.limits,
             (stop < range.len()).then_some(stop),
         );
+    }
+    if kind == "turns" {
+        let reverse = query.get("order").and_then(|value| value.as_str()) == Some("reverse");
+        return turn_page(work, range, next, reverse);
     }
     let joined: String;
     let name = match kind {
@@ -1893,39 +2002,6 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 work,
             )
         }
-        "turns" => record_page(
-            session.turn_views().map(|(index, prompt, events, uses)| {
-                let original = &lift.turns[index - lift.turns[0].index];
-                let start = work
-                    .snapshot
-                    .activity
-                    .turn_bounds(index)
-                    .unwrap()
-                    .start
-                    .max(range.start);
-                let record = TurnWire {
-                    codec: TURN_CODEC,
-                    index,
-                    prompt,
-                    started_at: original.started_at,
-                    ended_at: original.ended_at,
-                    events: events
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, event)| EventWire::new(start + offset, event))
-                        .collect(),
-                    tool_uses: uses
-                        .iter()
-                        .map(|use_| ToolUseWire::new(use_, &work.snapshot.session_id))
-                        .collect(),
-                };
-                snapshot_codec::encode(&record, work.limits.max_output_bytes)
-            }),
-            "cc-transcript.turn/1",
-            next,
-            reverse,
-            work,
-        ),
         "tool_calls" => {
             let calls = session.tool_calls().with_errors();
             let calls = if query.get("name").is_some_and(|name| !name.is_null()) {
@@ -2886,6 +2962,257 @@ mod tests {
         assert!(result.data.is_null());
     }
 
+    fn full_turn_records(
+        snap: &TranscriptSnapshot,
+        range: Range<usize>,
+        reverse: bool,
+    ) -> (Vec<String>, usize) {
+        let cap = WorkLimits {
+            max_events: 10000,
+            ..limits()
+        };
+        let cancel = Cancellation::default();
+        let mut work = Work::new(snap, &cap, &cancel);
+        let lift = lift_range(&mut work, &range, None).unwrap();
+        let session = view(&lift, &range, snap);
+        let mut records: Vec<_> = session
+            .turn_views()
+            .map(|(index, prompt, events, uses)| {
+                let original = &lift.turns[index - lift.turns[0].index];
+                let start = snap
+                    .activity
+                    .turn_bounds(index)
+                    .unwrap()
+                    .start
+                    .max(range.start);
+                snapshot_codec::encode(
+                    &TurnWire {
+                        codec: TURN_CODEC,
+                        index,
+                        prompt,
+                        started_at: original.started_at,
+                        ended_at: original.ended_at,
+                        events: events
+                            .iter()
+                            .enumerate()
+                            .map(|(offset, event)| EventWire::new(start + offset, event))
+                            .collect(),
+                        tool_uses: uses
+                            .iter()
+                            .map(|use_| ToolUseWire::new(use_, &snap.session_id))
+                            .collect(),
+                    },
+                    cap.max_output_bytes,
+                )
+                .unwrap()
+            })
+            .collect();
+        if reverse {
+            records.reverse();
+        }
+        (records, work.bytes)
+    }
+
+    fn turn_records(page: &Projection) -> Vec<String> {
+        page.data["records_json"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn turn_pages_materialize_only_their_absolute_turn_interval() {
+        let raw: Vec<_> = (0..600)
+            .map(|index| user(&format!("u{index}"), &format!("prompt {index}")))
+            .collect();
+        let snap = snapshot(&raw);
+        for reverse in [false, true] {
+            let req = request(
+                json!({"kind":"turns","order":if reverse {"reverse"} else {"forward"}}),
+                json!([]),
+            );
+            let cap = WorkLimits {
+                max_events: 10000,
+                max_items: 600,
+                ..limits()
+            };
+            let (expected, expected_bytes) = full_turn_records(&snap, 0..600, reverse);
+            let mut records = Vec::new();
+            let mut bytes = 0;
+            for (next, count, following) in
+                [(0, 256, Some(256)), (256, 256, Some(512)), (512, 88, None)]
+            {
+                let mut usage = ProjectionUsage::default();
+                let page = project_with_usage(
+                    &snap,
+                    &req,
+                    &cap,
+                    &Cancellation::default(),
+                    next,
+                    &mut usage,
+                )
+                .unwrap();
+                assert_eq!(page.next, following);
+                assert_eq!(page.complete, following.is_none());
+                assert_eq!(page.reason.as_deref(), following.map(|_| "item_limit"));
+                assert_eq!(page.events, count);
+                assert_eq!(usage.events, count);
+                assert_eq!(page.read_bytes, usage.read_bytes);
+                assert_eq!(page.items, count);
+                bytes += usage.read_bytes;
+                records.extend(turn_records(&page));
+            }
+            assert_eq!(records, expected);
+            assert_eq!(bytes, expected_bytes);
+        }
+    }
+
+    #[test]
+    fn turn_pages_preserve_clipped_events_prompts_tools_and_original_metadata() {
+        let snap = snapshot(&[
+            user("u0", "first"),
+            tool("call", "read", "Read", json!({"file_path":"a.rs"})),
+            said("a0", "first reply"),
+            user("u1", "second"),
+            said("a1", "second reply"),
+            user("u2", "third"),
+            tool_result("result", "read", "contents".into()),
+            said("a2", "third reply"),
+            user("u3", "fourth"),
+            said("a3", "fourth reply"),
+        ]);
+        for reverse in [false, true] {
+            let req = request(
+                json!({"kind":"turns","order":if reverse {"reverse"} else {"forward"}}),
+                json!([{"kind":"event_range","start":1,"stop":9}]),
+            );
+            let cap = WorkLimits {
+                max_items: 1,
+                ..limits()
+            };
+            let mut records = Vec::new();
+            for next in 0..4 {
+                let page = project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+                assert_eq!(page.next, (next < 3).then_some(next + 1));
+                records.extend(turn_records(&page));
+            }
+            assert_eq!(records, full_turn_records(&snap, 1..9, reverse).0);
+        }
+    }
+
+    #[test]
+    fn turn_pages_keep_external_results_and_charge_actual_page_work() {
+        let snap = snapshot(&[
+            user("u0", "first"),
+            tool("call", "read", "Read", json!({"file_path":"a.rs"})),
+            user("u1", "second"),
+            tool_result("result", "read", "contents".into()),
+        ]);
+        let req = request(json!({"kind":"turns","order":"forward"}), json!([]));
+        let cancel = Cancellation::default();
+        let mut cap = WorkLimits {
+            max_items: 1,
+            ..limits()
+        };
+        let mut work = Work::new(&snap, &cap, &cancel);
+        work.turn(0).unwrap();
+        let page_bytes = work.bytes;
+        let page_events = work.events;
+        assert_eq!(page_events, 3);
+        cap.max_read_bytes = page_bytes;
+        cap.max_events = page_events;
+        let page = project(&snap, &req, &cap, &cancel, 0).unwrap();
+        assert_eq!(page.events, page_events);
+        assert_eq!(page.read_bytes, page_bytes);
+        assert_eq!(
+            turn_records(&page),
+            full_turn_records(&snap, 0..4, false).0[..1]
+        );
+        cap.max_read_bytes -= 1;
+        assert_eq!(
+            project(&snap, &req, &cap, &cancel, 0)
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("read_limit")
+        );
+        cap.max_read_bytes = page_bytes;
+        cap.max_events -= 1;
+        assert_eq!(
+            project(&snap, &req, &cap, &cancel, 0)
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("event_limit")
+        );
+    }
+
+    #[test]
+    fn turn_pages_fit_one_cumulative_event_and_read_budget() {
+        let raw: Vec<_> = (0..600)
+            .map(|index| user(&format!("u{index}"), "prompt"))
+            .collect();
+        let snap = snapshot(&raw);
+        let req = request(json!({"kind":"turns","order":"forward"}), json!([]));
+        let (expected, expected_bytes) = full_turn_records(&snap, 0..600, false);
+        let mut cap = WorkLimits {
+            max_events: 600,
+            max_items: 600,
+            max_read_bytes: expected_bytes,
+            ..limits()
+        };
+        let mut records = Vec::new();
+        for next in [0, 256, 512] {
+            let page = project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+            assert!(!page.data.is_null(), "{:?}", page.reason);
+            cap.max_events -= page.events;
+            cap.max_read_bytes -= page.read_bytes;
+            cap.max_items -= page.items;
+            records.extend(turn_records(&page));
+        }
+        assert_eq!(records, expected);
+        assert_eq!(
+            (cap.max_events, cap.max_read_bytes, cap.max_items),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn turn_pages_preserve_empty_cursor_output_limit_and_cancellation_contracts() {
+        let snap = snapshot(&[user("u0", "first"), user("u1", "second")]);
+        let req = request(json!({"kind":"turns","order":"reverse"}), json!([]));
+        let cancel = Cancellation::default();
+        let mut cap = limits();
+        cap.max_items = 0;
+        let page = project(&snap, &req, &cap, &cancel, 0).unwrap();
+        assert!(turn_records(&page).is_empty());
+        assert_eq!(page.next, Some(0));
+        assert_eq!(page.reason.as_deref(), Some("item_limit"));
+        assert!(!page.complete);
+        cap.max_items = 1;
+        let terminal = project(&snap, &req, &cap, &cancel, 2).unwrap();
+        assert!(terminal.complete);
+        assert!(turn_records(&terminal).is_empty());
+        let invalid = project(&snap, &req, &cap, &cancel, 3).err().unwrap();
+        assert_eq!(invalid.reason, "record cursor out of range");
+        let empty = request(
+            json!({"kind":"turns","order":"forward"}),
+            json!([{"kind":"event_range","start":0,"stop":0}]),
+        );
+        assert!(project(&snap, &empty, &cap, &cancel, 0).unwrap().complete);
+        cap.max_output_bytes = 2;
+        assert!(
+            matches!(project(&snap, &req, &cap, &cancel, 0), Err(error) if error.status == Status::OutputLimit)
+        );
+        cap.max_output_bytes = limits().max_output_bytes;
+        cancel.cancel();
+        assert!(
+            matches!(project(&snap, &req, &cap, &cancel, 0), Err(error) if error.status == Status::Cancelled)
+        );
+    }
+
     #[test]
     fn current_turn_does_not_charge_old_turns() {
         let snap = snapshot(&[user("old", &"x".repeat(32768)), user("new", "current")]);
@@ -2905,6 +3232,246 @@ mod tests {
         .unwrap();
         assert!(result.complete);
         assert_eq!(result.data["value"].as_str(), Some("current"));
+    }
+
+    fn sparse_prompt_snapshot() -> (TranscriptSnapshot, Vec<String>) {
+        let mut raw = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..641 {
+            let text = format!("prompt-{index}-\"\\\n\t😀");
+            expected.push(text.clone());
+            raw.push(user(&format!("prompt-{index}"), &text));
+            raw.push(said(&format!("reply-{index}"), "reply"));
+            raw.push(user(&format!("empty-{index}"), ""));
+        }
+        let mut snap = snapshot(&raw);
+        let flags: Vec<_> = raw
+            .iter()
+            .map(|value| value["type"].as_str() == Some("user"))
+            .collect();
+        snap.activity = Arc::new(ActivityIndex::new(&snap.entries(), Some(&flags)));
+        assert_eq!(snap.activity.turn_count(), 1282);
+        (snap, expected)
+    }
+
+    #[test]
+    fn sparse_prompt_pages_charge_only_the_emitted_page() {
+        let (snap, expected) = sparse_prompt_snapshot();
+        for selection in ["first", "last"] {
+            for count in [0, 1, 300, 641, 1000] {
+                for partial in [false, true] {
+                    let eligible = &expected[usize::from(partial)..];
+                    let length = count.min(eligible.len());
+                    let selected = if selection == "first" {
+                        &eligible[..length]
+                    } else {
+                        &eligible[eligible.len() - length..]
+                    };
+                    let selectors = if partial {
+                        json!([{"kind":"event_range","start":1,"stop":snap.event_count}])
+                    } else {
+                        json!([])
+                    };
+                    let req = request(
+                        json!({"kind":"prompts","selection":selection,"count":count}),
+                        selectors,
+                    );
+                    let mut next = 0;
+                    let mut values = Vec::new();
+                    for _ in 0..4 {
+                        let mut cap = limits();
+                        cap.max_items = 256;
+                        cap.max_events = 256;
+                        let page =
+                            project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+                        assert_eq!(
+                            page.reason.as_deref(),
+                            (next + 256 < length).then_some("item_limit")
+                        );
+                        let actual = page.data["values"].as_array().expect("string page");
+                        let stop = length.min(next + 256);
+                        assert_eq!(page.events, stop - next);
+                        assert_eq!(actual.len(), stop - next);
+                        for (value, expected) in actual.iter().zip(&selected[next..stop]) {
+                            assert_eq!(value.as_str(), Some(expected.as_str()));
+                            values.push(value.as_str().unwrap().to_owned());
+                        }
+                        assert_eq!(page.complete, stop == length);
+                        assert_eq!(page.next, (stop < length).then_some(stop));
+                        if let Some(cursor) = page.next {
+                            assert!(cursor > next);
+                            next = cursor;
+                        } else {
+                            break;
+                        }
+                    }
+                    assert_eq!(values, selected);
+                    let mut cap = limits();
+                    cap.max_events = 0;
+                    let terminal =
+                        project(&snap, &req, &cap, &Cancellation::default(), length).unwrap();
+                    assert!(terminal.complete);
+                    assert_eq!(terminal.events, 0);
+                    assert!(terminal.data["values"].as_array().unwrap().is_empty());
+                    assert!(
+                        matches!(project(&snap, &req, &limits(), &Cancellation::default(), length + 1), Err(error) if error.status == Status::InvalidRequest)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_zero_item_pages_are_incomplete_without_charging_prompts() {
+        let (snap, _) = sparse_prompt_snapshot();
+        let mut cap = limits();
+        cap.max_items = 0;
+        cap.max_events = 0;
+        for selection in ["first", "last"] {
+            let req = request(
+                json!({"kind":"prompts","selection":selection,"count":641}),
+                json!([]),
+            );
+            let page = project(&snap, &req, &cap, &Cancellation::default(), 256).unwrap();
+            assert!(!page.complete);
+            assert_eq!(page.next, Some(256));
+            assert_eq!(page.reason.as_deref(), Some("item_limit"));
+            assert_eq!(page.events, 0);
+            assert!(page.data["values"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_scalar_current_and_empty_view_contracts_stay_unchanged() {
+        let mut snap = snapshot(&[
+            user("a", "first"),
+            said("reply", "reply"),
+            user("space", " \t"),
+            user("empty", ""),
+        ]);
+        snap.activity = Arc::new(ActivityIndex::new(
+            &snap.entries(),
+            Some(&[true, false, true, true]),
+        ));
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"first_prompt"}), json!([]))).data["value"].as_str(),
+            Some("first")
+        );
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"user_text"}), json!([]))).data["value"].as_str(),
+            Some("")
+        );
+        let current = request(
+            json!({"kind":"prompts","selection":"current","count":0}),
+            json!([]),
+        );
+        assert_eq!(run(&snap, &current).data["values"][0].as_str(), Some(""));
+        assert!(
+            project(&snap, &current, &limits(), &Cancellation::default(), 1)
+                .unwrap()
+                .complete
+        );
+        assert!(
+            matches!(project(&snap, &current, &limits(), &Cancellation::default(), 2), Err(error) if error.status == Status::InvalidRequest)
+        );
+        let partial = json!([{"kind":"event_range","start":1,"stop":4}]);
+        assert_eq!(
+            run(
+                &snap,
+                &request(json!({"kind":"first_prompt"}), partial.clone())
+            )
+            .data["value"]
+                .as_str(),
+            Some(" \t")
+        );
+        for selection in ["first", "last"] {
+            let page = run(
+                &snap,
+                &request(
+                    json!({"kind":"prompts","selection":selection,"count":10}),
+                    partial.clone(),
+                ),
+            );
+            assert_eq!(page.data["values"], json!([" \t"]));
+        }
+        let empty = json!([{"kind":"event_range","start":0,"stop":0}]);
+        assert!(run(
+            &snap,
+            &request(json!({"kind":"first_prompt"}), empty.clone())
+        )
+        .data["value"]
+            .is_null());
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"user_text"}), empty.clone())).data["value"].as_str(),
+            Some("")
+        );
+        let req = request(
+            json!({"kind":"prompts","selection":"first","count":10}),
+            empty,
+        );
+        assert!(run(&snap, &req).data["values"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(
+            matches!(project(&snap, &req, &limits(), &Cancellation::default(), 1), Err(error) if error.status == Status::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn prompt_pages_preserve_append_generations_and_output_limits() {
+        let raw = [
+            user("a", "first"),
+            said("reply", "reply"),
+            user("empty", ""),
+            user("space", " "),
+            user("b", "last"),
+        ];
+        let flags = [true, false, true, true, true];
+        let mut prior = snapshot(&raw[..1]);
+        prior.activity = Arc::new(ActivityIndex::new(&prior.entries(), Some(&flags[..1])));
+        let old_allocations = prior.activity.shared_allocations();
+        let mut next = snapshot(&raw);
+        next.activity = Arc::new(prior.activity.append(&next.entries(), 1, Some(&flags)));
+        for (snap, expected) in [
+            (&prior, json!(["first"])),
+            (&next, json!(["first", " ", "last"])),
+        ] {
+            for selection in ["first", "last"] {
+                let result = run(
+                    snap,
+                    &request(
+                        json!({"kind":"prompts","selection":selection,"count":100}),
+                        json!([]),
+                    ),
+                );
+                assert_eq!(result.data["values"], expected);
+            }
+        }
+        assert_eq!(prior.activity.shared_allocations(), old_allocations);
+        let (snap, expected) = sparse_prompt_snapshot();
+        let req = request(
+            json!({"kind":"prompts","selection":"last","count":1}),
+            json!([]),
+        );
+        let expected_data = json!({"kind":"strings","values":[expected.last().unwrap()]});
+        let mut cap = limits();
+        cap.max_output_bytes = sonic_rs::to_vec(&expected_data).unwrap().len();
+        assert_eq!(
+            project(&snap, &req, &cap, &Cancellation::default(), 0)
+                .unwrap()
+                .data,
+            expected_data
+        );
+        cap.max_output_bytes -= 1;
+        assert!(
+            matches!(project(&snap, &req, &cap, &Cancellation::default(), 0), Err(error) if error.status == Status::OutputLimit)
+        );
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        assert!(
+            matches!(project(&snap, &req, &limits(), &cancel, 0), Err(error) if error.status == Status::Cancelled)
+        );
     }
 
     #[test]

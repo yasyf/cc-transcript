@@ -41,6 +41,7 @@ pub(crate) struct CachedCall {
 #[derive(Debug, Clone)]
 pub(crate) struct CachedTurn {
     prompt: String,
+    prompt_count: usize,
     bounds: Range<usize>,
     started: Option<usize>,
     ended: Option<usize>,
@@ -252,6 +253,8 @@ impl ActivityIndex {
                 }
             }
             let turn = CachedTurn {
+                prompt_count: next.prompt_count_before(next.turn_count())
+                    + usize::from(!indexed.prompt.is_empty()),
                 prompt: indexed.prompt,
                 bounds: first_new_index + indexed.start..first_new_index + indexed.end,
                 started: indexed.started_idx.map(|i| first_new_index + i),
@@ -297,6 +300,19 @@ impl ActivityIndex {
 
     pub fn prompt(&self, index: usize) -> Option<&str> {
         self.turns.get(index).map(|turn| turn.prompt.as_str())
+    }
+
+    pub(crate) fn prompt_count_before(&self, turn: usize) -> usize {
+        if turn == 0 {
+            0
+        } else {
+            self.turns[turn - 1].prompt_count
+        }
+    }
+
+    pub(crate) fn prompt_turn(&self, ordinal: usize) -> usize {
+        self.turns
+            .partition_point(|turn| turn.prompt_count <= ordinal)
     }
 
     pub fn turn_bounds(&self, index: usize) -> Option<Range<usize>> {
@@ -558,6 +574,7 @@ impl ActivityIndex {
         for turn in turns.iter() {
             let CachedTurn {
                 prompt,
+                prompt_count: _,
                 bounds: _,
                 started: _,
                 ended: _,
