@@ -2886,6 +2886,257 @@ mod tests {
         assert!(result.data.is_null());
     }
 
+    fn full_turn_records(
+        snap: &TranscriptSnapshot,
+        range: Range<usize>,
+        reverse: bool,
+    ) -> (Vec<String>, usize) {
+        let cap = WorkLimits {
+            max_events: 10000,
+            ..limits()
+        };
+        let cancel = Cancellation::default();
+        let mut work = Work::new(snap, &cap, &cancel);
+        let lift = lift_range(&mut work, &range, None).unwrap();
+        let session = view(&lift, &range, snap);
+        let mut records: Vec<_> = session
+            .turn_views()
+            .map(|(index, prompt, events, uses)| {
+                let original = &lift.turns[index - lift.turns[0].index];
+                let start = snap
+                    .activity
+                    .turn_bounds(index)
+                    .unwrap()
+                    .start
+                    .max(range.start);
+                snapshot_codec::encode(
+                    &TurnWire {
+                        codec: TURN_CODEC,
+                        index,
+                        prompt,
+                        started_at: original.started_at,
+                        ended_at: original.ended_at,
+                        events: events
+                            .iter()
+                            .enumerate()
+                            .map(|(offset, event)| EventWire::new(start + offset, event))
+                            .collect(),
+                        tool_uses: uses
+                            .iter()
+                            .map(|use_| ToolUseWire::new(use_, &snap.session_id))
+                            .collect(),
+                    },
+                    cap.max_output_bytes,
+                )
+                .unwrap()
+            })
+            .collect();
+        if reverse {
+            records.reverse();
+        }
+        (records, work.bytes)
+    }
+
+    fn turn_records(page: &Projection) -> Vec<String> {
+        page.data["records_json"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn turn_pages_materialize_only_their_absolute_turn_interval() {
+        let raw: Vec<_> = (0..600)
+            .map(|index| user(&format!("u{index}"), &format!("prompt {index}")))
+            .collect();
+        let snap = snapshot(&raw);
+        for reverse in [false, true] {
+            let req = request(
+                json!({"kind":"turns","order":if reverse {"reverse"} else {"forward"}}),
+                json!([]),
+            );
+            let cap = WorkLimits {
+                max_events: 10000,
+                max_items: 600,
+                ..limits()
+            };
+            let (expected, expected_bytes) = full_turn_records(&snap, 0..600, reverse);
+            let mut records = Vec::new();
+            let mut bytes = 0;
+            for (next, count, following) in
+                [(0, 256, Some(256)), (256, 256, Some(512)), (512, 88, None)]
+            {
+                let mut usage = ProjectionUsage::default();
+                let page = project_with_usage(
+                    &snap,
+                    &req,
+                    &cap,
+                    &Cancellation::default(),
+                    next,
+                    &mut usage,
+                )
+                .unwrap();
+                assert_eq!(page.next, following);
+                assert_eq!(page.complete, following.is_none());
+                assert_eq!(page.reason.as_deref(), following.map(|_| "item_limit"));
+                assert_eq!(page.events, count);
+                assert_eq!(usage.events, count);
+                assert_eq!(page.read_bytes, usage.read_bytes);
+                assert_eq!(page.items, count);
+                bytes += usage.read_bytes;
+                records.extend(turn_records(&page));
+            }
+            assert_eq!(records, expected);
+            assert_eq!(bytes, expected_bytes);
+        }
+    }
+
+    #[test]
+    fn turn_pages_preserve_clipped_events_prompts_tools_and_original_metadata() {
+        let snap = snapshot(&[
+            user("u0", "first"),
+            tool("call", "read", "Read", json!({"file_path":"a.rs"})),
+            said("a0", "first reply"),
+            user("u1", "second"),
+            said("a1", "second reply"),
+            user("u2", "third"),
+            tool_result("result", "read", "contents".into()),
+            said("a2", "third reply"),
+            user("u3", "fourth"),
+            said("a3", "fourth reply"),
+        ]);
+        for reverse in [false, true] {
+            let req = request(
+                json!({"kind":"turns","order":if reverse {"reverse"} else {"forward"}}),
+                json!([{"kind":"event_range","start":1,"stop":9}]),
+            );
+            let cap = WorkLimits {
+                max_items: 1,
+                ..limits()
+            };
+            let mut records = Vec::new();
+            for next in 0..4 {
+                let page = project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+                assert_eq!(page.next, (next < 3).then_some(next + 1));
+                records.extend(turn_records(&page));
+            }
+            assert_eq!(records, full_turn_records(&snap, 1..9, reverse).0);
+        }
+    }
+
+    #[test]
+    fn turn_pages_keep_external_results_and_charge_actual_page_work() {
+        let snap = snapshot(&[
+            user("u0", "first"),
+            tool("call", "read", "Read", json!({"file_path":"a.rs"})),
+            user("u1", "second"),
+            tool_result("result", "read", "contents".into()),
+        ]);
+        let req = request(json!({"kind":"turns","order":"forward"}), json!([]));
+        let cancel = Cancellation::default();
+        let mut cap = WorkLimits {
+            max_items: 1,
+            ..limits()
+        };
+        let mut work = Work::new(&snap, &cap, &cancel);
+        work.turn(0).unwrap();
+        let page_bytes = work.bytes;
+        let page_events = work.events;
+        assert_eq!(page_events, 3);
+        cap.max_read_bytes = page_bytes;
+        cap.max_events = page_events;
+        let page = project(&snap, &req, &cap, &cancel, 0).unwrap();
+        assert_eq!(page.events, page_events);
+        assert_eq!(page.read_bytes, page_bytes);
+        assert_eq!(
+            turn_records(&page),
+            full_turn_records(&snap, 0..4, false).0[..1]
+        );
+        cap.max_read_bytes -= 1;
+        assert_eq!(
+            project(&snap, &req, &cap, &cancel, 0)
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("read_limit")
+        );
+        cap.max_read_bytes = page_bytes;
+        cap.max_events -= 1;
+        assert_eq!(
+            project(&snap, &req, &cap, &cancel, 0)
+                .unwrap()
+                .reason
+                .as_deref(),
+            Some("event_limit")
+        );
+    }
+
+    #[test]
+    fn turn_pages_fit_one_cumulative_event_and_read_budget() {
+        let raw: Vec<_> = (0..600)
+            .map(|index| user(&format!("u{index}"), "prompt"))
+            .collect();
+        let snap = snapshot(&raw);
+        let req = request(json!({"kind":"turns","order":"forward"}), json!([]));
+        let (expected, expected_bytes) = full_turn_records(&snap, 0..600, false);
+        let mut cap = WorkLimits {
+            max_events: 600,
+            max_items: 600,
+            max_read_bytes: expected_bytes,
+            ..limits()
+        };
+        let mut records = Vec::new();
+        for next in [0, 256, 512] {
+            let page = project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+            assert!(!page.data.is_null(), "{:?}", page.reason);
+            cap.max_events -= page.events;
+            cap.max_read_bytes -= page.read_bytes;
+            cap.max_items -= page.items;
+            records.extend(turn_records(&page));
+        }
+        assert_eq!(records, expected);
+        assert_eq!(
+            (cap.max_events, cap.max_read_bytes, cap.max_items),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn turn_pages_preserve_empty_cursor_output_limit_and_cancellation_contracts() {
+        let snap = snapshot(&[user("u0", "first"), user("u1", "second")]);
+        let req = request(json!({"kind":"turns","order":"reverse"}), json!([]));
+        let cancel = Cancellation::default();
+        let mut cap = limits();
+        cap.max_items = 0;
+        let page = project(&snap, &req, &cap, &cancel, 0).unwrap();
+        assert!(turn_records(&page).is_empty());
+        assert_eq!(page.next, Some(0));
+        assert_eq!(page.reason.as_deref(), Some("item_limit"));
+        assert!(!page.complete);
+        cap.max_items = 1;
+        let terminal = project(&snap, &req, &cap, &cancel, 2).unwrap();
+        assert!(terminal.complete);
+        assert!(turn_records(&terminal).is_empty());
+        let invalid = project(&snap, &req, &cap, &cancel, 3).err().unwrap();
+        assert_eq!(invalid.reason, "record cursor out of range");
+        let empty = request(
+            json!({"kind":"turns","order":"forward"}),
+            json!([{"kind":"event_range","start":0,"stop":0}]),
+        );
+        assert!(project(&snap, &empty, &cap, &cancel, 0).unwrap().complete);
+        cap.max_output_bytes = 2;
+        assert!(
+            matches!(project(&snap, &req, &cap, &cancel, 0), Err(error) if error.status == Status::OutputLimit)
+        );
+        cap.max_output_bytes = limits().max_output_bytes;
+        cancel.cancel();
+        assert!(
+            matches!(project(&snap, &req, &cap, &cancel, 0), Err(error) if error.status == Status::Cancelled)
+        );
+    }
+
     #[test]
     fn current_turn_does_not_charge_old_turns() {
         let snap = snapshot(&[user("old", &"x".repeat(32768)), user("new", "current")]);

@@ -11660,6 +11660,60 @@ mod tests {
         assert_eq!(state.counters[4], 1);
         assert_eq!(state.counters[1], pinned_size + 128);
     }
+    #[test]
+    fn turn_projection_cursor_preserves_native_page_status_and_zero_item_incompleteness() {
+        let source = Source::new(
+            &(0..600)
+                .map(|index| format!("{}\n", user(&format!("u{index}"))))
+                .collect::<String>(),
+        );
+        let store = NativeStore::new(&json!({})).unwrap();
+        let owner = context("turn-pages");
+        let cancel = Cancellation::default();
+        let mut acquiring = acquire(&source.path);
+        acquiring["limits"].insert("max_events", json!(10000));
+        let root = finish(&store, store.request(&acquiring, &owner, &cancel), &owner);
+        assert_eq!(root["status"].as_str(), Some("ok"));
+        for reverse in [false, true] {
+            let mut req = graph_request(
+                &root,
+                json!({"kind":"turns","order":if reverse {"reverse"} else {"forward"}}),
+                Vec::new(),
+                json!([]),
+            );
+            req["limits"].insert("max_events", json!(10000));
+            req["limits"].insert("max_items", json!(600));
+            req["limits"].insert("max_read_bytes", json!(16 * 1024 * 1024));
+            let mut response = store.request(&req, &owner, &cancel);
+            for (page_index, expected_items) in [256, 256, 88].into_iter().enumerate() {
+                assert_eq!(
+                    response["data"]["records_json"].as_array().unwrap().len(),
+                    expected_items
+                );
+                if page_index == 2 {
+                    assert_eq!(response["status"].as_str(), Some("ok"));
+                    assert!(response["cursor"].is_null());
+                    assert!(response["reason"].is_null());
+                } else {
+                    assert_eq!(response["status"].as_str(), Some("incomplete"));
+                    assert_eq!(response["reason"].as_str(), Some("item_limit"));
+                    let cursor = response["cursor"].as_str().unwrap().to_owned();
+                    response = store.request(
+                        &json!({"schema":SCHEMA,"id":"turn-resume","operation":"resume","cursor":cursor}),
+                        &owner,
+                        &cancel,
+                    );
+                }
+            }
+            req["limits"].insert("max_items", json!(0));
+            let zero = store.request(&req, &owner, &cancel);
+            assert_eq!(zero["status"].as_str(), Some("incomplete"));
+            assert_eq!(zero["reason"].as_str(), Some("item_limit"));
+            assert!(zero["cursor"].is_null());
+            assert!(zero["data"]["records_json"].as_array().unwrap().is_empty());
+        }
+    }
+
     fn graph_request(
         root: &Value,
         query: Value,
