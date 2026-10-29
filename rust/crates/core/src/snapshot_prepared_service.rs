@@ -2660,27 +2660,39 @@ impl NativeStore {
         let selector_key = (!selectors.as_array().is_some_and(|items| items.is_empty()))
             .then(|| sonic_rs::to_string(selectors).map_err(|error| invalid(error.to_string())))
             .transpose()?;
-        let cached_slice = match &selector_key {
-            None => Some(Arc::clone(&graph.root_facts)),
-            Some(key) => {
-                if graph.root_slices.len() >= 64 && !graph.root_slices.contains_key(key) {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "prepared root selector cache exhausted",
-                    ));
-                }
-                graph.root_slices.get(key).cloned()
-            }
-        };
         drop(graph);
-        let root_facts = match (cached_slice, selector_key) {
+        let cached_slice = {
+            let mut state = self.lock_state();
+            if !state.prepared_graphs.contains_key(token) {
+                return Err(SnapshotError::new(
+                    Status::StaleHandle,
+                    "prepared graph expired",
+                ));
+            }
+            let graph = shared.lock().expect("prepared graph");
+            let facts = match &selector_key {
+                None => Some(&graph.root_facts),
+                Some(key) => {
+                    if graph.root_slices.len() >= 64 && !graph.root_slices.contains_key(key) {
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "prepared root selector cache exhausted",
+                        ));
+                    }
+                    graph.root_slices.get(key)
+                }
+            }
+            .filter(|facts| facts.serves(need))
+            .cloned();
+            facts.map(|facts| self.retain_cached_facts(&mut state, facts))
+        };
+        let retained_root = match (cached_slice, selector_key) {
             (Some(facts), _) => facts,
             (None, Some(key)) => {
                 let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = root.event_count;
-                let bound =
-                    crate::snapshot_projection::facts_bound(&root, FactsNeed::Full);
+                let bound = crate::snapshot_projection::facts_bound(&root, need);
                 let mut slice_reservation = self.reserve_projection(context, bound)?;
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
@@ -2689,7 +2701,7 @@ impl NativeStore {
                     selectors,
                     &fact_limits,
                     cancel,
-                    FactsNeed::Full,
+                    need,
                 )?;
                 assert!(
                     facts.accounted_bytes() <= bound,
@@ -2700,32 +2712,30 @@ impl NativeStore {
                     &shared,
                     key,
                     Arc::new(facts),
+                    need,
                     context,
                     &mut slice_reservation,
                 )?
             }
-            (None, None) => unreachable!("the root facts are always cached"),
+            (None, None) => {
+                let (retained, reservation) = self.prepared_root_facts(
+                    &root,
+                    &classifier,
+                    context,
+                    &bounds,
+                    PreparedCacheReads::Unmetered,
+                    cancel,
+                    usage,
+                    need,
+                )?;
+                drop(reservation);
+                retained
+            }
         };
-        let full_root = if root_facts.serves(need) {
-            None
-        } else {
-            let (retained, reservation) = self.prepared_root_facts(
-                &root,
-                &classifier,
-                context,
-                &bounds,
-                PreparedCacheReads::Unmetered,
-                cancel,
-                usage,
-                need,
-            )?;
-            drop(reservation);
-            Some(retained)
-        };
-        let root_facts = full_root
-            .as_ref()
-            .map_or(root_facts, |retained| Arc::clone(retained.facts()));
-        if kind != "deep_predicate_inputs" && root_facts.query(query)?["value"].as_bool() == Some(true) {
+        let root_facts = retained_root.facts();
+        if kind != "deep_predicate_inputs"
+            && root_facts.query(query)?["value"].as_bool() == Some(true)
+        {
             let data = json!({"kind":"scalar","value":true});
             encoded_size(&data, bounds.max_output_bytes)?;
             return Ok((data, None, None));
@@ -2874,9 +2884,11 @@ impl NativeStore {
         shared: &Arc<Mutex<PreparedGraph>>,
         key: String,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+        need: FactsNeed,
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
-    ) -> Result<Arc<crate::snapshot_prepared::PreparedFacts>, SnapshotError> {
+    ) -> Result<RetainedFacts<'_>, SnapshotError> {
+        assert!(facts.serves(need));
         let mut state = self.lock_state();
         if !state.prepared_graphs.contains_key(token) {
             return Err(SnapshotError::new(
@@ -2885,17 +2897,22 @@ impl NativeStore {
             ));
         }
         let mut graph = shared.lock().expect("prepared graph");
-        if let Some(existing) = graph.root_slices.get(&key) {
-            return Ok(Arc::clone(existing));
+        if let Some(existing) = graph
+            .root_slices
+            .get(&key)
+            .filter(|facts| facts.serves(need))
+        {
+            return Ok(self.retain_cached_facts(&mut state, Arc::clone(existing)));
         }
-        if graph.root_slices.len() >= 64 {
+        let occupied = graph.root_slices.contains_key(&key);
+        if graph.root_slices.len() >= 64 && !occupied {
             return Err(SnapshotError::new(
                 Status::Incomplete,
                 "prepared root selector cache exhausted",
             ));
         }
         let retained = state.ledger.shared.admission([facts_anchor(&facts)])
-            + key.capacity()
+            + if occupied { 0 } else { key.capacity() }
             + graph.root_slices.growth_for(&key);
         let covered = retained.min(reservation.bytes);
         self.admit_memory(&mut state, context, retained - covered)?;
@@ -2904,7 +2921,7 @@ impl NativeStore {
         state.insert_root_slice(&mut graph, key, Arc::clone(&facts));
         drop(graph);
         drop(state.prepared_graphs.get_mut(token));
-        Ok(facts)
+        Ok(self.retain_cached_facts(&mut state, facts))
     }
 }
 
