@@ -2085,7 +2085,11 @@ fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowanc
                 .iter()
                 .map(|source| source.path.clone())
                 .collect::<Vec<_>>(),
-            scenario.sidechains,
+            scenario
+                .sidechains
+                .iter()
+                .map(|path| realpath(path).unwrap())
+                .collect::<Vec<_>>(),
         );
     }
 }
