@@ -2256,7 +2256,7 @@ fn root_facts_are_reserved_at_their_bound_before_parsing() {
         let store = prepared_store();
         let owner = context_for("facts", background);
         let (root, snapshot) = acquired(&store, &scenario.root.path, &owner);
-        let bound = facts_bound_walk(&snapshot);
+        let bound = index_facts_bound_walk(&snapshot);
         traced(&store);
         let prepared = drive(
             &store,
@@ -4622,6 +4622,14 @@ fn chunk_entry_bytes(snapshot: &Arc<TranscriptSnapshot>) -> usize {
 }
 
 pub(super) fn facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
+    facts_bound_walk_for(snapshot, FactsNeed::Full)
+}
+
+fn index_facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
+    facts_bound_walk_for(snapshot, FactsNeed::Index)
+}
+
+fn facts_bound_walk_for(snapshot: &Arc<TranscriptSnapshot>, need: FactsNeed) -> usize {
     let entries: Vec<&Entry> = (0..snapshot.event_count)
         .map(|index| snapshot.entry(index))
         .collect();
@@ -4687,7 +4695,10 @@ pub(super) fn facts_bound_walk(snapshot: &Arc<TranscriptSnapshot>) -> usize {
     NativeStore::audit_facts_bytes(&PreparedFacts {
         inputs,
         has_error: false,
-        overrides: OverrideFacts::Loaded(events),
+        overrides: match need {
+            FactsNeed::Index => OverrideFacts::Unloaded,
+            FactsNeed::Full => OverrideFacts::Loaded(events),
+        },
         accounted: 0,
     })
 }
@@ -4780,7 +4791,7 @@ fn index_root_facts_prediction(fixture: &Fixture, primed: bool) -> usize {
     if primed {
         decoded_index_facts_prediction(fixture, &fixture.pins[0])
     } else {
-        facts_bound_walk(&fixture.pins[0])
+        index_facts_bound_walk(&fixture.pins[0])
     }
 }
 
@@ -5239,7 +5250,7 @@ fn warm_root_refuses_root_facts_before_construction() {
         settled(&probe.store)[ENTRIES],
         entry_bytes(&[&probe.pins[0]])
     );
-    let predicted = facts_bound_walk(&probe.pins[0]);
+    let predicted = index_facts_bound_walk(&probe.pins[0]);
     let held = load_slot_ids(&probe.store);
     let tier = probe.store.lock_state().loads.reserved_bytes();
     assert!(submitted(site, &probe, [1, 0]));
@@ -5502,8 +5513,8 @@ fn prepared_query_refuses_source_completion_before_construction() {
     for background in [false, true] {
         let build = |index: usize| completion_query_fixture(&scenario, index, background);
         let (small_bytes, large_bytes) = (
-            facts_bound_walk(&build(0).pins[1]),
-            facts_bound_walk(&build(1).pins[1]),
+            index_facts_bound_walk(&build(0).pins[1]),
+            index_facts_bound_walk(&build(1).pins[1]),
         );
         let small = exact_headroom(&|| build(0), &attempt);
         let large = exact_headroom(&|| build(1), &attempt);
@@ -5744,11 +5755,13 @@ fn incremental_fact_bounds_match_the_independent_full_walk() {
         assert_eq!(activity.work().indexed_entries, raw.len() - boundary);
         snapshot.activity = Arc::new(activity);
         let snapshot = Arc::new(snapshot);
-        assert_eq!(
-            crate::snapshot_projection::facts_bound(&snapshot),
-            facts_bound_walk(&snapshot),
-            "append boundary {boundary}"
-        );
+        for need in [FactsNeed::Index, FactsNeed::Full] {
+            assert_eq!(
+                crate::snapshot_projection::facts_bound(&snapshot, need),
+                facts_bound_walk_for(&snapshot, need),
+                "append boundary {boundary}, {need:?}"
+            );
+        }
     }
 }
 
@@ -5766,7 +5779,7 @@ fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
             let bound = facts_bound_walk(&snapshot);
             assert_eq!(
                 bound,
-                crate::snapshot_projection::facts_bound(&snapshot),
+                crate::snapshot_projection::facts_bound(&snapshot, FactsNeed::Full),
                 "{site}: the production bound departs from the independent bound"
             );
             assert_eq!(
@@ -5857,6 +5870,7 @@ fn patch_root_facts_are_admitted_at_their_bound_before_construction() {
                 &[],
                 NO_LOADS,
             );
+            let predicted = index_facts_bound_walk(&probe.pins[0]);
             assert_facts_admitted_in_full(
                 &graph,
                 &build,
@@ -6349,8 +6363,10 @@ fn uncached_root_facts_hold_their_reservation_until_retention() {
     for background in [false, true] {
         let fixture = uncached_root_facts_fixture(&source, background);
         let cap = cap_for(&fixture.owner);
-        let predicted = facts_bound_walk(&fixture.pins[0]);
-        let occupied = NativeStore::audit_facts_bytes(&built_facts(&fixture.pins[0], &json!([])));
+        let predicted = index_facts_bound_walk(&fixture.pins[0]);
+        let occupied = NativeStore::audit_facts_bytes(
+            &built_facts(&fixture.pins[0], &json!([])).without_text(),
+        );
         assert!(
             occupied <= predicted,
             "{site}: the {predicted}-byte prediction does not cover the {occupied}-byte facts"

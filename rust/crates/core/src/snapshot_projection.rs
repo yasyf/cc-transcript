@@ -1520,14 +1520,14 @@ pub fn prepare_facts(
     prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024, need)
 }
 
-pub fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
+pub fn facts_bound(snapshot: &TranscriptSnapshot, need: FactsNeed) -> usize {
     let shape = snapshot.activity.shape();
     let slot = std::mem::size_of::<Value>();
     let pair = std::mem::size_of::<(Value, Value)>();
     let name = std::mem::size_of::<String>();
     let event = std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>();
     let edited_file = slot + hashbrown_tier(1, pair) * pair + "path".len();
-    crate::snapshot_ledger::arc_bytes::<crate::snapshot_prepared::PreparedFacts>()
+    let index = crate::snapshot_ledger::arc_bytes::<crate::snapshot_prepared::PreparedFacts>()
         + hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair) * pair
         + ["calls", "commands", "edited_files", "skills"]
             .iter()
@@ -1542,11 +1542,17 @@ pub fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
         + shape.commands * slot
         + shape.command_bytes
         + shape.skills * slot
-        + shape.skill_bytes
-        + pushed_capacity(snapshot.event_count) * event
-        + shape.prose_bytes
-        + shape.tool_name_slots * name
-        + shape.tool_name_bytes
+        + shape.skill_bytes;
+    match need {
+        FactsNeed::Index => index,
+        FactsNeed::Full => {
+            index
+                + pushed_capacity(snapshot.event_count) * event
+                + shape.prose_bytes
+                + shape.tool_name_slots * name
+                + shape.tool_name_bytes
+        }
+    }
 }
 
 fn prepare_facts_limited(
@@ -2167,6 +2173,39 @@ mod tests {
                 "{count} elements"
             );
         }
+    }
+
+    #[test]
+    fn index_fact_bounds_do_not_charge_unrelated_prose() {
+        let build = |bytes| {
+            let text = "x".repeat(bytes);
+            snapshot(&[
+                user("prompt", &text),
+                tool("call", "read", "Read", json!({"file_path":"src/lib.rs"})),
+                tool_result("result", "read", text.clone()),
+                said("reply", &text),
+            ])
+        };
+        let small = build(1);
+        let index = facts_bound(&small, FactsNeed::Index);
+        let full = facts_bound(&small, FactsNeed::Full);
+        for bytes in [4096, 1024 * 1024] {
+            let large = build(bytes);
+            assert_eq!(facts_bound(&large, FactsNeed::Index), index);
+            assert_eq!(facts_bound(&large, FactsNeed::Full) - full, 3 * (bytes - 1));
+        }
+        let mut raw = vec![
+            user("prompt", "x"),
+            tool("call", "read", "Read", json!({"file_path":"src/lib.rs"})),
+        ];
+        let before = snapshot(&raw);
+        raw.extend((0..1024).map(|i| user(&format!("extra-{i}"), "unrelated")));
+        let after = snapshot(&raw);
+        assert_eq!(
+            facts_bound(&before, FactsNeed::Index),
+            facts_bound(&after, FactsNeed::Index)
+        );
+        assert!(facts_bound(&before, FactsNeed::Full) < facts_bound(&after, FactsNeed::Full));
     }
 
     use crate::gateway::Provider;

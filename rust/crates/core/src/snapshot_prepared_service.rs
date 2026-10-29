@@ -324,7 +324,7 @@ impl NativeStore {
                 },
             ));
         }
-        let bound = crate::snapshot_projection::facts_bound(root);
+        let bound = crate::snapshot_projection::facts_bound(root, need);
         loop {
             let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
             if let Some(retained) = self.touch_retained_facts(
@@ -756,7 +756,7 @@ impl NativeStore {
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
-        let bound = crate::snapshot_projection::facts_bound(&snapshot);
+        let bound = crate::snapshot_projection::facts_bound(&snapshot, need);
         let prepared = self
             .reserve_projection(context, bound)
             .and_then(|reservation| {
@@ -2676,7 +2676,8 @@ impl NativeStore {
                 let mut fact_limits = bounds;
                 fact_limits.max_read_bytes = self.config.source;
                 fact_limits.max_events = root.event_count;
-                let bound = crate::snapshot_projection::facts_bound(&root);
+                let bound =
+                    crate::snapshot_projection::facts_bound(&root, FactsNeed::Full);
                 let mut slice_reservation = self.reserve_projection(context, bound)?;
                 #[cfg(test)]
                 self.fact_builds.fetch_add(1, Ordering::Relaxed);
