@@ -2043,6 +2043,37 @@ fn direct_prepare_graph_admits_exactly_before_publication() {
 }
 
 #[test]
+fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowance() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    for (events, items, expected_calls) in [(256, 256, 1), (32, 256, 2), (256, 7, 5)] {
+        let store = store_with(4096, events, &[("max_items_per_page", items)]);
+        let owner = context_for("coalesced-build", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let mut response = store.request(&request, &owner, &Cancellation::default());
+        let mut calls = 1;
+        while parked(&response) {
+            store.assert_conserved();
+            assert_eq!(store.lock_state().prepared_builds.len(), 1);
+            response = resume(&store, &response, &owner);
+            calls += 1;
+        }
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(calls, expected_calls, "events={events}, items={items}");
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        let graph = state.prepared_graphs[response["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+        assert_eq!(
+            graph.sources.iter().map(|source| source.path.clone()).collect::<Vec<_>>(),
+            scenario.sidechains,
+        );
+    }
+}
+
+#[test]
 fn stored_prepared_build_admits_exactly_before_publication() {
     let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
