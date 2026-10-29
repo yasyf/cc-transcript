@@ -32,7 +32,9 @@ use crate::snapshot_memory::{
 use crate::snapshot_prepared::FactsNeed;
 use crate::snapshot_prepared_disk::PreparedDiskKey;
 use crate::snapshot_projection::JSON_LITERAL_OBJECT_CAPACITY;
-use crate::types::{Entry, SYNTHETIC_MODEL};
+use crate::types::Entry;
+#[cfg(test)]
+use crate::types::SYNTHETIC_MODEL;
 
 pub const SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
@@ -375,23 +377,15 @@ impl TranscriptSnapshot {
         if self.window_start == 0 {
             return None;
         }
-        self.chunks
-            .iter()
-            .flat_map(|chunk| chunk.entries.iter())
-            .find_map(Entry::meta)
-            .map(|meta| meta.timestamp.timestamp_millis())
+        self.activity.started_unix_ms()
     }
 
     pub fn model(&self) -> Option<&str> {
-        self.chunks
-            .iter()
-            .rev()
-            .flat_map(|chunk| chunk.entries.iter().rev())
-            .find_map(|entry| match entry {
-                Entry::Assistant(assistant) if assistant.model != SYNTHETIC_MODEL => {
-                    Some(assistant.model.as_str())
-                }
-                _ => None,
+        self.activity
+            .last_model_event()
+            .map(|position| match self.entry(position) {
+                Entry::Assistant(assistant) => assistant.model.as_str(),
+                _ => unreachable!("indexed model is an assistant event"),
             })
     }
 
@@ -533,11 +527,10 @@ struct Lease {
     registry: Arc<crate::toolcall::ToolRegistrySnapshot>,
 }
 
-struct RenewedScope {
+struct LeasedScope {
     snapshot: Arc<TranscriptSnapshot>,
     classifier: Value,
     expires: u64,
-    description_bytes: usize,
 }
 
 // Sized exactly like an acquire reply's re-serialized copy, whose bytes admit graph members.
@@ -2889,6 +2882,8 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) fact_builds: AtomicUsize,
     #[cfg(test)]
+    pub(crate) description_builds: AtomicUsize,
+    #[cfg(test)]
     pub(crate) fact_lookups: AtomicUsize,
     #[cfg(test)]
     pub(crate) fact_read_waits: AtomicUsize,
@@ -3372,6 +3367,8 @@ impl NativeStore {
             #[cfg(test)]
             fact_builds: AtomicUsize::new(0),
             #[cfg(test)]
+            description_builds: AtomicUsize::new(0),
+            #[cfg(test)]
             fact_lookups: AtomicUsize::new(0),
             #[cfg(test)]
             fact_read_waits: AtomicUsize::new(0),
@@ -3520,7 +3517,7 @@ impl NativeStore {
         deadline: u64,
     ) -> Result<u64, SnapshotError> {
         for handle in handles {
-            self.pin_scope(handle, context)?;
+            self.pin_record(handle, context)?;
         }
         let state = self.lock_state();
         let mut expires = (now_ms() + self.config.ttl).min(deadline);
@@ -3955,11 +3952,9 @@ impl NativeStore {
         mut bounds: WorkLimits,
     ) -> Result<Value, SnapshotError> {
         cancel.check(bounds.deadline_unix_ms)?;
-        let (source, description) =
-            self.pin_scope_for_work(handle, context, bounds.deadline_unix_ms)?;
-        bounds.deadline_unix_ms = bounds
-            .deadline_unix_ms
-            .min(number(&description, "lease_expires_unix_ms")? as u64);
+        let scope = self.renew_scope_for_work(handle, context, bounds.deadline_unix_ms)?;
+        let source = scope.snapshot;
+        bounds.deadline_unix_ms = bounds.deadline_unix_ms.min(scope.expires);
         bounds.deadline_unix_ms = bounds
             .deadline_unix_ms
             .min(now_ms() + self.config.preparation);
@@ -4983,6 +4978,29 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_snapshot_allocations(snapshot: &Arc<TranscriptSnapshot>) -> Vec<(usize, usize)> {
+        let started = if snapshot.window_start == 0 {
+            None
+        } else {
+            snapshot
+                .chunks
+                .iter()
+                .flat_map(|chunk| chunk.entries.iter())
+                .find_map(Entry::meta)
+                .map(|meta| meta.timestamp.timestamp_millis())
+        };
+        assert_eq!(snapshot.window_started_unix_ms(), started);
+        let model = snapshot
+            .chunks
+            .iter()
+            .rev()
+            .flat_map(|chunk| chunk.entries.iter().rev())
+            .find_map(|entry| match entry {
+                Entry::Assistant(assistant) if assistant.model != SYNTHETIC_MODEL => {
+                    Some(assistant.model.as_str())
+                }
+                _ => None,
+            });
+        assert_eq!(snapshot.model(), model);
         let TranscriptSnapshot {
             ledger: _,
             id,
@@ -5863,6 +5881,8 @@ impl NativeStore {
         lease: &str,
         expires: u64,
     ) -> Value {
+        #[cfg(test)]
+        self.description_builds.fetch_add(1, Ordering::Relaxed);
         json!({"handle": LeaseHandle {owner_epoch: &self.owner_epoch, snapshot_id: &snapshot.id, generation: &snapshot.id, lease_id: lease},
             "canonical_path": snapshot.canonical_path.to_string_lossy().as_ref(),
             "source_id": format!("{}:{}", snapshot.stamp.identity.device, snapshot.stamp.identity.inode),
@@ -5879,8 +5899,7 @@ impl NativeStore {
         handle: &Value,
         context: &Value,
     ) -> Result<Arc<TranscriptSnapshot>, SnapshotError> {
-        self.pin_scope(handle, context)
-            .map(|(snapshot, _)| snapshot)
+        self.pin_record(handle, context).map(|scope| scope.snapshot)
     }
 
     pub fn validate_scope(&self, handle: &Value, context: &Value) -> Result<(), SnapshotError> {
@@ -5893,23 +5912,36 @@ impl NativeStore {
         handle: &Value,
         context: &Value,
     ) -> Result<(Arc<TranscriptSnapshot>, Value), SnapshotError> {
+        let scope = self.capture_scope(handle, context)?;
+        let description = self.description(
+            &scope.snapshot,
+            &scope.classifier,
+            str_field(handle, "lease_id")?,
+            scope.expires,
+        );
+        self.authority(context, Some(&scope.snapshot.canonical_path))?;
+        Ok((scope.snapshot, description))
+    }
+
+    fn pin_record(&self, handle: &Value, context: &Value) -> Result<LeasedScope, SnapshotError> {
+        let scope = self.capture_scope(handle, context)?;
+        self.authority(context, Some(&scope.snapshot.canonical_path))?;
+        Ok(scope)
+    }
+
+    fn capture_scope(&self, handle: &Value, context: &Value) -> Result<LeasedScope, SnapshotError> {
         self.authority(context, None)?;
-        let (snapshot, description) = {
+        let scope = {
             let mut state = self.lock_state();
             Self::prune(&mut state);
             let lease = self.lease(&state, handle, context)?;
-            (
-                Arc::clone(&lease.snapshot),
-                self.description(
-                    &lease.snapshot,
-                    &lease.classifier,
-                    str_field(handle, "lease_id")?,
-                    lease.expires,
-                ),
-            )
+            LeasedScope {
+                snapshot: Arc::clone(&lease.snapshot),
+                classifier: lease.classifier.clone(),
+                expires: lease.expires,
+            }
         };
-        self.authority(context, Some(&snapshot.canonical_path))?;
-        Ok((snapshot, description))
+        Ok(scope)
     }
 
     pub fn pin_scope_for_work(
@@ -5933,7 +5965,7 @@ impl NativeStore {
         handle: &Value,
         context: &Value,
         deadline: u64,
-    ) -> Result<RenewedScope, SnapshotError> {
+    ) -> Result<LeasedScope, SnapshotError> {
         #[cfg(test)]
         {
             let hook = self.pin_hook.lock().expect("pin hook").clone();
@@ -5950,7 +5982,7 @@ impl NativeStore {
                 "borrow deadline expired",
             ));
         }
-        let (snapshot, probe) = self.pin_scope(handle, context)?;
+        let scope = self.pin_record(handle, context)?;
         let mut state = self.lock_state();
         let lease = self.lease(&state, handle, context)?;
         let expires = lease.expires.max(deadline.min(lease.absolute_deadline));
@@ -5960,11 +5992,10 @@ impl NativeStore {
             .get_mut(str_field(handle, "lease_id")?)
             .expect("validated lease")
             .expires = expires;
-        Ok(RenewedScope {
-            snapshot,
+        Ok(LeasedScope {
+            snapshot: scope.snapshot,
             classifier,
             expires,
-            description_bytes: value_bytes(&probe),
         })
     }
 
@@ -8764,6 +8795,12 @@ impl NativeStore {
         let claimant = str_field(context, "claimant")?;
         let lease_id = str_field(root_handle, "lease_id")?;
         let root_path = scope.snapshot.canonical_path.as_os_str().len();
+        let description_bytes = value_bytes(&self.description(
+            &scope.snapshot,
+            &scope.classifier,
+            lease_id,
+            scope.expires,
+        ));
         let mut reservation = self.reserve_projection(
             context,
             size_of::<GraphCursor>()
@@ -8773,7 +8810,7 @@ impl NativeStore {
                 + value_bytes(root_handle)
                 + size_of::<GraphNode>()
                 + root_path
-                + scope.description_bytes
+                + description_bytes
                 + set_growth(&HashSet::<SourceIdentity>::new(), 1)
                 + task_count * size_of::<GraphTask>()
                 + attachment_bytes
@@ -8781,7 +8818,7 @@ impl NativeStore {
         )?;
         #[cfg(test)]
         self.graph_records.fetch_add(1, Ordering::Relaxed);
-        let RenewedScope {
+        let LeasedScope {
             snapshot: root,
             classifier,
             expires,
@@ -9097,7 +9134,7 @@ impl NativeStore {
         usage: &mut [u64; 20],
     ) -> Result<GraphYield, SnapshotError> {
         cancel.check(graph.remaining.deadline_unix_ms)?;
-        self.pin_scope_for_work(
+        self.renew_scope_for_work(
             &graph.root_handle,
             &graph.context,
             graph.remaining.deadline_unix_ms,
@@ -9538,12 +9575,10 @@ impl NativeStore {
         let handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing view handle"))?;
-        let (snapshot, description) =
-            self.pin_scope_for_work(handle, context, bound.deadline_unix_ms)?;
-        bound.deadline_unix_ms = bound
-            .deadline_unix_ms
-            .min(number(&description, "lease_expires_unix_ms")? as u64);
-        if !classifier_eq(&view["classifier"], &description["classifier"])? {
+        let scope = self.renew_scope_for_work(handle, context, bound.deadline_unix_ms)?;
+        let snapshot = scope.snapshot;
+        bound.deadline_unix_ms = bound.deadline_unix_ms.min(scope.expires);
+        if !classifier_eq(&view["classifier"], &scope.classifier)? {
             return Err(invalid("view classifier differs from leased generation"));
         }
         let mut page = bound;
@@ -9671,16 +9706,15 @@ impl NativeStore {
             .ok_or_else(|| invalid("missing windows_json"))?;
         let mut sessions = HashMap::new();
         for handle in handles.iter() {
-            let (snapshot, description) = self.pin_scope_for_work(
+            let scope = self.renew_scope_for_work(
                 handle
                     .get("handle")
                     .ok_or_else(|| invalid("missing handle"))?,
                 context,
                 bound.deadline_unix_ms,
             )?;
-            bound.deadline_unix_ms = bound
-                .deadline_unix_ms
-                .min(number(&description, "lease_expires_unix_ms")? as u64);
+            let snapshot = scope.snapshot;
+            bound.deadline_unix_ms = bound.deadline_unix_ms.min(scope.expires);
             let session = str_field(handle, "session_id")?;
             if session != snapshot.session_id {
                 return Err(invalid("hydration session differs from handle"));
@@ -16141,6 +16175,77 @@ mod tests {
         );
         assert_eq!(cache_reads(&plain), (Some(1), Some(indexed), Some(0)));
         assert_eq!(resident_member_is_full(&store, &members[0]), Some(false));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn repeated_root_predicates_keep_scope_metadata_typed() {
+        let skill = json!({"type":"assistant","uuid":"skill","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"m","content":[{"type":"tool_use","id":"skill","name":"Skill","input":{"skill":"skill-4"}}]}});
+        let source = Source::new(&format!("{}\n{skill}\n", user_text("prompt", "ready")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let root = finish(
+            &store,
+            store.request(&template, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let graph = finish(
+            &store,
+            store.request(&json!({"schema":SCHEMA,"id":"prepare","operation":"prepare_graph","view":{"handle":handle(&root),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},"thread_ids":[],"roots":[],"direct_paths":[],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]}), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(graph["status"].as_str(), Some("ok"), "{graph:?}");
+        let before = store.description_builds.load(Ordering::Relaxed);
+        for index in 0..24 {
+            let request = prepared_graph_request(
+                &graph,
+                &template,
+                json!([]),
+                json!({"kind":"has_skill","values":[format!("skill-{index}")],"subagents":true}),
+                None,
+            );
+            let answer = single_step(store.request(&request, &owner, &Cancellation::default()));
+            assert_eq!(value_of(&answer), Some(index == 4), "{answer:?}");
+        }
+        assert_eq!(store.description_builds.load(Ordering::Relaxed), before);
+        let (_, description) = store
+            .pin_scope_for_work(
+                &handle(&root),
+                &owner,
+                template["deadline_unix_ms"].as_u64().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(store.description_builds.load(Ordering::Relaxed), before + 1);
+        assert_eq!(
+            description["classifier"],
+            json!({"id":"native","version":"1"})
+        );
+        assert_eq!(description["model"].as_str(), Some("m"));
+        assert_eq!(
+            description["canonical_path"].as_str(),
+            std::fs::canonicalize(&source.path).unwrap().to_str()
+        );
+        let later = json!({"type":"assistant","uuid":"later","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"model":"later","content":[]}});
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source.path)
+            .unwrap()
+            .write_all(format!("{later}\n").as_bytes())
+            .unwrap();
+        let newer = finish(
+            &store,
+            store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            store.pin(&handle(&root), &owner).unwrap().model(),
+            Some("m")
+        );
+        assert_eq!(
+            store.pin(&handle(&newer), &owner).unwrap().model(),
+            Some("later")
+        );
         store.assert_conserved();
     }
 

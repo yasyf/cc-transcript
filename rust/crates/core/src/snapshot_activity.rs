@@ -123,6 +123,8 @@ pub struct ActivityIndex {
     uuids: Arc<HashMap<String, usize>>,
     results: Arc<HashMap<String, ResultPosition>>,
     shape: ActivityShape,
+    started_unix_ms: Option<i64>,
+    last_model_event: Option<usize>,
     work: ActivityWork,
 }
 
@@ -168,12 +170,19 @@ impl ActivityIndex {
             next.shape.include_entry(entry);
             let event = first_new_index + local;
             if let Some(meta) = entry.meta() {
+                if next.started_unix_ms.is_none() {
+                    next.started_unix_ms = Some(meta.timestamp.timestamp_millis());
+                }
                 if !next.uuids.contains_key(&meta.uuid) {
                     if Arc::strong_count(&next.uuids) > 1 {
                         next.work.copied_index_entries += next.uuids.len();
                     }
                     Arc::make_mut(&mut next.uuids).insert(meta.uuid.clone(), event);
                 }
+            }
+            if matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL)
+            {
+                next.last_model_event = Some(event);
             }
             if let Entry::User(user) = entry {
                 for (ordinal, block) in user.blocks().iter().enumerate() {
@@ -272,6 +281,14 @@ impl ActivityIndex {
 
     pub(crate) fn shape(&self) -> ActivityShape {
         self.shape
+    }
+
+    pub(crate) fn started_unix_ms(&self) -> Option<i64> {
+        self.started_unix_ms
+    }
+
+    pub(crate) fn last_model_event(&self) -> Option<usize> {
+        self.last_model_event
     }
 
     pub fn turn_count(&self) -> usize {
@@ -507,6 +524,8 @@ impl ActivityIndex {
             uuids,
             results,
             shape: _,
+            started_unix_ms: _,
+            last_model_event: _,
             work: _,
         } = self;
         let mut allocations = vec![
@@ -1155,11 +1174,14 @@ mod tests {
     #[test]
     fn every_append_boundary_matches_full_lift() {
         let entries = [
+            entry(r#"{"type":"mode","sessionId":"s","mode":"plan"}"#),
             tools(),
             user("u", "first"),
             tools(),
             user("v", "second"),
             results(),
+            entry(&sonic_rs::json!({"type":"assistant","uuid":"synthetic","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":crate::types::SYNTHETIC_MODEL,"content":[{"type":"text","text":"synthetic"}]}}).to_string()),
+            user("tail", "trailing prose"),
         ];
         let refs: Vec<_> = entries.iter().collect();
         for boundary in 0..=refs.len() {
@@ -1169,10 +1191,65 @@ mod tests {
             parity(&prior, &refs[..boundary], None);
             assert_eq!(next.shape(), ActivityIndex::new(&refs, None).shape());
             assert_eq!(
+                next.started_unix_ms(),
+                refs.iter()
+                    .find_map(|entry| entry.meta())
+                    .map(|meta| meta.timestamp.timestamp_millis())
+            );
+            assert_eq!(
+                next.last_model_event(),
+                refs.iter().rposition(|entry| matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL))
+            );
+            assert_eq!(
+                prior.started_unix_ms(),
+                refs[..boundary]
+                    .iter()
+                    .find_map(|entry| entry.meta())
+                    .map(|meta| meta.timestamp.timestamp_millis())
+            );
+            assert_eq!(
+                prior.last_model_event(),
+                refs[..boundary].iter().rposition(|entry| matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL))
+            );
+            assert_eq!(
                 prior.shape(),
                 ActivityIndex::new(&refs[..boundary], None).shape()
             );
         }
+    }
+
+    #[test]
+    fn metadata_is_local_to_each_window_and_immutable_prefix() {
+        let entries = [
+            sonic_rs::json!({"type":"user","uuid":"outside","sessionId":"s","timestamp":"2026-01-02T03:04:01Z","message":{"content":"outside"}}),
+            sonic_rs::json!({"type":"assistant","uuid":"before","sessionId":"s","timestamp":"2026-01-02T03:04:02Z","message":{"model":"before","content":[]}}),
+            sonic_rs::json!({"type":"mode","sessionId":"s","mode":"plan"}),
+            sonic_rs::json!({"type":"user","uuid":"inside","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"content":"inside"}}),
+            sonic_rs::json!({"type":"assistant","uuid":"model","sessionId":"s","timestamp":"2026-01-02T03:04:09Z","message":{"model":"inside","content":[]}}),
+            sonic_rs::json!({"type":"user","uuid":"tail","sessionId":"s","timestamp":"2026-01-02T03:04:10Z","message":{"content":"tail"}}),
+            sonic_rs::json!({"type":"assistant","uuid":"after","sessionId":"s","timestamp":"2026-01-02T03:04:11Z","message":{"model":"after","content":[]}}),
+        ].map(|value| entry(&value.to_string()));
+        let refs: Vec<_> = entries.iter().collect();
+        let global = ActivityIndex::new(&refs, None);
+        for range in [0..5, 2..6, 3..6, 2..4] {
+            let window = &refs[range.clone()];
+            let first = window
+                .iter()
+                .find_map(|entry| entry.meta())
+                .map(|meta| meta.timestamp.timestamp_millis());
+            let model = window.iter().rposition(|entry| matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL));
+            for boundary in 0..=window.len() {
+                let prior = ActivityIndex::new(&window[..boundary], None);
+                let next = prior.append(window, boundary, None);
+                assert_eq!(next.started_unix_ms(), first, "{range:?} {boundary}");
+                assert_eq!(next.last_model_event(), model, "{range:?} {boundary}");
+                assert_eq!(prior.last_model_event(), window[..boundary].iter().rposition(|entry| matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL)));
+            }
+        }
+        let window = ActivityIndex::new(&refs[2..6], None);
+        assert_ne!(window.started_unix_ms(), global.started_unix_ms());
+        assert_eq!(window.last_model_event(), Some(2));
+        assert_eq!(global.last_model_event(), Some(6));
     }
 
     #[test]
@@ -1186,6 +1263,8 @@ mod tests {
         let unchanged = next.append(&refs, refs.len(), Some(&flags));
         assert_eq!(unchanged.work(), ActivityWork::default());
         assert_eq!(unchanged.shape(), next.shape());
+        assert_eq!(unchanged.started_unix_ms(), next.started_unix_ms());
+        assert_eq!(unchanged.last_model_event(), next.last_model_event());
         assert_eq!(
             next.shape(),
             ActivityIndex::new(&refs, Some(&flags)).shape()
