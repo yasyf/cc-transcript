@@ -16519,6 +16519,18 @@ mod tests {
         let root_key = fact_entry_key(&source.path, &owner);
         let lookups = store.fact_lookups.load(Ordering::Relaxed);
         let builds = store.fact_builds.load(Ordering::Relaxed);
+        let indexed = ask(current_turn(), has_tool("Missing"), None);
+        assert_eq!(value_of(&indexed), Some(false));
+        {
+            let state = store.lock_state();
+            let graph = state.prepared_graphs
+                [graph["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+            let facts = graph.root_slices.values().next().unwrap();
+            assert!(facts.serves(FactsNeed::Index));
+            assert!(!facts.serves(FactsNeed::Full));
+        }
         let scoped = ask(current_turn(), has_override("TOKEN-ROOT", &[]), None);
         assert_eq!(value_of(&scoped), Some(false));
         assert_eq!(
@@ -16526,7 +16538,7 @@ mod tests {
                 store.fact_lookups.load(Ordering::Relaxed),
                 store.fact_builds.load(Ordering::Relaxed)
             ),
-            (lookups, builds + 1)
+            (lookups, builds + 2)
         );
         assert_eq!(
             store.prepared_disk.entry_text_state(&root_key),
@@ -16539,7 +16551,7 @@ mod tests {
                 store.fact_lookups.load(Ordering::Relaxed),
                 store.fact_builds.load(Ordering::Relaxed)
             ),
-            (lookups + 1, builds + 2)
+            (lookups + 1, builds + 3)
         );
         assert_eq!(
             store.prepared_disk.entry_text_state(&root_key),
@@ -16563,7 +16575,7 @@ mod tests {
         );
         assert_eq!(
             store.fact_builds.load(Ordering::Relaxed),
-            builds + 2,
+            builds + 3,
             "a selected view rebuilt its facts"
         );
         evict_memory_facts(&store, &source.path);
@@ -16580,7 +16592,7 @@ mod tests {
             json!({"kind":"observed_scalar","value":false,"observers":[false]}),
             "{observed:?}"
         );
-        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 3);
         store.assert_conserved();
     }
 
