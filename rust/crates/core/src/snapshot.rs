@@ -16525,8 +16525,8 @@ mod tests {
             let state = store.lock_state();
             let graph = state.prepared_graphs
                 [graph["data"]["handle"]["graph_id"].as_str().unwrap()]
-                .lock()
-                .unwrap();
+            .lock()
+            .unwrap();
             let facts = graph.root_slices.values().next().unwrap();
             assert!(facts.serves(FactsNeed::Index));
             assert!(!facts.serves(FactsNeed::Full));
