@@ -358,7 +358,14 @@ impl NativeStore {
                 #[cfg(test)]
                 self.fact_lookups.fetch_add(1, Ordering::Relaxed);
                 let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-                let lookup = self.prepared_disk.lookup(&key, &mut read, need, decoded);
+                let lookup = self.prepared_disk.lookup(
+                    &key,
+                    &mut read,
+                    need,
+                    decoded,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                );
                 usage[18] += read.operations;
                 usage[19] += read.bytes;
                 match lookup? {
@@ -584,7 +591,14 @@ impl NativeStore {
             #[cfg(test)]
             self.fact_lookups.fetch_add(1, Ordering::Relaxed);
             let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(&key, &mut read, need, decoded);
+            let lookup = self.prepared_disk.lookup(
+                &key,
+                &mut read,
+                need,
+                decoded,
+                cancel,
+                remaining.deadline_unix_ms,
+            );
             usage[18] += read.operations;
             usage[19] += read.bytes;
             if let PreparedCacheReads::Warming(..) = cache_reads {

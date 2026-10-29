@@ -15491,6 +15491,58 @@ mod tests {
         store.assert_conserved();
     }
 
+    #[test]
+    fn a_stopped_fact_read_keeps_the_entry_for_the_next_member_reader() {
+        for (expected, cancels) in [("cancelled", true), ("deadline", false)] {
+            let EvictedMembers {
+                source,
+                members,
+                store,
+                owner,
+                indexed,
+                ..
+            } = evicted_members(&["thread-a"]);
+            let key = fact_entry_key(&members[0], &owner);
+            let cancellation = Cancellation::default();
+            let stop = cancellation.clone();
+            let deadline = now_ms() + if cancels { 30_000 } else { 1_500 };
+            store.prepared_disk.set_read_hook(Some(Box::new(move || {
+                if cancels {
+                    stop.cancel();
+                } else {
+                    while now_ms() < deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            })));
+            let stopped = store.request(
+                &warm_request(&source, &["thread-a"], deadline),
+                &owner,
+                &cancellation,
+            );
+            store.prepared_disk.set_read_hook(None);
+            assert_eq!(stopped["status"].as_str(), Some(expected), "{stopped:?}");
+            assert_eq!(cache_reads(&stopped), (Some(0), Some(0), Some(0)));
+            assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+            assert!(store.prepared_disk.has_entry(&key).unwrap());
+            assert!(!store.lock_state().fact_read_in_flight);
+            store.assert_conserved();
+            let reused = store.request(
+                &warm_request(&source, &["thread-a"], now_ms() + 30_000),
+                &owner,
+                &Cancellation::default(),
+            );
+            assert_eq!(reused["status"].as_str(), Some("ok"), "{reused:?}");
+            assert_eq!(reused["data"]["complete"].as_bool(), Some(true));
+            assert_eq!(cache_reads(&reused), (Some(1), Some(indexed), Some(0)));
+            assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
+            assert!(resident_member_facts(&store, &members)
+                .iter()
+                .all(Option::is_some));
+            store.assert_conserved();
+        }
+    }
+
     fn user_text(id: &str, text: &str) -> String {
         format!(
             r#"{{"type":"user","uuid":"{id}","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"{text}"}}}}"#
@@ -16512,6 +16564,54 @@ mod tests {
             &first.0
         ));
         drop((first, second));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn a_cancelled_root_fact_read_keeps_the_entry_and_builds_nothing() {
+        let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let root = pinned_root(&store, &source, &owner);
+        assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 0);
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(root.stamp.identity),
+            1
+        );
+        let key = fact_entry_key(&source.path, &owner);
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        let cancellation = Cancellation::default();
+        let stop = cancellation.clone();
+        store
+            .prepared_disk
+            .set_read_hook(Some(Box::new(move || stop.cancel())));
+        let mut usage = [0u64; 20];
+        let stopped = store
+            .prepared_root_facts(
+                &root,
+                &json!({"id":"native","version":"1"}),
+                &owner,
+                &bounds,
+                PreparedCacheReads::Unmetered,
+                &cancellation,
+                &mut usage,
+                FactsNeed::Index,
+            )
+            .err()
+            .map(|error| error.status);
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!(stopped, Some(Status::Cancelled));
+        assert_eq!((usage[18], usage[19]), (0, 0));
+        assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds);
+        assert!(store.prepared_disk.has_entry(&key).unwrap());
+        assert!(!store.lock_state().fact_read_in_flight);
+        store.assert_conserved();
+        assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 1);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds);
         store.assert_conserved();
     }
 
