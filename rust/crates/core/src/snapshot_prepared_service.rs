@@ -736,8 +736,9 @@ impl NativeStore {
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
         let handle = &outcome["description"]["handle"];
         let pinned = self
-            .pin_scope_for_work(handle, context, remaining.deadline_unix_ms)
-            .and_then(|(snapshot, _)| {
+            .renew_scope_for_work(handle, context, remaining.deadline_unix_ms)
+            .and_then(|scope| {
+                let snapshot = scope.snapshot;
                 if snapshot.stamp == stamp {
                     Ok(snapshot)
                 } else {
@@ -972,9 +973,9 @@ impl NativeStore {
         let root_handle = view
             .get("handle")
             .ok_or_else(|| invalid("missing root handle"))?;
-        let (root, description) =
-            self.pin_scope_for_work(root_handle, context, remaining.deadline_unix_ms)?;
-        if !classifier_eq(&view["classifier"], &description["classifier"])? {
+        let scope = self.renew_scope_for_work(root_handle, context, remaining.deadline_unix_ms)?;
+        let root = scope.snapshot;
+        if !classifier_eq(&view["classifier"], &scope.classifier)? {
             return Err(invalid("prepared graph classifier differs from root"));
         }
         let ids = request
@@ -1178,13 +1179,14 @@ impl NativeStore {
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         cancel.check(build.remaining.deadline_unix_ms)?;
         let context = &build.context;
-        let (root, description) = self.pin_scope_for_work(
+        let scope = self.renew_scope_for_work(
             &build.root_handle,
             context,
             build.remaining.deadline_unix_ms,
         )?;
+        let root = scope.snapshot;
         if root.stamp != build.root.stamp
-            || !classifier_eq(&build.classifier, &description["classifier"])?
+            || !classifier_eq(&build.classifier, &scope.classifier)?
         {
             return Err(SnapshotError::new(
                 Status::Changed,
@@ -2240,14 +2242,15 @@ impl NativeStore {
                 graph.remaining.deadline_unix_ms,
             )
         };
-        let (root, description) = self.pin_scope_for_work(&handle, context, deadline)?;
+        let scope = self.renew_scope_for_work(&handle, context, deadline)?;
+        let root = scope.snapshot;
         let current = SourceStamp::of(&std::fs::metadata(&root.canonical_path).map_err(|_| {
             SnapshotError::new(Status::Changed, "prepared graph root disappeared")
         })?)
         .viewed_as(stamp);
         if root.stamp != stamp
             || current != stamp && !self.extends_prefix(&root, remaining, usage)?
-            || !classifier_eq(&classifier, &description["classifier"])?
+            || !classifier_eq(&classifier, &scope.classifier)?
         {
             return Err(SnapshotError::new(
                 Status::Changed,

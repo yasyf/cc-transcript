@@ -141,12 +141,12 @@ impl NativeStore {
         }
         let handle = &data["description"]["handle"];
         let lease_id = str_field(handle, "lease_id")?;
-        let snapshot = self.pin_scope_for_work(handle, context, bounds.deadline_unix_ms);
+        let snapshot = self.renew_scope_for_work(handle, context, bounds.deadline_unix_ms);
         self.lock_state()
             .leases
             .remove(lease_id);
         let snapshot = match snapshot {
-            Ok((snapshot, _)) => snapshot,
+            Ok(scope) => scope.snapshot,
             Err(error) if error.status == Status::Deadline => return Ok(progress(false)),
             Err(error) => return Err(error),
         };
