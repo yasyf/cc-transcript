@@ -1866,7 +1866,14 @@ fn carried_stage_and_label_seeds_share_one_anchor() {
 #[test]
 fn prepared_facts_shared_by_cache_graphs_builds_and_slices_stay_conserved() {
     let scenario = Scenario::new(10, |index| prompt_line(&format!("thread-{index:04}"), 2048));
-    let store = store_with(4096, 2048, &[("max_prepared_fact_memory_bytes", 8 * 1024)]);
+    let store = store_with(
+        4096,
+        2048,
+        &[
+            ("max_prepared_fact_memory_bytes", 8 * 1024),
+            ("max_items_per_page", 8),
+        ],
+    );
     let owner = context_for("facts", false);
     let (root, _root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let direct = scenario.direct();
