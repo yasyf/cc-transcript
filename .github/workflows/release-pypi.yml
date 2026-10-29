@@ -4,11 +4,6 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      mode:
-        type: choice
-        options: [build, verify-sdk16, recover-sdk16]
-        default: build
 
 concurrency:
   group: release-pypi
@@ -16,7 +11,6 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'build'
     uses: yasyf/homebrew-tap/.github/workflows/release-pypi-build.yml@41f8de6765b3b833ef333b0b98f5683f0e46685b
     secrets: inherit
     with:
@@ -64,82 +58,3 @@ jobs:
           --latest
           --repo "${{ github.repository }}"
           dist/*
-
-  sdk16-prepare:
-    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'verify-sdk16' || inputs.mode == 'recover-sdk16')
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      missing_count: ${{ steps.prepare.outputs.missing_count }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          artifact-ids: 12937395184,12937361714,12936333249,12936313491,12935562923
-          run-id: 40962343571
-          repository: yasyf/cc-transcript
-          github-token: ${{ github.token }}
-          path: original-dist
-          merge-multiple: true
-          digest-mismatch: error
-      - name: Verify original build and prepare missing distributions
-        id: prepare
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/recover_sdk16.py prepare
-      - uses: actions/upload-artifact@v7
-        if: steps.prepare.outputs.missing_count != '0'
-        with:
-          name: sdk16-missing
-          path: missing-dist/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        with:
-          name: sdk16-original
-          path: original-dist/*
-          if-no-files-found: error
-
-  sdk16-publish:
-    needs: sdk16-prepare
-    if: inputs.mode == 'recover-sdk16' && needs.sdk16-prepare.outputs.missing_count != '0'
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: sdk16-missing
-          path: missing-dist
-          digest-mismatch: error
-      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
-        with:
-          packages-dir: missing-dist/
-
-  sdk16-github-release:
-    needs: [sdk16-prepare, sdk16-publish]
-    if: >-
-      !cancelled() && inputs.mode == 'recover-sdk16' &&
-      needs.sdk16-prepare.result == 'success' &&
-      (needs.sdk16-publish.result == 'success' || needs.sdk16-publish.result == 'skipped')
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: sdk16-original
-          path: original-dist
-          digest-mismatch: error
-      - name: Verify complete PyPI publication and create original release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/recover_sdk16.py release
