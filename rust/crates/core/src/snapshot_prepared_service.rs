@@ -1169,14 +1169,11 @@ impl NativeStore {
         )
     }
 
-    fn prepare_graph_step(
+    fn validate_prepared_build_scope(
         &self,
-        token: &str,
-        mut build: PreparedBuild,
-        reservation: &mut ProjectionReservation<'_>,
+        build: &PreparedBuild,
         cancel: &Cancellation,
-        usage: &mut [u64; 20],
-    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+    ) -> Result<(), SnapshotError> {
         cancel.check(build.remaining.deadline_unix_ms)?;
         let context = &build.context;
         let scope = self.renew_scope_for_work(
@@ -1185,14 +1182,25 @@ impl NativeStore {
             build.remaining.deadline_unix_ms,
         )?;
         let root = scope.snapshot;
-        if root.stamp != build.root.stamp
-            || !classifier_eq(&build.classifier, &scope.classifier)?
-        {
+        if root.stamp != build.root.stamp || !classifier_eq(&build.classifier, &scope.classifier)? {
             return Err(SnapshotError::new(
                 Status::Changed,
                 "prepared graph root generation changed",
             ));
         }
+        Ok(())
+    }
+
+    fn prepare_graph_step(
+        &self,
+        token: &str,
+        mut build: PreparedBuild,
+        reservation: &mut ProjectionReservation<'_>,
+        cancel: &Cancellation,
+        usage: &mut [u64; 20],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        self.validate_prepared_build_scope(&build, cancel)?;
+        let context = &build.context;
         if build.tasks.is_empty() && build.sources.is_empty() && build.listing.is_none() {
             let direct = build.request["direct_paths"]
                 .as_array()
@@ -1245,212 +1253,230 @@ impl NativeStore {
             });
         }
         self.extend_projection_reservation(reservation, context, FILESYSTEM_PATH_BYTES)?;
+        let work_stop = self.config.event_step.min(self.config.page_items);
         let mut examined = 0usize;
-        while examined < 8 {
-            cancel.check(build.remaining.deadline_unix_ms)?;
-            if let Some(mut listing) = build.listing.take() {
-                let mut complete = false;
-                while examined < 8 {
-                    let Some(entry) = listing.entries.next() else {
-                        complete = true;
-                        break;
-                    };
-                    if build.remaining.max_discovery_entries == 0 {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "prepared graph discovery budget exhausted",
-                        ));
-                    }
-                    build.remaining.max_discovery_entries -= 1;
-                    usage[17] += 1;
-                    examined += 1;
-                    let entry = entry.map_err(io_error)?;
-                    let path = entry.path();
-                    if path
-                        .extension()
-                        .is_some_and(|extension| extension == "jsonl")
-                        && !path
-                            .file_name()
-                            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"._"))
-                    {
-                        self.extend_projection_reservation(
-                            reservation,
-                            context,
-                            path.capacity() + vec_growth(&listing.children, 1),
-                        )?;
-                        let predicted = vec_capacity_for(&listing.children, 1);
-                        listing.children.push(path);
-                        assert_eq!(
-                            listing.children.capacity(),
-                            predicted,
-                            "prepared build collections landed off their predicted capacities"
-                        );
-                    }
-                }
-                if !complete {
-                    build.listing = Some(listing);
-                    break;
-                }
-                listing.children.sort_unstable();
-                self.extend_projection_reservation(
-                    reservation,
-                    context,
-                    vec_growth(&build.tasks, listing.children.len())
-                        + listing
-                            .children
-                            .iter()
-                            .map(|path| spawner(path).len())
-                            .sum::<usize>(),
-                )?;
-                let predicted = vec_capacity_for(&build.tasks, listing.children.len());
-                build.tasks.reserve(listing.children.len());
-                assert_eq!(
-                    build.tasks.capacity(),
-                    predicted,
-                    "prepared build collections landed off their predicted capacities"
-                );
-                for path in listing.children.into_iter().rev() {
-                    let spawned_by = spawner(&path).to_owned();
-                    build.tasks.push(GraphTask::Visit {
-                        path,
-                        depth: listing.depth,
-                        spawned_by: Some(spawned_by),
-                    });
-                }
-                continue;
+        while examined < work_stop {
+            if examined != 0 {
+                self.validate_prepared_build_scope(&build, cancel)?;
             }
-            let Some(task) = build.tasks.pop() else {
-                break;
-            };
-            match task {
-                GraphTask::List { parent, depth } => {
-                    let base = parent
-                        .parent()
-                        .ok_or_else(|| invalid("source has no parent"))?;
-                    let stem = parent
-                        .file_stem()
-                        .ok_or_else(|| invalid("source has no stem"))?;
-                    let directory_bytes = sidechain_directory_capacity(base, stem);
+            let checkpoint = examined.saturating_add(8).min(work_stop);
+            while examined < checkpoint {
+                cancel.check(build.remaining.deadline_unix_ms)?;
+                if let Some(mut listing) = build.listing.take() {
+                    let mut complete = false;
+                    while examined < checkpoint {
+                        cancel.check(build.remaining.deadline_unix_ms)?;
+                        let Some(entry) = listing.entries.next() else {
+                            complete = true;
+                            break;
+                        };
+                        if build.remaining.max_discovery_entries == 0 {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "prepared graph discovery budget exhausted",
+                            ));
+                        }
+                        build.remaining.max_discovery_entries -= 1;
+                        usage[17] += 1;
+                        examined += 1;
+                        let entry = entry.map_err(io_error)?;
+                        let path = entry.path();
+                        if path
+                            .extension()
+                            .is_some_and(|extension| extension == "jsonl")
+                            && !path
+                                .file_name()
+                                .is_some_and(|name| name.as_encoded_bytes().starts_with(b"._"))
+                        {
+                            self.extend_projection_reservation(
+                                reservation,
+                                context,
+                                path.capacity() + vec_growth(&listing.children, 1),
+                            )?;
+                            let predicted = vec_capacity_for(&listing.children, 1);
+                            listing.children.push(path);
+                            assert_eq!(
+                                listing.children.capacity(),
+                                predicted,
+                                "prepared build collections landed off their predicted capacities"
+                            );
+                        }
+                    }
+                    if !complete {
+                        build.listing = Some(listing);
+                        break;
+                    }
+                    listing.children.sort_unstable();
                     self.extend_projection_reservation(
                         reservation,
                         context,
-                        directory_bytes + vec_growth(&build.sidechain_dirs, 1),
+                        vec_growth(&build.tasks, listing.children.len())
+                            + listing
+                                .children
+                                .iter()
+                                .map(|path| spawner(path).len())
+                                .sum::<usize>(),
                     )?;
-                    let predicted = vec_capacity_for(&build.sidechain_dirs, 1);
-                    let directory = sidechain_directory(base, stem);
+                    let predicted = vec_capacity_for(&build.tasks, listing.children.len());
+                    build.tasks.reserve(listing.children.len());
                     assert_eq!(
-                        directory.capacity(),
-                        directory_bytes,
-                        "sidechain directory landed off its predicted capacity"
+                        build.tasks.capacity(),
+                        predicted,
+                        "prepared build collections landed off their predicted capacities"
                     );
-                    let canonical = match realpath(&directory) {
-                        Ok(canonical) => canonical,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            build.sidechain_dirs.push((directory, None));
+                    for path in listing.children.into_iter().rev() {
+                        let spawned_by = spawner(&path).to_owned();
+                        build.tasks.push(GraphTask::Visit {
+                            path,
+                            depth: listing.depth,
+                            spawned_by: Some(spawned_by),
+                        });
+                    }
+                    continue;
+                }
+                let Some(task) = build.tasks.pop() else {
+                    break;
+                };
+                match task {
+                    GraphTask::List { parent, depth } => {
+                        let base = parent
+                            .parent()
+                            .ok_or_else(|| invalid("source has no parent"))?;
+                        let stem = parent
+                            .file_stem()
+                            .ok_or_else(|| invalid("source has no stem"))?;
+                        let directory_bytes = sidechain_directory_capacity(base, stem);
+                        self.extend_projection_reservation(
+                            reservation,
+                            context,
+                            directory_bytes + vec_growth(&build.sidechain_dirs, 1),
+                        )?;
+                        let predicted = vec_capacity_for(&build.sidechain_dirs, 1);
+                        let directory = sidechain_directory(base, stem);
+                        assert_eq!(
+                            directory.capacity(),
+                            directory_bytes,
+                            "sidechain directory landed off its predicted capacity"
+                        );
+                        let canonical = match realpath(&directory) {
+                            Ok(canonical) => canonical,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                build.sidechain_dirs.push((directory, None));
+                                assert_eq!(
+                                    build.sidechain_dirs.capacity(),
+                                    predicted,
+                                    "prepared build collections landed off their predicted capacities"
+                                );
+                                continue;
+                            }
+                            Err(error) => return Err(io_error(error)),
+                        };
+                        self.authority(context, Some(&canonical))?;
+                        let stamp =
+                            SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                        self.extend_projection_reservation(
+                            reservation,
+                            context,
+                            canonical.capacity()
+                                + READ_DIR_HANDLE_BYTES
+                                + directory.as_os_str().len(),
+                        )?;
+                        build.sidechain_dirs.push((canonical, Some(stamp)));
+                        assert_eq!(
+                            build.sidechain_dirs.capacity(),
+                            predicted,
+                            "prepared build collections landed off their predicted capacities"
+                        );
+                        build.listing = Some(GraphListing {
+                            entries: OpenDirectory::open(&directory)?,
+                            children: Vec::new(),
+                            depth,
+                        });
+                        #[cfg(test)]
+                        self.directory_opens.fetch_add(1, Ordering::Relaxed);
+                    }
+                    GraphTask::Visit {
+                        path,
+                        depth,
+                        spawned_by: _,
+                    } => {
+                        examined += 1;
+                        let canonical = realpath(&path).map_err(io_error)?;
+                        self.authority(context, Some(&canonical))?;
+                        let stamp =
+                            SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                        if build.seen.contains(&stamp.identity.file()) {
+                            continue;
+                        }
+                        if active_since_ns(&build.request)?
+                            .is_some_and(|since| stamp.mtime_ns < since)
+                        {
+                            self.extend_projection_reservation(
+                                reservation,
+                                context,
+                                set_growth(&build.seen, 1) + canonical.as_os_str().len(),
+                            )?;
+                            let predicted =
+                                (set_capacity_for(&build.seen, 1), build.tasks.capacity());
+                            build.seen.insert(stamp.identity.file());
+                            build.tasks.push(GraphTask::List {
+                                parent: canonical,
+                                depth: depth + 1,
+                            });
                             assert_eq!(
-                                build.sidechain_dirs.capacity(),
+                                (build.seen.capacity(), build.tasks.capacity()),
                                 predicted,
                                 "prepared build collections landed off their predicted capacities"
                             );
                             continue;
                         }
-                        Err(error) => return Err(io_error(error)),
-                    };
-                    self.authority(context, Some(&canonical))?;
-                    let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-                    self.extend_projection_reservation(
-                        reservation,
-                        context,
-                        canonical.capacity() + READ_DIR_HANDLE_BYTES + directory.as_os_str().len(),
-                    )?;
-                    build.sidechain_dirs.push((canonical, Some(stamp)));
-                    assert_eq!(
-                        build.sidechain_dirs.capacity(),
-                        predicted,
-                        "prepared build collections landed off their predicted capacities"
-                    );
-                    build.listing = Some(GraphListing {
-                        entries: OpenDirectory::open(&directory)?,
-                        children: Vec::new(),
-                        depth,
-                    });
-                    #[cfg(test)]
-                    self.directory_opens.fetch_add(1, Ordering::Relaxed);
-                }
-                GraphTask::Visit {
-                    path,
-                    depth,
-                    spawned_by: _,
-                } => {
-                    examined += 1;
-                    let canonical = realpath(&path).map_err(io_error)?;
-                    self.authority(context, Some(&canonical))?;
-                    let stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-                    if build.seen.contains(&stamp.identity.file()) {
-                        continue;
-                    }
-                    if active_since_ns(&build.request)?.is_some_and(|since| stamp.mtime_ns < since) {
+                        if build.stamps.len() >= build.remaining.max_sources {
+                            return Err(SnapshotError::new(
+                                Status::Incomplete,
+                                "prepared graph source budget exhausted",
+                            ));
+                        }
                         self.extend_projection_reservation(
                             reservation,
                             context,
-                            set_growth(&build.seen, 1) + canonical.as_os_str().len(),
+                            set_growth(&build.seen, 1)
+                                + vec_growth(&build.stamps, 1)
+                                + vec_growth(&build.sources, 1)
+                                + 3 * canonical.as_os_str().len(),
                         )?;
-                        let predicted = (set_capacity_for(&build.seen, 1), build.tasks.capacity());
+                        let predicted = (
+                            set_capacity_for(&build.seen, 1),
+                            vec_capacity_for(&build.stamps, 1),
+                            vec_capacity_for(&build.sources, 1),
+                            build.tasks.capacity(),
+                        );
+                        #[cfg(test)]
+                        self.build_sources.fetch_add(1, Ordering::Relaxed);
                         build.seen.insert(stamp.identity.file());
+                        build.stamps.push((canonical.clone(), stamp));
+                        build.sources.push(PreparedSourceRef {
+                            path: canonical.clone(),
+                            stamp,
+                        });
                         build.tasks.push(GraphTask::List {
                             parent: canonical,
                             depth: depth + 1,
                         });
                         assert_eq!(
-                            (build.seen.capacity(), build.tasks.capacity()),
+                            (
+                                build.seen.capacity(),
+                                build.stamps.capacity(),
+                                build.sources.capacity(),
+                                build.tasks.capacity(),
+                            ),
                             predicted,
                             "prepared build collections landed off their predicted capacities"
                         );
-                        continue;
                     }
-                    if build.stamps.len() >= build.remaining.max_sources {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "prepared graph source budget exhausted",
-                        ));
-                    }
-                    self.extend_projection_reservation(
-                        reservation,
-                        context,
-                        set_growth(&build.seen, 1)
-                            + vec_growth(&build.stamps, 1)
-                            + vec_growth(&build.sources, 1)
-                            + 3 * canonical.as_os_str().len(),
-                    )?;
-                    let predicted = (
-                        set_capacity_for(&build.seen, 1),
-                        vec_capacity_for(&build.stamps, 1),
-                        vec_capacity_for(&build.sources, 1),
-                        build.tasks.capacity(),
-                    );
-                    #[cfg(test)]
-                    self.build_sources.fetch_add(1, Ordering::Relaxed);
-                    build.seen.insert(stamp.identity.file());
-                    build.stamps.push((canonical.clone(), stamp));
-                    build.sources.push(PreparedSourceRef {
-                        path: canonical.clone(),
-                        stamp,
-                    });
-                    build.tasks.push(GraphTask::List {
-                        parent: canonical,
-                        depth: depth + 1,
-                    });
-                    assert_eq!(
-                        (
-                            build.seen.capacity(),
-                            build.stamps.capacity(),
-                            build.sources.capacity(),
-                            build.tasks.capacity(),
-                        ),
-                        predicted,
-                        "prepared build collections landed off their predicted capacities"
-                    );
                 }
+            }
+            if build.listing.is_none() && build.tasks.is_empty() {
+                break;
             }
         }
         if build.listing.is_some() || !build.tasks.is_empty() {
