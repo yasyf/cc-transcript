@@ -1,0 +1,67 @@
+{
+  "repository": "yasyf/cc-transcript",
+  "tag": "v14.45.16",
+  "tag_object": "d57f1016a491a1be55fa6ee235faf473c40607ec",
+  "source_sha": "073815899716171802323a04e0aae7cf49d79983",
+  "run_id": 40962343571,
+  "attempt": 1,
+  "artifacts": [
+    {
+      "id": 12937395184,
+      "name": "dist-linux-aarch64",
+      "zip_digest": "sha256:6beb08ffe4c98fff590ad9f1f37b346951ea525f8f91f6cb2a575a514e3f34f9"
+    },
+    {
+      "id": 12937361714,
+      "name": "dist-macos-x86_64",
+      "zip_digest": "sha256:d9aad9eb54f9c526a8ef65c34667b9612337a23482f0894873cdc7e4b1ac4c32"
+    },
+    {
+      "id": 12936333249,
+      "name": "dist-linux-x86_64",
+      "zip_digest": "sha256:af443f26dacde70f1526b91ddf2f10ad758b48c2e4e2dc463c214c1d9bd1b505"
+    },
+    {
+      "id": 12936313491,
+      "name": "dist-macos-arm64",
+      "zip_digest": "sha256:6a883aa8361a226c43c0e74bba17d9727ef636e0cd7127e024b0a0241f867002"
+    },
+    {
+      "id": 12935562923,
+      "name": "dist-sdist",
+      "zip_digest": "sha256:01137f6226f19dddcf572851c59135d42b3bd0a44db3294999529ebf709c7cac"
+    }
+  ],
+  "files": [
+    {
+      "filename": "cc_transcript-14.45.16-cp313-abi3-macosx_11_0_arm64.whl",
+      "size": 30543597,
+      "sha256": "73bb46ec1e0fa21ee03782581b56cb8c3f07ceb449e19b8e70a4d33e79cf2d7f",
+      "publication": "ALREADY_PRESENT_PRESERVE"
+    },
+    {
+      "filename": "cc_transcript-14.45.16-cp313-abi3-macosx_11_0_x86_64.whl",
+      "size": 31118554,
+      "sha256": "699ff588b7092a120bb583542fff38b12928a369a92ceff86b249d72b9e69d98",
+      "publication": "ALREADY_PRESENT_PRESERVE"
+    },
+    {
+      "filename": "cc_transcript-14.45.16-cp313-abi3-manylinux_2_28_aarch64.whl",
+      "size": 30737405,
+      "sha256": "0624ab66059b827ae14cbd3f1c72e4096371effe5160a5d706969784b9364db2",
+      "publication": "MISSING_UPLOAD_EXACT_ORIGINAL"
+    },
+    {
+      "filename": "cc_transcript-14.45.16-cp313-abi3-manylinux_2_28_x86_64.whl",
+      "size": 31407459,
+      "sha256": "9406f3f272098165c6d125d103f47cefb28b49288d4115e43eb281ea29cf9fbd",
+      "publication": "MISSING_UPLOAD_EXACT_ORIGINAL"
+    },
+    {
+      "filename": "cc_transcript-14.45.16.tar.gz",
+      "size": 12713402,
+      "sha256": "e41c41c6b7c24e01c9b4f9babeca8cc8a4ebc6ed97335d82c89d3739571c91b8",
+      "publication": "MISSING_UPLOAD_EXACT_ORIGINAL"
+    }
+  ]
+}
