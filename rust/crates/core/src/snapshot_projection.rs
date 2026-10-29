@@ -2907,6 +2907,246 @@ mod tests {
         assert_eq!(result.data["value"].as_str(), Some("current"));
     }
 
+    fn sparse_prompt_snapshot() -> (TranscriptSnapshot, Vec<String>) {
+        let mut raw = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..641 {
+            let text = format!("prompt-{index}-\"\\\n\t😀");
+            expected.push(text.clone());
+            raw.push(user(&format!("prompt-{index}"), &text));
+            raw.push(said(&format!("reply-{index}"), "reply"));
+            raw.push(user(&format!("empty-{index}"), ""));
+        }
+        let mut snap = snapshot(&raw);
+        let flags: Vec<_> = raw
+            .iter()
+            .map(|value| value["type"].as_str() == Some("user"))
+            .collect();
+        snap.activity = Arc::new(ActivityIndex::new(&snap.entries(), Some(&flags)));
+        assert_eq!(snap.activity.turn_count(), 1282);
+        (snap, expected)
+    }
+
+    #[test]
+    fn sparse_prompt_pages_charge_only_the_emitted_page() {
+        let (snap, expected) = sparse_prompt_snapshot();
+        for selection in ["first", "last"] {
+            for count in [0, 1, 300, 641, 1000] {
+                for partial in [false, true] {
+                    let eligible = &expected[usize::from(partial)..];
+                    let length = count.min(eligible.len());
+                    let selected = if selection == "first" {
+                        &eligible[..length]
+                    } else {
+                        &eligible[eligible.len() - length..]
+                    };
+                    let selectors = if partial {
+                        json!([{"kind":"event_range","start":1,"stop":snap.event_count}])
+                    } else {
+                        json!([])
+                    };
+                    let req = request(
+                        json!({"kind":"prompts","selection":selection,"count":count}),
+                        selectors,
+                    );
+                    let mut next = 0;
+                    let mut values = Vec::new();
+                    for _ in 0..4 {
+                        let mut cap = limits();
+                        cap.max_items = 256;
+                        cap.max_events = 256;
+                        let page =
+                            project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+                        assert_eq!(
+                            page.reason.as_deref(),
+                            (next + 256 < length).then_some("item_limit")
+                        );
+                        let actual = page.data["values"].as_array().expect("string page");
+                        let stop = length.min(next + 256);
+                        assert_eq!(page.events, stop - next);
+                        assert_eq!(actual.len(), stop - next);
+                        for (value, expected) in actual.iter().zip(&selected[next..stop]) {
+                            assert_eq!(value.as_str(), Some(expected.as_str()));
+                            values.push(value.as_str().unwrap().to_owned());
+                        }
+                        assert_eq!(page.complete, stop == length);
+                        assert_eq!(page.next, (stop < length).then_some(stop));
+                        if let Some(cursor) = page.next {
+                            assert!(cursor > next);
+                            next = cursor;
+                        } else {
+                            break;
+                        }
+                    }
+                    assert_eq!(values, selected);
+                    let mut cap = limits();
+                    cap.max_events = 0;
+                    let terminal =
+                        project(&snap, &req, &cap, &Cancellation::default(), length).unwrap();
+                    assert!(terminal.complete);
+                    assert_eq!(terminal.events, 0);
+                    assert!(terminal.data["values"].as_array().unwrap().is_empty());
+                    assert!(
+                        matches!(project(&snap, &req, &limits(), &Cancellation::default(), length + 1), Err(error) if error.status == Status::InvalidRequest)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_zero_item_pages_are_incomplete_without_charging_prompts() {
+        let (snap, _) = sparse_prompt_snapshot();
+        let mut cap = limits();
+        cap.max_items = 0;
+        cap.max_events = 0;
+        for selection in ["first", "last"] {
+            let req = request(
+                json!({"kind":"prompts","selection":selection,"count":641}),
+                json!([]),
+            );
+            let page = project(&snap, &req, &cap, &Cancellation::default(), 256).unwrap();
+            assert!(!page.complete);
+            assert_eq!(page.next, Some(256));
+            assert_eq!(page.reason.as_deref(), Some("item_limit"));
+            assert_eq!(page.events, 0);
+            assert!(page.data["values"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_scalar_current_and_empty_view_contracts_stay_unchanged() {
+        let mut snap = snapshot(&[
+            user("a", "first"),
+            said("reply", "reply"),
+            user("space", " \t"),
+            user("empty", ""),
+        ]);
+        snap.activity = Arc::new(ActivityIndex::new(
+            &snap.entries(),
+            Some(&[true, false, true, true]),
+        ));
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"first_prompt"}), json!([]))).data["value"].as_str(),
+            Some("first")
+        );
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"user_text"}), json!([]))).data["value"].as_str(),
+            Some("")
+        );
+        let current = request(
+            json!({"kind":"prompts","selection":"current","count":0}),
+            json!([]),
+        );
+        assert_eq!(run(&snap, &current).data["values"][0].as_str(), Some(""));
+        assert!(
+            project(&snap, &current, &limits(), &Cancellation::default(), 1)
+                .unwrap()
+                .complete
+        );
+        assert!(
+            matches!(project(&snap, &current, &limits(), &Cancellation::default(), 2), Err(error) if error.status == Status::InvalidRequest)
+        );
+        let partial = json!([{"kind":"event_range","start":1,"stop":4}]);
+        assert_eq!(
+            run(
+                &snap,
+                &request(json!({"kind":"first_prompt"}), partial.clone())
+            )
+            .data["value"]
+                .as_str(),
+            Some(" \t")
+        );
+        for selection in ["first", "last"] {
+            let page = run(
+                &snap,
+                &request(
+                    json!({"kind":"prompts","selection":selection,"count":10}),
+                    partial.clone(),
+                ),
+            );
+            assert_eq!(page.data["values"], json!([" \t"]));
+        }
+        let empty = json!([{"kind":"event_range","start":0,"stop":0}]);
+        assert!(run(
+            &snap,
+            &request(json!({"kind":"first_prompt"}), empty.clone())
+        )
+        .data["value"]
+            .is_null());
+        assert_eq!(
+            run(&snap, &request(json!({"kind":"user_text"}), empty.clone())).data["value"].as_str(),
+            Some("")
+        );
+        let req = request(
+            json!({"kind":"prompts","selection":"first","count":10}),
+            empty,
+        );
+        assert!(run(&snap, &req).data["values"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(
+            matches!(project(&snap, &req, &limits(), &Cancellation::default(), 1), Err(error) if error.status == Status::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn prompt_pages_preserve_append_generations_and_output_limits() {
+        let raw = [
+            user("a", "first"),
+            said("reply", "reply"),
+            user("empty", ""),
+            user("space", " "),
+            user("b", "last"),
+        ];
+        let flags = [true, false, true, true, true];
+        let mut prior = snapshot(&raw[..1]);
+        prior.activity = Arc::new(ActivityIndex::new(&prior.entries(), Some(&flags[..1])));
+        let old_allocations = prior.activity.shared_allocations();
+        let mut next = snapshot(&raw);
+        next.activity = Arc::new(prior.activity.append(&next.entries(), 1, Some(&flags)));
+        for (snap, expected) in [
+            (&prior, json!(["first"])),
+            (&next, json!(["first", " ", "last"])),
+        ] {
+            for selection in ["first", "last"] {
+                let result = run(
+                    snap,
+                    &request(
+                        json!({"kind":"prompts","selection":selection,"count":100}),
+                        json!([]),
+                    ),
+                );
+                assert_eq!(result.data["values"], expected);
+            }
+        }
+        assert_eq!(prior.activity.shared_allocations(), old_allocations);
+        let (snap, expected) = sparse_prompt_snapshot();
+        let req = request(
+            json!({"kind":"prompts","selection":"last","count":1}),
+            json!([]),
+        );
+        let expected_data = json!({"kind":"strings","values":[expected.last().unwrap()]});
+        let mut cap = limits();
+        cap.max_output_bytes = sonic_rs::to_vec(&expected_data).unwrap().len();
+        assert_eq!(
+            project(&snap, &req, &cap, &Cancellation::default(), 0)
+                .unwrap()
+                .data,
+            expected_data
+        );
+        cap.max_output_bytes -= 1;
+        assert!(
+            matches!(project(&snap, &req, &cap, &Cancellation::default(), 0), Err(error) if error.status == Status::OutputLimit)
+        );
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        assert!(
+            matches!(project(&snap, &req, &limits(), &cancel, 0), Err(error) if error.status == Status::Cancelled)
+        );
+    }
+
     #[test]
     fn assistant_zero_count_and_prompt_pages_match_python_selection() {
         let snap = snapshot(&[
