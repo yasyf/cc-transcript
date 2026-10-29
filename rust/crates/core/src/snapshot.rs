@@ -1051,6 +1051,9 @@ fn realpath(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 struct PreparedBuild {
+    charge_work: Work,
+    owned_payload_bytes: usize,
+    context_bytes: usize,
     claimant: String,
     context: Value,
     request: Value,
@@ -1691,37 +1694,18 @@ impl Charge<String> for PreparedBuild {
     }
 
     fn charge(&self) -> usize {
+        self.charge_work.tick(1);
         size_of::<PreparedBuild>()
-            + self.claimant.capacity()
-            + value_bytes(&self.context)
-            + value_bytes(&self.request)
-            + value_bytes(&self.root_handle)
-            + value_bytes(&self.classifier)
+            + self.owned_payload_bytes
             + self.tasks.capacity() * size_of::<GraphTask>()
-            + self.tasks.iter().map(task_bytes).sum::<usize>()
             + self.listing.as_ref().map_or(0, |listing| {
                 listing.children.capacity() * size_of::<PathBuf>()
-                    + listing
-                        .children
-                        .iter()
-                        .map(PathBuf::capacity)
-                        .sum::<usize>()
                     + listing.entries.retained_bytes()
             })
             + self.seen.capacity() * size_of::<SourceIdentity>()
             + self.sources.capacity() * size_of::<PreparedSourceRef>()
-            + self
-                .sources
-                .iter()
-                .map(|source| source.path.capacity())
-                .sum::<usize>()
-            + stamp_bytes(&self.stamps)
+            + self.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
             + self.sidechain_dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
-            + self
-                .sidechain_dirs
-                .iter()
-                .map(|(path, _)| path.capacity())
-                .sum::<usize>()
     }
 }
 
@@ -6780,7 +6764,12 @@ impl NativeStore {
                         context,
                         value_bytes(context),
                     )?;
-                    build.context = context.clone();
+                    let context = context.clone();
+                    let context_bytes = value_bytes(&context);
+                    build.owned_payload_bytes =
+                        build.owned_payload_bytes - build.context_bytes + context_bytes;
+                    build.context_bytes = context_bytes;
+                    build.context = context;
                     return self.prepare_graph_step(cursor, build, &mut reservation, cancel, usage);
                 }
                 let prepared_query = {

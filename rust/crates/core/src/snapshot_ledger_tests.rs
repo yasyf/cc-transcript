@@ -2139,6 +2139,146 @@ fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowanc
 }
 
 #[test]
+fn prepared_build_charge_work_is_independent_of_retained_paths() {
+    for count in [33, 129, 513] {
+        let scenario = Scenario::new(count, |index| line(&format!("thread-{index:04}")));
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-build-charge", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let state = store.lock_state();
+        let (token, build) = state.prepared_builds.iter().next().unwrap();
+        let work = build.charge_work.counter();
+        let before = work.load(Ordering::Relaxed);
+        for _ in 0..64 {
+            assert_eq!(
+                token.capacity() + build.charge(),
+                NativeStore::audit_prepared_build_bytes(token, build)
+            );
+        }
+        assert_eq!(work.load(Ordering::Relaxed) - before, 64, "paths={count}");
+    }
+}
+
+#[test]
+fn incremental_prepared_build_charge_matches_every_parked_allocation() {
+    for background in [false, true] {
+        for inactive in [false, true] {
+            let scenario = Scenario::new(17, |index| line(&format!("thread-{index:04}")));
+            let directory = scenario.root.directory.join("s").join("subagents");
+            std::fs::create_dir_all(&directory).unwrap();
+            for index in 0..33 {
+                std::fs::write(
+                    directory.join(format!("agent-{index:04}.jsonl")),
+                    line(&format!("discovered-{index:04}")),
+                )
+                .unwrap();
+            }
+            std::fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+            let alias = scenario.root.directory.join("alias.jsonl");
+            std::os::unix::fs::symlink(&scenario.sidechains[0], &alias).unwrap();
+            let mut direct = scenario.direct();
+            direct.push(direct[0].clone());
+            direct.push(alias.to_string_lossy().into_owned());
+            let store = store_with(4096, 1, &[]);
+            let mut owner = context_for("incremental-allocation-audit", background);
+            let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+            let mut request = prepare_request(&root, &[], &[], &direct);
+            if inactive {
+                request.insert("active_since_unix_ms", json!(now_ms() + 60_000));
+            }
+            let mut response = store.request(&request, &owner, &Cancellation::default());
+            let work = {
+                let state = store.lock_state();
+                state
+                    .prepared_builds
+                    .values()
+                    .next()
+                    .unwrap()
+                    .charge_work
+                    .counter()
+            };
+            let mut calls = 1;
+            let mut partial_listing = false;
+            while response["cursor"].as_str().is_some() {
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("incomplete"),
+                    "{response:?}"
+                );
+                store.assert_conserved();
+                {
+                    let state = store.lock_state();
+                    let (token, build) = state.prepared_builds.iter().next().unwrap();
+                    partial_listing |= build.listing.is_some();
+                    assert_eq!(
+                        token.capacity() + build.charge(),
+                        NativeStore::audit_prepared_build_bytes(token, build)
+                    );
+                }
+                owner.insert(
+                    "padding",
+                    json!("p".repeat(if calls % 2 == 0 { 257 } else { 3 })),
+                );
+                response = resume(&store, &response, &owner);
+                calls += 1;
+                assert!(calls < 256, "{response:?}");
+            }
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert!(partial_listing);
+            assert!(work.load(Ordering::Relaxed) <= 32 * (direct.len() + 33 + calls));
+            store.assert_conserved();
+            let state = store.lock_state();
+            assert!(state.prepared_builds.is_empty());
+            assert_eq!(state.transient_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn incremental_prepared_build_discovery_refusal_drops_its_taken_listing() {
+    let scenario = Scenario::new(0, |_| unreachable!());
+    let directory = scenario.root.directory.join("s").join("subagents");
+    std::fs::create_dir_all(&directory).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            directory.join(format!("agent-{index}.jsonl")),
+            line(&format!("discovered-{index}")),
+        )
+        .unwrap();
+    }
+    for background in [false, true] {
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-discovery-refusal", background);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let mut request = prepare_request(&root, &[], &[], &[]);
+        request["limits"].insert("max_discovery_entries", json!(1));
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let refused = resume(&store, &response, &owner);
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("incomplete"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("prepared graph discovery budget exhausted"),
+            "{refused:?}"
+        );
+        assert!(refused["cursor"].is_null());
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+    }
+}
+
+#[test]
 fn coalesced_prepared_build_admits_its_peak_before_publication() {
     let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
@@ -5046,12 +5186,20 @@ fn facts_bound_walk_for(snapshot: &Arc<TranscriptSnapshot>, need: FactsNeed) -> 
 }
 
 fn built_facts(source: &Arc<TranscriptSnapshot>, selectors: &Value) -> PreparedFacts {
+    built_facts_for_need(source, selectors, FactsNeed::Full)
+}
+
+fn built_facts_for_need(
+    source: &Arc<TranscriptSnapshot>,
+    selectors: &Value,
+    need: FactsNeed,
+) -> PreparedFacts {
     crate::snapshot_projection::prepare_facts(
         source,
         selectors,
         &work_bounds(),
         &Cancellation::default(),
-        FactsNeed::Full,
+        need,
     )
     .unwrap()
     .0
@@ -5888,8 +6036,32 @@ fn prepared_query_refuses_source_completion_before_construction() {
     }
 }
 
+fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) -> Fixture {
+    let query =
+        json!({"kind":"has_override","token":"missing","invalidated_by":[],"subagents":true});
+    if observer {
+        fixture.request.insert("observers", json!([query]));
+    } else if need == FactsNeed::Full {
+        fixture.request.insert("query", query);
+    }
+    assert_eq!(
+        FactsNeed::of_query(
+            &fixture.request["query"],
+            fixture.request.get("observers").and_then(Value::as_array),
+        ),
+        need,
+    );
+    fixture
+}
+
 fn root_slice_prediction(fixture: &Fixture) -> usize {
-    facts_bound_walk(&fixture.pins[0])
+    facts_bound_walk_for(
+        &fixture.pins[0],
+        FactsNeed::of_query(
+            &fixture.request["query"],
+            fixture.request.get("observers").and_then(Value::as_array),
+        ),
+    )
 }
 
 #[test]
@@ -5897,36 +6069,44 @@ fn root_slice_is_admitted_in_full_before_construction() {
     let scenario = Scenario::new(0, |_| String::new());
     let site = "query_graph root slice";
     for background in [false, true] {
-        let build = || slice_fixture(&scenario, background);
-        let probe = build();
-        let predicted = root_slice_prediction(&probe);
-        let slice_bytes = NativeStore::audit_facts_bytes(&built_facts(
-            &probe.pins[0],
-            &json!([{"kind":"current_turn"}]),
-        ));
-        assert!(
+        for (need, observer) in [
+            (FactsNeed::Index, false),
+            (FactsNeed::Full, false),
+            (FactsNeed::Full, true),
+        ] {
+            let build =
+                || root_slice_for_need(slice_fixture(&scenario, background), need, observer);
+            let probe = build();
+            let predicted = root_slice_prediction(&probe);
+            let slice_bytes = NativeStore::audit_facts_bytes(&built_facts_for_need(
+                &probe.pins[0],
+                &json!([{"kind":"current_turn"}]),
+                need,
+            ));
+            assert!(
             predicted >= slice_bytes,
             "{site}: the {predicted}-byte reservation does not cover the {slice_bytes}-byte slice"
         );
-        let attempt = |fixture: &Fixture| {
-            let mut usage = [0u64; 20];
-            let fitted = constructed(site, &fixture.store, [1, 0], true, || {
-                fixture
-                    .store
-                    .query_graph(
-                        &fixture.request,
-                        &fixture.owner,
-                        &Cancellation::default(),
-                        &mut usage,
-                    )
-                    .map(|_| ())
-            });
-            if !fitted {
-                assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
-            }
-            fitted
-        };
-        assert_facts_admitted_in_full(site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+            let attempt = |fixture: &Fixture| {
+                let mut usage = [0u64; 20];
+                let fitted = constructed(site, &fixture.store, [1, 0], true, || {
+                    fixture
+                        .store
+                        .query_graph(
+                            &fixture.request,
+                            &fixture.owner,
+                            &Cancellation::default(),
+                            &mut usage,
+                        )
+                        .map(|_| ())
+                });
+                if !fitted {
+                    assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
+                }
+                fitted
+            };
+            assert_facts_admitted_in_full(site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+        }
     }
 }
 
@@ -5935,19 +6115,26 @@ fn query_graph_refuses_a_root_slice_before_construction() {
     let scenario = Scenario::new(0, |_| String::new());
     let site = "query_graph root slice reply";
     for background in [false, true] {
-        let build = || slice_fixture(&scenario, background);
-        let predicted = root_slice_prediction(&build());
-        assert_facts_admitted_in_full(
-            site,
-            &build,
-            &|fixture: &Fixture| submitted(site, fixture, [1, 0]),
-            REPLY_RESERVATION,
-            predicted,
-            &[Trace::Reserved(REPLY_RESERVATION)],
-            NO_LOADS,
-        );
-        for headroom in [0, predicted - 1] {
-            assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+        for (need, observer) in [
+            (FactsNeed::Index, false),
+            (FactsNeed::Full, false),
+            (FactsNeed::Full, true),
+        ] {
+            let build =
+                || root_slice_for_need(slice_fixture(&scenario, background), need, observer);
+            let predicted = root_slice_prediction(&build());
+            assert_facts_admitted_in_full(
+                site,
+                &build,
+                &|fixture: &Fixture| submitted(site, fixture, [1, 0]),
+                REPLY_RESERVATION,
+                predicted,
+                &[Trace::Reserved(REPLY_RESERVATION)],
+                NO_LOADS,
+            );
+            for headroom in [0, predicted - 1] {
+                assert_refused_reply(site, &build(), REPLY_RESERVATION + headroom, 0);
+            }
         }
     }
 }
@@ -6260,47 +6447,58 @@ fn slices_of_a_decoded_patch_root_are_admitted_at_the_root_bound() {
         let source = LedgerSource::new(&patch_transcript(&patch, false));
         let site = format!("{shape} decoded root slice");
         for background in [false, true] {
-            let build = || decoded_slice_fixture(&source, background);
-            let probe = build();
-            let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
-            let decoded = NativeStore::audit_facts_bytes(
-                &probe.store.lock_state().prepared_graphs[graph_id]
-                    .lock()
-                    .unwrap()
-                    .root_facts,
-            );
-            let slice = NativeStore::audit_facts_bytes(&built_facts(
-                &probe.pins[0],
-                &json!([{"kind":"current_turn"}]),
-            ));
-            let predicted = facts_bound_walk(&probe.pins[0]);
-            assert!(
-                decoded < slice,
-                "{site}: the {decoded}-byte decoded root facts already bound the {slice}-byte slice"
-            );
-            assert!(
-                slice <= predicted,
-                "{site}: slice={slice} predicted={predicted}"
-            );
-            let attempt = |fixture: &Fixture| {
-                let mut usage = [0u64; 20];
-                let fitted = constructed(&site, &fixture.store, [1, 0], true, || {
-                    fixture
-                        .store
-                        .query_graph(
-                            &fixture.request,
-                            &fixture.owner,
-                            &Cancellation::default(),
-                            &mut usage,
-                        )
-                        .map(|_| ())
-                });
-                if !fitted {
-                    assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
+            for (need, observer) in [
+                (FactsNeed::Index, false),
+                (FactsNeed::Full, false),
+                (FactsNeed::Full, true),
+            ] {
+                let build = || {
+                    root_slice_for_need(decoded_slice_fixture(&source, background), need, observer)
+                };
+                let probe = build();
+                let graph_id = probe.request["handle"]["graph_id"].as_str().unwrap();
+                let decoded = NativeStore::audit_facts_bytes(
+                    &probe.store.lock_state().prepared_graphs[graph_id]
+                        .lock()
+                        .unwrap()
+                        .root_facts,
+                );
+                let slice = NativeStore::audit_facts_bytes(&built_facts_for_need(
+                    &probe.pins[0],
+                    &json!([{"kind":"current_turn"}]),
+                    need,
+                ));
+                let predicted = root_slice_prediction(&probe);
+                if need == FactsNeed::Full {
+                    assert!(
+                        decoded < slice,
+                        "{site}: the {decoded}-byte decoded root facts already bound the {slice}-byte slice"
+                    );
                 }
-                fitted
-            };
-            assert_facts_admitted_in_full(&site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+                assert!(
+                    slice <= predicted,
+                    "{site}: slice={slice} predicted={predicted}"
+                );
+                let attempt = |fixture: &Fixture| {
+                    let mut usage = [0u64; 20];
+                    let fitted = constructed(&site, &fixture.store, [1, 0], true, || {
+                        fixture
+                            .store
+                            .query_graph(
+                                &fixture.request,
+                                &fixture.owner,
+                                &Cancellation::default(),
+                                &mut usage,
+                            )
+                            .map(|_| ())
+                    });
+                    if !fitted {
+                        assert_eq!(usage, [0u64; 20], "{site}: the refusal reported work");
+                    }
+                    fitted
+                };
+                assert_facts_admitted_in_full(&site, &build, &attempt, 0, predicted, &[], NO_LOADS);
+            }
         }
     }
 }
