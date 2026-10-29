@@ -2695,7 +2695,9 @@ impl StoreState {
     ) {
         self.ledger.shared.reserve([facts_anchor(&facts)]);
         self.ledger.shared.acquire(facts_anchor(&facts));
-        graph.root_slices.insert(key, facts);
+        if let Some(displaced) = graph.root_slices.insert(key, facts) {
+            self.ledger.shared.release(facts_key(&displaced));
+        }
     }
 
     fn insert_delivery(&mut self, key: Arc<str>, delivery: Delivery) {
@@ -16489,6 +16491,12 @@ mod tests {
 
     #[test]
     fn selected_root_slices_answer_has_override_within_their_view() {
+        for observer_first in [false, true] {
+            selected_root_slice_upgrade(observer_first);
+        }
+    }
+
+    fn selected_root_slice_upgrade(observer_first: bool) {
         let source = Source::new(&format!(
             "{}\n{}\n",
             user_text("first", "TOKEN-ROOT"),
@@ -16525,14 +16533,25 @@ mod tests {
             let state = store.lock_state();
             let graph = state.prepared_graphs
                 [graph["data"]["handle"]["graph_id"].as_str().unwrap()]
-                .lock()
-                .unwrap();
+            .lock()
+            .unwrap();
             let facts = graph.root_slices.values().next().unwrap();
             assert!(facts.serves(FactsNeed::Index));
             assert!(!facts.serves(FactsNeed::Full));
         }
-        let scoped = ask(current_turn(), has_override("TOKEN-ROOT", &[]), None);
+        let scoped = if observer_first {
+            ask(
+                current_turn(),
+                has_tool("Missing"),
+                Some(json!([has_override("TOKEN-ROOT", &[])])),
+            )
+        } else {
+            ask(current_turn(), has_override("TOKEN-ROOT", &[]), None)
+        };
         assert_eq!(value_of(&scoped), Some(false));
+        if observer_first {
+            assert_eq!(scoped["data"]["observers"], json!([false]));
+        }
         assert_eq!(
             (
                 store.fact_lookups.load(Ordering::Relaxed),
@@ -20228,7 +20247,10 @@ mod tests {
                 .unwrap()
                 .root,
             );
-            let bound = slice_bytes.max(super::ledger_tests::facts_bound_walk(&root));
+            let bound = slice_bytes.max(crate::snapshot_projection::facts_bound(
+                &root,
+                FactsNeed::Index,
+            ));
             let query = slice_query(&prepared);
             let record = size_of::<PreparedQueryCursor>()
                 + owner["claimant"].as_str().unwrap().len()
