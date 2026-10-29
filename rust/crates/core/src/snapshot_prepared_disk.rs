@@ -13,7 +13,9 @@ use std::sync::{LazyLock, Mutex};
 use sha2::{Digest, Sha256};
 use sonic_rs::{json, JsonValueTrait, Value};
 
-use crate::snapshot::{SnapshotError, SourceIdentity, SourceStamp, Status, PARSER_VERSION};
+use crate::snapshot::{
+    Cancellation, SnapshotError, SourceIdentity, SourceStamp, Status, PARSER_VERSION,
+};
 #[cfg(test)]
 use crate::snapshot_ledger::Reserved;
 use crate::snapshot_ledger::{Table, Work};
@@ -45,6 +47,7 @@ const ROOM_SWEEP_NAMES: usize = 256;
 const ENTRY_NAME_BYTES: usize = 166;
 const LEGACY_ENTRY_NAME_BYTES: [usize; 2] = [150, 118];
 const MAX_STRANDED_OWNED: usize = 64;
+const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 static ACTIVE_OWNERS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -162,6 +165,24 @@ fn decode_transient_bytes(payload: usize) -> usize {
 
 fn probed_read_bytes(stored: usize) -> usize {
     stored.saturating_add(1)
+}
+
+fn read_chunks(
+    file: &std::fs::File,
+    wanted: usize,
+    bytes: &mut Vec<u8>,
+    mut checkpoint: impl FnMut() -> Result<(), SnapshotError>,
+) -> Result<(), SnapshotError> {
+    let mut unread = file.take(wanted as u64);
+    while (&mut unread)
+        .take(READ_CHUNK_BYTES as u64)
+        .read_to_end(bytes)
+        .map_err(disk_error)?
+        == READ_CHUNK_BYTES
+    {
+        checkpoint()?;
+    }
+    Ok(())
 }
 
 fn openat_file(dir_fd: libc::c_int, name: &CStr, flags: libc::c_int) -> io::Result<std::fs::File> {
@@ -1591,9 +1612,13 @@ impl PreparedDiskCache {
         read: &mut DiskRead,
         need: FactsNeed,
         admitted: usize,
+        cancel: &Cancellation,
+        deadline_unix_ms: u64,
     ) -> Result<DiskLookup, SnapshotError> {
+        cancel.check(deadline_unix_ms)?;
         self.check_dir()?;
         let mut state = self.state.lock().expect("prepared facts disk state");
+        cancel.check(deadline_unix_ms)?;
         let Some(entry) = state.entries.get(&key.name) else {
             return Ok(DiskLookup::Miss);
         };
@@ -1623,18 +1648,23 @@ impl PreparedDiskCache {
             {
                 return Err(incomplete("prepared facts cache entry changed"));
             }
-            #[cfg(test)]
-            run_read_hook(&self.owner_name);
+            let checkpoint = || {
+                #[cfg(test)]
+                run_read_hook(&self.owner_name);
+                cancel.check(deadline_unix_ms)
+            };
+            checkpoint()?;
             let mut bytes = Vec::with_capacity(wanted.min(expected));
             read.operations += 1;
-            let finished = (&file).take(wanted as u64).read_to_end(&mut bytes);
+            let finished = read_chunks(&file, wanted, &mut bytes, checkpoint);
             read.bytes += bytes.len() as u64;
-            finished.map_err(disk_error)?;
+            finished?;
             if need == FactsNeed::Index
                 && file.metadata().map_err(disk_error)?.len() != expected as u64
             {
                 return Err(incomplete("prepared facts cache entry changed"));
             }
+            cancel.check(deadline_unix_ms)?;
             let index_end = HEADER_BYTES + index_bytes;
             let verified = bytes
                 .get(..HEADER_BYTES)
@@ -1668,11 +1698,13 @@ impl PreparedDiskCache {
             if !verified {
                 return Err(incomplete("prepared facts cache integrity check failed"));
             }
+            cancel.check(deadline_unix_ms)?;
             let index: DecodedIndexSection = sonic_rs::from_slice(&bytes[HEADER_BYTES..index_end])
                 .map_err(|_| incomplete("prepared facts cache payload invalid"))?;
             let overrides = match served {
                 FactsNeed::Index => OverrideFacts::Unloaded,
                 FactsNeed::Full => {
+                    cancel.check(deadline_unix_ms)?;
                     let section: Option<Vec<OverrideEvent>> =
                         sonic_rs::from_slice(&bytes[index_end..])
                             .map_err(|_| incomplete("prepared facts cache payload invalid"))?;
@@ -1680,6 +1712,7 @@ impl PreparedDiskCache {
                 }
             };
             let facts = PreparedFacts::from_sections(index, overrides);
+            cancel.check(deadline_unix_ms)?;
             if inherited {
                 if facts.accounted_bytes() > accounted_bound {
                     return Err(incomplete("prepared facts cache accounting exceeded"));
@@ -1713,6 +1746,9 @@ impl PreparedDiskCache {
                 } else {
                     DiskLookup::IndexOnly(facts)
                 })
+            }
+            Err(error) if matches!(error.status, Status::Cancelled | Status::Deadline) => {
+                Err(error)
             }
             Err(_) => {
                 self.retire(&mut state, key.name)?;
@@ -2202,7 +2238,14 @@ mod tests {
         read: &mut DiskRead,
         need: FactsNeed,
     ) -> Result<DiskLookup, SnapshotError> {
-        cache.lookup(key, read, need, cache.decoded_bytes(key, need).unwrap_or(0))
+        cache.lookup(
+            key,
+            read,
+            need,
+            cache.decoded_bytes(key, need).unwrap_or(0),
+            &Cancellation::default(),
+            u64::MAX,
+        )
     }
 
     fn cache(cap: usize) -> PreparedDiskCache {
@@ -2954,6 +2997,163 @@ mod tests {
         assert!(matches!(outcome.unwrap(), DiskLookup::Retired));
         assert_eq!((read.operations, read.bytes as usize), (1, bound));
         assert_eq!(cache.stats().entries, 0);
+    }
+
+    fn chunked_facts() -> PreparedFacts {
+        let mut facts = PreparedFacts {
+            inputs: json!({
+                "calls": [["Read", ["/repo/file.rs"]]],
+                "commands": [],
+                "edited_files": [],
+                "skills": [],
+            }),
+            has_error: false,
+            overrides: OverrideFacts::Loaded(vec![OverrideEvent {
+                text: "x".repeat(3 * READ_CHUNK_BYTES),
+                tools: vec!["Read".to_owned()],
+            }]),
+            accounted: 0,
+        };
+        facts.refresh_accounted();
+        facts
+    }
+
+    #[test]
+    fn a_stopped_lookup_reads_no_further_and_keeps_the_entry() {
+        let cache = cache(2 * 1024 * 1024);
+        let entry = revision(1);
+        let built = chunked_facts();
+        assert!(cache
+            .insert(&entry, &built, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let path = cache.entry_path(entry.digest);
+        let stored = fs::read(&path).unwrap();
+        assert!(
+            stored.len() > 2 * READ_CHUNK_BYTES,
+            "entry {}",
+            stored.len()
+        );
+        let admitted = cache.decoded_bytes(&entry, FactsNeed::Full).unwrap();
+        for (site, cancelled, cancelled_at_read, deadline_unix_ms, status, counted) in [
+            (
+                "before the first read",
+                false,
+                Some(1),
+                u64::MAX,
+                Status::Cancelled,
+                (0, 0),
+            ),
+            (
+                "at a chunk boundary",
+                false,
+                Some(2),
+                u64::MAX,
+                Status::Cancelled,
+                (1, READ_CHUNK_BYTES as u64),
+            ),
+            (
+                "past the deadline",
+                false,
+                None,
+                0,
+                Status::Deadline,
+                (0, 0),
+            ),
+            (
+                "cancelled past the deadline",
+                true,
+                None,
+                0,
+                Status::Cancelled,
+                (0, 0),
+            ),
+        ] {
+            let cancel = Cancellation::default();
+            if cancelled {
+                cancel.cancel();
+            }
+            let stop = cancel.clone();
+            let mut reads = 0;
+            cache.set_read_hook(Some(Box::new(move || {
+                reads += 1;
+                if Some(reads) == cancelled_at_read {
+                    stop.cancel();
+                }
+            })));
+            let mut read = DiskRead::default();
+            let stopped = cache
+                .lookup(
+                    &entry,
+                    &mut read,
+                    FactsNeed::Full,
+                    admitted,
+                    &cancel,
+                    deadline_unix_ms,
+                )
+                .err()
+                .map(|error| error.status);
+            cache.set_read_hook(None);
+            assert_eq!(stopped, Some(status), "{site}");
+            assert_eq!((read.operations, read.bytes), counted, "{site}");
+            assert_eq!(fs::read(&path).unwrap(), stored, "{site}");
+            assert_eq!(cache.stats().entries, 1, "{site}");
+        }
+        let mut read = DiskRead::default();
+        let DiskLookup::Hit(loaded) = lookup(&cache, &entry, &mut read, FactsNeed::Full).unwrap()
+        else {
+            panic!("expected the kept entry to serve");
+        };
+        assert_eq!((read.operations, read.bytes), (1, stored.len() as u64));
+        assert_eq!(
+            loaded.text_section().unwrap()[0].text,
+            built.text_section().unwrap()[0].text
+        );
+    }
+
+    #[test]
+    fn a_stopped_inherited_lookup_leaves_the_entry_unadopted() {
+        let namespace = isolated_namespace();
+        let built = pushed_facts(5, 5);
+        let entry = revision(1);
+        let left = left_behind(&namespace, &entry, &built);
+        let stored = fs::metadata(&left).unwrap().len();
+        let successor = reuse_cache(&namespace, 64 * 1024);
+        let inherited = budget(&successor);
+        assert_eq!(inherited, (1, 0, stored as usize, 0));
+        let admitted = successor.decoded_bytes(&entry, FactsNeed::Full).unwrap();
+        let cancel = Cancellation::default();
+        let stop = cancel.clone();
+        successor.set_read_hook(Some(Box::new(move || stop.cancel())));
+        let mut read = DiskRead::default();
+        let stopped = successor
+            .lookup(
+                &entry,
+                &mut read,
+                FactsNeed::Full,
+                admitted,
+                &cancel,
+                u64::MAX,
+            )
+            .err()
+            .map(|error| error.status);
+        successor.set_read_hook(None);
+        assert_eq!(stopped, Some(Status::Cancelled));
+        assert_eq!((read.operations, read.bytes), (0, 0));
+        assert_eq!(budget(&successor), inherited);
+        assert!(left.exists());
+        assert!(!successor.has_entry(&entry).unwrap());
+        let DiskLookup::Hit(loaded) =
+            lookup(&successor, &entry, &mut read, FactsNeed::Full).unwrap()
+        else {
+            panic!("expected the inherited entry to serve");
+        };
+        assert_eq!(loaded.inputs, built.inputs);
+        assert_eq!((read.operations, read.bytes), (1, stored));
+        assert_eq!(budget(&successor), (1, stored as usize, 0, 0));
+        assert!(!left.exists());
+        drop(successor);
+        fs::remove_dir_all(namespace).unwrap();
     }
 
     fn pushed_facts(events: usize, tools: usize) -> PreparedFacts {
@@ -4767,7 +4967,14 @@ mod tests {
         let mut read = DiskRead::default();
         assert!(matches!(
             cache
-                .lookup(&entry, &mut read, FactsNeed::Full, admitted)
+                .lookup(
+                    &entry,
+                    &mut read,
+                    FactsNeed::Full,
+                    admitted,
+                    &Cancellation::default(),
+                    u64::MAX,
+                )
                 .unwrap(),
             DiskLookup::Changed
         ));
