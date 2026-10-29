@@ -1168,7 +1168,7 @@ fn registered_graph_fixture(scenario: &Scenario, background: bool) -> Fixture {
 }
 
 fn direct_graph_fixture(scenario: &Scenario, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("direct", background);
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let request = prepare_request(&root, &[], &[], &scenario.direct());
@@ -1221,6 +1221,50 @@ fn slice_fixture(scenario: &Scenario, background: bool) -> Fixture {
         request,
         pins: vec![root_snapshot],
     }
+}
+
+fn root_slice_candidate<'a>(
+    fixture: &'a Fixture,
+    need: FactsNeed,
+) -> (Arc<PreparedFacts>, ProjectionReservation<'a>) {
+    let mut bounds = work_bounds();
+    bounds.max_read_bytes = fixture.store.config.source;
+    bounds.max_events = fixture.pins[0].event_count;
+    let bound = crate::snapshot_projection::facts_bound(&fixture.pins[0], need);
+    let reservation = fixture
+        .store
+        .reserve_projection(&fixture.owner, bound)
+        .unwrap();
+    let facts = crate::snapshot_projection::prepare_facts(
+        &fixture.pins[0],
+        &fixture.request["selectors"],
+        &bounds,
+        &Cancellation::default(),
+        need,
+    )
+    .unwrap()
+    .0;
+    (Arc::new(facts), reservation)
+}
+
+fn publish_slice_candidate<'a>(
+    fixture: &'a Fixture,
+    key: String,
+    need: FactsNeed,
+    facts: Arc<PreparedFacts>,
+    reservation: &mut ProjectionReservation<'_>,
+) -> Result<RetainedFacts<'a>, SnapshotError> {
+    let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+    let shared = Arc::clone(&fixture.store.lock_state().prepared_graphs[graph_id]);
+    fixture.store.publish_root_slice(
+        graph_id,
+        &shared,
+        key,
+        facts,
+        need,
+        &fixture.owner,
+        reservation,
+    )
 }
 
 fn interrupted_classification(
@@ -2043,6 +2087,252 @@ fn direct_prepare_graph_admits_exactly_before_publication() {
 }
 
 #[test]
+fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowance() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    for (events, items, expected_calls) in [
+        (256, 256, 1),
+        (32, 256, 2),
+        (256, 7, 5),
+        (1, 256, 34),
+        (256, 1, 34),
+        (2, 256, 17),
+    ] {
+        let store = store_with(4096, events, &[("max_items_per_page", items)]);
+        let owner = context_for("coalesced-build", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let mut response = store.request(&request, &owner, &Cancellation::default());
+        let mut calls = 1;
+        while response["cursor"].as_str().is_some() {
+            assert_eq!(
+                response["status"].as_str(),
+                Some("incomplete"),
+                "{response:?}"
+            );
+            store.assert_conserved();
+            assert_eq!(store.lock_state().prepared_builds.len(), 1);
+            response = resume(&store, &response, &owner);
+            calls += 1;
+            assert!(calls <= 34, "{response:?}");
+        }
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(calls, expected_calls, "events={events}, items={items}");
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        let graph = state.prepared_graphs[response["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+        assert_eq!(
+            graph
+                .sources
+                .iter()
+                .map(|source| source.path.clone())
+                .collect::<Vec<_>>(),
+            scenario
+                .sidechains
+                .iter()
+                .map(|path| realpath(path).unwrap())
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[test]
+fn prepared_build_charge_work_is_independent_of_retained_paths() {
+    for count in [33, 129, 513] {
+        let scenario = Scenario::new(count, |index| line(&format!("thread-{index:04}")));
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-build-charge", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let state = store.lock_state();
+        let (token, build) = state.prepared_builds.iter().next().unwrap();
+        let work = build.charge_work.counter();
+        let before = work.load(Ordering::Relaxed);
+        for _ in 0..64 {
+            assert_eq!(
+                token.capacity() + build.charge(),
+                NativeStore::audit_prepared_build_bytes(token, build)
+            );
+        }
+        assert_eq!(work.load(Ordering::Relaxed) - before, 64, "paths={count}");
+    }
+}
+
+#[test]
+fn incremental_prepared_build_charge_matches_every_parked_allocation() {
+    for background in [false, true] {
+        for inactive in [false, true] {
+            let scenario = Scenario::new(17, |index| line(&format!("thread-{index:04}")));
+            let directory = scenario.root.directory.join("s").join("subagents");
+            std::fs::create_dir_all(&directory).unwrap();
+            for index in 0..33 {
+                std::fs::write(
+                    directory.join(format!("agent-{index:04}.jsonl")),
+                    line(&format!("discovered-{index:04}")),
+                )
+                .unwrap();
+            }
+            std::fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+            let alias = scenario.root.directory.join("alias.jsonl");
+            std::os::unix::fs::symlink(&scenario.sidechains[0], &alias).unwrap();
+            let mut direct = scenario.direct();
+            direct.push(direct[0].clone());
+            direct.push(alias.to_string_lossy().into_owned());
+            let store = store_with(4096, 1, &[]);
+            let mut owner = context_for("incremental-allocation-audit", background);
+            let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+            let mut request = prepare_request(&root, &[], &[], &direct);
+            if inactive {
+                request.insert("active_since_unix_ms", json!(now_ms() + 60_000));
+            }
+            let mut response = store.request(&request, &owner, &Cancellation::default());
+            let work = {
+                let state = store.lock_state();
+                state
+                    .prepared_builds
+                    .values()
+                    .next()
+                    .unwrap()
+                    .charge_work
+                    .counter()
+            };
+            let mut calls = 1;
+            let mut partial_listing = false;
+            while response["cursor"].as_str().is_some() {
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("incomplete"),
+                    "{response:?}"
+                );
+                store.assert_conserved();
+                {
+                    let state = store.lock_state();
+                    let (token, build) = state.prepared_builds.iter().next().unwrap();
+                    partial_listing |= build.listing.is_some();
+                    assert_eq!(
+                        token.capacity() + build.charge(),
+                        NativeStore::audit_prepared_build_bytes(token, build)
+                    );
+                }
+                owner.insert(
+                    "padding",
+                    json!("p".repeat(if calls % 2 == 0 { 257 } else { 3 })),
+                );
+                response = resume(&store, &response, &owner);
+                calls += 1;
+                assert!(calls < 256, "{response:?}");
+            }
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert!(partial_listing);
+            assert!(work.load(Ordering::Relaxed) <= 32 * (direct.len() + 33 + calls));
+            store.assert_conserved();
+            let state = store.lock_state();
+            assert!(state.prepared_builds.is_empty());
+            assert_eq!(state.transient_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn incremental_prepared_build_discovery_refusal_drops_its_taken_listing() {
+    let scenario = Scenario::new(0, |_| unreachable!());
+    let directory = scenario.root.directory.join("s").join("subagents");
+    std::fs::create_dir_all(&directory).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            directory.join(format!("agent-{index}.jsonl")),
+            line(&format!("discovered-{index}")),
+        )
+        .unwrap();
+    }
+    for background in [false, true] {
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-discovery-refusal", background);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let mut request = prepare_request(&root, &[], &[], &[]);
+        request["limits"].insert("max_discovery_entries", json!(1));
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let refused = resume(&store, &response, &owner);
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("incomplete"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused["reason"].as_str(),
+            Some("prepared graph discovery budget exhausted"),
+            "{refused:?}"
+        );
+        assert!(refused["cursor"].is_null());
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+    }
+}
+
+#[test]
+fn coalesced_prepared_build_admits_its_peak_before_publication() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        assert_admission_boundary(
+            "coalesced prepared build",
+            &|| {
+                let mut fixture = direct_graph_fixture(&scenario, background);
+                fixture.store.config.page_items = 256;
+                fixture
+            },
+            &|fixture: &Fixture| admitted(&submit(fixture), "ok"),
+            REPLY_RESERVATION,
+        );
+    }
+}
+
+#[test]
+fn coalesced_prepared_build_cancels_at_the_next_internal_checkpoint() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    let store = prepared_store();
+    let owner = context_for("coalesced-cancel", false);
+    let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+    let cancel = Cancellation::default();
+    let checkpoints = Arc::new(AtomicUsize::new(0));
+    *store.pin_hook.lock().unwrap() = Some(Arc::new({
+        let (cancel, checkpoints) = (cancel.clone(), Arc::clone(&checkpoints));
+        move |_: &Value| {
+            if checkpoints.fetch_add(1, Ordering::Relaxed) == 2 {
+                cancel.cancel();
+            }
+            Ok(())
+        }
+    }));
+    let response = store.request(
+        &prepare_request(&root, &[], &[], &scenario.direct()),
+        &owner,
+        &cancel,
+    );
+    assert_eq!(
+        response["status"].as_str(),
+        Some("cancelled"),
+        "{response:?}"
+    );
+    assert_eq!(checkpoints.load(Ordering::Relaxed), 3);
+    assert_eq!(store.build_sources.load(Ordering::Relaxed), 8);
+    store.assert_conserved();
+    assert_eq!(settled(&store)[PENDING], 0);
+    let state = store.lock_state();
+    assert!(state.prepared_builds.is_empty());
+    assert!(state.prepared_graphs.is_empty());
+    assert_eq!(state.transient_bytes, 0);
+}
+
+#[test]
 fn stored_prepared_build_admits_exactly_before_publication() {
     let scenario = Scenario::new(9, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
@@ -2290,7 +2580,7 @@ fn root_slices_are_reserved_at_the_root_bound_before_preparation() {
     for background in [false, true] {
         let fixture = slice_fixture(&scenario, background);
         let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
-        let bound = facts_bound_walk(&fixture.pins[0]);
+        let bound = index_facts_bound_walk(&fixture.pins[0]);
         let existing = {
             let state = fixture.store.lock_state();
             let graph = state.prepared_graphs[graph_id].lock().unwrap();
@@ -2312,6 +2602,198 @@ fn root_slices_are_reserved_at_the_root_bound_before_preparation() {
             bound >= slice,
             "root slice: the {bound}-byte root bound does not cover the {slice}-byte slice"
         );
+    }
+}
+
+#[test]
+fn selected_slice_publishers_upgrade_in_both_completion_orders() {
+    let scenario = Scenario::new(0, |_| String::new());
+    for background in [false, true] {
+        for first_need in [FactsNeed::Index, FactsNeed::Full] {
+            let fixture = slice_fixture(&scenario, background);
+            let key = sonic_rs::to_string(&fixture.request["selectors"]).unwrap();
+            let (index, mut index_reservation) = root_slice_candidate(&fixture, FactsNeed::Index);
+            let (full, mut full_reservation) = root_slice_candidate(&fixture, FactsNeed::Full);
+            let (first, second) = if first_need == FactsNeed::Index {
+                let first = publish_slice_candidate(
+                    &fixture,
+                    key.clone(),
+                    FactsNeed::Index,
+                    index,
+                    &mut index_reservation,
+                )
+                .unwrap();
+                let second = publish_slice_candidate(
+                    &fixture,
+                    key,
+                    FactsNeed::Full,
+                    full,
+                    &mut full_reservation,
+                )
+                .unwrap();
+                assert!(!first.facts().serves(FactsNeed::Full));
+                (first, second)
+            } else {
+                let first = publish_slice_candidate(
+                    &fixture,
+                    key.clone(),
+                    FactsNeed::Full,
+                    full,
+                    &mut full_reservation,
+                )
+                .unwrap();
+                let second = publish_slice_candidate(
+                    &fixture,
+                    key,
+                    FactsNeed::Index,
+                    index,
+                    &mut index_reservation,
+                )
+                .unwrap();
+                assert!(Arc::ptr_eq(first.facts(), second.facts()));
+                (first, second)
+            };
+            assert!(second.facts().serves(FactsNeed::Full));
+            drop(index_reservation);
+            drop(full_reservation);
+            fixture.store.assert_conserved();
+            let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+            {
+                let mut state = fixture.store.lock_state();
+                let graph = state.prepared_graphs[graph_id].lock().unwrap();
+                assert_eq!(graph.root_slices.len(), 1);
+                assert!(graph
+                    .root_slices
+                    .values()
+                    .all(|facts| facts.serves(FactsNeed::Full)));
+                drop(graph);
+                drop(state.remove_prepared_graph(graph_id));
+            }
+            fixture.store.assert_conserved();
+            let first_bytes = first.facts().accounted_bytes();
+            let second_bytes = second.facts().accounted_bytes();
+            let shared = Arc::ptr_eq(first.facts(), second.facts());
+            let before = fixture.store.lock_state().ledger.shared.facts();
+            drop(first);
+            assert_eq!(
+                fixture.store.lock_state().ledger.shared.facts(),
+                before - if shared { 0 } else { first_bytes }
+            );
+            fixture.store.assert_conserved();
+            let before = fixture.store.lock_state().ledger.shared.facts();
+            drop(second);
+            assert_eq!(
+                fixture.store.lock_state().ledger.shared.facts(),
+                before - second_bytes
+            );
+            fixture.store.assert_conserved();
+        }
+    }
+}
+
+#[test]
+fn selected_slice_upgrade_at_capacity_does_not_charge_a_second_key() {
+    let scenario = Scenario::new(0, |_| String::new());
+    let fixture = slice_fixture(&scenario, false);
+    for index in 0..64 {
+        let (facts, mut reservation) = root_slice_candidate(&fixture, FactsNeed::Index);
+        drop(
+            publish_slice_candidate(
+                &fixture,
+                format!("key-{index}"),
+                FactsNeed::Index,
+                facts,
+                &mut reservation,
+            )
+            .unwrap(),
+        );
+    }
+    fixture.store.assert_conserved();
+    let graph_id = fixture.request["handle"]["graph_id"].as_str().unwrap();
+    let before = {
+        let state = fixture.store.lock_state();
+        NativeStore::audit_prepared_graph_bytes(
+            &graph_id.to_owned(),
+            &state.prepared_graphs[graph_id],
+        )
+    };
+    let (facts, mut reservation) = root_slice_candidate(&fixture, FactsNeed::Full);
+    let upgraded = publish_slice_candidate(
+        &fixture,
+        String::with_capacity(4096) + "key-0",
+        FactsNeed::Full,
+        facts,
+        &mut reservation,
+    )
+    .unwrap();
+    assert!(upgraded.facts().serves(FactsNeed::Full));
+    let after = {
+        let state = fixture.store.lock_state();
+        let shared = &state.prepared_graphs[graph_id];
+        assert_eq!(shared.lock().unwrap().root_slices.len(), 64);
+        NativeStore::audit_prepared_graph_bytes(&graph_id.to_owned(), shared)
+    };
+    assert_eq!(before, after);
+    drop(upgraded);
+    drop(reservation);
+    let (facts, mut reservation) = root_slice_candidate(&fixture, FactsNeed::Index);
+    let refused = publish_slice_candidate(
+        &fixture,
+        "key-64".to_owned(),
+        FactsNeed::Index,
+        facts,
+        &mut reservation,
+    );
+    assert!(matches!(refused, Err(error) if error.status == Status::Incomplete));
+    drop(reservation);
+    fixture.store.assert_conserved();
+}
+
+#[test]
+fn selected_full_upgrade_refusal_preserves_the_index_and_its_reader() {
+    let scenario = Scenario::new(0, |_| String::new());
+    for background in [false, true] {
+        let mut fixture = slice_fixture(&scenario, background);
+        assert_eq!(submit(&fixture)["status"].as_str(), Some("ok"));
+        let graph_id = fixture.request["handle"]["graph_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let retained = {
+            let mut state = fixture.store.lock_state();
+            let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+            let facts = Arc::clone(graph.root_slices.values().next().unwrap());
+            drop(graph);
+            fixture.store.retain_cached_facts(&mut state, facts)
+        };
+        assert!(!retained.facts().serves(FactsNeed::Full));
+        fixture.request.insert(
+            "query",
+            json!({"kind":"has_override","token":"TOKEN","invalidated_by":[],"subagents":true}),
+        );
+        let filler = fill_to(&fixture.store, &fixture.owner, 0);
+        let before = ledger(&fixture.store);
+        let response = fixture.store.query_graph(
+            &fixture.request,
+            &fixture.owner,
+            &Cancellation::default(),
+            &mut [0u64; 20],
+        );
+        assert!(matches!(response, Err(error) if error.status == Status::RetainedLimit));
+        assert_eq!(ledger(&fixture.store), before);
+        {
+            let state = fixture.store.lock_state();
+            let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+            assert_eq!(graph.root_slices.len(), 1);
+            assert!(Arc::ptr_eq(
+                graph.root_slices.values().next().unwrap(),
+                retained.facts()
+            ));
+        }
+        fixture.store.assert_conserved();
+        drop(filler);
+        drop(retained);
+        fixture.store.assert_conserved();
     }
 }
 
@@ -5983,7 +6465,7 @@ fn degraded_root_fixture(source: &LedgerSource, background: bool) -> Fixture {
     let graph = prepared_graph(&store, &handle, &[], &owner);
     let request = graph_query(
         &graph,
-        json!({"kind":"has_read","pattern":"missing","subagents":true}),
+        json!({"kind":"has_override","token":"missing","invalidated_by":[],"subagents":true}),
         json!([{"kind":"current_turn"}]),
     );
     Fixture {
@@ -6672,7 +7154,7 @@ fn build_site(site: &str, probe: usize) -> impl Fn(&Fixture) -> bool + '_ {
 }
 
 fn parked_build_fixture(scenario: &Scenario, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("resumed-build", background);
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let first = store.request(
@@ -9300,7 +9782,7 @@ fn published_generations_record_their_arc_headers() {
 }
 
 fn listing_fixture(source: &LedgerSource, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("listing", background);
     let (root, root_snapshot) = acquired(&store, &source.path, &owner);
     Fixture {
