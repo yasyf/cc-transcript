@@ -7143,6 +7143,7 @@ impl NativeStore {
         let mut lines: Vec<(u64, Vec<Entry>)> = Vec::new();
         let mut events = 0usize;
         let mut exhausted = false;
+        let mut read_step = self.config.read_step.min(64 * 1024);
         loop {
             while events < count {
                 cancel.check(limits.deadline_unix_ms)?;
@@ -7165,11 +7166,7 @@ impl NativeStore {
                 }
                 break;
             }
-            let step = self
-                .config
-                .read_step
-                .min(budget - read)
-                .min(pending_start as usize);
+            let step = read_step.min(budget - read).min(pending_start as usize);
             if step == 0 {
                 exhausted = true;
                 break;
@@ -7183,6 +7180,7 @@ impl NativeStore {
             file.read_exact(&mut block).map_err(io_error)?;
             usage[1] += step as u64;
             read += step;
+            read_step = read_step.saturating_mul(2).min(self.config.read_step);
             block.extend_from_slice(&pending);
             pending = block;
             pending_start -= step as u64;
@@ -12203,6 +12201,192 @@ mod tests {
             .collect()
     }
 
+    fn tail_with_small_step_reference(source: &Source, count: usize, budget: usize) -> Value {
+        let owner = context("a");
+        let request = tail_request(&source.path, count, budget);
+        let store = NativeStore::new(&json!({})).unwrap();
+        let response = store.request(&request, &owner, &Cancellation::default());
+        let reference = NativeStore::new(&json!({"max_read_bytes_per_step":4096})).unwrap();
+        let reference = reference.request(&request, &owner, &Cancellation::default());
+        assert_eq!(response["status"], reference["status"], "{response:?}");
+        assert_eq!(response["reason"], reference["reason"], "{response:?}");
+        assert_eq!(response["data"], reference["data"], "{response:?}");
+        response
+    }
+
+    #[test]
+    fn tail_default_steps_read_only_the_newest_event_window() {
+        let suffix = (0..256)
+            .map(|index| format!("{}\n", user_text(&index.to_string(), &"x".repeat(1400))))
+            .collect::<String>();
+        assert!((256 * 1024..448 * 1024).contains(&suffix.len()));
+        let prefix = format!("{}\n", " ".repeat(8 * 1024 * 1024));
+        let source = Source::new(&format!("{prefix}{suffix}"));
+        let response = tail_with_small_step_reference(&source, 256, 8 * 1024 * 1024);
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(
+            tail_uuids(&response),
+            (0..256).map(|index| index.to_string()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            response["data"]["source_bytes"].as_u64(),
+            Some((prefix.len() + suffix.len()) as u64)
+        );
+        assert_eq!(
+            response["data"]["window_start_byte"].as_u64(),
+            Some(prefix.len() as u64)
+        );
+        let read = response["usage"]["source_bytes_read"].as_u64().unwrap();
+        assert!(read >= suffix.len() as u64 && read <= 512 * 1024, "{read}");
+    }
+
+    #[test]
+    fn tail_grows_reads_for_a_long_partial_line() {
+        fn count_reads(store: &Arc<NativeStore>, reads: &Arc<AtomicUsize>) {
+            let next = Arc::downgrade(store);
+            let reads = Arc::clone(reads);
+            *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
+                reads.fetch_add(1, Ordering::Relaxed);
+                count_reads(&next.upgrade().unwrap(), &reads);
+            }));
+        }
+
+        let prefix = format!("{}\n", " ".repeat(8 * 1024 * 1024));
+        let suffix = format!("{}\n", user_text("large", &"x".repeat(512 * 1024)));
+        let source = Source::new(&format!("{prefix}{suffix}"));
+        let owner = context("a");
+        let request = tail_request(&source.path, 1, 8 * 1024 * 1024);
+        let store = Arc::new(NativeStore::new(&json!({})).unwrap());
+        let reads = Arc::new(AtomicUsize::new(0));
+        count_reads(&store, &reads);
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(tail_uuids(&response), ["large"]);
+        assert_eq!(
+            response["data"]["window_start_byte"].as_u64(),
+            Some(prefix.len() as u64)
+        );
+        assert!(response["usage"]["source_bytes_read"].as_u64().unwrap() <= 1024 * 1024);
+        assert!(reads.load(Ordering::Relaxed) <= 4);
+        let bounded = NativeStore::new(&json!({"max_entry_bytes":256*1024})).unwrap();
+        let refused = bounded.request(&request, &owner, &Cancellation::default());
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("entry_limit"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn tail_preserves_utf8_across_growing_read_boundaries() {
+        let mut split_scalars = 0;
+        for ending in ["", "\n"] {
+            let contents = format!(
+                "{}\n{}{ending}",
+                user("old"),
+                user_text("unicode", &"é".repeat(128 * 1024))
+            );
+            let boundary = contents.len() - 64 * 1024;
+            split_scalars += usize::from(contents.as_bytes()[boundary] & 0xc0 == 0x80);
+            let source = Source::new(&contents);
+            let response = tail_with_small_step_reference(&source, 1, 1024 * 1024);
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(tail_uuids(&response), ["unicode"]);
+            assert_eq!(
+                response["data"]["window_start_byte"].as_u64(),
+                Some((user("old").len() + 1) as u64)
+            );
+        }
+        assert_eq!(split_scalars, 1);
+    }
+
+    #[test]
+    fn tail_read_budget_requires_the_oldest_line_delimiter() {
+        let prefix = format!("{}\n", user("old"));
+        let first = format!("{}\n", user_text("a", &"x".repeat(128 * 1024)));
+        let last = format!("{}\n", user_text("b", &"x".repeat(128 * 1024)));
+        let source = Source::new(&format!("{prefix}{first}{last}"));
+        let budget = first.len() + last.len();
+        let incomplete = tail_with_small_step_reference(&source, 2, budget);
+        assert_eq!(
+            incomplete["status"].as_str(),
+            Some("incomplete"),
+            "{incomplete:?}"
+        );
+        assert_eq!(
+            incomplete["reason"].as_str(),
+            Some("tail read budget exhausted")
+        );
+        assert!(incomplete["cursor"].is_null());
+        assert_eq!(tail_uuids(&incomplete), ["b"]);
+        assert_eq!(
+            incomplete["data"]["window_start_byte"].as_u64(),
+            Some((prefix.len() + first.len()) as u64)
+        );
+        let complete = tail_with_small_step_reference(&source, 2, budget + 1);
+        assert_eq!(complete["status"].as_str(), Some("ok"), "{complete:?}");
+        assert_eq!(tail_uuids(&complete), ["a", "b"]);
+        assert_eq!(
+            complete["data"]["window_start_byte"].as_u64(),
+            Some(prefix.len() as u64)
+        );
+    }
+
+    #[test]
+    fn tail_counts_metadata_events_and_skips_non_events_across_steps() {
+        let source = Source::new(&format!(
+            "{}\n{}\nnot json\n[]\nnull\n42\n{{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}}\n{}\n",
+            user("a"),
+            " ".repeat(96 * 1024),
+            user_text("b", &"x".repeat(128 * 1024)),
+        ));
+        let response = tail_with_small_step_reference(&source, 3, 1024 * 1024);
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        let records = response["data"]["records_json"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let records = crate::snapshot_codec::decode_events(&records, 1024 * 1024).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].event.meta().unwrap().uuid, "a");
+        assert!(matches!(&records[1].event, Entry::Other(other) if other.ty == "queue-operation"));
+        assert_eq!(records[2].event.meta().unwrap().uuid, "b");
+        assert_eq!(response["data"]["window_start_byte"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn tail_preserves_the_pinned_source_while_reads_grow() {
+        let prefix = format!("{}\n", user("old"));
+        let suffix = format!("{}\n", user_text("new", &"x".repeat(256 * 1024)));
+        let source = Source::new(&format!("{prefix}{suffix}"));
+        let path = source.path.clone();
+        let store = NativeStore::new(&json!({})).unwrap();
+        *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(format!("{}\n", user("appended")).as_bytes())
+                .unwrap();
+        }));
+        let response = store.request(
+            &tail_request(&source.path, 1, 1024 * 1024),
+            &context("a"),
+            &Cancellation::default(),
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(tail_uuids(&response), ["new"]);
+        assert_eq!(
+            response["data"]["source_bytes"].as_u64(),
+            Some((prefix.len() + suffix.len()) as u64)
+        );
+        assert_eq!(
+            response["data"]["window_start_byte"].as_u64(),
+            Some(prefix.len() as u64)
+        );
+    }
     #[test]
     fn tail_returns_the_newest_events_reading_backwards_in_bounded_steps() {
         let source = Source::new(&users(0..50));
