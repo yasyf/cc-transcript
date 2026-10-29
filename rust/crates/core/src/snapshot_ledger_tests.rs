@@ -2139,6 +2139,31 @@ fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowanc
 }
 
 #[test]
+fn prepared_build_charge_work_is_independent_of_retained_paths() {
+    for count in [33, 129, 513] {
+        let scenario = Scenario::new(count, |index| line(&format!("thread-{index:04}")));
+        let store = store_with(4096, 1, &[]);
+        let owner = context_for("incremental-build-charge", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let response = store.request(&request, &owner, &Cancellation::default());
+        assert!(parked(&response));
+        store.assert_conserved();
+        let state = store.lock_state();
+        let (token, build) = state.prepared_builds.iter().next().unwrap();
+        let work = build.charge_work.counter();
+        let before = work.load(Ordering::Relaxed);
+        for _ in 0..64 {
+            assert_eq!(
+                token.capacity() + build.charge(),
+                NativeStore::audit_prepared_build_bytes(token, build)
+            );
+        }
+        assert_eq!(work.load(Ordering::Relaxed) - before, 64, "paths={count}");
+    }
+}
+
+#[test]
 fn coalesced_prepared_build_admits_its_peak_before_publication() {
     let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {

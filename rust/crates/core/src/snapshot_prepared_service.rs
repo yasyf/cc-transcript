@@ -1139,6 +1139,7 @@ impl NativeStore {
         #[cfg(test)]
         self.build_records.fetch_add(1, Ordering::Relaxed);
         let build = PreparedBuild {
+            charge_work: Work::default(),
             claimant: str_field(context, "claimant")?.to_owned(),
             context: context.clone(),
             request: request.clone(),

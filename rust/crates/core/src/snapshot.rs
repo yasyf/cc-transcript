@@ -1051,6 +1051,7 @@ fn realpath(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 struct PreparedBuild {
+    charge_work: Work,
     claimant: String,
     context: Value,
     request: Value,
@@ -1691,6 +1692,7 @@ impl Charge<String> for PreparedBuild {
     }
 
     fn charge(&self) -> usize {
+        self.charge_work.tick(1);
         size_of::<PreparedBuild>()
             + self.claimant.capacity()
             + value_bytes(&self.context)
@@ -1698,7 +1700,14 @@ impl Charge<String> for PreparedBuild {
             + value_bytes(&self.root_handle)
             + value_bytes(&self.classifier)
             + self.tasks.capacity() * size_of::<GraphTask>()
-            + self.tasks.iter().map(task_bytes).sum::<usize>()
+            + self
+                .tasks
+                .iter()
+                .map(|task| {
+                    self.charge_work.tick(1);
+                    task_bytes(task)
+                })
+                .sum::<usize>()
             + self.listing.as_ref().map_or(0, |listing| {
                 listing.children.capacity() * size_of::<PathBuf>()
                     + listing
