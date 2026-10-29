@@ -8,13 +8,14 @@ use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 use crate::activity::{session_activity_refs, ActivityOpts, LiftedSession, Turn};
 use crate::context::{ContextWindow, Fidelity};
 use crate::ids::EventRef;
+use crate::parse::pushed_capacity;
 use crate::query::{InputRule, Session};
 use crate::render::{self, Budget};
 use crate::snapshot::{
     Cancellation, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
-use crate::snapshot_ledger::{hashbrown_tier, vec_capacity_after};
+use crate::snapshot_ledger::hashbrown_tier;
 use crate::snapshot_prepared::FactsNeed;
 use crate::toolcall::{
     expand_tool_names, tool_name_matches, with_registry, ToolCall, ToolRegistrySnapshot,
@@ -1519,66 +1520,33 @@ pub fn prepare_facts(
     prepare_facts_limited(snapshot, selectors, limits, cancel, 16 * 1024 * 1024, need)
 }
 
-fn pushed_capacity(count: usize, element: usize) -> usize {
-    (0..count).fold(0, |capacity, len| {
-        vec_capacity_after(capacity, len, 1, element)
-    })
-}
-
 pub fn facts_bound(snapshot: &TranscriptSnapshot) -> usize {
+    let shape = snapshot.activity.shape();
     let slot = std::mem::size_of::<Value>();
     let pair = std::mem::size_of::<(Value, Value)>();
     let name = std::mem::size_of::<String>();
     let event = std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>();
     let edited_file = slot + hashbrown_tier(1, pair) * pair + "path".len();
-    let inputs = snapshot
-        .activity
-        .calls()
-        .map(|(call, edits)| {
-            let paths = call.file_paths();
-            3 * slot
-                + call.name().len()
-                + paths.len() * slot
-                + paths.iter().map(|path| path.len()).sum::<usize>()
-                + edits
-                    .iter()
-                    .map(|(path, _)| edited_file + path.len())
-                    .sum::<usize>()
-                + match call {
-                    ToolCall::Bash(bash) => slot + bash.command.len(),
-                    ToolCall::Skill(skill) => slot + skill.skill.len(),
-                    _ => 0,
-                }
-        })
-        .sum::<usize>();
-    let overrides = (0..snapshot.event_count)
-        .map(|index| snapshot.entry(index))
-        .map(|entry| match entry {
-            Entry::User(user) => {
-                user.content.text_len()
-                    + user
-                        .tool_results()
-                        .map(|result| result.content.len())
-                        .sum::<usize>()
-            }
-            Entry::Assistant(assistant) => {
-                crate::types::joined_text_len(&assistant.blocks)
-                    + pushed_capacity(entry.tool_uses().count(), name) * name
-                    + entry.tool_uses().map(|tool| tool.name.len()).sum::<usize>()
-            }
-            Entry::System(system) => system.content.as_ref().map_or(0, String::len),
-            _ => 0,
-        })
-        .sum::<usize>();
     crate::snapshot_ledger::arc_bytes::<crate::snapshot_prepared::PreparedFacts>()
         + hashbrown_tier(JSON_LITERAL_OBJECT_CAPACITY, pair) * pair
         + ["calls", "commands", "edited_files", "skills"]
             .iter()
             .map(|key| key.len())
             .sum::<usize>()
-        + inputs
-        + pushed_capacity(snapshot.event_count, event) * event
-        + overrides
+        + shape.calls * 3 * slot
+        + shape.call_name_bytes
+        + shape.paths * slot
+        + shape.path_bytes
+        + shape.edits * edited_file
+        + shape.edit_path_bytes
+        + shape.commands * slot
+        + shape.command_bytes
+        + shape.skills * slot
+        + shape.skill_bytes
+        + pushed_capacity(snapshot.event_count) * event
+        + shape.prose_bytes
+        + shape.tool_name_slots * name
+        + shape.tool_name_bytes
 }
 
 fn prepare_facts_limited(
@@ -2178,10 +2146,6 @@ mod tests {
 
     #[test]
     fn pushed_capacity_matches_std_growth_for_pushes_and_collects() {
-        let (name, event) = (
-            std::mem::size_of::<String>(),
-            std::mem::size_of::<crate::snapshot_prepared::OverrideEvent>(),
-        );
         for count in 0..70 {
             let mut names = Vec::new();
             let mut events = Vec::new();
@@ -2196,9 +2160,9 @@ mod tests {
             assert_eq!(
                 (names.capacity(), collected.capacity(), events.capacity()),
                 (
-                    pushed_capacity(count, name),
-                    pushed_capacity(count, name),
-                    pushed_capacity(count, event)
+                    pushed_capacity(count),
+                    pushed_capacity(count),
+                    pushed_capacity(count)
                 ),
                 "{count} elements"
             );

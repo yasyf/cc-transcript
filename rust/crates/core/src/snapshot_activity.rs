@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, ToolUse, Turn};
+use crate::parse::pushed_capacity;
 #[cfg(test)]
 use crate::snapshot::NativeStore;
 #[cfg(test)]
@@ -53,12 +54,75 @@ pub(crate) struct ResultPosition {
     charge: MemoryCharge,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ActivityShape {
+    pub calls: usize,
+    pub call_name_bytes: usize,
+    pub paths: usize,
+    pub path_bytes: usize,
+    pub edits: usize,
+    pub edit_path_bytes: usize,
+    pub commands: usize,
+    pub command_bytes: usize,
+    pub skills: usize,
+    pub skill_bytes: usize,
+    pub prose_bytes: usize,
+    pub tool_name_slots: usize,
+    pub tool_name_bytes: usize,
+}
+
+impl ActivityShape {
+    fn include_entry(&mut self, entry: &Entry) {
+        match entry {
+            Entry::User(user) => {
+                self.prose_bytes += user.content.text_len()
+                    + user
+                        .tool_results()
+                        .map(|result| result.content.len())
+                        .sum::<usize>();
+            }
+            Entry::Assistant(assistant) => {
+                self.prose_bytes += crate::types::joined_text_len(&assistant.blocks);
+                self.tool_name_slots += pushed_capacity(entry.tool_uses().count());
+                self.tool_name_bytes +=
+                    entry.tool_uses().map(|tool| tool.name.len()).sum::<usize>();
+            }
+            Entry::System(system) => {
+                self.prose_bytes += system.content.as_ref().map_or(0, String::len);
+            }
+            _ => {}
+        }
+    }
+
+    fn include_call(&mut self, call: &ToolCall, edits: &[(String, Vec<Hunk>)]) {
+        let paths = call.file_paths();
+        self.calls += 1;
+        self.call_name_bytes += call.name().len();
+        self.paths += paths.len();
+        self.path_bytes += paths.iter().map(|path| path.len()).sum::<usize>();
+        self.edits += edits.len();
+        self.edit_path_bytes += edits.iter().map(|(path, _)| path.len()).sum::<usize>();
+        match call {
+            ToolCall::Bash(bash) => {
+                self.commands += 1;
+                self.command_bytes += bash.command.len();
+            }
+            ToolCall::Skill(skill) => {
+                self.skills += 1;
+                self.skill_bytes += skill.skill.len();
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ActivityIndex {
     entries: usize,
     turns: Arc<Vec<Arc<CachedTurn>>>,
     uuids: Arc<HashMap<String, usize>>,
     results: Arc<HashMap<String, ResultPosition>>,
+    shape: ActivityShape,
     work: ActivityWork,
 }
 
@@ -101,6 +165,7 @@ impl ActivityIndex {
             ..ActivityWork::default()
         };
         for (local, entry) in entries.iter().enumerate() {
+            next.shape.include_entry(entry);
             let event = first_new_index + local;
             if let Some(meta) = entry.meta() {
                 if !next.uuids.contains_key(&meta.uuid) {
@@ -149,6 +214,7 @@ impl ActivityIndex {
                     };
                     let call = parse_tool_call(&tool.name, &tool.input);
                     let edits = lower_edit(&call);
+                    next.shape.include_call(&call, &edits);
                     let id = tool.id.clone();
                     let accounted_bytes = size_of::<CachedCall>()
                         + id.capacity()
@@ -202,6 +268,10 @@ impl ActivityIndex {
 
     pub fn entry_count(&self) -> usize {
         self.entries
+    }
+
+    pub(crate) fn shape(&self) -> ActivityShape {
+        self.shape
     }
 
     pub fn turn_count(&self) -> usize {
@@ -436,6 +506,7 @@ impl ActivityIndex {
             turns,
             uuids,
             results,
+            shape: _,
             work: _,
         } = self;
         let mut allocations = vec![
@@ -1096,6 +1167,11 @@ mod tests {
             let next = prior.append(&refs, boundary, None);
             parity(&next, &refs, None);
             parity(&prior, &refs[..boundary], None);
+            assert_eq!(next.shape(), ActivityIndex::new(&refs, None).shape());
+            assert_eq!(
+                prior.shape(),
+                ActivityIndex::new(&refs[..boundary], None).shape()
+            );
         }
     }
 
@@ -1109,6 +1185,11 @@ mod tests {
         parity(&next, &refs, Some(&flags));
         let unchanged = next.append(&refs, refs.len(), Some(&flags));
         assert_eq!(unchanged.work(), ActivityWork::default());
+        assert_eq!(unchanged.shape(), next.shape());
+        assert_eq!(
+            next.shape(),
+            ActivityIndex::new(&refs, Some(&flags)).shape()
+        );
         assert!(Arc::ptr_eq(&next.turns[0], &unchanged.turns[0]));
         assert!(Arc::ptr_eq(&next.uuids, &unchanged.uuids));
         assert!(Arc::ptr_eq(&next.results, &unchanged.results));
