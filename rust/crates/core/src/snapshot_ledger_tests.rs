@@ -1168,7 +1168,7 @@ fn registered_graph_fixture(scenario: &Scenario, background: bool) -> Fixture {
 }
 
 fn direct_graph_fixture(scenario: &Scenario, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("direct", background);
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let request = prepare_request(&root, &[], &[], &scenario.direct());
@@ -2040,6 +2040,108 @@ fn direct_prepare_graph_admits_exactly_before_publication() {
             REPLY_RESERVATION,
         );
     }
+}
+
+#[test]
+fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowance() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    for (events, items, expected_calls) in [
+        (256, 256, 1),
+        (32, 256, 2),
+        (256, 7, 5),
+        (1, 256, 34),
+        (256, 1, 34),
+        (2, 256, 17),
+    ] {
+        let store = store_with(4096, events, &[("max_items_per_page", items)]);
+        let owner = context_for("coalesced-build", false);
+        let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+        let request = prepare_request(&root, &[], &[], &scenario.direct());
+        let mut response = store.request(&request, &owner, &Cancellation::default());
+        let mut calls = 1;
+        while response["cursor"].as_str().is_some() {
+            assert_eq!(
+                response["status"].as_str(),
+                Some("incomplete"),
+                "{response:?}"
+            );
+            store.assert_conserved();
+            assert_eq!(store.lock_state().prepared_builds.len(), 1);
+            response = resume(&store, &response, &owner);
+            calls += 1;
+            assert!(calls <= 34, "{response:?}");
+        }
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(calls, expected_calls, "events={events}, items={items}");
+        store.assert_conserved();
+        let state = store.lock_state();
+        assert!(state.prepared_builds.is_empty());
+        let graph = state.prepared_graphs[response["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+        assert_eq!(
+            graph
+                .sources
+                .iter()
+                .map(|source| source.path.clone())
+                .collect::<Vec<_>>(),
+            scenario.sidechains,
+        );
+    }
+}
+
+#[test]
+fn coalesced_prepared_build_admits_its_peak_before_publication() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        assert_admission_boundary(
+            "coalesced prepared build",
+            &|| {
+                let mut fixture = direct_graph_fixture(&scenario, background);
+                fixture.store.config.page_items = 256;
+                fixture
+            },
+            &|fixture: &Fixture| admitted(&submit(fixture), "ok"),
+            REPLY_RESERVATION,
+        );
+    }
+}
+
+#[test]
+fn coalesced_prepared_build_cancels_at_the_next_internal_checkpoint() {
+    let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
+    let store = prepared_store();
+    let owner = context_for("coalesced-cancel", false);
+    let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
+    let cancel = Cancellation::default();
+    let checkpoints = Arc::new(AtomicUsize::new(0));
+    *store.pin_hook.lock().unwrap() = Some(Arc::new({
+        let (cancel, checkpoints) = (cancel.clone(), Arc::clone(&checkpoints));
+        move |_: &Value| {
+            if checkpoints.fetch_add(1, Ordering::Relaxed) == 2 {
+                cancel.cancel();
+            }
+            Ok(())
+        }
+    }));
+    let response = store.request(
+        &prepare_request(&root, &[], &[], &scenario.direct()),
+        &owner,
+        &cancel,
+    );
+    assert_eq!(
+        response["status"].as_str(),
+        Some("cancelled"),
+        "{response:?}"
+    );
+    assert_eq!(checkpoints.load(Ordering::Relaxed), 3);
+    assert_eq!(store.build_sources.load(Ordering::Relaxed), 8);
+    store.assert_conserved();
+    assert_eq!(settled(&store)[PENDING], 0);
+    let state = store.lock_state();
+    assert!(state.prepared_builds.is_empty());
+    assert!(state.prepared_graphs.is_empty());
+    assert_eq!(state.transient_bytes, 0);
 }
 
 #[test]
@@ -6672,7 +6774,7 @@ fn build_site(site: &str, probe: usize) -> impl Fn(&Fixture) -> bool + '_ {
 }
 
 fn parked_build_fixture(scenario: &Scenario, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("resumed-build", background);
     let (root, root_snapshot) = acquired(&store, &scenario.root.path, &owner);
     let first = store.request(
@@ -9300,7 +9402,7 @@ fn published_generations_record_their_arc_headers() {
 }
 
 fn listing_fixture(source: &LedgerSource, background: bool) -> Fixture {
-    let store = prepared_store();
+    let store = store_with(4096, 2048, &[("max_items_per_page", 8)]);
     let owner = context_for("listing", background);
     let (root, root_snapshot) = acquired(&store, &source.path, &owner);
     Fixture {
