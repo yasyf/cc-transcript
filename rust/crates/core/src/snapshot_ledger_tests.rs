@@ -5242,7 +5242,7 @@ fn warm_root_facts_fixture(source: &LedgerSource) -> Fixture {
 
 #[test]
 fn warm_root_refuses_root_facts_before_construction() {
-    let source = LedgerSource::new(&prompt_line("root", 32 * 1024));
+    let source = LedgerSource::new(&patch_transcript(&delete_patch(&patch_paths(200)), false));
     let site = "warm_root root facts";
     let build = || warm_root_facts_fixture(&source);
     let probe = build();
