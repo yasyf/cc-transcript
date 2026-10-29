@@ -904,7 +904,7 @@ impl NativeStore {
                 return Ok(false);
             }
         }
-        dirs.hold()
+        dirs.hold(|| cancel.check(deadline))
     }
 
     fn validate_sidechain_dirs(
@@ -935,7 +935,7 @@ impl NativeStore {
                 return Ok(false);
             }
         }
-        dirs.hold()
+        dirs.hold(|| cancel.check(deadline))
     }
 
     fn prepare_graph(
@@ -1670,7 +1670,7 @@ impl NativeStore {
             });
         }
         let since = active_since_ns(request)?;
-        if !dirs.hold()?
+        if !dirs.hold(|| cancel.check(remaining.deadline_unix_ms))?
             || members
                 .iter()
                 .filter(|member| active(member, since))
@@ -2146,7 +2146,10 @@ impl NativeStore {
             steps += 1;
             uncached_steps += usize::from(!cached);
         }
-        if !dirs.hold()? {
+        if !dirs.hold(|| match cancel.check(remaining.deadline_unix_ms) {
+            Err(error) if error.status == Status::Deadline => Ok(()),
+            checked => checked,
+        })? {
             return Err(SnapshotError::new(
                 Status::Changed,
                 "registered source changed",
@@ -2253,7 +2256,7 @@ impl NativeStore {
         let page = self
             .prepared_query_steps(&mut cursor, &mut dirs, context, reservation, cancel, usage)
             .and_then(|page| {
-                if dirs.hold()? {
+                if dirs.hold(|| cancel.check(cursor.remaining.deadline_unix_ms))? {
                     Ok(page)
                 } else {
                     Err(SnapshotError::new(
@@ -3075,8 +3078,10 @@ impl<'a> ResolvedDirs<'a> {
         Ok(canonical)
     }
 
-    fn hold(&self) -> Result<bool, SnapshotError> {
+    fn hold(&self, check: impl Fn() -> Result<(), SnapshotError>) -> Result<bool, SnapshotError> {
+        check()?;
         for (directory, canonical) in &self.dirs {
+            check()?;
             match self.store.canonical_path(directory) {
                 Ok(current) if current == *canonical => {}
                 Ok(_) => return Ok(false),
@@ -3084,6 +3089,7 @@ impl<'a> ResolvedDirs<'a> {
                 Err(error) => return Err(io_error(error)),
             }
         }
+        check()?;
         Ok(true)
     }
 }
