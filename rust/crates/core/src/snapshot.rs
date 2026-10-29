@@ -2695,7 +2695,9 @@ impl StoreState {
     ) {
         self.ledger.shared.reserve([facts_anchor(&facts)]);
         self.ledger.shared.acquire(facts_anchor(&facts));
-        graph.root_slices.insert(key, facts);
+        if let Some(displaced) = graph.root_slices.insert(key, facts) {
+            self.ledger.shared.release(facts_key(&displaced));
+        }
     }
 
     fn insert_delivery(&mut self, key: Arc<str>, delivery: Delivery) {
@@ -16489,6 +16491,12 @@ mod tests {
 
     #[test]
     fn selected_root_slices_answer_has_override_within_their_view() {
+        for observer_first in [false, true] {
+            selected_root_slice_upgrade(observer_first);
+        }
+    }
+
+    fn selected_root_slice_upgrade(observer_first: bool) {
         let source = Source::new(&format!(
             "{}\n{}\n",
             user_text("first", "TOKEN-ROOT"),
@@ -16519,14 +16527,37 @@ mod tests {
         let root_key = fact_entry_key(&source.path, &owner);
         let lookups = store.fact_lookups.load(Ordering::Relaxed);
         let builds = store.fact_builds.load(Ordering::Relaxed);
-        let scoped = ask(current_turn(), has_override("TOKEN-ROOT", &[]), None);
+        let indexed = ask(current_turn(), has_tool("Missing"), None);
+        assert_eq!(value_of(&indexed), Some(false));
+        {
+            let state = store.lock_state();
+            let graph = state.prepared_graphs
+                [graph["data"]["handle"]["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+            let facts = graph.root_slices.values().next().unwrap();
+            assert!(facts.serves(FactsNeed::Index));
+            assert!(!facts.serves(FactsNeed::Full));
+        }
+        let scoped = if observer_first {
+            ask(
+                current_turn(),
+                has_tool("Missing"),
+                Some(json!([has_override("TOKEN-ROOT", &[])])),
+            )
+        } else {
+            ask(current_turn(), has_override("TOKEN-ROOT", &[]), None)
+        };
         assert_eq!(value_of(&scoped), Some(false));
+        if observer_first {
+            assert_eq!(scoped["data"]["observers"], json!([false]));
+        }
         assert_eq!(
             (
                 store.fact_lookups.load(Ordering::Relaxed),
                 store.fact_builds.load(Ordering::Relaxed)
             ),
-            (lookups, builds + 1)
+            (lookups, builds + 2)
         );
         assert_eq!(
             store.prepared_disk.entry_text_state(&root_key),
@@ -16539,7 +16570,7 @@ mod tests {
                 store.fact_lookups.load(Ordering::Relaxed),
                 store.fact_builds.load(Ordering::Relaxed)
             ),
-            (lookups + 1, builds + 2)
+            (lookups + 1, builds + 3)
         );
         assert_eq!(
             store.prepared_disk.entry_text_state(&root_key),
@@ -16563,7 +16594,7 @@ mod tests {
         );
         assert_eq!(
             store.fact_builds.load(Ordering::Relaxed),
-            builds + 2,
+            builds + 3,
             "a selected view rebuilt its facts"
         );
         evict_memory_facts(&store, &source.path);
@@ -16580,7 +16611,7 @@ mod tests {
             json!({"kind":"observed_scalar","value":false,"observers":[false]}),
             "{observed:?}"
         );
-        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 3);
         store.assert_conserved();
     }
 
@@ -20216,7 +20247,10 @@ mod tests {
                 .unwrap()
                 .root,
             );
-            let bound = slice_bytes.max(super::ledger_tests::facts_bound_walk(&root));
+            let bound = slice_bytes.max(crate::snapshot_projection::facts_bound(
+                &root,
+                FactsNeed::Index,
+            ));
             let query = slice_query(&prepared);
             let record = size_of::<PreparedQueryCursor>()
                 + owner["claimant"].as_str().unwrap().len()
