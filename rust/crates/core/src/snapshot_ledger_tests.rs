@@ -5708,6 +5708,51 @@ fn decoded_slice_fixture(source: &LedgerSource, background: bool) -> Fixture {
 }
 
 #[test]
+fn incremental_fact_bounds_match_the_independent_full_walk() {
+    let patch = multi_path_patch(&patch_paths(12));
+    let raw = [
+        json!({"type":"user","uuid":"first","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{"content":[{"type":"text","text":"start λ"},{"type":"text","text":"second block"}]}}),
+        json!({"type":"assistant","uuid":"tools","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"m","content":[{"type":"text","text":"using tools"},{"type":"tool_use","id":"b","name":"Bash","input":{"command":"printf λ && git status"}},{"type":"tool_use","id":"s","name":"Skill","input":{"skill":"pack:review"}},{"type":"tool_use","id":"r","name":"Read","input":{"file_path":"src/λ.rs"}},{"type":"tool_use","id":"p","name":"apply_patch","input":patch}]}}),
+        json!({"type":"user","uuid":"results","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"p","content":"failed λ","is_error":true},{"type":"tool_result","tool_use_id":"r","content":"read body"}]}}),
+        json!({"type":"system","uuid":"system","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","subtype":"compact_boundary","content":"system prose"}),
+        json!({"type":"user","uuid":"last","sessionId":"s","timestamp":"2026-01-02T03:04:09Z","message":{"content":"next"}}),
+    ];
+    for boundary in 0..=raw.len() {
+        let mut snapshot = TranscriptSnapshot::from_complete_entries(
+            "fact-bound".into(),
+            PathBuf::from("/fact-bound.jsonl"),
+            SourceStamp {
+                identity: SourceIdentity {
+                    device: 1,
+                    inode: 1,
+                    window_base: 0,
+                },
+                size: 0,
+                mtime_ns: 0,
+                ctime_ns: 0,
+            },
+            crate::gateway::Provider::Claude,
+            "s".into(),
+            raw.iter()
+                .cloned()
+                .map(|value| crate::parse::parse_entry(value).unwrap())
+                .collect(),
+        );
+        let entries = snapshot.entries();
+        let prefix = ActivityIndex::new(&entries[..boundary], None);
+        let activity = prefix.append(&entries, boundary, None);
+        assert_eq!(activity.work().indexed_entries, raw.len() - boundary);
+        snapshot.activity = Arc::new(activity);
+        let snapshot = Arc::new(snapshot);
+        assert_eq!(
+            crate::snapshot_projection::facts_bound(&snapshot),
+            facts_bound_walk(&snapshot),
+            "append boundary {boundary}"
+        );
+    }
+}
+
+#[test]
 fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
     let store = prepared_store();
     let owner = context_for("patch-facts", false);
