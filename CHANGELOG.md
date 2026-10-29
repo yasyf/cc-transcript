@@ -114,6 +114,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cancelled `query_graph`, `prepare_graph` or `warm_registered` request now
+  stops during the re-check of source parent directories that ends each
+  membership validation and each query or warm page. That re-check used to
+  visit every directory whatever the request's cancellation or deadline said. A
+  query page or a membership validation past its deadline now stops there too
+  and fails with `deadline`. A `warm_registered` step that runs past its
+  deadline still finishes the re-check and returns its partial page.
 - Waiters joined on one cold load publish its generation once. Each waiter
   decided whether the snapshot was new before it classified and inserted it into
   `latest` on that decision afterwards, so two waiters could both count

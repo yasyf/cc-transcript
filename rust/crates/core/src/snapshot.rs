@@ -14566,6 +14566,74 @@ mod tests {
     }
 
     #[test]
+    fn source_validation_skips_its_parent_hold_once_cancelled_or_past_its_deadline() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let sources = canonical_members(&source.directory.join("members"), &["a", "b"], "");
+        let store = store();
+        let owner = context("a");
+        let validate = |cancel: &Cancellation, deadline: u64| {
+            let before = store.source_resolutions.load(Ordering::Relaxed);
+            let validated = store
+                .validate_source_stamps(&sources, &owner, cancel, deadline)
+                .map_err(|error| error.status);
+            (
+                validated,
+                store.source_resolutions.load(Ordering::Relaxed) - before,
+            )
+        };
+        assert_eq!(
+            validate(&Cancellation::default(), now_ms() + 30_000),
+            (Ok(true), 2)
+        );
+        for (cancels, status) in [(true, Status::Cancelled), (false, Status::Deadline)] {
+            let cancel = Cancellation::default();
+            let deadline = now_ms() + 1_000;
+            *store.resolve_hook.lock().unwrap() = Some(Arc::new({
+                let (cancel, last) = (cancel.clone(), sources[1].path.clone());
+                move |path: &Path| {
+                    if path != last {
+                        return;
+                    }
+                    if cancels {
+                        cancel.cancel();
+                    } else {
+                        while now_ms() <= deadline {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                    }
+                }
+            }));
+            assert_eq!(validate(&cancel, deadline), (Err(status), 1));
+        }
+    }
+
+    #[test]
+    fn empty_membership_validation_reports_cancellation_and_an_expired_deadline() {
+        let store = store();
+        let owner = context("a");
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        for (cancel, deadline, status) in [
+            (Cancellation::default(), now_ms(), Status::Deadline),
+            (cancelled, now_ms() + 30_000, Status::Cancelled),
+        ] {
+            let before = store.source_resolutions.load(Ordering::Relaxed);
+            assert_eq!(
+                (
+                    store
+                        .validate_source_stamps(&[], &owner, &cancel, deadline)
+                        .map_err(|error| error.status),
+                    store
+                        .validate_sidechain_dirs(&[], &owner, &cancel, deadline)
+                        .map_err(|error| error.status),
+                ),
+                (Err(status), Err(status))
+            );
+            assert_eq!(store.source_resolutions.load(Ordering::Relaxed), before);
+        }
+    }
+
+    #[test]
     fn early_positive_query_rejects_a_parent_retargeted_during_its_page() {
         let source = Source::new(&format!("{}\n", user("root")));
         let tool = r#"{"type":"assistant","uuid":"tool","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"/tmp/only-a"}}]}}"#;
@@ -17844,6 +17912,32 @@ mod tests {
             page_ends(&registered_pages(&store, &owner, &request)),
             [(3, true)]
         );
+    }
+
+    #[test]
+    fn registered_warmer_cancelled_on_its_last_step_fails_its_final_hold() {
+        let (source, store, owner, mut request) = registered_warming(300);
+        registered_pages(&store, &owner, &request);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(source.directory.join("thread-0255.jsonl"))
+            .unwrap()
+            .write_all(format!("{}\n", user("appended")).as_bytes())
+            .unwrap();
+        let cancel = Cancellation::default();
+        *store.built_facts_hook.lock().unwrap() = Some(Arc::new({
+            let cancel = cancel.clone();
+            move |_: &Arc<crate::snapshot_prepared::PreparedFacts>| cancel.cancel()
+        }));
+        let builds = store.fact_builds.load(Ordering::Relaxed);
+        request.insert("deadline_unix_ms", json!(now_ms() + 120_000));
+        let cancelled = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            cancelled["status"].as_str(),
+            Some("cancelled"),
+            "{cancelled:?}"
+        );
+        assert_eq!(store.fact_builds.load(Ordering::Relaxed) - builds, 1);
     }
 
     #[test]
