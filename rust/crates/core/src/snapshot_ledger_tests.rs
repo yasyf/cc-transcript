@@ -2045,7 +2045,14 @@ fn direct_prepare_graph_admits_exactly_before_publication() {
 #[test]
 fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowance() {
     let scenario = Scenario::new(33, |index| line(&format!("thread-{index:04}")));
-    for (events, items, expected_calls) in [(256, 256, 1), (32, 256, 2), (256, 7, 5), (1, 256, 34), (256, 1, 34), (2, 256, 17)] {
+    for (events, items, expected_calls) in [
+        (256, 256, 1),
+        (32, 256, 2),
+        (256, 7, 5),
+        (1, 256, 34),
+        (256, 1, 34),
+        (2, 256, 17),
+    ] {
         let store = store_with(4096, events, &[("max_items_per_page", items)]);
         let owner = context_for("coalesced-build", false);
         let (root, _pin) = acquired(&store, &scenario.root.path, &owner);
@@ -2053,7 +2060,11 @@ fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowanc
         let mut response = store.request(&request, &owner, &Cancellation::default());
         let mut calls = 1;
         while response["cursor"].as_str().is_some() {
-            assert_eq!(response["status"].as_str(), Some("incomplete"), "{response:?}");
+            assert_eq!(
+                response["status"].as_str(),
+                Some("incomplete"),
+                "{response:?}"
+            );
             store.assert_conserved();
             assert_eq!(store.lock_state().prepared_builds.len(), 1);
             response = resume(&store, &response, &owner);
@@ -2069,7 +2080,11 @@ fn direct_prepared_build_coalesces_checkpoints_within_the_existing_work_allowanc
             .lock()
             .unwrap();
         assert_eq!(
-            graph.sources.iter().map(|source| source.path.clone()).collect::<Vec<_>>(),
+            graph
+                .sources
+                .iter()
+                .map(|source| source.path.clone())
+                .collect::<Vec<_>>(),
             scenario.sidechains,
         );
     }
@@ -2114,7 +2129,11 @@ fn coalesced_prepared_build_cancels_at_the_next_internal_checkpoint() {
         &owner,
         &cancel,
     );
-    assert_eq!(response["status"].as_str(), Some("cancelled"), "{response:?}");
+    assert_eq!(
+        response["status"].as_str(),
+        Some("cancelled"),
+        "{response:?}"
+    );
     assert_eq!(checkpoints.load(Ordering::Relaxed), 3);
     assert_eq!(store.build_sources.load(Ordering::Relaxed), 8);
     store.assert_conserved();
