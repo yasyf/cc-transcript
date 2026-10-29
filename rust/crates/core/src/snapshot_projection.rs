@@ -1572,9 +1572,12 @@ fn prepare_facts_limited(
     let calls = session.tool_calls().items();
     let inputs = json!({
         "calls":calls.iter().map(|use_| (use_.call.name(), use_.call.file_paths())).collect::<Vec<_>>(),
-        "commands":session.commands(),
+        "commands":calls.iter().filter(|use_| tool_name_matches(use_.call.name(), "Bash")).filter_map(|use_| match &use_.call {
+            ToolCall::Bash(call) => Some(call.command.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>(),
         "edited_files":calls.iter().flat_map(|use_| use_.edits.iter().map(|(path, _)| PredicateFileWire { path })).collect::<Vec<_>>(),
-        "skills":session.tool_calls().named("Skill").items().iter().filter_map(|use_| match &use_.call {
+        "skills":calls.iter().filter(|use_| tool_name_matches(use_.call.name(), "Skill")).filter_map(|use_| match &use_.call {
             ToolCall::Skill(call) => Some(call.skill.as_str()),
             _ => None,
         }).collect::<Vec<_>>()
@@ -2579,6 +2582,19 @@ mod tests {
             ),
             tool("bash", "bash-id", "Bash", json!({"command":"git status"})),
             tool("skill", "skill-id", "Skill", json!({"skill":"repo:review"})),
+            tool(
+                "failed-bash",
+                "failed-bash-id",
+                "Bash",
+                json!({"command":"failed-command"}),
+            ),
+            tool(
+                "failed-skill",
+                "failed-skill-id",
+                "Skill",
+                json!({"skill":"repo:failed"}),
+            ),
+            json!({"type":"user","uuid":"failed-results","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"failed-bash-id","content":"failed","is_error":true},{"type":"tool_result","tool_use_id":"failed-skill-id","content":"failed","is_error":true}]}}),
             user("u1", "OVERRIDE restored"),
         ]);
         let (facts, _, _) = prepare_facts(
@@ -2596,8 +2612,10 @@ mod tests {
             json!({"kind":"has_read_glob","values":["**/*.rs"],"subagents":true}),
             json!({"kind":"has_edit_to","values":["**/change.rs"],"subagents":true}),
             json!({"kind":"has_skill","values":["repo:review"],"subagents":true}),
+            json!({"kind":"has_skill","values":["repo:failed"],"subagents":true}),
             json!({"kind":"has_skill_suffix","values":["review"],"subagents":true}),
             json!({"kind":"has_command_regex","pattern":"git status","subagents":true}),
+            json!({"kind":"has_command_regex","pattern":"failed-command","subagents":true}),
             json!({"kind":"has_error","subagents":true}),
             json!({"kind":"has_edit","subagents":true}),
             json!({"kind":"has_override","token":"OVERRIDE","invalidated_by":["Read"],"subagents":true}),
