@@ -2200,13 +2200,14 @@ fn incremental_prepared_build_charge_matches_every_parked_allocation() {
             let mut response = store.request(&request, &owner, &Cancellation::default());
             let work = {
                 let state = store.lock_state();
-                state
+                let counter = state
                     .prepared_builds
                     .values()
                     .next()
                     .unwrap()
                     .charge_work
-                    .counter()
+                    .counter();
+                counter
             };
             let mut calls = 1;
             let mut partial_listing = false;
