@@ -1662,6 +1662,96 @@ fn override_facts(
     crate::snapshot_prepared::OverrideFacts::from_section(override_events)
 }
 
+fn turn_records_page(
+    lift: &LiftedSession<'_>,
+    range: &Range<usize>,
+    reverse: bool,
+    work: &Work<'_, '_>,
+) -> Result<Projection, SnapshotError> {
+    let session = view(lift, range, work.snapshot);
+    record_page(
+        session.turn_views().map(|(index, prompt, events, uses)| {
+            let original = &lift.turns[index - lift.turns[0].index];
+            let start = work
+                .snapshot
+                .activity
+                .turn_bounds(index)
+                .unwrap()
+                .start
+                .max(range.start);
+            let record = TurnWire {
+                codec: TURN_CODEC,
+                index,
+                prompt,
+                started_at: original.started_at,
+                ended_at: original.ended_at,
+                events: events
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, event)| EventWire::new(start + offset, event))
+                    .collect(),
+                tool_uses: uses
+                    .iter()
+                    .map(|use_| ToolUseWire::new(use_, &work.snapshot.session_id))
+                    .collect(),
+            };
+            snapshot_codec::encode(&record, work.limits.max_output_bytes)
+        }),
+        "cc-transcript.turn/1",
+        0,
+        reverse,
+        work,
+    )
+}
+
+fn turn_page(
+    work: &mut Work<'_, '_>,
+    range: Range<usize>,
+    next: usize,
+    reverse: bool,
+) -> Result<Projection, SnapshotError> {
+    let turns = if range.is_empty() {
+        0..0
+    } else {
+        work.snapshot.activity.turn_of_event(range.start).unwrap()
+            ..work.snapshot.activity.turn_of_event(range.end - 1).unwrap() + 1
+    };
+    let count = turns.len();
+    if next > count {
+        return Err(invalid("record cursor out of range"));
+    }
+    let stop = count.min(next.saturating_add(work.limits.max_items.min(256)));
+    let page_turns = if reverse {
+        turns.end - stop..turns.end - next
+    } else {
+        turns.start + next..turns.start + stop
+    };
+    let page_range = if page_turns.is_empty() {
+        range.start..range.start
+    } else {
+        range.start.max(
+            work.snapshot
+                .activity
+                .turn_bounds(page_turns.start)
+                .unwrap()
+                .start,
+        )
+            ..range.end.min(
+                work.snapshot
+                    .activity
+                    .turn_bounds(page_turns.end - 1)
+                    .unwrap()
+                    .end,
+            )
+    };
+    let lift = lift_range(work, &page_range, None)?;
+    let mut projection = turn_records_page(&lift, &page_range, reverse, work)?;
+    projection.next = (stop < count).then_some(stop);
+    projection.complete = projection.next.is_none();
+    projection.reason = projection.next.map(|_| "item_limit".to_owned());
+    Ok(projection)
+}
+
 fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, SnapshotError> {
     let query = field(request, "query")?;
     if query.get("subagents").and_then(|v| v.as_bool()) == Some(true) {
@@ -1732,6 +1822,10 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             work.limits,
             (stop < range.len()).then_some(stop),
         );
+    }
+    if kind == "turns" {
+        let reverse = query.get("order").and_then(|value| value.as_str()) == Some("reverse");
+        return turn_page(work, range, next, reverse);
     }
     let joined: String;
     let name = match kind {
@@ -1893,39 +1987,6 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 work,
             )
         }
-        "turns" => record_page(
-            session.turn_views().map(|(index, prompt, events, uses)| {
-                let original = &lift.turns[index - lift.turns[0].index];
-                let start = work
-                    .snapshot
-                    .activity
-                    .turn_bounds(index)
-                    .unwrap()
-                    .start
-                    .max(range.start);
-                let record = TurnWire {
-                    codec: TURN_CODEC,
-                    index,
-                    prompt,
-                    started_at: original.started_at,
-                    ended_at: original.ended_at,
-                    events: events
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, event)| EventWire::new(start + offset, event))
-                        .collect(),
-                    tool_uses: uses
-                        .iter()
-                        .map(|use_| ToolUseWire::new(use_, &work.snapshot.session_id))
-                        .collect(),
-                };
-                snapshot_codec::encode(&record, work.limits.max_output_bytes)
-            }),
-            "cc-transcript.turn/1",
-            next,
-            reverse,
-            work,
-        ),
         "tool_calls" => {
             let calls = session.tool_calls().with_errors();
             let calls = if query.get("name").is_some_and(|name| !name.is_null()) {
