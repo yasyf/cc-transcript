@@ -65,6 +65,9 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test owned transcript catalog operation counts on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+
       - name: Test prepared-facts disk cache on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- snapshot_prepared_disk restarted_owner_reuses_prepared_facts
 
@@ -78,9 +81,6 @@ jobs:
 
       - name: Test shared source-spine work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- source_spine_ --nocapture
-
-      - name: Test owned transcript catalog operation counts on Linux
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 
       - name: Generate native type stubs
         env:
