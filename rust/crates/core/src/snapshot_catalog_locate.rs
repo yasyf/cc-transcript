@@ -17,7 +17,16 @@ struct CatalogLocateQuery {
     floor: Option<Vec<usize>>,
     validated_after: Option<Vec<usize>>,
     final_hold: bool,
-    authority_changed: bool,
+    authority_epoch: u64,
+    capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
+    capability_bytes: usize,
+    generation_seen: Option<u64>,
+}
+
+struct CatalogCapability {
+    canonical_digest: [u8;32],
+    stamp: SourceStamp,
+    authority_epoch: u64,
 }
 
 struct CatalogLocatePage {
@@ -50,6 +59,7 @@ impl CatalogLocateQuery {
             + self.choices.capacity() * size_of::<Reverse<CatalogChoice>>() + self.choice_bytes
             + self.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
+            + self.capability_bytes
     }
 
     fn push_choice(&mut self, choice: CatalogChoice, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
@@ -88,6 +98,47 @@ impl CatalogLocateQuery {
             held.extend_from_slice(order);
             if let Some(edge) = edge { held.push(edge); }
         }
+        Ok(())
+    }
+
+    fn remember_capability(&mut self, order: Vec<usize>, binding: &CatalogBinding,
+        budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let Some((canonical,stamp)) = binding.canonical.as_ref().zip(binding.stamp) else { return Ok(()); };
+        let capability = CatalogCapability { canonical_digest:Sha256::digest(canonical.as_os_str().as_encoded_bytes()).into(),
+            stamp, authority_epoch:self.authority_epoch };
+        if let Some(previous) = self.capabilities.get_mut(order.as_slice()) { *previous = capability; }
+        else {
+            budget.reserve(size_of::<(Vec<usize>,CatalogCapability)>())?;
+            self.capability_bytes += size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
+            self.capabilities.insert(order,capability);
+        }
+        Ok(())
+    }
+
+    fn reuses_capability(&self, order: &[usize], canonical: &Path, binding: &CatalogBinding) -> bool {
+        self.capabilities.get(order).is_some_and(|capability|
+            capability.authority_epoch < self.authority_epoch
+                && binding.stamp.is_some_and(|stamp| stamp.identity == capability.stamp.identity
+                    && (!binding.directory || stamp == capability.stamp))
+                && capability.canonical_digest == <[u8;32]>::from(Sha256::digest(canonical.as_os_str().as_encoded_bytes())))
+    }
+
+    fn rewind_generation(&mut self) {
+        self.floor = None; self.validated_after = None;
+        self.choices_ready = false; self.final_hold = false;
+    }
+
+    fn rewind_parent(&mut self, parent: &[usize], budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        while self.capabilities.last_key_value().is_some_and(|(order,_)| order.as_slice() >= parent) {
+            let (order,_) = self.capabilities.pop_last().expect("invalidated capability");
+            self.capability_bytes -= size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
+        }
+        let previous = if let Some((order,_)) = self.capabilities.last_key_value() {
+            budget.reserve(order.len() * size_of::<usize>())?;
+            Some(order.clone())
+        } else { None };
+        self.rewind_generation();
+        if let Some(previous) = previous { self.position(&previous,None,budget)?; }
         Ok(())
     }
 
@@ -197,6 +248,10 @@ impl SourceCatalog {
     fn locate_page(&mut self, store: &NativeStore, _ids: &[Value], context: &Value,
         cancel: &Cancellation, remaining: &mut WorkLimits, usage: &mut [u64;20],
         query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogLocatePage, SnapshotError> {
+        if query.generation_seen.is_some_and(|generation| generation != self.generation_version) {
+            query.rewind_generation();
+        }
+        query.generation_seen = Some(self.generation_version);
         let mut updates = Vec::new();
         let stop = usage[17].saturating_add(store.config.event_step.min(remaining.max_discovery_entries) as u64);
         loop {
@@ -228,8 +283,9 @@ impl SourceCatalog {
                         query.push_choice(choice,budget)?;
                         continue;
                     }
-                    if let Some(stamp) = store.location_candidate(&choice.path,&query.scope,context)? {
-                        query.position(&choice.order,None,budget)?;
+                    let stamp = store.location_candidate(&choice.path,&query.scope,context)?;
+                    query.position(&choice.order,None,budget)?;
+                    if let Some(stamp) = stamp {
                         query.queue_candidate(store,&choice.id,choice.path,stamp,&mut updates,budget)?;
                     }
                     continue;
@@ -260,6 +316,7 @@ impl SourceCatalog {
                 (stop - usage[17]) as usize,usage,budget,Some(query))?;
             remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
             query.choice_version = self.candidate_version;
+            query.generation_seen = Some(self.generation_version);
             if let Some(choice) = choice { query.push_choice(choice,budget)?; }
         }
         cancel.check(remaining.deadline_unix_ms)?;
