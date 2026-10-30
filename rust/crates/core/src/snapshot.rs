@@ -1209,6 +1209,18 @@ impl OpenDirectoryEntry {
 }
 
 impl OpenedDirectory {
+    fn current_stamp(&self) -> std::io::Result<SourceStamp> {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(libc::dirfd(self.directory.as_ptr()),metadata.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(CatalogChildMetadata::from_descriptor(&unsafe { metadata.assume_init() }).stamp)
+    }
+
+    fn object_metadata(&self, name: &OsStr, store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
+        self.descriptor_metadata(name,false,store)
+    }
+
     fn descriptor_metadata(&self, name: &OsStr, follow: bool, _store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
         let name = std::ffi::CString::new(name.as_encoded_bytes()).expect("directory name contains no NUL");
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -11610,6 +11622,7 @@ impl NativeStore {
 }
 
 include!("snapshot_catalog.rs");
+include!("snapshot_symlink_proof.rs");
 include!("snapshot_catalog_owner.rs");
 include!("snapshot_catalog_locate.rs");
 include!("snapshot_prepared_service.rs");
