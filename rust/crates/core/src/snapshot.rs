@@ -1793,6 +1793,7 @@ impl Delivery {
 }
 
 pub(crate) struct StoreState {
+    gauge_reports: Work,
     latest: Table<SourceIdentity, Arc<TranscriptSnapshot>>,
     recent_codex: Table<SourceIdentity, u64>,
     loads: Table<SourceIdentity, Arc<LoadSlot>>,
@@ -1856,6 +1857,7 @@ fn carried_deadline(carried: &CarriedClassification) -> u64 {
 impl StoreState {
     fn new(work: Work) -> Self {
         Self {
+            gauge_reports: Work::default(),
             latest: Table::new(work.clone()),
             recent_codex: Table::new(work.clone()),
             loads: Table::new(work.clone()),
@@ -2809,6 +2811,7 @@ struct GaugeTerms {
 
 impl GaugeTerms {
     fn report(&self, state: &StoreState) -> Value {
+        state.gauge_reports.tick(1);
         let metadata = self.metadata + NativeStore::fixed_metadata_bytes(state);
         let owned = state.owned.accounted_bytes();
         json!({"retained_entry_capacity_bytes": self.entries, "retained_index_capacity_bytes": self.indexes,
@@ -11186,6 +11189,8 @@ mod tests {
     use super::*;
     use crate::snapshot_prepared::TextState;
     use std::io::Write;
+
+    include!("snapshot_admission_report_tests.rs");
 
     struct Source {
         directory: PathBuf,
