@@ -1517,8 +1517,7 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
     let owner = context_for("escaped", false);
     let (handle, snapshot) = acquired(&store, &source.path, &owner);
     assert_eq!(snapshot.chunks.len(), 1);
-    let rows_charge = snapshot.chunks[0].rows_charge();
-    let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
+    let charge = NativeStore::audit_chunk_rows_bytes(&snapshot.chunks[0].entries);
     let rows = Arc::clone(&snapshot.chunks[0].entries);
     assert_eq!(rows.len(), 1);
     assert!(matches!(&rows[0], Entry::User(user) if user.meta.uuid == "escaped"));
@@ -1552,10 +1551,9 @@ fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocat
     }).expect("the overlapping views share rows");
     assert!(!Arc::ptr_eq(&original, &selected));
     let rows = Arc::clone(&original.entries);
-    let charge = original.rows_charge();
-    let rows_bytes = charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
-    let original_metadata = original.metadata_bytes();
-    let selected_metadata = selected.metadata_bytes();
+    let rows_bytes = NativeStore::audit_chunk_rows_bytes(&original.entries);
+    let original_metadata = NativeStore::audit_chunk_metadata_bytes(&original);
+    let selected_metadata = NativeStore::audit_chunk_metadata_bytes(&selected);
     release_lease(&store, &whole_handle, &owner);
     release_lease(&store, &tail_handle, &owner);
     drop(full);
@@ -1569,6 +1567,43 @@ fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocat
     drop(selected);
     store.assert_conserved();
     assert_eq!(ledger(&store)[ENTRIES], rows_bytes);
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
+fn source_spine_escaped_allocation_audit_reads_live_fields() {
+    let source = LedgerSource::new(&line("audit-escape"));
+    let store = fast_store();
+    let owner = context_for("spine-escape-audit", false);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    let chunk = Arc::clone(&snapshot.chunks[0]);
+    let rows = Arc::clone(&chunk.entries);
+    let expected = NativeStore::audit_chunk_rows_bytes(&rows)
+        + NativeStore::audit_chunk_metadata_bytes(&chunk);
+    release_lease(&store, &handle, &owner);
+    drop(snapshot);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    let keys = [Arc::as_ptr(&rows) as usize, Arc::as_ptr(&chunk) as usize];
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state.escaped_chunks.get_mut(&key).unwrap().1.owned_capacity_bytes += 4096;
+        }
+    }
+    assert_eq!(audited(&store)[ENTRIES], expected);
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state.escaped_chunks.get_mut(&key).unwrap().1.owned_capacity_bytes -= 4096;
+        }
+    }
+    store.assert_conserved();
+    drop(chunk);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], NativeStore::audit_chunk_rows_bytes(&rows));
     drop(rows);
     store.assert_conserved();
     assert_eq!(ledger(&store)[ENTRIES], 0);
@@ -1598,8 +1633,7 @@ fn observations_under_one_guard_drain_deaths_after_the_lock() {
     let store = fast_store();
     let owner = context_for("guarded", false);
     let (orphan, replacement) = orphaned(&store, &source, &owner);
-    let rows_charge = orphan.chunks[0].rows_charge();
-    let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
+    let charge = NativeStore::audit_chunk_rows_bytes(&orphan.chunks[0].entries);
     let rows = Arc::clone(&orphan.chunks[0].entries);
     let mut state = store.lock_state();
     drop(orphan);
@@ -3876,8 +3910,7 @@ fn refused_publication_keeps_the_parsed_result_unpublished_until_the_retry_admit
             assert_eq!(state.escaped_chunks.len(), 2 * parsed.chunks.len());
             assert_eq!(slot.ledgered_bytes(), 0);
         }
-        let rows_charge = parsed.chunks[0].rows_charge();
-        let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
+        let charge = NativeStore::audit_chunk_rows_bytes(&parsed.chunks[0].entries);
         let rows = Arc::clone(&parsed.chunks[0].entries);
         release_lease(&refused.store, &handle, &refused.owner);
         drop(pinned);

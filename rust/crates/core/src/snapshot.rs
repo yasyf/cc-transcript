@@ -4862,9 +4862,19 @@ impl NativeStore {
                 }
             }
         }
-        for (id, (chunk, charge)) in state.escaped_chunks.iter() {
-            if chunk.strong_count() > 0 && allocations.insert(*id) {
-                entries += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+        for (id, (owner, _)) in state.escaped_chunks.iter() {
+            let bytes = match owner {
+                ChunkAllocationOwner::Rows(rows) => rows
+                    .upgrade()
+                    .map(|rows| Self::audit_chunk_rows_bytes(&rows)),
+                ChunkAllocationOwner::Metadata(chunk) => chunk
+                    .upgrade()
+                    .map(|chunk| Self::audit_chunk_metadata_bytes(&chunk)),
+            };
+            if let Some(bytes) = bytes {
+                if allocations.insert(*id) {
+                    entries += bytes;
+                }
             }
         }
         GaugeTerms {
@@ -5112,28 +5122,28 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_chunk_bytes(chunk: &EntryChunk) -> usize {
-        let EntryChunk {
-            ledger: _,
-            entries,
-            start: _,
-            charge: _,
-            entry_charges,
-            user_count: _,
-            sidechain_user_count: _,
-        } = chunk;
+        Self::audit_chunk_metadata_bytes(chunk) + Self::audit_chunk_rows_bytes(&chunk.entries)
+    }
+
+    #[cfg(test)]
+    fn audit_chunk_metadata_bytes(chunk: &EntryChunk) -> usize {
         arc_mirror::<EntryChunk>()
-            + arc_mirror::<ChunkRows>()
-            + entries.capacity() * size_of::<Entry>()
-            + entry_charges.capacity() * size_of::<MemoryCharge>()
-            + entries.arenas().capacity() * size_of::<(usize, SourceArena)>()
-            + entries
+            + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+    }
+
+    #[cfg(test)]
+    fn audit_chunk_rows_bytes(rows: &ChunkRows) -> usize {
+        arc_mirror::<ChunkRows>()
+            + rows.capacity() * size_of::<Entry>()
+            + rows.arenas().capacity() * size_of::<(usize, SourceArena)>()
+            + rows
                 .iter()
                 .map(|entry| {
                     let charge = entry_charge(entry);
                     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
                 })
                 .sum::<usize>()
-            + entries
+            + rows
                 .arenas()
                 .iter()
                 .map(|(_, arena)| Self::audit_arena_bytes(arena))
