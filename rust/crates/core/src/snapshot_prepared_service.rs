@@ -1771,7 +1771,7 @@ impl NativeStore {
         let ids = request["thread_ids"]
             .as_array()
             .ok_or_else(|| invalid("missing registered thread ids"))?;
-        request["roots"]
+        let roots = request["roots"]
             .as_array()
             .ok_or_else(|| invalid("missing registered roots"))?;
         let direct = request["direct_paths"]
@@ -1785,11 +1785,11 @@ impl NativeStore {
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
         let since = active_since_ns(request)?;
-        let (located, _catalog_reservation) = match self.catalog_paths(
-            request, context, cancel, remaining, usage, CatalogMode::Locate,
+        let (located, _catalog_reservation) = match self.catalog_access(
+            CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
         )? {
             CatalogResolution::Ready { paths, reservation } => (paths, reservation),
-            CatalogResolution::Indexed | CatalogResolution::Pending(_) => unreachable!("synchronous catalog lookup"),
+            CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Public { .. } => unreachable!("synchronous catalog lookup"),
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();

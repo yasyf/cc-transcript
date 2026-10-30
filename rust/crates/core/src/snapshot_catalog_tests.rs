@@ -53,12 +53,12 @@ fn registered_catalog_reuses_cancelled_indexing_for_a_4587_id_roster() {
     let observed_hook = Arc::clone(&observed);
     let cancel_hook = cancel.clone();
     *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new(move || {
-        if observed_hook.fetch_add(1, Ordering::Relaxed) == 15 { cancel_hook.cancel(); }
+        if observed_hook.fetch_add(1, Ordering::Relaxed) == 0 { cancel_hook.cancel(); }
     })));
     let (cancelled, first_entries) = catalog_counted_request(&store, &request, &owner, &cancel);
     *store.location_metadata_hook.lock().unwrap() = None;
     assert_eq!(cancelled["status"].as_str(), Some("cancelled"), "{cancelled:?}");
-    assert_eq!(observed.load(Ordering::Relaxed), 16);
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
     store.assert_conserved();
     let (_, resumed_entries) = catalog_finish_missing(&store, &request, &owner, 4588 - first_entries);
     assert_eq!(first_entries + resumed_entries, 4588, "owned indexing re-enumerated its prefix");
@@ -90,4 +90,51 @@ fn registered_catalog_reenumerates_only_the_changed_directory() {
     let (_, settled) = catalog_finish_missing(&store, &request, &owner, 0);
     assert_eq!(settled, 0);
     store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_deep_directory_metadata_work_is_linear() {
+    for depth in [32, 64, 128] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let mut directory = source.directory.clone();
+        for _ in 0..depth {
+            directory.push("d");
+            std::fs::create_dir(&directory).unwrap();
+        }
+        std::fs::write(directory.join("unrelated.txt"), "").unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":1,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("catalog-deep-work");
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let request = catalog_missing_request(&source, &root, &["missing".to_owned()]);
+        let before = store.location_canonicalizations.load(Ordering::Relaxed);
+        let (_, entries) = catalog_finish_missing(&store, &request, &owner, (depth + 2) as u64);
+        let resolutions = store.location_canonicalizations.load(Ordering::Relaxed) - before;
+        assert_eq!(entries, (depth + 2) as u64);
+        assert!(resolutions <= 32 * depth + 1024, "depth={depth} location_canonicalizations={resolutions}");
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn registered_catalog_cursor_charge_does_not_walk_its_immutable_request() {
+    for count in [33, 129, 513] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        std::fs::write(source.directory.join("unrelated.txt"), "").unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":1,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("catalog-readonly-charge");
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let ids: Vec<_> = (0..count).map(|index| format!("missing-{index}")).collect();
+        let request = catalog_missing_request(&source, &root, &ids);
+        let response = store.request(&request, &owner, &Cancellation::default());
+        let cursor = response["cursor"].as_str().expect("catalog private cursor");
+        let state = store.lock_state();
+        let build = state.registered_builds.get(cursor).expect("registered build");
+        let audit = NativeStore::audit_registered_build_bytes(&cursor.to_owned(), build) - cursor.len();
+        crate::snapshot_memory::DOM_WORK.with(|work| work.set(0));
+        for _ in 0..64 { assert_eq!(build.charge(), audit); }
+        let work = crate::snapshot_memory::DOM_WORK.with(std::cell::Cell::get);
+        assert_eq!(work, 0, "readonly charge walked immutable roster count={count}");
+        drop(state);
+        store.assert_conserved();
+    }
 }

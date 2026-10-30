@@ -6786,6 +6786,7 @@ impl NativeStore {
                     }
                     self.extend_projection_reservation(&mut reservation, context, value_bytes(context))?;
                     build.context = context.clone();
+                    build.context_bytes = value_bytes(&build.context);
                     return self.registered_graph_step(cursor, build, &mut reservation, cancel, usage);
                 }
                 let prepared_build = {
