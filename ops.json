@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"perf/locate-regular-prefilter"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"add_comment","body":"Candidate431df65 PR99 and baselinef374f9c PR98 published CI-only. Security review PASS at exact candidate. Source reviewer investigating a possible stable Darwin canonical-path-length error difference, distinct from approved post-lstat mutation boundary; source readiness held pending proof, no filesystem guards or detours added."}]}
