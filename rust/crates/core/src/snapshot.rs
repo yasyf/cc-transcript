@@ -2852,6 +2852,8 @@ pub struct NativeStore {
     #[cfg(test)]
     locate_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    location_metadata_hook: Mutex<Option<(&'static str, Arc<dyn Fn() + Send + Sync>)>>,
+    #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
@@ -3336,6 +3338,8 @@ impl NativeStore {
             pin_hook: Mutex::new(None),
             #[cfg(test)]
             locate_hook: Mutex::new(None),
+            #[cfg(test)]
+            location_metadata_hook: Mutex::new(None),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]
@@ -7857,6 +7861,27 @@ impl NativeStore {
     }
 
     #[cfg(test)]
+    fn after_location_metadata(&self, stage: &'static str) {
+        let hook = {
+            let mut hook = self
+                .location_metadata_hook
+                .lock()
+                .expect("location metadata hook");
+            if hook
+                .as_ref()
+                .is_some_and(|(expected, _)| *expected == stage)
+            {
+                hook.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
     fn after_source_resolved(&self, path: &Path) {
         let hook = self.resolve_hook.lock().expect("resolve hook").clone();
         if let Some(hook) = hook {
@@ -10369,6 +10394,8 @@ impl NativeStore {
             let path = PathBuf::from(root.as_str().ok_or_else(|| invalid("invalid root"))?);
             let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
+            #[cfg(test)]
+            self.after_location_metadata("root");
             scope.push(path);
         }
         let cached = {
@@ -10402,6 +10429,8 @@ impl NativeStore {
         let mut refreshed = Vec::new();
         for (id, path) in cached {
             if let Some(stamp) = self.location_candidate(&path, &scope, context)? {
+                #[cfg(test)]
+                self.after_location_metadata("cached");
                 let revision = stamp.revision();
                 self.extend_projection_reservation(
                     &mut reservation,
@@ -10485,6 +10514,8 @@ impl NativeStore {
                         )?;
                         continue;
                     };
+                    #[cfg(test)]
+                    self.after_location_metadata("pending");
                     let revision = stamp.revision();
                     self.extend_projection_reservation(
                         reservation,
@@ -10559,6 +10590,8 @@ impl NativeStore {
                         Err(error) => return Err(io_error(error)),
                     }
                 };
+                #[cfg(test)]
+                self.after_location_metadata("walk");
                 if metadata.is_dir() {
                     let identity = SourceStamp::of(&metadata).identity;
                     if !cursor.seen_directories.contains(&identity) {
@@ -11517,6 +11550,111 @@ mod tests {
             Some(0)
         );
         assert_eq!(store.state.lock().unwrap().leases.len(), 0);
+    }
+
+    #[test]
+    fn location_cancellation_stops_before_the_next_root() {
+        let source = Source::new("");
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let cancel = Cancellation::default();
+        let stopped = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() =
+            Some(("root", Arc::new(move || stopped.cancel())));
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory,source.directory.join("missing")],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        assert!(response["cursor"].is_null());
+        assert_eq!(response["usage"]["discovery_entries_examined"], json!(0));
+    }
+
+    #[test]
+    fn location_cancellation_does_not_refresh_cached_locations() {
+        let source = Source::new("");
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let expires = now_ms() + 100_000;
+        store.lock_state().insert_location(
+            "s".to_owned(),
+            LocatedPath {
+                path: source.path.clone(),
+                expires,
+            },
+        );
+        let cancel = Cancellation::default();
+        let stopped = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() =
+            Some(("cached", Arc::new(move || stopped.cancel())));
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["s"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        assert_eq!(
+            store.lock_state().locations.get("s").unwrap().expires,
+            expires
+        );
+        assert!(response["cursor"].is_null());
+        assert_eq!(response["usage"]["discovery_entries_examined"], json!(0));
+    }
+
+    #[test]
+    fn location_cancellation_stops_inside_recursive_metadata_work() {
+        let source = Source::new("");
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let cancel = Cancellation::default();
+        let stopped = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() =
+            Some(("walk", Arc::new(move || stopped.cancel())));
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        assert!(response["cursor"].is_null());
+        assert_eq!(response["usage"]["discovery_entries_examined"], json!(0));
+        assert!(store.lock_state().locates.is_empty());
+    }
+
+    #[test]
+    fn location_cancellation_prevents_final_pending_publication() {
+        let source = Source::new("");
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["s"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let first = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+        let cancel = Cancellation::default();
+        let stopped = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() =
+            Some(("pending", Arc::new(move || stopped.cancel())));
+        let response = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        assert!(response["cursor"].is_null());
+        assert!(response["data"].is_null());
+        assert_eq!(response["usage"]["discovery_entries_examined"], json!(0));
+        assert!(store.lock_state().locates.is_empty());
     }
 
     #[test]
