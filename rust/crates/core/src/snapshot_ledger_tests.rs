@@ -8599,7 +8599,7 @@ fn open_directory_reservation(cursor: &LocateCursor, root: &Path) -> usize {
 }
 
 fn location_step_peak(cursor: &LocateCursor, root: &Path) -> usize {
-    locate_record_bytes(cursor) + LOCATE_PATH_SLOTS + open_directory_reservation(cursor, root)
+    locate_record_bytes(cursor) + LOCATE_USER_PATH_SLOTS + open_directory_reservation(cursor, root)
 }
 
 #[test]
@@ -11394,7 +11394,7 @@ fn resumed_location_step_admits_each_found_session_before_retaining_it() {
         let exact = exact_headroom(&build, &attempt);
         assert_eq!(
             exact + key,
-            REPLY_RESERVATION + value_bytes(&control.owner) + LOCATE_PATH_SLOTS + site,
+            REPLY_RESERVATION + value_bytes(&control.owner) + LOCATE_USER_PATH_SLOTS + site,
             "the first found session was not admitted by its retained bytes"
         );
         for headroom in [REPLY_RESERVATION, exact - 1] {
@@ -11517,7 +11517,7 @@ fn resumed_location_step_forgets_an_invalid_session_before_admitting_the_next_on
             exact + key,
             REPLY_RESERVATION
                 + value_bytes(&control.owner)
-                + LOCATE_PATH_SLOTS
+                + LOCATE_USER_PATH_SLOTS
                 + found.len() * size_of::<String>()
                 + site,
             "the session found after forgetting an invalid one was not admitted by its retained bytes"
@@ -11581,6 +11581,18 @@ fn filesystem_path_slot_covers_a_joined_directory_entry_path() {
             assert!(
                 joined.capacity() + libc::PATH_MAX as usize + 2 * size_of::<libc::dirent>()
                     <= LOCATE_PATH_SLOTS
+            );
+            let raw_parent = PathBuf::from(&root);
+            let mut child = PathBuf::from("c".repeat(libc::PATH_MAX as usize - 1));
+            child.reserve_exact(1 + name.len());
+            child.push(&name);
+            assert!(
+                joined.capacity()
+                    + raw_parent.capacity()
+                    + child.capacity()
+                    + (joined.as_os_str().len() + 1).max(child.as_os_str().len() + 1)
+                    + size_of::<libc::dirent>()
+                    <= LOCATE_USER_PATH_SLOTS
             );
         }
     }
