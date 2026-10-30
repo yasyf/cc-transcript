@@ -266,6 +266,7 @@ impl std::ops::Deref for ChunkRows {
 
 #[derive(Debug)]
 pub struct EntryChunk {
+    ledger: LedgerHook,
     pub entries: Arc<ChunkRows>,
     pub start: usize,
     pub charge: MemoryCharge,
@@ -277,6 +278,35 @@ pub struct EntryChunk {
 impl EntryChunk {
     pub fn new(start: usize, entries: Vec<Entry>) -> Self {
         Self::retaining(start, entries, Vec::new())
+    }
+
+    fn metadata_bytes(&self) -> usize {
+        arc_bytes::<Self>() + self.entry_charges.capacity() * size_of::<MemoryCharge>()
+    }
+
+    fn rows_charge(&self) -> MemoryCharge {
+        MemoryCharge {
+            owned_capacity_bytes: self.charge.owned_capacity_bytes - self.metadata_bytes(),
+            opaque_dom_accounted_bytes: self.charge.opaque_dom_accounted_bytes,
+        }
+    }
+
+    fn rebased(&self, start: usize) -> Self {
+        let entry_charges = self.entry_charges.clone();
+        Self {
+            ledger: LedgerHook::default(),
+            entries: Arc::clone(&self.entries),
+            start,
+            charge: MemoryCharge {
+                owned_capacity_bytes: self.rows_charge().owned_capacity_bytes
+                    + arc_bytes::<Self>()
+                    + entry_charges.capacity() * size_of::<MemoryCharge>(),
+                opaque_dom_accounted_bytes: self.charge.opaque_dom_accounted_bytes,
+            },
+            entry_charges,
+            user_count: self.user_count,
+            sidechain_user_count: self.sidechain_user_count,
+        }
     }
 
     pub(crate) fn retaining(
@@ -308,6 +338,7 @@ impl EntryChunk {
             .filter(|entry| matches!(entry,Entry::User(user) if user.meta.is_sidechain))
             .count();
         Self {
+            ledger: LedgerHook::default(),
             entries: Arc::new(ChunkRows::retaining(entries, arenas)),
             start,
             charge,
@@ -425,7 +456,13 @@ impl TranscriptSnapshot {
         entries.extend(
             self.chunks
                 .iter()
-                .map(|chunk| (Arc::as_ptr(&chunk.entries) as usize, chunk.charge)),
+                .flat_map(|chunk| [
+                    (Arc::as_ptr(chunk) as usize, MemoryCharge {
+                        owned_capacity_bytes: chunk.metadata_bytes(),
+                        opaque_dom_accounted_bytes: 0,
+                    }),
+                    (Arc::as_ptr(&chunk.entries) as usize, chunk.rows_charge()),
+                ]),
         );
         if let Some(raw) = &self.codex_raw {
             entries.push((
@@ -590,6 +627,26 @@ impl LoadSlot {
     }
 }
 
+enum ChunkAllocationOwner {
+    Rows(Weak<ChunkRows>),
+    Metadata(Weak<EntryChunk>),
+}
+
+impl ChunkAllocationOwner {
+    fn strong_count(&self) -> usize {
+        match self {
+            Self::Rows(rows) => rows.strong_count(),
+            Self::Metadata(chunk) => chunk.strong_count(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SourceChunkSpan {
+    start: u64,
+    end: u64,
+}
+
 struct Load {
     file: File,
     offset: u64,
@@ -597,6 +654,11 @@ struct Load {
     pending_start: u64,
     provider: Option<Provider>,
     chunks: Vec<Arc<EntryChunk>>,
+    source_chunks: Vec<SourceChunkSpan>,
+    previous_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
+    published_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
+    reuse_next: Option<usize>,
+    reuse_prepared: bool,
     codex_raw: Option<Arc<Vec<u8>>>,
     codex_append: Option<Arc<CodexAppendIndex>>,
     count: usize,
@@ -1467,6 +1529,7 @@ struct GenerationRecord {
     registry_generation: String,
     entries: Vec<(usize, MemoryCharge)>,
     indexes: Vec<(usize, usize)>,
+    source_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
 }
 
 impl GenerationRecord {
@@ -1476,6 +1539,7 @@ impl GenerationRecord {
             registry_generation: registry_generation.to_owned(),
             entries: snapshot.accounted_allocations(),
             indexes: snapshot.activity.shared_allocations(),
+            source_chunks: None,
         }
     }
 
@@ -1489,7 +1553,9 @@ impl GenerationRecord {
 
 impl Charge<usize> for GenerationRecord {
     fn charge(&self) -> usize {
-        self.registry_generation.capacity()
+        self.source_chunks.as_ref().map_or(0, |chunks| {
+            arc_bytes::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
+        }) + self.registry_generation.capacity()
             + self.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + self.indexes.capacity() * size_of::<(usize, usize)>()
     }
@@ -1509,10 +1575,6 @@ fn facts_anchor(facts: &Arc<crate::snapshot_prepared::PreparedFacts>) -> Anchor 
 
 fn chunk_key(chunk: &EntryChunk) -> usize {
     Arc::as_ptr(&chunk.entries) as usize
-}
-
-fn chunk_anchor(chunk: &Arc<EntryChunk>) -> Anchor {
-    Anchor::entries(chunk_key(chunk), chunk.charge)
 }
 
 fn entry_bytes(snapshot: &TranscriptSnapshot) -> usize {
@@ -1819,7 +1881,7 @@ pub(crate) struct StoreState {
     resolutions: Ledgered<String, ResolutionCursor>,
     locations: Ledgered<String, LocatedPath>,
     locates: Ledgered<String, LocateCursor>,
-    escaped_chunks: Table<usize, (Weak<ChunkRows>, MemoryCharge)>,
+    escaped_chunks: Table<usize, (ChunkAllocationOwner, MemoryCharge)>,
     recent_codex_raw_bytes: usize,
     locations_expiry: ExpiryIndex<String>,
     carried_expiry: ExpiryIndex<(SourceIdentity, String)>,
@@ -1993,42 +2055,43 @@ impl StoreState {
         }
     }
 
-    fn escaping<'a>(
-        &'a self,
-        chunks: &'a [Arc<EntryChunk>],
-    ) -> impl Iterator<Item = &'a Arc<EntryChunk>> + 'a {
-        chunks
-            .iter()
-            .filter(move |chunk| !self.escaped_chunks.contains_key(&chunk_key(chunk)))
+    fn escaping<'a>(&'a self, chunks: &'a [Arc<EntryChunk>]) -> impl Iterator<Item = Anchor> + 'a {
+        chunks.iter().flat_map(|chunk| [
+            Anchor::entries(chunk_key(chunk), chunk.rows_charge()),
+            Anchor::entries(Arc::as_ptr(chunk) as usize, MemoryCharge {
+                owned_capacity_bytes: chunk.metadata_bytes(),
+                opaque_dom_accounted_bytes: 0,
+            }),
+        ]).filter(|anchor| !self.escaped_chunks.contains_key(&anchor.id))
     }
 
     fn escape_growth(&self, chunks: &[Arc<EntryChunk>]) -> usize {
         self.escaped_chunks.growth(self.escaping(chunks).count())
-            + self
-                .ledger
-                .shared
-                .admission(self.escaping(chunks).map(chunk_anchor))
+            + self.ledger.shared.admission(self.escaping(chunks))
     }
 
     fn escape_chunks(&mut self, chunks: &[Arc<EntryChunk>]) {
-        let additional = self.escaping(chunks).count();
-        let anchors: Vec<_> = self.escaping(chunks).map(chunk_anchor).collect();
-        self.escaped_chunks.reserve(additional);
+        let anchors: Vec<_> = self.escaping(chunks).collect();
+        self.escaped_chunks.reserve(anchors.len());
         self.ledger.shared.reserve(anchors);
         for chunk in chunks {
-            let key = chunk_key(chunk);
-            if self.escaped_chunks.contains_key(&key) {
-                continue;
+            let rows = chunk_key(chunk);
+            if !self.escaped_chunks.contains_key(&rows) {
+                chunk.entries.ledger.arm(&self.ledger.queue, LedgerEvent::Chunk(rows));
+                let charge = chunk.rows_charge();
+                self.escaped_chunks.insert(rows, (ChunkAllocationOwner::Rows(Arc::downgrade(&chunk.entries)), charge));
+                self.ledger.shared.acquire(Anchor::entries(rows, charge));
             }
-            chunk
-                .entries
-                .ledger
-                .arm(&self.ledger.queue, LedgerEvent::Chunk(key));
-            self.escaped_chunks
-                .insert(key, (Arc::downgrade(&chunk.entries), chunk.charge));
-            self.ledger
-                .shared
-                .acquire(Anchor::entries(key, chunk.charge));
+            let metadata = Arc::as_ptr(chunk) as usize;
+            if !self.escaped_chunks.contains_key(&metadata) {
+                chunk.ledger.arm(&self.ledger.queue, LedgerEvent::Chunk(metadata));
+                let charge = MemoryCharge {
+                    owned_capacity_bytes: chunk.metadata_bytes(),
+                    opaque_dom_accounted_bytes: 0,
+                };
+                self.escaped_chunks.insert(metadata, (ChunkAllocationOwner::Metadata(Arc::downgrade(chunk)), charge));
+                self.ledger.shared.acquire(Anchor::entries(metadata, charge));
+            }
         }
     }
 
@@ -4799,11 +4862,9 @@ impl NativeStore {
                 }
             }
         }
-        for (chunk, charge) in state.escaped_chunks.values() {
-            if let Some(chunk) = chunk.upgrade() {
-                if allocations.insert(Arc::as_ptr(&chunk) as usize) {
-                    entries += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
-                }
+        for (id, (chunk, charge)) in state.escaped_chunks.iter() {
+            if chunk.strong_count() > 0 && allocations.insert(*id) {
+                entries += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
             }
         }
         GaugeTerms {
@@ -5026,11 +5087,13 @@ impl NativeStore {
                 + chunks.capacity() * size_of::<Arc<EntryChunk>>()
                 + fence.capacity(),
         ))
-        .chain(chunks.iter().map(|chunk| {
-            (
-                Arc::as_ptr(&chunk.entries) as usize,
-                Self::audit_chunk_bytes(chunk),
-            )
+        .chain(chunks.iter().flat_map(|chunk| {
+            let metadata = arc_mirror::<EntryChunk>()
+                + chunk.entry_charges.capacity() * size_of::<MemoryCharge>();
+            [
+                (Arc::as_ptr(chunk) as usize, metadata),
+                (Arc::as_ptr(&chunk.entries) as usize, Self::audit_chunk_bytes(chunk) - metadata),
+            ]
         }))
         .chain(codex_raw.iter().map(|raw| {
             (
@@ -5050,6 +5113,7 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_chunk_bytes(chunk: &EntryChunk) -> usize {
         let EntryChunk {
+            ledger: _,
             entries,
             start: _,
             charge: _,
@@ -5216,8 +5280,11 @@ impl NativeStore {
             registry_generation,
             entries,
             indexes,
+            source_chunks,
         } = record;
-        registry_generation.capacity()
+        source_chunks.as_ref().map_or(0, |chunks| {
+            arc_mirror::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
+        }) + registry_generation.capacity()
             + entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + indexes.capacity() * size_of::<(usize, usize)>()
     }
@@ -7355,11 +7422,8 @@ impl NativeStore {
         let waiter = {
             let mut state = self.lock_state();
             Self::prune(&mut state);
-            let cached = state
-                .latest
-                .get(&stamp.identity)
-                .filter(|snapshot| snapshot.stamp == stamp)
-                .cloned();
+            let cached = state.latest_source(&stamp.identity)
+                .filter(|snapshot| snapshot.stamp == stamp);
             if cached.is_some() {
                 usage[7] += 1;
             }
@@ -7400,16 +7464,18 @@ impl NativeStore {
                         self.config.read_step.min(stamp.size as usize)
                     };
                 self.admit_memory(&mut state, context, additional)?;
-                let previous = state
-                    .latest
-                    .get(&stamp.identity)
+                let previous = state.source_spine(&stamp.identity)
                     .filter(|old| {
                         old.event_count > 0
-                            && old.stamp.size < stamp.size
+                            && Self::matches_prefix(stamp, old.stamp)
                             && (old.provider == Provider::Claude
-                                || old.provider == Provider::Codex && old.codex_raw.is_some())
-                    })
-                    .cloned();
+                                || old.provider == Provider::Codex && old.codex_raw.is_some()
+                                    && old.stamp.size < stamp.size)
+                    });
+                let previous_chunks = previous.as_ref().and_then(|previous| {
+                    state.generations.get(&snapshot_key(previous))
+                        .and_then(|generation| generation.source_chunks.clone())
+                });
                 let previous_index_compatible = previous.as_ref().is_some_and(|previous| {
                     state
                         .generations
@@ -7420,7 +7486,11 @@ impl NativeStore {
                         })
                 });
                 if cached.is_none() {
-                    usage[if previous.is_some() { 5 } else { 4 }] += 1;
+                    usage[match previous.as_ref() {
+                        Some(previous) if previous.stamp.size < stamp.size => 5,
+                        Some(_) => 7,
+                        None => 4,
+                    }] += 1;
                 }
                 let slot = Arc::new(LoadSlot {
                     id: self.token("load"),
@@ -7438,6 +7508,11 @@ impl NativeStore {
                         pending_start: 0,
                         provider: None,
                         chunks: Vec::new(),
+                        source_chunks: Vec::new(),
+                        previous_chunks,
+                        published_chunks: None,
+                        reuse_next: None,
+                        reuse_prepared: false,
                         codex_raw: None,
                         codex_append: None,
                         count: 0,
@@ -7657,7 +7732,11 @@ impl NativeStore {
             let generation = load
                 .result
                 .as_ref()
-                .map(|snapshot| GenerationRecord::new(snapshot, &slot.registry_generation));
+                .map(|snapshot| {
+                    let mut record = GenerationRecord::new(snapshot, &slot.registry_generation);
+                    record.source_chunks = load.published_chunks.clone();
+                    record
+                });
             let publishing = generation.is_some();
             let pending_charge = if publishing {
                 0
@@ -7811,7 +7890,7 @@ impl NativeStore {
                 pledge.bytes = 0;
             }
             if fresh && !state.holds_latest(&slot.stamp.identity, &source) {
-                let latest = state.latest.growth_for(&slot.stamp.identity);
+                let latest = state.latest_growth(&slot.stamp.identity, &source);
                 if self
                     .admit_memory(&mut state, &waiter.context, latest)
                     .is_ok()
@@ -7966,6 +8045,9 @@ impl NativeStore {
                     .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
             })
             .collect();
+        let shared_metadata: HashSet<_> = load.previous.iter()
+            .flat_map(|snapshot| snapshot.chunks.iter().map(|chunk| Arc::as_ptr(chunk) as usize))
+            .collect();
         let charge = load.pending.capacity()
             + load.codex_raw.as_ref().map_or(0, |raw| {
                 if load
@@ -7997,14 +8079,13 @@ impl NativeStore {
             + load.fence.capacity()
             + load.session_id.as_ref().map_or(0, String::capacity)
             + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
-            + load
-                .chunks
-                .iter()
-                .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
-                .map(|chunk| {
-                    chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
-                })
-                .sum::<usize>();
+            + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
+            + load.chunks.iter().map(|chunk| {
+                let rows = chunk.rows_charge();
+                usize::from(!shared_metadata.contains(&(Arc::as_ptr(chunk) as usize))) * chunk.metadata_bytes()
+                    + if shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)) { 0 }
+                    else { rows.owned_capacity_bytes + rows.opaque_dom_accounted_bytes }
+            }).sum::<usize>();
         let prior_indexes: HashSet<_> = load
             .previous
             .as_ref()
@@ -8026,6 +8107,10 @@ impl NativeStore {
         load.pending_start = 0;
         load.provider = None;
         load.chunks = Vec::new();
+        load.source_chunks = Vec::new();
+        load.published_chunks = None;
+        load.reuse_next = None;
+        load.reuse_prepared = false;
         load.codex_raw = None;
         load.codex_append = None;
         load.count = 0;
@@ -8337,6 +8422,11 @@ impl NativeStore {
                 }
                 let fence = std::mem::take(&mut load.prefix_fence);
                 if fence == prior_fence {
+                    if previous.stamp.identity.window_base != slot.stamp.identity.window_base {
+                        load.prefix_checked = true;
+                        return Ok(());
+                    }
+                    load.reuse_prepared = true;
                     if previous.provider == Provider::Codex {
                         load.pending = Vec::new();
                         load.offset = previous.stamp.size;
@@ -8357,6 +8447,12 @@ impl NativeStore {
                             .len()
                             .saturating_sub(usize::from(previous.provisional_tail));
                         load.chunks = previous.chunks[..keep].to_vec();
+                        if let Some(spans) = &load.previous_chunks {
+                            self.extend_load_reservation(
+                                slot, context, keep * size_of::<SourceChunkSpan>(),
+                            )?;
+                            load.source_chunks = spans[..keep].to_vec();
+                        }
                         load.count = load.chunks.iter().map(|chunk| chunk.entries.len()).sum();
                         load.committed = previous.committed_bytes;
                         load.offset = previous.committed_bytes;
@@ -8374,15 +8470,22 @@ impl NativeStore {
                 } else {
                     load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
                     load.previous = None;
+                    load.previous_chunks = None;
                     usage[4] += 1;
                 }
                 return Ok(());
             }
         }
         if load.window_start.is_none() {
-            let unscanned = slot.stamp.identity.window_base - load.window_scanned;
-            let located = if unscanned == 0 {
-                Some(0)
+            let base = slot.stamp.identity.window_base;
+            let floor = load.previous_chunks.as_ref().and_then(|spans| {
+                let at = spans.partition_point(|span| span.start <= base).checked_sub(1)?;
+                let span = spans[at];
+                (base <= span.end).then_some(if base == span.end { span.end } else { span.start })
+            }).unwrap_or(0);
+            let unscanned = base - load.window_scanned;
+            let located = if unscanned == floor {
+                Some(floor)
             } else {
                 if load.window_scanned > self.config.entry as u64 {
                     return Err(SnapshotError::new(
@@ -8392,7 +8495,7 @@ impl NativeStore {
                 }
                 let count = (read_bound as u64)
                     .min((64 * 1024u64).saturating_add(load.window_scanned))
-                    .min(unscanned);
+                    .min(unscanned - floor);
                 if count == 0 {
                     return Err(source_read_limit());
                 }
@@ -8445,13 +8548,19 @@ impl NativeStore {
             usage[6] += 1;
             return Ok(());
         }
+        if self.reuse_source_chunk(slot, load, context)? {
+            return Ok(());
+        }
         if !load.decoded {
             if load.offset < slot.stamp.size
                 && (load.pending.is_empty()
                     || load.provider == Some(Provider::Codex)
                     || !load.pending.contains(&b'\n'))
             {
-                let count = (slot.stamp.size - load.offset).min(read_bound as u64) as usize;
+                let stop = load.reuse_next.map_or(slot.stamp.size, |index| {
+                    load.previous_chunks.as_ref().unwrap()[index].start
+                });
+                let count = (stop - load.offset).min(read_bound as u64) as usize;
                 let growth = vec_growth(&load.pending, count);
                 if growth > read_bound {
                     self.extend_load_reservation(slot, context, growth - read_bound)?;
@@ -8585,11 +8694,21 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
+                    self.extend_load_reservation(
+                        slot, context, vec_growth(&load.source_chunks, 1),
+                    )?;
+                    load.source_chunks.push(SourceChunkSpan {
+                        start: load.pending_start,
+                        end: load.pending_start + consumed as u64,
+                    });
                     load.chunks
                         .push(Arc::new(EntryChunk::retaining(load.count, entries, arenas)));
                     load.count += count;
                 }
                 if consumed > 0 {
+                    if let Some(span) = load.source_chunks.last_mut() {
+                        span.end = load.pending_start + consumed as u64;
+                    }
                     load.pending.drain(..consumed);
                     load.pending_start += consumed as u64;
                     load.committed = load.pending_start;
@@ -8642,6 +8761,13 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
+                    self.extend_load_reservation(
+                        slot, context, vec_growth(&load.source_chunks, 1),
+                    )?;
+                    load.source_chunks.push(SourceChunkSpan {
+                        start: load.pending_start,
+                        end: slot.stamp.size,
+                    });
                     load.chunks
                         .push(Arc::new(EntryChunk::retaining(load.count, tail, arenas)));
                     load.count += count;
@@ -8708,6 +8834,10 @@ impl NativeStore {
                 .to_string_lossy()
                 .into_owned()
         });
+        if load.provider == Some(Provider::Claude) && load.source_chunks.len() == load.chunks.len() {
+            self.extend_load_reservation(slot, context, arc_bytes::<Vec<SourceChunkSpan>>())?;
+            load.published_chunks = Some(Arc::new(std::mem::take(&mut load.source_chunks)));
+        }
         load.result = Some(Arc::new(TranscriptSnapshot {
             ledger: LedgerHook::default(),
             id: self.token("snapshot"),
@@ -11172,6 +11302,7 @@ impl NativeStore {
 include!("snapshot_prepared_service.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
+include!("snapshot_spine.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -20617,8 +20748,8 @@ mod tests {
         );
         let snapshot = store.pin(handle(&response), &owner).unwrap();
         let rows = Arc::clone(&snapshot.chunks[0].entries);
-        let rows_bytes = snapshot.chunks[0].charge.owned_capacity_bytes
-            + snapshot.chunks[0].charge.opaque_dom_accounted_bytes;
+        let rows_charge = snapshot.chunks[0].rows_charge();
+        let rows_bytes = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
         release_lease(&store, handle(&response), &owner);
         store.lock_state().retain_latest(|_, _| false);
         drop(snapshot);
@@ -21310,4 +21441,6 @@ mod tests {
         assert_eq!(merged[14] - before[14], 128);
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
+    include!("snapshot_spine_tests.rs");
+
 }

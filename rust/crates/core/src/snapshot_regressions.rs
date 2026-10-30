@@ -465,7 +465,7 @@ fn joined_waiters_publish_a_cold_generation_once_while_its_parser_still_classifi
     assert!(Arc::ptr_eq(&pin(&store, &third, &c), &latest));
     assert_eq!(
         store.state.lock().unwrap().escaped_chunks.len(),
-        latest.chunks.len()
+        2 * latest.chunks.len()
     );
     store.assert_conserved();
 }

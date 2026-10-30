@@ -1517,7 +1517,8 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
     let owner = context_for("escaped", false);
     let (handle, snapshot) = acquired(&store, &source.path, &owner);
     assert_eq!(snapshot.chunks.len(), 1);
-    let charge = chunk_charge(&snapshot.chunks[0]);
+    let rows_charge = snapshot.chunks[0].rows_charge();
+    let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
     let rows = Arc::clone(&snapshot.chunks[0].entries);
     assert_eq!(rows.len(), 1);
     assert!(matches!(&rows[0], Entry::User(user) if user.meta.uuid == "escaped"));
@@ -1535,12 +1536,52 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
 }
 
 #[test]
+fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocation() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = fast_store();
+    let owner = context_for("spine-wrapper-escape", false);
+    let (whole_handle, full) = acquired(&store, &source.path, &owner);
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    let tail_handle = ok_handle(&response);
+    let tail = store.pin(&tail_handle, &owner).unwrap();
+    let (original, selected) = tail.chunks.iter().find_map(|selected| {
+        full.chunks.iter().find(|original| Arc::ptr_eq(&original.entries, &selected.entries))
+            .map(|original| (Arc::clone(original), Arc::clone(selected)))
+    }).expect("the overlapping views share rows");
+    assert!(!Arc::ptr_eq(&original, &selected));
+    let rows = Arc::clone(&original.entries);
+    let charge = original.rows_charge();
+    let rows_bytes = charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+    let original_metadata = original.metadata_bytes();
+    let selected_metadata = selected.metadata_bytes();
+    release_lease(&store, &whole_handle, &owner);
+    release_lease(&store, &tail_handle, &owner);
+    drop(full);
+    drop(tail);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes + original_metadata + selected_metadata);
+    drop(original);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes + selected_metadata);
+    drop(selected);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes);
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
 fn observations_under_one_guard_drain_deaths_after_the_lock() {
     let source = LedgerSource::new(&line("guarded"));
     let store = fast_store();
     let owner = context_for("guarded", false);
     let (orphan, replacement) = orphaned(&store, &source, &owner);
-    let charge = chunk_charge(&orphan.chunks[0]);
+    let rows_charge = orphan.chunks[0].rows_charge();
+    let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
     let rows = Arc::clone(&orphan.chunks[0].entries);
     let mut state = store.lock_state();
     drop(orphan);
@@ -3814,10 +3855,11 @@ fn refused_publication_keeps_the_parsed_result_unpublished_until_the_retry_admit
         {
             let state = refused.store.lock_state();
             assert!(state.generations.contains_key(&snapshot_key(&parsed)));
-            assert_eq!(state.escaped_chunks.len(), parsed.chunks.len());
+            assert_eq!(state.escaped_chunks.len(), 2 * parsed.chunks.len());
             assert_eq!(slot.ledgered_bytes(), 0);
         }
-        let charge = chunk_charge(&parsed.chunks[0]);
+        let rows_charge = parsed.chunks[0].rows_charge();
+        let charge = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
         let rows = Arc::clone(&parsed.chunks[0].entries);
         release_lease(&refused.store, &handle, &refused.owner);
         drop(pinned);
@@ -8871,6 +8913,11 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
         pending_start: _,
         provider: _,
         chunks,
+        source_chunks,
+        previous_chunks: _,
+        published_chunks: _,
+        reuse_next: _,
+        reuse_prepared: _,
         codex_raw,
         codex_append,
         count: _,
@@ -8900,6 +8947,7 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
     );
     assert!(codex_raw.is_none() && codex_append.is_none());
     pending.capacity()
+        + source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + origin_fence.capacity()
         + seal_fence.capacity()
         + prefix_fence.capacity()
