@@ -71,6 +71,9 @@ jobs:
       - name: Test location traversal on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_
 
+      - name: Measure source cache pressure on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- pressure_reclaims cache_pressure_keeps shared_cache_owners --nocapture
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
