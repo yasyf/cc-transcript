@@ -1189,7 +1189,7 @@ impl SourceCatalog {
             if let Some((status,reason)) = &fresh.issue {
                 if *status != Status::Missing { return Err(SnapshotError::new(*status,reason)); }
             }
-            let old = match check.kind {
+            let old: &CatalogBinding = match check.kind {
                 CatalogCheckKind::Root(index) => &self.roots[index].binding,
                 CatalogCheckKind::Directory(identity) => &self.directories.get(&identity).expect("catalog check directory").observed,
                 CatalogCheckKind::Edge(identity,index) => &self.directories.get(&identity).expect("catalog parent").edges[index].binding,
@@ -1211,13 +1211,18 @@ impl SourceCatalog {
                 CatalogCheckKind::Edge(identity,index) => self.directories.get(&identity).expect("prefix parent").edges[index].unchanged(&fresh),
                 _ => old.unchanged(&fresh),
             };
-            if unchanged && !uncertain {
-                if fresh.directory {
-                    budget.reserve(set_growth(&query.seen_directories,1))?;
-                    query.seen_directories.insert(fresh.stamp.expect("certified prefix directory").identity);
-                }
-                continue;
-            }
+            if unchanged && !uncertain { continue; }
+            let bridge = matches!(check.kind,CatalogCheckKind::Directory(_)) && fresh.directory
+                && ((query.frames.is_empty() && query.floor.is_none() && !query.used_name_stream) || query.cache_bridge);
+            let bridge_binding = if bridge {
+                budget.reserve(fresh.payload_bytes())?;
+                Some(fresh.clone())
+            } else { None };
+            let bridge_order = if bridge {
+                let order = query.validated_after.as_ref().expect("changed prefix position");
+                budget.reserve(order.capacity() * size_of::<usize>())?;
+                Some(order.clone())
+            } else { None };
             match check.kind {
                 CatalogCheckKind::Root(index) => {
                     if uncertain && old.unchanged(&fresh) {
@@ -1235,6 +1240,19 @@ impl SourceCatalog {
             self.sync_routes(budget)?;
             query.validated_after = None;
             query.choices_ready = false;
+            if let Some((order,binding)) = bridge_order.zip(bridge_binding) {
+                self.observe_cached_prefix(query,&order,budget)?;
+                let depth = query.frames.len();
+                self.admit_observation_frame(store,path,order,&binding,query,budget)?;
+                query.cache_bridge = true;
+                query.cache_bridge_depth = (query.frames.len() > depth).then_some(depth);
+                query.observation_started = true;
+                query.generation_seen = Some(self.generation_version);
+            } else if !query.frames.is_empty() {
+                query.cache_bridge = false;
+                query.cache_bridge_depth = None;
+                query.observation_started = true;
+            }
             return Ok(None);
         }
     }

@@ -239,6 +239,7 @@ impl NativeStore {
                 return Err(SnapshotError::new(Status::StaleCursor,"location catalog owner changed"));
             }
             query.catalog_owner = Some(owner);
+            query.retirement_hook.arm(&self.lock_state().ledger.queue,LedgerEvent::Catalog(owner));
         }
         let mut catalog = {
             let mut state = self.lock_state();

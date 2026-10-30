@@ -2091,6 +2091,17 @@ impl StoreState {
                         self.release_escaped_chunk(chunk);
                     }
                 }
+                LedgerEvent::Catalog(identity) => {
+                    if let Some(owner) = self.catalog_owners.get(&identity) {
+                        if let Some(record) = self.catalogs.get_mut(owner.key.as_ref()) {
+                            let mut cell = record.cell.lock().expect("catalog retirement");
+                            if let CatalogCell::Idle(catalog) = &mut *cell {
+                                catalog.prune_retired();
+                                record.accounted.store(catalog.charge() - size_of::<SourceCatalog>(),Ordering::Release);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -4978,6 +4989,7 @@ impl NativeStore {
         state
             .locates
             .retain(|_, cursor| cursor.expires > now && cursor.limits.deadline_unix_ms > now);
+        state.drain();
         state.leases.retain(|_, lease| lease.expires > now);
         state
             .waiters
@@ -5964,6 +5976,7 @@ impl NativeStore {
             + query.frames.capacity() * size_of::<CatalogObservationFrame>()
             + query.frames.iter().map(|frame| frame.raw_parent.capacity() + frame.order.capacity() * size_of::<usize>()).sum::<usize>()
             + query.seen_directories.capacity() * size_of::<SourceIdentity>()
+            + query.seen_certified_through.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
@@ -7131,6 +7144,8 @@ impl NativeStore {
                     }
                     if locate.context["authority"] != context["authority"] {
                         locate.query.observation_started = true;
+                        locate.query.cache_bridge = false;
+                        locate.query.cache_bridge_depth = None;
                     }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
@@ -10997,11 +11012,17 @@ impl NativeStore {
                 floor: None,
                 validated_after: None,
                 observation_started: false,
+                used_name_stream: false,
+                cache_bridge: false,
+                cache_bridge_depth: None,
+                seen_certified_through: None,
                 next_observation_root: roots.len(),
                 frames: Vec::new(),
+                frame_bytes: 0,
                 seen_directories: HashSet::new(),
                 generation_seen: None,
                 catalog_owner: None,
+                retirement_hook: LedgerHook::default(),
                 emitted: 0,
                 output_bytes: 0,
                 finished: false,
