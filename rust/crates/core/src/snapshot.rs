@@ -5961,14 +5961,9 @@ impl NativeStore {
                 .validated_after
                 .as_ref()
                 .map_or(0, |order| order.capacity() * size_of::<usize>())
-            + query
-                .capabilities
-                .keys()
-                .map(|order| {
-                    size_of::<(Vec<usize>, CatalogCapability)>()
-                        + order.capacity() * size_of::<usize>()
-                })
-                .sum::<usize>()
+            + query.frames.capacity() * size_of::<CatalogObservationFrame>()
+            + query.frames.iter().map(|frame| frame.raw_parent.capacity() + frame.order.capacity() * size_of::<usize>()).sum::<usize>()
+            + query.seen_directories.capacity() * size_of::<SourceIdentity>()
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
@@ -7134,12 +7129,8 @@ impl NativeStore {
                         drop(locate);
                         return Err(error);
                     }
-                    if locate.context["authority"]["kind"] != context["authority"]["kind"]
-                        || (context["authority"]["kind"].as_str() == Some("restricted_roots")
-                            && locate.context["authority"]["roots"]
-                                != context["authority"]["roots"])
-                    {
-                        locate.query.authority_epoch += 1;
+                    if locate.context["authority"] != context["authority"] {
+                        locate.query.observation_started = true;
                     }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
@@ -11004,12 +10995,11 @@ impl NativeStore {
                 choices_ready: false,
                 choice_version: 0,
                 floor: None,
-                frontier: None,
                 validated_after: None,
-                final_hold: false,
-                authority_epoch: 0,
-                capabilities: BTreeMap::new(),
-                capability_bytes: 0,
+                observation_started: false,
+                next_observation_root: roots.len(),
+                frames: Vec::new(),
+                seen_directories: HashSet::new(),
                 generation_seen: None,
                 catalog_owner: None,
                 emitted: 0,
@@ -11548,6 +11538,7 @@ mod tests {
     include!("snapshot_catalog_tests.rs");
     include!("snapshot_public_catalog_tests.rs");
     include!("snapshot_public_zero_hit_tests.rs");
+    include!("snapshot_public_observation_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {

@@ -14954,3 +14954,4 @@ fn an_oversized_text_source_upgrades_to_exceeded_on_demand() {
 }
 
 include!("snapshot_public_review_tests.rs");
+include!("snapshot_public_observation_ledger_tests.rs");

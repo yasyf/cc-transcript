@@ -349,6 +349,7 @@ impl NativeStore {
         })();
         {
             let mut state = self.lock_state();
+            if let Some(catalog) = catalog.as_mut() { catalog.prune_retired(); }
             let new_bytes = catalog.as_ref().map_or(0, |catalog| catalog.charge() - size_of::<SourceCatalog>());
             let added = new_bytes.saturating_sub(old_bytes);
             assert!(added <= reservation.bytes, "source catalog outgrew its admitted allocation");

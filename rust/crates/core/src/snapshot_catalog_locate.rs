@@ -1,3 +1,13 @@
+enum CatalogCachePublication {
+    Uncertified,
+    Complete { generation_version: u64 },
+}
+
+enum CatalogPrefixCertificate<'a> {
+    Closed { generation_version: u64, through: &'a [usize] },
+    Complete { generation_version: u64 },
+}
+
 struct CatalogLocateQuery {
     ids: Vec<String>,
     wanted: HashSet<String>,
@@ -15,28 +25,44 @@ struct CatalogLocateQuery {
     choices_ready: bool,
     choice_version: u64,
     floor: Option<Vec<usize>>,
-    frontier: Option<CatalogQueryFrontier>,
     validated_after: Option<Vec<usize>>,
-    final_hold: bool,
-    authority_epoch: u64,
-    capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
-    capability_bytes: usize,
+    observation_started: bool,
+    next_observation_root: usize,
+    frames: Vec<CatalogObservationFrame>,
+    seen_directories: HashSet<SourceIdentity>,
     generation_seen: Option<u64>,
     catalog_owner: Option<usize>,
 }
 
-#[derive(Clone, Copy)]
-enum CatalogQueryFrontier {
-    Directory { identity: SourceIdentity, generation: u64, route_digest: [u8;32] },
-    Root { index: usize, stamp: SourceStamp, canonical_digest: [u8;32] },
+struct CatalogObservationFrame {
+    generation: u64,
+    lease: Arc<()>,
+    identity: SourceIdentity,
+    next_name: usize,
+    raw_parent: PathBuf,
+    order: Vec<usize>,
 }
 
-struct CatalogCapability {
-    canonical_digest: [u8;32],
-    route_digest: [u8;32],
-    directory_generation: u64,
-    stamp: SourceStamp,
-    authority_epoch: u64,
+impl CatalogObservationFrame {
+    fn owned_bytes(&self) -> usize {
+        self.raw_parent.capacity() + self.order.capacity() * size_of::<usize>()
+    }
+}
+
+struct CatalogQueryObservation {
+    binding: CatalogBinding,
+}
+
+impl CatalogQueryObservation {
+    fn classify(store: &NativeStore, path: &Path, parent: Option<&Path>, context: &Value) -> Result<(Self,bool),SnapshotError> {
+        CatalogBinding::entry(store,path,parent,context,false).map(|(binding,shared)| (Self { binding },shared))
+    }
+}
+
+enum CatalogObservationStep {
+    Candidate { id: String, path: PathBuf, stamp: SourceStamp },
+    Progress,
+    End,
 }
 
 struct CatalogLocatePage {
@@ -69,7 +95,9 @@ impl CatalogLocateQuery {
             + self.choices.capacity() * size_of::<Reverse<CatalogChoice>>() + self.choice_bytes
             + self.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
-            + self.capability_bytes
+            + self.frames.capacity() * size_of::<CatalogObservationFrame>()
+            + self.frames.iter().map(CatalogObservationFrame::owned_bytes).sum::<usize>()
+            + self.seen_directories.capacity() * size_of::<SourceIdentity>()
     }
 
     fn push_choice(&mut self, choice: CatalogChoice, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
@@ -110,55 +138,6 @@ impl CatalogLocateQuery {
             held.extend_from_slice(order);
             if let Some(edge) = edge { held.push(edge); }
         }
-        Ok(())
-    }
-
-    fn remember_capability(&mut self, order: Vec<usize>, path: &Path, generation: u64, binding: &CatalogBinding,
-        budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
-        let Some((canonical,stamp)) = binding.canonical.as_ref().zip(binding.stamp) else { return Ok(()); };
-        let capability = CatalogCapability { canonical_digest:Sha256::digest(canonical.as_os_str().as_encoded_bytes()).into(),
-            route_digest:Sha256::digest(path.as_os_str().as_encoded_bytes()).into(), directory_generation:generation,
-            stamp, authority_epoch:self.authority_epoch };
-        if let Some(previous) = self.capabilities.get_mut(order.as_slice()) { *previous = capability; }
-        else {
-            budget.reserve(size_of::<(Vec<usize>,CatalogCapability)>())?;
-            self.capability_bytes += size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
-            self.capabilities.insert(order,capability);
-        }
-        Ok(())
-    }
-
-    fn reuses_capability(&self, order: &[usize], path: &Path, generation: u64, canonical: &Path, binding: &CatalogBinding) -> bool {
-        self.capabilities.get(order).is_some_and(|capability|
-            capability.authority_epoch < self.authority_epoch
-                && capability.directory_generation == generation
-                && capability.route_digest == <[u8;32]>::from(Sha256::digest(path.as_os_str().as_encoded_bytes()))
-                && binding.stamp.is_some_and(|stamp| stamp.identity == capability.stamp.identity
-                    && (!binding.directory || stamp == capability.stamp))
-                && capability.canonical_digest == <[u8;32]>::from(Sha256::digest(canonical.as_os_str().as_encoded_bytes())))
-    }
-
-    fn rewind_generation(&mut self) {
-        self.floor = None; self.frontier = None; self.validated_after = None;
-        self.choices_ready = false; self.final_hold = false;
-    }
-
-    fn rewind_parent(&mut self, parent: &Vec<usize>, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
-        let mut removed = 0;
-        self.capabilities.retain(|order,_| {
-            if order.starts_with(parent) {
-                removed += size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
-                false
-            } else { true }
-        });
-        self.capability_bytes -= removed;
-        let previous = if let Some((order,_)) = self.capabilities.range::<Vec<usize>,_>(
-            (std::ops::Bound::Unbounded,std::ops::Bound::Excluded(parent))).next_back() {
-            budget.reserve(order.len() * size_of::<usize>())?;
-            Some(order.clone())
-        } else { None };
-        self.rewind_generation();
-        if let Some(previous) = previous { self.position(&previous,None,budget)?; }
         Ok(())
     }
 
@@ -265,111 +244,16 @@ impl SourceCatalog {
         Ok(choices)
     }
 
-    fn public_query_frontier(&self, query: &CatalogLocateQuery) -> Option<CatalogQueryFrontier> {
-        let floor = query.floor.as_ref()?;
-        for length in (1..=floor.len()).rev() {
-            let Some(check) = self.checks.get(&floor[..length]) else { continue; };
-            let identity = match check.kind {
-                CatalogCheckKind::Root(index) => {
-                    let root = &self.roots[index];
-                    let stamp = root.binding.stamp?;
-                    if !root.binding.directory {
-                        return Some(CatalogQueryFrontier::Root { index, stamp,
-                            canonical_digest:Sha256::digest(root.binding.canonical.as_ref()?.as_os_str().as_encoded_bytes()).into() });
-                    }
-                    stamp.identity
-                }
-                CatalogCheckKind::Directory(identity) => identity,
-                CatalogCheckKind::Edge(identity,index) => {
-                    let edge = &self.directories.get(&identity)?.edges[index];
-                    if edge.binding.directory { edge.binding.stamp?.identity } else { identity }
-                }
-                CatalogCheckKind::ReadIssue(identity) => identity,
-            };
-            let route = self.route_index.get(&identity)?;
-            let node = self.directories.get(&identity)?;
-            return Some(CatalogQueryFrontier::Directory { identity, generation:node.generation,
-                route_digest:Sha256::digest(route.path.as_os_str().as_encoded_bytes()).into() });
-        }
-        None
-    }
-
-    fn public_frontier_unchanged(&self, query: &CatalogLocateQuery) -> bool {
-        let Some(floor) = query.floor.as_ref() else { return false; };
-        match query.frontier {
-            Some(CatalogQueryFrontier::Directory { identity, generation, route_digest }) =>
-                self.directories.get(&identity).zip(self.route_index.get(&identity)).is_some_and(|(node,route)|
-                    node.generation == generation && floor.starts_with(&route.order)
-                        && route_digest == <[u8;32]>::from(Sha256::digest(route.path.as_os_str().as_encoded_bytes()))),
-            Some(CatalogQueryFrontier::Root { index, stamp, canonical_digest }) => {
-                let root = &self.roots[index];
-                root.binding.stamp == Some(stamp) && root.binding.canonical.as_ref().is_some_and(|path|
-                    canonical_digest == <[u8;32]>::from(Sha256::digest(path.as_os_str().as_encoded_bytes())))
-            }
-            None => false,
-        }
-    }
-
-    fn public_authority_candidate(&self, query: &CatalogLocateQuery, bound: Option<&Vec<usize>>,
-        cancel: &Cancellation, deadline: u64) -> Result<Option<CatalogCandidate>, SnapshotError> {
-        if query.authority_epoch == 0 { return Ok(None); }
-        let Some(after) = query.floor.as_ref().into_iter().chain(query.validated_after.as_ref()).max() else { return Ok(None); };
-        if bound.is_some_and(|bound| after >= bound) { return Ok(None); }
-        let mut best: Option<CatalogCandidate> = None;
-        for length in (1..=after.len()).rev() {
-            cancel.check(deadline)?;
-            let Some(check) = self.checks.get(&after[..length]) else { continue; };
-            let identity = match check.kind {
-                CatalogCheckKind::Root(index) if self.roots[index].binding.directory =>
-                    self.roots[index].binding.stamp.expect("catalog authority root stamp").identity,
-                CatalogCheckKind::Directory(identity) => identity,
-                CatalogCheckKind::Edge(identity,index) => {
-                    let edge = &self.directories.get(&identity).expect("catalog authority parent").edges[index];
-                    if !edge.binding.directory { continue; }
-                    edge.binding.stamp.expect("catalog authority child stamp").identity
-                }
-                _ => continue,
-            };
-            let route = self.route_index.get(&identity).expect("catalog authority route");
-            if route.order != after[..length] { continue; }
-            let node = self.directories.get(&identity).expect("catalog authority directory");
-            let start = after.get(length).map_or(0, |index| index + 1);
-            let end = bound.filter(|bound| bound.starts_with(&route.order))
-                .map_or(node.edges.len(), |bound| bound.get(length).map_or(0, |index| index + 1))
-                .min(node.edges.len());
-            for index in start..end {
-                cancel.check(deadline)?;
-                let edge = &node.edges[index];
-                if edge.binding.directory || node.symlinks.binary_search(&index).is_ok() || edge.binding.issue.is_some() { continue; }
-                let candidate = CatalogCandidate { directory:identity, edge:index };
-                if best.is_none_or(|best| self.public_authority_order(candidate).cmp(self.public_authority_order(best)).is_lt()) {
-                    best = Some(candidate);
-                }
-                break;
-            }
-        }
-        Ok(best)
-    }
-
-    fn public_authority_order(&self, candidate: CatalogCandidate) -> impl Iterator<Item=usize> + '_ {
-        self.route_index.get(&candidate.directory).expect("catalog authority order").order.iter().copied()
-            .chain(std::iter::once(candidate.edge))
-    }
-
     fn locate_page(&mut self, store: &NativeStore, _ids: &[Value], context: &Value,
         cancel: &Cancellation, remaining: &mut WorkLimits, usage: &mut [u64;20],
         query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogLocatePage, SnapshotError> {
-        if query.generation_seen.is_some_and(|generation| generation != self.generation_version) {
-            if self.public_frontier_unchanged(query) {
-                query.validated_after = None;
-                query.choices_ready = false;
-                query.final_hold = false;
-            } else {
-                query.rewind_generation();
-            }
+        if !query.observation_started && query.generation_seen.is_some_and(|version| version != self.generation_version) {
+            query.validated_after = None;
+            query.choices_ready = false;
         }
         query.generation_seen = Some(self.generation_version);
         let mut updates = Vec::new();
+        let mut parent_hint = None;
         let stop = usage[17].saturating_add(store.config.event_step.min(remaining.max_discovery_entries) as u64);
         loop {
             cancel.check(remaining.deadline_unix_ms)?;
@@ -381,65 +265,243 @@ impl SourceCatalog {
                 query.queue_unfound("incomplete",budget)?;
                 continue;
             }
-            self.sync_routes(budget)?;
-            if !query.choices_ready || query.choice_version != self.candidate_version {
-                let choices = self.choices(&query.wanted,cancel,remaining.deadline_unix_ms,budget)?;
-                query.choices.clear(); query.choice_bytes = 0;
-                for choice in choices {
-                    if !query.found.contains(&choice.id) && query.floor.as_ref().is_none_or(|floor| choice.order > *floor) {
-                        query.push_choice(choice,budget)?;
+            if !query.observation_started {
+                self.sync_routes(budget)?;
+                if !query.choices_ready || query.choice_version != self.candidate_version {
+                    let choices = self.choices(&query.wanted,cancel,remaining.deadline_unix_ms,budget)?;
+                    query.choices.clear(); query.choice_bytes = 0;
+                    for choice in choices {
+                        if !query.found.contains(&choice.id) && query.floor.as_ref().is_none_or(|floor| choice.order > *floor) {
+                            query.push_choice(choice,budget)?;
+                        }
                     }
+                    query.choices_ready = true;
+                    query.choice_version = self.candidate_version;
                 }
-                query.choices_ready = true;
-                query.choice_version = self.candidate_version;
-            }
-            if let Some(choice) = query.pop_choice() {
-                if query.found.contains(&choice.id) { continue; }
-                if self.frontier_closed(&choice.order) {
-                    if !self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,Some(&choice.order),query,budget)? {
-                        query.push_choice(choice,budget)?;
+                if let Some(choice) = query.pop_choice() {
+                    if query.found.contains(&choice.id) { continue; }
+                    if self.frontier_closed(&choice.order) {
+                        if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,Some(&choice.order),query,budget)?.is_none() {
+                            query.push_choice(choice,budget)?;
+                            continue;
+                        }
+                        let stamp = store.location_candidate(&choice.path,&query.scope,context)?;
+                        self.observe_cached_prefix(query,&choice.order,budget)?;
+                        query.position(&choice.order,None,budget)?;
+                        if let Some(stamp) = stamp {
+                            query.queue_candidate(store,&choice.id,choice.path,stamp,&mut updates,budget)?;
+                        }
                         continue;
                     }
-                    let stamp = store.location_candidate(&choice.path,&query.scope,context)?;
-                    query.position(&choice.order,None,budget)?;
-                    query.frontier = self.public_query_frontier(query);
-                    if let Some(stamp) = stamp {
-                        query.queue_candidate(store,&choice.id,choice.path,stamp,&mut updates,budget)?;
-                    }
+                    query.push_choice(choice,budget)?;
+                }
+                if remaining.max_discovery_entries == 0 {
+                    query.exhausted = true; query.finished = true;
+                    query.queue_unfound("incomplete",budget)?;
                     continue;
                 }
-                query.push_choice(choice,budget)?;
+                if self.complete {
+                    if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,None,query,budget)?.is_none() { continue; }
+                    if !self.complete { continue; }
+                    self.publication = CatalogCachePublication::Complete { generation_version:self.generation_version };
+                    query.finished = true;
+                    query.queue_unfound("missing",budget)?;
+                    continue;
+                }
+                query.observation_started = true;
             }
             if remaining.max_discovery_entries == 0 {
                 query.exhausted = true; query.finished = true;
                 query.queue_unfound("incomplete",budget)?;
                 continue;
             }
-            if self.complete {
-                if !query.final_hold {
-                    query.validated_after = None;
-                    query.final_hold = true;
-                }
-                if !self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,None,query,budget)? { continue; }
-                if !self.complete { continue; }
-                query.finished = true;
-                query.queue_unfound("missing",budget)?;
-                continue;
-            }
             if usage[17] >= stop { break; }
-            let frontier = self.frontier_order(budget)?;
-            if !self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,frontier.as_ref(),query,budget)? { continue; }
             let before = usage[17];
-            let choice = self.advance_until(store,cancel,remaining.deadline_unix_ms,
-                (stop - usage[17]) as usize,usage,budget,Some(query))?;
+            let observation = self.observe_next(store,context,cancel,remaining.deadline_unix_ms,query,usage,&mut parent_hint,budget)?;
             remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
-            query.choice_version = self.candidate_version;
-            query.generation_seen = Some(self.generation_version);
-            if let Some(choice) = choice { query.push_choice(choice,budget)?; }
+            match observation {
+                CatalogObservationStep::Candidate { id,path,stamp } => query.queue_candidate(store,&id,path,stamp,&mut updates,budget)?,
+                CatalogObservationStep::Progress => {},
+                CatalogObservationStep::End => {
+                    query.finished = true;
+                    query.queue_unfound("missing",budget)?;
+                }
+            }
         }
         cancel.check(remaining.deadline_unix_ms)?;
         store.remember_locations(updates.iter().map(|(id,path)| (id,path)),context);
         cancel.check(remaining.deadline_unix_ms)?;
         Ok(query.page())
+    }
+}
+
+impl SourceCatalog {
+    fn admit_observation_frame(&mut self, store: &NativeStore, path: PathBuf, order: Vec<usize>,
+        binding: &CatalogBinding, query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let stamp = binding.stamp.expect("observed directory stamp");
+        if query.seen_directories.contains(&stamp.identity) { return Ok(()); }
+        let canonical = binding.canonical.as_ref().expect("observed directory canonical");
+        budget.reserve(set_growth(&query.seen_directories,1) + vec_growth(&query.frames,1)
+            + path.capacity() + order.capacity() * size_of::<usize>()
+            + self.route_index.growth_for(&stamp.identity) + path.capacity() + order.capacity() * size_of::<usize>()
+            + Self::check_growth(order.len()))?;
+        if self.directories.get(&stamp.identity).is_some_and(|node| !node.observed.unchanged(binding)) {
+            budget.reserve(binding.payload_bytes())?;
+            self.invalidate_directory(stamp.identity,binding.clone(),budget)?;
+        }
+        budget.reserve(canonical.capacity())?;
+        self.schedule(canonical.clone(),stamp,budget)?;
+        let route = CatalogRoute { path:path.clone(),order:order.clone() };
+        self.install_route(stamp.identity,route);
+        self.sync_routes(budget)?;
+        let generation = self.directories.get(&stamp.identity).expect("observed directory").generation;
+        self.open_generation(store,stamp.identity,generation,&path,budget)?;
+        let node = self.directories.get(&stamp.identity).expect("opened observation generation");
+        if let CatalogScan::Issue { status,reason,.. } = &node.scan { return Err(SnapshotError::new(*status,reason)); }
+        query.seen_directories.insert(stamp.identity);
+        query.frames.push(CatalogObservationFrame { generation,lease:Arc::clone(&node.lease),identity:stamp.identity,
+            next_name:0,raw_parent:path,order });
+        Ok(())
+    }
+
+    fn observe_cached_prefix(&self, query: &mut CatalogLocateQuery, bound: &[usize],
+        budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        query.frames.clear();
+        query.next_observation_root = self.roots.len() - bound[0] - 1;
+        for length in 1..bound.len() {
+            let order = &bound[..length];
+            let identity = match self.checks.get(order).map(|check| check.kind) {
+                Some(CatalogCheckKind::Root(index)) => self.roots[index].binding.stamp.expect("cached prefix root").identity,
+                Some(CatalogCheckKind::Directory(identity)) => identity,
+                Some(CatalogCheckKind::Edge(identity,index)) => self.directories.get(&identity).expect("cached prefix parent").edges[index].binding.stamp.expect("cached prefix directory").identity,
+                _ => continue,
+            };
+            let node = self.directories.get(&identity).expect("cached prefix generation");
+            let route = self.route_index.get(&identity).expect("cached prefix route");
+            budget.reserve(vec_growth(&query.frames,1) + route.path.capacity() + order.len() * size_of::<usize>()
+                + set_growth(&query.seen_directories,1))?;
+            query.seen_directories.insert(identity);
+            query.frames.push(CatalogObservationFrame { generation:node.generation,lease:Arc::clone(&node.lease),identity,
+                next_name:bound[length] + 1,raw_parent:route.path.clone(),order:order.to_vec() });
+        }
+        Ok(())
+    }
+
+    fn publish_observed_name(&mut self, identity: SourceIdentity, generation: u64, name: OsString,
+        binding: &CatalogBinding, symlink: bool, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let node = self.generation(identity,generation);
+        let physical_path = catalog_child_path(&node.canonical,&name);
+        // A name lease has no authority or physical-fact provenance. Only a successful same-parent
+        // canonical observation can populate the physical candidate index.
+        let proven = binding.issue.is_none() && binding.canonical.as_deref() == Some(physical_path.as_path());
+        let current = self.directories.get(&identity).is_some_and(|node| node.generation == generation);
+        if current && proven {
+            budget.reserve(name.capacity() + binding.payload_bytes())?;
+            let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding.clone()),symlink };
+            self.install_edge(&pending,budget)?;
+            self.commit_edge(pending);
+            return Ok(());
+        }
+        budget.reserve(vec_growth(&node.edges,1) + name.capacity())?;
+        let before = node.owned_bytes();
+        let node = self.generation_mut(identity,generation);
+        node.payload_bytes += name.capacity();
+        node.first_unproven.get_or_insert(node.edges.len());
+        node.edges.push(CatalogNameRecord::unobserved(name));
+        node.pending_name = None;
+        node.physical_complete = false;
+        self.update_generation_charge(identity,generation,before);
+        self.publication = CatalogCachePublication::Uncertified;
+        Ok(())
+    }
+
+    fn observe_next(&mut self, store: &NativeStore, context: &Value, cancel: &Cancellation, deadline: u64,
+        query: &mut CatalogLocateQuery, usage: &mut [u64;20], parent_hint: &mut Option<(u64,Option<PathBuf>)>,
+        budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogObservationStep,SnapshotError> {
+        loop {
+            cancel.check(deadline)?;
+            #[cfg(test)]
+            store.after_location_metadata("walk");
+            if query.frames.is_empty() {
+                if query.next_observation_root == 0 {
+                    if self.next_root == 0 && self.pending.is_empty() {
+                        self.complete = true;
+                        self.publication = CatalogCachePublication::Uncertified;
+                        self.decision_revision += 1;
+                        self.epoch += 1;
+                    }
+                    return Ok(CatalogObservationStep::End);
+                }
+                let index = query.next_observation_root - 1;
+                budget.scratch(LOCATE_USER_PATH_SLOTS + self.roots[index].path.capacity())?;
+                let path = self.roots[index].path.clone();
+                let binding = CatalogBinding::inspect(store,&path,context)?;
+                if let Some((status,reason)) = &binding.issue {
+                    if *status != Status::Missing { return Err(SnapshotError::new(*status,reason)); }
+                }
+                budget.reserve(binding.payload_bytes() + 2 * size_of::<usize>() + Self::check_growth(1))?;
+                let order = vec![self.roots.len() - index - 1];
+                self.update_root(index,binding.clone(),budget)?;
+                self.next_root = self.next_root.min(index);
+                self.install_check(order.clone(),CatalogCheck { kind:CatalogCheckKind::Root(index) });
+                query.next_observation_root -= 1;
+                if binding.directory {
+                    self.admit_observation_frame(store,path,order,&binding,query,budget)?;
+                    continue;
+                }
+                if let Some(candidate) = Self::observed_candidate(&path,&binding,query,budget)? { return Ok(candidate); }
+                continue;
+            }
+            let frame = query.frames.last().expect("observation frame");
+            let (identity,generation,offset) = (frame.identity,frame.generation,frame.next_name);
+            let step = self.next_generation_name(identity,generation,offset,budget)?;
+            let (name,symlink,appended) = match step {
+                CatalogNameStep::End => {
+                    query.frames.pop();
+                    if self.directories.get(&identity).is_some_and(|node| node.generation == generation) {
+                        self.pending.retain(|pending| *pending != identity);
+                    }
+                    continue;
+                }
+                CatalogNameStep::Issue { status,reason } => return Err(SnapshotError::new(status,reason)),
+                CatalogNameStep::Name { name,symlink,appended } => (name,symlink,appended),
+            };
+            // Logical discovery is charged to this view even when another caller prefetched the name.
+            usage[17] += 1;
+            #[cfg(test)]
+            store.after_location_metadata("entry");
+            let frame = query.frames.last().expect("observation frame");
+            budget.scratch(LOCATE_USER_PATH_SLOTS + frame.raw_parent.capacity() + name.capacity())?;
+            let path = catalog_child_path(&frame.raw_parent,&name);
+            if context["authority"]["kind"].as_str() == Some("user")
+                && parent_hint.as_ref().is_none_or(|(prior,_)| *prior != generation) {
+                *parent_hint = Some((generation,CatalogBinding::canonical_path(store,&frame.raw_parent).ok()));
+            }
+            let parent = parent_hint.as_ref().and_then(|(_,path)| path.as_deref());
+            let (observation,shared_parent) = CatalogQueryObservation::classify(store,&path,parent,context)?;
+            let binding = observation.binding;
+            if !shared_parent { *parent_hint = None; }
+            if appended { self.publish_observed_name(identity,generation,name,&binding,symlink,budget)?; }
+            if let Some((status,reason)) = &binding.issue {
+                if *status != Status::Missing { return Err(SnapshotError::new(*status,reason)); }
+            }
+            let frame = query.frames.last_mut().expect("observation frame");
+            frame.next_name += 1;
+            if binding.directory {
+                budget.reserve((frame.order.len() + 1) * size_of::<usize>() + path.capacity())?;
+                let mut order = frame.order.clone(); order.push(offset);
+                self.admit_observation_frame(store,path,order,&binding,query,budget)?;
+            } else if let Some(candidate) = Self::observed_candidate(&path,&binding,query,budget)? { return Ok(candidate); }
+            return Ok(CatalogObservationStep::Progress);
+        }
+    }
+
+    fn observed_candidate(path: &Path, binding: &CatalogBinding, query: &CatalogLocateQuery,
+        budget: &mut CatalogBudget<'_, '_>) -> Result<Option<CatalogObservationStep>,SnapshotError> {
+        if !binding.regular || path.extension().is_none_or(|extension| extension != "jsonl") { return Ok(None); }
+        let stem = path.file_stem().expect("observed source stem").to_string_lossy();
+        let Some(id) = NativeStore::requested_location(&stem,&query.wanted).filter(|id| !query.found.contains(*id)) else { return Ok(None); };
+        budget.reserve(id.len() + path.as_os_str().len())?;
+        Ok(Some(CatalogObservationStep::Candidate { id:id.to_owned(),path:path.to_owned(),stamp:binding.stamp.expect("observed source stamp") }))
     }
 }
