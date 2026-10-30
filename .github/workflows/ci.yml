@@ -131,6 +131,36 @@ jobs:
           name: cc-transcript-macos-${{ github.sha }}
           path: dist/*.whl
 
+  packaging-wheel:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build wheel from source distribution
+        run: uv build
+      - name: Install wheel in a fresh environment
+        run: |
+          uv venv .wheel-smoke
+          uv pip install --python .wheel-smoke/bin/python dist/*.whl
+      - name: Verify distribution contents and installed NLP APIs
+        run: |
+          .wheel-smoke/bin/python -I scripts/check_distribution.py dist > distribution-proof.json
+          cat distribution-proof.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cc-transcript-packaging-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            distribution-proof.json
+
   large-root-benchmark:
     if: contains(github.event.pull_request.labels.*.name, 'large-root-benchmark')
     runs-on: macos-15
