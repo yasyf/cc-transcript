@@ -65,6 +65,9 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test unpublished load charge work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
+
       - name: Test prepared-facts disk cache on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- snapshot_prepared_disk restarted_owner_reuses_prepared_facts
 
@@ -81,9 +84,6 @@ jobs:
 
       - name: Test owned transcript catalog operation counts on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
-
-      - name: Test unpublished load charge work on Linux
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
 
       - name: Generate native type stubs
         env:
