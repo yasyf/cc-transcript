@@ -11527,6 +11527,7 @@ mod tests {
 
     include!("snapshot_catalog_tests.rs");
     include!("snapshot_public_catalog_tests.rs");
+    include!("snapshot_public_zero_hit_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
