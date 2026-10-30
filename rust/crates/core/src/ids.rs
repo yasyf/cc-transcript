@@ -64,11 +64,13 @@ pub fn tool_digest(tool_name: &str, tool_input: &Value) -> Result<String, String
 pub(crate) fn write_canonical(value: &Value, out: &mut impl std::fmt::Write) -> Result<(), String> {
     match value.get_type() {
         JsonType::Null => out.write_str("null").unwrap(),
-        JsonType::Boolean => out.write_str(if value.as_bool().unwrap() {
-            "true"
-        } else {
-            "false"
-        }).unwrap(),
+        JsonType::Boolean => out
+            .write_str(if value.as_bool().unwrap() {
+                "true"
+            } else {
+                "false"
+            })
+            .unwrap(),
         JsonType::Number => encode_number(value, out)?,
         JsonType::String => encode_string_to(value.as_str().unwrap(), out).unwrap(),
         JsonType::Array => {
@@ -82,7 +84,8 @@ pub(crate) fn write_canonical(value: &Value, out: &mut impl std::fmt::Write) -> 
             out.write_char(']').unwrap();
         }
         JsonType::Object => {
-            let mut deduped: HashMap<&str, &Value> = HashMap::with_capacity(value.as_object().unwrap().len());
+            let mut deduped: HashMap<&str, &Value> =
+                HashMap::with_capacity(value.as_object().unwrap().len());
             for (key, item) in value.as_object().unwrap().iter() {
                 deduped.insert(key, item);
             }
@@ -224,7 +227,10 @@ mod tests {
         }
         for raw in ["9007199254740993", "100000000000000000000000000000"] {
             let value: Value = sonic_rs::from_str(raw).unwrap();
-            assert_eq!(canonical_json_size(&value).unwrap_err(), canonical_json(&value).unwrap_err());
+            assert_eq!(
+                canonical_json_size(&value).unwrap_err(),
+                canonical_json(&value).unwrap_err()
+            );
         }
     }
 

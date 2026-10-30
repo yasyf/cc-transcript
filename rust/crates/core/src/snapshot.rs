@@ -8809,7 +8809,9 @@ impl NativeStore {
                 let fence = std::mem::take(&mut load.prefix_fence);
                 if fence == prior_fence {
                     if previous.stamp.identity.window_base != slot.stamp.identity.window_base {
-                        load.file.seek(SeekFrom::Start(load.offset)).map_err(io_error)?;
+                        load.file
+                            .seek(SeekFrom::Start(load.offset))
+                            .map_err(io_error)?;
                         load.prefix_checked = true;
                         return Ok(());
                     }
