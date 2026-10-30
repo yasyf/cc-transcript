@@ -832,7 +832,8 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
     let left = source.directory.join("left.txt");
     let right = source.directory.join("right.txt");
     let alias = source.directory.join("first.jsonl");
-    for path in [&left, &right, &later.join("second.jsonl")] {
+    let second = later.join("second.jsonl");
+    for path in [&left, &right, &second] {
         std::fs::write(path, format!("{}\n", user("member"))).unwrap();
     }
     std::os::unix::fs::symlink(&left, &alias).unwrap();
