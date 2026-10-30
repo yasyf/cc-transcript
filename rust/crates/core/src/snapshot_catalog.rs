@@ -1183,10 +1183,8 @@ impl SourceCatalog {
             };
             let fresh = match CatalogBinding::canonical_path(store,&path) {
                 Ok(canonical) => {
-                    if let Err(error) = store.authority(context,Some(&canonical)) {
-                        if error.status == Status::PermissionDenied && query.reuses_capability(order,&path,generation,&canonical,old) { continue; }
-                        return Err(error);
-                    }
+                    if query.reuses_capability(order,&path,generation,&canonical,old) { continue; }
+                    store.authority(context,Some(&canonical))?;
                     CatalogBinding::metadata(canonical)
                 }
                 Err(error) => CatalogBinding { issue:Some((error.status,error.reason)), ..CatalogBinding::empty() },

@@ -7076,7 +7076,10 @@ impl NativeStore {
                         drop(locate);
                         return Err(error);
                     }
-                    if locate.context["authority"] != context["authority"] { locate.query.authority_epoch += 1; }
+                    if locate.context["authority"]["kind"] != context["authority"]["kind"]
+                        || (context["authority"]["kind"].as_str() == Some("restricted_roots")
+                            && locate.context["authority"]["roots"] != context["authority"]["roots"])
+                    { locate.query.authority_epoch += 1; }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
                 }
