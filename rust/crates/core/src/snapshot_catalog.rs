@@ -85,7 +85,7 @@ struct CatalogChildMetadata {
     stamp: SourceStamp,
     directory: bool,
     regular: bool,
-    revalidate: bool,
+    symlink: bool,
 }
 
 impl CatalogChildMetadata {
