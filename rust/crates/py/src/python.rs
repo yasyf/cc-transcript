@@ -1048,7 +1048,7 @@ fn noise_spec_json() -> &'static str {
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction]
 fn project_request_body(py: Python<'_>, path: String) -> PyResult<Option<(bool, Option<String>)>> {
-    py.allow_threads(|| {
+    py.detach(|| {
         Ok(cc_transcript_core::request_body::read_request_body(std::path::Path::new(&path))?
             .map(|body| (body.bypass_rules, body.sha)))
     })
