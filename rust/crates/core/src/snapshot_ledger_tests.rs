@@ -3995,7 +3995,9 @@ fn published_follower(path: &Path, background: bool, requests: usize) -> Fixture
             let state = parked.store.lock_state();
             state.latest.len() == state.latest.reserved()
         };
-        if padded { break; }
+        if padded {
+            break;
+        }
         let source = LedgerSource::new(&line(&format!("cache-padding-{}", padding.len())));
         let (handle, snapshot) = acquired(&parked.store, &source.path, &parked.owner);
         release_lease(&parked.store, &handle, &parked.owner);
@@ -4036,7 +4038,10 @@ fn latest_cache_write_is_skipped_when_its_index_growth_does_not_fit() {
         let skipped = build();
         let (growth, reserved) = {
             let state = skipped.store.lock_state();
-            (state.latest_growth(&identity, &skipped.pins[0]), state.latest.reserved())
+            (
+                state.latest_growth(&identity, &skipped.pins[0]),
+                state.latest.reserved(),
+            )
         };
         assert!(growth > 0);
         assert!(
