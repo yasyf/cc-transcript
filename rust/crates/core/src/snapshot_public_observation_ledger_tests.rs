@@ -102,6 +102,54 @@ fn location_observation_store_drop_releases_both_live_and_retired_generation_tok
     assert!(retired.upgrade().is_none());
 }
 
+#[test]
+fn location_observation_last_pin_release_while_owner_busy_reclaims_at_settlement() {
+    let source = LedgerSource::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    for index in 0..4 { source.file(&format!("ordinary-{index}.txt"), ""); }
+    let store = Arc::new(public_review_store(1));
+    let owner = context_for("public-observation-busy-a", false);
+    let foreign = context_for("public-observation-busy-b", false);
+    let request = public_review_request(&source, &["absent"]);
+    let first = store.request(&request, &owner, &Cancellation::default());
+    let cursor = first["cursor"].as_str().expect("pinned original query").to_owned();
+    let slot = public_observation_ledger_slot(&store);
+    let old_token = {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("settled original generation"); };
+        Arc::downgrade(&catalog.directories.values().next().unwrap().lease)
+    };
+    source.file("new-name.txt", "");
+    let weak_store = Arc::downgrade(&store);
+    let release_owner = owner.clone();
+    let called = Arc::new(AtomicUsize::new(0));
+    let called_hook = Arc::clone(&called);
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new(move || {
+        let store = weak_store.upgrade().unwrap();
+        let slot = public_observation_ledger_slot(&store);
+        assert!(matches!(*slot.cell.lock().unwrap(), CatalogCell::Busy));
+        let released = store.request(&json!({"schema":SCHEMA,"id":"release-old-while-busy","operation":"release","kind":"cursor","owner_epoch":null,"token":cursor}), &release_owner, &Cancellation::default());
+        assert_eq!(released["status"].as_str(), Some("ok"), "{released:?}");
+        called_hook.fetch_add(1, Ordering::Relaxed);
+    })));
+    let rebuilding = store.request(&request, &foreign, &Cancellation::default());
+    assert_eq!(called.load(Ordering::Relaxed), 1);
+    assert_eq!(rebuilding["status"].as_str(), Some("incomplete"), "{rebuilding:?}");
+    assert!(rebuilding["cursor"].as_str().is_some());
+    {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("new owner must settle"); };
+        assert!(catalog.retired_generations.is_empty());
+        assert!(catalog.retirement_queue.is_empty());
+        assert_eq!(catalog.retired_bytes, 0);
+    }
+    assert!(old_token.upgrade().is_none());
+    public_observation_ledger_audit(&store);
+    let released = store.request(&json!({"schema":SCHEMA,"id":"release-busy-rebuilder","operation":"release","kind":"cursor","owner_epoch":null,"token":rebuilding["cursor"]}), &foreign, &Cancellation::default());
+    assert_eq!(released["status"].as_str(), Some("ok"));
+    public_observation_ledger_audit(&store);
+}
+
 fn public_observation_retirement_admission_attempt(headroom: usize, verify_recovery: bool) -> bool {
     let source = LedgerSource::new("");
     std::fs::remove_file(&source.path).unwrap();
