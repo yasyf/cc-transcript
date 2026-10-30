@@ -8351,7 +8351,9 @@ impl NativeStore {
                         "source entry exceeds owner bound",
                     ));
                 }
-                let count = (read_bound as u64).min(unscanned);
+                let count = (read_bound as u64)
+                    .min((64 * 1024u64).saturating_add(load.window_scanned))
+                    .min(unscanned);
                 if count == 0 {
                     return Err(source_read_limit());
                 }
@@ -12662,13 +12664,25 @@ mod tests {
             let source = Source::new(&format!(
                 "{}{}",
                 if prefix { users(0..2) } else { String::new() },
-                user("2").replace("hello", &"x".repeat(192 * 1024))
+                user("2").replace("hello", &"x".repeat(2 * 1024 * 1024))
             ));
-            let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":256*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+            let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":4*1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
             let owner = context("a");
             let (base, start, _) = expected_window(&source.path, 1024);
             assert!(base - start > 128 * 1024);
-            let response = windowed(&store, &source.path, 1024, &owner);
+            let mut request = windowed_acquire(&source.path, 1024);
+            request["limits"].insert("max_source_read_bytes", json!(8 * 1024 * 1024));
+            let mut response = store.request(&request, &owner, &Cancellation::default());
+            for _ in 0..16 {
+                if response["status"].as_str() != Some("incomplete") {
+                    break;
+                }
+                response = store.request(
+                    &json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":response["cursor"]}),
+                    &owner,
+                    &Cancellation::default(),
+                );
+            }
             assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
             let snapshot = store.pin(handle(&response), &owner).unwrap();
             assert_eq!(snapshot.window_start, start);
