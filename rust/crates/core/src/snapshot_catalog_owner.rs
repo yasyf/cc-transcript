@@ -300,10 +300,10 @@ impl NativeStore {
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
                             remaining.deadline_unix_ms, plan.as_ref().expect("catalog read plan"), &mut budget)?
                         {
-                            if selected_revision.is_some_and(|revision| revision != catalog.decision_revision) {
+                            if selected_revision.is_some_and(|revision| revision != catalog.selection_revision) {
                                 return Err(SnapshotError::new(Status::Changed, "registered catalog changed during selection"));
                             }
-                            selected_revision = Some(catalog.decision_revision);
+                            selected_revision = Some(catalog.selection_revision);
                             self.remember_locations(located.iter(), context);
                             budget.reserve(map_growth(&paths, located.len()))?;
                             paths.extend(located);
@@ -323,7 +323,7 @@ impl NativeStore {
                 }
             }
             catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-            if plan_epoch != catalog.epoch || selected_revision != Some(catalog.decision_revision) {
+            if plan_epoch != catalog.epoch || selected_revision != Some(catalog.selection_revision) {
                 return Err(SnapshotError::new(Status::Changed, "registered catalog changed during lookup"));
             }
             cancel.check(remaining.deadline_unix_ms)?;
