@@ -1137,7 +1137,24 @@ impl SourceCatalog {
             cancel.check(deadline)?;
             let lower = query.validated_after.as_ref().map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);
             let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
-            let Some((order,check)) = self.checks.range::<Vec<usize>,_>((lower,upper)).next() else { return Ok(true); };
+            let next = self.checks.range::<Vec<usize>,_>((lower,upper)).next();
+            let authority_after = query.validated_after.as_ref().into_iter().chain(query.floor.as_ref()).max();
+            let lower = authority_after.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);
+            let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
+            if let Some((order,path)) = query.authority_checks.range::<Vec<usize>,_>((lower,upper)).next() {
+                if next.is_none_or(|(next,_)| order < next) {
+                    match CatalogBinding::canonical_path(store,path) {
+                        Ok(canonical) => store.authority(context,Some(&canonical))?,
+                        Err(error) if error.status == Status::Missing => {},
+                        Err(error) => return Err(error),
+                    }
+                    budget.scratch(order.len() * size_of::<usize>())?;
+                    let order = order.clone();
+                    query.validation_position(&order,budget)?;
+                    continue;
+                }
+            }
+            let Some((order,check)) = next else { return Ok(true); };
             let check = *check;
             if let CatalogCheckKind::ReadIssue(identity) = check.kind {
                 let node = self.directories.get(&identity).expect("catalog issue directory");

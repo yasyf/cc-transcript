@@ -397,3 +397,27 @@ fn public_catalog_review_ordinary_io_errors_pre_admit_the_whole_registered_slice
     assert!(!public_review_ordinary_error_batch(Some(exact-1)));
     assert!(public_review_ordinary_error_batch(Some(exact)));
 }
+
+#[test]
+fn public_catalog_review_narrowed_resume_checks_an_unconsumed_shared_regular_entry() {
+    let source = LedgerSource::new("");
+    let allowed = LedgerSource::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    source.file("first.txt", "");
+    source.file("second.txt", "");
+    let store = public_review_store(1);
+    let owner = context_for("public-review-shared-regular", false);
+    let request = public_review_request(&source, &["missing"]);
+    let first = store.request(&request, &owner, &Cancellation::default());
+    let cursor = first["cursor"].as_str().expect("one-entry private cursor").to_owned();
+    assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+    let (_, rows) = public_review_finish(&store, &request, &owner);
+    assert_eq!(rows[0]["status"].as_str(), Some("missing"));
+    let mut narrowed = owner.clone();
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[allowed.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let response = store.request(&json!({"schema":SCHEMA,"id":"shared-regular-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+    assert_eq!(response["status"].as_str(), Some("permission_denied"), "{response:?}");
+    assert!(response["data"].is_null());
+    assert!(response["cursor"].is_null());
+    store.assert_conserved();
+}

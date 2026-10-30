@@ -18,6 +18,9 @@ struct CatalogLocateQuery {
     validated_after: Option<Vec<usize>>,
     final_hold: bool,
     authority_epoch: u64,
+    authority_checks: BTreeMap<Vec<usize>, PathBuf>,
+    authority_check_bytes: usize,
+    authority_view: Option<(u64, u64)>,
     capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
     capability_bytes: usize,
     generation_seen: Option<u64>,
@@ -62,7 +65,7 @@ impl CatalogLocateQuery {
             + self.choices.capacity() * size_of::<Reverse<CatalogChoice>>() + self.choice_bytes
             + self.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
-            + self.capability_bytes
+            + self.capability_bytes + self.authority_check_bytes
     }
 
     fn push_choice(&mut self, choice: CatalogChoice, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
@@ -256,6 +259,34 @@ impl SourceCatalog {
         Ok(choices)
     }
 
+    fn public_authority_view(&self, query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
+        if query.authority_epoch == 0 || query.authority_view == Some((query.authority_epoch, self.candidate_version)) {
+            return Ok(());
+        }
+        query.authority_checks.clear();
+        query.authority_check_bytes = 0;
+        for (identity, route) in self.route_index.iter() {
+            let node = self.directories.get(identity).expect("catalog authority directory");
+            for (index, edge) in node.edges.iter().enumerate() {
+                if edge.binding.directory || node.symlinks.binary_search(&index).is_ok() || edge.binding.issue.is_some() {
+                    continue;
+                }
+                let order = Self::query_order(route, index, budget)?;
+                if query.floor.as_ref().is_some_and(|floor| order <= *floor) {
+                    continue;
+                }
+                let path_bytes = route.path.as_os_str().len() + 1 + edge.name.len();
+                budget.reserve(size_of::<(Vec<usize>, PathBuf)>() + path_bytes)?;
+                let path = catalog_child_path(&route.path, &edge.name);
+                query.authority_check_bytes += size_of::<(Vec<usize>, PathBuf)>()
+                    + order.capacity() * size_of::<usize>() + path.capacity();
+                query.authority_checks.insert(order, path);
+            }
+        }
+        query.authority_view = Some((query.authority_epoch, self.candidate_version));
+        Ok(())
+    }
+
     fn locate_page(&mut self, store: &NativeStore, _ids: &[Value], context: &Value,
         cancel: &Cancellation, remaining: &mut WorkLimits, usage: &mut [u64;20],
         query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogLocatePage, SnapshotError> {
@@ -276,6 +307,7 @@ impl SourceCatalog {
                 continue;
             }
             self.sync_routes(budget)?;
+            self.public_authority_view(query, budget)?;
             if !query.choices_ready || query.choice_version != self.candidate_version {
                 let choices = self.choices(&query.wanted,cancel,remaining.deadline_unix_ms,budget)?;
                 query.choices.clear(); query.choice_bytes = 0;
@@ -328,6 +360,9 @@ impl SourceCatalog {
             remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
             query.choice_version = self.candidate_version;
             query.generation_seen = Some(self.generation_version);
+            if query.authority_epoch != 0 {
+                query.authority_view = Some((query.authority_epoch, self.candidate_version));
+            }
             if let Some(choice) = choice { query.push_choice(choice,budget)?; }
         }
         cancel.check(remaining.deadline_unix_ms)?;
